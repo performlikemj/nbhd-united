@@ -1,0 +1,20 @@
+# Generated manually — run `pip-compile requirements.in` to regenerate
+Django>=5.1,<5.2
+djangorestframework>=3.15
+django-cors-headers
+django-environ
+psycopg[binary]
+gunicorn
+djangorestframework-simplejwt
+PyJWT
+celery[redis]
+redis
+django-celery-beat
+dj-stripe>=2.9
+python-telegram-bot>=21.0
+litellm
+openai
+tiktoken
+whitenoise
+django-extensions
+pip-tools

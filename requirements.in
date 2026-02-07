@@ -1,0 +1,32 @@
+# Core
+Django>=5.1,<5.2
+djangorestframework>=3.15
+django-cors-headers
+django-environ
+psycopg[binary]
+gunicorn
+
+# Auth
+djangorestframework-simplejwt
+PyJWT
+
+# Async / Tasks
+celery[redis]
+redis
+django-celery-beat
+
+# Payments
+dj-stripe>=2.9
+
+# Telegram
+python-telegram-bot>=21.0
+
+# AI / Models
+litellm
+openai
+tiktoken
+
+# Utils
+whitenoise
+django-extensions
+pip-tools
