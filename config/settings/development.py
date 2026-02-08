@@ -6,6 +6,9 @@ DEBUG = True
 # Allow all hosts in dev
 ALLOWED_HOSTS = ["*"]
 
+# Allow all CORS origins in dev (frontend on :3000 → backend on :8000)
+CORS_ALLOW_ALL_ORIGINS = True
+
 # Use console email backend
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
