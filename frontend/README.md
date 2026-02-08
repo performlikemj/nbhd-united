@@ -1,27 +1,38 @@
-# Frontend — Next.js
+# Frontend — Next.js Subscriber Console
 
-Self-service dashboard for NBHD United subscribers.
+Separate frontend build for NBHD United subscriber self-service workflows.
 
-## Features (planned)
+## Included Scaffold
 
-- Onboarding wizard (connect Telegram, subscribe via Stripe)
-- OAuth connections (Gmail, Google Calendar)
-- Usage dashboard (messages, tokens, cost)
-- Subscription management (Stripe Customer Portal)
+- App Router + TypeScript + Tailwind baseline
+- React Query provider + typed API client
+- Initial routes:
+  - `/` home snapshot and quick actions
+  - `/onboarding` onboarding status checklist
+  - `/integrations` OAuth integration management surface
+  - `/usage` token/message usage and budget view
+  - `/billing` Stripe portal and subscription controls
 
 ## Stack
 
 - Next.js 14+ (App Router)
 - Tailwind CSS
 - React Query
-- Stripe Checkout
+- TypeScript
 
 ## Setup
 
 ```bash
-npx create-next-app@latest . --typescript --tailwind --app
+cd frontend
+cp .env.example .env.local
 npm install
 npm run dev
 ```
 
-This is a separate build from the Django backend.
+Default API base URL in `.env.local`:
+
+```bash
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+```
+
+This frontend remains a separate deployment artifact from the Django backend.

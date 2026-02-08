@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ink: #12232c;
+  --mist: #f6f4ee;
+  --card: #fcfcf8;
+  --accent: #ff9961;
+  --signal: #5fbaaf;
+  --font-body: "Avenir Next", "Trebuchet MS", "Verdana", sans-serif;
+  --font-mono: "IBM Plex Mono", "Consolas", "Menlo", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  color: var(--ink);
+  font-family: var(--font-body), sans-serif;
+  text-rendering: optimizeLegibility;
+}
+
+.font-mono {
+  font-family: var(--font-mono), monospace;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
