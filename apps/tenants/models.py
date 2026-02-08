@@ -4,6 +4,9 @@ import uuid
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
+# Import so Django discovers the model for migrations
+from .telegram_models import TelegramLinkToken  # noqa: F401
+
 
 class User(AbstractUser):
     """Custom user model with Telegram binding."""

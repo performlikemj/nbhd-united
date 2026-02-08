@@ -11,6 +11,7 @@ from django.views.decorators.http import require_POST
 from .services import (
     extract_chat_id,
     forward_to_openclaw,
+    handle_start_command,
     is_rate_limited,
     resolve_container,
     send_onboarding_link,
@@ -37,6 +38,11 @@ def telegram_webhook(request):
     except json.JSONDecodeError:
         return HttpResponseBadRequest("Invalid JSON")
 
+    # Handle /start TOKEN for account linking (before routing)
+    link_response = handle_start_command(update)
+    if link_response:
+        return JsonResponse(link_response)
+
     chat_id = extract_chat_id(update)
     if not chat_id:
         return HttpResponse("ok")
@@ -51,8 +57,6 @@ def telegram_webhook(request):
     if not container_fqdn:
         # Unknown user — send onboarding link
         response_data = send_onboarding_link(chat_id)
-        # We could call Telegram API directly here, or just return
-        # For now, log it
         logger.info("Unknown chat_id %s, sending onboarding link", chat_id)
         return JsonResponse(response_data)
 

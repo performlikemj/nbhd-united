@@ -116,3 +116,46 @@ def send_onboarding_link(chat_id: int) -> dict:
             "Once subscribed, come back and send me a message!"
         ),
     }
+
+
+def handle_start_command(update: dict) -> dict | None:
+    """Handle /start TOKEN for account linking.
+
+    Returns a Telegram sendMessage response dict, or None if not a /start command.
+    """
+    message = update.get("message", {})
+    text = message.get("text", "")
+
+    if not text.startswith("/start "):
+        return None
+
+    token = text.split(" ", 1)[1].strip()
+    if not token:
+        return None
+
+    from_user = message.get("from", {})
+    chat_id = message.get("chat", {}).get("id")
+    telegram_user_id = from_user.get("id")
+
+    if not chat_id or not telegram_user_id:
+        return None
+
+    from apps.tenants.telegram_service import process_start_token
+
+    success, reply = process_start_token(
+        telegram_user_id=telegram_user_id,
+        telegram_chat_id=chat_id,
+        telegram_username=from_user.get("username", ""),
+        telegram_first_name=from_user.get("first_name", ""),
+        token=token,
+    )
+
+    if success:
+        # Invalidate route cache so subsequent messages get routed
+        invalidate_cache(chat_id)
+
+    return {
+        "method": "sendMessage",
+        "chat_id": chat_id,
+        "text": reply,
+    }
