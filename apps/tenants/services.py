@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from django.utils.text import slugify
+from django.db import IntegrityError, transaction
 
 from .models import Tenant, User
 
@@ -21,24 +21,29 @@ def create_tenant(
 
     Provisioning is triggered by billing webhook after payment.
     """
-    # Generate unique username
-    base_username = f"tg_{telegram_chat_id}"
-    username = base_username
+    if User.objects.filter(telegram_chat_id=telegram_chat_id).exists():
+        raise ValueError(f"Tenant already exists for chat_id={telegram_chat_id}")
 
-    user = User.objects.create_user(
-        username=username,
-        telegram_chat_id=telegram_chat_id,
-        telegram_user_id=telegram_user_id,
-        telegram_username=telegram_username or "",
-        display_name=display_name or "Friend",
-        language=language,
-    )
+    try:
+        with transaction.atomic():
+            user = User.objects.create_user(
+                username=f"tg_{telegram_chat_id}",
+                telegram_chat_id=telegram_chat_id,
+                telegram_user_id=telegram_user_id,
+                telegram_username=telegram_username or "",
+                display_name=display_name or "Friend",
+                language=language,
+            )
 
-    tenant = Tenant.objects.create(
-        user=user,
-        status=Tenant.Status.PENDING,
-        key_vault_prefix=f"tenants-{user.id}",
-    )
+            tenant = Tenant.objects.create(
+                user=user,
+                status=Tenant.Status.PENDING,
+                key_vault_prefix=f"tenants-{user.id}",
+            )
+    except IntegrityError as exc:
+        if "telegram_chat_id" in str(exc):
+            raise ValueError(f"Tenant already exists for chat_id={telegram_chat_id}") from exc
+        raise
 
     logger.info("Created tenant %s for user %s (chat_id=%s)", tenant.id, user.id, telegram_chat_id)
     return tenant

@@ -8,7 +8,11 @@ from django.http import HttpResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .services import handle_checkout_completed, handle_subscription_deleted
+from .services import (
+    handle_checkout_completed,
+    handle_invoice_payment_failed,
+    handle_subscription_deleted,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +44,8 @@ def stripe_webhook(request):
         case "customer.subscription.updated":
             # Future: handle tier changes
             logger.info("Subscription updated: %s", data.get("id"))
+        case "invoice.payment_failed":
+            handle_invoice_payment_failed(data)
         case _:
             logger.debug("Unhandled Stripe event: %s", event_type)
 

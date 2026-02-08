@@ -4,9 +4,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import timedelta
 from typing import Any
 
+import httpx
 from django.conf import settings
+from django.utils import timezone
 
 from apps.tenants.models import Tenant
 from .models import Integration
@@ -27,7 +30,21 @@ OAUTH_PROVIDERS: dict[str, dict[str, Any]] = {
         "scopes": ["https://www.googleapis.com/auth/calendar"],
         "provider_group": "google",
     },
+    "sautai": {
+        "auth_url": "https://app.sautai.com/oauth/authorize",
+        "token_url": "https://app.sautai.com/oauth/token",
+        "scopes": ["read", "write"],
+        "provider_group": "sautai",
+    },
 }
+
+
+def get_provider_config(provider: str) -> dict[str, Any]:
+    """Return provider config or raise for unknown providers."""
+    config = OAUTH_PROVIDERS.get(provider)
+    if config is None:
+        raise ValueError(f"Unsupported provider: {provider}")
+    return config
 
 
 def get_key_vault_secret_name(tenant: Tenant, provider: str) -> str:
@@ -88,21 +105,30 @@ def connect_integration(
     tenant: Tenant,
     provider: str,
     tokens: dict[str, Any],
-    provider_email: str = "",
+    provider_email: str | None = None,
     scopes: list[str] | None = None,
 ) -> Integration:
     """Connect an integration — store tokens and create/update record."""
+    provider_config = get_provider_config(provider)
     secret_name = store_tokens_in_key_vault(tenant, provider, tokens)
+    expires_in = tokens.get("expires_in")
+    token_expires_at = None
+    if expires_in is not None:
+        token_expires_at = timezone.now() + timedelta(seconds=int(expires_in))
+
+    defaults: dict[str, Any] = {
+        "status": Integration.Status.ACTIVE,
+        "scopes": scopes or provider_config.get("scopes", []),
+        "key_vault_secret_name": secret_name,
+        "token_expires_at": token_expires_at,
+    }
+    if provider_email is not None:
+        defaults["provider_email"] = provider_email
 
     integration, created = Integration.objects.update_or_create(
         tenant=tenant,
         provider=provider,
-        defaults={
-            "status": Integration.Status.ACTIVE,
-            "scopes": scopes or [],
-            "provider_email": provider_email,
-            "key_vault_secret_name": secret_name,
-        },
+        defaults=defaults,
     )
 
     logger.info(
@@ -123,3 +149,39 @@ def disconnect_integration(tenant: Tenant, provider: str) -> None:
     )
 
     logger.info("Disconnected %s for tenant %s", provider, tenant.id)
+
+
+def refresh_integration_tokens(
+    tenant: Tenant,
+    provider: str,
+    refresh_token: str,
+    client_id: str,
+    client_secret: str,
+) -> Integration:
+    """Refresh OAuth tokens and persist them to Key Vault + integration metadata."""
+    if not refresh_token:
+        raise ValueError("refresh_token is required")
+
+    config = get_provider_config(provider)
+    resp = httpx.post(
+        config["token_url"],
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+            "client_secret": client_secret,
+        },
+        timeout=20.0,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    payload.setdefault("refresh_token", refresh_token)
+
+    scope_text = payload.get("scope", "")
+    scopes = [s for s in scope_text.split(" ") if s] if scope_text else config.get("scopes", [])
+    return connect_integration(
+        tenant=tenant,
+        provider=provider,
+        tokens=payload,
+        scopes=scopes,
+    )

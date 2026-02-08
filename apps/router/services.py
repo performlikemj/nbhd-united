@@ -1,8 +1,9 @@
 """Telegram message router — forwards messages to correct OpenClaw instance."""
 from __future__ import annotations
 
+from collections import deque
 import logging
-from functools import lru_cache
+from time import monotonic
 
 import httpx
 from django.conf import settings
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 # In-memory cache: chat_id → container_fqdn
 _route_cache: dict[int, str] = {}
+_rate_limit_state: dict[int, deque[float]] = {}
 
 
 def resolve_container(chat_id: int) -> str | None:
@@ -43,6 +45,30 @@ def invalidate_cache(chat_id: int) -> None:
 def clear_cache() -> None:
     """Clear the entire route cache."""
     _route_cache.clear()
+
+
+def clear_rate_limits() -> None:
+    """Clear in-memory rate-limit state."""
+    _rate_limit_state.clear()
+
+
+def is_rate_limited(chat_id: int) -> bool:
+    """Return True if the chat has exceeded the per-minute limit."""
+    limit = getattr(settings, "ROUTER_RATE_LIMIT_PER_MINUTE", 30)
+    if limit <= 0:
+        return False
+
+    now = monotonic()
+    window_seconds = 60.0
+    chat_hits = _rate_limit_state.setdefault(chat_id, deque())
+    while chat_hits and (now - chat_hits[0]) > window_seconds:
+        chat_hits.popleft()
+
+    if len(chat_hits) >= limit:
+        return True
+
+    chat_hits.append(now)
+    return False
 
 
 def extract_chat_id(update: dict) -> int | None:

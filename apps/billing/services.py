@@ -20,6 +20,38 @@ MODEL_COSTS: dict[str, dict[str, float]] = {
 DEFAULT_COST = {"input": 3.0, "output": 15.0}
 
 
+def _normalize_tier(raw_tier: str) -> str:
+    allowed = {choice for choice, _ in Tenant.ModelTier.choices}
+    if raw_tier in allowed:
+        return raw_tier
+    logger.warning("Invalid tier '%s' from Stripe webhook, defaulting to basic", raw_tier)
+    return Tenant.ModelTier.BASIC
+
+
+def _find_tenant_for_stripe_event(payload: dict) -> Tenant | None:
+    metadata = payload.get("metadata") or {}
+    user_id = metadata.get("user_id")
+    subscription_id = payload.get("subscription") or payload.get("id")
+    customer_id = payload.get("customer")
+
+    if user_id:
+        tenant = Tenant.objects.filter(user_id=user_id).first()
+        if tenant:
+            return tenant
+
+    if subscription_id:
+        tenant = Tenant.objects.filter(stripe_subscription_id=subscription_id).first()
+        if tenant:
+            return tenant
+
+    if customer_id:
+        tenant = Tenant.objects.filter(stripe_customer_id=customer_id).first()
+        if tenant:
+            return tenant
+
+    return None
+
+
 def record_usage(
     tenant: Tenant,
     event_type: str,
@@ -88,20 +120,22 @@ def handle_checkout_completed(session_data: dict) -> None:
     """Handle Stripe checkout.session.completed webhook."""
     from apps.orchestrator.tasks import provision_tenant_task
 
-    metadata = session_data.get("metadata", {})
-    user_id = metadata.get("user_id")
-    tier = metadata.get("tier", "basic")
-    customer_id = session_data.get("customer", "")
-    subscription_id = session_data.get("subscription", "")
+    metadata = session_data.get("metadata") or {}
+    tier = _normalize_tier(metadata.get("tier", Tenant.ModelTier.BASIC))
+    customer_id = session_data.get("customer") or ""
+    subscription_id = session_data.get("subscription") or ""
 
-    if not user_id:
-        logger.error("checkout.session.completed missing user_id in metadata")
+    tenant = _find_tenant_for_stripe_event(session_data)
+    if not tenant:
+        logger.error("No tenant found for checkout.session.completed payload")
         return
 
-    try:
-        tenant = Tenant.objects.get(user_id=user_id)
-    except Tenant.DoesNotExist:
-        logger.error("No tenant for user_id=%s", user_id)
+    was_provisioning = tenant.status == Tenant.Status.PROVISIONING
+    same_subscription = tenant.stripe_subscription_id == subscription_id
+    already_active = tenant.status == Tenant.Status.ACTIVE and bool(tenant.container_id)
+
+    if already_active and same_subscription and tenant.model_tier == tier:
+        logger.info("Ignoring duplicate checkout completion for active tenant %s", tenant.id)
         return
 
     tenant.stripe_customer_id = customer_id
@@ -113,6 +147,10 @@ def handle_checkout_completed(session_data: dict) -> None:
         "model_tier", "status", "updated_at",
     ])
 
+    if was_provisioning and same_subscription:
+        logger.info("Tenant %s already provisioning for current subscription", tenant.id)
+        return
+
     provision_tenant_task.delay(str(tenant.id))
     logger.info("Triggered provisioning for tenant %s", tenant.id)
 
@@ -121,17 +159,13 @@ def handle_subscription_deleted(subscription_data: dict) -> None:
     """Handle customer.subscription.deleted webhook."""
     from apps.orchestrator.tasks import deprovision_tenant_task
 
-    metadata = subscription_data.get("metadata", {})
-    user_id = metadata.get("user_id")
-
-    if not user_id:
-        logger.error("subscription.deleted missing user_id in metadata")
+    tenant = _find_tenant_for_stripe_event(subscription_data)
+    if not tenant:
+        logger.error("No tenant found for customer.subscription.deleted payload")
         return
 
-    try:
-        tenant = Tenant.objects.get(user_id=user_id)
-    except Tenant.DoesNotExist:
-        logger.error("No tenant for user_id=%s", user_id)
+    if tenant.status in (Tenant.Status.DEPROVISIONING, Tenant.Status.DELETED):
+        logger.info("Tenant %s already deprovisioning/deleted", tenant.id)
         return
 
     tenant.status = Tenant.Status.DEPROVISIONING
@@ -139,3 +173,19 @@ def handle_subscription_deleted(subscription_data: dict) -> None:
 
     deprovision_tenant_task.delay(str(tenant.id))
     logger.info("Triggered deprovisioning for tenant %s", tenant.id)
+
+
+def handle_invoice_payment_failed(invoice_data: dict) -> None:
+    """Handle invoice.payment_failed webhook by suspending tenant access."""
+    tenant = _find_tenant_for_stripe_event(invoice_data)
+    if not tenant:
+        logger.error("No tenant found for invoice.payment_failed payload")
+        return
+
+    if tenant.status == Tenant.Status.SUSPENDED:
+        logger.info("Tenant %s already suspended", tenant.id)
+        return
+
+    tenant.status = Tenant.Status.SUSPENDED
+    tenant.save(update_fields=["status", "updated_at"])
+    logger.warning("Suspended tenant %s after failed invoice", tenant.id)

@@ -8,7 +8,13 @@ from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseForbid
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .services import extract_chat_id, forward_to_openclaw, resolve_container, send_onboarding_link
+from .services import (
+    extract_chat_id,
+    forward_to_openclaw,
+    is_rate_limited,
+    resolve_container,
+    send_onboarding_link,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +40,10 @@ def telegram_webhook(request):
     chat_id = extract_chat_id(update)
     if not chat_id:
         return HttpResponse("ok")
+
+    if is_rate_limited(chat_id):
+        logger.warning("Rate limited chat_id %s", chat_id)
+        return HttpResponse("Too many requests", status=429)
 
     # Look up container for this chat_id
     container_fqdn = resolve_container(chat_id)

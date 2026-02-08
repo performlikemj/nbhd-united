@@ -1,0 +1,103 @@
+"""Additional orchestrator service coverage."""
+from unittest.mock import patch
+
+from django.test import TestCase
+
+from apps.tenants.models import Tenant
+from apps.tenants.services import create_tenant
+from apps.orchestrator.services import deprovision_tenant, provision_tenant
+
+
+class OrchestratorServiceTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Orchestrator", telegram_chat_id=515151)
+
+    @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
+    @patch("apps.orchestrator.services.config_to_json", return_value="{}")
+    @patch(
+        "apps.orchestrator.services.create_managed_identity",
+        return_value={"id": "/identities/1", "client_id": "client-1"},
+    )
+    @patch(
+        "apps.orchestrator.services.create_container_app",
+        return_value={"name": "oc-tenant", "fqdn": "oc-tenant.internal.azurecontainerapps.io"},
+    )
+    def test_provision_happy_path(
+        self,
+        _mock_create_container,
+        _mock_create_identity,
+        _mock_config_json,
+        _mock_generate_config,
+    ):
+        provision_tenant(str(self.tenant.id))
+        self.tenant.refresh_from_db()
+
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+        self.assertEqual(self.tenant.container_id, "oc-tenant")
+        self.assertEqual(self.tenant.container_fqdn, "oc-tenant.internal.azurecontainerapps.io")
+        self.assertEqual(self.tenant.managed_identity_id, "/identities/1")
+        self.assertIsNotNone(self.tenant.provisioned_at)
+
+    @patch("apps.orchestrator.services.create_container_app", side_effect=RuntimeError("azure error"))
+    @patch(
+        "apps.orchestrator.services.create_managed_identity",
+        return_value={"id": "/identities/2", "client_id": "client-2"},
+    )
+    @patch("apps.orchestrator.services.config_to_json", return_value="{}")
+    @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
+    def test_provision_failure_resets_to_pending(
+        self,
+        _mock_generate_config,
+        _mock_config_json,
+        _mock_create_identity,
+        _mock_create_container,
+    ):
+        with self.assertRaises(RuntimeError):
+            provision_tenant(str(self.tenant.id))
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.status, Tenant.Status.PENDING)
+
+    @patch("apps.orchestrator.services.create_container_app")
+    def test_provision_skips_if_tenant_not_provisionable(self, mock_create_container):
+        self.tenant.status = Tenant.Status.DELETED
+        self.tenant.save(update_fields=["status", "updated_at"])
+
+        provision_tenant(str(self.tenant.id))
+        self.tenant.refresh_from_db()
+
+        self.assertEqual(self.tenant.status, Tenant.Status.DELETED)
+        mock_create_container.assert_not_called()
+
+    @patch("apps.orchestrator.services.delete_managed_identity")
+    @patch("apps.orchestrator.services.delete_container_app")
+    def test_deprovision_clears_container_fields(self, mock_delete_container, mock_delete_identity):
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.container_id = "oc-tenant"
+        self.tenant.container_fqdn = "oc-tenant.internal.azurecontainerapps.io"
+        self.tenant.managed_identity_id = "/identities/3"
+        self.tenant.save(
+            update_fields=["status", "container_id", "container_fqdn", "managed_identity_id", "updated_at"]
+        )
+
+        deprovision_tenant(str(self.tenant.id))
+        self.tenant.refresh_from_db()
+
+        self.assertEqual(self.tenant.status, Tenant.Status.DELETED)
+        self.assertEqual(self.tenant.container_id, "")
+        self.assertEqual(self.tenant.container_fqdn, "")
+        self.assertEqual(self.tenant.managed_identity_id, "")
+        mock_delete_container.assert_called_once_with("oc-tenant")
+        mock_delete_identity.assert_called_once_with(str(self.tenant.id))
+
+    @patch("apps.orchestrator.services.delete_container_app", side_effect=RuntimeError("delete failed"))
+    def test_deprovision_failure_marks_suspended(self, _mock_delete_container):
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.container_id = "oc-failing"
+        self.tenant.save(update_fields=["status", "container_id", "updated_at"])
+
+        with self.assertRaises(RuntimeError):
+            deprovision_tenant(str(self.tenant.id))
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.status, Tenant.Status.SUSPENDED)
