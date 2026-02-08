@@ -125,6 +125,7 @@ SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "SIGNING_KEY": env("JWT_SECRET", default=SECRET_KEY),
+    "TOKEN_OBTAIN_SERIALIZER": "apps.tenants.serializers.EmailTokenObtainPairSerializer",
 }
 
 # CORS
@@ -161,3 +162,21 @@ AZURE_LOCATION = env("AZURE_LOCATION", default="eastus")
 AZURE_CONTAINER_ENV_ID = env("AZURE_CONTAINER_ENV_ID", default="")
 AZURE_ACR_SERVER = env("AZURE_ACR_SERVER", default="nbhdunited.azurecr.io")
 AZURE_KEY_VAULT_NAME = env("AZURE_KEY_VAULT_NAME", default="kv-nbhd-prod")
+
+# Stripe price IDs
+STRIPE_PRICE_IDS = {
+    "basic": env("STRIPE_PRICE_BASIC", default=""),
+    "plus": env("STRIPE_PRICE_PLUS", default=""),
+}
+
+# Frontend URL (for redirects)
+FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
+
+# API base URL (for OAuth callback redirects)
+API_BASE_URL = env("API_BASE_URL", default="http://localhost:8000")
+
+# OAuth client credentials
+GOOGLE_OAUTH_CLIENT_ID = env("GOOGLE_OAUTH_CLIENT_ID", default="")
+GOOGLE_OAUTH_CLIENT_SECRET = env("GOOGLE_OAUTH_CLIENT_SECRET", default="")
+SAUTAI_OAUTH_CLIENT_ID = env("SAUTAI_OAUTH_CLIENT_ID", default="")
+SAUTAI_OAUTH_CLIENT_SECRET = env("SAUTAI_OAUTH_CLIENT_SECRET", default="")

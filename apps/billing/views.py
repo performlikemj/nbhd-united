@@ -1,4 +1,4 @@
-"""Stripe webhook handler."""
+"""Stripe webhook handler and billing views."""
 import json
 import logging
 
@@ -7,7 +7,12 @@ from django.conf import settings
 from django.http import HttpResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
+from rest_framework import status as http_status
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
+from apps.tenants.models import Tenant
 from .services import (
     handle_checkout_completed,
     handle_invoice_payment_failed,
@@ -50,3 +55,62 @@ def stripe_webhook(request):
             logger.debug("Unhandled Stripe event: %s", event_type)
 
     return HttpResponse(status=200)
+
+
+class StripePortalView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response(
+                {"detail": "No tenant found."},
+                status=http_status.HTTP_404_NOT_FOUND,
+            )
+
+        if not tenant.stripe_customer_id:
+            return Response(
+                {"detail": "No Stripe customer linked."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        session = stripe.billing_portal.Session.create(
+            customer=tenant.stripe_customer_id,
+            return_url=f"{settings.FRONTEND_URL}/billing",
+        )
+        return Response({"url": session.url})
+
+
+class StripeCheckoutView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        tier = request.data.get("tier", "basic")
+        price_id = settings.STRIPE_PRICE_IDS.get(tier)
+
+        if not price_id:
+            return Response(
+                {"detail": f"Unknown tier: {tier}"},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = request.user
+        customer_email = user.email
+
+        metadata = {"user_id": str(user.id), "tier": tier}
+        try:
+            tenant = user.tenant
+            metadata["tenant_id"] = str(tenant.id)
+        except Tenant.DoesNotExist:
+            pass
+
+        session = stripe.checkout.Session.create(
+            customer_email=customer_email,
+            line_items=[{"price": price_id, "quantity": 1}],
+            mode="subscription",
+            success_url=f"{settings.FRONTEND_URL}/onboarding?checkout=success",
+            cancel_url=f"{settings.FRONTEND_URL}/billing?checkout=cancelled",
+            metadata=metadata,
+        )
+        return Response({"url": session.url})
