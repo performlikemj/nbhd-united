@@ -1,49 +1,84 @@
-# Neighborhood United — Managed AI Agent Platform
+# NBHD United — Managed OpenClaw Platform
 
-**Your AI, Your Context, Your Privacy.**
-
-A multi-tenant AI agent platform that gives every user their own private AI assistant accessible through Telegram. Built for communities — especially those in low-income and non-tech neighborhoods.
+**Control plane for managed OpenClaw instances.** Each $5/month subscriber gets their own private AI assistant via Telegram, powered by OpenClaw running in isolated Azure containers.
 
 ## Architecture
 
-- **Django 5.1** — REST API with DRF
-- **Celery + Redis** — Async task processing
-- **PostgreSQL 16** — Primary database with tenant isolation
-- **LiteLLM + OpenRouter** — Multi-model AI routing (free → paid tiers)
-- **dj-stripe** — Stripe billing integration
-- **python-telegram-bot** — Telegram as primary interface
+This is **NOT** an AI runtime — [OpenClaw](https://github.com/nichochar/openclaw) is the runtime. This repo is the orchestration layer:
 
-See [architecture docs](../docs/community-agent-platform/) for full details.
+```
+┌─────────────────┐
+│  Telegram Users  │
+└────────┬────────┘
+         │
+┌────────▼────────┐     ┌──────────────┐     ┌──────────────┐
+│  Message Router  │────▶│  OpenClaw A   │     │  OpenClaw N   │
+│  (this service)  │     │  (container)  │ ... │  (container)  │
+└────────┬────────┘     └──────┬───────┘     └──────┬───────┘
+         │                     │                     │
+┌────────▼────────┐     ┌──────▼─────────────────────▼──────┐
+│  Stripe Billing  │     │         Azure Key Vault           │
+│  (dj-stripe)    │     │  (tenant-scoped OAuth tokens)     │
+└─────────────────┘     └───────────────────────────────────┘
+```
+
+### Components
+
+| Component | What it does |
+|-----------|-------------|
+| **Tenants** | User accounts, subscription status, container mapping |
+| **Billing** | Stripe subscription ($5/mo), webhook → provisioning triggers |
+| **Orchestrator** | Azure Container Apps SDK — create/delete OpenClaw instances |
+| **Router** | Single Telegram bot, routes messages to correct OpenClaw container |
+| **Integrations** | OAuth flows → tokens stored in Azure Key Vault |
+| **Dashboard** | DRF API for frontend (tenant status, usage, connections) |
+
+### Key Design Decisions
+
+- **One container per user** — true isolation, no shared state
+- **Scale-to-zero** — Azure Container Apps idles inactive containers
+- **Single Telegram bot** — router maps `chat_id → container` and forwards
+- **Key Vault for secrets** — Azure RBAC enforces tenant isolation at platform level
+- **OpenClaw config template** — generated per tenant with locked `allowFrom`
+
+## Tech Stack
+
+- **Django 5.1** + DRF — REST API
+- **Celery + Redis** — async provisioning tasks
+- **PostgreSQL 16** — tenant registry, usage tracking
+- **dj-stripe** — Stripe billing integration
+- **Azure Container Apps** — OpenClaw instance hosting
+- **Azure Key Vault** — tenant-scoped secret storage
 
 ## Quick Start
 
 ```bash
-# 1. Clone and enter
+# Clone and enter
 cd nbhd-united
 
-# 2. Create virtual environment
+# Create virtual environment
 python -m venv .venv
 source .venv/bin/activate
 
-# 3. Install dependencies
+# Install dependencies
 pip install pip-tools
 pip-compile requirements.in
 pip-sync requirements.txt
 
-# 4. Configure environment
+# Configure
 cp .env.example .env
-# Edit .env with your settings
+# Edit .env — set AZURE_MOCK=true for local dev
 
-# 5. Start services
+# Start services
 docker compose up -d  # PostgreSQL + Redis
 
-# 6. Run migrations
+# Run migrations
 python manage.py migrate
 
-# 7. Create superuser
+# Create superuser
 python manage.py createsuperuser
 
-# 8. Run dev server
+# Run dev server
 python manage.py runserver
 ```
 
@@ -53,31 +88,53 @@ make setup       # venv + deps
 make docker-up   # postgres + redis
 make migrate     # run migrations
 make run         # dev server
+make test        # run tests
+```
+
+## Management Commands
+
+```bash
+# List all tenants
+python manage.py list_tenants
+python manage.py list_tenants --status active
+
+# Check container health
+python manage.py check_health
+
+# Manual provisioning
+python manage.py provision_tenant <tenant-uuid>
+python manage.py deprovision_tenant <tenant-uuid>
 ```
 
 ## Project Structure
 
 ```
-config/          → Django settings, URLs, WSGI/ASGI, Celery
+config/              Django settings (base/development/production)
 apps/
-  tenants/       → Tenant & user management, auth
-  agents/        → Agent sessions, messages, memory
-  billing/       → Stripe plans & usage tracking
-  telegram_bot/  → Telegram webhook & handlers
-  integrations/  → OAuth per-user integrations (future)
+  tenants/           User model, tenant model, registration
+  billing/           Stripe webhooks, usage tracking, budget caps
+  orchestrator/      Azure Container Apps lifecycle, config generation
+  router/            Telegram message routing to OpenClaw instances
+  integrations/      OAuth flows, Key Vault token storage
+  dashboard/         DRF API for frontend
+templates/
+  openclaw/          OpenClaw workspace templates (AGENTS.md, etc.)
+infra/               Terraform modules (placeholder)
+frontend/            Next.js app (placeholder, separate build)
 ```
-
-## Key Concepts
-
-- **1 User = 1 Tenant = 1 Agent** — Simple mental model
-- **Telegram-first** — No web UI needed, button-driven UX
-- **Tiered models** — Free users get free models, paid get premium
-- **pip-tools workflow** — `requirements.in` is source of truth
 
 ## Environment Variables
 
-See `.env.example` for all required configuration.
+See `.env.example` for all configuration. Key ones:
+
+| Variable | Purpose |
+|----------|---------|
+| `TELEGRAM_BOT_TOKEN` | Shared Telegram bot token |
+| `ANTHROPIC_API_KEY` | Shared API key for all OpenClaw instances |
+| `AZURE_SUBSCRIPTION_ID` | Azure subscription for Container Apps |
+| `AZURE_KEY_VAULT_NAME` | Key Vault for tenant secrets |
+| `AZURE_MOCK` | Set `true` for local dev without Azure |
 
 ## License
 
-Proprietary — Neighborhood United
+Proprietary — NBHD United

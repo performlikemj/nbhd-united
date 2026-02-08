@@ -1,16 +1,16 @@
 from django.contrib import admin
 
-from .models import Plan, UsageEvent
+from .models import MonthlyBudget, UsageRecord
 
 
-@admin.register(Plan)
-class PlanAdmin(admin.ModelAdmin):
-    list_display = ("name", "tier", "monthly_price", "token_budget", "is_active")
-    list_filter = ("tier", "is_active")
-
-
-@admin.register(UsageEvent)
-class UsageEventAdmin(admin.ModelAdmin):
-    list_display = ("event_type", "tenant", "tokens", "model_used", "cost_estimate", "created_at")
+@admin.register(UsageRecord)
+class UsageRecordAdmin(admin.ModelAdmin):
+    list_display = ("event_type", "tenant", "input_tokens", "output_tokens", "model_used", "cost_estimate", "created_at")
     list_filter = ("event_type",)
     date_hierarchy = "created_at"
+
+
+@admin.register(MonthlyBudget)
+class MonthlyBudgetAdmin(admin.ModelAdmin):
+    list_display = ("month", "budget_dollars", "spent_dollars", "is_capped")
+    list_filter = ("is_capped",)

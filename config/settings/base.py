@@ -1,5 +1,5 @@
 """
-Base Django settings for Neighborhood United.
+Base Django settings for NBHD United — OpenClaw Control Plane.
 """
 import os
 from pathlib import Path
@@ -7,7 +7,6 @@ from datetime import timedelta
 
 import environ
 
-# Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 env = environ.Env(
@@ -36,10 +35,11 @@ INSTALLED_APPS = [
     "djstripe",
     # Local apps
     "apps.tenants",
-    "apps.agents",
     "apps.billing",
-    "apps.telegram_bot",
+    "apps.orchestrator",
+    "apps.router",
     "apps.integrations",
+    "apps.dashboard",
 ]
 
 MIDDLEWARE = [
@@ -60,7 +60,7 @@ ROOT_URLCONF = "config.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -146,9 +146,17 @@ STRIPE_LIVE_MODE = env.bool("STRIPE_LIVE_MODE", default=False)
 DJSTRIPE_WEBHOOK_SECRET = env("DJSTRIPE_WEBHOOK_SECRET", default="")
 DJSTRIPE_FOREIGN_KEY_TO_FIELD = "id"
 
-# Telegram
+# Telegram (shared bot)
 TELEGRAM_BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", default="")
 TELEGRAM_WEBHOOK_SECRET = env("TELEGRAM_WEBHOOK_SECRET", default="")
 
-# OpenRouter
-OPENROUTER_API_KEY = env("OPENROUTER_API_KEY", default="")
+# Anthropic API (shared key for all OpenClaw instances)
+ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
+
+# Azure
+AZURE_SUBSCRIPTION_ID = env("AZURE_SUBSCRIPTION_ID", default="")
+AZURE_RESOURCE_GROUP = env("AZURE_RESOURCE_GROUP", default="rg-nbhd-prod")
+AZURE_LOCATION = env("AZURE_LOCATION", default="eastus")
+AZURE_CONTAINER_ENV_ID = env("AZURE_CONTAINER_ENV_ID", default="")
+AZURE_ACR_SERVER = env("AZURE_ACR_SERVER", default="nbhdunited.azurecr.io")
+AZURE_KEY_VAULT_NAME = env("AZURE_KEY_VAULT_NAME", default="kv-nbhd-prod")

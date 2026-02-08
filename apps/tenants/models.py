@@ -1,45 +1,17 @@
+"""Tenant models — core of the control plane."""
 import uuid
 
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
 
-class Tenant(models.Model):
-    """A tenant represents a single user's isolated environment."""
-
-    class PlanTier(models.TextChoices):
-        FREE = "free", "Free"
-        PAID = "paid", "Paid"
-        SPONSOR = "sponsor", "Sponsor"
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=255)
-    slug = models.SlugField(max_length=255, unique=True)
-    plan_tier = models.CharField(
-        max_length=20, choices=PlanTier.choices, default=PlanTier.FREE
-    )
-    is_active = models.BooleanField(default=True)
-    stripe_customer_id = models.CharField(max_length=255, blank=True, default="")
-    metadata = models.JSONField(default=dict, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = "tenants"
-
-    def __str__(self):
-        return self.name
-
-
 class User(AbstractUser):
-    """Custom user model — every user belongs to a tenant."""
+    """Custom user model with Telegram binding."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    tenant = models.ForeignKey(
-        Tenant, on_delete=models.CASCADE, related_name="users", null=True, blank=True
-    )
     telegram_chat_id = models.BigIntegerField(unique=True, null=True, blank=True)
     telegram_user_id = models.BigIntegerField(null=True, blank=True)
+    telegram_username = models.CharField(max_length=255, blank=True, default="")
     display_name = models.CharField(max_length=255, default="Friend")
     language = models.CharField(max_length=10, default="en")
     preferences = models.JSONField(default=dict, blank=True)
@@ -47,31 +19,89 @@ class User(AbstractUser):
     class Meta:
         db_table = "users"
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.display_name or self.username
 
 
-class AgentConfig(models.Model):
-    """Per-tenant agent configuration."""
+class Tenant(models.Model):
+    """
+    A tenant = one subscriber = one OpenClaw instance.
+    This is the central record tying user, subscription, and container together.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        PROVISIONING = "provisioning", "Provisioning"
+        ACTIVE = "active", "Active"
+        SUSPENDED = "suspended", "Suspended"
+        DEPROVISIONING = "deprovisioning", "Deprovisioning"
+        DELETED = "deleted", "Deleted"
+
+    class ModelTier(models.TextChoices):
+        BASIC = "basic", "Basic (Sonnet)"
+        PLUS = "plus", "Plus (Opus available)"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    tenant = models.OneToOneField(
-        Tenant, on_delete=models.CASCADE, related_name="agent_config"
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="tenant")
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.PENDING
     )
-    name = models.CharField(max_length=255, default="Assistant")
-    system_prompt = models.TextField(
-        default="You are a helpful assistant for the Neighborhood United community."
+    model_tier = models.CharField(
+        max_length=20, choices=ModelTier.choices, default=ModelTier.BASIC
     )
-    model_tier = models.CharField(max_length=20, default="free")
-    model_override = models.CharField(max_length=255, blank=True, default="")
-    temperature = models.FloatField(default=0.7)
-    max_tokens_per_message = models.IntegerField(default=2048)
-    tools_enabled = models.JSONField(default=list, blank=True)
+
+    # OpenClaw container
+    container_id = models.CharField(
+        max_length=255, blank=True, default="",
+        help_text="Azure Container App name (e.g. oc-usr-abc123)",
+    )
+    container_fqdn = models.CharField(
+        max_length=512, blank=True, default="",
+        help_text="Internal FQDN of the container",
+    )
+
+    # Azure Key Vault
+    key_vault_prefix = models.CharField(
+        max_length=255, blank=True, default="",
+        help_text="Key Vault secret prefix (e.g. tenants-<uuid>)",
+    )
+    managed_identity_id = models.CharField(
+        max_length=512, blank=True, default="",
+        help_text="Azure User-Assigned Managed Identity resource ID",
+    )
+
+    # Stripe (dj-stripe handles subscription objects; this is a quick-lookup cache)
+    stripe_customer_id = models.CharField(max_length=255, blank=True, default="")
+    stripe_subscription_id = models.CharField(max_length=255, blank=True, default="")
+
+    # Usage tracking
+    messages_today = models.IntegerField(default=0)
+    messages_this_month = models.IntegerField(default=0)
+    tokens_this_month = models.IntegerField(default=0)
+    estimated_cost_this_month = models.DecimalField(
+        max_digits=10, decimal_places=4, default=0
+    )
+    monthly_token_budget = models.IntegerField(
+        default=500_000,
+        help_text="Per-user monthly token budget",
+    )
+
+    # Metadata
+    last_message_at = models.DateTimeField(null=True, blank=True)
+    provisioned_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = "agent_configs"
+        db_table = "tenants"
 
-    def __str__(self):
-        return f"{self.name} ({self.tenant})"
+    def __str__(self) -> str:
+        return f"{self.user.display_name} ({self.status})"
+
+    @property
+    def is_active(self) -> bool:
+        return self.status == self.Status.ACTIVE
+
+    @property
+    def is_over_budget(self) -> bool:
+        return self.tokens_this_month >= self.monthly_token_budget

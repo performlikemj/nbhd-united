@@ -17,14 +17,17 @@ django-celery-beat
 
 # Payments
 dj-stripe>=2.9
+stripe
 
-# Telegram
-python-telegram-bot>=21.0
+# HTTP client (for routing to OpenClaw instances)
+httpx
 
-# AI / Models
-litellm
-openai
-tiktoken
+# Azure SDK (for Container Apps, Key Vault, Managed Identity)
+azure-identity
+azure-mgmt-containerinstance
+azure-mgmt-appcontainers
+azure-mgmt-msi
+azure-keyvault-secrets
 
 # Utils
 whitenoise

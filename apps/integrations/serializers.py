@@ -6,5 +6,8 @@ from .models import Integration
 class IntegrationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Integration
-        fields = ("id", "provider", "status", "provider_email", "scopes", "created_at")
-        read_only_fields = ("id", "created_at")
+        fields = (
+            "id", "provider", "status", "provider_email",
+            "scopes", "connected_at", "updated_at",
+        )
+        read_only_fields = fields
