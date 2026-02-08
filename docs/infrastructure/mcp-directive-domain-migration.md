@@ -4,14 +4,20 @@
 
 **Safety level:** HIGH — this affects a live production backend. Each phase must be verified before proceeding to the next. Do NOT skip verification steps.
 
+**Important context:**
+- All environment variables for `sautai-django-westus2` are stored in **Azure Key Vault** and referenced by the Container App. Nothing is hardcoded in the container config.
+- Django reads these via `os.getenv()`. When you update a Key Vault secret, you must **restart the Container App** (or create a new revision) to pick up the new values.
+- The relevant env vars: `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `TELEGRAM_WEBHOOK_SECRET`, `STRIPE_WEBHOOK_SECRET`
+
 ---
 
 ## Prerequisites
 
 Before starting, confirm:
 - [ ] You have access to Cloudflare DNS for `sautai.com`
-- [ ] You have access to Azure portal or CLI for resource group containing `sautai-django-westus2`
-- [ ] You know the current FQDN of `sautai-django-westus2` (the `*.azurecontainerapps.io` address)
+- [ ] You have access to Azure portal or CLI for the resource group containing `sautai-django-westus2`
+- [ ] You have access to the Azure Key Vault used by `sautai-django-westus2`
+- [ ] You know the current FQDN of `sautai-django-westus2`
 
 To find the FQDN:
 ```bash
@@ -21,6 +27,16 @@ az containerapp show \
   --query "properties.configuration.ingress.fqdn" \
   -o tsv
 ```
+
+To find which Key Vault is used:
+```bash
+az containerapp show \
+  --name sautai-django-westus2 \
+  --resource-group <RESOURCE_GROUP> \
+  --query "properties.template.containers[0].env" \
+  -o table
+```
+Look for env vars with `secretRef` or Key Vault reference URIs.
 
 ---
 
@@ -65,50 +81,75 @@ If using Azure Portal instead:
 3. Select "Managed certificate"
 4. Validate and add
 
-### Step 1.3: Update Django settings
+### Step 1.3: Update Key Vault secrets
 
-Add `api.sautai.com` to the Sautai Django settings. The `ALLOWED_HOSTS` is read from the `ALLOWED_HOSTS` environment variable.
+All Django config is driven by environment variables stored in Azure Key Vault. Update these secrets:
 
-**Option A: Update env var in Azure** (preferred — no code deploy needed):
+**1. `ALLOWED_HOSTS`** — Append `api.sautai.com`
+
 ```bash
-# Get current ALLOWED_HOSTS value first
-az containerapp show \
+# First, read the current value
+az keyvault secret show \
+  --vault-name <KEY_VAULT_NAME> \
+  --name ALLOWED-HOSTS \
+  --query "value" -o tsv
+
+# Update with api.sautai.com appended (comma-separated)
+az keyvault secret set \
+  --vault-name <KEY_VAULT_NAME> \
+  --name ALLOWED-HOSTS \
+  --value "<EXISTING_VALUE>,api.sautai.com"
+```
+
+⚠️ Key Vault secret names use hyphens, not underscores. The secret name might be `ALLOWED-HOSTS` or `ALLOWEDHOSTS` — check the actual name first:
+```bash
+az keyvault secret list \
+  --vault-name <KEY_VAULT_NAME> \
+  --query "[?contains(name, 'ALLOWED') || contains(name, 'CORS') || contains(name, 'CSRF')].name" \
+  -o tsv
+```
+
+**2. `CORS_ALLOWED_ORIGINS`** — Append `https://api.sautai.com`
+
+```bash
+# Read current value
+az keyvault secret show \
+  --vault-name <KEY_VAULT_NAME> \
+  --name CORS-ALLOWED-ORIGINS \
+  --query "value" -o tsv
+
+# Update with https://api.sautai.com appended
+az keyvault secret set \
+  --vault-name <KEY_VAULT_NAME> \
+  --name CORS-ALLOWED-ORIGINS \
+  --value "<EXISTING_VALUE>,https://api.sautai.com"
+```
+
+Note: If `CORS_ALLOWED_ORIGINS` is NOT set in Key Vault, Django falls back to a hardcoded list in `settings.py` that already includes the old domains and `sautai.com`. In that case, you need to either:
+- Set it in Key Vault with the full list including `https://api.sautai.com`, OR
+- The `CSRF_TRUSTED_ORIGINS` in production mode is auto-built from `CORS_ALLOWED_ORIGINS`, so updating CORS covers CSRF too.
+
+### Step 1.4: Restart the Container App
+
+Key Vault secret changes are NOT picked up automatically. Restart to load new values:
+
+```bash
+# Create a new revision to pick up updated secrets
+az containerapp revision restart \
   --name sautai-django-westus2 \
   --resource-group <RESOURCE_GROUP> \
-  --query "properties.template.containers[0].env[?name=='ALLOWED_HOSTS'].value" \
-  -o tsv
+  --revision <LATEST_REVISION_NAME>
+```
 
-# Update — append api.sautai.com to existing value
+Or force a new revision:
+```bash
 az containerapp update \
   --name sautai-django-westus2 \
   --resource-group <RESOURCE_GROUP> \
-  --set-env-vars "ALLOWED_HOSTS=<EXISTING_VALUE>,api.sautai.com"
+  --revision-suffix refresh-$(date +%s)
 ```
 
-**Option B: Update code** (if ALLOWED_HOSTS is hardcoded):
-
-In `hood_united/settings.py`, in the CORS fallback block (~line 137), add:
-```python
-'https://api.sautai.com',
-```
-
-And in the production `CSRF_TRUSTED_ORIGINS` block (~line 665), add:
-```python
-'https://api.sautai.com',
-```
-
-Also update `CORS_ALLOWED_ORIGINS` env var in Azure if it's set:
-```bash
-az containerapp show \
-  --name sautai-django-westus2 \
-  --resource-group <RESOURCE_GROUP> \
-  --query "properties.template.containers[0].env[?name=='CORS_ALLOWED_ORIGINS'].value" \
-  -o tsv
-
-# If set, append https://api.sautai.com to it
-```
-
-### Step 1.4: Verify
+### Step 1.5: Verify
 
 Run ALL of these checks before proceeding:
 
@@ -117,16 +158,16 @@ Run ALL of these checks before proceeding:
 dig api.sautai.com CNAME +short
 # Expected: sautai-django-westus2.<region>.azurecontainerapps.io
 
-# 2. HTTPS works
+# 2. HTTPS works on new domain
 curl -I https://api.sautai.com/admin/
 # Expected: 200 or 302 (redirect to login)
 
-# 3. Old domains still work (CRITICAL — they must still work)
+# 3. Old domains STILL work (CRITICAL)
 curl -I https://hoodunited.org/admin/
 curl -I https://neighborhoodunited.org/admin/
 # Expected: 200 or 302
 
-# 4. API responds
+# 4. API responds on new domain
 curl https://api.sautai.com/chefs/api/public/approved-chefs/
 # Expected: JSON response
 ```
@@ -141,25 +182,27 @@ curl https://api.sautai.com/chefs/api/public/approved-chefs/
 
 ### Step 2.1: Identify current API base URL
 
-Check the Sautai frontend for the API base URL configuration:
-- Look for `VITE_API_BASE_URL`, `REACT_APP_API_URL`, or similar in:
-  - `.env` / `.env.production` in the frontend repo
-  - Azure Static Web App application settings
-  - Hardcoded in source code (search for `hoodunited.org` or `neighborhoodunited.org`)
+The Sautai frontend is a Vite/React app on Azure Static Web App `sautai-frontend`. Find the API base URL:
+- Check for `VITE_API_BASE_URL` or similar in the Static Web App application settings
+- Or search the frontend source for `hoodunited.org` or `neighborhoodunited.org`
+
+⚠️ **Vite `VITE_*` env vars are baked in at build time.** Changing a Static Web App application setting for a `VITE_*` var requires a **rebuild and redeploy** of the frontend, not just an env var update.
 
 ### Step 2.2: Update frontend API base URL
 
-Change the API base URL from the current value to `https://api.sautai.com`
+Change the API base URL to `https://api.sautai.com`
 
-**If it's an Azure Static Web App env var:**
+**If the value is in a `.env.production` or similar build-time config:**
+- Update the value in the repo
+- Rebuild and redeploy the frontend
+
+**If the value is a runtime config (unlikely for Vite but check):**
 ```bash
 az staticwebapp appsettings set \
   --name sautai-frontend \
   --resource-group <RESOURCE_GROUP> \
   --setting-names "VITE_API_BASE_URL=https://api.sautai.com"
 ```
-
-⚠️ Note: For Vite apps, `VITE_*` env vars are baked in at build time, not runtime. If the URL is a `VITE_*` variable, you need to **rebuild and redeploy** the frontend with the new value, not just update the env var.
 
 ### Step 2.3: Update Sautai Telegram webhook URL
 
@@ -182,20 +225,26 @@ curl "https://api.telegram.org/bot<SAUTAI_BOT_TOKEN>/getWebhookInfo"
 # Expected: url should show https://api.sautai.com/api/telegram/webhook/
 ```
 
+The `SAUTAI_BOT_TOKEN` and `SAUTAI_TELEGRAM_WEBHOOK_SECRET` values are in the Key Vault:
+```bash
+az keyvault secret show --vault-name <KEY_VAULT_NAME> --name TELEGRAM-BOT-TOKEN --query "value" -o tsv
+az keyvault secret show --vault-name <KEY_VAULT_NAME> --name TELEGRAM-WEBHOOK-SECRET --query "value" -o tsv
+```
+
 ### Step 2.4: Update Stripe webhook URL (if applicable)
 
 1. Go to Stripe Dashboard → Developers → Webhooks
 2. Find the webhook endpoint pointing to `hoodunited.org` or `neighborhoodunited.org`
 3. Update the URL to `https://api.sautai.com/<same-path>`
-4. **Do NOT delete the old webhook yet** — update the URL in place
+4. **Do NOT delete the old webhook** — update the URL in place
 
 ### Step 2.5: Check for OAuth callback URLs
 
-Search for any OAuth redirect URIs registered with:
+Check if any OAuth providers have redirect URIs registered with old domains:
 - Google (Gmail, Calendar) OAuth credentials
 - Any other OAuth providers
 
-If found, add `https://api.sautai.com` as an authorized redirect URI. Keep old URIs for now.
+If found, add `https://api.sautai.com` as an authorized redirect URI. Keep old URIs temporarily.
 
 ### Step 2.6: Verify
 
@@ -204,16 +253,16 @@ If found, add `https://api.sautai.com` as an authorized redirect URI. Keep old U
 curl -I https://sautai.com
 # Expected: 200
 
-# 2. Frontend can reach API (open browser, check Network tab)
+# 2. Frontend reaches API (open browser, check Network tab)
 # Go to https://sautai.com, log in, verify API calls go to api.sautai.com
 
 # 3. Telegram bot still works
 # Send a test message to the Sautai bot on Telegram — should get a response
 
-# 4. Test a full flow: browse chefs, view profiles, etc.
+# 4. Full flow test: browse chefs, view profiles, any Stripe-related actions
 ```
 
-**⛔ STOP if anything is broken. Rollback: revert frontend API URL to old domain. Old domains still work.**
+**⛔ STOP if anything is broken. Rollback: revert frontend API URL to old domain, revert Telegram webhook. Old domains still work.**
 
 ---
 
@@ -226,35 +275,46 @@ curl -I https://sautai.com
 ### Step 3.1: Remove custom domains from Azure
 
 ```bash
-# Remove each old domain
 az containerapp hostname delete \
   --name sautai-django-westus2 \
   --resource-group <RESOURCE_GROUP> \
-  --hostname hoodunited.org \
-  --yes
+  --hostname hoodunited.org --yes
 
 az containerapp hostname delete \
   --name sautai-django-westus2 \
   --resource-group <RESOURCE_GROUP> \
-  --hostname www.hoodunited.org \
-  --yes
+  --hostname www.hoodunited.org --yes
 
 az containerapp hostname delete \
   --name sautai-django-westus2 \
   --resource-group <RESOURCE_GROUP> \
-  --hostname neighborhoodunited.org \
-  --yes
+  --hostname neighborhoodunited.org --yes
 
 az containerapp hostname delete \
   --name sautai-django-westus2 \
   --resource-group <RESOURCE_GROUP> \
-  --hostname www.neighborhoodunited.org \
-  --yes
+  --hostname www.neighborhoodunited.org --yes
 ```
 
-### Step 3.2: Clean up Django settings
+### Step 3.2: Clean up Key Vault secrets
 
-Remove old domains from `hood_united/settings.py` CORS fallback (~lines 141-144):
+Update `ALLOWED_HOSTS` and `CORS_ALLOWED_ORIGINS` in Key Vault to remove the old domains:
+
+```bash
+# Read current ALLOWED_HOSTS, remove hoodunited.org and neighborhoodunited.org entries
+az keyvault secret show --vault-name <KEY_VAULT_NAME> --name ALLOWED-HOSTS --query "value" -o tsv
+# Edit the value, removing old domains, then:
+az keyvault secret set --vault-name <KEY_VAULT_NAME> --name ALLOWED-HOSTS --value "<CLEANED_VALUE>"
+
+# Same for CORS_ALLOWED_ORIGINS
+az keyvault secret show --vault-name <KEY_VAULT_NAME> --name CORS-ALLOWED-ORIGINS --query "value" -o tsv
+# Remove https://hoodunited.org, https://www.hoodunited.org, https://neighborhoodunited.org, https://www.neighborhoodunited.org
+az keyvault secret set --vault-name <KEY_VAULT_NAME> --name CORS-ALLOWED-ORIGINS --value "<CLEANED_VALUE>"
+```
+
+### Step 3.3: Also clean up the hardcoded fallbacks in Django settings
+
+In `hood_united/settings.py`, remove the old domains from the CORS fallback block (~lines 141-144):
 ```python
 # REMOVE these lines:
 'https://hoodunited.org',
@@ -263,27 +323,29 @@ Remove old domains from `hood_united/settings.py` CORS fallback (~lines 141-144)
 'https://www.neighborhoodunited.org',
 ```
 
-Also update `CORS_ALLOWED_ORIGINS` env var in Azure if it contains old domains.
+Add `https://api.sautai.com` if not already present in the fallback list.
 
-### Step 3.3: Remove old DNS records
+Deploy this code change and restart the container app.
+
+### Step 3.4: Remove old DNS records
 
 Go to the DNS registrar/provider for `hoodunited.org` and `neighborhoodunited.org`:
-- Remove CNAME records pointing to `sautai-django-westus2`
-- **Do NOT delete the domains** — you'll need them for NBHD United
+- Remove CNAME/A records pointing to `sautai-django-westus2`
+- **Do NOT delete the domains themselves** — they'll be used for NBHD United
 
-### Step 3.4: Verify
+### Step 3.5: Verify
 
 ```bash
 # 1. api.sautai.com still works
 curl -I https://api.sautai.com/admin/
 # Expected: 200 or 302
 
-# 2. Old domains no longer resolve to Sautai (may take time for DNS)
+# 2. Old domains no longer resolve to Sautai
 curl -I https://hoodunited.org/admin/
-# Expected: connection error or different response
+curl -I https://neighborhoodunited.org/admin/
+# Expected: connection error or timeout
 
-# 3. Sautai frontend still works end-to-end
-# Browse https://sautai.com, test core flows
+# 3. Full Sautai flow still works on sautai.com + api.sautai.com
 ```
 
 ---
@@ -295,22 +357,24 @@ curl -I https://hoodunited.org/admin/
 | Sautai frontend | `sautai.com` | `sautai.com` (unchanged) |
 | Sautai backend | `hoodunited.org`, `neighborhoodunited.org` | `api.sautai.com` |
 | Sautai Telegram webhook | `https://<old-domain>/api/telegram/webhook/` | `https://api.sautai.com/api/telegram/webhook/` |
+| Key Vault `ALLOWED_HOSTS` | includes old domains | includes `api.sautai.com`, old domains removed |
+| Key Vault `CORS_ALLOWED_ORIGINS` | includes old domains | includes `https://api.sautai.com`, old domains removed |
 | `hoodunited.org` | Sautai backend | Free (for NBHD United redirect) |
 | `neighborhoodunited.org` | Sautai backend | Free (for NBHD United) |
 
 ## Rollback Plan
 
-At any point during Phase 1-2:
-- Old domains still work (they're not removed until Phase 3)
+**During Phase 1-2** (old domains still attached):
 - Revert frontend API URL to old domain
 - Revert Telegram webhook to old URL
-- Everything goes back to exactly how it was
+- Everything goes back to exactly how it was — zero risk
 
-After Phase 3:
+**After Phase 3** (old domains removed):
 - Re-add old domains to Azure Container App
 - Re-add DNS records
-- Revert Django settings
+- Restore old values in Key Vault secrets
+- Restart container app
 
 ---
 
-*This directive is safe to execute step-by-step. Each phase is independent and verified before the next begins.*
+*This directive is safe to execute step-by-step. Each phase is independent and verified before the next begins. All configuration is managed through Azure Key Vault — no container rebuilds needed for env var changes, only restarts.*
