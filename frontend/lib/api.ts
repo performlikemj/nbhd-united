@@ -109,10 +109,39 @@ export function fetchTenant(): Promise<Tenant> {
   return apiFetch<Tenant>("/api/v1/tenants/me/");
 }
 
-export function onboardTenant(data: { telegram_chat_id: number; display_name?: string }): Promise<Tenant> {
+export function onboardTenant(data: { display_name?: string; language?: string }): Promise<Tenant> {
   return apiFetch<Tenant>("/api/v1/tenants/onboard/", {
     method: "POST",
     body: JSON.stringify(data),
+  });
+}
+
+// Telegram linking
+export interface TelegramLinkResponse {
+  deep_link: string;
+  qr_code: string;  // base64 data URL
+  expires_at: string;
+}
+
+export interface TelegramStatus {
+  linked: boolean;
+  telegram_username?: string;
+  telegram_chat_id?: number;
+}
+
+export function generateTelegramLink(): Promise<TelegramLinkResponse> {
+  return apiFetch<TelegramLinkResponse>("/api/v1/tenants/telegram/generate-link/", {
+    method: "POST",
+  });
+}
+
+export function fetchTelegramStatus(): Promise<TelegramStatus> {
+  return apiFetch<TelegramStatus>("/api/v1/tenants/telegram/status/");
+}
+
+export function unlinkTelegram(): Promise<{ success: boolean }> {
+  return apiFetch<{ success: boolean }>("/api/v1/tenants/telegram/unlink/", {
+    method: "POST",
   });
 }
 

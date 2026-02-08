@@ -33,7 +33,7 @@ class TenantViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class OnboardTenantView(APIView):
-    """Create tenant during onboarding — user provides Telegram chat_id."""
+    """Create tenant during onboarding — Telegram linking happens later via QR flow."""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -46,12 +46,11 @@ class OnboardTenantView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        # Update user with Telegram info
+        # Update user profile
         user = request.user
-        user.telegram_chat_id = serializer.validated_data["telegram_chat_id"]
         user.display_name = serializer.validated_data.get("display_name", user.display_name)
         user.language = serializer.validated_data.get("language", user.language)
-        user.save(update_fields=["telegram_chat_id", "display_name", "language"])
+        user.save(update_fields=["display_name", "language"])
 
         # Create tenant
         tenant = Tenant.objects.create(user=user)

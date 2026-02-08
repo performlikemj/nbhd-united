@@ -39,8 +39,7 @@ class TenantSerializer(serializers.ModelSerializer):
 
 
 class TenantRegistrationSerializer(serializers.Serializer):
-    """Used during onboarding — user provides Telegram chat ID."""
-    telegram_chat_id = serializers.IntegerField()
+    """Used during onboarding — Telegram linking happens later via QR flow."""
     display_name = serializers.CharField(max_length=255, required=False, default="Friend")
     language = serializers.CharField(max_length=10, required=False, default="en")
 

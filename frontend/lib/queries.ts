@@ -8,11 +8,14 @@ import {
   fetchIntegrations,
   fetchMe,
   fetchTenant,
+  fetchTelegramStatus,
   fetchUsageHistory,
+  generateTelegramLink,
   getOAuthAuthorizeUrl,
   onboardTenant,
   requestStripeCheckout,
   requestStripePortal,
+  unlinkTelegram,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -87,5 +90,31 @@ export function useDisconnectIntegrationMutation() {
 export function useStripePortalMutation() {
   return useMutation({
     mutationFn: requestStripePortal,
+  });
+}
+
+// Telegram
+export function useTelegramStatusQuery(enabled = true) {
+  return useQuery({
+    queryKey: ["telegram-status"],
+    queryFn: fetchTelegramStatus,
+    refetchInterval: enabled ? 3000 : false,
+  });
+}
+
+export function useGenerateTelegramLinkMutation() {
+  return useMutation({
+    mutationFn: generateTelegramLink,
+  });
+}
+
+export function useUnlinkTelegramMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: unlinkTelegram,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["telegram-status"] });
+      void queryClient.invalidateQueries({ queryKey: ["me"] });
+    },
   });
 }
