@@ -120,7 +120,7 @@ apps/
 templates/
   openclaw/          OpenClaw workspace templates (AGENTS.md, etc.)
 infra/               Terraform modules (placeholder)
-frontend/            Next.js app (placeholder, separate build)
+frontend/            Next.js subscriber console (separate build)
 ```
 
 ## Environment Variables

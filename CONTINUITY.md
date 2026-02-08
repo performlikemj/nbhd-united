@@ -1,39 +1,41 @@
 # Master Ledger: CONTINUITY.md
 
 ## Goal
-- Stabilize NBHD United as the Django/OpenClaw control plane: provisioning, billing-driven lifecycle, Telegram routing, and integration secret orchestration.
-- Success criteria: local environment boots, migrations apply, full test suite passes, service-layer behaviors are validated, and changes are committed on `feature/openclaw-control-plane`.
+- Stabilize NBHD United as the Django/OpenClaw control plane and scaffold the separate Next.js subscriber frontend.
+- Success criteria: backend orchestration is stable and tested, and `frontend/` has a runnable starter implementing onboarding/integrations/usage/billing surfaces.
 
 ## Constraints / Assumptions
 - Django repo is orchestration-only; OpenClaw remains runtime per tenant.
-- External systems (Azure Container Apps, Key Vault, Stripe, Telegram) must be mocked in tests.
+- External systems (Azure Container Apps, Key Vault, Stripe, Telegram) are mocked in tests where needed.
 - Development uses `AZURE_MOCK=true` and local Postgres/Redis.
-- Avoid destructive git operations and preserve unrelated worktree changes.
+- Frontend remains a separate build artifact from backend deployment.
 
 ## Key Decisions
-- 2026-02-08: Treat this work as a non-trivial stabilization stream with a dedicated task ledger.
-- 2026-02-08: Reconcile refactor schema drift with explicit migrations instead of relying on interactive migration prompts.
+- 2026-02-08: Reconcile refactor schema drift with explicit migrations instead of interactive prompts.
+- 2026-02-08: Continue work from `main`; merged and deleted `feature/openclaw-control-plane`.
+- 2026-02-08: Scaffold frontend under `frontend/` using hand-authored Next.js files and offline-safe fonts.
 
 ## State
 - Done:
-  - Environment bootstrap and deterministic `.venv` command path.
-  - Migration drift fixed and applied (`tenants`, `billing`, `integrations`).
-  - Service-layer hardening across tenant lifecycle, Stripe webhook handling, routing, and integrations.
-  - Coverage expanded to 47 tests; full suite passing.
+  - Backend stabilization merged on `main` with passing tests.
+  - Remote feature branch removed after merge.
+  - Frontend scaffold implemented and validated (`npm run lint`, `npm run build`).
 - Now:
-  - Commit and push changes to `feature/openclaw-control-plane`.
+  - Ready for user review and next frontend/backend API integration iteration.
 - Next:
-  - Share concise rollout/testing summary and open follow-ups if any.
+  - Connect frontend auth + Stripe portal/live onboarding flows to backend endpoints.
 
 ## Task Map
 ```text
 CONTINUITY.md
-  └─ CONTINUITY_openclaw-control-plane-hardening.md (@owner:codex)
+  ├─ CONTINUITY_openclaw-control-plane-hardening.md (@owner:codex)
+  └─ CONTINUITY_frontend-scaffold.md (@owner:codex)
 ```
 
 ## Active Ledgers
 - `CONTINUITY.md`
 - `CONTINUITY_openclaw-control-plane-hardening.md`
+- `CONTINUITY_frontend-scaffold.md`
 
 ## Cross-task Blockers / Handoffs
 - None currently.
@@ -42,11 +44,11 @@ CONTINUITY.md
 - [2026-02-08] Created initial `CONTINUITY.md` bootstrap ledger.
 
 ## Open Questions (UNCONFIRMED)
-- UNCONFIRMED: Whether remote push to `feature/openclaw-control-plane` is available with current git credentials.
+- UNCONFIRMED: Preferred production auth/session contract for frontend API calls.
 
 ## Working Set
-- Files: `apps/**`, `config/**`, `CONTINUITY.md`, `CONTINUITY_openclaw-control-plane-hardening.md`
-- Commands: migrate/check/test/makemigrations verification through `.venv/bin/python manage.py ...`
+- Files: `apps/**`, `config/**`, `frontend/**`, `CONTINUITY*.md`
+- Commands: Django verify commands and frontend `npm` validate commands
 
 ## Archived
 - None.
