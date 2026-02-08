@@ -2,6 +2,7 @@
 from django.test import TestCase
 
 from .models import Tenant, User
+from .serializers import TenantSerializer
 from .services import create_tenant
 
 
@@ -34,3 +35,57 @@ class TenantModelTest(TestCase):
         create_tenant(display_name="User1", telegram_chat_id=333)
         with self.assertRaises(Exception):
             create_tenant(display_name="User2", telegram_chat_id=333)
+
+
+class AuthLoginTest(TestCase):
+    def setUp(self):
+        self.email = "login@example.com"
+        self.password = "testpass123"
+        User.objects.create_user(
+            username=self.email, email=self.email, password=self.password,
+        )
+
+    def test_login_with_email_returns_tokens(self):
+        response = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": self.email, "password": self.password},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("access", data)
+        self.assertIn("refresh", data)
+
+    def test_login_with_wrong_password_returns_401(self):
+        response = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": self.email, "password": "wrongpass"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 401)
+
+
+class TenantSerializerTest(TestCase):
+    def test_active_with_subscription_returns_true(self):
+        tenant = create_tenant(display_name="Sub", telegram_chat_id=500)
+        tenant.stripe_subscription_id = "sub_x"
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.save()
+        data = TenantSerializer(tenant).data
+        self.assertTrue(data["has_active_subscription"])
+
+    def test_deleted_with_subscription_returns_false(self):
+        tenant = create_tenant(display_name="Del", telegram_chat_id=501)
+        tenant.stripe_subscription_id = "sub_x"
+        tenant.status = Tenant.Status.DELETED
+        tenant.save()
+        data = TenantSerializer(tenant).data
+        self.assertFalse(data["has_active_subscription"])
+
+    def test_active_without_subscription_returns_false(self):
+        tenant = create_tenant(display_name="NoSub", telegram_chat_id=502)
+        tenant.stripe_subscription_id = ""
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.save()
+        data = TenantSerializer(tenant).data
+        self.assertFalse(data["has_active_subscription"])

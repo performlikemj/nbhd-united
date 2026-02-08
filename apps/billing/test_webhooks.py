@@ -1,7 +1,11 @@
 """Billing webhook view tests."""
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase, override_settings
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from apps.tenants.models import User
+from apps.tenants.services import create_tenant
 
 
 @override_settings(DJSTRIPE_WEBHOOK_SECRET="whsec_test")
@@ -54,3 +58,31 @@ class StripeWebhookViewTest(TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
+
+
+@override_settings(STRIPE_PRICE_IDS={"plus": "price_plus_test"})
+class StripeCheckoutViewTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Checkout", telegram_chat_id=600)
+        self.user = self.tenant.user
+        self.user.email = "checkout@example.com"
+        self.user.save()
+        refresh = RefreshToken.for_user(self.user)
+        self.auth_header = f"Bearer {refresh.access_token}"
+
+    @patch("apps.billing.views.stripe.checkout.Session.create")
+    def test_checkout_includes_tier_in_metadata(self, mock_session_create):
+        mock_session_create.return_value = MagicMock(url="https://checkout.stripe.com/test")
+
+        response = self.client.post(
+            "/api/v1/billing/checkout/",
+            {"tier": "plus"},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self.auth_header,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_session_create.assert_called_once()
+        call_kwargs = mock_session_create.call_args[1]
+        self.assertEqual(call_kwargs["metadata"]["tier"], "plus")
+        self.assertEqual(call_kwargs["metadata"]["user_id"], str(self.user.id))
