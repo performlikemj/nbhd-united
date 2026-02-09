@@ -118,7 +118,7 @@ def check_budget(tenant: Tenant) -> bool:
 
 def handle_checkout_completed(session_data: dict) -> None:
     """Handle Stripe checkout.session.completed webhook."""
-    from apps.orchestrator.tasks import provision_tenant_task
+    from apps.cron.publish import publish_task
 
     metadata = session_data.get("metadata") or {}
     tier = _normalize_tier(metadata.get("tier", Tenant.ModelTier.BASIC))
@@ -151,13 +151,13 @@ def handle_checkout_completed(session_data: dict) -> None:
         logger.info("Tenant %s already provisioning for current subscription", tenant.id)
         return
 
-    provision_tenant_task.delay(str(tenant.id))
+    publish_task("provision_tenant", str(tenant.id))
     logger.info("Triggered provisioning for tenant %s", tenant.id)
 
 
 def handle_subscription_deleted(subscription_data: dict) -> None:
     """Handle customer.subscription.deleted webhook."""
-    from apps.orchestrator.tasks import deprovision_tenant_task
+    from apps.cron.publish import publish_task
 
     tenant = _find_tenant_for_stripe_event(subscription_data)
     if not tenant:
@@ -171,7 +171,7 @@ def handle_subscription_deleted(subscription_data: dict) -> None:
     tenant.status = Tenant.Status.DEPROVISIONING
     tenant.save(update_fields=["status", "updated_at"])
 
-    deprovision_tenant_task.delay(str(tenant.id))
+    publish_task("deprovision_tenant", str(tenant.id))
     logger.info("Triggered deprovisioning for tenant %s", tenant.id)
 
 

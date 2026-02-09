@@ -10,14 +10,21 @@ gunicorn
 djangorestframework-simplejwt
 PyJWT
 
-# Async / Tasks
-celery[redis]
-redis
-django-celery-beat
+# Task scheduling (QStash — replaces Celery)
+qstash>=2.0
 
 # Payments
 dj-stripe>=2.9
 stripe
+
+# Telegram
+python-telegram-bot>=21.0
+qrcode[pil]
+
+# AI / LLM
+litellm
+openai
+tiktoken
 
 # HTTP client (for routing to OpenClaw instances)
 httpx

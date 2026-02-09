@@ -1,4 +1,4 @@
-# Generated manually — run `pip-compile requirements.in` to regenerate
+# Generated from requirements.in — run `pip-compile requirements.in` to regenerate
 Django>=5.1,<5.2
 djangorestframework>=3.15
 django-cors-headers
@@ -7,15 +7,20 @@ psycopg[binary]
 gunicorn
 djangorestframework-simplejwt
 PyJWT
-celery[redis]
-redis
-django-celery-beat
+qstash>=2.0
 dj-stripe>=2.9
+stripe
 python-telegram-bot>=21.0
+qrcode[pil]
 litellm
 openai
 tiktoken
+httpx
+azure-identity
+azure-mgmt-containerinstance
+azure-mgmt-appcontainers
+azure-mgmt-msi
+azure-keyvault-secrets
 whitenoise
 django-extensions
 pip-tools
-qrcode[pil]

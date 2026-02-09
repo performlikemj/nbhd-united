@@ -31,7 +31,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "corsheaders",
     "django_extensions",
-    "django_celery_beat",
+    # django_celery_beat removed — using QStash for scheduling
     "djstripe",
     # Local apps
     "apps.tenants",
@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     "apps.router",
     "apps.integrations",
     "apps.dashboard",
+    "apps.cron",
 ]
 
 MIDDLEWARE = [
@@ -131,14 +132,13 @@ SIMPLE_JWT = {
 # CORS
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
 
-# Celery
-CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://localhost:6379/1")
-CELERY_RESULT_BACKEND = env("REDIS_URL", default="redis://localhost:6379/0")
-CELERY_ACCEPT_CONTENT = ["json"]
-CELERY_TASK_SERIALIZER = "json"
-CELERY_RESULT_SERIALIZER = "json"
-CELERY_TIMEZONE = "UTC"
-CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+# QStash (replaces Celery — scheduled & on-demand tasks via webhooks)
+QSTASH_CURRENT_SIGNING_KEY = env("QSTASH_CURRENT_SIGNING_KEY", default="")
+QSTASH_NEXT_SIGNING_KEY = env("QSTASH_NEXT_SIGNING_KEY", default="")
+QSTASH_TOKEN = env("QSTASH_TOKEN", default="")
+
+# Upstash Redis (general cache / rate limiting)
+UPSTASH_REDIS_URL = env("UPSTASH_REDIS_URL", default="")
 
 # Stripe (dj-stripe)
 STRIPE_LIVE_SECRET_KEY = env("STRIPE_LIVE_SECRET_KEY", default="")
@@ -159,7 +159,7 @@ ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
 # Azure
 AZURE_SUBSCRIPTION_ID = env("AZURE_SUBSCRIPTION_ID", default="")
 AZURE_RESOURCE_GROUP = env("AZURE_RESOURCE_GROUP", default="rg-nbhd-prod")
-AZURE_LOCATION = env("AZURE_LOCATION", default="eastus")
+AZURE_LOCATION = env("AZURE_LOCATION", default="westus2")
 AZURE_CONTAINER_ENV_ID = env("AZURE_CONTAINER_ENV_ID", default="")
 AZURE_ACR_SERVER = env("AZURE_ACR_SERVER", default="nbhdunited.azurecr.io")
 AZURE_KEY_VAULT_NAME = env("AZURE_KEY_VAULT_NAME", default="kv-nbhd-prod")

@@ -38,4 +38,6 @@ Thumbs.db
 htmlcov/
 .coverage
 .coverage.*
-.env
+
+# MCP config (may contain project refs)
+.mcp.json

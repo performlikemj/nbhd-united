@@ -50,14 +50,14 @@ def create_tenant(
 
 
 def reset_daily_counters() -> int:
-    """Reset daily message counters. Run via Celery beat at midnight UTC."""
+    """Reset daily message counters. Run via QStash cron at midnight UTC."""
     count = Tenant.objects.filter(messages_today__gt=0).update(messages_today=0)
     logger.info("Reset daily counters for %d tenants", count)
     return count
 
 
 def reset_monthly_counters() -> int:
-    """Reset monthly counters. Run via Celery beat on 1st of month."""
+    """Reset monthly counters. Run via QStash cron on 1st of month."""
     count = Tenant.objects.filter(messages_this_month__gt=0).update(
         messages_this_month=0,
         tokens_this_month=0,

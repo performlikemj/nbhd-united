@@ -1,4 +1,4 @@
-.PHONY: setup migrate run test lint compile-deps sync-deps docker-up docker-down celery celery-beat superuser tenants health
+.PHONY: setup migrate run test lint compile-deps sync-deps docker-up docker-down superuser tenants health
 
 setup:
 	python -m venv .venv
@@ -29,12 +29,6 @@ docker-up:
 
 docker-down:
 	docker compose down
-
-celery:
-	celery -A config worker -l info
-
-celery-beat:
-	celery -A config beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
 
 superuser:
 	python manage.py createsuperuser
