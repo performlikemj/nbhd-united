@@ -17,7 +17,7 @@ class BillingWebhookServiceTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Billing", telegram_chat_id=424242)
 
-    @patch("apps.billing.services.publish_task")
+    @patch("apps.cron.publish.publish_task")
     def test_checkout_completed_sets_provisioning_and_enqueues(self, mock_publish):
         handle_checkout_completed(
             {
@@ -34,7 +34,7 @@ class BillingWebhookServiceTest(TestCase):
         self.assertEqual(self.tenant.stripe_subscription_id, "sub_123")
         mock_publish.assert_called_once_with("provision_tenant", str(self.tenant.id))
 
-    @patch("apps.billing.services.publish_task")
+    @patch("apps.cron.publish.publish_task")
     def test_checkout_completed_invalid_tier_defaults_to_basic(self, mock_publish):
         handle_checkout_completed(
             {
@@ -48,7 +48,7 @@ class BillingWebhookServiceTest(TestCase):
         self.assertEqual(self.tenant.model_tier, Tenant.ModelTier.BASIC)
         mock_publish.assert_called_once()
 
-    @patch("apps.billing.services.publish_task")
+    @patch("apps.cron.publish.publish_task")
     def test_checkout_completed_duplicate_active_event_is_ignored(self, mock_publish):
         self.tenant.status = Tenant.Status.ACTIVE
         self.tenant.container_id = "oc-tenant"
@@ -70,7 +70,7 @@ class BillingWebhookServiceTest(TestCase):
         self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
         mock_publish.assert_not_called()
 
-    @patch("apps.billing.services.publish_task")
+    @patch("apps.cron.publish.publish_task")
     def test_subscription_deleted_finds_tenant_by_subscription_id(self, mock_publish):
         self.tenant.stripe_subscription_id = "sub_lookup"
         self.tenant.status = Tenant.Status.ACTIVE
