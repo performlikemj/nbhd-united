@@ -17,8 +17,8 @@ class BillingWebhookServiceTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Billing", telegram_chat_id=424242)
 
-    @patch("apps.orchestrator.tasks.provision_tenant_task.delay")
-    def test_checkout_completed_sets_provisioning_and_enqueues(self, mock_delay):
+    @patch("apps.billing.services.publish_task")
+    def test_checkout_completed_sets_provisioning_and_enqueues(self, mock_publish):
         handle_checkout_completed(
             {
                 "metadata": {"user_id": str(self.tenant.user_id), "tier": "plus"},
@@ -32,10 +32,10 @@ class BillingWebhookServiceTest(TestCase):
         self.assertEqual(self.tenant.model_tier, Tenant.ModelTier.PLUS)
         self.assertEqual(self.tenant.stripe_customer_id, "cus_123")
         self.assertEqual(self.tenant.stripe_subscription_id, "sub_123")
-        mock_delay.assert_called_once_with(str(self.tenant.id))
+        mock_publish.assert_called_once_with("provision_tenant", str(self.tenant.id))
 
-    @patch("apps.orchestrator.tasks.provision_tenant_task.delay")
-    def test_checkout_completed_invalid_tier_defaults_to_basic(self, mock_delay):
+    @patch("apps.billing.services.publish_task")
+    def test_checkout_completed_invalid_tier_defaults_to_basic(self, mock_publish):
         handle_checkout_completed(
             {
                 "metadata": {"user_id": str(self.tenant.user_id), "tier": "enterprise"},
@@ -46,10 +46,10 @@ class BillingWebhookServiceTest(TestCase):
 
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.model_tier, Tenant.ModelTier.BASIC)
-        mock_delay.assert_called_once()
+        mock_publish.assert_called_once()
 
-    @patch("apps.orchestrator.tasks.provision_tenant_task.delay")
-    def test_checkout_completed_duplicate_active_event_is_ignored(self, mock_delay):
+    @patch("apps.billing.services.publish_task")
+    def test_checkout_completed_duplicate_active_event_is_ignored(self, mock_publish):
         self.tenant.status = Tenant.Status.ACTIVE
         self.tenant.container_id = "oc-tenant"
         self.tenant.model_tier = Tenant.ModelTier.BASIC
@@ -68,10 +68,10 @@ class BillingWebhookServiceTest(TestCase):
 
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
-        mock_delay.assert_not_called()
+        mock_publish.assert_not_called()
 
-    @patch("apps.orchestrator.tasks.deprovision_tenant_task.delay")
-    def test_subscription_deleted_finds_tenant_by_subscription_id(self, mock_delay):
+    @patch("apps.billing.services.publish_task")
+    def test_subscription_deleted_finds_tenant_by_subscription_id(self, mock_publish):
         self.tenant.stripe_subscription_id = "sub_lookup"
         self.tenant.status = Tenant.Status.ACTIVE
         self.tenant.save(update_fields=["stripe_subscription_id", "status", "updated_at"])
@@ -80,7 +80,7 @@ class BillingWebhookServiceTest(TestCase):
 
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.status, Tenant.Status.DEPROVISIONING)
-        mock_delay.assert_called_once_with(str(self.tenant.id))
+        mock_publish.assert_called_once_with("deprovision_tenant", str(self.tenant.id))
 
     def test_invoice_payment_failed_suspends_tenant_by_customer(self):
         self.tenant.stripe_customer_id = "cus_lookup"
