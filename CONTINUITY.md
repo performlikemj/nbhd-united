@@ -14,6 +14,8 @@
 - 2026-02-08: Reconcile refactor schema drift with explicit migrations instead of interactive prompts.
 - 2026-02-08: Continue work from `main`; merged and deleted `feature/openclaw-control-plane`.
 - 2026-02-08: Scaffold frontend under `frontend/` using hand-authored Next.js files and offline-safe fonts.
+- 2026-02-10: Plan Google OAuth MVP in-house (Gmail + Calendar first), defer Composio until broader integration scope.
+- 2026-02-10: Use Django proxy access boundary for Gmail/Calendar in MVP; defer direct OpenClaw token handling to a later phase.
 
 ## State
 - Done:
@@ -22,13 +24,16 @@
   - Frontend scaffold implemented and validated (`npm run lint`, `npm run build`).
   - Remediation hardening implemented and validated across billing/webhook/auth/frontend flows.
 - Now:
-  - Ready for user review of remediation changes.
+  - Tasks 1-2 of Google OAuth MVP are complete (hardening + refresh scheduling).
 - Next:
-  - Apply migrations + environment secrets in runtime environments and deploy.
+  - Begin Task 3 (token retrieval/access boundary) from `CONTINUITY_plan-google-oauth-mvp.md`.
 
 ## Task Map
 ```text
 CONTINUITY.md
+  ├─ CONTINUITY_plan-google-oauth-mvp.md (@owner:codex, in-progress)
+  │    ├─ CONTINUITY_google-oauth-hardening.md (@owner:codex, completed)
+  │    └─ CONTINUITY_google-oauth-refresh-scheduling.md (@owner:codex, completed)
   ├─ CONTINUITY_plan-remediation-hardening.md (@owner:codex)
   │    └─ CONTINUITY_remediation-hardening.md (@owner:codex)
   ├─ CONTINUITY_openclaw-control-plane-hardening.md (@owner:codex)
@@ -37,16 +42,20 @@ CONTINUITY.md
 
 ## Active Ledgers
 - `CONTINUITY.md`
+- `CONTINUITY_plan-google-oauth-mvp.md`
+- `CONTINUITY_google-oauth-hardening.md`
+- `CONTINUITY_google-oauth-refresh-scheduling.md`
 - `CONTINUITY_plan-remediation-hardening.md`
 - `CONTINUITY_remediation-hardening.md`
 - `CONTINUITY_openclaw-control-plane-hardening.md`
 - `CONTINUITY_frontend-scaffold.md`
 
 ## Cross-task Blockers / Handoffs
-- None currently.
+- @handoff-to:CONTINUITY_plan-google-oauth-mvp.md - Task 3 token retrieval/access boundary is unblocked and ready.
 
 ## Trivial Log
 - [2026-02-08] Created initial `CONTINUITY.md` bootstrap ledger.
+- [2026-02-10] Assessed Google OAuth (Gmail/Calendar) MVP readiness; identified gaps in scheduled token refresh wiring and runtime data-access consumption.
 
 ## Open Questions (UNCONFIRMED)
 - UNCONFIRMED: Preferred production auth/session contract for frontend API calls.

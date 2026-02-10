@@ -82,6 +82,7 @@ TASK_MAP = {
     "reset_daily_counters": "apps.tenants.tasks.reset_daily_counters_task",
     "reset_monthly_counters": "apps.tenants.tasks.reset_monthly_counters_task",
     "cleanup_expired_telegram_tokens": "apps.tenants.tasks.cleanup_expired_telegram_tokens",
+    "refresh_expiring_integrations": "apps.integrations.tasks.refresh_expiring_integrations_task",
     # Provisioning (on-demand via QStash publish)
     "provision_tenant": "apps.orchestrator.tasks.provision_tenant_task",
     "deprovision_tenant": "apps.orchestrator.tasks.deprovision_tenant_task",

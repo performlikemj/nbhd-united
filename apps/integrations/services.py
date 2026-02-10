@@ -15,19 +15,28 @@ from apps.tenants.models import Tenant
 from .models import Integration
 
 logger = logging.getLogger(__name__)
+_MOCK_KEY_VAULT_STORE: dict[str, str] = {}
 
 # OAuth provider configs
 OAUTH_PROVIDERS: dict[str, dict[str, Any]] = {
     "gmail": {
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
         "token_url": "https://oauth2.googleapis.com/token",
-        "scopes": ["https://www.googleapis.com/auth/gmail.modify"],
+        "scopes": [
+            "openid",
+            "email",
+            "https://www.googleapis.com/auth/gmail.modify",
+        ],
         "provider_group": "google",
     },
     "google-calendar": {
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
         "token_url": "https://oauth2.googleapis.com/token",
-        "scopes": ["https://www.googleapis.com/auth/calendar"],
+        "scopes": [
+            "openid",
+            "email",
+            "https://www.googleapis.com/auth/calendar",
+        ],
         "provider_group": "google",
     },
     "sautai": {
@@ -65,6 +74,7 @@ def store_tokens_in_key_vault(
     secret_value = json.dumps(tokens)
 
     if os.environ.get("AZURE_MOCK", "false").lower() == "true":
+        _MOCK_KEY_VAULT_STORE[secret_name] = secret_value
         logger.info("[MOCK] Stored tokens in Key Vault: %s", secret_name)
         return secret_name
 
@@ -85,6 +95,7 @@ def delete_tokens_from_key_vault(tenant: Tenant, provider: str) -> None:
     secret_name = get_key_vault_secret_name(tenant, provider)
 
     if os.environ.get("AZURE_MOCK", "false").lower() == "true":
+        _MOCK_KEY_VAULT_STORE.pop(secret_name, None)
         logger.info("[MOCK] Deleted tokens from Key Vault: %s", secret_name)
         return
 
@@ -99,6 +110,40 @@ def delete_tokens_from_key_vault(tenant: Tenant, provider: str) -> None:
         client.begin_delete_secret(secret_name).result()
     except Exception:
         logger.exception("Failed to delete Key Vault secret %s", secret_name)
+
+
+def load_tokens_from_key_vault(tenant: Tenant, provider: str) -> dict[str, Any] | None:
+    """Load OAuth tokens from Azure Key Vault for a tenant/provider."""
+    secret_name = get_key_vault_secret_name(tenant, provider)
+
+    if os.environ.get("AZURE_MOCK", "false").lower() == "true":
+        secret_value = _MOCK_KEY_VAULT_STORE.get(secret_name)
+        if not secret_value:
+            return None
+        try:
+            return json.loads(secret_value)
+        except json.JSONDecodeError:
+            logger.warning("[MOCK] Invalid JSON in Key Vault secret: %s", secret_name)
+            return None
+
+    from azure.identity import DefaultAzureCredential
+    from azure.keyvault.secrets import SecretClient
+
+    credential = DefaultAzureCredential()
+    vault_url = f"https://{settings.AZURE_KEY_VAULT_NAME}.vault.azure.net"
+    client = SecretClient(vault_url=vault_url, credential=credential)
+
+    try:
+        secret = client.get_secret(secret_name)
+    except Exception:
+        logger.warning("Failed to load Key Vault secret %s", secret_name)
+        return None
+
+    try:
+        return json.loads(secret.value)
+    except (TypeError, json.JSONDecodeError):
+        logger.warning("Invalid JSON in Key Vault secret %s", secret_name)
+        return None
 
 
 def connect_integration(
