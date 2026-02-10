@@ -69,6 +69,10 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(message || `Request failed: ${response.status}`);
   }
 
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
   return (await response.json()) as T;
 }
 
@@ -88,6 +92,18 @@ export async function signup(
   return apiFetch<{ access: string; refresh: string }>("/api/v1/auth/signup/", {
     method: "POST",
     body: JSON.stringify({ email, password, display_name: displayName }),
+  });
+}
+
+export async function logout(): Promise<void> {
+  const refresh = getRefreshToken();
+  if (!refresh) {
+    return;
+  }
+
+  await apiFetch<void>("/api/v1/auth/logout/", {
+    method: "POST",
+    body: JSON.stringify({ refresh }),
   });
 }
 

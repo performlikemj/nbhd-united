@@ -20,20 +20,25 @@
   - Backend stabilization merged on `main` with passing tests.
   - Remote feature branch removed after merge.
   - Frontend scaffold implemented and validated (`npm run lint`, `npm run build`).
+  - Remediation hardening implemented and validated across billing/webhook/auth/frontend flows.
 - Now:
-  - Ready for user review and next frontend/backend API integration iteration.
+  - Ready for user review of remediation changes.
 - Next:
-  - Connect frontend auth + Stripe portal/live onboarding flows to backend endpoints.
+  - Apply migrations + environment secrets in runtime environments and deploy.
 
 ## Task Map
 ```text
 CONTINUITY.md
+  ├─ CONTINUITY_plan-remediation-hardening.md (@owner:codex)
+  │    └─ CONTINUITY_remediation-hardening.md (@owner:codex)
   ├─ CONTINUITY_openclaw-control-plane-hardening.md (@owner:codex)
   └─ CONTINUITY_frontend-scaffold.md (@owner:codex)
 ```
 
 ## Active Ledgers
 - `CONTINUITY.md`
+- `CONTINUITY_plan-remediation-hardening.md`
+- `CONTINUITY_remediation-hardening.md`
 - `CONTINUITY_openclaw-control-plane-hardening.md`
 - `CONTINUITY_frontend-scaffold.md`
 

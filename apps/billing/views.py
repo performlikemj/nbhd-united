@@ -1,5 +1,4 @@
 """Stripe webhook handler and billing views."""
-import json
 import logging
 
 import stripe
@@ -20,6 +19,22 @@ from .services import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _get_stripe_api_key() -> str:
+    """Return the Stripe API key matching the configured mode."""
+    if settings.STRIPE_LIVE_MODE:
+        return settings.STRIPE_LIVE_SECRET_KEY
+    return settings.STRIPE_TEST_SECRET_KEY
+
+
+def _require_stripe_api_key() -> str | None:
+    """Return configured Stripe API key or None if Stripe is not configured."""
+    api_key = (_get_stripe_api_key() or "").strip()
+    if not api_key:
+        logger.error("Stripe API key missing (STRIPE_LIVE_MODE=%s)", settings.STRIPE_LIVE_MODE)
+        return None
+    return api_key
 
 
 @csrf_exempt
@@ -61,6 +76,13 @@ class StripePortalView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        api_key = _require_stripe_api_key()
+        if not api_key:
+            return Response(
+                {"detail": "Stripe is not configured."},
+                status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         try:
             tenant = request.user.tenant
         except Tenant.DoesNotExist:
@@ -78,6 +100,7 @@ class StripePortalView(APIView):
         session = stripe.billing_portal.Session.create(
             customer=tenant.stripe_customer_id,
             return_url=f"{settings.FRONTEND_URL}/billing",
+            api_key=api_key,
         )
         return Response({"url": session.url})
 
@@ -86,6 +109,13 @@ class StripeCheckoutView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        api_key = _require_stripe_api_key()
+        if not api_key:
+            return Response(
+                {"detail": "Stripe is not configured."},
+                status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         tier = request.data.get("tier", "basic")
         price_id = settings.STRIPE_PRICE_IDS.get(tier)
 
@@ -112,5 +142,6 @@ class StripeCheckoutView(APIView):
             success_url=f"{settings.FRONTEND_URL}/onboarding?checkout=success",
             cancel_url=f"{settings.FRONTEND_URL}/billing?checkout=cancelled",
             metadata=metadata,
+            api_key=api_key,
         )
         return Response({"url": session.url})

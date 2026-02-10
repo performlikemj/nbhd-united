@@ -1,5 +1,6 @@
 """Telegram webhook endpoint — routes to correct OpenClaw instance."""
 import asyncio
+import hmac
 import json
 import logging
 
@@ -29,8 +30,13 @@ def telegram_webhook(request):
     It looks up chat_id → container and forwards the update.
     """
     # Verify webhook secret
+    configured_secret = (settings.TELEGRAM_WEBHOOK_SECRET or "").strip()
+    if not configured_secret:
+        logger.error("TELEGRAM_WEBHOOK_SECRET is not configured")
+        return HttpResponse("Webhook secret not configured", status=503)
+
     secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-    if secret != settings.TELEGRAM_WEBHOOK_SECRET:
+    if not hmac.compare_digest(secret, configured_secret):
         return HttpResponseForbidden("Invalid secret")
 
     try:

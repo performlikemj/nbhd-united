@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
@@ -14,9 +14,16 @@ import {
 } from "@/lib/queries";
 import type { TelegramLinkResponse } from "@/lib/api";
 
+const autoOnboardAttempted = new Set<string>();
+
 export default function OnboardingPage() {
   const { data: me, isLoading } = useMeQuery();
   const onboard = useOnboardMutation();
+  const {
+    mutateAsync: onboardTenant,
+    isPending: onboardingPending,
+    isSuccess: onboardingSuccess,
+  } = onboard;
   const checkout = useCheckoutMutation();
   const generateLink = useGenerateTelegramLinkMutation();
 
@@ -33,23 +40,22 @@ export default function OnboardingPage() {
   const { data: telegramStatus } = useTelegramStatusQuery(shouldPollTelegram);
   const telegramLinked = telegramStatus?.linked ?? false;
 
-  // Auto-create tenant on first load if user has no tenant
-  const handleEnsureTenant = async () => {
-    if (!hasTenant && !onboard.isPending) {
-      try {
-        await onboard.mutateAsync({
-          display_name: me?.display_name,
-        });
-      } catch {
-        // tenant may already exist
-      }
+  // Auto-create tenant once per user when onboarding starts.
+  useEffect(() => {
+    const userId = me?.id;
+    if (!userId || hasTenant || onboardingPending || onboardingSuccess) {
+      return;
     }
-  };
+    if (autoOnboardAttempted.has(userId)) {
+      return;
+    }
 
-  // Ensure tenant exists when page loads
-  if (me && !hasTenant && !onboard.isPending && !onboard.isSuccess) {
-    handleEnsureTenant();
-  }
+    autoOnboardAttempted.add(userId);
+    void onboardTenant({ display_name: me.display_name }).catch(() => {
+      // Allow a retry on subsequent renders if the request failed.
+      autoOnboardAttempted.delete(userId);
+    });
+  }, [hasTenant, me, onboardTenant, onboardingPending, onboardingSuccess]);
 
   const handleCheckout = async () => {
     setCheckoutError("");

@@ -19,12 +19,16 @@ class TelegramWebhookViewTest(TestCase):
         clear_cache()
         clear_rate_limits()
 
-    def _post_update(self, payload: dict):
+    def _post_update(self, payload: dict, secret: str = "test-secret"):
+        extra_headers = {}
+        if secret is not None:
+            extra_headers["HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN"] = secret
+
         return self.client.post(
             "/api/v1/telegram/webhook/",
             data=json.dumps(payload),
             content_type="application/json",
-            HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN="test-secret",
+            **extra_headers,
         )
 
     def test_unknown_chat_returns_onboarding_payload(self):
@@ -34,6 +38,17 @@ class TelegramWebhookViewTest(TestCase):
         body = response.json()
         self.assertEqual(body["method"], "sendMessage")
         self.assertEqual(body["chat_id"], 999000111)
+        self.assertIn("Sign up at", body["text"])
+
+    @override_settings(FRONTEND_URL="https://console.example.com")
+    def test_unknown_chat_message_uses_frontend_url_setting(self):
+        response = self._post_update({"message": {"chat": {"id": 101010}}})
+        body = response.json()
+        self.assertIn("https://console.example.com", body["text"])
+
+    def test_invalid_secret_returns_403(self):
+        response = self._post_update({"message": {"chat": {"id": 1}}}, secret="wrong-secret")
+        self.assertEqual(response.status_code, 403)
 
     def test_inactive_tenant_gets_onboarding_payload(self):
         tenant = create_tenant(display_name="Inactive", telegram_chat_id=777111)
@@ -85,3 +100,14 @@ class TelegramWebhookRateLimitTest(TestCase):
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 429)
+
+
+@override_settings(TELEGRAM_WEBHOOK_SECRET="")
+class TelegramWebhookSecretConfigTest(TestCase):
+    def test_missing_config_returns_503_even_with_no_header(self):
+        response = self.client.post(
+            "/api/v1/telegram/webhook/",
+            data=json.dumps({"message": {"chat": {"id": 1}}}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 503)

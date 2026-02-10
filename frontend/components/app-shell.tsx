@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ReactNode, useEffect, useState } from "react";
 
+import { logout } from "@/lib/api";
 import { clearTokens, isLoggedIn } from "@/lib/auth";
 
 const navItems = [
@@ -32,9 +33,15 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   }, [pathname, isPublicPage, router]);
 
-  const handleLogout = () => {
-    clearTokens();
-    router.push("/login");
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } catch {
+      // Proceed with local logout even if server-side revocation fails.
+    } finally {
+      clearTokens();
+      router.push("/login");
+    }
   };
 
   if (!checked && !isPublicPage) {

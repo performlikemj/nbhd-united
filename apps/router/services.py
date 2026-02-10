@@ -106,12 +106,13 @@ async def forward_to_openclaw(container_fqdn: str, update: dict) -> dict | None:
 
 def send_onboarding_link(chat_id: int) -> dict:
     """Build a response telling an unregistered user to sign up."""
+    frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
     return {
         "method": "sendMessage",
         "chat_id": chat_id,
         "text": (
             "👋 Welcome! I don't recognize your account yet.\n\n"
-            "Sign up at https://neighborhoodunited.org to get your own "
+            f"Sign up at {frontend_url} to get your own "
             "AI assistant for $5/month.\n\n"
             "Once subscribed, come back and send me a message!"
         ),

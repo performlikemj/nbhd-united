@@ -130,9 +130,15 @@ See `.env.example` for all configuration. Key ones:
 | Variable | Purpose |
 |----------|---------|
 | `TELEGRAM_BOT_TOKEN` | Shared Telegram bot token |
+| `TELEGRAM_WEBHOOK_SECRET` | Required non-empty webhook secret for Telegram webhook validation |
+| `STRIPE_TEST_SECRET_KEY` | Stripe test key used when `STRIPE_LIVE_MODE=False` |
+| `STRIPE_LIVE_SECRET_KEY` | Stripe live key used when `STRIPE_LIVE_MODE=True` |
+| `STRIPE_PRICE_BASIC` | Stripe price ID for Basic tier checkout |
+| `STRIPE_PRICE_PLUS` | Stripe price ID for Plus tier checkout |
 | `ANTHROPIC_API_KEY` | Shared API key for all OpenClaw instances |
 | `AZURE_SUBSCRIPTION_ID` | Azure subscription for Container Apps |
 | `AZURE_KEY_VAULT_NAME` | Key Vault for tenant secrets |
+| `FRONTEND_URL` | Subscriber console URL used for redirects and onboarding links |
 | `AZURE_MOCK` | Set `true` for local dev without Azure |
 
 ## License
