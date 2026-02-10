@@ -30,6 +30,10 @@ staticfiles/
 *.swo
 *~
 
+# Next.js
+frontend/out/
+frontend/.next/
+
 # OS
 .DS_Store
 Thumbs.db
