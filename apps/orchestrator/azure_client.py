@@ -42,6 +42,36 @@ def get_identity_client():
     return ManagedServiceIdentityClient(credential, settings.AZURE_SUBSCRIPTION_ID)
 
 
+def _build_container_secret(
+    secret_name: str,
+    *,
+    plain_value: str,
+    key_vault_secret_name: str,
+    identity_id: str,
+) -> dict[str, str]:
+    """Build Container Apps secret payload using Key Vault by default."""
+    backend = str(
+        getattr(settings, "OPENCLAW_CONTAINER_SECRET_BACKEND", "keyvault") or "keyvault"
+    ).strip().lower()
+    if backend == "keyvault":
+        vault_name = str(getattr(settings, "AZURE_KEY_VAULT_NAME", "") or "").strip()
+        kv_secret_name = str(key_vault_secret_name or "").strip()
+        if vault_name and kv_secret_name and identity_id:
+            return {
+                "name": secret_name,
+                "keyVaultUrl": f"https://{vault_name}.vault.azure.net/secrets/{kv_secret_name}",
+                "identity": identity_id,
+            }
+
+        logger.warning(
+            "Key Vault secret reference disabled for %s due to missing vault/secret/identity; "
+            "falling back to inline secret value",
+            secret_name,
+        )
+
+    return {"name": secret_name, "value": plain_value}
+
+
 def create_managed_identity(tenant_id: str) -> dict[str, str]:
     """Create a User-Assigned Managed Identity for a tenant.
 
@@ -104,6 +134,26 @@ def create_container_app(
         return {"name": container_name, "fqdn": fqdn}
 
     client = get_container_client()
+    secrets = [
+        _build_container_secret(
+            "anthropic-key",
+            plain_value=settings.ANTHROPIC_API_KEY,
+            key_vault_secret_name=settings.AZURE_KV_SECRET_ANTHROPIC_API_KEY,
+            identity_id=identity_id,
+        ),
+        _build_container_secret(
+            "telegram-token",
+            plain_value=settings.TELEGRAM_BOT_TOKEN,
+            key_vault_secret_name=settings.AZURE_KV_SECRET_TELEGRAM_BOT_TOKEN,
+            identity_id=identity_id,
+        ),
+        _build_container_secret(
+            "nbhd-internal-api-key",
+            plain_value=settings.NBHD_INTERNAL_API_KEY,
+            key_vault_secret_name=settings.AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY,
+            identity_id=identity_id,
+        ),
+    ]
 
     container_app: dict[str, Any] = {
         "location": settings.AZURE_LOCATION,
@@ -119,11 +169,7 @@ def create_container_app(
                     "targetPort": 18789,
                     "transport": "http",
                 },
-                "secrets": [
-                    {"name": "anthropic-key", "value": settings.ANTHROPIC_API_KEY},
-                    {"name": "telegram-token", "value": settings.TELEGRAM_BOT_TOKEN},
-                    {"name": "nbhd-internal-api-key", "value": settings.NBHD_INTERNAL_API_KEY},
-                ],
+                "secrets": secrets,
             },
             "template": {
                 "containers": [

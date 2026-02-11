@@ -97,12 +97,25 @@ Execute Task 4 from the Google OAuth MVP plan: expose internal Django endpoints 
     - `docker build -f Dockerfile.openclaw -t nbhd-openclaw:local .` -> passed.
     - `docker run ... nbhd-openclaw:local --help` with schema-compatible config -> passed.
     - `docker run ... nbhd-openclaw:local plugins list` -> `nbhd-google-tools` loaded from `/opt/nbhd/plugins/nbhd-google-tools/index.js`.
+  - ACR publish verified:
+    - `az acr repository list -n nbhdunited` includes `nbhd-openclaw`.
+    - `az acr repository show-tags -n nbhdunited --repository nbhd-openclaw` shows `c637198` and `latest`.
+  - Key Vault-backed runtime secret wiring added for container provisioning:
+    - `apps/orchestrator/azure_client.py` now builds Container Apps secrets as Key Vault references by default (`keyVaultUrl` + tenant user-assigned `identity`), with explicit fallback mode `OPENCLAW_CONTAINER_SECRET_BACKEND=env`.
+    - Added settings/env wiring:
+      - `OPENCLAW_CONTAINER_SECRET_BACKEND`
+      - `AZURE_KV_SECRET_ANTHROPIC_API_KEY`
+      - `AZURE_KV_SECRET_TELEGRAM_BOT_TOKEN`
+      - `AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY`
+    - Updated tests and validation:
+      - `DATABASE_URL=sqlite:////tmp/nbhd_united_test.sqlite3 AZURE_MOCK=true .venv/bin/python manage.py test apps.orchestrator` -> 16 passed.
 - Now:
   - Backend Phase A/B completed; Track 1 complete and runtime image pipeline scaffold is now in-repo.
   - Track 2 plugin scaffold is implemented and locally validated in Docker.
+  - Runtime provisioning path is now Key Vault-first for OpenClaw container secrets.
 - Next:
-  - Build/push `nbhd-openclaw` from this repo CI (or manually once) and confirm repository/tags exist in ACR.
-  - Set `OPENCLAW_GOOGLE_PLUGIN_ID=nbhd-google-tools` in runtime environment to enable plugin loading.
+  - Set `OPENCLAW_GOOGLE_PLUGIN_ID=nbhd-google-tools` and `OPENCLAW_GOOGLE_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-google-tools` in deployed Django env.
+  - Ensure Key Vault contains the runtime secret names expected by settings (`anthropic-api-key`, `telegram-bot-token`, `nbhd-internal-api-key`) and tenant runtime identities have secret-read access.
   - Run Docker/container smoke validation for plugin tool calls against internal Django runtime endpoints.
   - Add assistant-level action-item extraction contract and tests (read-only recommendations only).
 
@@ -183,7 +196,7 @@ Execute Task 4 from the Google OAuth MVP plan: expose internal Django endpoints 
 
 ## Open questions (UNCONFIRMED)
 - UNCONFIRMED: Exact assistant contract for Gmail response shape (messages list fields and max defaults).
-- UNCONFIRMED: Whether CI secrets/permissions in this repo allow pushing `nbhd-openclaw` image tags to `nbhdunited` ACR.
+- UNCONFIRMED: Whether production deployment currently uses `rg-nbhd-prod` and `nbhd-django-westus2` (recent `az containerapp` calls encountered DNS/resource lookup instability from this environment).
 - UNCONFIRMED: Whether router -> OpenClaw webhook forwarding requires additional gateway auth settings once runtime runs with current defaults.
 
 ## Working set

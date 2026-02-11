@@ -51,6 +51,8 @@ Deliver the MVP value chain: Telegram bot -> read Gmail -> check Google Calendar
 - [2026-02-11] Syntax checks passed for runtime scaffold (`node --check` plugin, `sh -n` entrypoint).
 - [2026-02-11] OpenClaw runtime compatibility fix: gateway config defaults updated to schema-valid values (`bind: lan`, removed invalid `gateway.auth.mode=none`) and orchestrator tests passing (15).
 - [2026-02-11] Local Docker validation passed: runtime image builds and `plugins list` shows `nbhd-google-tools` as loaded.
+- [2026-02-11] ACR publish verified for runtime image: `nbhdunited.azurecr.io/nbhd-openclaw` now exists with tags `c637198` and `latest`.
+- [2026-02-11] Runtime provisioning secrets moved to Key Vault-first references in container payloads (`keyVaultUrl` + identity) with env fallback mode retained for local/dev; orchestrator tests passing (16).
 
 ## Decisions
 - Build Google OAuth in-house for MVP; defer Composio unless scope expands to many providers.
@@ -62,9 +64,9 @@ Deliver the MVP value chain: Telegram bot -> read Gmail -> check Google Calendar
 
 ## Blockers
 - @dependency: Google Cloud consent screen + redirect URI setup must be completed per environment.
-- @blocked-by: first runtime image publish has not yet been executed/verified in ACR after workflow changes.
+- @blocked-by: production env/secret rollout not yet applied end-to-end for Key Vault-backed runtime secrets and plugin env vars.
 
 ## State
 - Done: Gap assessment and practical timeline (4-8 dev days) completed.
-- Now: Task 4 in progress; Track 1 complete and Track 2 scaffold locally validated in Docker.
-- Next: trigger/verify first `nbhd-openclaw` publish in ACR, set plugin env, then run full runtime e2e validation with plugin-enabled tenant provisioning.
+- Now: Task 4 in progress; Track 1 complete, runtime image published, and Key Vault-backed secret wiring merged in control plane.
+- Next: apply plugin env + Key Vault secret rollout in production, then run full runtime e2e validation with plugin-enabled tenant provisioning.

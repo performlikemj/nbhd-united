@@ -162,6 +162,22 @@ OPENCLAW_GOOGLE_PLUGIN_PATH = env(
     "OPENCLAW_GOOGLE_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-google-tools",
 )
+OPENCLAW_CONTAINER_SECRET_BACKEND = env(
+    "OPENCLAW_CONTAINER_SECRET_BACKEND",
+    default="keyvault",
+)
+AZURE_KV_SECRET_ANTHROPIC_API_KEY = env(
+    "AZURE_KV_SECRET_ANTHROPIC_API_KEY",
+    default="anthropic-api-key",
+)
+AZURE_KV_SECRET_TELEGRAM_BOT_TOKEN = env(
+    "AZURE_KV_SECRET_TELEGRAM_BOT_TOKEN",
+    default="telegram-bot-token",
+)
+AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY = env(
+    "AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY",
+    default="nbhd-internal-api-key",
+)
 
 # Azure
 AZURE_SUBSCRIPTION_ID = env("AZURE_SUBSCRIPTION_ID", default="")

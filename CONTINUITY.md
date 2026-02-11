@@ -31,10 +31,12 @@
   - Google OAuth MVP Task 4 Track 1 completed in control plane (runtime env injection + env-gated plugin/tool wiring in generated OpenClaw config).
   - Runtime build path created in-repo for `nbhd-openclaw` (Dockerfile, entrypoint, plugin scaffold, CI build/push step).
   - Local runtime Docker validation passed (`nbhd-openclaw:local` builds; `nbhd-google-tools` plugin loads in container).
+  - Runtime image published and verified in ACR (`nbhdunited.azurecr.io/nbhd-openclaw:{c637198,latest}`).
+  - OpenClaw provisioning now defaults to Key Vault-backed secret references (`keyVaultUrl` + identity) for Anthropic/Telegram/internal runtime auth secrets.
 - Now:
-  - Task 4 runtime capability wiring in progress (Track 2 scaffold + local validation complete; awaiting first ACR publish + full e2e).
+  - Task 4 runtime capability wiring in progress (runtime image published; pending production plugin env + Key Vault secret rollout and full e2e).
 - Next:
-  - Publish first `nbhd-openclaw` image from this repo CI, set plugin env vars, and run full provisioned-tenant e2e.
+  - Apply production plugin env vars + Key Vault secret mapping for runtime provisioning, then run full provisioned-tenant e2e.
 
 ## Task Map
 ```text
@@ -64,7 +66,7 @@ CONTINUITY.md
 
 ## Cross-task Blockers / Handoffs
 - @handoff-to:CONTINUITY_google-runtime-capability-wiring.md - Task 4 active; implement Track 1/2 (tenant config injection + OpenClaw plugin runtime wiring).
-- @blocked-by: runtime image publish still pending after new workflow path (must verify ACR tags and smoke runtime).
+- @blocked-by: production Key Vault + Container App env rollout still pending before runtime e2e.
 
 ## Trivial Log
 - [2026-02-08] Created initial `CONTINUITY.md` bootstrap ledger.
