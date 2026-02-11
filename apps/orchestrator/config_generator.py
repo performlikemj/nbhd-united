@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from django.conf import settings
+
 from apps.tenants.models import Tenant
 
 # Model mapping by tier
@@ -41,6 +43,8 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     tier = tenant.model_tier or "basic"
     models_config = TIER_MODELS.get(tier, TIER_MODELS["basic"])
     model_entries = TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["basic"])
+    plugin_id = str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_ID", "") or "").strip()
+    plugin_path = str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_PATH", "") or "").strip()
 
     config: dict[str, Any] = {
         # Auth — uses shared API key injected via env var
@@ -89,14 +93,11 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             },
         },
 
-        # Gateway — local mode, accessible via internal FQDN
+        # Gateway — local mode, accessible to internal callers in the container network
         "gateway": {
             "port": 18789,
             "mode": "local",
-            "bind": "0.0.0.0",  # Accessible within container network
-            "auth": {
-                "mode": "none",  # Internal-only, no public ingress
-            },
+            "bind": "lan",
         },
 
         # Tools
@@ -113,6 +114,21 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "ackReactionScope": "group-mentions",
         },
     }
+
+    if plugin_id:
+        plugin_config: dict[str, Any] = {
+            "allow": [plugin_id],
+            "entries": {
+                plugin_id: {
+                    "enabled": True,
+                },
+            },
+        }
+        if plugin_path:
+            plugin_config["load"] = {"paths": [plugin_path]}
+
+        config["plugins"] = plugin_config
+        config["tools"]["alsoAllow"] = ["group:plugins"]
 
     return config
 

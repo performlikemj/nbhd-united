@@ -122,6 +122,7 @@ def create_container_app(
                 "secrets": [
                     {"name": "anthropic-key", "value": settings.ANTHROPIC_API_KEY},
                     {"name": "telegram-token", "value": settings.TELEGRAM_BOT_TOKEN},
+                    {"name": "nbhd-internal-api-key", "value": settings.NBHD_INTERNAL_API_KEY},
                 ],
             },
             "template": {
@@ -133,7 +134,10 @@ def create_container_app(
                         "env": [
                             {"name": "ANTHROPIC_API_KEY", "secretRef": "anthropic-key"},
                             {"name": "TELEGRAM_BOT_TOKEN", "secretRef": "telegram-token"},
+                            {"name": "NBHD_INTERNAL_API_KEY", "secretRef": "nbhd-internal-api-key"},
                             {"name": "NBHD_TENANT_ID", "value": str(tenant_id)},
+                            {"name": "NBHD_API_BASE_URL", "value": settings.API_BASE_URL},
+                            {"name": "OPENCLAW_CONFIG_JSON", "value": config_json},
                             {"name": "AZURE_CLIENT_ID", "value": identity_client_id},
                         ],
                         "volumeMounts": [

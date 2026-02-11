@@ -153,9 +153,15 @@ TELEGRAM_BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", default="")
 TELEGRAM_BOT_USERNAME = env("TELEGRAM_BOT_USERNAME", default="NbhdUnitedBot")
 TELEGRAM_WEBHOOK_SECRET = env("TELEGRAM_WEBHOOK_SECRET", default="")
 ROUTER_RATE_LIMIT_PER_MINUTE = env.int("ROUTER_RATE_LIMIT_PER_MINUTE", default=30)
+NBHD_INTERNAL_API_KEY = env("NBHD_INTERNAL_API_KEY", default="")
 
 # Anthropic API (shared key for all OpenClaw instances)
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
+OPENCLAW_GOOGLE_PLUGIN_ID = env("OPENCLAW_GOOGLE_PLUGIN_ID", default="")
+OPENCLAW_GOOGLE_PLUGIN_PATH = env(
+    "OPENCLAW_GOOGLE_PLUGIN_PATH",
+    default="/opt/nbhd/plugins/nbhd-google-tools",
+)
 
 # Azure
 AZURE_SUBSCRIPTION_ID = env("AZURE_SUBSCRIPTION_ID", default="")

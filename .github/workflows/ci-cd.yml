@@ -115,6 +115,16 @@ jobs:
           docker push ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }}
           docker push ${{ env.REGISTRY }}.azurecr.io/django:latest
 
+      - name: Build and push OpenClaw runtime image
+        run: |
+          docker build --platform linux/amd64 \
+            -f Dockerfile.openclaw \
+            -t ${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:${{ github.sha }} \
+            -t ${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:latest \
+            .
+          docker push ${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:latest
+
       - name: Deploy Django to Container Apps
         run: |
           az containerapp update \

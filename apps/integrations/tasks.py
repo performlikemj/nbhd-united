@@ -5,40 +5,19 @@ import logging
 from datetime import timedelta
 
 import httpx
-from django.conf import settings
+from django.db.models import Q
 from django.utils import timezone
 
 from .models import Integration
-from .services import load_tokens_from_key_vault, refresh_integration_tokens
+from .services import (
+    get_provider_client_credentials,
+    load_tokens_from_key_vault,
+    refresh_integration_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
 REFRESH_LEAD_MINUTES = 15
-
-_CLIENT_CREDENTIALS_BY_GROUP = {
-    "google": (
-        lambda: settings.GOOGLE_OAUTH_CLIENT_ID,
-        lambda: settings.GOOGLE_OAUTH_CLIENT_SECRET,
-    ),
-    "sautai": (
-        lambda: settings.SAUTAI_OAUTH_CLIENT_ID,
-        lambda: settings.SAUTAI_OAUTH_CLIENT_SECRET,
-    ),
-}
-
-_PROVIDER_GROUP = {
-    Integration.Provider.GMAIL: "google",
-    Integration.Provider.GOOGLE_CALENDAR: "google",
-    Integration.Provider.SAUTAI: "sautai",
-}
-
-
-def _credentials_for_provider(provider: str) -> tuple[str, str]:
-    group = _PROVIDER_GROUP.get(provider, "")
-    getters = _CLIENT_CREDENTIALS_BY_GROUP.get(group)
-    if getters is None:
-        return "", ""
-    return getters[0](), getters[1]()
 
 
 def refresh_expiring_integrations_task() -> dict[str, int]:
@@ -49,15 +28,15 @@ def refresh_expiring_integrations_task() -> dict[str, int]:
     threshold = timezone.now() + timedelta(minutes=REFRESH_LEAD_MINUTES)
     integrations = Integration.objects.select_related("tenant").filter(
         status=Integration.Status.ACTIVE,
-        token_expires_at__isnull=False,
-        token_expires_at__lte=threshold,
+    ).filter(
+        Q(token_expires_at__isnull=True) | Q(token_expires_at__lte=threshold)
     )
 
     checked = refreshed = expired = errored = 0
 
     for integration in integrations:
         checked += 1
-        client_id, client_secret = _credentials_for_provider(integration.provider)
+        client_id, client_secret = get_provider_client_credentials(integration.provider)
         if not client_id or not client_secret:
             integration.status = Integration.Status.ERROR
             integration.save(update_fields=["status", "updated_at"])
@@ -69,7 +48,8 @@ def refresh_expiring_integrations_task() -> dict[str, int]:
             )
             continue
 
-        tokens = load_tokens_from_key_vault(integration.tenant, integration.provider) or {}
+        raw_tokens = load_tokens_from_key_vault(integration.tenant, integration.provider)
+        tokens = raw_tokens if isinstance(raw_tokens, dict) else {}
         refresh_token = tokens.get("refresh_token")
         if not refresh_token:
             integration.status = Integration.Status.EXPIRED

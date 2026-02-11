@@ -82,3 +82,26 @@ class RefreshExpiringIntegrationsTaskTest(TestCase):
 
         self.assertEqual(result["expired"], 1)
         self.assertEqual(self.integration.status, Integration.Status.EXPIRED)
+
+    @patch("apps.integrations.tasks.refresh_integration_tokens")
+    @patch("apps.integrations.tasks.load_tokens_from_key_vault")
+    def test_refreshes_when_token_expiry_is_unknown(self, mock_load_tokens, mock_refresh):
+        self.integration.token_expires_at = None
+        self.integration.save(update_fields=["token_expires_at", "updated_at"])
+        mock_load_tokens.return_value = {"refresh_token": "refresh-token"}
+
+        result = refresh_expiring_integrations_task()
+
+        self.assertEqual(result["checked"], 1)
+        self.assertEqual(result["refreshed"], 1)
+        mock_refresh.assert_called_once()
+
+    @patch("apps.integrations.tasks.load_tokens_from_key_vault")
+    def test_handles_malformed_token_payload_without_crashing(self, mock_load_tokens):
+        mock_load_tokens.return_value = ["not-a-dict"]
+
+        result = refresh_expiring_integrations_task()
+        self.integration.refresh_from_db()
+
+        self.assertEqual(result["expired"], 1)
+        self.assertEqual(self.integration.status, Integration.Status.EXPIRED)

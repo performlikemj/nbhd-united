@@ -1,9 +1,11 @@
 """Integration views — list, connect (OAuth callback), disconnect."""
 import logging
+import secrets
 from urllib.parse import urlencode
 
 import httpx
 from django.conf import settings
+from django.core.cache import cache
 from django.core import signing
 from django.http import HttpResponse
 from django.shortcuts import redirect
@@ -20,6 +22,7 @@ from .services import connect_integration, disconnect_integration, get_provider_
 
 logger = logging.getLogger(__name__)
 OAUTH_STATE_MAX_AGE_SECONDS = 600
+OAUTH_STATE_NONCE_CACHE_KEY_PREFIX = "oauth-state-nonce"
 
 OAUTH_CLIENT_CREDENTIALS = {
     "google": {
@@ -38,9 +41,23 @@ def _redirect_to_integrations(frontend_url: str, params: dict[str, str]) -> Http
     return redirect(f"{frontend_url}/integrations?{query}")
 
 
+def _state_nonce_cache_key(nonce: str) -> str:
+    return f"{OAUTH_STATE_NONCE_CACHE_KEY_PREFIX}:{nonce}"
+
+
+def _consume_state_nonce(nonce: str) -> bool:
+    key = _state_nonce_cache_key(nonce)
+    if cache.get(key) is None:
+        return False
+    cache.delete(key)
+    return True
+
+
 def _build_oauth_state(user_id: str, provider: str) -> str:
+    nonce = secrets.token_urlsafe(24)
+    cache.set(_state_nonce_cache_key(nonce), "1", timeout=OAUTH_STATE_MAX_AGE_SECONDS)
     return signing.dumps(
-        {"user_id": user_id, "provider": provider},
+        {"user_id": user_id, "provider": provider, "nonce": nonce},
         salt="oauth",
     )
 
@@ -49,6 +66,9 @@ def _load_oauth_state(state: str, provider: str) -> dict[str, str]:
     data = signing.loads(state, salt="oauth", max_age=OAUTH_STATE_MAX_AGE_SECONDS)
     if data.get("provider") != provider:
         raise signing.BadSignature("provider mismatch")
+    nonce = data.get("nonce", "")
+    if not isinstance(nonce, str) or not nonce or not _consume_state_nonce(nonce):
+        raise signing.BadSignature("state nonce missing/invalid")
     return data
 
 
@@ -122,8 +142,8 @@ class OAuthAuthorizeView(APIView):
         except ValueError:
             return Response({"detail": f"Unknown provider: {provider}"}, status=400)
 
-        client_id, _ = _get_credentials(provider)
-        if not client_id:
+        client_id, client_secret = _get_credentials(provider)
+        if not client_id or not client_secret:
             return Response(
                 {"detail": f"OAuth not configured for {provider}."},
                 status=400,

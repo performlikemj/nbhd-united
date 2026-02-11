@@ -1,10 +1,11 @@
 """Integration services — OAuth flows and Key Vault writes."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import logging
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
@@ -16,6 +17,45 @@ from .models import Integration
 
 logger = logging.getLogger(__name__)
 _MOCK_KEY_VAULT_STORE: dict[str, str] = {}
+ON_DEMAND_REFRESH_LEEWAY_SECONDS = 120
+
+
+class IntegrationAccessError(RuntimeError):
+    """Base error for brokered integration token access."""
+
+
+class IntegrationNotConnectedError(IntegrationAccessError):
+    """Integration record does not exist for tenant/provider."""
+
+
+class IntegrationInactiveError(IntegrationAccessError):
+    """Integration exists but is not usable (revoked/expired/error)."""
+
+
+class IntegrationTokenDataError(IntegrationAccessError):
+    """Token material is missing or malformed."""
+
+
+class IntegrationProviderConfigError(IntegrationAccessError):
+    """OAuth provider credentials are not configured in Django settings."""
+
+
+class IntegrationRefreshError(IntegrationAccessError):
+    """Refresh flow failed while trying to obtain a valid access token."""
+
+
+class IntegrationScopeError(IntegrationAccessError):
+    """Integration is connected but lacks required OAuth scopes."""
+
+
+@dataclass(frozen=True)
+class ProviderAccessToken:
+    """Short-lived access token result exposed to internal callers."""
+
+    access_token: str
+    expires_at: datetime | None
+    provider: str
+    tenant_id: str
 
 # OAuth provider configs
 OAUTH_PROVIDERS: dict[str, dict[str, Any]] = {
@@ -25,7 +65,7 @@ OAUTH_PROVIDERS: dict[str, dict[str, Any]] = {
         "scopes": [
             "openid",
             "email",
-            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/gmail.readonly",
         ],
         "provider_group": "google",
     },
@@ -35,7 +75,7 @@ OAUTH_PROVIDERS: dict[str, dict[str, Any]] = {
         "scopes": [
             "openid",
             "email",
-            "https://www.googleapis.com/auth/calendar",
+            "https://www.googleapis.com/auth/calendar.readonly",
         ],
         "provider_group": "google",
     },
@@ -47,6 +87,34 @@ OAUTH_PROVIDERS: dict[str, dict[str, Any]] = {
     },
 }
 
+PROVIDER_GROUP = {
+    Integration.Provider.GMAIL: "google",
+    Integration.Provider.GOOGLE_CALENDAR: "google",
+    Integration.Provider.SAUTAI: "sautai",
+}
+
+CLIENT_CREDENTIALS_BY_GROUP = {
+    "google": (
+        lambda: settings.GOOGLE_OAUTH_CLIENT_ID,
+        lambda: settings.GOOGLE_OAUTH_CLIENT_SECRET,
+    ),
+    "sautai": (
+        lambda: settings.SAUTAI_OAUTH_CLIENT_ID,
+        lambda: settings.SAUTAI_OAUTH_CLIENT_SECRET,
+    ),
+}
+
+READ_COMPATIBLE_SCOPES_BY_PROVIDER: dict[str, set[str]] = {
+    Integration.Provider.GMAIL: {
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.modify",
+    },
+    Integration.Provider.GOOGLE_CALENDAR: {
+        "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/calendar",
+    },
+}
+
 
 def get_provider_config(provider: str) -> dict[str, Any]:
     """Return provider config or raise for unknown providers."""
@@ -54,6 +122,15 @@ def get_provider_config(provider: str) -> dict[str, Any]:
     if config is None:
         raise ValueError(f"Unsupported provider: {provider}")
     return config
+
+
+def get_provider_client_credentials(provider: str) -> tuple[str, str]:
+    """Return OAuth client credentials for a provider group."""
+    group = PROVIDER_GROUP.get(provider, "")
+    getters = CLIENT_CREDENTIALS_BY_GROUP.get(group)
+    if getters is None:
+        return "", ""
+    return getters[0](), getters[1]()
 
 
 def get_key_vault_secret_name(tenant: Tenant, provider: str) -> str:
@@ -121,10 +198,14 @@ def load_tokens_from_key_vault(tenant: Tenant, provider: str) -> dict[str, Any] 
         if not secret_value:
             return None
         try:
-            return json.loads(secret_value)
+            payload = json.loads(secret_value)
         except json.JSONDecodeError:
             logger.warning("[MOCK] Invalid JSON in Key Vault secret: %s", secret_name)
             return None
+        if not isinstance(payload, dict):
+            logger.warning("[MOCK] Token payload is not an object: %s", secret_name)
+            return None
+        return payload
 
     from azure.identity import DefaultAzureCredential
     from azure.keyvault.secrets import SecretClient
@@ -140,10 +221,145 @@ def load_tokens_from_key_vault(tenant: Tenant, provider: str) -> dict[str, Any] 
         return None
 
     try:
-        return json.loads(secret.value)
+        payload = json.loads(secret.value)
     except (TypeError, json.JSONDecodeError):
         logger.warning("Invalid JSON in Key Vault secret %s", secret_name)
         return None
+    if not isinstance(payload, dict):
+        logger.warning("Token payload is not an object in Key Vault secret %s", secret_name)
+        return None
+    return payload
+
+
+def _mark_integration_status(integration: Integration, status: str) -> None:
+    if integration.status != status:
+        integration.status = status
+        integration.save(update_fields=["status", "updated_at"])
+
+
+def _is_access_token_expiring(
+    token_expires_at: datetime | None,
+    refresh_leeway_seconds: int,
+) -> bool:
+    if token_expires_at is None:
+        return True
+    threshold = timezone.now() + timedelta(seconds=refresh_leeway_seconds)
+    return token_expires_at <= threshold
+
+
+def _get_integration_or_raise(tenant: Tenant, provider: str) -> Integration:
+    integration = Integration.objects.filter(tenant=tenant, provider=provider).first()
+    if integration is None:
+        raise IntegrationNotConnectedError(
+            f"No integration configured for provider={provider}"
+        )
+
+    if integration.status != Integration.Status.ACTIVE:
+        raise IntegrationInactiveError(
+            f"Integration status is {integration.status} for provider={provider}"
+        )
+
+    return integration
+
+
+def _has_read_compatible_scope(integration: Integration) -> bool:
+    acceptable_scopes = READ_COMPATIBLE_SCOPES_BY_PROVIDER.get(integration.provider)
+    if not acceptable_scopes:
+        return True
+
+    raw_scopes = integration.scopes
+    if not isinstance(raw_scopes, list) or not raw_scopes:
+        # Older rows may have empty scope metadata. Allow and rely on provider response.
+        return True
+
+    granted_scopes = {
+        str(scope).strip()
+        for scope in raw_scopes
+        if isinstance(scope, str) and str(scope).strip()
+    }
+    return bool(granted_scopes.intersection(acceptable_scopes))
+
+
+def get_valid_provider_access_token(
+    tenant: Tenant,
+    provider: str,
+    refresh_leeway_seconds: int = ON_DEMAND_REFRESH_LEEWAY_SECONDS,
+) -> ProviderAccessToken:
+    """Return a valid access token for internal runtime calls.
+
+    This broker never returns refresh tokens and may refresh on-demand
+    when access tokens are missing or near expiry.
+    """
+    integration = _get_integration_or_raise(tenant, provider)
+    if not _has_read_compatible_scope(integration):
+        raise IntegrationScopeError(
+            f"Integration lacks read scope for provider={provider}; reconnect required"
+        )
+
+    raw_tokens = load_tokens_from_key_vault(tenant, provider)
+    tokens = raw_tokens if isinstance(raw_tokens, dict) else {}
+    access_token = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+    needs_refresh = (
+        not access_token
+        or _is_access_token_expiring(integration.token_expires_at, refresh_leeway_seconds)
+    )
+
+    if needs_refresh:
+        if not refresh_token:
+            _mark_integration_status(integration, Integration.Status.EXPIRED)
+            raise IntegrationTokenDataError(
+                f"Missing refresh_token for provider={provider}"
+            )
+
+        client_id, client_secret = get_provider_client_credentials(provider)
+        if not client_id or not client_secret:
+            _mark_integration_status(integration, Integration.Status.ERROR)
+            raise IntegrationProviderConfigError(
+                f"Missing OAuth credentials for provider={provider}"
+            )
+
+        try:
+            integration = refresh_integration_tokens(
+                tenant=tenant,
+                provider=provider,
+                refresh_token=refresh_token,
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code if exc.response is not None else 0
+            new_status = (
+                Integration.Status.EXPIRED
+                if status_code in (400, 401)
+                else Integration.Status.ERROR
+            )
+            _mark_integration_status(integration, new_status)
+            raise IntegrationRefreshError(
+                f"OAuth refresh failed for provider={provider} status={status_code}"
+            ) from exc
+        except Exception as exc:
+            _mark_integration_status(integration, Integration.Status.ERROR)
+            raise IntegrationRefreshError(
+                f"OAuth refresh failed for provider={provider}"
+            ) from exc
+
+        raw_tokens = load_tokens_from_key_vault(tenant, provider)
+        tokens = raw_tokens if isinstance(raw_tokens, dict) else {}
+        access_token = tokens.get("access_token")
+
+    if not access_token:
+        _mark_integration_status(integration, Integration.Status.ERROR)
+        raise IntegrationTokenDataError(
+            f"Missing access_token for provider={provider}"
+        )
+
+    return ProviderAccessToken(
+        access_token=access_token,
+        expires_at=integration.token_expires_at,
+        provider=provider,
+        tenant_id=str(tenant.id),
+    )
 
 
 def connect_integration(

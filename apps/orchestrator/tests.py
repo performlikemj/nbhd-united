@@ -24,6 +24,11 @@ class ConfigGeneratorTest(TestCase):
         self.assertIn("agents", config)
         self.assertEqual(config["gateway"]["mode"], "local")
 
+    def test_gateway_defaults_use_supported_bind_mode(self):
+        config = generate_openclaw_config(self.tenant)
+        self.assertEqual(config["gateway"]["bind"], "lan")
+        self.assertNotIn("auth", config["gateway"])
+
     def test_chat_id_in_allow_from(self):
         config = generate_openclaw_config(self.tenant)
         allow_from = config["channels"]["telegram"]["allowFrom"]
@@ -40,6 +45,25 @@ class ConfigGeneratorTest(TestCase):
         models = config["agents"]["defaults"]["models"]
         aliases = [v.get("alias") for v in models.values()]
         self.assertIn("opus", aliases)
+
+    def test_plugin_wiring_enabled_when_plugin_id_configured(self):
+        with override_settings(OPENCLAW_GOOGLE_PLUGIN_ID="nbhd-google-tools"):
+            config = generate_openclaw_config(self.tenant)
+
+        self.assertEqual(config["plugins"]["allow"], ["nbhd-google-tools"])
+        self.assertTrue(config["plugins"]["entries"]["nbhd-google-tools"]["enabled"])
+        self.assertEqual(
+            config["plugins"]["load"]["paths"],
+            ["/opt/nbhd/plugins/nbhd-google-tools"],
+        )
+        self.assertIn("group:plugins", config["tools"]["alsoAllow"])
+
+    def test_plugin_wiring_omitted_when_plugin_id_not_configured(self):
+        with override_settings(OPENCLAW_GOOGLE_PLUGIN_ID=""):
+            config = generate_openclaw_config(self.tenant)
+
+        self.assertNotIn("plugins", config)
+        self.assertNotIn("alsoAllow", config["tools"])
 
 
 @override_settings()
