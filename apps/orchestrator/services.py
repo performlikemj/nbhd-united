@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 
+from django.conf import settings
 from django.utils import timezone
 
 from apps.tenants.models import Tenant
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__)
 def provision_tenant(tenant_id: str) -> None:
     """Full provisioning flow for a new tenant."""
     tenant = Tenant.objects.select_related("user").get(id=tenant_id)
+    secret_backend = str(
+        getattr(settings, "OPENCLAW_CONTAINER_SECRET_BACKEND", "keyvault") or "keyvault"
+    ).strip().lower()
 
     if tenant.status not in (Tenant.Status.PENDING, Tenant.Status.PROVISIONING):
         logger.warning("Tenant %s in unexpected state %s for provisioning", tenant_id, tenant.status)
@@ -37,8 +41,9 @@ def provision_tenant(tenant_id: str) -> None:
         # 2. Create Managed Identity
         identity = create_managed_identity(str(tenant.id))
 
-        # 2b. Grant identity Key Vault access for secret references
-        assign_key_vault_role(identity["principal_id"])
+        # 2b. Grant identity Key Vault access for secret references (keyvault backend only)
+        if secret_backend == "keyvault":
+            assign_key_vault_role(identity["principal_id"])
 
         # 3. Create Container App
         container_name = f"oc-{str(tenant.id)[:20]}"

@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     "apps.orchestrator",
     "apps.router",
     "apps.integrations",
+    "apps.automations",
     "apps.dashboard",
     "apps.cron",
 ]

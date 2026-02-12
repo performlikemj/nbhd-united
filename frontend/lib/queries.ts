@@ -3,7 +3,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  createAutomation,
+  deleteAutomation,
   disconnectIntegration,
+  fetchAutomationRuns,
+  fetchAutomationRunsForAutomation,
+  fetchAutomations,
   fetchDashboard,
   fetchIntegrations,
   fetchMe,
@@ -13,9 +18,13 @@ import {
   generateTelegramLink,
   getOAuthAuthorizeUrl,
   onboardTenant,
+  pauseAutomation,
+  resumeAutomation,
+  runAutomationNow,
   requestStripeCheckout,
   requestStripePortal,
   unlinkTelegram,
+  updateAutomation,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -115,6 +124,87 @@ export function useUnlinkTelegramMutation() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["telegram-status"] });
       void queryClient.invalidateQueries({ queryKey: ["me"] });
+    },
+  });
+}
+
+// Automations
+export function useAutomationsQuery() {
+  return useQuery({
+    queryKey: ["automations"],
+    queryFn: fetchAutomations,
+  });
+}
+
+export function useAutomationRunsQuery(automationId?: string) {
+  return useQuery({
+    queryKey: ["automation-runs", automationId ?? "all"],
+    queryFn: () =>
+      automationId ? fetchAutomationRunsForAutomation(automationId) : fetchAutomationRuns(),
+  });
+}
+
+export function useCreateAutomationMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createAutomation,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["automations"] });
+      void queryClient.invalidateQueries({ queryKey: ["automation-runs"] });
+    },
+  });
+}
+
+export function useUpdateAutomationMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof updateAutomation>[1] }) =>
+      updateAutomation(id, data),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["automations"] });
+      void queryClient.invalidateQueries({ queryKey: ["automation-runs"] });
+    },
+  });
+}
+
+export function useDeleteAutomationMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteAutomation,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["automations"] });
+      void queryClient.invalidateQueries({ queryKey: ["automation-runs"] });
+    },
+  });
+}
+
+export function usePauseAutomationMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: pauseAutomation,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["automations"] });
+    },
+  });
+}
+
+export function useResumeAutomationMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: resumeAutomation,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["automations"] });
+    },
+  });
+}
+
+export function useRunAutomationMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: runAutomationNow,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["automations"] });
+      void queryClient.invalidateQueries({ queryKey: ["automation-runs"] });
     },
   });
 }

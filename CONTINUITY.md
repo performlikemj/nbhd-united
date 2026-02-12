@@ -18,6 +18,7 @@
 - 2026-02-10: Use Django proxy access boundary for Gmail/Calendar in MVP; defer direct OpenClaw token handling to a later phase.
 - 2026-02-11: Prioritize read-only assistant value (email/calendar visibility + action-item extraction), defer write actions.
 - 2026-02-11: Use native OpenClaw plugin/tool integration for runtime wiring to NBHD endpoints (defer MCP-first approach for current scope).
+- 2026-02-12: Implement proactive automation v1 as focused scope (`daily_brief`, `weekly_review`) with DB-backed per-automation timezone schedules and global cron evaluation.
 
 ## State
 - Done:
@@ -33,14 +34,22 @@
   - Local runtime Docker validation passed (`nbhd-openclaw:local` builds; `nbhd-google-tools` plugin loads in container).
   - Runtime image published and verified in ACR (`nbhdunited.azurecr.io/nbhd-openclaw:{c637198,latest}`).
   - OpenClaw provisioning now defaults to Key Vault-backed secret references (`keyVaultUrl` + identity) for Anthropic/Telegram/internal runtime auth secrets.
+  - Proactive automations v1 scaffold completed:
+    - Track 1 hardening patch applied and validated (backend-gated KV role assignment + test assertions + dependency source-of-truth alignment).
+    - Track 2 focused automation scope implemented (`daily_brief`, `weekly_review`) with backend app/API/scheduler/cron bridge and frontend `/automations` management page.
+    - Validation complete:
+      - `DATABASE_URL=sqlite:////tmp/nbhd_united_test.sqlite3 AZURE_MOCK=true .venv/bin/python manage.py test apps.orchestrator apps.automations apps.router` -> `Ran 52 tests`, `OK`.
+      - `cd frontend && npm run lint && npm run build` -> passed.
 - Now:
   - Task 4 runtime capability wiring in progress (runtime image published; pending production plugin env + Key Vault secret rollout and full e2e).
 - Next:
   - Apply production plugin env vars + Key Vault secret mapping for runtime provisioning, then run full provisioned-tenant e2e.
+  - Wire operational QStash schedule for `run_due_automations` cadence in deployed environment and monitor initial run telemetry.
 
 ## Task Map
 ```text
 CONTINUITY.md
+  ├─ CONTINUITY_automations-proactive-scaffold.md (@owner:codex, completed)
   ├─ CONTINUITY_plan-google-oauth-mvp.md (@owner:codex, in-progress)
   │    ├─ CONTINUITY_google-oauth-hardening.md (@owner:codex, completed)
   │    ├─ CONTINUITY_google-oauth-refresh-scheduling.md (@owner:codex, completed)
@@ -54,6 +63,7 @@ CONTINUITY.md
 
 ## Active Ledgers
 - `CONTINUITY.md`
+- `CONTINUITY_automations-proactive-scaffold.md`
 - `CONTINUITY_plan-google-oauth-mvp.md`
 - `CONTINUITY_google-oauth-hardening.md`
 - `CONTINUITY_google-oauth-refresh-scheduling.md`
@@ -65,6 +75,7 @@ CONTINUITY.md
 - `CONTINUITY_frontend-scaffold.md`
 
 ## Cross-task Blockers / Handoffs
+- @handoff-to:CONTINUITY_automations-proactive-scaffold.md - implementation complete; ready for commit/deploy.
 - @handoff-to:CONTINUITY_google-runtime-capability-wiring.md - Task 4 active; implement Track 1/2 (tenant config injection + OpenClaw plugin runtime wiring).
 - @blocked-by: production Key Vault + Container App env rollout still pending before runtime e2e.
 

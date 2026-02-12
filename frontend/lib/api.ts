@@ -1,5 +1,13 @@
 import { clearTokens, getAccessToken, getRefreshToken, setTokens } from "@/lib/auth";
-import { AuthUser, DashboardData, Integration, Tenant, UsageRecord } from "@/lib/types";
+import {
+  AuthUser,
+  Automation,
+  AutomationRun,
+  DashboardData,
+  Integration,
+  Tenant,
+  UsageRecord,
+} from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
@@ -192,4 +200,69 @@ export function requestStripeCheckout(tier: string): Promise<{ url: string }> {
     method: "POST",
     body: JSON.stringify({ tier }),
   });
+}
+
+// Automations
+type AutomationResponse = Automation[] | { results?: Automation[] };
+
+export interface AutomationInput {
+  kind: "daily_brief" | "weekly_review";
+  status?: "active" | "paused";
+  timezone: string;
+  schedule_type: "daily" | "weekly";
+  schedule_time: string;
+  schedule_days?: number[];
+}
+
+export interface PaginatedResponse<T> {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: T[];
+}
+
+export async function fetchAutomations(): Promise<Automation[]> {
+  const data = await apiFetch<AutomationResponse>("/api/v1/automations/");
+  if (Array.isArray(data)) {
+    return data;
+  }
+  return data.results ?? [];
+}
+
+export function createAutomation(data: AutomationInput): Promise<Automation> {
+  return apiFetch<Automation>("/api/v1/automations/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateAutomation(id: string, data: Partial<AutomationInput>): Promise<Automation> {
+  return apiFetch<Automation>(`/api/v1/automations/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteAutomation(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/automations/${id}/`, { method: "DELETE" });
+}
+
+export function pauseAutomation(id: string): Promise<Automation> {
+  return apiFetch<Automation>(`/api/v1/automations/${id}/pause/`, { method: "POST" });
+}
+
+export function resumeAutomation(id: string): Promise<Automation> {
+  return apiFetch<Automation>(`/api/v1/automations/${id}/resume/`, { method: "POST" });
+}
+
+export function runAutomationNow(id: string): Promise<AutomationRun> {
+  return apiFetch<AutomationRun>(`/api/v1/automations/${id}/run/`, { method: "POST" });
+}
+
+export function fetchAutomationRuns(): Promise<PaginatedResponse<AutomationRun>> {
+  return apiFetch<PaginatedResponse<AutomationRun>>("/api/v1/automations/runs/");
+}
+
+export function fetchAutomationRunsForAutomation(id: string): Promise<PaginatedResponse<AutomationRun>> {
+  return apiFetch<PaginatedResponse<AutomationRun>>(`/api/v1/automations/${id}/runs/`);
 }

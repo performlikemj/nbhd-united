@@ -87,6 +87,9 @@ export default function HomePage() {
                 <Link className="rounded-panel border border-ink/15 bg-white px-4 py-3 text-sm hover:border-ink/30" href="/billing">
                   Open billing controls
                 </Link>
+                <Link className="rounded-panel border border-ink/15 bg-white px-4 py-3 text-sm hover:border-ink/30" href="/automations">
+                  Configure automations
+                </Link>
               </div>
             </SectionCard>
           </div>

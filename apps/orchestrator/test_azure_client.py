@@ -180,6 +180,7 @@ class AssignKeyVaultRoleTest(SimpleTestCase):
 
         # Should not raise
         assign_key_vault_role("principal-abc")
+        mock_client.role_assignments.create.assert_called_once()
 
     @override_settings(
         AZURE_SUBSCRIPTION_ID="sub-123",

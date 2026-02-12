@@ -1,7 +1,7 @@
 """Additional orchestrator service coverage."""
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
@@ -12,6 +12,7 @@ class OrchestratorServiceTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Orchestrator", telegram_chat_id=515151)
 
+    @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="keyvault")
     @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
     @patch("apps.orchestrator.services.config_to_json", return_value="{}")
     @patch(
@@ -39,7 +40,32 @@ class OrchestratorServiceTest(TestCase):
         self.assertEqual(self.tenant.container_fqdn, "oc-tenant.internal.azurecontainerapps.io")
         self.assertEqual(self.tenant.managed_identity_id, "/identities/1")
         self.assertIsNotNone(self.tenant.provisioned_at)
+        _mock_assign_kv_role.assert_called_once_with("principal-1")
 
+    @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="env")
+    @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
+    @patch("apps.orchestrator.services.config_to_json", return_value="{}")
+    @patch(
+        "apps.orchestrator.services.create_managed_identity",
+        return_value={"id": "/identities/10", "client_id": "client-10", "principal_id": "principal-10"},
+    )
+    @patch("apps.orchestrator.services.assign_key_vault_role")
+    @patch(
+        "apps.orchestrator.services.create_container_app",
+        return_value={"name": "oc-tenant", "fqdn": "oc-tenant.internal.azurecontainerapps.io"},
+    )
+    def test_provision_skips_kv_role_assignment_for_env_backend(
+        self,
+        _mock_create_container,
+        _mock_assign_kv_role,
+        _mock_create_identity,
+        _mock_config_json,
+        _mock_generate_config,
+    ):
+        provision_tenant(str(self.tenant.id))
+        _mock_assign_kv_role.assert_not_called()
+
+    @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="keyvault")
     @patch("apps.orchestrator.services.create_container_app", side_effect=RuntimeError("azure error"))
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch(
@@ -61,6 +87,7 @@ class OrchestratorServiceTest(TestCase):
 
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.status, Tenant.Status.PENDING)
+        _mock_assign_kv_role.assert_called_once_with("principal-2")
 
     @patch("apps.orchestrator.services.create_container_app")
     def test_provision_skips_if_tenant_not_provisionable(self, mock_create_container):

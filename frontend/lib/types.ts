@@ -91,3 +91,43 @@ export interface UsageRecord {
   cost_estimate: string;
   created_at: string;
 }
+
+export type AutomationKind = "daily_brief" | "weekly_review";
+export type AutomationStatus = "active" | "paused";
+export type AutomationScheduleType = "daily" | "weekly";
+
+export interface Automation {
+  id: string;
+  kind: AutomationKind;
+  status: AutomationStatus;
+  timezone: string;
+  schedule_type: AutomationScheduleType;
+  schedule_time: string;
+  schedule_days: number[];
+  quiet_hours_start: string | null;
+  quiet_hours_end: string | null;
+  last_run_at: string | null;
+  next_run_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type AutomationRunStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
+export type AutomationTriggerSource = "manual" | "schedule";
+
+export interface AutomationRun {
+  id: string;
+  automation: string;
+  tenant: string;
+  status: AutomationRunStatus;
+  trigger_source: AutomationTriggerSource;
+  scheduled_for: string;
+  started_at: string | null;
+  finished_at: string | null;
+  idempotency_key: string;
+  input_payload: Record<string, unknown>;
+  result_payload: Record<string, unknown>;
+  error_message: string;
+  created_at: string;
+  updated_at: string;
+}
