@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from apps.tenants.models import Tenant
 from .azure_client import (
+    assign_key_vault_role,
     create_container_app,
     create_managed_identity,
     delete_container_app,
@@ -35,6 +36,9 @@ def provision_tenant(tenant_id: str) -> None:
 
         # 2. Create Managed Identity
         identity = create_managed_identity(str(tenant.id))
+
+        # 2b. Grant identity Key Vault access for secret references
+        assign_key_vault_role(identity["principal_id"])
 
         # 3. Create Container App
         container_name = f"oc-{str(tenant.id)[:20]}"

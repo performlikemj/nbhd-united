@@ -101,6 +101,67 @@ def create_managed_identity(tenant_id: str) -> dict[str, str]:
     }
 
 
+def get_authorization_client():
+    """Get Azure Authorization Management client."""
+    if _is_mock():
+        return None
+
+    from azure.identity import DefaultAzureCredential
+    from azure.mgmt.authorization import AuthorizationManagementClient
+
+    credential = DefaultAzureCredential()
+    return AuthorizationManagementClient(credential, settings.AZURE_SUBSCRIPTION_ID)
+
+
+def assign_key_vault_role(principal_id: str) -> None:
+    """Assign 'Key Vault Secrets User' to identity on the project vault."""
+    if _is_mock():
+        logger.info("[MOCK] Assigned Key Vault Secrets User to %s", principal_id)
+        return
+
+    import uuid
+
+    client = get_authorization_client()
+
+    vault_name = str(getattr(settings, "AZURE_KEY_VAULT_NAME", "") or "").strip()
+    if not vault_name:
+        raise ValueError("AZURE_KEY_VAULT_NAME is not configured")
+
+    # Well-known Azure built-in role ID for Key Vault Secrets User
+    KV_SECRETS_USER_ROLE = "4633458b-17de-408a-b874-0445c86b69e6"
+
+    scope = (
+        f"/subscriptions/{settings.AZURE_SUBSCRIPTION_ID}"
+        f"/resourceGroups/{settings.AZURE_RESOURCE_GROUP}"
+        f"/providers/Microsoft.KeyVault/vaults/{vault_name}"
+    )
+    role_def_id = f"{scope}/providers/Microsoft.Authorization/roleDefinitions/{KV_SECRETS_USER_ROLE}"
+
+    # Deterministic UUID → idempotent (same identity + role + scope = same assignment name)
+    assignment_name = str(uuid.uuid5(
+        uuid.NAMESPACE_URL, f"{principal_id}:{KV_SECRETS_USER_ROLE}:{scope}",
+    ))
+
+    try:
+        client.role_assignments.create(
+            scope=scope,
+            role_assignment_name=assignment_name,
+            parameters={
+                "properties": {
+                    "role_definition_id": role_def_id,
+                    "principal_id": principal_id,
+                    "principal_type": "ServicePrincipal",
+                }
+            },
+        )
+        logger.info("Assigned KV Secrets User to %s on %s", principal_id, vault_name)
+    except Exception as exc:
+        if hasattr(exc, "status_code") and exc.status_code == 409:
+            logger.info("KV role already assigned to %s (idempotent)", principal_id)
+        else:
+            raise
+
+
 def delete_managed_identity(tenant_id: str) -> None:
     """Delete a tenant's Managed Identity."""
     if _is_mock():

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase, override_settings
 
-from apps.orchestrator.azure_client import create_container_app
+from apps.orchestrator.azure_client import assign_key_vault_role, create_container_app
 
 
 @override_settings(
@@ -126,3 +126,68 @@ class AzureClientTest(SimpleTestCase):
         self.assertEqual(secret_map["anthropic-key"]["value"], "anthropic-secret")
         self.assertEqual(secret_map["telegram-token"]["value"], "telegram-secret")
         self.assertEqual(secret_map["nbhd-internal-api-key"]["value"], "internal-secret")
+
+
+class AssignKeyVaultRoleTest(SimpleTestCase):
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=True)
+    def test_mock_mode_skips_azure_call(self, _mock_is_mock):
+        # Should return without error in mock mode
+        assign_key_vault_role("mock-principal-123")
+
+    @override_settings(
+        AZURE_SUBSCRIPTION_ID="sub-123",
+        AZURE_RESOURCE_GROUP="rg-test",
+        AZURE_KEY_VAULT_NAME="kv-test",
+    )
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_authorization_client")
+    def test_creates_role_assignment(self, mock_get_auth_client, _mock_is_mock):
+        mock_client = MagicMock()
+        mock_get_auth_client.return_value = mock_client
+
+        assign_key_vault_role("principal-abc")
+
+        mock_client.role_assignments.create.assert_called_once()
+        call_kwargs = mock_client.role_assignments.create.call_args.kwargs
+        self.assertEqual(
+            call_kwargs["scope"],
+            "/subscriptions/sub-123/resourceGroups/rg-test"
+            "/providers/Microsoft.KeyVault/vaults/kv-test",
+        )
+        self.assertEqual(
+            call_kwargs["parameters"]["properties"]["principal_id"],
+            "principal-abc",
+        )
+        self.assertEqual(
+            call_kwargs["parameters"]["properties"]["principal_type"],
+            "ServicePrincipal",
+        )
+
+    @override_settings(
+        AZURE_SUBSCRIPTION_ID="sub-123",
+        AZURE_RESOURCE_GROUP="rg-test",
+        AZURE_KEY_VAULT_NAME="kv-test",
+    )
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_authorization_client")
+    def test_idempotent_on_409_conflict(self, mock_get_auth_client, _mock_is_mock):
+        mock_client = MagicMock()
+        mock_get_auth_client.return_value = mock_client
+
+        conflict_exc = Exception("RoleAssignmentExists")
+        conflict_exc.status_code = 409
+        mock_client.role_assignments.create.side_effect = conflict_exc
+
+        # Should not raise
+        assign_key_vault_role("principal-abc")
+
+    @override_settings(
+        AZURE_SUBSCRIPTION_ID="sub-123",
+        AZURE_RESOURCE_GROUP="rg-test",
+        AZURE_KEY_VAULT_NAME="",
+    )
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_authorization_client")
+    def test_raises_on_missing_vault_name(self, mock_get_auth_client, _mock_is_mock):
+        with self.assertRaises(ValueError):
+            assign_key_vault_role("principal-abc")

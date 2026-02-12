@@ -20,6 +20,7 @@ azure-identity
 azure-mgmt-containerinstance
 azure-mgmt-appcontainers
 azure-mgmt-msi
+azure-mgmt-authorization
 azure-keyvault-secrets
 whitenoise
 django-extensions

@@ -16,8 +16,9 @@ class OrchestratorServiceTest(TestCase):
     @patch("apps.orchestrator.services.config_to_json", return_value="{}")
     @patch(
         "apps.orchestrator.services.create_managed_identity",
-        return_value={"id": "/identities/1", "client_id": "client-1"},
+        return_value={"id": "/identities/1", "client_id": "client-1", "principal_id": "principal-1"},
     )
+    @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch(
         "apps.orchestrator.services.create_container_app",
         return_value={"name": "oc-tenant", "fqdn": "oc-tenant.internal.azurecontainerapps.io"},
@@ -25,6 +26,7 @@ class OrchestratorServiceTest(TestCase):
     def test_provision_happy_path(
         self,
         _mock_create_container,
+        _mock_assign_kv_role,
         _mock_create_identity,
         _mock_config_json,
         _mock_generate_config,
@@ -39,9 +41,10 @@ class OrchestratorServiceTest(TestCase):
         self.assertIsNotNone(self.tenant.provisioned_at)
 
     @patch("apps.orchestrator.services.create_container_app", side_effect=RuntimeError("azure error"))
+    @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch(
         "apps.orchestrator.services.create_managed_identity",
-        return_value={"id": "/identities/2", "client_id": "client-2"},
+        return_value={"id": "/identities/2", "client_id": "client-2", "principal_id": "principal-2"},
     )
     @patch("apps.orchestrator.services.config_to_json", return_value="{}")
     @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
@@ -50,6 +53,7 @@ class OrchestratorServiceTest(TestCase):
         _mock_generate_config,
         _mock_config_json,
         _mock_create_identity,
+        _mock_assign_kv_role,
         _mock_create_container,
     ):
         with self.assertRaises(RuntimeError):
