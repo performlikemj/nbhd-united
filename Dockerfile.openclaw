@@ -14,6 +14,8 @@ RUN npm install --global "openclaw@${OPENCLAW_VERSION}" \
 WORKDIR /opt/nbhd
 
 COPY runtime/openclaw/plugins/nbhd-google-tools /opt/nbhd/plugins/nbhd-google-tools
+COPY agent-skills /opt/nbhd/agent-skills
+COPY templates/openclaw /opt/nbhd/templates/openclaw
 COPY runtime/openclaw/entrypoint.sh /usr/local/bin/nbhd-openclaw-entrypoint
 
 RUN chmod +x /usr/local/bin/nbhd-openclaw-entrypoint \

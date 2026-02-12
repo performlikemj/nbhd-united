@@ -8,6 +8,30 @@ function asTrimmedString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function asStringArray(value, { maxItems = 10 } = {}) {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("Expected an array of strings");
+  }
+  if (value.length > maxItems) {
+    throw new Error(`Array exceeds max items (${maxItems})`);
+  }
+
+  const cleaned = [];
+  for (const item of value) {
+    if (typeof item !== "string") {
+      throw new Error("Array must contain only strings");
+    }
+    const normalized = item.trim();
+    if (normalized.length > 0) {
+      cleaned.push(normalized);
+    }
+  }
+  return cleaned;
+}
+
 function parseInteger(value, { defaultValue, min, max }) {
   if (value === undefined || value === null || value === "") {
     return defaultValue;
@@ -85,7 +109,7 @@ function renderPayload(payload) {
   };
 }
 
-async function callNbhdRuntime(api, path, query) {
+async function callNbhdRuntimeRequest(api, { path, method = "GET", query, body }) {
   const runtime = getRuntimeConfig(api);
   const url = buildUrl(runtime.apiBaseUrl, path, query);
 
@@ -93,12 +117,20 @@ async function callNbhdRuntime(api, path, query) {
   const timeout = setTimeout(() => controller.abort(), runtime.requestTimeoutMs);
 
   try {
+    const headers = {
+      "X-NBHD-Internal-Key": runtime.internalKey,
+      "X-NBHD-Tenant-Id": runtime.tenantId,
+    };
+    let requestBody;
+    if (method !== "GET" && body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      requestBody = JSON.stringify(body);
+    }
+
     const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        "X-NBHD-Internal-Key": runtime.internalKey,
-        "X-NBHD-Tenant-Id": runtime.tenantId,
-      },
+      method,
+      headers,
+      body: requestBody,
       signal: controller.signal,
     });
 
@@ -159,10 +191,10 @@ export default function register(api) {
     },
     async execute(_id, params) {
       const input = asObject(params);
-      const payload = await callNbhdRuntime(
-        api,
-        tenantPath(api, "/gmail/messages/"),
-        {
+      const payload = await callNbhdRuntimeRequest(api, {
+        path: tenantPath(api, "/gmail/messages/"),
+        method: "GET",
+        query: {
           q: asTrimmedString(input.q),
           max_results: parseInteger(input.max_results, {
             defaultValue: 5,
@@ -170,7 +202,7 @@ export default function register(api) {
             max: 10,
           }),
         },
-      );
+      });
       return renderPayload(payload);
     },
   });
@@ -194,10 +226,10 @@ export default function register(api) {
       if (!messageId) {
         throw new Error("message_id is required");
       }
-      const payload = await callNbhdRuntime(
-        api,
-        tenantPath(api, `/gmail/messages/${encodeURIComponent(messageId)}/`),
-        {
+      const payload = await callNbhdRuntimeRequest(api, {
+        path: tenantPath(api, `/gmail/messages/${encodeURIComponent(messageId)}/`),
+        method: "GET",
+        query: {
           include_thread: parseBoolean(input.include_thread, true),
           thread_limit: parseInteger(input.thread_limit, {
             defaultValue: 5,
@@ -205,7 +237,7 @@ export default function register(api) {
             max: 10,
           }),
         },
-      );
+      });
       return renderPayload(payload);
     },
   });
@@ -224,10 +256,10 @@ export default function register(api) {
     },
     async execute(_id, params) {
       const input = asObject(params);
-      const payload = await callNbhdRuntime(
-        api,
-        tenantPath(api, "/google-calendar/events/"),
-        {
+      const payload = await callNbhdRuntimeRequest(api, {
+        path: tenantPath(api, "/google-calendar/events/"),
+        method: "GET",
+        query: {
           time_min: asTrimmedString(input.time_min),
           time_max: asTrimmedString(input.time_max),
           max_results: parseInteger(input.max_results, {
@@ -236,7 +268,7 @@ export default function register(api) {
             max: 20,
           }),
         },
-      );
+      });
       return renderPayload(payload);
     },
   });
@@ -254,14 +286,124 @@ export default function register(api) {
     },
     async execute(_id, params) {
       const input = asObject(params);
-      const payload = await callNbhdRuntime(
-        api,
-        tenantPath(api, "/google-calendar/freebusy/"),
-        {
+      const payload = await callNbhdRuntimeRequest(api, {
+        path: tenantPath(api, "/google-calendar/freebusy/"),
+        method: "GET",
+        query: {
           time_min: asTrimmedString(input.time_min),
           time_max: asTrimmedString(input.time_max),
         },
-      );
+      });
+      return renderPayload(payload);
+    },
+  });
+
+  registerTool(api, {
+    name: "nbhd_journal_create_entry",
+    description: "Create a tenant-scoped journal entry from a reflection conversation.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        date: { type: "string", description: "ISO date (YYYY-MM-DD)." },
+        mood: { type: "string" },
+        energy: { type: "string", enum: ["low", "medium", "high"] },
+        wins: { type: "array", items: { type: "string" } },
+        challenges: { type: "array", items: { type: "string" } },
+        reflection: { type: "string" },
+        raw_text: { type: "string" },
+      },
+      required: ["date", "mood", "energy", "wins", "challenges", "raw_text"],
+    },
+    async execute(_id, params) {
+      const input = asObject(params);
+      const payload = await callNbhdRuntimeRequest(api, {
+        path: tenantPath(api, "/journal-entries/"),
+        method: "POST",
+        body: {
+          date: asTrimmedString(input.date),
+          mood: asTrimmedString(input.mood),
+          energy: asTrimmedString(input.energy),
+          wins: asStringArray(input.wins),
+          challenges: asStringArray(input.challenges),
+          reflection: asTrimmedString(input.reflection),
+          raw_text: asTrimmedString(input.raw_text),
+        },
+      });
+      return renderPayload(payload);
+    },
+  });
+
+  registerTool(api, {
+    name: "nbhd_journal_list_entries",
+    description: "List tenant-scoped journal entries, optionally filtered by date range.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        date_from: { type: "string", description: "ISO date (YYYY-MM-DD)." },
+        date_to: { type: "string", description: "ISO date (YYYY-MM-DD)." },
+      },
+    },
+    async execute(_id, params) {
+      const input = asObject(params);
+      const payload = await callNbhdRuntimeRequest(api, {
+        path: tenantPath(api, "/journal-entries/"),
+        method: "GET",
+        query: {
+          date_from: asTrimmedString(input.date_from),
+          date_to: asTrimmedString(input.date_to),
+        },
+      });
+      return renderPayload(payload);
+    },
+  });
+
+  registerTool(api, {
+    name: "nbhd_journal_create_weekly_review",
+    description: "Create a weekly review summary from aggregated journal reflections.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        week_start: { type: "string", description: "ISO date (YYYY-MM-DD)." },
+        week_end: { type: "string", description: "ISO date (YYYY-MM-DD)." },
+        mood_summary: { type: "string" },
+        top_wins: { type: "array", items: { type: "string" } },
+        top_challenges: { type: "array", items: { type: "string" } },
+        lessons: { type: "array", items: { type: "string" } },
+        week_rating: { type: "string", enum: ["thumbs-up", "thumbs-down", "meh"] },
+        intentions_next_week: { type: "array", items: { type: "string" } },
+        raw_text: { type: "string" },
+      },
+      required: [
+        "week_start",
+        "week_end",
+        "mood_summary",
+        "top_wins",
+        "top_challenges",
+        "week_rating",
+        "intentions_next_week",
+        "raw_text",
+      ],
+    },
+    async execute(_id, params) {
+      const input = asObject(params);
+      const payload = await callNbhdRuntimeRequest(api, {
+        path: tenantPath(api, "/weekly-reviews/"),
+        method: "POST",
+        body: {
+          week_start: asTrimmedString(input.week_start),
+          week_end: asTrimmedString(input.week_end),
+          mood_summary: asTrimmedString(input.mood_summary),
+          top_wins: asStringArray(input.top_wins),
+          top_challenges: asStringArray(input.top_challenges),
+          lessons: asStringArray(input.lessons),
+          week_rating: asTrimmedString(input.week_rating),
+          intentions_next_week: asStringArray(input.intentions_next_week),
+          raw_text: asTrimmedString(input.raw_text),
+        },
+      });
       return renderPayload(payload);
     },
   });

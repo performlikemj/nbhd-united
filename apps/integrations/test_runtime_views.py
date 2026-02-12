@@ -7,6 +7,7 @@ import httpx
 from django.test import TestCase
 from django.test.utils import override_settings
 
+from apps.journal.models import JournalEntry, WeeklyReview
 from apps.tenants.services import create_tenant
 
 from .services import (
@@ -238,3 +239,143 @@ class RuntimeIntegrationViewsTest(TestCase):
         self.assertEqual(body["provider"], "google-calendar")
         self.assertEqual(len(body["busy"]), 1)
         mock_freebusy.assert_called_once()
+
+    def test_runtime_journal_requires_internal_auth(self):
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/journal-entries/",
+            data={},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"], "internal_auth_failed")
+
+    def test_runtime_journal_create_entry_persists_tenant_scoped(self):
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/journal-entries/",
+            data={
+                "date": "2026-02-12",
+                "mood": "focused",
+                "energy": "medium",
+                "wins": ["Shipped patch"],
+                "challenges": ["Too many meetings"],
+                "reflection": "Block deep work tomorrow",
+                "raw_text": "Conversation summary",
+            },
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertEqual(body["tenant_id"], str(self.tenant.id))
+        self.assertEqual(JournalEntry.objects.count(), 1)
+        self.assertEqual(JournalEntry.objects.first().tenant, self.tenant)
+
+    def test_runtime_journal_rejects_invalid_energy(self):
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/journal-entries/",
+            data={
+                "date": "2026-02-12",
+                "mood": "focused",
+                "energy": "turbo",
+                "wins": [],
+                "challenges": [],
+                "raw_text": "Conversation summary",
+            },
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("energy", response.json())
+
+    def test_runtime_journal_list_entries_filters_by_date_range(self):
+        JournalEntry.objects.create(
+            tenant=self.tenant,
+            date="2026-02-10",
+            mood="good",
+            energy="high",
+            wins=["A"],
+            challenges=[],
+            raw_text="entry-a",
+        )
+        JournalEntry.objects.create(
+            tenant=self.tenant,
+            date="2026-02-12",
+            mood="tired",
+            energy="low",
+            wins=[],
+            challenges=["B"],
+            raw_text="entry-b",
+        )
+        JournalEntry.objects.create(
+            tenant=self.other_tenant,
+            date="2026-02-11",
+            mood="other",
+            energy="medium",
+            wins=["hidden"],
+            challenges=[],
+            raw_text="entry-hidden",
+        )
+
+        response = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/journal-entries/?date_from=2026-02-12&date_to=2026-02-12",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["entries"][0]["date"], "2026-02-12")
+
+    def test_runtime_journal_rejects_invalid_date_window(self):
+        response = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/journal-entries/?date_from=2026-02-13&date_to=2026-02-12",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "invalid_request")
+
+    def test_runtime_weekly_review_create_persists(self):
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/weekly-reviews/",
+            data={
+                "week_start": "2026-02-06",
+                "week_end": "2026-02-12",
+                "mood_summary": "Strong finish",
+                "top_wins": ["Ship feature"],
+                "top_challenges": ["Context switching"],
+                "lessons": ["Batch meetings"],
+                "week_rating": "thumbs-up",
+                "intentions_next_week": ["Protect mornings"],
+                "raw_text": "Review summary",
+            },
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(WeeklyReview.objects.count(), 1)
+        self.assertEqual(WeeklyReview.objects.first().tenant, self.tenant)
+
+    def test_runtime_weekly_review_rejects_invalid_rating(self):
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/weekly-reviews/",
+            data={
+                "week_start": "2026-02-06",
+                "week_end": "2026-02-12",
+                "mood_summary": "Strong finish",
+                "top_wins": [],
+                "top_challenges": [],
+                "lessons": [],
+                "week_rating": "great",
+                "intentions_next_week": ["Protect mornings"],
+                "raw_text": "Review summary",
+            },
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("week_rating", response.json())

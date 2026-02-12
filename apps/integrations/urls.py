@@ -6,6 +6,8 @@ from .runtime_views import (
     RuntimeCalendarFreeBusyView,
     RuntimeGmailMessageDetailView,
     RuntimeGmailMessagesView,
+    RuntimeJournalEntriesView,
+    RuntimeWeeklyReviewsView,
 )
 from .views import IntegrationViewSet, OAuthAuthorizeView, OAuthCallbackView
 
@@ -34,6 +36,16 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/google-calendar/freebusy/",
         RuntimeCalendarFreeBusyView.as_view(),
         name="runtime-google-calendar-freebusy",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/journal-entries/",
+        RuntimeJournalEntriesView.as_view(),
+        name="runtime-journal-entries",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/weekly-reviews/",
+        RuntimeWeeklyReviewsView.as_view(),
+        name="runtime-weekly-reviews",
     ),
     path("", include(router.urls)),
 ]

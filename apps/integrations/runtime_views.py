@@ -1,6 +1,7 @@
 """Internal runtime Google capability endpoints."""
 from __future__ import annotations
 
+from datetime import date
 from uuid import UUID
 
 import httpx
@@ -9,6 +10,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.journal.models import JournalEntry
+from apps.journal.serializers import JournalEntryRuntimeSerializer, WeeklyReviewRuntimeSerializer
 from apps.tenants.models import Tenant
 
 from .google_api import (
@@ -75,6 +78,30 @@ def _parse_bool(raw_value: str | None, *, default: bool = False) -> bool:
     raise ValueError("must be a boolean")
 
 
+def _parse_iso_date(raw_value: str | None, *, field_name: str) -> date | None:
+    if raw_value in (None, ""):
+        return None
+    try:
+        return date.fromisoformat(str(raw_value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be YYYY-MM-DD") from exc
+
+
+def _parse_journal_date_range(request) -> tuple[date | None, date | None]:
+    date_from = _parse_iso_date(request.query_params.get("date_from"), field_name="date_from")
+    date_to = _parse_iso_date(request.query_params.get("date_to"), field_name="date_to")
+
+    if (date_from is None) != (date_to is None):
+        raise ValueError("date_from and date_to must be provided together")
+    if date_from is None or date_to is None:
+        return None, None
+    if date_from > date_to:
+        raise ValueError("date_from must be on or before date_to")
+    if (date_to - date_from).days > 30:
+        raise ValueError("date range must be 31 days or less")
+    return date_from, date_to
+
+
 def _load_tenant_or_404(tenant_id: UUID) -> tuple[Tenant | None, Response | None]:
     tenant = Tenant.objects.filter(id=tenant_id).first()
     if tenant is None:
@@ -121,6 +148,97 @@ def _integration_error_response(exc: Exception) -> Response:
         {"error": "integration_access_failed"},
         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
+
+
+class RuntimeJournalEntriesView(APIView):
+    """Create/list runtime journal entries for a tenant."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        try:
+            date_from, date_to = _parse_journal_date_range(request)
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        queryset = JournalEntry.objects.filter(tenant=tenant).order_by("-date", "-created_at")
+        if date_from is not None and date_to is not None:
+            queryset = queryset.filter(date__gte=date_from, date__lte=date_to)
+
+        serializer = JournalEntryRuntimeSerializer(queryset, many=True)
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "entries": serializer.data,
+                "count": len(serializer.data),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        serializer = JournalEntryRuntimeSerializer(
+            data=request.data,
+            context={"tenant": tenant},
+        )
+        serializer.is_valid(raise_exception=True)
+        entry = serializer.save()
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "entry": JournalEntryRuntimeSerializer(entry).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class RuntimeWeeklyReviewsView(APIView):
+    """Create runtime weekly reviews for a tenant."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        serializer = WeeklyReviewRuntimeSerializer(
+            data=request.data,
+            context={"tenant": tenant},
+        )
+        serializer.is_valid(raise_exception=True)
+        review = serializer.save()
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "review": WeeklyReviewRuntimeSerializer(review).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class RuntimeGmailMessagesView(APIView):

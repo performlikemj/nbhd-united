@@ -19,6 +19,7 @@
 - 2026-02-11: Prioritize read-only assistant value (email/calendar visibility + action-item extraction), defer write actions.
 - 2026-02-11: Use native OpenClaw plugin/tool integration for runtime wiring to NBHD endpoints (defer MCP-first approach for current scope).
 - 2026-02-12: Implement proactive automation v1 as focused scope (`daily_brief`, `weekly_review`) with DB-backed per-automation timezone schedules and global cron evaluation.
+- 2026-02-12: Implement harness-aligned agent-skills MVP via runtime header auth contract (`X-NBHD-Internal-Key`, `X-NBHD-Tenant-Id`) with backend/runtime scope only (no frontend journal UI in this phase).
 
 ## State
 - Done:
@@ -40,15 +41,29 @@
     - Validation complete:
       - `DATABASE_URL=sqlite:////tmp/nbhd_united_test.sqlite3 AZURE_MOCK=true .venv/bin/python manage.py test apps.orchestrator apps.automations apps.router` -> `Ran 52 tests`, `OK`.
       - `cd frontend && npm run lint && npm run build` -> passed.
+  - Harness-aligned agent-skills MVP implementation completed (pending deploy):
+    - Added `apps/journal` app (models + serializers + tests + migration).
+    - Added runtime endpoints for journal entries and weekly reviews under `/api/v1/integrations/runtime/{tenant_id}/...`.
+    - Extended runtime plugin to support POST JSON and added journal tools (`nbhd_journal_create_entry`, `nbhd_journal_list_entries`, `nbhd_journal_create_weekly_review`).
+    - Added managed skill files under `agent-skills/` and runtime workspace sync (`skills/nbhd-managed`) in entrypoint.
+    - Added architecture/runbook doc at `docs/agent-skills-architecture.md`.
+    - Validation complete:
+      - `node --test runtime/openclaw/plugins/nbhd-google-tools/index.test.mjs` -> `3 passed`.
+      - `DATABASE_URL=sqlite:////tmp/nbhd_united_test.sqlite3 AZURE_MOCK=true .venv/bin/python manage.py test apps.journal apps.integrations apps.orchestrator` -> `Ran 73 tests`, `OK`.
+      - `DATABASE_URL=sqlite:////tmp/nbhd_united_test.sqlite3 AZURE_MOCK=true .venv/bin/python manage.py test apps/` -> `Ran 153 tests`, `OK`.
+      - `DATABASE_URL=sqlite:////tmp/nbhd_united_test.sqlite3 AZURE_MOCK=true .venv/bin/python manage.py makemigrations --check --dry-run` -> `No changes detected`.
 - Now:
   - Task 4 runtime capability wiring in progress (runtime image published; pending production plugin env + Key Vault secret rollout and full e2e).
+  - Harness-aligned skills MVP is ready for commit/deploy rollout (`CONTINUITY_agent-skills-harness-mvp.md`).
 - Next:
   - Apply production plugin env vars + Key Vault secret mapping for runtime provisioning, then run full provisioned-tenant e2e.
   - Wire operational QStash schedule for `run_due_automations` cadence in deployed environment and monitor initial run telemetry.
+  - Deploy backend + runtime image for journal skills and run pilot tenant e2e smoke.
 
 ## Task Map
 ```text
 CONTINUITY.md
+  ├─ CONTINUITY_agent-skills-harness-mvp.md (@owner:codex, in-progress)
   ├─ CONTINUITY_automations-proactive-scaffold.md (@owner:codex, completed)
   ├─ CONTINUITY_plan-google-oauth-mvp.md (@owner:codex, in-progress)
   │    ├─ CONTINUITY_google-oauth-hardening.md (@owner:codex, completed)
@@ -63,6 +78,7 @@ CONTINUITY.md
 
 ## Active Ledgers
 - `CONTINUITY.md`
+- `CONTINUITY_agent-skills-harness-mvp.md`
 - `CONTINUITY_automations-proactive-scaffold.md`
 - `CONTINUITY_plan-google-oauth-mvp.md`
 - `CONTINUITY_google-oauth-hardening.md`
@@ -75,6 +91,7 @@ CONTINUITY.md
 - `CONTINUITY_frontend-scaffold.md`
 
 ## Cross-task Blockers / Handoffs
+- @handoff-to:CONTINUITY_agent-skills-harness-mvp.md - implementation complete; ready for commit/deploy rollout.
 - @handoff-to:CONTINUITY_automations-proactive-scaffold.md - implementation complete; ready for commit/deploy.
 - @handoff-to:CONTINUITY_google-runtime-capability-wiring.md - Task 4 active; implement Track 1/2 (tenant config injection + OpenClaw plugin runtime wiring).
 - @blocked-by: production Key Vault + Container App env rollout still pending before runtime e2e.
@@ -89,7 +106,7 @@ CONTINUITY.md
 - UNCONFIRMED: Preferred production auth/session contract for frontend API calls.
 
 ## Working Set
-- Files: `apps/**`, `config/**`, `frontend/**`, `CONTINUITY*.md`
+- Files: `apps/**`, `runtime/**`, `templates/**`, `agent-skills/**`, `docs/**`, `config/**`, `frontend/**`, `CONTINUITY*.md`
 - Commands: Django verify commands and frontend `npm` validate commands
 
 ## Archived
