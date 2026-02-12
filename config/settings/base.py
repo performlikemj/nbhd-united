@@ -156,6 +156,9 @@ TELEGRAM_BOT_USERNAME = env("TELEGRAM_BOT_USERNAME", default="NbhdUnitedBot")
 TELEGRAM_WEBHOOK_SECRET = env("TELEGRAM_WEBHOOK_SECRET", default="")
 ROUTER_RATE_LIMIT_PER_MINUTE = env.int("ROUTER_RATE_LIMIT_PER_MINUTE", default=30)
 NBHD_INTERNAL_API_KEY = env("NBHD_INTERNAL_API_KEY", default="")
+NBHD_INTERNAL_API_KEY_FALLBACK_ENABLED = env.bool(
+    "NBHD_INTERNAL_API_KEY_FALLBACK_ENABLED", default=True
+)
 
 # Anthropic API (shared key for all OpenClaw instances)
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
@@ -188,6 +191,7 @@ AZURE_LOCATION = env("AZURE_LOCATION", default="westus2")
 AZURE_CONTAINER_ENV_ID = env("AZURE_CONTAINER_ENV_ID", default="")
 AZURE_ACR_SERVER = env("AZURE_ACR_SERVER", default="nbhdunited.azurecr.io")
 AZURE_KEY_VAULT_NAME = env("AZURE_KEY_VAULT_NAME", default="kv-nbhd-prod")
+AZURE_PROVISIONER_CLIENT_ID = env("AZURE_PROVISIONER_CLIENT_ID", default="")
 
 # Stripe price IDs
 STRIPE_PRICE_IDS = {

@@ -13,7 +13,9 @@ from .azure_client import (
     create_managed_identity,
     delete_container_app,
     delete_managed_identity,
+    store_tenant_internal_key_in_key_vault,
 )
+from .key_utils import generate_internal_api_key, hash_internal_api_key
 from .config_generator import config_to_json, generate_openclaw_config
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,22 @@ def provision_tenant(tenant_id: str) -> None:
         if secret_backend == "keyvault":
             assign_key_vault_role(identity["principal_id"])
 
+        # 2c. Generate per-tenant internal API key
+        plaintext_key = generate_internal_api_key()
+        key_hash = hash_internal_api_key(plaintext_key)
+
+        # 2d. Store plaintext in Key Vault
+        kv_secret_name = store_tenant_internal_key_in_key_vault(
+            str(tenant.id), plaintext_key,
+        )
+
+        # 2e. Store hash in DB
+        tenant.internal_api_key_hash = key_hash
+        tenant.internal_api_key_set_at = timezone.now()
+        tenant.save(update_fields=[
+            "internal_api_key_hash", "internal_api_key_set_at", "updated_at",
+        ])
+
         # 3. Create Container App
         container_name = f"oc-{str(tenant.id)[:20]}"
         result = create_container_app(
@@ -53,6 +71,7 @@ def provision_tenant(tenant_id: str) -> None:
             config_json=config_json,
             identity_id=identity["id"],
             identity_client_id=identity["client_id"],
+            internal_api_key_kv_secret=kv_secret_name,
         )
 
         # 4. Update tenant record
@@ -95,9 +114,12 @@ def deprovision_tenant(tenant_id: str) -> None:
         tenant.container_id = ""
         tenant.container_fqdn = ""
         tenant.managed_identity_id = ""
+        tenant.internal_api_key_hash = ""
+        tenant.internal_api_key_set_at = None
         tenant.save(update_fields=[
             "status", "container_id", "container_fqdn",
-            "managed_identity_id", "updated_at",
+            "managed_identity_id", "internal_api_key_hash",
+            "internal_api_key_set_at", "updated_at",
         ])
 
         logger.info("Deprovisioned tenant %s", tenant_id)

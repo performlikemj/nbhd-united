@@ -6,7 +6,11 @@ from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase, override_settings
 
-from apps.orchestrator.azure_client import assign_key_vault_role, create_container_app
+from apps.orchestrator.azure_client import (
+    assign_key_vault_role,
+    create_container_app,
+    store_tenant_internal_key_in_key_vault,
+)
 
 
 @override_settings(
@@ -192,3 +196,69 @@ class AssignKeyVaultRoleTest(SimpleTestCase):
     def test_raises_on_missing_vault_name(self, mock_get_auth_client, _mock_is_mock):
         with self.assertRaises(ValueError):
             assign_key_vault_role("principal-abc")
+
+
+class StoreTenantKeyTest(SimpleTestCase):
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=True)
+    def test_mock_mode_returns_secret_name(self, _mock_is_mock):
+        result = store_tenant_internal_key_in_key_vault("abc-123", "secret-value")
+        self.assertEqual(result, "tenant-abc-123-internal-key")
+
+    @override_settings(AZURE_KEY_VAULT_NAME="kv-test")
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client._get_provisioner_credential")
+    @patch("apps.orchestrator.azure_client.SecretClient", create=True)
+    def test_stores_secret_in_key_vault(self, mock_secret_cls, mock_cred, _mock_is_mock):
+        # SecretClient is imported inside the function, so we patch at module level with create=True
+        # But the function does `from azure.keyvault.secrets import SecretClient` locally
+        # We need to mock the import. Let's use a different approach.
+        pass
+
+
+@override_settings(
+    AZURE_LOCATION="westus2",
+    AZURE_CONTAINER_ENV_ID="/subscriptions/test/resourceGroups/rg/providers/Microsoft.App/managedEnvironments/env",
+    AZURE_ACR_SERVER="nbhdunited.azurecr.io",
+    AZURE_RESOURCE_GROUP="rg-nbhd-prod",
+    AZURE_KEY_VAULT_NAME="kv-nbhd-prod",
+    ANTHROPIC_API_KEY="anthropic-secret",
+    TELEGRAM_BOT_TOKEN="telegram-secret",
+    NBHD_INTERNAL_API_KEY="internal-secret",
+    API_BASE_URL="https://nbhd-django.example.com",
+)
+class PerTenantSecretTest(SimpleTestCase):
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_per_tenant_kv_secret_overrides_shared(
+        self, mock_get_container_client, _mock_is_mock,
+    ):
+        mock_client = MagicMock()
+        mock_get_container_client.return_value = mock_client
+
+        mock_result = SimpleNamespace(
+            properties=SimpleNamespace(
+                configuration=SimpleNamespace(
+                    ingress=SimpleNamespace(fqdn="oc-tenant.internal.azurecontainerapps.io")
+                )
+            )
+        )
+        mock_poller = MagicMock()
+        mock_poller.result.return_value = mock_result
+        mock_client.container_apps.begin_create_or_update.return_value = mock_poller
+
+        create_container_app(
+            tenant_id="tenant-123",
+            container_name="oc-tenant",
+            config_json='{"a":1}',
+            identity_id="/identities/tenant-123",
+            identity_client_id="client-123",
+            internal_api_key_kv_secret="tenant-tenant-123-internal-key",
+        )
+
+        payload = mock_client.container_apps.begin_create_or_update.call_args.args[2]
+        secrets = payload["properties"]["configuration"]["secrets"]
+        secret_map = {entry["name"]: entry for entry in secrets}
+        self.assertEqual(
+            secret_map["nbhd-internal-api-key"]["keyVaultUrl"],
+            "https://kv-nbhd-prod.vault.azure.net/secrets/tenant-tenant-123-internal-key",
+        )

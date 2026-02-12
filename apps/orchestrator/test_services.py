@@ -21,12 +21,17 @@ class OrchestratorServiceTest(TestCase):
     )
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch(
+        "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
+        return_value="tenant-xxx-internal-key",
+    )
+    @patch(
         "apps.orchestrator.services.create_container_app",
         return_value={"name": "oc-tenant", "fqdn": "oc-tenant.internal.azurecontainerapps.io"},
     )
     def test_provision_happy_path(
         self,
         _mock_create_container,
+        _mock_store_kv_key,
         _mock_assign_kv_role,
         _mock_create_identity,
         _mock_config_json,
@@ -41,6 +46,12 @@ class OrchestratorServiceTest(TestCase):
         self.assertEqual(self.tenant.managed_identity_id, "/identities/1")
         self.assertIsNotNone(self.tenant.provisioned_at)
         _mock_assign_kv_role.assert_called_once_with("principal-1")
+        self.assertEqual(len(self.tenant.internal_api_key_hash), 64)
+        self.assertIsNotNone(self.tenant.internal_api_key_set_at)
+        _mock_store_kv_key.assert_called_once()
+        _mock_create_container.assert_called_once()
+        call_kwargs = _mock_create_container.call_args.kwargs
+        self.assertEqual(call_kwargs["internal_api_key_kv_secret"], "tenant-xxx-internal-key")
 
     @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="env")
     @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
@@ -51,12 +62,17 @@ class OrchestratorServiceTest(TestCase):
     )
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch(
+        "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
+        return_value="tenant-xxx-internal-key",
+    )
+    @patch(
         "apps.orchestrator.services.create_container_app",
         return_value={"name": "oc-tenant", "fqdn": "oc-tenant.internal.azurecontainerapps.io"},
     )
     def test_provision_skips_kv_role_assignment_for_env_backend(
         self,
         _mock_create_container,
+        _mock_store_kv_key,
         _mock_assign_kv_role,
         _mock_create_identity,
         _mock_config_json,
@@ -67,6 +83,10 @@ class OrchestratorServiceTest(TestCase):
 
     @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="keyvault")
     @patch("apps.orchestrator.services.create_container_app", side_effect=RuntimeError("azure error"))
+    @patch(
+        "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
+        return_value="tenant-xxx-internal-key",
+    )
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch(
         "apps.orchestrator.services.create_managed_identity",
@@ -80,6 +100,7 @@ class OrchestratorServiceTest(TestCase):
         _mock_config_json,
         _mock_create_identity,
         _mock_assign_kv_role,
+        _mock_store_kv_key,
         _mock_create_container,
     ):
         with self.assertRaises(RuntimeError):

@@ -18,16 +18,28 @@ def _is_mock() -> bool:
     return os.environ.get("AZURE_MOCK", "false").lower() == "true"
 
 
+def _get_provisioner_credential():
+    """Get credential for the provisioning identity (elevated permissions).
+
+    In production, uses the dedicated user-assigned managed identity.
+    In local dev, falls back to DefaultAzureCredential (Azure CLI login).
+    """
+    from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
+
+    client_id = str(getattr(settings, "AZURE_PROVISIONER_CLIENT_ID", "") or "").strip()
+    if client_id:
+        return ManagedIdentityCredential(client_id=client_id)
+    return DefaultAzureCredential()
+
+
 def get_container_client():
     """Get Azure Container Apps API client."""
     if _is_mock():
         return None
 
-    from azure.identity import DefaultAzureCredential
     from azure.mgmt.appcontainers import ContainerAppsAPIClient
 
-    credential = DefaultAzureCredential()
-    return ContainerAppsAPIClient(credential, settings.AZURE_SUBSCRIPTION_ID)
+    return ContainerAppsAPIClient(_get_provisioner_credential(), settings.AZURE_SUBSCRIPTION_ID)
 
 
 def get_identity_client():
@@ -35,11 +47,9 @@ def get_identity_client():
     if _is_mock():
         return None
 
-    from azure.identity import DefaultAzureCredential
     from azure.mgmt.msi import ManagedServiceIdentityClient
 
-    credential = DefaultAzureCredential()
-    return ManagedServiceIdentityClient(credential, settings.AZURE_SUBSCRIPTION_ID)
+    return ManagedServiceIdentityClient(_get_provisioner_credential(), settings.AZURE_SUBSCRIPTION_ID)
 
 
 def _build_container_secret(
@@ -106,11 +116,9 @@ def get_authorization_client():
     if _is_mock():
         return None
 
-    from azure.identity import DefaultAzureCredential
     from azure.mgmt.authorization import AuthorizationManagementClient
 
-    credential = DefaultAzureCredential()
-    return AuthorizationManagementClient(credential, settings.AZURE_SUBSCRIPTION_ID)
+    return AuthorizationManagementClient(_get_provisioner_credential(), settings.AZURE_SUBSCRIPTION_ID)
 
 
 def assign_key_vault_role(principal_id: str) -> None:
@@ -162,6 +170,32 @@ def assign_key_vault_role(principal_id: str) -> None:
             raise
 
 
+def store_tenant_internal_key_in_key_vault(tenant_id: str, plaintext_key: str) -> str:
+    """Store a tenant's internal API key in Azure Key Vault.
+
+    Uses naming convention: tenant-<uuid>-internal-key
+    Returns the KV secret name.
+    """
+    secret_name = f"tenant-{tenant_id}-internal-key"
+
+    if _is_mock():
+        logger.info("[MOCK] Stored tenant internal key in KV: %s", secret_name)
+        return secret_name
+
+    from azure.keyvault.secrets import SecretClient
+
+    vault_name = str(getattr(settings, "AZURE_KEY_VAULT_NAME", "") or "").strip()
+    if not vault_name:
+        raise ValueError("AZURE_KEY_VAULT_NAME is not configured")
+
+    vault_url = f"https://{vault_name}.vault.azure.net"
+    client = SecretClient(vault_url=vault_url, credential=_get_provisioner_credential())
+    client.set_secret(secret_name, plaintext_key)
+
+    logger.info("Stored tenant internal key in Key Vault: %s", secret_name)
+    return secret_name
+
+
 def delete_managed_identity(tenant_id: str) -> None:
     """Delete a tenant's Managed Identity."""
     if _is_mock():
@@ -184,6 +218,7 @@ def create_container_app(
     config_json: str,
     identity_id: str,
     identity_client_id: str,
+    internal_api_key_kv_secret: str = "",
 ) -> dict[str, str]:
     """Create an Azure Container App for an OpenClaw instance.
 
@@ -211,7 +246,7 @@ def create_container_app(
         _build_container_secret(
             "nbhd-internal-api-key",
             plain_value=settings.NBHD_INTERNAL_API_KEY,
-            key_vault_secret_name=settings.AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY,
+            key_vault_secret_name=internal_api_key_kv_secret or settings.AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY,
             identity_id=identity_id,
         ),
     ]

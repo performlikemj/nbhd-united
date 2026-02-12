@@ -89,6 +89,16 @@ class Tenant(models.Model):
         help_text="Per-user monthly token budget",
     )
 
+    # Per-tenant internal API key
+    internal_api_key_hash = models.CharField(
+        max_length=64, blank=True, default="",
+        help_text="SHA-256 hex digest of this tenant's internal API key",
+    )
+    internal_api_key_set_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="When the per-tenant internal API key was last generated",
+    )
+
     # Metadata
     last_message_at = models.DateTimeField(null=True, blank=True)
     provisioned_at = models.DateTimeField(null=True, blank=True)
