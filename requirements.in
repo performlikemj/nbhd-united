@@ -29,6 +29,9 @@ tiktoken
 # HTTP client (for routing to OpenClaw instances)
 httpx
 
+# Managed OAuth (Composio — Google integrations)
+composio>=0.7
+
 # Azure SDK (for Container Apps, Key Vault, Managed Identity)
 azure-identity
 azure-mgmt-containerinstance

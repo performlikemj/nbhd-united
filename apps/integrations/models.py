@@ -34,6 +34,10 @@ class Integration(models.Model):
         max_length=255, blank=True, default="",
         help_text="Key Vault secret name where tokens are stored",
     )
+    composio_connected_account_id = models.CharField(
+        max_length=255, blank=True, default="",
+        help_text="Composio connected account ID (for Composio-managed providers)",
+    )
     token_expires_at = models.DateTimeField(null=True, blank=True)
     connected_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

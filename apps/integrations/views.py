@@ -18,7 +18,15 @@ from rest_framework.views import APIView
 from apps.tenants.models import User
 from .models import Integration
 from .serializers import IntegrationSerializer
-from .services import connect_integration, disconnect_integration, get_provider_config
+from .services import (
+    connect_integration,
+    complete_composio_connection,
+    disconnect_integration,
+    get_provider_config,
+    initiate_composio_connection,
+    is_composio_provider,
+    IntegrationAccessError,
+)
 
 logger = logging.getLogger(__name__)
 OAUTH_STATE_MAX_AGE_SECONDS = 600
@@ -137,6 +145,11 @@ class OAuthAuthorizeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, provider):
+        # Composio-managed providers: delegate auth to Composio
+        if is_composio_provider(provider):
+            return self._composio_authorize(request, provider)
+
+        # Direct OAuth path (Sautai, or Google when Composio is not configured)
         try:
             config = get_provider_config(provider)
         except ValueError:
@@ -163,6 +176,33 @@ class OAuthAuthorizeView(APIView):
 
         auth_url = f"{config['auth_url']}?{urlencode(params)}"
         return Response({"url": auth_url})
+
+    def _composio_authorize(self, request, provider):
+        if not hasattr(request.user, "tenant"):
+            return Response({"detail": "No tenant provisioned."}, status=400)
+
+        state = _build_oauth_state(str(request.user.id), provider)
+        api_base = getattr(settings, "API_BASE_URL", "http://localhost:8000")
+        callback_url = f"{api_base}/api/v1/integrations/composio-callback/{provider}/?state={state}"
+
+        try:
+            redirect_url, connection_request_id = initiate_composio_connection(
+                tenant=request.user.tenant,
+                provider=provider,
+                callback_url=callback_url,
+            )
+        except Exception as exc:
+            logger.exception("Composio authorize failed for %s", provider)
+            return Response({"detail": str(exc)}, status=400)
+
+        # Cache connection_request_id keyed by state for the callback
+        cache.set(
+            f"composio-conn-req:{state}",
+            connection_request_id,
+            timeout=OAUTH_STATE_MAX_AGE_SECONDS,
+        )
+
+        return Response({"url": redirect_url})
 
 
 class OAuthCallbackView(APIView):
@@ -236,4 +276,50 @@ class OAuthCallbackView(APIView):
             return _redirect_to_integrations(frontend_url, {"error": "exchange_failed"})
         except Exception:
             logger.exception("OAuth callback failed for %s", provider)
+            return _redirect_to_integrations(frontend_url, {"error": "callback_failed"})
+
+
+class ComposioCallbackView(APIView):
+    """Handle redirect from Composio after the user completes OAuth."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, provider):
+        frontend_url = settings.FRONTEND_URL
+
+        if not is_composio_provider(provider):
+            return _redirect_to_integrations(frontend_url, {"error": "unknown_provider"})
+
+        state = request.query_params.get("state", "")
+        if not state:
+            return _redirect_to_integrations(frontend_url, {"error": "missing_params"})
+
+        try:
+            data = _load_oauth_state(state, provider)
+        except signing.BadSignature:
+            return _redirect_to_integrations(frontend_url, {"error": "invalid_state"})
+
+        try:
+            user = User.objects.get(id=data["user_id"])
+        except User.DoesNotExist:
+            return _redirect_to_integrations(frontend_url, {"error": "user_not_found"})
+
+        if not hasattr(user, "tenant"):
+            return _redirect_to_integrations(frontend_url, {"error": "no_tenant"})
+
+        connection_request_id = cache.get(f"composio-conn-req:{state}")
+        if not connection_request_id:
+            return _redirect_to_integrations(frontend_url, {"error": "expired_request"})
+        cache.delete(f"composio-conn-req:{state}")
+
+        try:
+            complete_composio_connection(
+                tenant=user.tenant,
+                provider=provider,
+                connection_request_id=connection_request_id,
+            )
+            return _redirect_to_integrations(frontend_url, {"connected": provider})
+        except Exception:
+            logger.exception("Composio callback failed for %s", provider)
             return _redirect_to_integrations(frontend_url, {"error": "callback_failed"})

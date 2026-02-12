@@ -1,4 +1,4 @@
-"""Integration services — OAuth flows and Key Vault writes."""
+"""Integration services — OAuth flows, Key Vault writes, and Composio managed auth."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -18,6 +18,177 @@ from .models import Integration
 logger = logging.getLogger(__name__)
 _MOCK_KEY_VAULT_STORE: dict[str, str] = {}
 ON_DEMAND_REFRESH_LEEWAY_SECONDS = 120
+
+# ---------------------------------------------------------------------------
+# Composio managed-auth helpers
+# ---------------------------------------------------------------------------
+
+COMPOSIO_MANAGED_PROVIDERS: set[str] = {"gmail", "google-calendar"}
+
+_composio_client = None
+
+
+def is_composio_provider(provider: str) -> bool:
+    """Return True if provider auth is managed through Composio."""
+    return provider in COMPOSIO_MANAGED_PROVIDERS and bool(
+        getattr(settings, "COMPOSIO_API_KEY", "")
+    )
+
+
+def _get_composio_client():
+    """Lazy singleton for the Composio client."""
+    global _composio_client
+    if _composio_client is None:
+        from composio import Composio
+
+        api_key = settings.COMPOSIO_API_KEY
+        if not api_key:
+            raise IntegrationProviderConfigError("COMPOSIO_API_KEY not configured")
+        _composio_client = Composio(api_key=api_key)
+    return _composio_client
+
+
+def _get_composio_auth_config_id(provider: str) -> str:
+    """Map a provider name to its Composio auth-config ID from settings."""
+    mapping = {
+        "gmail": getattr(settings, "COMPOSIO_GMAIL_AUTH_CONFIG_ID", ""),
+        "google-calendar": getattr(settings, "COMPOSIO_GCAL_AUTH_CONFIG_ID", ""),
+    }
+    config_id = mapping.get(provider, "")
+    if not config_id:
+        raise IntegrationProviderConfigError(
+            f"No Composio auth_config_id configured for provider={provider}"
+        )
+    return config_id
+
+
+def initiate_composio_connection(
+    tenant: Tenant,
+    provider: str,
+    callback_url: str,
+) -> tuple[str, str]:
+    """Start a Composio OAuth connection.
+
+    Returns (redirect_url, connection_request_id).
+    """
+    client = _get_composio_client()
+    auth_config_id = _get_composio_auth_config_id(provider)
+
+    # One connection per tenant per provider
+    user_id = f"tenant-{tenant.id}"
+
+    connection_request = client.connected_accounts.initiate(
+        user_id=user_id,
+        auth_config_id=auth_config_id,
+        callback_url=callback_url,
+    )
+
+    return connection_request.redirect_url, connection_request.id
+
+
+def complete_composio_connection(
+    tenant: Tenant,
+    provider: str,
+    connection_request_id: str,
+) -> Integration:
+    """Wait for a Composio connection to become active, then persist."""
+    client = _get_composio_client()
+
+    connected_account = client.connected_accounts.wait_for_connection(
+        id=connection_request_id,
+        timeout=30,
+    )
+
+    if connected_account.status != "ACTIVE":
+        raise IntegrationAccessError(
+            f"Composio connection not active: {connected_account.status}"
+        )
+
+    # Try to extract provider email from auth params
+    provider_email = _extract_composio_email(connected_account.id)
+
+    integration, created = Integration.objects.update_or_create(
+        tenant=tenant,
+        provider=provider,
+        defaults={
+            "status": Integration.Status.ACTIVE,
+            "composio_connected_account_id": connected_account.id,
+            "provider_email": provider_email,
+            "scopes": [],
+            "key_vault_secret_name": "",
+        },
+    )
+
+    logger.info(
+        "%s Composio integration %s for tenant %s (account=%s)",
+        "Created" if created else "Updated",
+        provider,
+        tenant.id,
+        connected_account.id,
+    )
+    return integration
+
+
+def _extract_composio_email(connected_account_id: str) -> str:
+    """Best-effort email extraction from a Composio connected account."""
+    try:
+        client = _get_composio_client()
+        auth_params = client.get_auth_params(connection_id=connected_account_id)
+        for param in auth_params.get("parameters", []):
+            if param.get("name") == "email":
+                return param.get("value", "")
+    except Exception:
+        logger.debug("Could not extract email from Composio account %s", connected_account_id)
+    return ""
+
+
+def _get_composio_access_token(
+    integration: Integration,
+    tenant: Tenant,
+    provider: str,
+) -> ProviderAccessToken:
+    """Retrieve access token from Composio connected account."""
+    if not integration.composio_connected_account_id:
+        raise IntegrationTokenDataError(
+            f"No Composio connected_account_id for provider={provider}"
+        )
+
+    client = _get_composio_client()
+
+    try:
+        auth_params = client.get_auth_params(
+            connection_id=integration.composio_connected_account_id,
+        )
+    except Exception as exc:
+        _mark_integration_status(integration, Integration.Status.ERROR)
+        raise IntegrationRefreshError(
+            f"Failed to retrieve Composio auth params for provider={provider}"
+        ) from exc
+
+    # Extract access_token from the parameters list
+    access_token = ""
+    for param in auth_params.get("parameters", []):
+        if param.get("name") in ("access_token", "Authorization"):
+            value = param.get("value", "")
+            # Strip "Bearer " prefix if present
+            if value.startswith("Bearer "):
+                value = value[7:]
+            access_token = value
+            break
+
+    if not access_token or access_token.endswith("..."):
+        _mark_integration_status(integration, Integration.Status.ERROR)
+        raise IntegrationTokenDataError(
+            f"Composio returned masked/empty token for provider={provider}. "
+            "Ensure 'Mask Connected Account Secrets' is disabled in Composio settings."
+        )
+
+    return ProviderAccessToken(
+        access_token=access_token,
+        expires_at=None,  # Composio manages expiry/refresh
+        provider=provider,
+        tenant_id=str(tenant.id),
+    )
 
 
 class IntegrationAccessError(RuntimeError):
@@ -291,6 +462,12 @@ def get_valid_provider_access_token(
     when access tokens are missing or near expiry.
     """
     integration = _get_integration_or_raise(tenant, provider)
+
+    # Composio path: managed providers with a connected account ID
+    if is_composio_provider(provider) and integration.composio_connected_account_id:
+        return _get_composio_access_token(integration, tenant, provider)
+
+    # Existing Key Vault path (Sautai + legacy Google integrations)
     if not _has_read_compatible_scope(integration):
         raise IntegrationScopeError(
             f"Integration lacks read scope for provider={provider}; reconnect required"
@@ -403,10 +580,28 @@ def connect_integration(
 
 def disconnect_integration(tenant: Tenant, provider: str) -> None:
     """Disconnect an integration — delete tokens and mark revoked."""
-    delete_tokens_from_key_vault(tenant, provider)
+    integration = Integration.objects.filter(tenant=tenant, provider=provider).first()
+
+    if integration and integration.composio_connected_account_id:
+        # Composio-managed: revoke the connected account
+        try:
+            client = _get_composio_client()
+            client.connected_accounts.delete(
+                account_id=integration.composio_connected_account_id,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to delete Composio account %s for tenant %s",
+                integration.composio_connected_account_id,
+                tenant.id,
+            )
+    else:
+        # Key Vault path
+        delete_tokens_from_key_vault(tenant, provider)
 
     Integration.objects.filter(tenant=tenant, provider=provider).update(
         status=Integration.Status.REVOKED,
+        composio_connected_account_id="",
     )
 
     logger.info("Disconnected %s for tenant %s", provider, tenant.id)

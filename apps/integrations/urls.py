@@ -9,7 +9,7 @@ from .runtime_views import (
     RuntimeJournalEntriesView,
     RuntimeWeeklyReviewsView,
 )
-from .views import IntegrationViewSet, OAuthAuthorizeView, OAuthCallbackView
+from .views import ComposioCallbackView, IntegrationViewSet, OAuthAuthorizeView, OAuthCallbackView
 
 router = DefaultRouter()
 router.register("", IntegrationViewSet, basename="integration")
@@ -17,6 +17,7 @@ router.register("", IntegrationViewSet, basename="integration")
 urlpatterns = [
     path("authorize/<str:provider>/", OAuthAuthorizeView.as_view(), name="oauth-authorize"),
     path("callback/<str:provider>/", OAuthCallbackView.as_view(), name="oauth-callback"),
+    path("composio-callback/<str:provider>/", ComposioCallbackView.as_view(), name="composio-callback"),
     path(
         "runtime/<uuid:tenant_id>/gmail/messages/",
         RuntimeGmailMessagesView.as_view(),
