@@ -1,0 +1,81 @@
+"use client";
+
+import { SectionCard } from "@/components/section-card";
+import { SectionCardSkeleton } from "@/components/skeleton";
+import { StatusPill } from "@/components/status-pill";
+import { useMeQuery } from "@/lib/queries";
+
+export default function SettingsPage() {
+  const { data: me, isLoading } = useMeQuery();
+
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        <SectionCardSkeleton lines={4} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <SectionCard title="Account" subtitle="Your profile and authentication details">
+        {me ? (
+          <dl className="grid gap-3 text-sm sm:grid-cols-2">
+            <div className="rounded-panel border border-ink/15 bg-white p-4">
+              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">
+                Display Name
+              </dt>
+              <dd className="mt-1 text-base font-medium text-ink">
+                {me.display_name || "Not set"}
+              </dd>
+            </div>
+            <div className="rounded-panel border border-ink/15 bg-white p-4">
+              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">
+                Email
+              </dt>
+              <dd className="mt-1 text-base text-ink">{me.email}</dd>
+            </div>
+            <div className="rounded-panel border border-ink/15 bg-white p-4">
+              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">
+                Username
+              </dt>
+              <dd className="mt-1 text-base text-ink">{me.username}</dd>
+            </div>
+            <div className="rounded-panel border border-ink/15 bg-white p-4">
+              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">
+                Language
+              </dt>
+              <dd className="mt-1 text-base text-ink">{me.language || "en"}</dd>
+            </div>
+            <div className="rounded-panel border border-ink/15 bg-white p-4">
+              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">
+                Telegram
+              </dt>
+              <dd className="mt-1">
+                {me.telegram_username ? (
+                  <span className="text-base text-ink">@{me.telegram_username}</span>
+                ) : (
+                  <StatusPill status="pending" />
+                )}
+              </dd>
+            </div>
+            <div className="rounded-panel border border-ink/15 bg-white p-4">
+              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">
+                Tenant
+              </dt>
+              <dd className="mt-1">
+                {me.tenant ? (
+                  <StatusPill status={me.tenant.status} />
+                ) : (
+                  <span className="text-sm text-ink/65">No tenant provisioned</span>
+                )}
+              </dd>
+            </div>
+          </dl>
+        ) : (
+          <p className="text-sm text-ink/70">Could not load account details.</p>
+        )}
+      </SectionCard>
+    </div>
+  );
+}

@@ -3,10 +3,11 @@
 import clsx from "clsx";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 
 import { logout } from "@/lib/api";
 import { clearTokens, isLoggedIn } from "@/lib/auth";
+import { useMeQuery } from "@/lib/queries";
 
 const navItems = [
   { href: "/", label: "Home" },
@@ -18,6 +19,64 @@ const navItems = [
 ];
 
 const publicPages = ["/login", "/signup"];
+
+function UserMenu({ onLogout }: { onLogout: () => void }) {
+  const { data: me } = useMeQuery();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const displayName = me?.display_name || me?.email || "User";
+  const initials = displayName
+    .split(" ")
+    .map((w) => w[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-2 rounded-full border border-ink/15 px-3 py-1.5 text-sm text-ink/75 transition hover:border-ink/30 hover:text-ink"
+      >
+        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-ink/10 font-mono text-[10px] font-medium text-ink/70">
+          {initials}
+        </span>
+        <span className="hidden sm:inline">{displayName}</span>
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full mt-2 w-48 rounded-panel border border-ink/10 bg-white p-1 shadow-panel animate-reveal z-40">
+          <Link
+            href="/settings"
+            onClick={() => setOpen(false)}
+            className="block rounded-lg px-3 py-2 text-sm text-ink/75 hover:bg-ink/5 hover:text-ink"
+          >
+            Settings
+          </Link>
+          <button
+            type="button"
+            onClick={() => { setOpen(false); onLogout(); }}
+            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-ink/75 hover:bg-ink/5 hover:text-ink"
+          >
+            Sign out
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -90,13 +149,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 );
               })}
             </nav>
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="rounded-full border border-ink/15 px-3 py-1.5 text-sm text-ink/70 transition hover:border-ink/30 hover:text-ink"
-            >
-              Sign out
-            </button>
+            <UserMenu onLogout={handleLogout} />
           </div>
         </div>
       </header>
