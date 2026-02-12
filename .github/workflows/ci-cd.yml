@@ -154,6 +154,8 @@ jobs:
 
       - name: Build frontend (static export)
         working-directory: frontend
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io
         run: npm run build
 
       - name: Verify staticwebapp.config.json in output
