@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import Tenant
-from .serializers import TenantRegistrationSerializer, TenantSerializer
+from .serializers import TenantRegistrationSerializer, TenantSerializer, UserSerializer
 
 
 class TenantViewSet(viewsets.ReadOnlyModelViewSet):
@@ -50,8 +50,23 @@ class OnboardTenantView(APIView):
         user = request.user
         user.display_name = serializer.validated_data.get("display_name", user.display_name)
         user.language = serializer.validated_data.get("language", user.language)
-        user.save(update_fields=["display_name", "language"])
+        user.timezone = serializer.validated_data.get("timezone", user.timezone)
+        user.save(update_fields=["display_name", "language", "timezone"])
 
         # Create tenant
         tenant = Tenant.objects.create(user=user)
         return Response(TenantSerializer(tenant).data, status=status.HTTP_201_CREATED)
+
+
+class ProfileView(APIView):
+    """Get/update current user's profile (display_name, language, timezone)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(UserSerializer(request.user).data)
+
+    def patch(self, request):
+        serializer = UserSerializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)

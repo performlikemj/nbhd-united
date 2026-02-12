@@ -203,8 +203,11 @@ def _dispatch_to_openclaw(automation: Automation, run_id: uuid.UUID) -> tuple[di
 
     loop = asyncio.new_event_loop()
     try:
+        user_tz = automation.timezone or tenant.user.timezone or "UTC"
         result = loop.run_until_complete(
-            forward_to_openclaw(tenant.container_fqdn, synthetic_update)
+            forward_to_openclaw(
+                tenant.container_fqdn, synthetic_update, user_timezone=user_tz,
+            )
         )
     finally:
         loop.close()
