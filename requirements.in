@@ -29,6 +29,9 @@ tiktoken
 # HTTP client (for routing to OpenClaw instances)
 httpx
 
+# Redis cache (shared across workers/containers)
+django-redis
+
 # Managed OAuth (Composio — Google integrations)
 composio>=0.7
 

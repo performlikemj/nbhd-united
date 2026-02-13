@@ -146,6 +146,20 @@ QSTASH_TOKEN = env("QSTASH_TOKEN", default="")
 # Upstash Redis (general cache / rate limiting)
 UPSTASH_REDIS_URL = env("UPSTASH_REDIS_URL", default="")
 
+# Cache — use Redis when available (shared across workers & container revisions),
+# fall back to in-process memory for local dev without Redis.
+if UPSTASH_REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": UPSTASH_REDIS_URL,
+            "OPTIONS": {
+                "CLIENT_CLASS": "django_redis.client.DefaultClient",
+                "CONNECTION_POOL_KWARGS": {"ssl_cert_reqs": None},
+            },
+        }
+    }
+
 # Stripe (dj-stripe)
 STRIPE_LIVE_SECRET_KEY = env("STRIPE_LIVE_SECRET_KEY", default="")
 STRIPE_TEST_SECRET_KEY = env("STRIPE_TEST_SECRET_KEY", default="")

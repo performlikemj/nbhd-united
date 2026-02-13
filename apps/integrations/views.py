@@ -229,6 +229,7 @@ class OAuthCallbackView(APIView):
         try:
             data = _load_oauth_state(state, provider)
         except signing.BadSignature:
+            logger.warning("OAuth callback invalid_state for %s", provider)
             return _redirect_to_integrations(frontend_url, {"error": "invalid_state"})
 
         try:
@@ -298,6 +299,7 @@ class ComposioCallbackView(APIView):
         try:
             data = _load_oauth_state(state, provider)
         except signing.BadSignature:
+            logger.warning("Composio callback invalid_state for %s", provider)
             return _redirect_to_integrations(frontend_url, {"error": "invalid_state"})
 
         try:
