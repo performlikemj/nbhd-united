@@ -105,7 +105,7 @@ async def forward_to_openclaw(
     Uses a longer timeout (90s) to accommodate Azure Container Apps
     cold starts when minReplicas=0, and retries once on timeout.
     """
-    url = f"http://{container_fqdn}/telegram-webhook"
+    url = f"https://{container_fqdn}/telegram-webhook"
 
     attempt = 0
     while True:

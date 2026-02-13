@@ -81,7 +81,7 @@ class ForwardingBehaviorTest(TestCase):
 
         self.assertEqual(result, {"ok": True})
         mock_client.post.assert_called_once_with(
-            "http://oc-router.internal.azurecontainerapps.io/telegram-webhook",
+            "https://oc-router.internal.azurecontainerapps.io/telegram-webhook",
             json={"message": {"chat": {"id": 1}}},
         )
 
@@ -157,7 +157,7 @@ class ForwardingBehaviorTest(TestCase):
 
         url = mock_client.post.call_args[0][0]
         self.assertNotIn(":18789", url)
-        self.assertEqual(url, "http://oc-test.internal.azurecontainerapps.io/telegram-webhook")
+        self.assertEqual(url, "https://oc-test.internal.azurecontainerapps.io/telegram-webhook")
 
 
 class SendTemporaryErrorTest(TestCase):
