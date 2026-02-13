@@ -135,14 +135,22 @@ export default function OnboardingPage() {
               Complete Stripe checkout to trigger provisioning of your dedicated OpenClaw runtime.
             </p>
             {stepStates[1] !== "completed" && (
-              <button
-                type="button"
-                onClick={handleCheckout}
-                disabled={checkout.isPending}
-                className="mt-4 rounded-full bg-accent px-5 py-2.5 text-sm font-medium text-white transition hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-55"
-              >
-                {checkout.isPending ? "Redirecting to Stripe..." : "Start subscription"}
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={handleCheckout}
+                  disabled={checkout.isPending}
+                  className="mt-4 rounded-full bg-accent px-5 py-2.5 text-sm font-medium text-white transition hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  {checkout.isPending ? "Redirecting to Stripe..." : "Start subscription"}
+                </button>
+                <p className="mt-3 text-xs text-ink/45">
+                  By subscribing, you agree to our{" "}
+                  <a href="/legal/terms" className="underline hover:text-ink/70">Terms</a>,{" "}
+                  <a href="/legal/privacy" className="underline hover:text-ink/70">Privacy Policy</a>, and{" "}
+                  <a href="/legal/refund" className="underline hover:text-ink/70">Refund Policy</a>.
+                </p>
+              </>
             )}
             {stepStates[1] === "completed" && (
               <p className="mt-1 text-sm text-signal">Subscription active</p>

@@ -142,6 +142,12 @@ class StripeCheckoutView(APIView):
             success_url=f"{settings.FRONTEND_URL}/onboarding?checkout=success",
             cancel_url=f"{settings.FRONTEND_URL}/billing?checkout=cancelled",
             metadata=metadata,
+            consent_collection={"terms_of_service": "required"},
+            custom_text={
+                "terms_of_service_acceptance": {
+                    "message": f"I agree to the [Terms of Service]({settings.FRONTEND_URL}/legal/terms)"
+                }
+            },
             api_key=api_key,
         )
         return Response({"url": session.url})

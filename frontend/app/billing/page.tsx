@@ -125,6 +125,12 @@ export default function BillingPage() {
                 {checkoutMutation.isPending ? "Redirecting..." : "Start/Change Plan"}
               </button>
             </div>
+            <p className="text-xs text-ink/45">
+              By subscribing, you agree to our{" "}
+              <Link href="/legal/terms" className="underline hover:text-ink/70">Terms</Link>,{" "}
+              <Link href="/legal/privacy" className="underline hover:text-ink/70">Privacy Policy</Link>, and{" "}
+              <Link href="/legal/refund" className="underline hover:text-ink/70">Refund Policy</Link>.
+            </p>
 
             {portalError && (
               <p className="rounded-panel border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
@@ -165,6 +171,12 @@ export default function BillingPage() {
                 {checkoutMutation.isPending ? "Redirecting..." : "Subscribe now"}
               </button>
             </div>
+            <p className="mt-3 text-xs text-ink/45">
+              By subscribing, you agree to our{" "}
+              <Link href="/legal/terms" className="underline hover:text-ink/70">Terms</Link>,{" "}
+              <Link href="/legal/privacy" className="underline hover:text-ink/70">Privacy Policy</Link>, and{" "}
+              <Link href="/legal/refund" className="underline hover:text-ink/70">Refund Policy</Link>.
+            </p>
             {checkoutError && (
               <p className="mt-4 rounded-panel border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-900">
                 {checkoutError}
