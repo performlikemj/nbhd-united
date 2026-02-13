@@ -191,6 +191,15 @@ class TelegramViewsTest(TestCase):
         resp = self.client.post("/api/v1/tenants/telegram/unlink/")
         self.assertEqual(resp.status_code, 400)
 
+    @patch("apps.tenants.telegram_views.invalidate_cache")
+    def test_unlink_invalidates_route_cache(self, mock_invalidate):
+        self.user.telegram_user_id = 12345
+        self.user.telegram_chat_id = 67890
+        self.user.save()
+        resp = self.client.post("/api/v1/tenants/telegram/unlink/")
+        self.assertEqual(resp.status_code, 200)
+        mock_invalidate.assert_called_once_with(67890)
+
 
 class RouterStartCommandTest(TestCase):
     """Test that /start TOKEN in the webhook triggers linking."""

@@ -11,6 +11,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from apps.router.services import invalidate_cache
 from . import telegram_service as svc
 
 logger = logging.getLogger(__name__)
@@ -45,8 +46,11 @@ def telegram_generate_link(request):
 @permission_classes([IsAuthenticated])
 def telegram_unlink(request):
     """Unlink the user's Telegram account."""
+    old_chat_id = request.user.telegram_chat_id
     success = svc.unlink_telegram(request.user)
     if success:
+        if old_chat_id:
+            invalidate_cache(old_chat_id)
         return Response({"success": True})
     return Response({"error": "Telegram not linked."}, status=400)
 
