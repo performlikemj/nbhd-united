@@ -32,12 +32,13 @@ httpx
 # Managed OAuth (Composio — Google integrations)
 composio>=0.7
 
-# Azure SDK (for Container Apps, Key Vault, Managed Identity)
+# Azure SDK (for Container Apps, Key Vault, Managed Identity, Storage)
 azure-identity
 azure-mgmt-containerinstance
 azure-mgmt-appcontainers
 azure-mgmt-msi
 azure-mgmt-authorization
+azure-mgmt-storage
 azure-keyvault-secrets
 
 # Utils

@@ -11,8 +11,11 @@ from .azure_client import (
     assign_key_vault_role,
     create_container_app,
     create_managed_identity,
+    create_tenant_file_share,
     delete_container_app,
     delete_managed_identity,
+    delete_tenant_file_share,
+    register_environment_storage,
     store_tenant_internal_key_in_key_vault,
 )
 from .key_utils import generate_internal_api_key, hash_internal_api_key
@@ -63,6 +66,10 @@ def provision_tenant(tenant_id: str) -> None:
             "internal_api_key_hash", "internal_api_key_set_at", "updated_at",
         ])
 
+        # 2f. Create Azure File Share and register with Container Environment
+        create_tenant_file_share(str(tenant.id))
+        register_environment_storage(str(tenant.id))
+
         # 3. Create Container App
         container_name = f"oc-{str(tenant.id)[:20]}"
         result = create_container_app(
@@ -105,6 +112,9 @@ def deprovision_tenant(tenant_id: str) -> None:
         # 1. Delete container
         if tenant.container_id:
             delete_container_app(tenant.container_id)
+
+        # 1b. Delete file share and environment storage
+        delete_tenant_file_share(str(tenant.id))
 
         # 2. Delete managed identity
         delete_managed_identity(str(tenant.id))

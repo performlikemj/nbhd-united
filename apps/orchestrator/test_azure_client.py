@@ -9,6 +9,8 @@ from django.test import SimpleTestCase, override_settings
 from apps.orchestrator.azure_client import (
     assign_key_vault_role,
     create_container_app,
+    create_tenant_file_share,
+    register_environment_storage,
     store_tenant_internal_key_in_key_vault,
 )
 
@@ -208,6 +210,78 @@ class StoreTenantKeyTest(SimpleTestCase):
         # But the function does `from azure.keyvault.secrets import SecretClient` locally
         # We need to mock the import. Let's use a different approach.
         pass
+
+
+class CreateTenantFileShareTest(SimpleTestCase):
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=True)
+    def test_mock_mode_returns_share_info(self, _mock_is_mock):
+        result = create_tenant_file_share("abc-123-def-456-ghi")
+        self.assertEqual(result["share_name"], "ws-abc-123-def-456-ghi")
+
+    @override_settings(
+        AZURE_RESOURCE_GROUP="rg-test",
+        AZURE_STORAGE_ACCOUNT_NAME="sttest",
+    )
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_storage_client")
+    def test_creates_file_share(self, mock_get_storage_client, _mock_is_mock):
+        mock_client = MagicMock()
+        mock_get_storage_client.return_value = mock_client
+
+        result = create_tenant_file_share("tenant-abc")
+
+        mock_client.file_shares.create.assert_called_once()
+        call_kwargs = mock_client.file_shares.create.call_args.kwargs
+        self.assertEqual(call_kwargs["account_name"], "sttest")
+        self.assertEqual(call_kwargs["share_name"], "ws-tenant-abc")
+        self.assertEqual(result, {"share_name": "ws-tenant-abc", "account_name": "sttest"})
+
+    @override_settings(AZURE_STORAGE_ACCOUNT_NAME="")
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    def test_raises_on_missing_account_name(self, _mock_is_mock):
+        with self.assertRaises(ValueError):
+            create_tenant_file_share("tenant-abc")
+
+
+class RegisterEnvironmentStorageTest(SimpleTestCase):
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=True)
+    def test_mock_mode_skips_azure_call(self, _mock_is_mock):
+        register_environment_storage("tenant-abc")
+
+    @override_settings(
+        AZURE_SUBSCRIPTION_ID="sub-123",
+        AZURE_RESOURCE_GROUP="rg-test",
+        AZURE_STORAGE_ACCOUNT_NAME="sttest",
+        AZURE_CONTAINER_ENV_ID="/subscriptions/sub-123/resourceGroups/rg-test/providers/Microsoft.App/managedEnvironments/test-env",
+    )
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    @patch("apps.orchestrator.azure_client.get_storage_client")
+    def test_registers_storage_with_environment(
+        self, mock_get_storage_client, mock_get_container_client, _mock_is_mock,
+    ):
+        mock_storage_client = MagicMock()
+        mock_get_storage_client.return_value = mock_storage_client
+        mock_storage_client.storage_accounts.list_keys.return_value = SimpleNamespace(
+            keys=[SimpleNamespace(value="fake-key-123")],
+        )
+
+        mock_container_client = MagicMock()
+        mock_get_container_client.return_value = mock_container_client
+
+        register_environment_storage("tenant-abc")
+
+        mock_container_client.managed_environments_storages.create_or_update.assert_called_once()
+        call_kwargs = mock_container_client.managed_environments_storages.create_or_update.call_args.kwargs
+        self.assertEqual(call_kwargs["environment_name"], "test-env")
+        self.assertEqual(call_kwargs["storage_name"], "ws-tenant-abc")
+
+        envelope = call_kwargs["storage_envelope"]
+        azure_file = envelope.properties.azure_file
+        self.assertEqual(azure_file.account_name, "sttest")
+        self.assertEqual(azure_file.account_key, "fake-key-123")
+        self.assertEqual(azure_file.access_mode, "ReadWrite")
+        self.assertEqual(azure_file.share_name, "ws-tenant-abc")
 
 
 @override_settings(

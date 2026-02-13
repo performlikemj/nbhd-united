@@ -196,6 +196,127 @@ def store_tenant_internal_key_in_key_vault(tenant_id: str, plaintext_key: str) -
     return secret_name
 
 
+def get_storage_client():
+    """Get Azure Storage Management client."""
+    if _is_mock():
+        return None
+
+    from azure.mgmt.storage import StorageManagementClient
+
+    return StorageManagementClient(_get_provisioner_credential(), settings.AZURE_SUBSCRIPTION_ID)
+
+
+def create_tenant_file_share(tenant_id: str) -> dict[str, str]:
+    """Create an Azure File Share for a tenant's workspace.
+
+    Returns dict with 'share_name' and 'account_name'.
+    """
+    share_name = f"ws-{str(tenant_id)[:20]}"
+    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
+
+    if _is_mock():
+        logger.info("[MOCK] Created file share %s for tenant %s", share_name, tenant_id)
+        return {"share_name": share_name, "account_name": account_name or "mock-storage"}
+
+    if not account_name:
+        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
+
+    client = get_storage_client()
+    client.file_shares.create(
+        resource_group_name=settings.AZURE_RESOURCE_GROUP,
+        account_name=account_name,
+        share_name=share_name,
+        file_share={},
+    )
+    logger.info("Created file share %s in %s", share_name, account_name)
+    return {"share_name": share_name, "account_name": account_name}
+
+
+def register_environment_storage(tenant_id: str) -> None:
+    """Register a tenant's file share with the Container Apps Environment."""
+    if _is_mock():
+        logger.info("[MOCK] Registered environment storage for tenant %s", tenant_id)
+        return
+
+    from azure.mgmt.appcontainers.models import (
+        AzureFileProperties,
+        ManagedEnvironmentStorage,
+        ManagedEnvironmentStorageProperties,
+    )
+
+    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
+    if not account_name:
+        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
+
+    env_id = str(getattr(settings, "AZURE_CONTAINER_ENV_ID", "") or "").strip()
+    if not env_id:
+        raise ValueError("AZURE_CONTAINER_ENV_ID is not configured")
+    env_name = env_id.split("/")[-1]
+
+    storage_name = f"ws-{str(tenant_id)[:20]}"
+
+    # Get storage account key programmatically
+    storage_client = get_storage_client()
+    keys = storage_client.storage_accounts.list_keys(
+        settings.AZURE_RESOURCE_GROUP, account_name,
+    )
+    account_key = keys.keys[0].value
+
+    container_client = get_container_client()
+    container_client.managed_environments_storages.create_or_update(
+        resource_group_name=settings.AZURE_RESOURCE_GROUP,
+        environment_name=env_name,
+        storage_name=storage_name,
+        storage_envelope=ManagedEnvironmentStorage(
+            properties=ManagedEnvironmentStorageProperties(
+                azure_file=AzureFileProperties(
+                    account_name=account_name,
+                    account_key=account_key,
+                    access_mode="ReadWrite",
+                    share_name=storage_name,
+                ),
+            ),
+        ),
+    )
+    logger.info("Registered environment storage %s for tenant %s", storage_name, tenant_id)
+
+
+def delete_tenant_file_share(tenant_id: str) -> None:
+    """Delete a tenant's file share and deregister from the environment."""
+    if _is_mock():
+        logger.info("[MOCK] Deleted file share for tenant %s", tenant_id)
+        return
+
+    storage_name = f"ws-{str(tenant_id)[:20]}"
+    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
+    env_id = str(getattr(settings, "AZURE_CONTAINER_ENV_ID", "") or "").strip()
+    env_name = env_id.split("/")[-1] if env_id else ""
+
+    # Deregister from environment first
+    if env_name:
+        try:
+            container_client = get_container_client()
+            container_client.managed_environments_storages.delete(
+                resource_group_name=settings.AZURE_RESOURCE_GROUP,
+                environment_name=env_name,
+                storage_name=storage_name,
+            )
+        except Exception:
+            logger.exception("Failed to deregister storage %s from environment", storage_name)
+
+    # Delete the file share
+    if account_name:
+        try:
+            storage_client = get_storage_client()
+            storage_client.file_shares.delete(
+                resource_group_name=settings.AZURE_RESOURCE_GROUP,
+                account_name=account_name,
+                share_name=storage_name,
+            )
+        except Exception:
+            logger.exception("Failed to delete file share %s", storage_name)
+
+
 def delete_managed_identity(tenant_id: str) -> None:
     """Delete a tenant's Managed Identity."""
     if _is_mock():

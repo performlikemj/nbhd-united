@@ -195,6 +195,7 @@ AZURE_CONTAINER_ENV_ID = env("AZURE_CONTAINER_ENV_ID", default="")
 AZURE_ACR_SERVER = env("AZURE_ACR_SERVER", default="nbhdunited.azurecr.io")
 AZURE_KEY_VAULT_NAME = env("AZURE_KEY_VAULT_NAME", default="kv-nbhd-prod")
 AZURE_PROVISIONER_CLIENT_ID = env("AZURE_PROVISIONER_CLIENT_ID", default="")
+AZURE_STORAGE_ACCOUNT_NAME = env("AZURE_STORAGE_ACCOUNT_NAME", default="")
 
 # Stripe price IDs
 STRIPE_PRICE_IDS = {

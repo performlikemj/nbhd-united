@@ -55,7 +55,10 @@ azure-mgmt-core==1.6.0
     #   azure-mgmt-authorization
     #   azure-mgmt-containerinstance
     #   azure-mgmt-msi
+    #   azure-mgmt-storage
 azure-mgmt-msi==7.1.0
+    # via -r requirements.in
+azure-mgmt-storage==24.0.0
     # via -r requirements.in
 build==1.4.0
     # via pip-tools
@@ -178,7 +181,9 @@ msal==1.34.0
 msal-extensions==1.3.1
     # via azure-identity
 msrest==0.7.1
-    # via azure-mgmt-appcontainers
+    # via
+    #   azure-mgmt-appcontainers
+    #   azure-mgmt-storage
 multidict==6.7.1
     # via
     #   aiohttp
@@ -301,6 +306,7 @@ typing-extensions==4.15.0
     #   azure-keyvault-secrets
     #   azure-mgmt-appcontainers
     #   azure-mgmt-msi
+    #   azure-mgmt-storage
     #   composio
     #   composio-client
     #   huggingface-hub
