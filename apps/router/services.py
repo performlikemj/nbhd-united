@@ -13,24 +13,29 @@ from apps.tenants.models import Tenant, User
 
 logger = logging.getLogger(__name__)
 
-# In-memory cache: chat_id → container_fqdn
-_route_cache: dict[int, str] = {}
+# In-memory cache: chat_id → (container_fqdn, timestamp)
+ROUTE_CACHE_TTL = 60  # seconds
+_route_cache: dict[int, tuple[str, float]] = {}
 _rate_limit_state: dict[int, deque[float]] = {}
 
 
 def resolve_container(chat_id: int) -> str | None:
     """Look up the OpenClaw container FQDN for a chat_id.
 
-    Uses in-memory cache backed by DB lookup.
+    Uses in-memory cache (with TTL) backed by DB lookup.
     """
-    if chat_id in _route_cache:
-        return _route_cache[chat_id]
+    cached = _route_cache.get(chat_id)
+    if cached is not None:
+        fqdn, ts = cached
+        if (monotonic() - ts) < ROUTE_CACHE_TTL:
+            return fqdn
+        del _route_cache[chat_id]
 
     try:
         user = User.objects.get(telegram_chat_id=chat_id)
         tenant = Tenant.objects.get(user=user, status=Tenant.Status.ACTIVE)
         if tenant.container_fqdn:
-            _route_cache[chat_id] = tenant.container_fqdn
+            _route_cache[chat_id] = (tenant.container_fqdn, monotonic())
             return tenant.container_fqdn
     except (User.DoesNotExist, Tenant.DoesNotExist):
         pass

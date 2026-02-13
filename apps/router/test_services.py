@@ -8,6 +8,7 @@ from django.test import TestCase, override_settings
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 from apps.router.services import (
+    ROUTE_CACHE_TTL,
     clear_cache,
     clear_rate_limits,
     forward_to_openclaw,
@@ -34,6 +35,33 @@ class ResolveContainerEdgeCaseTest(TestCase):
         self.tenant.save(update_fields=["status", "updated_at"])
 
         self.assertIsNone(resolve_container(111999))
+
+
+class RouteCacheTTLTest(TestCase):
+    def setUp(self):
+        clear_cache()
+        self.tenant = create_tenant(display_name="TTL", telegram_chat_id=222888)
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.container_fqdn = "oc-ttl.internal.azurecontainerapps.io"
+        self.tenant.save(update_fields=["status", "container_fqdn", "updated_at"])
+
+    def tearDown(self):
+        clear_cache()
+
+    def test_expired_cache_entry_triggers_db_lookup(self):
+        """After TTL expires, resolve_container should re-query the DB."""
+        # Populate the cache
+        fqdn = resolve_container(222888)
+        self.assertEqual(fqdn, "oc-ttl.internal.azurecontainerapps.io")
+
+        # Simulate TTL expiry by backdating the cached timestamp
+        from apps.router.services import _route_cache
+        from time import monotonic
+        _route_cache[222888] = ("old-stale.internal.azurecontainerapps.io", monotonic() - ROUTE_CACHE_TTL - 1)
+
+        # Should ignore the stale entry and get the fresh value from DB
+        fqdn = resolve_container(222888)
+        self.assertEqual(fqdn, "oc-ttl.internal.azurecontainerapps.io")
 
 
 class ForwardingBehaviorTest(TestCase):
