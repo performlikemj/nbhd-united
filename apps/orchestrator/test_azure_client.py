@@ -38,11 +38,9 @@ class AzureClientTest(SimpleTestCase):
         mock_get_container_client.return_value = mock_client
 
         mock_result = SimpleNamespace(
-            properties=SimpleNamespace(
-                configuration=SimpleNamespace(
-                    ingress=SimpleNamespace(fqdn="oc-tenant.internal.azurecontainerapps.io")
-                )
-            )
+            configuration=SimpleNamespace(
+                ingress=SimpleNamespace(fqdn="oc-tenant.internal.azurecontainerapps.io")
+            ),
         )
         mock_poller = MagicMock()
         mock_poller.result.return_value = mock_result
@@ -108,11 +106,9 @@ class AzureClientTest(SimpleTestCase):
         mock_get_container_client.return_value = mock_client
 
         mock_result = SimpleNamespace(
-            properties=SimpleNamespace(
-                configuration=SimpleNamespace(
-                    ingress=SimpleNamespace(fqdn="oc-tenant.internal.azurecontainerapps.io")
-                )
-            )
+            configuration=SimpleNamespace(
+                ingress=SimpleNamespace(fqdn="oc-tenant.internal.azurecontainerapps.io")
+            ),
         )
         mock_poller = MagicMock()
         mock_poller.result.return_value = mock_result
@@ -305,11 +301,9 @@ class PerTenantSecretTest(SimpleTestCase):
         mock_get_container_client.return_value = mock_client
 
         mock_result = SimpleNamespace(
-            properties=SimpleNamespace(
-                configuration=SimpleNamespace(
-                    ingress=SimpleNamespace(fqdn="oc-tenant.internal.azurecontainerapps.io")
-                )
-            )
+            configuration=SimpleNamespace(
+                ingress=SimpleNamespace(fqdn="oc-tenant.internal.azurecontainerapps.io")
+            ),
         )
         mock_poller = MagicMock()
         mock_poller.result.return_value = mock_result

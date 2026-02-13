@@ -486,7 +486,11 @@ def create_container_app(
         settings.AZURE_RESOURCE_GROUP, container_name, container_app,
     ).result()
 
-    fqdn = result.properties.configuration.ingress.fqdn if result.properties else ""
+    # SDK v4 flattens the model — try direct attributes first, then nested .properties
+    try:
+        fqdn = result.configuration.ingress.fqdn
+    except AttributeError:
+        fqdn = ""
     return {"name": container_name, "fqdn": fqdn}
 
 
