@@ -3,6 +3,7 @@
 import clsx from "clsx";
 import { useEffect, useState } from "react";
 
+import { PersonaSelector } from "@/components/persona-selector";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import {
@@ -10,16 +11,18 @@ import {
   useGenerateTelegramLinkMutation,
   useMeQuery,
   useOnboardMutation,
+  usePersonasQuery,
   useTelegramStatusQuery,
 } from "@/lib/queries";
 import type { TelegramLinkResponse } from "@/lib/api";
 
 type StepState = "completed" | "current" | "upcoming";
 
-const STEP_LABELS = ["Account", "Subscribe", "Telegram", "Ready"] as const;
+const STEP_LABELS = ["Account", "Persona", "Subscribe", "Telegram", "Ready"] as const;
 
 const STEP_TITLES = [
   "Create your account",
+  "Choose your agent",
   "Start your subscription",
   "Connect Telegram",
   "Your agent is ready",
@@ -45,9 +48,12 @@ export default function OnboardingPage() {
   } = onboard;
   const checkout = useCheckoutMutation();
   const generateLink = useGenerateTelegramLinkMutation();
+  const { data: personas } = usePersonasQuery();
 
   const [checkoutError, setCheckoutError] = useState("");
   const [linkData, setLinkData] = useState<TelegramLinkResponse | null>(null);
+  const [linkSecondsLeft, setLinkSecondsLeft] = useState(0);
+  const [selectedPersona, setSelectedPersona] = useState("neighbor");
 
   const tenant = me?.tenant;
   const hasTenant = Boolean(tenant);
@@ -58,16 +64,39 @@ export default function OnboardingPage() {
   const { data: telegramStatus } = useTelegramStatusQuery(shouldPollTelegram);
   const telegramLinked = telegramStatus?.linked ?? false;
 
-  // Compute step states
+  // Compute step states (5 steps now)
+  const personaDone = hasTenant; // persona is selected when tenant is created
   const stepStates: StepState[] = [
     "completed", // Account — always done
-    subscriptionActive ? "completed" : hasTenant ? "current" : "upcoming",
+    personaDone ? "completed" : "current",
+    subscriptionActive ? "completed" : personaDone ? "current" : "upcoming",
     telegramLinked ? "completed" : subscriptionActive && !telegramLinked ? "current" : "upcoming",
     runtimeReady ? "completed" : telegramLinked && !runtimeReady ? "current" : "upcoming",
   ];
 
   const currentStepIndex = stepStates.findIndex((s) => s === "current");
   const [activeStep, setActiveStep] = useState(currentStepIndex >= 0 ? currentStepIndex : 0);
+
+  // Auto-clear expired link data and tick countdown
+  useEffect(() => {
+    if (!linkData) {
+      setLinkSecondsLeft(0);
+      return;
+    }
+    const expiresAt = new Date(linkData.expires_at).getTime();
+    const tick = () => {
+      const ms = expiresAt - Date.now();
+      if (ms <= 0) {
+        setLinkData(null);
+        setLinkSecondsLeft(0);
+      } else {
+        setLinkSecondsLeft(Math.ceil(ms / 1000));
+      }
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [linkData]);
 
   // Auto-advance to the current progress step when state changes
   useEffect(() => {
@@ -76,8 +105,7 @@ export default function OnboardingPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stepStates.join(",")]);
 
-  // Auto-create tenant once per user when onboarding starts.
-  useEffect(() => {
+  const handleSelectPersona = async () => {
     const userId = me?.id;
     if (!userId || hasTenant || onboardingPending || onboardingSuccess) {
       return;
@@ -87,10 +115,15 @@ export default function OnboardingPage() {
     }
 
     autoOnboardAttempted.add(userId);
-    void onboardTenant({ display_name: me.display_name }).catch(() => {
+    try {
+      await onboardTenant({
+        display_name: me.display_name,
+        agent_persona: selectedPersona,
+      });
+    } catch {
       autoOnboardAttempted.delete(userId);
-    });
-  }, [hasTenant, me, onboardTenant, onboardingPending, onboardingSuccess]);
+    }
+  };
 
   const handleCheckout = async () => {
     setCheckoutError("");
@@ -132,9 +165,37 @@ export default function OnboardingPage() {
         return (
           <>
             <p className="mt-1 text-sm text-ink/65">
+              Pick a personality for your AI assistant. You can change this later in settings.
+            </p>
+            {stepStates[1] !== "completed" && personas && (
+              <div className="mt-4 space-y-4">
+                <PersonaSelector
+                  personas={personas}
+                  selected={selectedPersona}
+                  onSelect={setSelectedPersona}
+                />
+                <button
+                  type="button"
+                  onClick={handleSelectPersona}
+                  disabled={onboardingPending}
+                  className="rounded-full bg-accent px-5 py-2.5 text-sm font-medium text-white transition hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  {onboardingPending ? "Setting up..." : "Continue"}
+                </button>
+              </div>
+            )}
+            {stepStates[1] === "completed" && (
+              <p className="mt-1 text-sm text-signal">Persona selected</p>
+            )}
+          </>
+        );
+      case 2:
+        return (
+          <>
+            <p className="mt-1 text-sm text-ink/65">
               Complete Stripe checkout to trigger provisioning of your dedicated OpenClaw runtime.
             </p>
-            {stepStates[1] !== "completed" && (
+            {stepStates[2] !== "completed" && (
               <>
                 <button
                   type="button"
@@ -152,7 +213,7 @@ export default function OnboardingPage() {
                 </p>
               </>
             )}
-            {stepStates[1] === "completed" && (
+            {stepStates[2] === "completed" && (
               <p className="mt-1 text-sm text-signal">Subscription active</p>
             )}
             {checkoutError && (
@@ -162,18 +223,18 @@ export default function OnboardingPage() {
             )}
           </>
         );
-      case 2:
+      case 3:
         return (
           <>
             <p className="mt-1 text-sm text-ink/65">
               Link your Telegram account so the assistant can message you.
             </p>
-            {stepStates[2] === "completed" && telegramStatus?.telegram_username && (
+            {stepStates[3] === "completed" && telegramStatus?.telegram_username && (
               <p className="mt-1 text-sm text-signal">
                 Connected as @{telegramStatus.telegram_username}
               </p>
             )}
-            {stepStates[2] === "current" && !linkData && (
+            {stepStates[3] === "current" && !linkData && (
               <button
                 type="button"
                 onClick={handleGenerateLink}
@@ -183,7 +244,7 @@ export default function OnboardingPage() {
                 {generateLink.isPending ? "Generating..." : "Connect Telegram"}
               </button>
             )}
-            {stepStates[2] === "current" && linkData && (
+            {stepStates[3] === "current" && linkData && (
               <div className="mt-4 space-y-3">
                 <p className="text-sm text-ink/70">
                   Scan the QR code or tap the link to connect your Telegram:
@@ -210,23 +271,36 @@ export default function OnboardingPage() {
                         Waiting for you to connect...
                       </p>
                     </div>
+                    {linkSecondsLeft > 0 && (
+                      <p className="text-xs text-ink/40">
+                        Link expires in {Math.floor(linkSecondsLeft / 60)}:{String(linkSecondsLeft % 60).padStart(2, "0")}
+                      </p>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleGenerateLink}
+                      disabled={generateLink.isPending}
+                      className="text-xs text-accent underline hover:text-accent/75 disabled:opacity-50"
+                    >
+                      {generateLink.isPending ? "Generating..." : "Generate new link"}
+                    </button>
                   </div>
                 </div>
               </div>
             )}
-            {stepStates[2] === "upcoming" && (
+            {stepStates[3] === "upcoming" && (
               <p className="mt-1 text-sm text-ink/35">Complete the subscription step first</p>
             )}
           </>
         );
-      case 3:
+      case 4:
         return (
           <>
-            {stepStates[3] === "completed" ? (
+            {stepStates[4] === "completed" ? (
               <p className="mt-1 text-sm text-signal">
                 Your assistant is active and ready to receive messages!
               </p>
-            ) : stepStates[3] === "current" ? (
+            ) : stepStates[4] === "current" ? (
               <div className="mt-3 flex items-center gap-3">
                 <div className="h-2.5 w-2.5 rounded-full bg-accent animate-pulse" />
                 <p className="text-sm text-ink/65">
@@ -362,9 +436,10 @@ export default function OnboardingPage() {
                     <p className="font-medium text-ink">{STEP_TITLES[i]}</p>
                     <p className="text-sm text-signal">
                       {i === 0 && `Signed in as ${me?.display_name || me?.email || "you"}`}
-                      {i === 1 && "Subscription active"}
-                      {i === 2 && (telegramStatus?.telegram_username ? `Connected as @${telegramStatus.telegram_username}` : "Connected")}
-                      {i === 3 && "Your assistant is active and ready!"}
+                      {i === 1 && "Persona selected"}
+                      {i === 2 && "Subscription active"}
+                      {i === 3 && (telegramStatus?.telegram_username ? `Connected as @${telegramStatus.telegram_username}` : "Connected")}
+                      {i === 4 && "Your assistant is active and ready!"}
                     </p>
                   </div>
                 </button>

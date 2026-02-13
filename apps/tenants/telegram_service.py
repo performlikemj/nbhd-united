@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 BOT_USERNAME = getattr(settings, "TELEGRAM_BOT_USERNAME", "NbhdUnitedBot")
 
 # Token TTL
-TOKEN_EXPIRY_MINUTES = 10
+TOKEN_EXPIRY_MINUTES = 15
 
 
 def generate_link_token(user: User) -> TelegramLinkToken:
