@@ -24,6 +24,8 @@ class OrchestratorServiceTest(TestCase):
         "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
         return_value="tenant-xxx-internal-key",
     )
+    @patch("apps.orchestrator.services.create_tenant_file_share")
+    @patch("apps.orchestrator.services.register_environment_storage")
     @patch(
         "apps.orchestrator.services.create_container_app",
         return_value={"name": "oc-tenant", "fqdn": "oc-tenant.internal.azurecontainerapps.io"},
@@ -31,6 +33,8 @@ class OrchestratorServiceTest(TestCase):
     def test_provision_happy_path(
         self,
         _mock_create_container,
+        _mock_register_storage,
+        _mock_create_file_share,
         _mock_store_kv_key,
         _mock_assign_kv_role,
         _mock_create_identity,
@@ -65,6 +69,8 @@ class OrchestratorServiceTest(TestCase):
         "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
         return_value="tenant-xxx-internal-key",
     )
+    @patch("apps.orchestrator.services.create_tenant_file_share")
+    @patch("apps.orchestrator.services.register_environment_storage")
     @patch(
         "apps.orchestrator.services.create_container_app",
         return_value={"name": "oc-tenant", "fqdn": "oc-tenant.internal.azurecontainerapps.io"},
@@ -72,6 +78,8 @@ class OrchestratorServiceTest(TestCase):
     def test_provision_skips_kv_role_assignment_for_env_backend(
         self,
         _mock_create_container,
+        _mock_register_storage,
+        _mock_create_file_share,
         _mock_store_kv_key,
         _mock_assign_kv_role,
         _mock_create_identity,
@@ -83,6 +91,8 @@ class OrchestratorServiceTest(TestCase):
 
     @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="keyvault")
     @patch("apps.orchestrator.services.create_container_app", side_effect=RuntimeError("azure error"))
+    @patch("apps.orchestrator.services.register_environment_storage")
+    @patch("apps.orchestrator.services.create_tenant_file_share")
     @patch(
         "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
         return_value="tenant-xxx-internal-key",
@@ -101,6 +111,8 @@ class OrchestratorServiceTest(TestCase):
         _mock_create_identity,
         _mock_assign_kv_role,
         _mock_store_kv_key,
+        _mock_create_file_share,
+        _mock_register_storage,
         _mock_create_container,
     ):
         with self.assertRaises(RuntimeError):
@@ -122,8 +134,9 @@ class OrchestratorServiceTest(TestCase):
         mock_create_container.assert_not_called()
 
     @patch("apps.orchestrator.services.delete_managed_identity")
+    @patch("apps.orchestrator.services.delete_tenant_file_share")
     @patch("apps.orchestrator.services.delete_container_app")
-    def test_deprovision_clears_container_fields(self, mock_delete_container, mock_delete_identity):
+    def test_deprovision_clears_container_fields(self, mock_delete_container, mock_delete_file_share, mock_delete_identity):
         self.tenant.status = Tenant.Status.ACTIVE
         self.tenant.container_id = "oc-tenant"
         self.tenant.container_fqdn = "oc-tenant.internal.azurecontainerapps.io"
@@ -142,8 +155,9 @@ class OrchestratorServiceTest(TestCase):
         mock_delete_container.assert_called_once_with("oc-tenant")
         mock_delete_identity.assert_called_once_with(str(self.tenant.id))
 
+    @patch("apps.orchestrator.services.delete_tenant_file_share")
     @patch("apps.orchestrator.services.delete_container_app", side_effect=RuntimeError("delete failed"))
-    def test_deprovision_failure_marks_suspended(self, _mock_delete_container):
+    def test_deprovision_failure_marks_suspended(self, _mock_delete_container, _mock_delete_file_share):
         self.tenant.status = Tenant.Status.ACTIVE
         self.tenant.container_id = "oc-failing"
         self.tenant.save(update_fields=["status", "container_id", "updated_at"])
