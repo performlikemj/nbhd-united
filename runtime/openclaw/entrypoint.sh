@@ -17,9 +17,31 @@ if [ -d "$NBHD_MANAGED_SKILLS_SRC" ]; then
     cp -R "$NBHD_MANAGED_SKILLS_SRC"/. "$NBHD_MANAGED_SKILLS_DST"/
 fi
 
-if [ -f "$NBHD_MANAGED_AGENTS_TEMPLATE" ]; then
+# AGENTS.md — always overwritten (system-controlled)
+# Prefer persona-rendered content from env var; fall back to static template
+if [ -n "${NBHD_AGENTS_MD:-}" ]; then
+    printf '%s\n' "$NBHD_AGENTS_MD" > "$NBHD_MANAGED_AGENTS_DST"
+elif [ -f "$NBHD_MANAGED_AGENTS_TEMPLATE" ]; then
     cp "$NBHD_MANAGED_AGENTS_TEMPLATE" "$NBHD_MANAGED_AGENTS_DST"
 fi
+
+# SOUL.md, IDENTITY.md — seed once from env var, don't overwrite
+if [ -n "${NBHD_SOUL_MD:-}" ] && [ ! -f "$OPENCLAW_WORKSPACE_PATH/SOUL.md" ]; then
+    printf '%s\n' "$NBHD_SOUL_MD" > "$OPENCLAW_WORKSPACE_PATH/SOUL.md"
+fi
+if [ -n "${NBHD_IDENTITY_MD:-}" ] && [ ! -f "$OPENCLAW_WORKSPACE_PATH/IDENTITY.md" ]; then
+    printf '%s\n' "$NBHD_IDENTITY_MD" > "$OPENCLAW_WORKSPACE_PATH/IDENTITY.md"
+fi
+
+# USER.md, TOOLS.md — seed from static templates if missing
+NBHD_TEMPLATES_DIR="${NBHD_TEMPLATES_DIR:-/opt/nbhd/templates/openclaw}"
+for file in USER.md TOOLS.md; do
+    src="$NBHD_TEMPLATES_DIR/$file"
+    dst="$OPENCLAW_WORKSPACE_PATH/$file"
+    if [ -f "$src" ] && [ ! -f "$dst" ]; then
+        cp "$src" "$dst"
+    fi
+done
 
 if [ -n "${OPENCLAW_CONFIG_JSON:-}" ]; then
     printf '%s\n' "$OPENCLAW_CONFIG_JSON" > "$OPENCLAW_CONFIG_PATH"

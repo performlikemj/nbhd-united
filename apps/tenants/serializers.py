@@ -42,6 +42,13 @@ class TenantRegistrationSerializer(serializers.Serializer):
     """Used during onboarding — Telegram linking happens later via QR flow."""
     display_name = serializers.CharField(max_length=255, required=False, default="Friend")
     language = serializers.CharField(max_length=10, required=False, default="en")
+    agent_persona = serializers.CharField(max_length=30, required=False, default="neighbor")
+
+    def validate_agent_persona(self, value):
+        from apps.orchestrator.personas import PERSONAS
+        if value not in PERSONAS:
+            raise serializers.ValidationError(f"Unknown persona: {value}")
+        return value
 
 
 class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):

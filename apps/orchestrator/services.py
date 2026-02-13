@@ -21,6 +21,7 @@ from .azure_client import (
 )
 from .key_utils import generate_internal_api_key, hash_internal_api_key
 from .config_generator import config_to_json, generate_openclaw_config
+from .personas import render_workspace_files
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,10 @@ def provision_tenant(tenant_id: str) -> None:
         create_tenant_file_share(str(tenant.id))
         register_environment_storage(str(tenant.id))
 
+        # 2g. Render workspace templates based on persona
+        persona_key = (tenant.user.preferences or {}).get("agent_persona", "neighbor")
+        workspace_env = render_workspace_files(persona_key)
+
         # 3. Create Container App
         container_name = f"oc-{str(tenant.id)[:20]}"
         result = create_container_app(
@@ -83,6 +88,7 @@ def provision_tenant(tenant_id: str) -> None:
             identity_id=identity["id"],
             identity_client_id=identity["client_id"],
             internal_api_key_kv_secret=kv_secret_name,
+            workspace_env=workspace_env,
         )
 
         # 4. Update tenant record

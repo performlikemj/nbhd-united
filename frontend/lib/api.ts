@@ -139,9 +139,32 @@ export function fetchTenant(): Promise<Tenant> {
   return apiFetch<Tenant>("/api/v1/tenants/me/");
 }
 
-export function onboardTenant(data: { display_name?: string; language?: string }): Promise<Tenant> {
+export function onboardTenant(data: { display_name?: string; language?: string; agent_persona?: string }): Promise<Tenant> {
   return apiFetch<Tenant>("/api/v1/tenants/onboard/", {
     method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+// Personas
+export interface PersonaOption {
+  key: string;
+  label: string;
+  description: string;
+  emoji: string;
+}
+
+export function fetchPersonas(): Promise<PersonaOption[]> {
+  return apiFetch<PersonaOption[]>("/api/v1/tenants/personas/");
+}
+
+export function fetchPreferences(): Promise<{ agent_persona: string }> {
+  return apiFetch<{ agent_persona: string }>("/api/v1/tenants/preferences/");
+}
+
+export function updatePreferences(data: { agent_persona: string }): Promise<{ agent_persona: string }> {
+  return apiFetch<{ agent_persona: string }>("/api/v1/tenants/preferences/", {
+    method: "PATCH",
     body: JSON.stringify(data),
   });
 }

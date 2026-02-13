@@ -50,8 +50,51 @@ class OnboardTenantView(APIView):
         user = request.user
         user.display_name = serializer.validated_data.get("display_name", user.display_name)
         user.language = serializer.validated_data.get("language", user.language)
-        user.save(update_fields=["display_name", "language"])
+        user.preferences = {
+            **user.preferences,
+            "agent_persona": serializer.validated_data.get("agent_persona", "neighbor"),
+        }
+        user.save(update_fields=["display_name", "language", "preferences"])
 
         # Create tenant
         tenant = Tenant.objects.create(user=user)
         return Response(TenantSerializer(tenant).data, status=status.HTTP_201_CREATED)
+
+
+class PersonaListView(APIView):
+    """List available agent personas."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.orchestrator.personas import list_personas
+        return Response(list_personas())
+
+
+class UpdatePreferencesView(APIView):
+    """Update user preferences (e.g. agent persona)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response({
+            "agent_persona": request.user.preferences.get("agent_persona", "neighbor"),
+        })
+
+    def patch(self, request):
+        from apps.orchestrator.personas import PERSONAS
+
+        persona = request.data.get("agent_persona")
+        if persona is not None:
+            if persona not in PERSONAS:
+                return Response(
+                    {"detail": f"Unknown persona: {persona}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            request.user.preferences = {
+                **request.user.preferences,
+                "agent_persona": persona,
+            }
+            request.user.save(update_fields=["preferences"])
+
+        return Response({
+            "agent_persona": request.user.preferences.get("agent_persona", "neighbor"),
+        })

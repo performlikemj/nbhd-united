@@ -12,6 +12,8 @@ import {
   fetchDashboard,
   fetchIntegrations,
   fetchMe,
+  fetchPersonas,
+  fetchPreferences,
   fetchTenant,
   fetchTelegramStatus,
   fetchUsageHistory,
@@ -25,6 +27,7 @@ import {
   requestStripePortal,
   unlinkTelegram,
   updateAutomation,
+  updatePreferences,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -124,6 +127,31 @@ export function useUnlinkTelegramMutation() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["telegram-status"] });
       void queryClient.invalidateQueries({ queryKey: ["me"] });
+    },
+  });
+}
+
+// Personas & Preferences
+export function usePersonasQuery() {
+  return useQuery({
+    queryKey: ["personas"],
+    queryFn: fetchPersonas,
+  });
+}
+
+export function usePreferencesQuery() {
+  return useQuery({
+    queryKey: ["preferences"],
+    queryFn: fetchPreferences,
+  });
+}
+
+export function useUpdatePreferencesMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updatePreferences,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["preferences"] });
     },
   });
 }

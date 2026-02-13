@@ -390,6 +390,7 @@ def create_container_app(
     identity_id: str,
     identity_client_id: str,
     internal_api_key_kv_secret: str = "",
+    workspace_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Create an Azure Container App for an OpenClaw instance.
 
@@ -458,6 +459,10 @@ def create_container_app(
                             {"name": "NBHD_API_BASE_URL", "value": settings.API_BASE_URL},
                             {"name": "OPENCLAW_CONFIG_JSON", "value": config_json},
                             {"name": "AZURE_CLIENT_ID", "value": identity_client_id},
+                            *[
+                                {"name": k, "value": v}
+                                for k, v in (workspace_env or {}).items()
+                            ],
                         ],
                         "volumeMounts": [
                             {"volumeName": "workspace", "mountPath": "/home/node/.openclaw"},
