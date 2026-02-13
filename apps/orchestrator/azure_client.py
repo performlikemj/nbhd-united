@@ -150,17 +150,17 @@ def assign_key_vault_role(principal_id: str) -> None:
         uuid.NAMESPACE_URL, f"{principal_id}:{KV_SECRETS_USER_ROLE}:{scope}",
     ))
 
+    from azure.mgmt.authorization.models import RoleAssignmentCreateParameters
+
     try:
         client.role_assignments.create(
             scope=scope,
             role_assignment_name=assignment_name,
-            parameters={
-                "properties": {
-                    "role_definition_id": role_def_id,
-                    "principal_id": principal_id,
-                    "principal_type": "ServicePrincipal",
-                }
-            },
+            parameters=RoleAssignmentCreateParameters(
+                role_definition_id=role_def_id,
+                principal_id=principal_id,
+                principal_type="ServicePrincipal",
+            ),
         )
         logger.info("Assigned KV Secrets User to %s on %s", principal_id, vault_name)
     except Exception as exc:

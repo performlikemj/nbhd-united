@@ -158,14 +158,9 @@ class AssignKeyVaultRoleTest(SimpleTestCase):
             "/subscriptions/sub-123/resourceGroups/rg-test"
             "/providers/Microsoft.KeyVault/vaults/kv-test",
         )
-        self.assertEqual(
-            call_kwargs["parameters"]["properties"]["principal_id"],
-            "principal-abc",
-        )
-        self.assertEqual(
-            call_kwargs["parameters"]["properties"]["principal_type"],
-            "ServicePrincipal",
-        )
+        params = call_kwargs["parameters"]
+        self.assertEqual(params.principal_id, "principal-abc")
+        self.assertEqual(params.principal_type, "ServicePrincipal")
 
     @override_settings(
         AZURE_SUBSCRIPTION_ID="sub-123",
