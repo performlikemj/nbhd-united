@@ -170,6 +170,56 @@ def assign_key_vault_role(principal_id: str) -> None:
             raise
 
 
+def assign_acr_pull_role(principal_id: str) -> None:
+    """Assign 'AcrPull' to identity on the project container registry."""
+    if _is_mock():
+        logger.info("[MOCK] Assigned AcrPull to %s", principal_id)
+        return
+
+    import uuid
+
+    client = get_authorization_client()
+
+    acr_server = str(getattr(settings, "AZURE_ACR_SERVER", "") or "").strip()
+    if not acr_server:
+        raise ValueError("AZURE_ACR_SERVER is not configured")
+    # Extract registry name from server FQDN (e.g. "nbhdunited.azurecr.io" -> "nbhdunited")
+    acr_name = acr_server.split(".")[0]
+
+    # Well-known Azure built-in role ID for AcrPull
+    ACR_PULL_ROLE = "7f951dda-4ed3-4680-a7ca-43fe172d538d"
+
+    scope = (
+        f"/subscriptions/{settings.AZURE_SUBSCRIPTION_ID}"
+        f"/resourceGroups/{settings.AZURE_RESOURCE_GROUP}"
+        f"/providers/Microsoft.ContainerRegistry/registries/{acr_name}"
+    )
+    role_def_id = f"{scope}/providers/Microsoft.Authorization/roleDefinitions/{ACR_PULL_ROLE}"
+
+    assignment_name = str(uuid.uuid5(
+        uuid.NAMESPACE_URL, f"{principal_id}:{ACR_PULL_ROLE}:{scope}",
+    ))
+
+    from azure.mgmt.authorization.models import RoleAssignmentCreateParameters
+
+    try:
+        client.role_assignments.create(
+            scope=scope,
+            role_assignment_name=assignment_name,
+            parameters=RoleAssignmentCreateParameters(
+                role_definition_id=role_def_id,
+                principal_id=principal_id,
+                principal_type="ServicePrincipal",
+            ),
+        )
+        logger.info("Assigned AcrPull to %s on %s", principal_id, acr_name)
+    except Exception as exc:
+        if hasattr(exc, "status_code") and exc.status_code == 409:
+            logger.info("AcrPull role already assigned to %s (idempotent)", principal_id)
+        else:
+            raise
+
+
 def store_tenant_internal_key_in_key_vault(tenant_id: str, plaintext_key: str) -> str:
     """Store a tenant's internal API key in Azure Key Vault.
 
@@ -381,6 +431,12 @@ def create_container_app(
         },
         "properties": {
             "configuration": {
+                "registries": [
+                    {
+                        "server": settings.AZURE_ACR_SERVER,
+                        "identity": identity_id,
+                    },
+                ],
                 "ingress": {
                     "external": False,
                     "targetPort": 18789,

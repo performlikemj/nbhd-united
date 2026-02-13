@@ -20,6 +20,7 @@ class OrchestratorServiceTest(TestCase):
         return_value={"id": "/identities/1", "client_id": "client-1", "principal_id": "principal-1"},
     )
     @patch("apps.orchestrator.services.assign_key_vault_role")
+    @patch("apps.orchestrator.services.assign_acr_pull_role")
     @patch(
         "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
         return_value="tenant-xxx-internal-key",
@@ -36,6 +37,7 @@ class OrchestratorServiceTest(TestCase):
         _mock_register_storage,
         _mock_create_file_share,
         _mock_store_kv_key,
+        _mock_assign_acr_role,
         _mock_assign_kv_role,
         _mock_create_identity,
         _mock_config_json,
@@ -65,6 +67,7 @@ class OrchestratorServiceTest(TestCase):
         return_value={"id": "/identities/10", "client_id": "client-10", "principal_id": "principal-10"},
     )
     @patch("apps.orchestrator.services.assign_key_vault_role")
+    @patch("apps.orchestrator.services.assign_acr_pull_role")
     @patch(
         "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
         return_value="tenant-xxx-internal-key",
@@ -81,6 +84,7 @@ class OrchestratorServiceTest(TestCase):
         _mock_register_storage,
         _mock_create_file_share,
         _mock_store_kv_key,
+        _mock_assign_acr_role,
         _mock_assign_kv_role,
         _mock_create_identity,
         _mock_config_json,
@@ -97,6 +101,7 @@ class OrchestratorServiceTest(TestCase):
         "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
         return_value="tenant-xxx-internal-key",
     )
+    @patch("apps.orchestrator.services.assign_acr_pull_role")
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch(
         "apps.orchestrator.services.create_managed_identity",
@@ -110,6 +115,7 @@ class OrchestratorServiceTest(TestCase):
         _mock_config_json,
         _mock_create_identity,
         _mock_assign_kv_role,
+        _mock_assign_acr_role,
         _mock_store_kv_key,
         _mock_create_file_share,
         _mock_register_storage,

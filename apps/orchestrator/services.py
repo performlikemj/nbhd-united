@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from apps.tenants.models import Tenant
 from .azure_client import (
+    assign_acr_pull_role,
     assign_key_vault_role,
     create_container_app,
     create_managed_identity,
@@ -49,6 +50,9 @@ def provision_tenant(tenant_id: str) -> None:
         # 2b. Grant identity Key Vault access for secret references (keyvault backend only)
         if secret_backend == "keyvault":
             assign_key_vault_role(identity["principal_id"])
+
+        # 2b2. Grant identity ACR pull access for container image
+        assign_acr_pull_role(identity["principal_id"])
 
         # 2c. Generate per-tenant internal API key
         plaintext_key = generate_internal_api_key()
