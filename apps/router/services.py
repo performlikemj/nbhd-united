@@ -1,6 +1,7 @@
 """Telegram message router — forwards messages to correct OpenClaw instance."""
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 import logging
 from time import monotonic
@@ -83,25 +84,47 @@ def extract_chat_id(update: dict) -> int | None:
     return None
 
 
-async def forward_to_openclaw(container_fqdn: str, update: dict) -> dict | None:
+async def forward_to_openclaw(
+    container_fqdn: str,
+    update: dict,
+    *,
+    timeout: float = 90.0,
+    max_retries: int = 1,
+    retry_delay: float = 5.0,
+) -> dict | None:
     """Forward a Telegram update to an OpenClaw instance's gateway.
 
     OpenClaw's Telegram channel plugin expects to receive webhook
     updates at its gateway. We proxy them through.
-    """
-    url = f"http://{container_fqdn}:18789/telegram-webhook"
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, json=update)
-            resp.raise_for_status()
-            return resp.json() if resp.content else None
-    except httpx.TimeoutException:
-        logger.warning("Timeout forwarding to %s", container_fqdn)
-        return None
-    except httpx.HTTPError as e:
-        logger.error("Error forwarding to %s: %s", container_fqdn, e)
-        return None
+    Uses a longer timeout (90s) to accommodate Azure Container Apps
+    cold starts when minReplicas=0, and retries once on timeout.
+    """
+    url = f"http://{container_fqdn}/telegram-webhook"
+
+    attempt = 0
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(url, json=update)
+                resp.raise_for_status()
+                return resp.json() if resp.content else None
+        except httpx.TimeoutException:
+            attempt += 1
+            if attempt <= max_retries:
+                logger.info(
+                    "Timeout forwarding to %s (attempt %d/%d), retrying in %.0fs",
+                    container_fqdn, attempt, max_retries + 1, retry_delay,
+                )
+                await asyncio.sleep(retry_delay)
+                continue
+            logger.warning(
+                "Timeout forwarding to %s after %d attempts", container_fqdn, attempt,
+            )
+            return None
+        except httpx.HTTPError as e:
+            logger.error("Error forwarding to %s: %s", container_fqdn, e)
+            return None
 
 
 def send_onboarding_link(chat_id: int) -> dict:
@@ -115,6 +138,18 @@ def send_onboarding_link(chat_id: int) -> dict:
             f"Sign up at {frontend_url} to get your own "
             "AI assistant for $5/month.\n\n"
             "Once subscribed, come back and send me a message!"
+        ),
+    }
+
+
+def send_temporary_error(chat_id: int) -> dict:
+    """Build a response telling the user their agent is temporarily unreachable."""
+    return {
+        "method": "sendMessage",
+        "chat_id": chat_id,
+        "text": (
+            "Your assistant is waking up but took longer than expected. "
+            "Please send your message again in a moment!"
         ),
     }
 

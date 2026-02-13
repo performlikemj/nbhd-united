@@ -75,6 +75,23 @@ class TelegramWebhookViewTest(TestCase):
         self.assertEqual(response.json(), {"ok": True})
         mock_forward.assert_awaited_once()
 
+    @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
+    def test_forwarding_failure_sends_retry_message(self, mock_forward):
+        """When forwarding returns None, user gets a friendly retry message."""
+        tenant = create_tenant(display_name="Failing", telegram_chat_id=987654)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.container_fqdn = "oc-failing.internal.azurecontainerapps.io"
+        tenant.save(update_fields=["status", "container_fqdn", "updated_at"])
+        mock_forward.return_value = None
+
+        response = self._post_update({"message": {"chat": {"id": 987654}}})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["method"], "sendMessage")
+        self.assertEqual(body["chat_id"], 987654)
+        self.assertIn("waking up", body["text"])
+
 
 @override_settings(TELEGRAM_WEBHOOK_SECRET="test-secret", ROUTER_RATE_LIMIT_PER_MINUTE=1)
 class TelegramWebhookRateLimitTest(TestCase):

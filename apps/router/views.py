@@ -16,6 +16,7 @@ from .services import (
     is_rate_limited,
     resolve_container,
     send_onboarding_link,
+    send_temporary_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,4 +76,5 @@ def telegram_webhook(request):
 
     if result:
         return JsonResponse(result)
-    return HttpResponse("ok")
+    # Forwarding failed (timeout or error) — tell the user to retry
+    return JsonResponse(send_temporary_error(chat_id))
