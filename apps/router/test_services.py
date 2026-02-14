@@ -14,6 +14,7 @@ from apps.router.services import (
     forward_to_openclaw,
     is_rate_limited,
     resolve_container,
+    resolve_user_timezone,
     send_temporary_error,
 )
 
@@ -35,6 +36,14 @@ class ResolveContainerEdgeCaseTest(TestCase):
         self.tenant.save(update_fields=["status", "updated_at"])
 
         self.assertIsNone(resolve_container(111999))
+
+    def test_resolve_user_timezone_returns_utc_when_user_missing(self):
+        self.assertEqual(resolve_user_timezone(404404), "UTC")
+
+    def test_resolve_user_timezone_returns_user_preference(self):
+        self.tenant.user.timezone = "America/Los_Angeles"
+        self.tenant.user.save(update_fields=["timezone"])
+        self.assertEqual(resolve_user_timezone(111999), "America/Los_Angeles")
 
 
 class RouteCacheTTLTest(TestCase):
@@ -88,6 +97,29 @@ class ForwardingBehaviorTest(TestCase):
                 "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret",
                 "X-User-Timezone": "UTC",
             },
+        )
+
+    @patch("apps.router.services.httpx.AsyncClient")
+    def test_forward_to_openclaw_passes_user_timezone_header(self, mock_async_client):
+        mock_client = AsyncMock()
+        mock_response = Mock()
+        mock_response.content = b'{"ok": true}'
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {"ok": True}
+        mock_client.post.return_value = mock_response
+        mock_async_client.return_value.__aenter__.return_value = mock_client
+
+        asyncio.run(
+            forward_to_openclaw(
+                "oc-router.internal.azurecontainerapps.io",
+                {"message": {"chat": {"id": 1}}},
+                user_timezone="Asia/Tokyo",
+            )
+        )
+
+        self.assertEqual(
+            mock_client.post.call_args.kwargs["headers"]["X-User-Timezone"],
+            "Asia/Tokyo",
         )
 
     @patch("apps.router.services.httpx.AsyncClient")

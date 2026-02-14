@@ -74,6 +74,22 @@ class TelegramWebhookViewTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"ok": True})
         mock_forward.assert_awaited_once()
+        self.assertEqual(mock_forward.await_args.kwargs.get("user_timezone"), "UTC")
+
+    @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
+    def test_active_tenant_forwards_user_timezone(self, mock_forward):
+        tenant = create_tenant(display_name="TZ", telegram_chat_id=123789)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.container_fqdn = "oc-active.internal.azurecontainerapps.io"
+        tenant.user.timezone = "Asia/Tokyo"
+        tenant.user.save(update_fields=["timezone"])
+        tenant.save(update_fields=["status", "container_fqdn", "updated_at"])
+        mock_forward.return_value = {"ok": True}
+
+        response = self._post_update({"message": {"chat": {"id": 123789}}})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_forward.await_args.kwargs.get("user_timezone"), "Asia/Tokyo")
 
     @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
     def test_forwarding_failure_sends_retry_message(self, mock_forward):
