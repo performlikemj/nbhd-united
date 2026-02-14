@@ -65,6 +65,21 @@ class ConfigGeneratorTest(TestCase):
         self.assertNotIn("plugins", config)
         self.assertNotIn("alsoAllow", config["tools"])
 
+    @override_settings(API_BASE_URL="https://api.example.com")
+    def test_webhook_fields_set_when_settings_available(self):
+        config = generate_openclaw_config(self.tenant)
+        tg = config["channels"]["telegram"]
+        self.assertEqual(tg["webhookUrl"], "https://api.example.com/api/v1/telegram/webhook/")
+        self.assertEqual(tg["webhookHost"], "0.0.0.0")
+        self.assertNotIn("webhookSecret", tg)
+
+    @override_settings(API_BASE_URL="")
+    def test_webhook_fields_omitted_when_settings_missing(self):
+        config = generate_openclaw_config(self.tenant)
+        tg = config["channels"]["telegram"]
+        self.assertNotIn("webhookUrl", tg)
+        self.assertNotIn("webhookSecret", tg)
+
     def test_config_with_no_chat_id_uses_disabled_dm_policy(self):
         self.tenant.user.telegram_chat_id = None
         self.tenant.user.save(update_fields=["telegram_chat_id"])

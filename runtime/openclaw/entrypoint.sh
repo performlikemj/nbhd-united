@@ -47,6 +47,19 @@ if [ -n "${OPENCLAW_CONFIG_JSON:-}" ]; then
     printf '%s\n' "$OPENCLAW_CONFIG_JSON" > "$OPENCLAW_CONFIG_PATH"
 fi
 
+# Inject webhook secret into config (never stored in config JSON at rest)
+if [ -n "${OPENCLAW_WEBHOOK_SECRET:-}" ]; then
+    node -e "
+      const fs = require('fs');
+      const p = '$OPENCLAW_CONFIG_PATH';
+      const c = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (c.channels && c.channels.telegram) {
+        c.channels.telegram.webhookSecret = process.env.OPENCLAW_WEBHOOK_SECRET;
+      }
+      fs.writeFileSync(p, JSON.stringify(c, null, 2));
+    "
+fi
+
 if [ ! -f "$OPENCLAW_CONFIG_PATH" ]; then
     echo "OPENCLAW_CONFIG_JSON is not set and config file is missing at $OPENCLAW_CONFIG_PATH" >&2
     exit 1

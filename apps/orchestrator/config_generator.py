@@ -46,6 +46,8 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     plugin_id = str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_ID", "") or "").strip()
     plugin_path = str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_PATH", "") or "").strip()
 
+    api_base = str(getattr(settings, "API_BASE_URL", "") or "").strip().rstrip("/")
+
     config: dict[str, Any] = {
         # Auth — uses shared API key injected via env var
         "auth": {
@@ -82,6 +84,8 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         },
 
         # Telegram channel — locked to this user's chat_id
+        # Webhook mode: OpenClaw serves POST /telegram-webhook on the gateway
+        # port so our Django router can forward Telegram updates to it.
         "channels": {
             "telegram": {
                 "name": tenant.user.display_name,
@@ -93,6 +97,14 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 ),
                 "groupPolicy": "disabled",
                 "streamMode": "partial",
+                **(
+                    {
+                        "webhookUrl": f"{api_base}/api/v1/telegram/webhook/",
+                        "webhookHost": "0.0.0.0",
+                    }
+                    if api_base
+                    else {}
+                ),
             },
         },
 

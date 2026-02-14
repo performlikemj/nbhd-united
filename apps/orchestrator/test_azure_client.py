@@ -23,6 +23,7 @@ from apps.orchestrator.azure_client import (
     AZURE_KEY_VAULT_NAME="kv-nbhd-prod",
     ANTHROPIC_API_KEY="anthropic-secret",
     TELEGRAM_BOT_TOKEN="telegram-secret",
+    TELEGRAM_WEBHOOK_SECRET="webhook-secret",
     NBHD_INTERNAL_API_KEY="internal-secret",
     API_BASE_URL="https://nbhd-django.example.com",
 )
@@ -82,6 +83,10 @@ class AzureClientTest(SimpleTestCase):
             secret_map["nbhd-internal-api-key"]["identity"],
             "/identities/tenant-123",
         )
+        self.assertEqual(
+            secret_map["telegram-webhook-secret"]["keyVaultUrl"],
+            "https://kv-nbhd-prod.vault.azure.net/secrets/telegram-webhook-secret",
+        )
 
         container = payload["properties"]["template"]["containers"][0]
         self.assertEqual(container["image"], "nbhdunited.azurecr.io/nbhd-openclaw:latest")
@@ -94,6 +99,10 @@ class AzureClientTest(SimpleTestCase):
         self.assertEqual(env_map["AZURE_CLIENT_ID"]["value"], "client-123")
         self.assertEqual(env_map["NBHD_INTERNAL_API_KEY"]["secretRef"], "nbhd-internal-api-key")
         self.assertEqual(env_map["OPENCLAW_GATEWAY_TOKEN"]["secretRef"], "nbhd-internal-api-key")
+        self.assertEqual(env_map["OPENCLAW_WEBHOOK_SECRET"]["secretRef"], "telegram-webhook-secret")
+
+        ingress = payload["properties"]["configuration"]["ingress"]
+        self.assertEqual(ingress["targetPort"], 8787)
 
     @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="env")
     @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
@@ -129,6 +138,7 @@ class AzureClientTest(SimpleTestCase):
         self.assertEqual(secret_map["anthropic-key"]["value"], "anthropic-secret")
         self.assertEqual(secret_map["telegram-token"]["value"], "telegram-secret")
         self.assertEqual(secret_map["nbhd-internal-api-key"]["value"], "internal-secret")
+        self.assertEqual(secret_map["telegram-webhook-secret"]["value"], "webhook-secret")
 
 
 class AssignKeyVaultRoleTest(SimpleTestCase):
@@ -289,6 +299,7 @@ class RegisterEnvironmentStorageTest(SimpleTestCase):
     AZURE_KEY_VAULT_NAME="kv-nbhd-prod",
     ANTHROPIC_API_KEY="anthropic-secret",
     TELEGRAM_BOT_TOKEN="telegram-secret",
+    TELEGRAM_WEBHOOK_SECRET="webhook-secret",
     NBHD_INTERNAL_API_KEY="internal-secret",
     API_BASE_URL="https://nbhd-django.example.com",
 )

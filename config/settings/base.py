@@ -203,6 +203,10 @@ AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY = env(
     "AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY",
     default="nbhd-internal-api-key",
 )
+AZURE_KV_SECRET_TELEGRAM_WEBHOOK_SECRET = env(
+    "AZURE_KV_SECRET_TELEGRAM_WEBHOOK_SECRET",
+    default="telegram-webhook-secret",
+)
 
 # Azure
 AZURE_SUBSCRIPTION_ID = env("AZURE_SUBSCRIPTION_ID", default="")

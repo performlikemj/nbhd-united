@@ -456,6 +456,12 @@ def create_container_app(
             key_vault_secret_name=internal_api_key_kv_secret or settings.AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY,
             identity_id=identity_id,
         ),
+        _build_container_secret(
+            "telegram-webhook-secret",
+            plain_value=settings.TELEGRAM_WEBHOOK_SECRET,
+            key_vault_secret_name=settings.AZURE_KV_SECRET_TELEGRAM_WEBHOOK_SECRET,
+            identity_id=identity_id,
+        ),
     ]
 
     container_app: dict[str, Any] = {
@@ -475,7 +481,7 @@ def create_container_app(
                 ],
                 "ingress": {
                     "external": False,
-                    "targetPort": 18789,
+                    "targetPort": 8787,
                     "transport": "http",
                 },
                 "secrets": secrets,
@@ -491,6 +497,7 @@ def create_container_app(
                             {"name": "TELEGRAM_BOT_TOKEN", "secretRef": "telegram-token"},
                             {"name": "NBHD_INTERNAL_API_KEY", "secretRef": "nbhd-internal-api-key"},
                             {"name": "OPENCLAW_GATEWAY_TOKEN", "secretRef": "nbhd-internal-api-key"},
+                            {"name": "OPENCLAW_WEBHOOK_SECRET", "secretRef": "telegram-webhook-secret"},
                             {"name": "NBHD_TENANT_ID", "value": str(tenant_id)},
                             {"name": "NBHD_API_BASE_URL", "value": settings.API_BASE_URL},
                             {"name": "OPENCLAW_CONFIG_JSON", "value": config_json},
