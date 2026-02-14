@@ -27,6 +27,7 @@ class OrchestratorServiceTest(TestCase):
     )
     @patch("apps.orchestrator.services.create_tenant_file_share")
     @patch("apps.orchestrator.services.register_environment_storage")
+    @patch("apps.orchestrator.services.upload_config_to_file_share")
     @patch(
         "apps.orchestrator.services.create_container_app",
         return_value={"name": "oc-tenant", "fqdn": "oc-tenant.internal.azurecontainerapps.io"},
@@ -34,6 +35,7 @@ class OrchestratorServiceTest(TestCase):
     def test_provision_happy_path(
         self,
         _mock_create_container,
+        _mock_upload_config,
         _mock_register_storage,
         _mock_create_file_share,
         _mock_store_kv_key,
@@ -74,6 +76,7 @@ class OrchestratorServiceTest(TestCase):
     )
     @patch("apps.orchestrator.services.create_tenant_file_share")
     @patch("apps.orchestrator.services.register_environment_storage")
+    @patch("apps.orchestrator.services.upload_config_to_file_share")
     @patch(
         "apps.orchestrator.services.create_container_app",
         return_value={"name": "oc-tenant", "fqdn": "oc-tenant.internal.azurecontainerapps.io"},
@@ -81,6 +84,7 @@ class OrchestratorServiceTest(TestCase):
     def test_provision_skips_kv_role_assignment_for_env_backend(
         self,
         _mock_create_container,
+        _mock_upload_config,
         _mock_register_storage,
         _mock_create_file_share,
         _mock_store_kv_key,
@@ -95,6 +99,7 @@ class OrchestratorServiceTest(TestCase):
 
     @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="keyvault")
     @patch("apps.orchestrator.services.create_container_app", side_effect=RuntimeError("azure error"))
+    @patch("apps.orchestrator.services.upload_config_to_file_share")
     @patch("apps.orchestrator.services.register_environment_storage")
     @patch("apps.orchestrator.services.create_tenant_file_share")
     @patch(
@@ -119,6 +124,7 @@ class OrchestratorServiceTest(TestCase):
         _mock_store_kv_key,
         _mock_create_file_share,
         _mock_register_storage,
+        _mock_upload_config,
         _mock_create_container,
     ):
         with self.assertRaises(RuntimeError):
