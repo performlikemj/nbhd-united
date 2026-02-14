@@ -15,6 +15,7 @@ from .services import (
     handle_start_command,
     is_rate_limited,
     resolve_container,
+    resolve_user_timezone,
     send_onboarding_link,
     send_temporary_error,
 )
@@ -70,7 +71,10 @@ def telegram_webhook(request):
     # Forward to the correct OpenClaw instance
     loop = asyncio.new_event_loop()
     try:
-        result = loop.run_until_complete(forward_to_openclaw(container_fqdn, update))
+        user_timezone = resolve_user_timezone(chat_id)
+        result = loop.run_until_complete(
+            forward_to_openclaw(container_fqdn, update, user_timezone=user_timezone)
+        )
     finally:
         loop.close()
 

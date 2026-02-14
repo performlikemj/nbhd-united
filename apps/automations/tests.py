@@ -122,6 +122,7 @@ class AutomationApiTest(TestCase):
         self.assertEqual(body["status"], AutomationRun.Status.SUCCEEDED)
         self.assertEqual(AutomationRun.objects.filter(automation=automation).count(), 1)
         mock_forward.assert_awaited_once()
+        self.assertEqual(mock_forward.await_args.kwargs.get("user_timezone"), "UTC")
 
     def test_runs_endpoints_are_tenant_scoped(self):
         own_automation = self._create_automation()
