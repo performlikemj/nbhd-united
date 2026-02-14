@@ -1,4 +1,6 @@
 """Tenant serializers."""
+from zoneinfo import available_timezones
+
 from django.contrib.auth import authenticate
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
@@ -6,15 +8,26 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from .models import Tenant, User
 
+_VALID_TIMEZONES = available_timezones()
+
+
+def _validate_timezone(value: str) -> str:
+    if value not in _VALID_TIMEZONES:
+        raise serializers.ValidationError(f"Invalid timezone: {value}")
+    return value
+
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = (
             "id", "username", "email", "display_name", "language",
-            "telegram_chat_id", "telegram_username",
+            "timezone", "telegram_chat_id", "telegram_username",
         )
-        read_only_fields = ("id",)
+        read_only_fields = ("id", "username", "email", "telegram_chat_id", "telegram_username")
+
+    def validate_timezone(self, value):
+        return _validate_timezone(value)
 
 
 class TenantSerializer(serializers.ModelSerializer):
@@ -42,7 +55,11 @@ class TenantRegistrationSerializer(serializers.Serializer):
     """Used during onboarding — Telegram linking happens later via QR flow."""
     display_name = serializers.CharField(max_length=255, required=False, default="Friend")
     language = serializers.CharField(max_length=10, required=False, default="en")
+    timezone = serializers.CharField(max_length=63, required=False, default="UTC")
     agent_persona = serializers.CharField(max_length=30, required=False, default="neighbor")
+
+    def validate_timezone(self, value):
+        return _validate_timezone(value)
 
     def validate_agent_persona(self, value):
         from apps.orchestrator.personas import PERSONAS

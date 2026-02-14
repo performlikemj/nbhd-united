@@ -1,4 +1,6 @@
 """Tenant views."""
+import logging
+
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -6,7 +8,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import Tenant
-from .serializers import TenantRegistrationSerializer, TenantSerializer
+from .serializers import TenantRegistrationSerializer, TenantSerializer, UserSerializer
+
+logger = logging.getLogger(__name__)
 
 
 class TenantViewSet(viewsets.ReadOnlyModelViewSet):
@@ -50,11 +54,12 @@ class OnboardTenantView(APIView):
         user = request.user
         user.display_name = serializer.validated_data.get("display_name", user.display_name)
         user.language = serializer.validated_data.get("language", user.language)
+        user.timezone = serializer.validated_data.get("timezone", user.timezone)
         user.preferences = {
             **user.preferences,
             "agent_persona": serializer.validated_data.get("agent_persona", "neighbor"),
         }
-        user.save(update_fields=["display_name", "language", "preferences"])
+        user.save(update_fields=["display_name", "language", "timezone", "preferences"])
 
         # Create tenant
         tenant = Tenant.objects.create(user=user)
@@ -98,3 +103,34 @@ class UpdatePreferencesView(APIView):
         return Response({
             "agent_persona": request.user.preferences.get("agent_persona", "neighbor"),
         })
+
+
+class ProfileView(APIView):
+    """Get/update current user's profile fields."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(UserSerializer(request.user).data)
+
+    def patch(self, request):
+        original_timezone = request.user.timezone
+        serializer = UserSerializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        if serializer.validated_data.get("timezone") and request.user.timezone != original_timezone:
+            try:
+                tenant = request.user.tenant
+            except Tenant.DoesNotExist:
+                tenant = None
+            if tenant and tenant.status == Tenant.Status.ACTIVE and tenant.container_id:
+                from apps.orchestrator.services import update_tenant_config
+                try:
+                    update_tenant_config(str(tenant.id))
+                except Exception:
+                    logger.exception(
+                        "Failed to refresh OpenClaw config after timezone update for tenant %s",
+                        tenant.id,
+                    )
+
+        return Response(serializer.data)

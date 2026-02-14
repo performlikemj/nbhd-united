@@ -17,6 +17,11 @@ class User(AbstractUser):
     telegram_username = models.CharField(max_length=255, blank=True, default="")
     display_name = models.CharField(max_length=255, default="Friend")
     language = models.CharField(max_length=10, default="en")
+    timezone = models.CharField(
+        max_length=63,
+        default="UTC",
+        help_text="IANA timezone string, e.g. 'America/New_York'",
+    )
     preferences = models.JSONField(default=dict, blank=True)
 
     class Meta:
