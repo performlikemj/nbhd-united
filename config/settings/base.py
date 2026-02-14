@@ -226,6 +226,10 @@ STRIPE_PRICE_IDS = {
 
 # Frontend URL (for redirects)
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
+USAGE_DASHBOARD_SUBSCRIPTION_PRICE = env.float(
+    "USAGE_DASHBOARD_SUBSCRIPTION_PRICE",
+    default=5.0,
+)
 
 # API base URL (for OAuth callback redirects)
 API_BASE_URL = env("API_BASE_URL", default="http://localhost:8000")
