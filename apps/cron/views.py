@@ -87,6 +87,7 @@ TASK_MAP = {
     # Provisioning (on-demand via QStash publish)
     "provision_tenant": "apps.orchestrator.tasks.provision_tenant_task",
     "deprovision_tenant": "apps.orchestrator.tasks.deprovision_tenant_task",
+    "update_tenant_config": "apps.orchestrator.tasks.update_tenant_config_task",
 }
 
 

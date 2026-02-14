@@ -39,7 +39,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     This is the config that gets written to the container's
     ~/.openclaw/openclaw.json (or mounted via Azure Files).
     """
-    chat_id = str(tenant.user.telegram_chat_id)
+    chat_id = tenant.user.telegram_chat_id  # may be None before Telegram linking
     tier = tenant.model_tier or "basic"
     models_config = TIER_MODELS.get(tier, TIER_MODELS["basic"])
     model_entries = TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["basic"])
@@ -86,9 +86,12 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "telegram": {
                 "name": tenant.user.display_name,
                 "enabled": True,
-                "dmPolicy": "allowlist",
-                "allowFrom": [chat_id],
-                "groupPolicy": "deny",
+                **(
+                    {"dmPolicy": "allowlist", "allowFrom": [str(chat_id)]}
+                    if chat_id is not None
+                    else {"dmPolicy": "disabled"}
+                ),
+                "groupPolicy": "disabled",
                 "streamMode": "partial",
             },
         },

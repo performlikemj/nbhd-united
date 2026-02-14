@@ -18,6 +18,7 @@ from .azure_client import (
     delete_tenant_file_share,
     register_environment_storage,
     store_tenant_internal_key_in_key_vault,
+    update_container_env_var,
 )
 from .key_utils import generate_internal_api_key, hash_internal_api_key
 from .config_generator import config_to_json, generate_openclaw_config
@@ -109,6 +110,26 @@ def provision_tenant(tenant_id: str) -> None:
         tenant.status = Tenant.Status.PENDING
         tenant.save(update_fields=["status", "updated_at"])
         raise
+
+
+def update_tenant_config(tenant_id: str) -> None:
+    """Regenerate OpenClaw config and update the running container."""
+    tenant = Tenant.objects.select_related("user").get(id=tenant_id)
+
+    if tenant.status != Tenant.Status.ACTIVE or not tenant.container_id:
+        logger.warning(
+            "Cannot update config for tenant %s (status=%s, container=%s)",
+            tenant_id, tenant.status, tenant.container_id,
+        )
+        return
+
+    config = generate_openclaw_config(tenant)
+    config_json = config_to_json(config)
+
+    update_container_env_var(
+        tenant.container_id, "OPENCLAW_CONFIG_JSON", config_json,
+    )
+    logger.info("Updated OpenClaw config for tenant %s", tenant_id)
 
 
 def deprovision_tenant(tenant_id: str) -> None:

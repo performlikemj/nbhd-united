@@ -117,7 +117,25 @@ def process_start_token(
     link_token.save(update_fields=["used"])
 
     logger.info("Linked Telegram user %s to NBHD user %s", telegram_user_id, user.id)
+
+    # If tenant has an active container, push updated config with the new chat_id
+    _trigger_config_update_if_active(user)
+
     return True, f"✅ Welcome, {user.display_name}! Your Telegram is now connected."
+
+
+def _trigger_config_update_if_active(user: User) -> None:
+    """If the user's tenant has an active container, trigger a config update."""
+    from apps.tenants.models import Tenant
+
+    try:
+        tenant = Tenant.objects.get(user=user)
+    except Tenant.DoesNotExist:
+        return
+
+    if tenant.status == Tenant.Status.ACTIVE and tenant.container_id:
+        from apps.cron.publish import publish_task
+        publish_task("update_tenant_config", str(tenant.id))
 
 
 def unlink_telegram(user: User) -> bool:

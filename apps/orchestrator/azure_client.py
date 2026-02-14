@@ -499,6 +499,37 @@ def create_container_app(
     return {"name": container_name, "fqdn": fqdn}
 
 
+def update_container_env_var(
+    container_name: str,
+    env_name: str,
+    env_value: str,
+) -> None:
+    """Update a single environment variable on an existing Container App."""
+    if _is_mock():
+        logger.info("[MOCK] Updated %s on %s", env_name, container_name)
+        return
+
+    client = get_container_client()
+    app = client.container_apps.get(
+        settings.AZURE_RESOURCE_GROUP, container_name,
+    )
+
+    for container in app.template.containers:
+        env_list = container.env or []
+        for env_entry in env_list:
+            if env_entry.name == env_name:
+                env_entry.value = env_value
+                break
+        else:
+            env_list.append({"name": env_name, "value": env_value})
+        container.env = env_list
+
+    client.container_apps.begin_create_or_update(
+        settings.AZURE_RESOURCE_GROUP, container_name, app,
+    ).result()
+    logger.info("Updated env var %s on container %s", env_name, container_name)
+
+
 def delete_container_app(container_name: str) -> None:
     """Delete an Azure Container App."""
     if _is_mock():

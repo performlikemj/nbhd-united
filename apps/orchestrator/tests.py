@@ -7,7 +7,7 @@ from django.test import TestCase, override_settings
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 from .config_generator import generate_openclaw_config
-from .services import provision_tenant, deprovision_tenant
+from .services import provision_tenant, deprovision_tenant, update_tenant_config
 
 
 class ConfigGeneratorTest(TestCase):
@@ -65,6 +65,14 @@ class ConfigGeneratorTest(TestCase):
         self.assertNotIn("plugins", config)
         self.assertNotIn("alsoAllow", config["tools"])
 
+    def test_config_with_no_chat_id_uses_disabled_dm_policy(self):
+        self.tenant.user.telegram_chat_id = None
+        self.tenant.user.save(update_fields=["telegram_chat_id"])
+        config = generate_openclaw_config(self.tenant)
+        tg = config["channels"]["telegram"]
+        self.assertEqual(tg["dmPolicy"], "disabled")
+        self.assertNotIn("allowFrom", tg)
+
 
 @override_settings()
 class ProvisioningTest(TestCase):
@@ -91,3 +99,16 @@ class ProvisioningTest(TestCase):
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.status, Tenant.Status.DELETED)
         self.assertEqual(self.tenant.container_id, "")
+
+    @patch("apps.orchestrator.services.update_container_env_var")
+    def test_update_tenant_config_pushes_new_config(self, mock_update_env):
+        provision_tenant(str(self.tenant.id))
+        self.tenant.refresh_from_db()
+
+        update_tenant_config(str(self.tenant.id))
+
+        mock_update_env.assert_called_once()
+        call_args = mock_update_env.call_args
+        self.assertEqual(call_args[0][0], self.tenant.container_id)
+        self.assertEqual(call_args[0][1], "OPENCLAW_CONFIG_JSON")
+        self.assertIn("111222333", call_args[0][2])
