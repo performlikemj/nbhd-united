@@ -8,8 +8,9 @@ NBHD_MANAGED_SKILLS_SRC="${NBHD_MANAGED_SKILLS_SRC:-/opt/nbhd/agent-skills}"
 NBHD_MANAGED_SKILLS_DST="${NBHD_MANAGED_SKILLS_DST:-$OPENCLAW_WORKSPACE_PATH/skills/nbhd-managed}"
 NBHD_MANAGED_AGENTS_TEMPLATE="${NBHD_MANAGED_AGENTS_TEMPLATE:-/opt/nbhd/templates/openclaw/AGENTS.md}"
 NBHD_MANAGED_AGENTS_DST="${NBHD_MANAGED_AGENTS_DST:-$OPENCLAW_WORKSPACE_PATH/AGENTS.md}"
+NBHD_MEMORY_DIR="${NBHD_MEMORY_DIR:-$OPENCLAW_WORKSPACE_PATH/memory}"
 
-mkdir -p "$OPENCLAW_HOME" "$OPENCLAW_WORKSPACE_PATH"
+mkdir -p "$OPENCLAW_HOME" "$OPENCLAW_WORKSPACE_PATH" "$NBHD_MEMORY_DIR"
 
 if [ -d "$NBHD_MANAGED_SKILLS_SRC" ]; then
     rm -rf "$NBHD_MANAGED_SKILLS_DST"
@@ -35,7 +36,7 @@ fi
 
 # USER.md, TOOLS.md — seed from static templates if missing
 NBHD_TEMPLATES_DIR="${NBHD_TEMPLATES_DIR:-/opt/nbhd/templates/openclaw}"
-for file in USER.md TOOLS.md; do
+for file in USER.md TOOLS.md MEMORY.md HEARTBEAT.md; do
     src="$NBHD_TEMPLATES_DIR/$file"
     dst="$OPENCLAW_WORKSPACE_PATH/$file"
     if [ -f "$src" ] && [ ! -f "$dst" ]; then
