@@ -111,16 +111,20 @@ function IntegrationsContent() {
   const { data, isLoading, error } = useIntegrationsQuery();
   const disconnect = useDisconnectIntegrationMutation();
   const authorize = useOAuthAuthorizeMutation();
+  const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
 
   const connectedProvider = searchParams.get("connected");
   const oauthError = searchParams.get("error");
 
   const handleConnect = async (provider: string) => {
+    setConnectingProvider(provider);
     try {
       const result = await authorize.mutateAsync(provider);
       window.location.assign(result.url);
     } catch {
       // Error shown via mutation state
+    } finally {
+      setConnectingProvider(null);
     }
   };
 
@@ -175,10 +179,10 @@ function IntegrationsContent() {
                 <button
                   className="rounded-full border border-ink/20 px-3 py-1.5 text-sm hover:border-ink/40 disabled:cursor-not-allowed disabled:opacity-45"
                   type="button"
-                  disabled={connected || authorize.isPending}
+                  disabled={connected || connectingProvider !== null}
                   onClick={() => handleConnect(provider.key)}
                 >
-                  {authorize.isPending ? "Redirecting..." : "Connect"}
+                  {connectingProvider === provider.key ? "Redirecting..." : "Connect"}
                 </button>
                 <button
                   className="rounded-full border border-ink/20 px-3 py-1.5 text-sm hover:border-ink/40 disabled:cursor-not-allowed disabled:opacity-45"
