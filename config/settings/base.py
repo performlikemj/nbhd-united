@@ -146,13 +146,17 @@ QSTASH_TOKEN = env("QSTASH_TOKEN", default="")
 # Upstash Redis (general cache / rate limiting)
 UPSTASH_REDIS_URL = env("UPSTASH_REDIS_URL", default="")
 
+# Native Redis URL (rediss://default:TOKEN@HOST:PORT) — used by django-redis.
+# NOTE: This is NOT the same as UPSTASH_REDIS_URL (the REST API endpoint).
+REDIS_URL = env("REDIS_URL", default="")
+
 # Cache — use Redis when available (shared across workers & container revisions),
 # fall back to in-process memory for local dev without Redis.
-if UPSTASH_REDIS_URL:
+if REDIS_URL:
     CACHES = {
         "default": {
             "BACKEND": "django_redis.cache.RedisCache",
-            "LOCATION": UPSTASH_REDIS_URL,
+            "LOCATION": REDIS_URL,
             "OPTIONS": {
                 "CLIENT_CLASS": "django_redis.client.DefaultClient",
                 "CONNECTION_POOL_KWARGS": {"ssl_cert_reqs": None},
