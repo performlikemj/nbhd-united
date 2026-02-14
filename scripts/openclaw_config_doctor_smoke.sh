@@ -30,15 +30,23 @@ pathlib.Path('$CONFIG_PATH').write_text(json.dumps(generate_openclaw_config(tena
 chmod 600 "$CONFIG_PATH"
 mkdir -p "$STATE_DIR"
 
+set +e
 DOCTOR_OUTPUT="$(
   OPENCLAW_CONFIG_PATH="$CONFIG_PATH" \
   OPENCLAW_STATE_DIR="$STATE_DIR" \
-  npx --yes openclaw doctor --non-interactive --no-workspace-suggestions 2>&1
+  npx --yes openclaw doctor --non-interactive 2>&1
 )"
+DOCTOR_EXIT=$?
+set -e
 
 printf '%s\n' "$DOCTOR_OUTPUT"
 
 if printf '%s\n' "$DOCTOR_OUTPUT" | grep -qi "Invalid config"; then
   echo "OpenClaw config doctor smoke failed: invalid config detected." >&2
   exit 1
+fi
+
+if [ "$DOCTOR_EXIT" -ne 0 ]; then
+  echo "OpenClaw config doctor smoke failed: doctor command exited non-zero." >&2
+  exit "$DOCTOR_EXIT"
 fi

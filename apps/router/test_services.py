@@ -84,7 +84,10 @@ class ForwardingBehaviorTest(TestCase):
         mock_client.post.assert_called_once_with(
             "https://oc-router.internal.azurecontainerapps.io/telegram-webhook",
             json={"message": {"chat": {"id": 1}}},
-            headers={"X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret"},
+            headers={
+                "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret",
+                "X-User-Timezone": "UTC",
+            },
         )
 
     @patch("apps.router.services.httpx.AsyncClient")
