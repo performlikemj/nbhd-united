@@ -26,6 +26,7 @@ from apps.orchestrator.azure_client import (
     TELEGRAM_WEBHOOK_SECRET="webhook-secret",
     NBHD_INTERNAL_API_KEY="internal-secret",
     API_BASE_URL="https://nbhd-django.example.com",
+    PREVIEW_ACCESS_KEY="preview-secret",
 )
 class AzureClientTest(SimpleTestCase):
     @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
@@ -100,11 +101,12 @@ class AzureClientTest(SimpleTestCase):
         self.assertEqual(env_map["NBHD_INTERNAL_API_KEY"]["secretRef"], "nbhd-internal-api-key")
         self.assertEqual(env_map["OPENCLAW_GATEWAY_TOKEN"]["secretRef"], "nbhd-internal-api-key")
         self.assertEqual(env_map["OPENCLAW_WEBHOOK_SECRET"]["secretRef"], "telegram-webhook-secret")
+        self.assertEqual(env_map["NBHD_PREVIEW_KEY"]["value"], "preview-secret")
 
         ingress = payload["properties"]["configuration"]["ingress"]
         self.assertEqual(ingress["targetPort"], 8787)
 
-    @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="env")
+    @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="env", PREVIEW_ACCESS_KEY="")
     @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
     @patch("apps.orchestrator.azure_client.get_container_client")
     def test_create_container_app_supports_inline_secret_backend(
@@ -139,6 +141,9 @@ class AzureClientTest(SimpleTestCase):
         self.assertEqual(secret_map["telegram-token"]["value"], "telegram-secret")
         self.assertEqual(secret_map["nbhd-internal-api-key"]["value"], "internal-secret")
         self.assertEqual(secret_map["telegram-webhook-secret"]["value"], "webhook-secret")
+        container = payload["properties"]["template"]["containers"][0]
+        env_map = {entry["name"]: entry for entry in container["env"]}
+        self.assertNotIn("NBHD_PREVIEW_KEY", env_map)
 
 
 class AssignKeyVaultRoleTest(SimpleTestCase):

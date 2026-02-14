@@ -27,6 +27,7 @@ function mockResponse({ status = 200, payload = {} } = {}) {
 test("nbhd_gmail_list_messages uses GET with tenant-scoped headers", async () => {
   process.env.NBHD_TENANT_ID = "tenant-1";
   process.env.NBHD_INTERNAL_API_KEY = "internal-key";
+  process.env.NBHD_PREVIEW_KEY = "preview-key";
 
   const { api, tools } = buildApi();
   const calls = [];
@@ -45,12 +46,14 @@ test("nbhd_gmail_list_messages uses GET with tenant-scoped headers", async () =>
   assert.equal(calls[0].options.method, "GET");
   assert.equal(calls[0].options.headers["X-NBHD-Internal-Key"], "internal-key");
   assert.equal(calls[0].options.headers["X-NBHD-Tenant-Id"], "tenant-1");
+  assert.equal(calls[0].options.headers["X-Preview-Key"], "preview-key");
   assert.match(calls[0].url, /\/api\/v1\/integrations\/runtime\/tenant-1\/gmail\/messages\/\?q=in%3Ainbox&max_results=3$/);
 });
 
 test("nbhd_journal_create_entry uses POST with JSON payload", async () => {
   process.env.NBHD_TENANT_ID = "tenant-abc";
   process.env.NBHD_INTERNAL_API_KEY = "shared-key";
+  process.env.NBHD_PREVIEW_KEY = "";
 
   const { api, tools } = buildApi();
   const calls = [];
@@ -85,6 +88,7 @@ test("nbhd_journal_create_entry uses POST with JSON payload", async () => {
 test("runtime error payloads are surfaced with error code/detail", async () => {
   process.env.NBHD_TENANT_ID = "tenant-err";
   process.env.NBHD_INTERNAL_API_KEY = "shared-key";
+  process.env.NBHD_PREVIEW_KEY = "";
 
   const { api, tools } = buildApi();
   global.fetch = async () =>

@@ -139,10 +139,14 @@ Execute Task 4 from the Google OAuth MVP plan: expose internal Django endpoints 
   - Track 2 plugin scaffold is implemented and locally validated in Docker.
   - Runtime provisioning path is now Key Vault-first for OpenClaw container secrets.
   - Production cache wiring is normalized to Upstash TLS via `REDIS_URL`, and OAuth authorize endpoints are stable in post-deploy checks.
+  - Runtime request path now forwards preview authorization headers when configured:
+    - plugin uses `NBHD_PREVIEW_KEY -> X-Preview-Key` for internal calls,
+    - `NBHD_PREVIEW_KEY` is injected from control-plane `PREVIEW_ACCESS_KEY` in runtime container env.
 - Next:
   - Observe production logs for 60 minutes during real authenticated integration-connect traffic and confirm no authorize-path regressions.
   - Keep rollback target (`nbhd-django-westus2--0000052` / `49d33163e4ee0c2104f958785f05fbfb6cae4140`) available if production behavior regresses.
   - Run full authenticated Gmail/Google Calendar connect smoke in UI and validate expected redirect/error handling semantics.
+  - Rebuild/push `nbhd-openclaw` image and roll out updated OpenClaw containers, then confirm permission signatures disappear for runtime `/api/v1/integrations/runtime/*` calls.
   - Add assistant-level action-item extraction contract and tests (read-only recommendations only).
 
 ## Execution plan (tenant config + plugin)

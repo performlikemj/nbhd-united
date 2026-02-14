@@ -65,6 +65,7 @@ function getRuntimeConfig(api) {
   );
   const tenantId = asTrimmedString(process.env.NBHD_TENANT_ID);
   const internalKey = asTrimmedString(process.env.NBHD_INTERNAL_API_KEY);
+  const previewKey = asTrimmedString(process.env.NBHD_PREVIEW_KEY || "");
   const requestTimeoutMs = parseInteger(pluginConfig.requestTimeoutMs, {
     defaultValue: DEFAULT_REQUEST_TIMEOUT_MS,
     min: 1000,
@@ -81,7 +82,7 @@ function getRuntimeConfig(api) {
     throw new Error("NBHD_INTERNAL_API_KEY is required");
   }
 
-  return { apiBaseUrl, tenantId, internalKey, requestTimeoutMs };
+  return { apiBaseUrl, tenantId, internalKey, previewKey, requestTimeoutMs };
 }
 
 function buildUrl(baseUrl, path, query) {
@@ -121,6 +122,9 @@ async function callNbhdRuntimeRequest(api, { path, method = "GET", query, body }
       "X-NBHD-Internal-Key": runtime.internalKey,
       "X-NBHD-Tenant-Id": runtime.tenantId,
     };
+    if (runtime.previewKey) {
+      headers["X-Preview-Key"] = runtime.previewKey;
+    }
     let requestBody;
     if (method !== "GET" && body !== undefined) {
       headers["Content-Type"] = "application/json";

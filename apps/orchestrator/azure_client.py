@@ -500,6 +500,11 @@ def create_container_app(
                             {"name": "OPENCLAW_WEBHOOK_SECRET", "secretRef": "telegram-webhook-secret"},
                             {"name": "NBHD_TENANT_ID", "value": str(tenant_id)},
                             {"name": "NBHD_API_BASE_URL", "value": settings.API_BASE_URL},
+                            *(
+                                [{"name": "NBHD_PREVIEW_KEY", "value": str(settings.PREVIEW_ACCESS_KEY)}]
+                                if str(settings.PREVIEW_ACCESS_KEY or "").strip()
+                                else []
+                            ),
                             {"name": "OPENCLAW_CONFIG_JSON", "value": config_json},
                             {"name": "AZURE_CLIENT_ID", "value": identity_client_id},
                             *[
