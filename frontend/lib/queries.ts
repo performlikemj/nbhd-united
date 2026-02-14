@@ -110,7 +110,9 @@ export function useTelegramStatusQuery(enabled = true) {
   return useQuery({
     queryKey: ["telegram-status"],
     queryFn: fetchTelegramStatus,
-    refetchInterval: enabled ? 3000 : false,
+    refetchInterval: enabled
+      ? (query) => (query.state.status === "error" ? false : 3000)
+      : false,
   });
 }
 

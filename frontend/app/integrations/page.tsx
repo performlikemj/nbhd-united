@@ -23,10 +23,10 @@ const providers = [
 ];
 
 function TelegramCard() {
-  const { data: status } = useTelegramStatusQuery();
+  const [linkData, setLinkData] = useState<TelegramLinkResponse | null>(null);
+  const { data: status } = useTelegramStatusQuery(!!linkData);
   const generateLink = useGenerateTelegramLinkMutation();
   const unlinkMutation = useUnlinkTelegramMutation();
-  const [linkData, setLinkData] = useState<TelegramLinkResponse | null>(null);
 
   const linked = status?.linked ?? false;
 
