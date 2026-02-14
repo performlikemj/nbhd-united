@@ -65,16 +65,43 @@ class ConfigGeneratorTest(TestCase):
         self.assertNotIn("plugins", config)
         self.assertNotIn("alsoAllow", config["tools"])
 
-    @override_settings(API_BASE_URL="https://api.example.com")
+    def test_tools_policy_uses_allow_and_deny_lists(self):
+        self.tenant.model_tier = "basic"
+        config = generate_openclaw_config(self.tenant)
+        tools = config["tools"]
+        self.assertIn("allow", tools)
+        self.assertIn("deny", tools)
+        self.assertIn("group:automation", tools["deny"])
+        self.assertNotIn("group:browser", tools["allow"])
+
+    def test_plus_tier_tools_enable_browser_and_exec(self):
+        self.tenant.model_tier = "plus"
+        config = generate_openclaw_config(self.tenant)
+        tools = config["tools"]
+        self.assertIn("group:browser", tools["allow"])
+        self.assertIn("exec", tools["allow"])
+        self.assertEqual(tools["elevated"], {"enabled": False})
+
+    @override_settings(
+        API_BASE_URL="https://api.example.com",
+        TELEGRAM_WEBHOOK_SECRET="runtime-webhook-secret",
+    )
     def test_webhook_fields_set_when_settings_available(self):
         config = generate_openclaw_config(self.tenant)
         tg = config["channels"]["telegram"]
         self.assertEqual(tg["webhookUrl"], "https://api.example.com/api/v1/telegram/webhook/")
         self.assertEqual(tg["webhookHost"], "0.0.0.0")
-        self.assertNotIn("webhookSecret", tg)
+        self.assertEqual(tg["webhookSecret"], "runtime-webhook-secret")
 
     @override_settings(API_BASE_URL="")
     def test_webhook_fields_omitted_when_settings_missing(self):
+        config = generate_openclaw_config(self.tenant)
+        tg = config["channels"]["telegram"]
+        self.assertNotIn("webhookUrl", tg)
+        self.assertNotIn("webhookSecret", tg)
+
+    @override_settings(API_BASE_URL="https://api.example.com", TELEGRAM_WEBHOOK_SECRET="")
+    def test_webhook_fields_omitted_when_webhook_secret_missing(self):
         config = generate_openclaw_config(self.tenant)
         tg = config["channels"]["telegram"]
         self.assertNotIn("webhookUrl", tg)

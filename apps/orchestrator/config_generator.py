@@ -9,6 +9,7 @@ from typing import Any
 
 from django.conf import settings
 
+from apps.orchestrator.tool_policy import generate_tool_config
 from apps.tenants.models import Tenant
 
 # Model mapping by tier
@@ -33,6 +34,11 @@ TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
 }
 
 
+def _build_tools_section(tier: str) -> dict[str, Any]:
+    """Build documented OpenClaw tools policy for subscriber tier."""
+    return generate_tool_config(tier)
+
+
 def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     """Generate a complete openclaw.json for a tenant's container.
 
@@ -47,6 +53,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     plugin_path = str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_PATH", "") or "").strip()
 
     api_base = str(getattr(settings, "API_BASE_URL", "") or "").strip().rstrip("/")
+    webhook_secret = str(getattr(settings, "TELEGRAM_WEBHOOK_SECRET", "") or "").strip()
 
     config: dict[str, Any] = {
         # Auth — uses shared API key injected via env var
@@ -68,6 +75,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 },
                 "models": model_entries,
                 "workspace": "/home/node/.openclaw/workspace",
+                "userTimezone": str(getattr(tenant.user, "timezone", "") or "UTC"),
                 "compaction": {
                     "mode": "safeguard",
                 },
@@ -101,8 +109,9 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                     {
                         "webhookUrl": f"{api_base}/api/v1/telegram/webhook/",
                         "webhookHost": "0.0.0.0",
+                        "webhookSecret": webhook_secret,
                     }
-                    if api_base
+                    if api_base and webhook_secret
                     else {}
                 ),
             },
@@ -116,13 +125,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         },
 
         # Tools
-        "tools": {
-            "web": {
-                "search": {
-                    "enabled": True,
-                },
-            },
-        },
+        "tools": _build_tools_section(tier),
 
         # Messages
         "messages": {
