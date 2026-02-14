@@ -9,7 +9,10 @@ from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseForbid
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
+from apps.billing.services import record_usage
+from apps.tenants.models import Tenant
 from .services import (
+    resolve_tenant_by_chat_id,
     extract_chat_id,
     forward_to_openclaw,
     handle_start_command,
@@ -21,6 +24,63 @@ from .services import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_non_negative_int(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, float) and value.is_integer() and value >= 0:
+        return int(value)
+    return 0
+
+
+def _extract_usage_payload(payload: object) -> dict[str, object]:
+    if not isinstance(payload, dict):
+        return {}
+
+    usage_payload = payload.get("usage")
+    if isinstance(usage_payload, dict):
+        return usage_payload
+
+    result_payload = payload.get("result")
+    if isinstance(result_payload, dict):
+        nested = result_payload.get("usage")
+        if isinstance(nested, dict):
+            return nested
+
+    return {}
+
+
+def _record_usage_from_openclaw_result(tenant: Tenant, result: object) -> None:
+    if not isinstance(result, dict):
+        return
+
+    usage = _extract_usage_payload(result)
+    input_tokens = _coerce_non_negative_int(usage.get("input_tokens"))
+    output_tokens = _coerce_non_negative_int(usage.get("output_tokens"))
+    model_used = ""
+    if isinstance(usage.get("model_used"), str):
+        model_used = usage.get("model_used") or ""
+    elif isinstance(usage.get("model"), str):
+        model_used = usage.get("model") or ""
+
+    if not model_used and isinstance(result.get("model_used"), str):
+        model_used = result.get("model_used") or ""
+
+    try:
+        record_usage(
+            tenant=tenant,
+            event_type="message",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            model_used=model_used,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to record usage for tenant=%s after OpenClaw callback", tenant.id
+        )
 
 
 @csrf_exempt
@@ -79,6 +139,9 @@ def telegram_webhook(request):
         loop.close()
 
     if result:
+        tenant = resolve_tenant_by_chat_id(chat_id)
+        if tenant is not None:
+            _record_usage_from_openclaw_result(tenant, result)
         return JsonResponse(result)
     # Forwarding failed (timeout or error) — tell the user to retry
     return JsonResponse(send_temporary_error(chat_id))

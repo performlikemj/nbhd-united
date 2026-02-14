@@ -76,6 +76,36 @@ class TelegramWebhookViewTest(TestCase):
         mock_forward.assert_awaited_once()
         self.assertEqual(mock_forward.await_args.kwargs.get("user_timezone"), "UTC")
 
+    @patch("apps.router.views.record_usage")
+    @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
+    def test_active_tenant_records_usage_on_forward_success(self, mock_forward, mock_record_usage):
+        tenant = create_tenant(display_name="Active", telegram_chat_id=123457)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.container_fqdn = "oc-active.internal.azurecontainerapps.io"
+        tenant.save(update_fields=["status", "container_fqdn", "updated_at"])
+
+        mock_forward.return_value = {
+            "ok": True,
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 34,
+                "model_used": "anthropic/claude-sonnet-4-20250514",
+            },
+        }
+
+        response = self._post_update({"message": {"chat": {"id": 123457}}})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["ok"], True)
+        self.assertEqual(mock_record_usage.call_count, 1)
+        mock_record_usage.assert_called_once_with(
+            tenant=tenant,
+            event_type="message",
+            input_tokens=12,
+            output_tokens=34,
+            model_used="anthropic/claude-sonnet-4-20250514",
+        )
+
     @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
     def test_active_tenant_forwards_user_timezone(self, mock_forward):
         tenant = create_tenant(display_name="TZ", telegram_chat_id=123789)

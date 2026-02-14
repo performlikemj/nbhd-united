@@ -21,6 +21,7 @@ const navItems = [
 ];
 
 const publicPages = ["/login", "/signup"];
+const isReviewPage = (pathname: string): boolean => pathname.startsWith("/review");
 
 function UserMenu({ onLogout }: { onLogout: () => void }) {
   const { data: me } = useMeQuery();
@@ -86,8 +87,15 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [checked, setChecked] = useState(false);
   const [previewOk, setPreviewOk] = useState(false);
 
-  const isPublicPage = publicPages.includes(pathname) || pathname.startsWith("/legal/");
+  const isPublicPage = publicPages.includes(pathname) || pathname.startsWith("/legal/") || isReviewPage(pathname);
   const isLegalPage = pathname.startsWith("/legal/");
+  const isIntegrationCallbackResult =
+    pathname === "/integrations" &&
+    typeof window !== "undefined" &&
+    (() => {
+      const params = new URLSearchParams(window.location.search);
+      return params.has("connected") || params.has("error");
+    })();
 
   // Capture ?preview=<key> from URL, store in localStorage, strip from address bar.
   useEffect(() => {
@@ -121,8 +129,14 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   };
 
-  // Preview gate — block everything except /legal/* if no preview key is stored.
-  if (!previewOk && !isLegalPage) {
+  // Preview gate — block most routes except /legal/* unless this is a callback landing page
+  // that needs to surface connected/error state to the user.
+  if (
+    !previewOk &&
+    !isLegalPage &&
+    !isIntegrationCallbackResult &&
+    !isReviewPage(pathname)
+  ) {
     return (
       <div className="relative flex min-h-screen flex-col">
         <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(circle_at_20%_20%,rgba(255,194,153,0.42),transparent_40%),radial-gradient(circle_at_85%_15%,rgba(112,194,184,0.45),transparent_32%),linear-gradient(180deg,#f8f6ef_0%,#eef4f4_48%,#f9f9f6_100%)]" />

@@ -118,6 +118,13 @@ Execute Task 4 from the Google OAuth MVP plan: expose internal Django endpoints 
     - Validation:
       - `DATABASE_URL=sqlite:////tmp/nbhd_united_test.sqlite3 AZURE_MOCK=true PREVIEW_ACCESS_KEY= .venv/bin/python manage.py test apps.integrations.test_views` -> 8 passed.
       - `DATABASE_URL=sqlite:////tmp/nbhd_united_test.sqlite3 AZURE_MOCK=true PREVIEW_ACCESS_KEY= .venv/bin/python manage.py test apps.integrations` -> 54 passed.
+  - Preview-gated OAuth callback UX alignment for Stripe review:
+    - Added callback-result landing bypass in `frontend/components/app-shell.tsx` so `/integrations?connected=...` and `/integrations?error=...` render without the preview block.
+    - Added `docs/stripe-audit-policies.md` with policy matrix, auth contract, endpoint allowlist, and preview-bypass documentation.
+    - Validation:
+      - `DATABASE_URL=sqlite:////tmp/nbhd_united_test.sqlite3 AZURE_MOCK=true PREVIEW_ACCESS_KEY= .venv/bin/python manage.py test apps.orchestrator.test_azure_client` -> 14 passed.
+      - `DATABASE_URL=sqlite:////tmp/nbhd_united_test.sqlite3 AZURE_MOCK=true PREVIEW_ACCESS_KEY= .venv/bin/python manage.py test apps.integrations` -> 55 passed.
+      - `cd frontend && npm run lint && npm run build` -> passed.
   - Production Redis normalization + OAuth stabilization rollout completed (2026-02-14):
     - Rollback checkpoint captured before rollout:
       - revision: `nbhd-django-westus2--0000052`
@@ -144,6 +151,8 @@ Execute Task 4 from the Google OAuth MVP plan: expose internal Django endpoints 
     - `NBHD_PREVIEW_KEY` is injected from control-plane `PREVIEW_ACCESS_KEY` in runtime container env.
 - Next:
   - Observe production logs for 60 minutes during real authenticated integration-connect traffic and confirm no authorize-path regressions.
+  - Deploy the frontend callback-routing change and collect callback-result evidence for Stripe review packet.
+  - `/review` is now a public audit page (no preview overlay) to support Stripe review while preserving preview gate.
   - Keep rollback target (`nbhd-django-westus2--0000052` / `49d33163e4ee0c2104f958785f05fbfb6cae4140`) available if production behavior regresses.
   - Run full authenticated Gmail/Google Calendar connect smoke in UI and validate expected redirect/error handling semantics.
   - Rebuild/push `nbhd-openclaw` image and roll out updated OpenClaw containers, then confirm permission signatures disappear for runtime `/api/v1/integrations/runtime/*` calls.

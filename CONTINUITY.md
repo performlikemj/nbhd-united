@@ -147,6 +147,8 @@ CONTINUITY.md
 - [2026-02-10] Assessed Google OAuth (Gmail/Calendar) MVP readiness; identified gaps in scheduled token refresh wiring and runtime data-access consumption.
 - [2026-02-11] Validated Stripe checkout -> signed webhook completion smoke path locally (tenant transitioned to ACTIVE with mock container provisioning).
 - [2026-02-11] Validated Stripe checkout -> webhook -> provisioning path inside Docker (`web` + `postgres`) with `AZURE_MOCK=true`.
+- [2026-02-14] Wired Telegram webhook success path to call `record_usage(...)` for message-level usage increments.
+- [2026-02-14] Added `/review` reviewer entry-point link on `/login` to support Stripe audit navigation.
 
 ## Open Questions (UNCONFIRMED)
 - UNCONFIRMED: Preferred production auth/session contract for frontend API calls.

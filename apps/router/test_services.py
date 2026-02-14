@@ -14,6 +14,7 @@ from apps.router.services import (
     forward_to_openclaw,
     is_rate_limited,
     resolve_container,
+    resolve_tenant_by_chat_id,
     resolve_user_timezone,
     send_temporary_error,
 )
@@ -36,6 +37,22 @@ class ResolveContainerEdgeCaseTest(TestCase):
         self.tenant.save(update_fields=["status", "updated_at"])
 
         self.assertIsNone(resolve_container(111999))
+
+    def test_resolve_tenant_by_chat_id_returns_tenant(self):
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.container_fqdn = "oc-router.internal.azurecontainerapps.io"
+        self.tenant.save(update_fields=["status", "container_fqdn", "updated_at"])
+
+        resolved = resolve_tenant_by_chat_id(111999)
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.id, self.tenant.id)
+
+    def test_resolve_tenant_by_chat_id_returns_none_for_inactive(self):
+        self.tenant.status = Tenant.Status.SUSPENDED
+        self.tenant.container_fqdn = ""
+        self.tenant.save(update_fields=["status", "container_fqdn", "updated_at"])
+
+        self.assertIsNone(resolve_tenant_by_chat_id(111999))
 
     def test_resolve_user_timezone_returns_utc_when_user_missing(self):
         self.assertEqual(resolve_user_timezone(404404), "UTC")
