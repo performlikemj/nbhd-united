@@ -10,6 +10,7 @@ from typing import Any
 from django.conf import settings
 
 from apps.tenants.models import Tenant
+from apps.orchestrator.tool_policy import generate_tool_config
 
 # Model mapping by tier
 TIER_MODELS: dict[str, dict[str, str]] = {
@@ -31,6 +32,12 @@ TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
         "anthropic/claude-opus-4-20250514": {"alias": "opus"},
     },
 }
+
+
+def _build_tools_section(tier: str) -> dict[str, Any]:
+    """Build tools config with policy restrictions for subscriber tier."""
+    tool_config = generate_tool_config(tier)
+    return {"tools": tool_config["tools"]}
 
 
 def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
@@ -100,14 +107,8 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "bind": "lan",
         },
 
-        # Tools
-        "tools": {
-            "web": {
-                "search": {
-                    "enabled": True,
-                },
-            },
-        },
+        # Tools — scoped by tier to prevent subscriber runtime access
+        **_build_tools_section(tier),
 
         # Messages
         "messages": {
