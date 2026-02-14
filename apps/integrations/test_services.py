@@ -19,6 +19,7 @@ from .services import (
     IntegrationRefreshError,
     IntegrationScopeError,
     IntegrationTokenDataError,
+    initiate_composio_connection,
     connect_integration,
     disconnect_integration,
     get_valid_provider_access_token,
@@ -121,9 +122,41 @@ class IntegrationServiceTest(TestCase):
             secret_name = get_key_vault_secret_name(self.tenant, "gmail")
             integration_services._MOCK_KEY_VAULT_STORE[secret_name] = json.dumps(["x"])
 
-            payload = load_tokens_from_key_vault(self.tenant, "gmail")
+        payload = load_tokens_from_key_vault(self.tenant, "gmail")
 
         self.assertIsNone(payload)
+
+    @override_settings(
+        COMPOSIO_API_KEY="test-key",
+        COMPOSIO_GMAIL_AUTH_CONFIG_ID="ac-test-gmail",
+        COMPOSIO_ALLOW_MULTIPLE_ACCOUNTS=True,
+    )
+    @patch("apps.integrations.services._get_composio_client")
+    def test_initiate_composio_connection_allows_multiple_accounts(
+        self,
+        mock_get_client,
+    ):
+        mock_connected_accounts = Mock()
+        mock_connected_accounts.initiate.return_value = Mock(
+            redirect_url="https://composio.example/connect",
+            id="conn-1",
+        )
+        mock_get_client.return_value = Mock(connected_accounts=mock_connected_accounts)
+
+        redirect_url, request_id = initiate_composio_connection(
+            self.tenant,
+            "gmail",
+            "https://app.example.com/callback",
+        )
+
+        self.assertEqual(redirect_url, "https://composio.example/connect")
+        self.assertEqual(request_id, "conn-1")
+        mock_connected_accounts.initiate.assert_called_once_with(
+            user_id=f"tenant-{self.tenant.id}",
+            auth_config_id="ac-test-gmail",
+            callback_url="https://app.example.com/callback",
+            allow_multiple=True,
+        )
 
 
 @override_settings(

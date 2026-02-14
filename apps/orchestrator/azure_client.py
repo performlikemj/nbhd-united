@@ -509,6 +509,7 @@ def create_container_app(
                         ],
                         "volumeMounts": [
                             {"volumeName": "workspace", "mountPath": "/home/node/.openclaw"},
+                            {"volumeName": "sessions-scratch", "mountPath": "/home/node/.openclaw/agents"},
                         ],
                     },
                 ],
@@ -518,9 +519,13 @@ def create_container_app(
                         "storageType": "AzureFile",
                         "storageName": f"ws-{str(tenant_id)[:20]}",
                     },
+                    {
+                        "name": "sessions-scratch",
+                        "storageType": "EmptyDir",
+                    },
                 ],
                 "scale": {
-                    "minReplicas": 0,
+                    "minReplicas": 1,
                     "maxReplicas": 1,
                     "rules": [
                         {"name": "http-trigger", "http": {"metadata": {"concurrentRequests": "1"}}},

@@ -1,6 +1,7 @@
 """Integration views — list, connect (OAuth callback), disconnect."""
 import logging
 import secrets
+import time
 from urllib.parse import urlencode
 
 import httpx
@@ -31,6 +32,7 @@ from .services import (
 logger = logging.getLogger(__name__)
 OAUTH_STATE_MAX_AGE_SECONDS = 600
 OAUTH_STATE_NONCE_CACHE_KEY_PREFIX = "oauth-state-nonce"
+_OAUTH_STATE_NONCE_FALLBACK: dict[str, float] = {}
 
 OAUTH_CLIENT_CREDENTIALS = {
     "google": {
@@ -53,17 +55,69 @@ def _state_nonce_cache_key(nonce: str) -> str:
     return f"{OAUTH_STATE_NONCE_CACHE_KEY_PREFIX}:{nonce}"
 
 
+def _prune_fallback_state_nonces(now: float | None = None) -> None:
+    current = now if now is not None else time.time()
+    expired = [
+        nonce
+        for nonce, expires_at in _OAUTH_STATE_NONCE_FALLBACK.items()
+        if expires_at <= current
+    ]
+    for nonce in expired:
+        _OAUTH_STATE_NONCE_FALLBACK.pop(nonce, None)
+
+
+def _record_fallback_state_nonce(nonce: str) -> None:
+    now = time.time()
+    _prune_fallback_state_nonces(now)
+    _OAUTH_STATE_NONCE_FALLBACK[nonce] = now + OAUTH_STATE_MAX_AGE_SECONDS
+
+
+def _consume_fallback_state_nonce(nonce: str) -> bool:
+    now = time.time()
+    _prune_fallback_state_nonces(now)
+    expires_at = _OAUTH_STATE_NONCE_FALLBACK.pop(nonce, None)
+    return bool(expires_at and expires_at > now)
+
+
 def _consume_state_nonce(nonce: str) -> bool:
     key = _state_nonce_cache_key(nonce)
-    if cache.get(key) is None:
-        return False
-    cache.delete(key)
-    return True
+    cache_hit = False
+
+    try:
+        cache_hit = cache.get(key) is not None
+    except Exception:
+        logger.warning(
+            "OAuth state nonce cache read failed; attempting process-local fallback."
+        )
+
+    if cache_hit:
+        try:
+            cache.delete(key)
+        except Exception:
+            logger.warning(
+                "OAuth state nonce cache delete failed; clearing process-local fallback only."
+            )
+        _consume_fallback_state_nonce(nonce)
+        return True
+
+    fallback_hit = _consume_fallback_state_nonce(nonce)
+    if fallback_hit:
+        try:
+            cache.delete(key)
+        except Exception:
+            logger.debug("OAuth nonce cache cleanup skipped after fallback consume.")
+    return fallback_hit
 
 
 def _build_oauth_state(user_id: str, provider: str) -> str:
     nonce = secrets.token_urlsafe(24)
-    cache.set(_state_nonce_cache_key(nonce), "1", timeout=OAUTH_STATE_MAX_AGE_SECONDS)
+    _record_fallback_state_nonce(nonce)
+    try:
+        cache.set(_state_nonce_cache_key(nonce), "1", timeout=OAUTH_STATE_MAX_AGE_SECONDS)
+    except Exception:
+        logger.warning(
+            "OAuth state nonce cache write failed; using process-local fallback store."
+        )
     return signing.dumps(
         {"user_id": user_id, "provider": provider, "nonce": nonce},
         salt="oauth",

@@ -53,6 +53,13 @@ Deliver the MVP value chain: Telegram bot -> read Gmail -> check Google Calendar
 - [2026-02-11] Local Docker validation passed: runtime image builds and `plugins list` shows `nbhd-google-tools` as loaded.
 - [2026-02-11] ACR publish verified for runtime image: `nbhdunited.azurecr.io/nbhd-openclaw` now exists with tags `c637198` and `latest`.
 - [2026-02-11] Runtime provisioning secrets moved to Key Vault-first references in container payloads (`keyVaultUrl` + identity) with env fallback mode retained for local/dev; orchestrator tests passing (16).
+- [2026-02-14] OAuth reliability patch: Google authorize/callback flow now uses process-local nonce fallback when cache backend is unavailable, preventing Redis/cache outages from hard-500ing integration connects; added view regressions and validated `apps.integrations` suite (54 passed).
+- [2026-02-14] Production rollout completed for OAuth/Redis stability:
+  - Key Vault `redis-url` rotated to `rediss://...` (Upstash TLS).
+  - Container App `nbhd-django-westus2` normalized to canonical `REDIS_URL` secret ref (removed optional `UPSTASH_REDIS_URL` runtime env + secret).
+  - Deployed Django image `nbhdunited.azurecr.io/django:manual-20260214150632-4bde901` (ready revision `nbhd-django-westus2--0000055`; rollback checkpoint `--0000052` / `49d33163e4ee0c2104f958785f05fbfb6cae4140`).
+  - Added scheduled query alert `nbhd-integrations-authorize-redis-alert` for authorize-path 500 and Redis interruption signatures.
+  - Post-deploy checks: unauth authorize smoke returns `403` (not `500`), and log query on revision `--0000055` shows `hits=0` for targeted error signatures.
 
 ## Decisions
 - Build Google OAuth in-house for MVP; defer Composio unless scope expands to many providers.
@@ -69,4 +76,4 @@ Deliver the MVP value chain: Telegram bot -> read Gmail -> check Google Calendar
 ## State
 - Done: Gap assessment and practical timeline (4-8 dev days) completed.
 - Now: Task 4 in progress; Track 1 complete, runtime image published, and Key Vault-backed secret wiring merged in control plane.
-- Next: apply plugin env + Key Vault secret rollout in production, then run full runtime e2e validation with plugin-enabled tenant provisioning.
+- Next: observe authenticated integration-connect traffic on revision `--0000055` and then run full runtime e2e validation with plugin-enabled tenant provisioning.

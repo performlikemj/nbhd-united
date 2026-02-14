@@ -22,6 +22,7 @@ class OAuthAuthorizeViewTest(TestCase):
     @override_settings(
         GOOGLE_OAUTH_CLIENT_ID="google-client-id",
         GOOGLE_OAUTH_CLIENT_SECRET="google-client-secret",
+        COMPOSIO_API_KEY="",
     )
     def test_authorize_state_binds_user_and_provider(self):
         response = self.client.get("/api/v1/integrations/authorize/gmail/")
@@ -43,17 +44,30 @@ class OAuthAuthorizeViewTest(TestCase):
     @override_settings(
         GOOGLE_OAUTH_CLIENT_ID="google-client-id",
         GOOGLE_OAUTH_CLIENT_SECRET="",
+        COMPOSIO_API_KEY="",
     )
     def test_authorize_requires_client_secret(self):
         response = self.client.get("/api/v1/integrations/authorize/gmail/")
         self.assertEqual(response.status_code, 400)
         self.assertIn("OAuth not configured", response.data["detail"])
 
+    @override_settings(
+        GOOGLE_OAUTH_CLIENT_ID="google-client-id",
+        GOOGLE_OAUTH_CLIENT_SECRET="google-client-secret",
+        COMPOSIO_API_KEY="",
+    )
+    @patch("apps.integrations.views.cache.set", side_effect=RuntimeError("cache unavailable"))
+    def test_authorize_handles_cache_write_failure(self, _mock_cache_set):
+        response = self.client.get("/api/v1/integrations/authorize/gmail/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("url", response.data)
+
 
 @override_settings(
     FRONTEND_URL="http://localhost:3000",
     GOOGLE_OAUTH_CLIENT_ID="google-client-id",
     GOOGLE_OAUTH_CLIENT_SECRET="google-client-secret",
+    COMPOSIO_API_KEY="",
 )
 class OAuthCallbackViewTest(TestCase):
     def setUp(self):
@@ -157,3 +171,41 @@ class OAuthCallbackViewTest(TestCase):
         self.assertEqual(first["Location"], "http://localhost:3000/integrations?connected=gmail")
         self.assertEqual(second.status_code, 302)
         self.assertEqual(second["Location"], "http://localhost:3000/integrations?error=invalid_state")
+
+    @patch("apps.integrations.views.fetch_provider_email", return_value=None)
+    @patch("apps.integrations.views.connect_integration")
+    @patch("apps.integrations.views.httpx.post")
+    def test_callback_uses_fallback_nonce_when_cache_unavailable(
+        self,
+        mock_post,
+        _mock_connect,
+        _mock_email,
+    ):
+        mock_response = Mock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "expires_in": 3600,
+        }
+        mock_post.return_value = mock_response
+
+        with patch("apps.integrations.views.cache.set", side_effect=RuntimeError("cache down")):
+            state = self._state(provider="gmail")
+
+        with (
+            patch("apps.integrations.views.cache.get", side_effect=RuntimeError("cache down")),
+            patch("apps.integrations.views.cache.delete", side_effect=RuntimeError("cache down")),
+        ):
+            first = self.client.get(
+                f"/api/v1/integrations/callback/gmail/?state={state}&code=auth-code"
+            )
+            second = self.client.get(
+                f"/api/v1/integrations/callback/gmail/?state={state}&code=auth-code"
+            )
+
+        self.assertEqual(first.status_code, 302)
+        self.assertEqual(first["Location"], "http://localhost:3000/integrations?connected=gmail")
+        self.assertEqual(second.status_code, 302)
+        self.assertEqual(second["Location"], "http://localhost:3000/integrations?error=invalid_state")
+        self.assertEqual(mock_post.call_count, 1)

@@ -45,3 +45,7 @@ htmlcov/
 
 # MCP config (may contain project refs)
 .mcp.json
+
+CONTINUITY*.md
+CONTINUITY_*.md
+CONTINUITY.md

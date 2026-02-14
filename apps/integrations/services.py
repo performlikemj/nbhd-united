@@ -73,6 +73,7 @@ def initiate_composio_connection(
     """
     client = _get_composio_client()
     auth_config_id = _get_composio_auth_config_id(provider)
+    allow_multiple = getattr(settings, "COMPOSIO_ALLOW_MULTIPLE_ACCOUNTS", True)
 
     # One connection per tenant per provider
     user_id = f"tenant-{tenant.id}"
@@ -81,6 +82,7 @@ def initiate_composio_connection(
         user_id=user_id,
         auth_config_id=auth_config_id,
         callback_url=callback_url,
+        allow_multiple=allow_multiple,
     )
 
     return connection_request.redirect_url, connection_request.id

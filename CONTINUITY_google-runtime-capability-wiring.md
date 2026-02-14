@@ -109,14 +109,40 @@ Execute Task 4 from the Google OAuth MVP plan: expose internal Django endpoints 
       - `AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY`
     - Updated tests and validation:
       - `DATABASE_URL=sqlite:////tmp/nbhd_united_test.sqlite3 AZURE_MOCK=true .venv/bin/python manage.py test apps.orchestrator` -> 16 passed.
+  - OAuth authorize/callback cache resilience fix for Google providers:
+    - Updated `apps/integrations/views.py` to keep a process-local one-time nonce fallback store and use it when cache backend read/write fails.
+    - Prevented hard 500 responses when cache/Redis is unavailable during OAuth state creation or callback verification.
+    - Added regression tests in `apps/integrations/test_views.py`:
+      - authorize succeeds when `cache.set` fails,
+      - callback succeeds once and rejects replay when cache get/delete fails.
+    - Validation:
+      - `DATABASE_URL=sqlite:////tmp/nbhd_united_test.sqlite3 AZURE_MOCK=true PREVIEW_ACCESS_KEY= .venv/bin/python manage.py test apps.integrations.test_views` -> 8 passed.
+      - `DATABASE_URL=sqlite:////tmp/nbhd_united_test.sqlite3 AZURE_MOCK=true PREVIEW_ACCESS_KEY= .venv/bin/python manage.py test apps.integrations` -> 54 passed.
+  - Production Redis normalization + OAuth stabilization rollout completed (2026-02-14):
+    - Rollback checkpoint captured before rollout:
+      - revision: `nbhd-django-westus2--0000052`
+      - image: `nbhdunited.azurecr.io/django:49d33163e4ee0c2104f958785f05fbfb6cae4140`
+    - Updated Key Vault secret `redis-url` to Upstash TLS form (`rediss://...`) and confirmed secret version refresh.
+    - Removed optional `UPSTASH_REDIS_URL` runtime env + `upstash-redis-url` container secret from `nbhd-django-westus2` (kept canonical `REDIS_URL -> secretRef redis-url`).
+    - Built/pushed/deployed Django image with OAuth fallback patch:
+      - deployed image: `nbhdunited.azurecr.io/django:manual-20260214150632-4bde901`
+      - ready revision: `nbhd-django-westus2--0000055`
+    - Added operational alert rule:
+      - `nbhd-integrations-authorize-redis-alert` (`Microsoft.Insights/scheduledQueryRules`)
+      - query watches integration authorize 500s + Redis connection interruption signatures.
+    - Post-deploy validation:
+      - smoke calls to `/api/v1/integrations/authorize/gmail/` and `/api/v1/integrations/authorize/google-calendar/` return `403` (not `500`) when unauthenticated.
+      - Log Analytics check on revision `nbhd-django-westus2--0000055`:
+        - authorize 500 / Redis interruption signatures in last 20m -> `hits=0`.
 - Now:
   - Backend Phase A/B completed; Track 1 complete and runtime image pipeline scaffold is now in-repo.
   - Track 2 plugin scaffold is implemented and locally validated in Docker.
   - Runtime provisioning path is now Key Vault-first for OpenClaw container secrets.
+  - Production cache wiring is normalized to Upstash TLS via `REDIS_URL`, and OAuth authorize endpoints are stable in post-deploy checks.
 - Next:
-  - Set `OPENCLAW_GOOGLE_PLUGIN_ID=nbhd-google-tools` and `OPENCLAW_GOOGLE_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-google-tools` in deployed Django env.
-  - Ensure Key Vault contains the runtime secret names expected by settings (`anthropic-api-key`, `telegram-bot-token`, `nbhd-internal-api-key`) and tenant runtime identities have secret-read access.
-  - Run Docker/container smoke validation for plugin tool calls against internal Django runtime endpoints.
+  - Observe production logs for 60 minutes during real authenticated integration-connect traffic and confirm no authorize-path regressions.
+  - Keep rollback target (`nbhd-django-westus2--0000052` / `49d33163e4ee0c2104f958785f05fbfb6cae4140`) available if production behavior regresses.
+  - Run full authenticated Gmail/Google Calendar connect smoke in UI and validate expected redirect/error handling semantics.
   - Add assistant-level action-item extraction contract and tests (read-only recommendations only).
 
 ## Execution plan (tenant config + plugin)
