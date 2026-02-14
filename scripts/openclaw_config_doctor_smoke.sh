@@ -34,7 +34,7 @@ set +e
 DOCTOR_OUTPUT="$(
   OPENCLAW_CONFIG_PATH="$CONFIG_PATH" \
   OPENCLAW_STATE_DIR="$STATE_DIR" \
-  npx --yes openclaw doctor --non-interactive 2>&1
+  npx --yes --package openclaw@latest openclaw doctor --non-interactive 2>&1
 )"
 DOCTOR_EXIT=$?
 set -e
