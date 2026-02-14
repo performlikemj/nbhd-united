@@ -8,6 +8,7 @@ import {
   Integration,
   Tenant,
   UsageRecord,
+  UsageSummary,
 } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -143,6 +144,10 @@ export function fetchDashboard(): Promise<DashboardData> {
 
 export function fetchUsageHistory(): Promise<{ results: UsageRecord[] }> {
   return apiFetch<{ results: UsageRecord[] }>("/api/v1/dashboard/usage/");
+}
+
+export function fetchUsageSummary(): Promise<UsageSummary> {
+  return apiFetch<UsageSummary>("/api/v1/billing/usage/summary/");
 }
 
 // Tenants

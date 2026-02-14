@@ -17,6 +17,7 @@ import {
   fetchTenant,
   fetchTelegramStatus,
   fetchUsageHistory,
+  fetchUsageSummary,
   generateTelegramLink,
   getOAuthAuthorizeUrl,
   onboardTenant,
@@ -56,6 +57,13 @@ export function useUsageHistoryQuery() {
   return useQuery({
     queryKey: ["usage-history"],
     queryFn: fetchUsageHistory,
+  });
+}
+
+export function useUsageSummaryQuery() {
+  return useQuery({
+    queryKey: ["usage-summary"],
+    queryFn: fetchUsageSummary,
   });
 }
 

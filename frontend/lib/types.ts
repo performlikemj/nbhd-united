@@ -92,6 +92,38 @@ export interface UsageRecord {
   created_at: string;
 }
 
+export interface UsageModelBreakdown {
+  model: string;
+  display_name: string;
+  input_tokens: number;
+  output_tokens: number;
+  cost: number;
+  count: number;
+}
+
+export interface UsageBudgetSummary {
+  tenant_tokens_used: number;
+  tenant_token_budget: number;
+  tenant_estimated_cost: number;
+  budget_percentage: number;
+  global_spent: number;
+  global_remaining: number | null;
+}
+
+export interface UsageSummary {
+  period: {
+    start: string;
+    end: string;
+  };
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_tokens: number;
+  total_cost: number;
+  message_count: number;
+  by_model: UsageModelBreakdown[];
+  budget: UsageBudgetSummary;
+}
+
 export type AutomationKind = "daily_brief" | "weekly_review";
 export type AutomationStatus = "active" | "paused";
 export type AutomationScheduleType = "daily" | "weekly";

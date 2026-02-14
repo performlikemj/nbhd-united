@@ -107,6 +107,29 @@ class TelegramWebhookViewTest(TestCase):
         )
 
     @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
+    def test_active_tenant_over_budget_is_blocked(self, mock_forward):
+        tenant = create_tenant(display_name="QuotaBlocked", telegram_chat_id=123458)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.monthly_token_budget = 500
+        tenant.tokens_this_month = 500
+        tenant.container_fqdn = "oc-active.internal.azurecontainerapps.io"
+        tenant.save(
+            update_fields=[
+                "status", "monthly_token_budget", "tokens_this_month", "container_fqdn",
+                "updated_at",
+            ]
+        )
+
+        response = self._post_update({"message": {"chat": {"id": 123458}}})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["method"], "sendMessage")
+        self.assertIn("quota", body["text"].lower())
+        self.assertIn("/billing", body["text"])
+        mock_forward.assert_not_called()
+
+    @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
     def test_active_tenant_forwards_user_timezone(self, mock_forward):
         tenant = create_tenant(display_name="TZ", telegram_chat_id=123789)
         tenant.status = Tenant.Status.ACTIVE

@@ -9,7 +9,7 @@ from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseForbid
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from apps.billing.services import record_usage
+from apps.billing.services import check_budget, record_usage
 from apps.tenants.models import Tenant
 from .services import (
     resolve_tenant_by_chat_id,
@@ -17,8 +17,6 @@ from .services import (
     forward_to_openclaw,
     handle_start_command,
     is_rate_limited,
-    resolve_container,
-    resolve_user_timezone,
     send_onboarding_link,
     send_temporary_error,
 )
@@ -83,6 +81,27 @@ def _record_usage_from_openclaw_result(tenant: Tenant, result: object) -> None:
         )
 
 
+def _build_budget_exhausted_message(chat_id: int, tenant: Tenant) -> dict:
+    frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
+    budget_remaining = max(tenant.monthly_token_budget - tenant.tokens_this_month, 0)
+    plus_message = (
+        " Opus requests are paused while at quota."
+        if tenant.model_tier == Tenant.ModelTier.PLUS
+        else ""
+    )
+
+    return {
+        "method": "sendMessage",
+        "chat_id": chat_id,
+        "text": (
+            "You’ve hit your monthly token quota."
+            f" {budget_remaining} token{'' if budget_remaining == 1 else 's'} remaining."
+            " New messages are blocked until the next monthly reset."
+            f"{plus_message} Open Billing to upgrade/manage at {frontend_url}/billing."
+        ),
+    }
+
+
 @csrf_exempt
 @require_POST
 def telegram_webhook(request):
@@ -119,29 +138,34 @@ def telegram_webhook(request):
         logger.warning("Rate limited chat_id %s", chat_id)
         return HttpResponse("Too many requests", status=429)
 
-    # Look up container for this chat_id
-    container_fqdn = resolve_container(chat_id)
+    tenant = resolve_tenant_by_chat_id(chat_id)
 
-    if not container_fqdn:
+    # Unknown/inactive users are guided through onboarding.
+    if not tenant:
         # Unknown user — send onboarding link
         response_data = send_onboarding_link(chat_id)
         logger.info("Unknown chat_id %s, sending onboarding link", chat_id)
         return JsonResponse(response_data)
 
+    if not check_budget(tenant):
+        return JsonResponse(_build_budget_exhausted_message(chat_id, tenant))
+
     # Forward to the correct OpenClaw instance
     loop = asyncio.new_event_loop()
     try:
-        user_timezone = resolve_user_timezone(chat_id)
+        user_timezone = tenant.user.timezone or "UTC"
         result = loop.run_until_complete(
-            forward_to_openclaw(container_fqdn, update, user_timezone=user_timezone)
+            forward_to_openclaw(
+                tenant.container_fqdn,
+                update,
+                user_timezone=user_timezone,
+            )
         )
     finally:
         loop.close()
 
     if result:
-        tenant = resolve_tenant_by_chat_id(chat_id)
-        if tenant is not None:
-            _record_usage_from_openclaw_result(tenant, result)
+        _record_usage_from_openclaw_result(tenant, result)
         return JsonResponse(result)
     # Forwarding failed (timeout or error) — tell the user to retry
     return JsonResponse(send_temporary_error(chat_id))
