@@ -19,6 +19,7 @@ from .azure_client import (
     register_environment_storage,
     store_tenant_internal_key_in_key_vault,
     update_container_env_var,
+    upload_config_to_file_share,
 )
 from .key_utils import generate_internal_api_key, hash_internal_api_key
 from .config_generator import config_to_json, generate_openclaw_config
@@ -76,6 +77,9 @@ def provision_tenant(tenant_id: str) -> None:
         create_tenant_file_share(str(tenant.id))
         register_environment_storage(str(tenant.id))
 
+        # 2f2. Write config to file share so OpenClaw reads it on first boot
+        upload_config_to_file_share(str(tenant.id), config_json)
+
         # 2g. Render workspace templates based on persona
         persona_key = (tenant.user.preferences or {}).get("agent_persona", "neighbor")
         workspace_env = render_workspace_files(persona_key)
@@ -126,6 +130,10 @@ def update_tenant_config(tenant_id: str) -> None:
     config = generate_openclaw_config(tenant)
     config_json = config_to_json(config)
 
+    # Write to file share (source of truth — OpenClaw reads from file after first boot)
+    upload_config_to_file_share(str(tenant.id), config_json)
+
+    # Also update env var for consistency (used on first-ever boot of new revisions)
     update_container_env_var(
         tenant.container_id, "OPENCLAW_CONFIG_JSON", config_json,
     )

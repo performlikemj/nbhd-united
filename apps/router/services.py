@@ -93,17 +93,16 @@ async def forward_to_openclaw(
     container_fqdn: str,
     update: dict,
     *,
-    timeout: float = 90.0,
-    max_retries: int = 1,
+    timeout: float = 10.0,
+    max_retries: int = 0,
     retry_delay: float = 5.0,
 ) -> dict | None:
     """Forward a Telegram update to an OpenClaw instance's gateway.
 
-    OpenClaw's Telegram channel plugin expects to receive webhook
-    updates at its gateway. We proxy them through.
-
-    Uses a longer timeout (90s) to accommodate Azure Container Apps
-    cold starts when minReplicas=0, and retries once on timeout.
+    Uses a short timeout (10s) to stay well within gunicorn's 120s limit.
+    When Azure Container Apps scales from zero, the initial request triggers
+    the scale-up even if it times out. The user is told to retry in ~30s,
+    by which time the container is warm.
     """
     url = f"https://{container_fqdn}/telegram-webhook"
 
@@ -153,8 +152,8 @@ def send_temporary_error(chat_id: int) -> dict:
         "method": "sendMessage",
         "chat_id": chat_id,
         "text": (
-            "Your assistant is waking up but took longer than expected. "
-            "Please send your message again in a moment!"
+            "Grabbing my coffee \u2615 \u2014 send that again in about "
+            "30 seconds and I'll be ready!"
         ),
     }
 

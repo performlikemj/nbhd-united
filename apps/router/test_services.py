@@ -119,6 +119,7 @@ class ForwardingBehaviorTest(TestCase):
             forward_to_openclaw(
                 "oc-router.internal.azurecontainerapps.io",
                 {"message": {"chat": {"id": 1}}},
+                max_retries=1,
                 retry_delay=0.0,
             )
         )
@@ -159,13 +160,26 @@ class ForwardingBehaviorTest(TestCase):
         self.assertNotIn(":18789", url)
         self.assertEqual(url, "https://oc-test.internal.azurecontainerapps.io/telegram-webhook")
 
+    @patch("apps.router.services.httpx.AsyncClient")
+    def test_forward_default_no_retries(self, mock_async_client):
+        """Default: single attempt, no retries on timeout."""
+        mock_client = AsyncMock()
+        mock_client.post.side_effect = httpx.TimeoutException("cold start")
+        mock_async_client.return_value.__aenter__.return_value = mock_client
+
+        result = asyncio.run(
+            forward_to_openclaw("oc-test.internal.azurecontainerapps.io", {})
+        )
+        self.assertIsNone(result)
+        self.assertEqual(mock_client.post.call_count, 1)
+
 
 class SendTemporaryErrorTest(TestCase):
     def test_returns_send_message_payload(self):
         result = send_temporary_error(12345)
         self.assertEqual(result["method"], "sendMessage")
         self.assertEqual(result["chat_id"], 12345)
-        self.assertIn("waking up", result["text"])
+        self.assertIn("30 seconds", result["text"])
 
 
 @override_settings(ROUTER_RATE_LIMIT_PER_MINUTE=1)

@@ -282,6 +282,41 @@ def create_tenant_file_share(tenant_id: str) -> dict[str, str]:
     return {"share_name": share_name, "account_name": account_name}
 
 
+def upload_config_to_file_share(tenant_id: str, config_json: str) -> None:
+    """Upload openclaw.json to the tenant's Azure File Share.
+
+    This writes the config directly to the file that OpenClaw reads on boot,
+    ensuring config changes take effect (the OPENCLAW_CONFIG_JSON env var
+    is only read on the very first boot).
+    """
+    share_name = f"ws-{str(tenant_id)[:20]}"
+
+    if _is_mock():
+        logger.info("[MOCK] Uploaded config to file share %s", share_name)
+        return
+
+    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
+    if not account_name:
+        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
+
+    from azure.storage.fileshare import ShareFileClient
+
+    storage_client = get_storage_client()
+    keys = storage_client.storage_accounts.list_keys(
+        settings.AZURE_RESOURCE_GROUP, account_name,
+    )
+    account_key = keys.keys[0].value
+
+    file_client = ShareFileClient(
+        account_url=f"https://{account_name}.file.core.windows.net",
+        share_name=share_name,
+        file_path="openclaw.json",
+        credential=account_key,
+    )
+    file_client.upload_file(config_json.encode("utf-8"), overwrite=True)
+    logger.info("Uploaded openclaw.json to file share %s", share_name)
+
+
 def register_environment_storage(tenant_id: str) -> None:
     """Register a tenant's file share with the Container Apps Environment."""
     if _is_mock():
@@ -455,6 +490,7 @@ def create_container_app(
                             {"name": "ANTHROPIC_API_KEY", "secretRef": "anthropic-key"},
                             {"name": "TELEGRAM_BOT_TOKEN", "secretRef": "telegram-token"},
                             {"name": "NBHD_INTERNAL_API_KEY", "secretRef": "nbhd-internal-api-key"},
+                            {"name": "OPENCLAW_GATEWAY_TOKEN", "secretRef": "nbhd-internal-api-key"},
                             {"name": "NBHD_TENANT_ID", "value": str(tenant_id)},
                             {"name": "NBHD_API_BASE_URL", "value": settings.API_BASE_URL},
                             {"name": "OPENCLAW_CONFIG_JSON", "value": config_json},

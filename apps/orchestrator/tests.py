@@ -101,12 +101,21 @@ class ProvisioningTest(TestCase):
         self.assertEqual(self.tenant.container_id, "")
 
     @patch("apps.orchestrator.services.update_container_env_var")
-    def test_update_tenant_config_pushes_new_config(self, mock_update_env):
+    @patch("apps.orchestrator.services.upload_config_to_file_share")
+    def test_update_tenant_config_pushes_new_config(self, mock_upload, mock_update_env):
         provision_tenant(str(self.tenant.id))
         self.tenant.refresh_from_db()
 
+        mock_upload.reset_mock()
         update_tenant_config(str(self.tenant.id))
 
+        # File share is updated (source of truth for OpenClaw)
+        mock_upload.assert_called_once()
+        upload_args = mock_upload.call_args[0]
+        self.assertEqual(upload_args[0], str(self.tenant.id))
+        self.assertIn("111222333", upload_args[1])
+
+        # Env var also updated for consistency
         mock_update_env.assert_called_once()
         call_args = mock_update_env.call_args
         self.assertEqual(call_args[0][0], self.tenant.container_id)

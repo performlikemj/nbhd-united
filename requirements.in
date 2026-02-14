@@ -42,6 +42,7 @@ azure-mgmt-appcontainers
 azure-mgmt-msi
 azure-mgmt-authorization
 azure-mgmt-storage
+azure-storage-file-share
 azure-keyvault-secrets
 
 # Utils

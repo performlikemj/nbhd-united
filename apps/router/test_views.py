@@ -90,7 +90,7 @@ class TelegramWebhookViewTest(TestCase):
         body = response.json()
         self.assertEqual(body["method"], "sendMessage")
         self.assertEqual(body["chat_id"], 987654)
-        self.assertIn("waking up", body["text"])
+        self.assertIn("30 seconds", body["text"])
 
 
 @override_settings(TELEGRAM_WEBHOOK_SECRET="test-secret", ROUTER_RATE_LIMIT_PER_MINUTE=1)

@@ -38,6 +38,7 @@ azure-core==1.38.1
     #   azure-identity
     #   azure-keyvault-secrets
     #   azure-mgmt-core
+    #   azure-storage-file-share
     #   msrest
 azure-identity==1.25.2
     # via -r requirements.in
@@ -59,6 +60,8 @@ azure-mgmt-core==1.6.0
 azure-mgmt-msi==7.1.0
     # via -r requirements.in
 azure-mgmt-storage==24.0.0
+    # via -r requirements.in
+azure-storage-file-share==12.24.0
     # via -r requirements.in
 build==1.4.0
     # via pip-tools
@@ -84,6 +87,7 @@ composio-client==1.27.0
 cryptography==46.0.5
     # via
     #   azure-identity
+    #   azure-storage-file-share
     #   msal
     #   pyjwt
 distro==1.9.0
@@ -158,6 +162,7 @@ isodate==0.7.2
     #   azure-mgmt-authorization
     #   azure-mgmt-containerinstance
     #   azure-mgmt-msi
+    #   azure-storage-file-share
     #   msrest
 jinja2==3.1.6
     # via litellm
@@ -314,6 +319,7 @@ typing-extensions==4.15.0
     #   azure-mgmt-appcontainers
     #   azure-mgmt-msi
     #   azure-mgmt-storage
+    #   azure-storage-file-share
     #   composio
     #   composio-client
     #   huggingface-hub

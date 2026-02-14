@@ -93,6 +93,7 @@ class AzureClientTest(SimpleTestCase):
         self.assertEqual(env_map["OPENCLAW_CONFIG_JSON"]["value"], config_json)
         self.assertEqual(env_map["AZURE_CLIENT_ID"]["value"], "client-123")
         self.assertEqual(env_map["NBHD_INTERNAL_API_KEY"]["secretRef"], "nbhd-internal-api-key")
+        self.assertEqual(env_map["OPENCLAW_GATEWAY_TOKEN"]["secretRef"], "nbhd-internal-api-key")
 
     @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="env")
     @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
