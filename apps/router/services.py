@@ -43,6 +43,15 @@ def resolve_container(chat_id: int) -> str | None:
     return None
 
 
+def resolve_user_timezone(chat_id: int) -> str:
+    """Look up user's preferred timezone; return UTC when unknown."""
+    try:
+        user = User.objects.get(telegram_chat_id=chat_id)
+        return user.timezone or "UTC"
+    except User.DoesNotExist:
+        return "UTC"
+
+
 def invalidate_cache(chat_id: int) -> None:
     """Remove a chat_id from the route cache."""
     _route_cache.pop(chat_id, None)
@@ -93,6 +102,7 @@ async def forward_to_openclaw(
     container_fqdn: str,
     update: dict,
     *,
+    user_timezone: str = "UTC",
     timeout: float = 10.0,
     max_retries: int = 0,
     retry_delay: float = 5.0,
@@ -110,7 +120,14 @@ async def forward_to_openclaw(
     while True:
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(url, json=update)
+                resp = await client.post(
+                    url,
+                    json=update,
+                    headers={
+                        "X-Telegram-Bot-Api-Secret-Token": settings.TELEGRAM_WEBHOOK_SECRET,
+                        "X-User-Timezone": user_timezone,
+                    },
+                )
                 resp.raise_for_status()
                 return resp.json() if resp.content else None
         except httpx.TimeoutException:

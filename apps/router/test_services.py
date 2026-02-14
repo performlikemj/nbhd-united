@@ -64,6 +64,7 @@ class RouteCacheTTLTest(TestCase):
         self.assertEqual(fqdn, "oc-ttl.internal.azurecontainerapps.io")
 
 
+@override_settings(TELEGRAM_WEBHOOK_SECRET="test-webhook-secret")
 class ForwardingBehaviorTest(TestCase):
     @patch("apps.router.services.httpx.AsyncClient")
     def test_forward_to_openclaw_success(self, mock_async_client):
@@ -83,6 +84,7 @@ class ForwardingBehaviorTest(TestCase):
         mock_client.post.assert_called_once_with(
             "https://oc-router.internal.azurecontainerapps.io/telegram-webhook",
             json={"message": {"chat": {"id": 1}}},
+            headers={"X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret"},
         )
 
     @patch("apps.router.services.httpx.AsyncClient")
