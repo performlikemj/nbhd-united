@@ -48,7 +48,7 @@ OAUTH_CLIENT_CREDENTIALS = {
 
 def _redirect_to_integrations(frontend_url: str, params: dict[str, str]) -> HttpResponse:
     query = urlencode(params)
-    return redirect(f"{frontend_url}/integrations?{query}")
+    return redirect(f"{frontend_url}/settings/integrations?{query}")
 
 
 def _state_nonce_cache_key(nonce: str) -> str:

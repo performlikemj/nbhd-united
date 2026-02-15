@@ -92,7 +92,7 @@ class OAuthCallbackViewTest(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
             response["Location"],
-            "http://localhost:3000/integrations?error=invalid_state",
+            "http://localhost:3000/settings/integrations?error=invalid_state",
         )
 
     @patch("apps.integrations.views.fetch_provider_email", return_value="person@example.com")
@@ -121,7 +121,7 @@ class OAuthCallbackViewTest(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
             response["Location"],
-            "http://localhost:3000/integrations?connected=gmail",
+            "http://localhost:3000/settings/integrations?connected=gmail",
         )
         mock_connect.assert_called_once()
         self.assertEqual(mock_connect.call_args.kwargs["provider_email"], "person@example.com")
@@ -143,7 +143,7 @@ class OAuthCallbackViewTest(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
             response["Location"],
-            "http://localhost:3000/integrations?error=oauth_not_configured",
+            "http://localhost:3000/settings/integrations?error=oauth_not_configured",
         )
 
     @patch("apps.integrations.views.fetch_provider_email", return_value=None)
@@ -168,9 +168,9 @@ class OAuthCallbackViewTest(TestCase):
         )
 
         self.assertEqual(first.status_code, 302)
-        self.assertEqual(first["Location"], "http://localhost:3000/integrations?connected=gmail")
+        self.assertEqual(first["Location"], "http://localhost:3000/settings/integrations?connected=gmail")
         self.assertEqual(second.status_code, 302)
-        self.assertEqual(second["Location"], "http://localhost:3000/integrations?error=invalid_state")
+        self.assertEqual(second["Location"], "http://localhost:3000/settings/integrations?error=invalid_state")
 
     @patch("apps.integrations.views.fetch_provider_email", return_value=None)
     @patch("apps.integrations.views.connect_integration")
@@ -205,7 +205,7 @@ class OAuthCallbackViewTest(TestCase):
             )
 
         self.assertEqual(first.status_code, 302)
-        self.assertEqual(first["Location"], "http://localhost:3000/integrations?connected=gmail")
+        self.assertEqual(first["Location"], "http://localhost:3000/settings/integrations?connected=gmail")
         self.assertEqual(second.status_code, 302)
-        self.assertEqual(second["Location"], "http://localhost:3000/integrations?error=invalid_state")
+        self.assertEqual(second["Location"], "http://localhost:3000/settings/integrations?error=invalid_state")
         self.assertEqual(mock_post.call_count, 1)
