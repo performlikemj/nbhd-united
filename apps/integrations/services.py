@@ -45,6 +45,20 @@ def _get_composio_client():
         if not api_key:
             raise IntegrationProviderConfigError("COMPOSIO_API_KEY not configured")
         _composio_client = Composio(api_key=api_key)
+
+        # Ensure credential masking is disabled so connected_accounts.get()
+        # returns real access tokens instead of "ya29..."-style placeholders.
+        try:
+            _composio_client._client.project.config.update(
+                mask_secret_keys_in_connected_account=False,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to disable Composio credential masking; "
+                "tokens may be masked",
+                exc_info=True,
+            )
+
     return _composio_client
 
 
@@ -195,6 +209,13 @@ def _get_composio_access_token(
     # Extract access_token from the connected account state
     credentials = _composio_val_to_dict(account)
     access_token = credentials.get("access_token", "")
+
+    logger.debug(
+        "Composio credentials for provider=%s: token_len=%d keys=%s",
+        provider,
+        len(access_token),
+        sorted(credentials.keys()),
+    )
     # Fall back: some providers put the token in an "Authorization" header value
     if not access_token:
         auth_header = credentials.get("Authorization", "")

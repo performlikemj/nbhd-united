@@ -20,6 +20,7 @@ from .services import (
     IntegrationScopeError,
     IntegrationTokenDataError,
     _extract_composio_email,
+    _get_composio_client,
     initiate_composio_connection,
     connect_integration,
     disconnect_integration,
@@ -158,6 +159,27 @@ class IntegrationServiceTest(TestCase):
             callback_url="https://app.example.com/callback",
             allow_multiple=True,
         )
+
+    @override_settings(COMPOSIO_API_KEY="test-key")
+    def test_get_composio_client_disables_credential_masking(self):
+        import apps.integrations.services as svc
+
+        mock_composio_cls = Mock()
+        mock_instance = Mock()
+        mock_composio_cls.return_value = mock_instance
+
+        # Reset the singleton so _get_composio_client() re-creates it
+        original = svc._composio_client
+        svc._composio_client = None
+        try:
+            with patch.dict("sys.modules", {"composio": Mock(Composio=mock_composio_cls)}):
+                client = _get_composio_client()
+
+            mock_instance._client.project.config.update.assert_called_once_with(
+                mask_secret_keys_in_connected_account=False,
+            )
+        finally:
+            svc._composio_client = original
 
 
 @override_settings(
