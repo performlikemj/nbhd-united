@@ -19,6 +19,7 @@ from .services import (
     IntegrationRefreshError,
     IntegrationScopeError,
     IntegrationTokenDataError,
+    _extract_composio_email,
     initiate_composio_connection,
     connect_integration,
     disconnect_integration,
@@ -323,3 +324,140 @@ class IntegrationCredentialBrokerTest(TestCase):
 
         integration.refresh_from_db()
         self.assertEqual(integration.status, Integration.Status.EXPIRED)
+
+
+@override_settings(COMPOSIO_API_KEY="test-key")
+class ComposioConnectedAccountsAPITest(TestCase):
+    """Tests for the new connected_accounts.get()-based Composio helpers."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Composio", telegram_chat_id=717171)
+
+    @patch("apps.integrations.services._get_composio_client")
+    def test_extract_composio_email_returns_email(self, mock_get_client):
+        state = Mock()
+        state.val = {"email": "user@gmail.com", "access_token": "tok"}
+        account = Mock(state=state)
+        mock_get_client.return_value.connected_accounts.get.return_value = account
+
+        result = _extract_composio_email("conn-123")
+
+        self.assertEqual(result, "user@gmail.com")
+        mock_get_client.return_value.connected_accounts.get.assert_called_once_with(
+            id="conn-123",
+        )
+
+    @patch("apps.integrations.services._get_composio_client")
+    def test_extract_composio_email_returns_empty_when_missing(self, mock_get_client):
+        state = Mock()
+        state.val = {"access_token": "tok"}
+        account = Mock(state=state)
+        mock_get_client.return_value.connected_accounts.get.return_value = account
+
+        result = _extract_composio_email("conn-123")
+
+        self.assertEqual(result, "")
+
+    @patch("apps.integrations.services._get_composio_client")
+    def test_extract_composio_email_handles_exception(self, mock_get_client):
+        mock_get_client.return_value.connected_accounts.get.side_effect = RuntimeError("boom")
+
+        result = _extract_composio_email("conn-123")
+
+        self.assertEqual(result, "")
+
+    @patch("apps.integrations.services._get_composio_client")
+    def test_get_composio_access_token_returns_token(self, mock_get_client):
+        state = Mock()
+        state.val = {"access_token": "real-token", "email": "u@gmail.com"}
+        account = Mock(state=state)
+        mock_get_client.return_value.connected_accounts.get.return_value = account
+
+        Integration.objects.create(
+            tenant=self.tenant,
+            provider="gmail",
+            status=Integration.Status.ACTIVE,
+            composio_connected_account_id="conn-456",
+        )
+
+        result = get_valid_provider_access_token(self.tenant, "gmail")
+
+        self.assertEqual(result.access_token, "real-token")
+        self.assertEqual(result.provider, "gmail")
+        mock_get_client.return_value.connected_accounts.get.assert_called_once_with(
+            id="conn-456",
+        )
+
+    @patch("apps.integrations.services._get_composio_client")
+    def test_get_composio_access_token_falls_back_to_authorization_header(self, mock_get_client):
+        state = Mock()
+        state.val = {"Authorization": "Bearer header-token"}
+        account = Mock(state=state)
+        mock_get_client.return_value.connected_accounts.get.return_value = account
+
+        Integration.objects.create(
+            tenant=self.tenant,
+            provider="gmail",
+            status=Integration.Status.ACTIVE,
+            composio_connected_account_id="conn-789",
+        )
+
+        result = get_valid_provider_access_token(self.tenant, "gmail")
+
+        self.assertEqual(result.access_token, "header-token")
+
+    @patch("apps.integrations.services._get_composio_client")
+    def test_get_composio_access_token_raises_on_masked_token(self, mock_get_client):
+        state = Mock()
+        state.val = {"access_token": "ya29.a0AfH6S..."}
+        account = Mock(state=state)
+        mock_get_client.return_value.connected_accounts.get.return_value = account
+
+        integration = Integration.objects.create(
+            tenant=self.tenant,
+            provider="gmail",
+            status=Integration.Status.ACTIVE,
+            composio_connected_account_id="conn-masked",
+        )
+
+        with self.assertRaises(IntegrationTokenDataError):
+            get_valid_provider_access_token(self.tenant, "gmail")
+
+        integration.refresh_from_db()
+        self.assertEqual(integration.status, Integration.Status.ERROR)
+
+    @patch("apps.integrations.services._get_composio_client")
+    def test_get_composio_access_token_recovers_from_error_status(self, mock_get_client):
+        state = Mock()
+        state.val = {"access_token": "recovered-token"}
+        account = Mock(state=state)
+        mock_get_client.return_value.connected_accounts.get.return_value = account
+
+        integration = Integration.objects.create(
+            tenant=self.tenant,
+            provider="gmail",
+            status=Integration.Status.ERROR,
+            composio_connected_account_id="conn-recover",
+        )
+
+        result = get_valid_provider_access_token(self.tenant, "gmail")
+
+        self.assertEqual(result.access_token, "recovered-token")
+        integration.refresh_from_db()
+        self.assertEqual(integration.status, Integration.Status.ACTIVE)
+
+    @patch("apps.integrations.services._get_composio_client")
+    def test_get_composio_access_token_raises_on_api_failure(self, mock_get_client):
+        mock_get_client.return_value.connected_accounts.get.side_effect = RuntimeError(
+            "API down"
+        )
+
+        Integration.objects.create(
+            tenant=self.tenant,
+            provider="gmail",
+            status=Integration.Status.ACTIVE,
+            composio_connected_account_id="conn-fail",
+        )
+
+        with self.assertRaises(IntegrationRefreshError):
+            get_valid_provider_access_token(self.tenant, "gmail")

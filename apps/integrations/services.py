@@ -135,10 +135,9 @@ def _extract_composio_email(connected_account_id: str) -> str:
     """Best-effort email extraction from a Composio connected account."""
     try:
         client = _get_composio_client()
-        auth_params = client.get_auth_params(connection_id=connected_account_id)
-        for param in auth_params.get("parameters", []):
-            if param.get("name") == "email":
-                return param.get("value", "")
+        account = client.connected_accounts.get(id=connected_account_id)
+        credentials = getattr(getattr(account, "state", None), "val", None) or {}
+        return credentials.get("email", "")
     except Exception:
         logger.warning(
             "Could not extract email from Composio account %s",
@@ -162,12 +161,12 @@ def _get_composio_access_token(
     client = _get_composio_client()
 
     try:
-        auth_params = client.get_auth_params(
-            connection_id=integration.composio_connected_account_id,
+        account = client.connected_accounts.get(
+            id=integration.composio_connected_account_id,
         )
     except Exception as exc:
         logger.exception(
-            "Composio get_auth_params failed for provider=%s "
+            "Composio connected_accounts.get failed for provider=%s "
             "connected_account_id=%s tenant=%s",
             provider,
             integration.composio_connected_account_id,
@@ -177,16 +176,16 @@ def _get_composio_access_token(
             f"Failed to retrieve Composio auth params for provider={provider}"
         ) from exc
 
-    # Extract access_token from the parameters list
-    access_token = ""
-    for param in auth_params.get("parameters", []):
-        if param.get("name") in ("access_token", "Authorization"):
-            value = param.get("value", "")
-            # Strip "Bearer " prefix if present
-            if value.startswith("Bearer "):
-                value = value[7:]
-            access_token = value
-            break
+    # Extract access_token from the connected account state
+    credentials = getattr(getattr(account, "state", None), "val", None) or {}
+    access_token = credentials.get("access_token", "")
+    # Fall back: some providers put the token in an "Authorization" header value
+    if not access_token:
+        auth_header = credentials.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            access_token = auth_header[7:]
+        else:
+            access_token = auth_header
 
     if not access_token or access_token.endswith("..."):
         _mark_integration_status(integration, Integration.Status.ERROR)
