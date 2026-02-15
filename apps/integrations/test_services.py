@@ -344,7 +344,7 @@ class ComposioConnectedAccountsAPITest(TestCase):
 
         self.assertEqual(result, "user@gmail.com")
         mock_get_client.return_value.connected_accounts.get.assert_called_once_with(
-            id="conn-123",
+            "conn-123",
         )
 
     @patch("apps.integrations.services._get_composio_client")
@@ -385,7 +385,7 @@ class ComposioConnectedAccountsAPITest(TestCase):
         self.assertEqual(result.access_token, "real-token")
         self.assertEqual(result.provider, "gmail")
         mock_get_client.return_value.connected_accounts.get.assert_called_once_with(
-            id="conn-456",
+            "conn-456",
         )
 
     @patch("apps.integrations.services._get_composio_client")

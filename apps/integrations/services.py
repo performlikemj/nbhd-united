@@ -131,12 +131,28 @@ def complete_composio_connection(
     return integration
 
 
+def _composio_val_to_dict(account) -> dict:
+    """Safely extract a credentials dict from a Composio connected account.
+
+    ``account.state.val`` may be a Pydantic model (composio-client >=1.27)
+    or a plain dict; this helper normalises both to a dict.
+    """
+    val = getattr(getattr(account, "state", None), "val", None)
+    if val is None:
+        return {}
+    if isinstance(val, dict):
+        return val
+    if hasattr(val, "model_dump"):
+        return val.model_dump()
+    return {}
+
+
 def _extract_composio_email(connected_account_id: str) -> str:
     """Best-effort email extraction from a Composio connected account."""
     try:
         client = _get_composio_client()
-        account = client.connected_accounts.get(id=connected_account_id)
-        credentials = getattr(getattr(account, "state", None), "val", None) or {}
+        account = client.connected_accounts.get(connected_account_id)
+        credentials = _composio_val_to_dict(account)
         return credentials.get("email", "")
     except Exception:
         logger.warning(
@@ -162,7 +178,7 @@ def _get_composio_access_token(
 
     try:
         account = client.connected_accounts.get(
-            id=integration.composio_connected_account_id,
+            integration.composio_connected_account_id,
         )
     except Exception as exc:
         logger.exception(
@@ -177,7 +193,7 @@ def _get_composio_access_token(
         ) from exc
 
     # Extract access_token from the connected account state
-    credentials = getattr(getattr(account, "state", None), "val", None) or {}
+    credentials = _composio_val_to_dict(account)
     access_token = credentials.get("access_token", "")
     # Fall back: some providers put the token in an "Authorization" header value
     if not access_token:
@@ -620,7 +636,7 @@ def disconnect_integration(tenant: Tenant, provider: str) -> None:
         try:
             client = _get_composio_client()
             client.connected_accounts.delete(
-                account_id=integration.composio_connected_account_id,
+                integration.composio_connected_account_id,
             )
         except Exception:
             logger.warning(
