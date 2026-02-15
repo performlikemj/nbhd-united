@@ -5,6 +5,8 @@ import {
   AutomationRun,
   DashboardData,
   Integration,
+  JournalEntry,
+  JournalEntryEnergy,
   Tenant,
   UsageRecord,
   UsageSummary,
@@ -305,4 +307,45 @@ export function fetchAutomationRuns(): Promise<PaginatedResponse<AutomationRun>>
 
 export function fetchAutomationRunsForAutomation(id: string): Promise<PaginatedResponse<AutomationRun>> {
   return apiFetch<PaginatedResponse<AutomationRun>>(`/api/v1/automations/${id}/runs/`);
+}
+
+// Journal
+export interface JournalEntryInput {
+  date: string;
+  mood: string;
+  energy: JournalEntryEnergy;
+  wins: string[];
+  challenges: string[];
+  reflection: string;
+}
+
+export function fetchJournalEntries(
+  params?: { date_from?: string; date_to?: string },
+): Promise<JournalEntry[]> {
+  const searchParams = new URLSearchParams();
+  if (params?.date_from) searchParams.set("date_from", params.date_from);
+  if (params?.date_to) searchParams.set("date_to", params.date_to);
+  const query = searchParams.toString();
+  return apiFetch<JournalEntry[]>(`/api/v1/journal/${query ? `?${query}` : ""}`);
+}
+
+export function createJournalEntry(data: JournalEntryInput): Promise<JournalEntry> {
+  return apiFetch<JournalEntry>("/api/v1/journal/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateJournalEntry(
+  id: string,
+  data: Partial<JournalEntryInput>,
+): Promise<JournalEntry> {
+  return apiFetch<JournalEntry>(`/api/v1/journal/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteJournalEntry(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/journal/${id}/`, { method: "DELETE" });
 }

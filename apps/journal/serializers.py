@@ -1,4 +1,4 @@
-"""Serializers for runtime-created journal artifacts."""
+"""Serializers for journal artifacts."""
 from __future__ import annotations
 
 from rest_framework import serializers
@@ -128,3 +128,66 @@ class WeeklyReviewRuntimeSerializer(serializers.ModelSerializer):
     def create(self, validated_data: dict) -> WeeklyReview:
         tenant = self.context["tenant"]
         return WeeklyReview.objects.create(tenant=tenant, **validated_data)
+
+
+def _build_raw_text(data: dict) -> str:
+    parts = []
+    if data.get("mood"):
+        parts.append(f"Mood: {data['mood']}")
+    if data.get("energy"):
+        parts.append(f"Energy: {data['energy']}")
+    if data.get("wins"):
+        parts.append("Wins: " + ", ".join(data["wins"]))
+    if data.get("challenges"):
+        parts.append("Challenges: " + ", ".join(data["challenges"]))
+    if data.get("reflection"):
+        parts.append(f"Reflection: {data['reflection']}")
+    return "\n".join(parts)
+
+
+class JournalEntrySerializer(serializers.ModelSerializer):
+    """User-facing serializer (JWT auth). Excludes tenant and auto-generates raw_text."""
+
+    class Meta:
+        model = JournalEntry
+        fields = (
+            "id",
+            "date",
+            "mood",
+            "energy",
+            "wins",
+            "challenges",
+            "reflection",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("id", "created_at", "updated_at")
+
+    def validate_wins(self, value):
+        return _validate_string_list(field_name="wins", value=value)
+
+    def validate_challenges(self, value):
+        return _validate_string_list(field_name="challenges", value=value)
+
+    def validate_mood(self, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise serializers.ValidationError("mood is required.")
+        return normalized
+
+    def validate_reflection(self, value: str) -> str:
+        return value.strip()
+
+    def create(self, validated_data: dict) -> JournalEntry:
+        tenant = self.context["tenant"]
+        raw_text = _build_raw_text(validated_data)
+        return JournalEntry.objects.create(tenant=tenant, raw_text=raw_text, **validated_data)
+
+    def update(self, instance: JournalEntry, validated_data: dict) -> JournalEntry:
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.raw_text = _build_raw_text(
+            {f: getattr(instance, f) for f in ("mood", "energy", "wins", "challenges", "reflection")}
+        )
+        instance.save()
+        return instance

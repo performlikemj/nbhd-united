@@ -4,13 +4,16 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   createAutomation,
+  createJournalEntry,
   deleteAutomation,
+  deleteJournalEntry,
   disconnectIntegration,
   fetchAutomationRuns,
   fetchAutomationRunsForAutomation,
   fetchAutomations,
   fetchDashboard,
   fetchIntegrations,
+  fetchJournalEntries,
   fetchMe,
   fetchPersonas,
   fetchPreferences,
@@ -28,6 +31,7 @@ import {
   requestStripePortal,
   unlinkTelegram,
   updateAutomation,
+  updateJournalEntry,
   updatePreferences,
 } from "@/lib/api";
 
@@ -243,6 +247,45 @@ export function useRunAutomationMutation() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["automations"] });
       void queryClient.invalidateQueries({ queryKey: ["automation-runs"] });
+    },
+  });
+}
+
+// Journal
+export function useJournalEntriesQuery() {
+  return useQuery({
+    queryKey: ["journal-entries"],
+    queryFn: () => fetchJournalEntries(),
+  });
+}
+
+export function useCreateJournalEntryMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createJournalEntry,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["journal-entries"] });
+    },
+  });
+}
+
+export function useUpdateJournalEntryMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof updateJournalEntry>[1] }) =>
+      updateJournalEntry(id, data),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["journal-entries"] });
+    },
+  });
+}
+
+export function useDeleteJournalEntryMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteJournalEntry,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["journal-entries"] });
     },
   });
 }

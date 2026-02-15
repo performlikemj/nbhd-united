@@ -8,6 +8,7 @@ urlpatterns = [
     path("api/v1/billing/", include("apps.billing.urls")),
     path("api/v1/integrations/", include("apps.integrations.urls")),
     path("api/v1/automations/", include("apps.automations.urls")),
+    path("api/v1/journal/", include("apps.journal.urls")),
     path("api/v1/dashboard/", include("apps.dashboard.urls")),
     path("api/v1/telegram/", include("apps.router.urls")),
     path("api/cron/", include("apps.cron.urls")),

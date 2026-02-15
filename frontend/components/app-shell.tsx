@@ -15,6 +15,7 @@ const navItems = [
   { href: "/onboarding", label: "Onboarding" },
   { href: "/integrations", label: "Integrations" },
   { href: "/automations", label: "Automations" },
+  { href: "/journal", label: "Journal" },
   { href: "/usage", label: "Usage" },
   { href: "/billing", label: "Billing" },
 ];

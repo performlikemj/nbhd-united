@@ -124,6 +124,21 @@ export interface UsageSummary {
   budget: UsageBudgetSummary;
 }
 
+// Journal
+export type JournalEntryEnergy = "low" | "medium" | "high";
+
+export interface JournalEntry {
+  id: string;
+  date: string;
+  mood: string;
+  energy: JournalEntryEnergy;
+  wins: string[];
+  challenges: string[];
+  reflection: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export type AutomationKind = "daily_brief" | "weekly_review";
 export type AutomationStatus = "active" | "paused";
 export type AutomationScheduleType = "daily" | "weekly";
