@@ -207,6 +207,20 @@ AZURE_KV_SECRET_TELEGRAM_WEBHOOK_SECRET = env(
     "AZURE_KV_SECRET_TELEGRAM_WEBHOOK_SECRET",
     default="telegram-webhook-secret",
 )
+AZURE_KV_SECRET_BRAVE_API_KEY = env(
+    "AZURE_KV_SECRET_BRAVE_API_KEY",
+    default="brave-api-key",
+)
+AZURE_KV_SECRET_OPENAI_API_KEY = env(
+    "AZURE_KV_SECRET_OPENAI_API_KEY",
+    default="openai-api-key",
+)
+
+# Brave Search API (shared key for subscriber web_search)
+BRAVE_API_KEY = env("BRAVE_API_KEY", default="")
+
+# OpenAI API (shared key for Whisper transcription)
+OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 
 # Azure
 AZURE_SUBSCRIPTION_ID = env("AZURE_SUBSCRIPTION_ID", default="")

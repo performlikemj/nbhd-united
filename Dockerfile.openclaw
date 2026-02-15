@@ -10,6 +10,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install --global "openclaw@${OPENCLAW_VERSION}" \
+    && openclaw skill install openai-whisper-api \
     && npm cache clean --force
 
 WORKDIR /opt/nbhd

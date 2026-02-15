@@ -124,6 +124,15 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "bind": "lan",
         },
 
+        # Skills — voice transcription via OpenAI Whisper
+        "skills": {
+            "entries": {
+                "openai-whisper-api": {
+                    "enabled": True,
+                },
+            },
+        },
+
         # Tools
         "tools": _build_tools_section(tier),
 

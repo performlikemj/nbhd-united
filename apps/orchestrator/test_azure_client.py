@@ -25,6 +25,10 @@ from apps.orchestrator.azure_client import (
     TELEGRAM_BOT_TOKEN="telegram-secret",
     TELEGRAM_WEBHOOK_SECRET="webhook-secret",
     NBHD_INTERNAL_API_KEY="internal-secret",
+    BRAVE_API_KEY="brave-secret",
+    OPENAI_API_KEY="openai-secret",
+    AZURE_KV_SECRET_BRAVE_API_KEY="brave-api-key",
+    AZURE_KV_SECRET_OPENAI_API_KEY="openai-api-key",
     API_BASE_URL="https://nbhd-django.example.com",
 )
 class AzureClientTest(SimpleTestCase):
@@ -87,6 +91,14 @@ class AzureClientTest(SimpleTestCase):
             secret_map["telegram-webhook-secret"]["keyVaultUrl"],
             "https://kv-nbhd-prod.vault.azure.net/secrets/telegram-webhook-secret",
         )
+        self.assertEqual(
+            secret_map["brave-api-key"]["keyVaultUrl"],
+            "https://kv-nbhd-prod.vault.azure.net/secrets/brave-api-key",
+        )
+        self.assertEqual(
+            secret_map["openai-api-key"]["keyVaultUrl"],
+            "https://kv-nbhd-prod.vault.azure.net/secrets/openai-api-key",
+        )
 
         container = payload["properties"]["template"]["containers"][0]
         self.assertEqual(container["image"], "nbhdunited.azurecr.io/nbhd-openclaw:latest")
@@ -100,6 +112,8 @@ class AzureClientTest(SimpleTestCase):
         self.assertEqual(env_map["NBHD_INTERNAL_API_KEY"]["secretRef"], "nbhd-internal-api-key")
         self.assertEqual(env_map["OPENCLAW_GATEWAY_TOKEN"]["secretRef"], "nbhd-internal-api-key")
         self.assertEqual(env_map["OPENCLAW_WEBHOOK_SECRET"]["secretRef"], "telegram-webhook-secret")
+        self.assertEqual(env_map["BRAVE_API_KEY"]["secretRef"], "brave-api-key")
+        self.assertEqual(env_map["OPENAI_API_KEY"]["secretRef"], "openai-api-key")
 
         ingress = payload["properties"]["configuration"]["ingress"]
         self.assertEqual(ingress["targetPort"], 8787)
@@ -306,6 +320,10 @@ class RegisterEnvironmentStorageTest(SimpleTestCase):
     TELEGRAM_BOT_TOKEN="telegram-secret",
     TELEGRAM_WEBHOOK_SECRET="webhook-secret",
     NBHD_INTERNAL_API_KEY="internal-secret",
+    BRAVE_API_KEY="brave-secret",
+    OPENAI_API_KEY="openai-secret",
+    AZURE_KV_SECRET_BRAVE_API_KEY="brave-api-key",
+    AZURE_KV_SECRET_OPENAI_API_KEY="openai-api-key",
     API_BASE_URL="https://nbhd-django.example.com",
 )
 class PerTenantSecretTest(SimpleTestCase):
