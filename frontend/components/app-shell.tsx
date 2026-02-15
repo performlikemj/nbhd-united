@@ -20,7 +20,6 @@ const navItems = [
 ];
 
 const publicPages = ["/login", "/signup"];
-const isReviewPage = (pathname: string): boolean => pathname.startsWith("/review");
 
 function UserMenu({ onLogout }: { onLogout: () => void }) {
   const { data: me } = useMeQuery();
@@ -85,7 +84,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [checked, setChecked] = useState(false);
 
-  const isPublicPage = publicPages.includes(pathname) || pathname.startsWith("/legal/") || isReviewPage(pathname);
+  const isPublicPage = publicPages.includes(pathname) || pathname.startsWith("/legal/");
 
   useEffect(() => {
     if (!isPublicPage && !isLoggedIn()) {

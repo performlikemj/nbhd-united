@@ -90,20 +90,6 @@ export default function LoginPage() {
           </Link>
         </p>
 
-        <div className="mt-8 rounded-panel border border-ink/10 bg-ink/3 px-4 py-3 text-sm text-ink/70">
-          <p className="font-medium text-ink">Stripe Review Access</p>
-          <p className="mt-1 text-ink/70">
-            Reviewers can register with the provided invite code at{" "}
-            <Link href="/signup" className="text-ink underline hover:text-ink/80">
-              /signup
-            </Link>
-            , or visit{" "}
-            <Link href="/review" className="text-ink underline hover:text-ink/80">
-              /review
-            </Link>{" "}
-            for policy and callback-flow evidence.
-          </p>
-        </div>
       </div>
     </div>
   );

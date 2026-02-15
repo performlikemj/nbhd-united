@@ -88,7 +88,7 @@ Runtime endpoint auth contract is enforced by:
 ### Frontend callback-result rendering path
 
 - `frontend/components/app-shell.tsx`
-  - Public pages (`/login`, `/signup`, `/legal/*`, `/review`) render without authentication.
+  - Public pages (`/login`, `/signup`, `/legal/*`) render without authentication.
   - Authenticated pages redirect to `/login` when no session is present.
 
 ### Signup invite-code gate
@@ -153,7 +153,6 @@ OPENCLAW_CONTAINER_SECRET_BACKEND=keyvault
 3. Verify invite-code signup gate:
    - signup endpoint validates invite code against `PREVIEW_ACCESS_KEY`
    - all pages are publicly browsable; authenticated pages redirect to login
-   - `/review` provides a public policy packet landing page
 4. Verify env keys above exist in deployed secrets/config (redacted values only).
 5. Verify composio callback endpoints accept unauthenticated callbacks but enforce state/tenant integrity and expiry.
 
@@ -170,5 +169,3 @@ OPENCLAW_CONTAINER_SECRET_BACKEND=keyvault
   - Integrations page shows:
     - `Integrations?connected=<provider>`
     - `Integrations?error=<code>`
-- Audit entry page:
-  - `frontend/app/review/page.tsx` is a public reviewer-facing page that summarizes policy controls and gives callback-result route examples.
