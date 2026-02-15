@@ -173,7 +173,6 @@ def _get_composio_access_token(
             integration.composio_connected_account_id,
             tenant.id,
         )
-        _mark_integration_status(integration, Integration.Status.ERROR)
         raise IntegrationRefreshError(
             f"Failed to retrieve Composio auth params for provider={provider}"
         ) from exc
@@ -195,6 +194,15 @@ def _get_composio_access_token(
             f"Composio returned masked/empty token for provider={provider}. "
             "Ensure 'Mask Connected Account Secrets' is disabled in Composio settings."
         )
+
+    # Auto-recover: if we successfully got a token, clear any error status.
+    if integration.status != Integration.Status.ACTIVE:
+        logger.info(
+            "Composio integration recovered for provider=%s tenant=%s "
+            "(was status=%s)",
+            provider, tenant.id, integration.status,
+        )
+        _mark_integration_status(integration, Integration.Status.ACTIVE)
 
     return ProviderAccessToken(
         access_token=access_token,
@@ -474,11 +482,24 @@ def get_valid_provider_access_token(
     This broker never returns refresh tokens and may refresh on-demand
     when access tokens are missing or near expiry.
     """
-    integration = _get_integration_or_raise(tenant, provider)
+    # Composio path: allow retry even when status is ERROR, since Composio
+    # manages token refresh internally and transient failures should not
+    # permanently block the integration.
+    if is_composio_provider(provider):
+        integration = Integration.objects.filter(
+            tenant=tenant, provider=provider
+        ).first()
+        if integration is None:
+            raise IntegrationNotConnectedError(
+                f"No integration configured for provider={provider}"
+            )
+        if integration.composio_connected_account_id:
+            return _get_composio_access_token(integration, tenant, provider)
+        # Fall through to Key Vault path for legacy integrations without
+        # a Composio connected account.
 
-    # Composio path: managed providers with a connected account ID
-    if is_composio_provider(provider) and integration.composio_connected_account_id:
-        return _get_composio_access_token(integration, tenant, provider)
+    # Non-Composio / legacy path: strict status check
+    integration = _get_integration_or_raise(tenant, provider)
 
     # Existing Key Vault path (Sautai + legacy Google integrations)
     if not _has_read_compatible_scope(integration):
