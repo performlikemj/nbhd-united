@@ -150,6 +150,7 @@ CONTINUITY.md
 - [2026-02-14] Wired Telegram webhook success path to call `record_usage(...)` for message-level usage increments.
 - [2026-02-14] Added `/review` reviewer entry-point link on `/login` to support Stripe audit navigation.
 - [2026-02-15] Fixed journal runtime tests to use `NBHD_INTERNAL_API_KEY` in overrides for consistent internal auth checks.
+- [2026-02-15] Merged `merge/journal-memory-updates` into `main` and pushed final integration commit; branch closed.
 
 ## Open Questions (UNCONFIRMED)
 - UNCONFIRMED: Preferred production auth/session contract for frontend API calls.
