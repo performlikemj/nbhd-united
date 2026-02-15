@@ -1,17 +1,22 @@
-"""Internal runtime Google capability endpoints."""
+"""Internal runtime capability endpoints."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from uuid import UUID
 
 import httpx
+from django.utils import timezone as tz
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.journal.models import JournalEntry
-from apps.journal.serializers import JournalEntryRuntimeSerializer, WeeklyReviewRuntimeSerializer
+from apps.journal.md_utils import append_entry_markdown
+from apps.journal.models import DailyNote, JournalEntry, UserMemory
+from apps.journal.serializers import (
+    JournalEntryRuntimeSerializer,
+    WeeklyReviewRuntimeSerializer,
+)
 from apps.tenants.models import Tenant
 
 from .google_api import (
@@ -520,6 +525,209 @@ class RuntimeCalendarFreeBusyView(APIView):
                 "provider": "google-calendar",
                 "tenant_id": str(tenant.id),
                 **payload,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Markdown-first daily note & memory runtime endpoints
+# ---------------------------------------------------------------------------
+
+
+class RuntimeDailyNotesView(APIView):
+    """GET raw markdown daily note, POST append to daily note (agent access)."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        date_str = request.query_params.get("date")
+        if not date_str:
+            return Response(
+                {"error": "invalid_request", "detail": "date query param required (YYYY-MM-DD)"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            d = date.fromisoformat(date_str)
+        except ValueError:
+            return Response(
+                {"error": "invalid_request", "detail": "date must be YYYY-MM-DD"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        note = DailyNote.objects.filter(tenant=tenant, date=d).first()
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "date": str(d),
+                "markdown": note.markdown if note else "",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class RuntimeDailyNoteAppendView(APIView):
+    """POST append markdown content to a daily note (agent access)."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        content = request.data.get("content", "").strip()
+        if not content:
+            return Response(
+                {"error": "invalid_request", "detail": "content is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        date_str = request.data.get("date")
+        if date_str:
+            try:
+                d = date.fromisoformat(date_str)
+            except ValueError:
+                return Response(
+                    {"error": "invalid_request", "detail": "date must be YYYY-MM-DD"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            d = tz.now().date()
+
+        note, _ = DailyNote.objects.get_or_create(tenant=tenant, date=d)
+
+        time_str = tz.now().strftime("%H:%M")
+        note.markdown = append_entry_markdown(
+            note.markdown,
+            time=time_str,
+            author="agent",
+            content=content,
+            date_str=str(d),
+        )
+        note.save()
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "date": str(d),
+                "markdown": note.markdown,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class RuntimeUserMemoryView(APIView):
+    """GET/PUT raw markdown long-term memory (agent access)."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        memory = UserMemory.objects.filter(tenant=tenant).first()
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "markdown": memory.markdown if memory else "",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def put(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        markdown = request.data.get("markdown", "")
+        memory, _ = UserMemory.objects.get_or_create(tenant=tenant)
+        memory.markdown = markdown
+        memory.save()
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "markdown": memory.markdown,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class RuntimeJournalContextView(APIView):
+    """Combined context: recent daily notes (raw md) + long-term memory (raw md).
+
+    Designed for agent session initialization.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        try:
+            days = _parse_positive_int(
+                request.query_params.get("days"),
+                default=7,
+                max_value=30,
+            )
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": f"days {exc}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        cutoff = (tz.now() - timedelta(days=days)).date()
+
+        recent_notes = DailyNote.objects.filter(
+            tenant=tenant, date__gte=cutoff
+        ).order_by("date")
+
+        memory = UserMemory.objects.filter(tenant=tenant).first()
+
+        notes_data = [
+            {"date": str(n.date), "markdown": n.markdown}
+            for n in recent_notes
+        ]
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "recent_notes": notes_data,
+                "long_term_memory": memory.markdown if memory else "",
+                "recent_notes_count": len(notes_data),
+                "days_back": days,
             },
             status=status.HTTP_200_OK,
         )

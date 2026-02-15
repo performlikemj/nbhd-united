@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from .models import JournalEntry, WeeklyReview
+from .models import DailyNote, JournalEntry, UserMemory, WeeklyReview
 
 MAX_LIST_ITEMS = 10
 
@@ -28,6 +28,11 @@ def _validate_string_list(*, value, field_name: str, allow_empty: bool = True) -
     if not allow_empty and not cleaned:
         raise serializers.ValidationError(f"{field_name} must include at least one item.")
     return cleaned
+
+
+# ---------------------------------------------------------------------------
+# Legacy JournalEntry serializers (untouched)
+# ---------------------------------------------------------------------------
 
 
 class JournalEntryRuntimeSerializer(serializers.ModelSerializer):
@@ -191,3 +196,31 @@ class JournalEntrySerializer(serializers.ModelSerializer):
         )
         instance.save()
         return instance
+
+
+# ---------------------------------------------------------------------------
+# DailyNote serializer (user-facing structured entry)
+# ---------------------------------------------------------------------------
+
+
+class DailyNoteEntryInputSerializer(serializers.Serializer):
+    """Accepts a simple entry from the frontend to append to a daily note."""
+
+    content = serializers.CharField()
+    mood = serializers.CharField(required=False, allow_blank=True, default="")
+    energy = serializers.IntegerField(required=False, default=None, allow_null=True)
+    time = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class DailyNoteEntryPatchSerializer(serializers.Serializer):
+    """Patch a single entry by index."""
+
+    content = serializers.CharField(required=False)
+    mood = serializers.CharField(required=False, allow_blank=True)
+    energy = serializers.IntegerField(required=False, allow_null=True)
+
+
+class MemoryPatchSerializer(serializers.Serializer):
+    """Patch memory — full markdown replacement or section-based."""
+
+    markdown = serializers.CharField()
