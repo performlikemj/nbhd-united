@@ -140,7 +140,11 @@ def _extract_composio_email(connected_account_id: str) -> str:
             if param.get("name") == "email":
                 return param.get("value", "")
     except Exception:
-        logger.debug("Could not extract email from Composio account %s", connected_account_id)
+        logger.warning(
+            "Could not extract email from Composio account %s",
+            connected_account_id,
+            exc_info=True,
+        )
     return ""
 
 
@@ -162,6 +166,13 @@ def _get_composio_access_token(
             connection_id=integration.composio_connected_account_id,
         )
     except Exception as exc:
+        logger.exception(
+            "Composio get_auth_params failed for provider=%s "
+            "connected_account_id=%s tenant=%s",
+            provider,
+            integration.composio_connected_account_id,
+            tenant.id,
+        )
         _mark_integration_status(integration, Integration.Status.ERROR)
         raise IntegrationRefreshError(
             f"Failed to retrieve Composio auth params for provider={provider}"
