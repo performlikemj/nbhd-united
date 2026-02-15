@@ -1,40 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useState } from "react";
 
-import { clearPreviewKey, getPreviewKey, setPreviewKey } from "@/lib/preview";
 import { SectionCard } from "@/components/section-card";
 
 export default function ReviewPage() {
-  const [previewKey, setPreviewKeyState] = useState("");
-  const [message, setMessage] = useState("");
-
-  useEffect(() => {
-    setPreviewKeyState(getPreviewKey() ?? "");
-  }, []);
-
-  const hasPreviewAccess = Boolean(previewKey);
-
-  const saveReviewKey = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const nextKey = (form.get("previewKey") as string | null)?.trim();
-    if (!nextKey) {
-      setMessage("A preview key is required to unlock audit mode.");
-      return;
-    }
-    setPreviewKey(nextKey);
-    setPreviewKeyState(nextKey);
-    setMessage("Preview key saved locally for this browser session.");
-  };
-
-  const clearReviewKey = () => {
-    clearPreviewKey();
-    setPreviewKeyState("");
-    setMessage("Local preview key cleared.");
-  };
-
   return (
     <div className="space-y-5">
       <SectionCard
@@ -46,61 +16,42 @@ export default function ReviewPage() {
         </p>
       </SectionCard>
 
-      <SectionCard title="1) Access Control" subtitle="How preview gates behave during review">
+      <SectionCard title="1) Access Model" subtitle="How registration and access controls work">
         <ul className="list-disc space-y-2 pl-5 text-sm text-ink/75">
-          <li>Preview gating is enforced by middleware for most backend routes.</li>
-          <li>OAuth callback routes are excluded from server-side preview checks.</li>
+          <li>Registration requires an invite code, validated server-side against a configured secret.</li>
+          <li>All pages are publicly browsable; authenticated pages redirect to the login screen.</li>
+          <li>OAuth callback routes are excluded from authentication requirements.</li>
           <li>Frontend callback landing pages render on <code>/integrations?connected=...</code> or <code>/integrations?error=...</code>.</li>
         </ul>
       </SectionCard>
 
-      <SectionCard title="2) Unlock Audit Session" subtitle="Unlock app flow without changing callback URLs">
-        <form className="space-y-3" onSubmit={saveReviewKey}>
-          <label className="block text-sm font-medium text-ink/85" htmlFor="previewKey">
-            Preview key
-          </label>
-          <input
-            id="previewKey"
-            name="previewKey"
-            type="password"
-            required
-            placeholder="Paste preview key for this environment"
-            className="w-full rounded-panel border border-ink/20 px-3 py-2 text-sm outline-none ring-0 transition focus:border-ink/40"
-          />
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="submit"
-              className="rounded-full border border-ink/20 px-4 py-2 text-sm hover:bg-ink/5"
-            >
-              Save preview key
-            </button>
-            <button
-              type="button"
-              onClick={clearReviewKey}
-              className="rounded-full border border-ink/20 px-4 py-2 text-sm hover:bg-rose-50"
-            >
-              Clear preview key
-            </button>
-          </div>
-        </form>
-        {message ? <p className="mt-3 rounded-panel border border-ink/10 bg-ink/5 p-2 text-sm text-ink/80">{message}</p> : null}
-        {hasPreviewAccess ? (
-          <p className="mt-3 rounded-panel border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
-            Preview mode active for this browser.
-          </p>
-        ) : null}
+      <SectionCard title="2) Reviewer Onboarding" subtitle="How to access authenticated areas">
+        <ul className="list-disc space-y-2 pl-5 text-sm text-ink/75">
+          <li>
+            Navigate to{" "}
+            <Link href="/signup" className="text-ink underline hover:text-ink/80">/signup</Link>{" "}
+            and enter the invite code provided by the administrator.
+          </li>
+          <li>After registration, all authenticated pages (dashboard, billing, integrations, etc.) are accessible.</li>
+          <li>
+            Policy pages are always accessible without an account:{" "}
+            <Link href="/legal/privacy" className="text-ink underline hover:text-ink/80">Privacy</Link>,{" "}
+            <Link href="/legal/terms" className="text-ink underline hover:text-ink/80">Terms</Link>,{" "}
+            <Link href="/legal/refund" className="text-ink underline hover:text-ink/80">Refund</Link>.
+          </li>
+        </ul>
       </SectionCard>
 
       <SectionCard title="3) Reviewer Checklist" subtitle="Required review evidence">
         <ul className="list-disc space-y-2 pl-5 text-sm text-ink/75">
-          <li>Confirm policy matrix in `apps/orchestrator/tool_policy.py`.</li>
-          <li>Confirm middleware exemptions in `config/middleware.py`.</li>
-          <li>Confirm runtime auth contract and header behavior in `runtime/openclaw/plugins/nbhd-google-tools/index.js`.</li>
-          <li>Confirm callback-result render path in `frontend/components/app-shell.tsx`.</li>
-          <li>Run `apps/orchestrator/test_azure_client.py` and `apps/integrations` tests.</li>
+          <li>Confirm policy matrix in <code>apps/orchestrator/tool_policy.py</code>.</li>
+          <li>Confirm invite-code signup gate in <code>apps/tenants/auth_views.py</code>.</li>
+          <li>Confirm runtime auth contract and header behavior in <code>runtime/openclaw/plugins/nbhd-google-tools/index.js</code>.</li>
+          <li>Confirm callback-result render path in <code>frontend/components/app-shell.tsx</code>.</li>
+          <li>Run <code>apps/orchestrator/test_azure_client.py</code> and <code>apps/integrations</code> tests.</li>
         </ul>
         <div className="mt-4 rounded-panel border border-ink/10 bg-ink/5 p-3 text-xs">
-          <p className="font-mono text-ink/75">Relevant audit artifact: `docs/stripe-audit-policies.md`.</p>
+          <p className="font-mono text-ink/75">Relevant audit artifact: <code>docs/stripe-audit-policies.md</code>.</p>
         </div>
       </SectionCard>
 
@@ -132,7 +83,8 @@ export default function ReviewPage() {
       <div className="space-y-3 rounded-panel border border-ink/10 bg-white p-4">
         <p className="text-xs uppercase tracking-[0.24em] text-ink/60">Audit support</p>
         <p className="text-sm text-ink/75">
-          If you want a temporary full walkthrough account, ask operations for a scoped reviewer onboarding link so you can reach authenticated areas.
+          If you need a reviewer account, ask operations for an invite code and register at{" "}
+          <Link href="/signup" className="text-ink underline hover:text-ink/80">/signup</Link>.
         </p>
       </div>
     </div>

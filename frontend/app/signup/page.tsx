@@ -12,6 +12,7 @@ export default function SignupPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -21,7 +22,7 @@ export default function SignupPage() {
     setLoading(true);
 
     try {
-      const tokens = await signup(email, password, displayName || undefined);
+      const tokens = await signup(email, password, displayName || undefined, inviteCode || undefined);
       setTokens(tokens.access, tokens.refresh);
       router.push("/");
     } catch (err) {
@@ -39,6 +40,24 @@ export default function SignupPage() {
         <p className="mt-1 text-sm text-ink/65">Sign up to get started with your private AI assistant.</p>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+          <div>
+            <label htmlFor="inviteCode" className="block font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">
+              Invite Code
+            </label>
+            <input
+              id="inviteCode"
+              type="text"
+              required
+              value={inviteCode}
+              onChange={(e) => setInviteCode(e.target.value)}
+              className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-4 py-2.5 text-sm text-ink outline-none focus:border-ink/40"
+              placeholder="Enter your invite code"
+            />
+            <p className="mt-1 text-xs text-ink/45">
+              An invite code is required to create an account.
+            </p>
+          </div>
+
           <div>
             <label htmlFor="displayName" className="block font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">
               Display Name

@@ -1,5 +1,4 @@
 import { clearTokens, getAccessToken, getRefreshToken, setTokens } from "@/lib/auth";
-import { getPreviewKey } from "@/lib/preview";
 import {
   AuthUser,
   Automation,
@@ -51,11 +50,6 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (accessToken) {
     headers["Authorization"] = `Bearer ${accessToken}`;
-  }
-
-  const previewKey = getPreviewKey();
-  if (previewKey) {
-    headers["X-Preview-Key"] = previewKey;
   }
 
   let response = await fetch(`${API_BASE}${path}`, {
@@ -114,10 +108,11 @@ export async function signup(
   email: string,
   password: string,
   displayName?: string,
+  inviteCode?: string,
 ): Promise<{ access: string; refresh: string }> {
   return apiFetch<{ access: string; refresh: string }>("/api/v1/auth/signup/", {
     method: "POST",
-    body: JSON.stringify({ email, password, display_name: displayName }),
+    body: JSON.stringify({ email, password, display_name: displayName, invite_code: inviteCode }),
   });
 }
 

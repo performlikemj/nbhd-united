@@ -1,4 +1,5 @@
 """Authentication views — signup, login, logout, me."""
+from django.conf import settings as django_settings
 from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -26,6 +27,15 @@ class SignupView(APIView):
                 {"detail": "Email and password are required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        required_code = getattr(django_settings, "PREVIEW_ACCESS_KEY", "")
+        if required_code:
+            invite_code = request.data.get("invite_code", "")
+            if invite_code != required_code:
+                return Response(
+                    {"detail": "A valid invite code is required to create an account."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
         if User.objects.filter(email=email).exists():
             return Response(

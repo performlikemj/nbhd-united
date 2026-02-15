@@ -52,7 +52,6 @@ MIDDLEWARE = [
     "django.contrib.sessions.middleware.SessionMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
-    "config.middleware.PreviewAccessMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
@@ -137,7 +136,7 @@ SIMPLE_JWT = {
 # CORS
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
 from corsheaders.defaults import default_headers  # noqa: E402
-CORS_ALLOW_HEADERS = (*default_headers, "x-preview-key")
+CORS_ALLOW_HEADERS = (*default_headers,)
 
 # QStash (replaces Celery — scheduled & on-demand tasks via webhooks)
 QSTASH_CURRENT_SIGNING_KEY = env("QSTASH_CURRENT_SIGNING_KEY", default="")
@@ -235,7 +234,7 @@ USAGE_DASHBOARD_SUBSCRIPTION_PRICE = env.float(
 # API base URL (for OAuth callback redirects)
 API_BASE_URL = env("API_BASE_URL", default="http://localhost:8000")
 
-# Preview access gate (set to a UUID to activate; leave empty to disable)
+# Invite code for gated signup (set to gate registration; leave empty for open signup)
 PREVIEW_ACCESS_KEY = env("PREVIEW_ACCESS_KEY", default="")
 
 # OAuth client credentials

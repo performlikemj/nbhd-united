@@ -7,7 +7,6 @@ import { ReactNode, useEffect, useRef, useState } from "react";
 
 import { logout } from "@/lib/api";
 import { clearTokens, isLoggedIn } from "@/lib/auth";
-import { hasPreviewKey, setPreviewKey } from "@/lib/preview";
 import { useMeQuery } from "@/lib/queries";
 import { SiteFooter } from "@/components/site-footer";
 
@@ -85,30 +84,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [checked, setChecked] = useState(false);
-  const [previewOk, setPreviewOk] = useState(false);
 
   const isPublicPage = publicPages.includes(pathname) || pathname.startsWith("/legal/") || isReviewPage(pathname);
-  const isLegalPage = pathname.startsWith("/legal/");
-  const isIntegrationCallbackResult =
-    pathname === "/integrations" &&
-    typeof window !== "undefined" &&
-    (() => {
-      const params = new URLSearchParams(window.location.search);
-      return params.has("connected") || params.has("error");
-    })();
-
-  // Capture ?preview=<key> from URL, store in localStorage, strip from address bar.
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const keyParam = params.get("preview");
-    if (keyParam) {
-      setPreviewKey(keyParam);
-      const url = new URL(window.location.href);
-      url.searchParams.delete("preview");
-      window.history.replaceState({}, "", url.toString());
-    }
-    setPreviewOk(hasPreviewKey());
-  }, []);
 
   useEffect(() => {
     if (!isPublicPage && !isLoggedIn()) {
@@ -128,36 +105,6 @@ export function AppShell({ children }: { children: ReactNode }) {
       router.push("/login");
     }
   };
-
-  // Preview gate — block most routes except /legal/* unless this is a callback landing page
-  // that needs to surface connected/error state to the user.
-  if (
-    !previewOk &&
-    !isLegalPage &&
-    !isIntegrationCallbackResult &&
-    !isReviewPage(pathname)
-  ) {
-    return (
-      <div className="relative flex min-h-screen flex-col">
-        <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(circle_at_20%_20%,rgba(255,194,153,0.42),transparent_40%),radial-gradient(circle_at_85%_15%,rgba(112,194,184,0.45),transparent_32%),linear-gradient(180deg,#f8f6ef_0%,#eef4f4_48%,#f9f9f6_100%)]" />
-        <div className="pointer-events-none absolute inset-0 -z-10 bg-[linear-gradient(rgba(18,31,38,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(18,31,38,0.05)_1px,transparent_1px)] bg-[size:32px_32px] opacity-70 animate-pulseGrid" />
-        <div className="flex min-h-screen items-center justify-center">
-          <div className="w-full max-w-md rounded-panel border border-ink/10 bg-white/90 p-8 shadow-panel animate-reveal text-center">
-            <p className="font-mono text-xs uppercase tracking-[0.24em] text-ink/70">
-              NBHD United
-            </p>
-            <h2 className="mt-2 text-2xl font-semibold text-ink">
-              Preview Access Required
-            </h2>
-            <p className="mt-2 text-sm text-ink/65">
-              This application is currently in preview. Please use the
-              invite link provided by the administrator.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   if (!checked && !isPublicPage) {
     return null;

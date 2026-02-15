@@ -70,8 +70,6 @@ For every runtime request, plugin sets:
 
 - `X-NBHD-Internal-Key`: internal shared key
 - `X-NBHD-Tenant-Id`: tenant UUID
-- `X-Preview-Key`: optional (`NBHD_PREVIEW_KEY` if configured)
-
 Header assembly is centralized in `getRuntimeConfig()` + `callNbhdRuntimeRequest()`.
 
 Runtime endpoint auth contract is enforced by:
@@ -90,17 +88,15 @@ Runtime endpoint auth contract is enforced by:
 ### Frontend callback-result rendering path
 
 - `frontend/components/app-shell.tsx`
-  - allows `/integrations?connected=...` and `/integrations?error=...` to bypass client-side preview block so callback landings can render results.
-  - allows `/review` to bypass the preview overlay so Stripe reviewers can load policy evidence without requiring preview key injection.
+  - Public pages (`/login`, `/signup`, `/legal/*`, `/review`) render without authentication.
+  - Authenticated pages redirect to `/login` when no session is present.
 
-### Backend preview gate
+### Signup invite-code gate
 
-- `config/middleware.py`
-  - `PreviewAccessMiddleware` enforces `X-Preview-Key` when `PREVIEW_ACCESS_KEY` is set.
-  - Callback paths are exempt:
-    - `/api/v1/integrations/callback/`
-    - `/api/v1/integrations/composio-callback/`
-  - other paths require key unless another exemption applies.
+- `apps/tenants/auth_views.py`
+  - `SignupView` validates `invite_code` from request body against `PREVIEW_ACCESS_KEY`.
+  - When `PREVIEW_ACCESS_KEY` is empty, signup is open (no invite code required).
+  - When set, signup returns 403 if the invite code is missing or incorrect.
 
 ## 4) Policy-Critical Settings and Deployment Inputs
 
@@ -121,7 +117,7 @@ From `config/settings/base.py`:
 - `AZURE_KV_SECRET_TELEGRAM_BOT_TOKEN`
 - `AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY`
 - `AZURE_KV_SECRET_TELEGRAM_WEBHOOK_SECRET`
-- `PREVIEW_ACCESS_KEY` passthrough into runtime env as `NBHD_PREVIEW_KEY`
+- `PREVIEW_ACCESS_KEY` (invite code for gated signup; leave empty for open registration)
 
 ### Deployment env sketch (placeholders only)
 
@@ -154,10 +150,10 @@ OPENCLAW_CONTAINER_SECRET_BACKEND=keyvault
    - assert `tools.deny` includes runtime-management and session/cross-agent controls
    - assert `tools.elevated.enabled` is false
 2. Verify internal auth headers are always sent from runtime plugin.
-3. Verify preview bypass behavior:
-   - backend middleware exempt callbacks
-   - frontend surfaces callback-result pages even without preview key
-   - `/review` provides a public policy packet landing page and does not require a preview key
+3. Verify invite-code signup gate:
+   - signup endpoint validates invite code against `PREVIEW_ACCESS_KEY`
+   - all pages are publicly browsable; authenticated pages redirect to login
+   - `/review` provides a public policy packet landing page
 4. Verify env keys above exist in deployed secrets/config (redacted values only).
 5. Verify composio callback endpoints accept unauthenticated callbacks but enforce state/tenant integrity and expiry.
 
