@@ -4,9 +4,13 @@ from rest_framework.routers import DefaultRouter
 from .runtime_views import (
     RuntimeCalendarEventsView,
     RuntimeCalendarFreeBusyView,
+    RuntimeDailyNoteAppendView,
+    RuntimeDailyNotesView,
     RuntimeGmailMessageDetailView,
     RuntimeGmailMessagesView,
+    RuntimeJournalContextView,
     RuntimeJournalEntriesView,
+    RuntimeUserMemoryView,
     RuntimeWeeklyReviewsView,
 )
 from .views import ComposioCallbackView, IntegrationViewSet, OAuthAuthorizeView, OAuthCallbackView
@@ -47,6 +51,26 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/weekly-reviews/",
         RuntimeWeeklyReviewsView.as_view(),
         name="runtime-weekly-reviews",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/daily-note/",
+        RuntimeDailyNotesView.as_view(),
+        name="runtime-daily-note",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/daily-note/append/",
+        RuntimeDailyNoteAppendView.as_view(),
+        name="runtime-daily-note-append",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/long-term-memory/",
+        RuntimeUserMemoryView.as_view(),
+        name="runtime-long-term-memory",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/journal-context/",
+        RuntimeJournalContextView.as_view(),
+        name="runtime-journal-context",
     ),
     path("", include(router.urls)),
 ]

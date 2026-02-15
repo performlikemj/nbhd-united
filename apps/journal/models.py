@@ -64,3 +64,31 @@ class WeeklyReview(models.Model):
 
     def __str__(self) -> str:
         return f"{self.tenant_id}:{self.week_start}:{self.week_end}"
+
+
+class DailyNote(models.Model):
+    """One markdown document per tenant per date. Both human and agent append to it."""
+
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="daily_notes")
+    date = models.DateField()
+    markdown = models.TextField(default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ["tenant", "date"]
+        ordering = ["-date"]
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}:{self.date}"
+
+
+class UserMemory(models.Model):
+    """One markdown document per tenant — like MEMORY.md. Agent curates this."""
+
+    tenant = models.OneToOneField(Tenant, on_delete=models.CASCADE, related_name="user_memory")
+    markdown = models.TextField(default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}:memory"
