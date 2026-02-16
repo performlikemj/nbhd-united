@@ -122,8 +122,53 @@ def render_identity_md(persona_key: str) -> str:
     )
 
 
+def _load_soul_from_key_vault() -> str | None:
+    """Attempt to load the core SOUL.md content from Azure Key Vault.
+
+    Returns the content string or None if unavailable.
+    Cached after first successful load to avoid repeated KV calls.
+    """
+    if hasattr(_load_soul_from_key_vault, "_cached"):
+        return _load_soul_from_key_vault._cached
+
+    import logging
+
+    from django.conf import settings as django_settings
+
+    logger = logging.getLogger(__name__)
+    secret_name = str(
+        getattr(django_settings, "AZURE_KV_SECRET_SOUL_MD", "") or ""
+    ).strip()
+    if not secret_name:
+        _load_soul_from_key_vault._cached = None
+        return None
+
+    try:
+        from apps.orchestrator.azure_client import read_key_vault_secret
+
+        content = read_key_vault_secret(secret_name)
+        if content and content.strip():
+            logger.info("Loaded SOUL.md from Key Vault secret: %s", secret_name)
+            _load_soul_from_key_vault._cached = content.strip()
+            return _load_soul_from_key_vault._cached
+    except Exception as exc:
+        logger.warning("Failed to load SOUL.md from Key Vault: %s", exc)
+
+    _load_soul_from_key_vault._cached = None
+    return None
+
+
 def render_soul_md(persona_key: str) -> str:
-    """Render SOUL.md content for a persona."""
+    """Render SOUL.md content.
+
+    Reads the core soul from Key Vault (the heart of the product).
+    Falls back to a generated version from persona traits if KV is unavailable.
+    """
+    kv_soul = _load_soul_from_key_vault()
+    if kv_soul:
+        return kv_soul
+
+    # Fallback: generate from persona traits
     persona = get_persona(persona_key)
     template = os.environ.get("NBHD_SOUL_MD_TEMPLATE")
     if template:

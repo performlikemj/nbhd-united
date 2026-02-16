@@ -223,6 +223,10 @@ AZURE_KV_SECRET_BRAVE_API_KEY = env(
     "AZURE_KV_SECRET_BRAVE_API_KEY",
     default="brave-api-key",
 )
+AZURE_KV_SECRET_SOUL_MD = env(
+    "AZURE_KV_SECRET_SOUL_MD",
+    default="nbhd-soul-md",
+)
 
 # Azure
 AZURE_SUBSCRIPTION_ID = env("AZURE_SUBSCRIPTION_ID", default="")
