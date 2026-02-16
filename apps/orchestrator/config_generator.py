@@ -162,6 +162,11 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         },
     }
 
+    # Inject platform API keys for all subscribers
+    brave_key = str(getattr(settings, "BRAVE_API_KEY", "") or "").strip()
+    if brave_key:
+        config.setdefault("env", {})["BRAVE_API_KEY"] = brave_key
+
     providers = _build_models_providers(tier, tenant)
     if providers:
         config["models"] = {"mode": "merge", "providers": providers}

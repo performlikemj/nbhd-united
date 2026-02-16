@@ -183,6 +183,7 @@ NBHD_INTERNAL_API_KEY_FALLBACK_ENABLED = env.bool(
 # Anthropic API (shared key for all OpenClaw instances)
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
+BRAVE_API_KEY = env("BRAVE_API_KEY", default="")
 OPENCLAW_GOOGLE_PLUGIN_ID = env("OPENCLAW_GOOGLE_PLUGIN_ID", default="")
 OPENCLAW_GOOGLE_PLUGIN_PATH = env(
     "OPENCLAW_GOOGLE_PLUGIN_PATH",
