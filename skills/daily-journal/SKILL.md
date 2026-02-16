@@ -15,21 +15,25 @@ Operate the user's personal OS — a collaborative daily note where both you and
 
 Each day has ONE markdown document. You and the user both write into it. The document follows the user's daily note template (customizable, but defaults are below). You fill in your sections (morning report, log entries). The user fills in theirs (evening check-in, reflections). You can comment on each other's entries inline.
 
-## API Endpoints
+## Tools
 
-All journal operations go through the control plane API. Read `references/api.md` for endpoint details and auth.
+Journal operations use registered OpenClaw tools (provided by the `nbhd-journal-tools` plugin). No direct HTTP calls needed.
 
-**Quick reference:**
-- `GET /daily-note/?date=YYYY-MM-DD` — fetch raw markdown for a day
-- `POST /daily-note/append/` — append content to a day's note
-- `PUT /long-term-memory/` — update the curated memory doc
-- `GET /journal-context/` — load recent notes + memory (use at session start)
+| Tool | Purpose |
+|------|---------|
+| `nbhd_journal_context` | Load recent daily notes + memory (session init) |
+| `nbhd_daily_note_get` | Get raw markdown for a specific date |
+| `nbhd_daily_note_append` | Append a timestamped entry (auto author=agent) |
+| `nbhd_memory_get` | Get the long-term memory document |
+| `nbhd_memory_update` | Replace the long-term memory document |
+
+For endpoint details and response shapes, see `references/api.md`.
 
 ## Session Start
 
 Every session, before responding to the user, load context:
 
-1. Call `GET /journal-context/` to retrieve the last 7 days of daily notes + long-term memory
+1. Call `nbhd_journal_context` (defaults to last 7 days)
 2. Scan for: open blockers, yesterday's "plan for tomorrow", overnight work requests, unresolved decisions
 3. Use this context to inform your responses throughout the session
 
@@ -45,7 +49,7 @@ Read the user's morning report template from `references/templates.md`. Fill in 
 4. **Reminders** — upcoming deadlines, expiring keys, events
 5. **Today's priorities** — suggested focus based on yesterday's plan and current state
 
-Append the completed morning report to today's daily note via `POST /daily-note/append/`.
+Append the completed morning report via `nbhd_daily_note_append` with the full markdown block as `content`.
 
 Then send a summary to the user via their messaging channel (Telegram, etc.) — keep it concise, link to the full note if the platform supports it.
 
@@ -59,8 +63,8 @@ If the user fills it in via the app UI, no action needed — the frontend handle
 
 ### Memory Curation (cron, weekly — e.g., Sunday evening)
 
-1. Load the last 7 days of daily notes via `GET /journal-context/?days=7`
-2. Read the current long-term memory via `GET /long-term-memory/`
+1. Load the last 7 days via `nbhd_journal_context({ days: 7 })`
+2. The response includes both daily notes and current memory
 3. Review daily notes for:
    - **Preferences** discovered (work habits, food, schedule patterns)
    - **Decisions** made (technical, personal, project direction)
@@ -68,7 +72,7 @@ If the user fills it in via the app UI, no action needed — the frontend handle
    - **Goals** mentioned or updated
    - **People & context** (new contacts, relationships, team changes)
 4. Update the memory document — add new insights, update existing ones, remove outdated info
-5. Save via `PUT /long-term-memory/`
+5. Save via `nbhd_memory_update({ markdown: "..." })`
 
 Keep the memory document organized by category (see `references/templates.md` for default structure).
 
@@ -77,11 +81,10 @@ Keep the memory document organized by category (see `references/templates.md` fo
 When you do something noteworthy during a conversation, append a log entry:
 
 ```
-POST /daily-note/append/
-{ "content": "Checked production logs — all stable. No errors in last 12h.", "date": "2026-02-16" }
+nbhd_daily_note_append({ content: "Checked production logs — all stable. No errors in last 12h." })
 ```
 
-The API auto-timestamps and marks it as `author=agent`. Do this for:
+The tool auto-timestamps and marks it as `author=agent`. Do this for:
 - Email/calendar checks
 - Research completed
 - Tasks finished

@@ -1,0 +1,21 @@
+{
+  "id": "nbhd-journal-tools",
+  "name": "NBHD Journal Tools",
+  "description": "Daily journal and long-term memory tools for the markdown-first collaborative journaling system.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string",
+        "description": "Override NBHD API base URL. Defaults to NBHD_API_BASE_URL env var."
+      },
+      "requestTimeoutMs": {
+        "type": "number",
+        "minimum": 1000,
+        "maximum": 60000,
+        "description": "HTTP timeout for NBHD runtime endpoint requests."
+      }
+    }
+  }
+}
