@@ -309,9 +309,9 @@ export default function TemplatesPage() {
           </p>
         </SectionCard>
       ) : (
-        <SectionCard title="Saved templates" subtitle={`${data.length} templates`}>
+        <SectionCard title="Saved templates" subtitle={`${data?.length ?? 0} templates`}>
           <div className="space-y-3">
-            {data.length === 0 ? (
+            {!data || data.length === 0 ? (
               <p className="text-sm text-ink/70">No templates yet. Create your first template above.</p>
             ) : (
               data.map((template) => (
