@@ -2,6 +2,8 @@
 
 import { useState, useCallback } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
+import { MarkdownEditor } from "@/components/journal/markdown-editor";
+import { MarkdownHelpSheet } from "@/components/journal/markdown-help-sheet";
 import { QuickLogInput } from "@/components/journal/quick-log-input";
 import {
   useDocumentQuery,
@@ -46,6 +48,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
   const [currentSlug, setCurrentSlug] = useState(slug);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const effectiveSlug = kind === "daily" ? currentSlug : slug;
   const { data: doc, isLoading, error } = useDocumentQuery(kind, effectiveSlug);
@@ -232,12 +235,13 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
       <div className="flex-1 overflow-y-auto">
         {editing ? (
           <div className="p-4 lg:p-6">
-            <textarea
-              className="min-h-[50dvh] w-full rounded-panel border border-ink/15 bg-white px-3 py-2.5 font-mono text-sm leading-relaxed focus:border-accent/40 focus:outline-none focus:ring-1 focus:ring-accent/20 lg:px-4 lg:py-3"
-              rows={Math.max(20, (draft.split("\n").length + 5))}
+            <MarkdownEditor
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={setDraft}
+              onSave={handleSave}
+              onHelpToggle={() => setHelpOpen(true)}
               autoFocus
+              minRows={Math.max(20, (draft.split("\n").length + 5))}
             />
           </div>
         ) : (
@@ -263,6 +267,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
           )}
         </div>
       )}
+      <MarkdownHelpSheet open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
 }
