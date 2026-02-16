@@ -187,6 +187,11 @@ OPENCLAW_GOOGLE_PLUGIN_PATH = env(
     "OPENCLAW_GOOGLE_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-google-tools",
 )
+OPENCLAW_JOURNAL_PLUGIN_ID = env("OPENCLAW_JOURNAL_PLUGIN_ID", default="")
+OPENCLAW_JOURNAL_PLUGIN_PATH = env(
+    "OPENCLAW_JOURNAL_PLUGIN_PATH",
+    default="/opt/nbhd/plugins/nbhd-journal-tools",
+)
 OPENCLAW_CONTAINER_SECRET_BACKEND = env(
     "OPENCLAW_CONTAINER_SECRET_BACKEND",
     default="keyvault",

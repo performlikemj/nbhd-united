@@ -15,6 +15,7 @@ RUN npm install --global "openclaw@${OPENCLAW_VERSION}" \
 WORKDIR /opt/nbhd
 
 COPY runtime/openclaw/plugins/nbhd-google-tools /opt/nbhd/plugins/nbhd-google-tools
+COPY runtime/openclaw/plugins/nbhd-journal-tools /opt/nbhd/plugins/nbhd-journal-tools
 COPY agent-skills /opt/nbhd/agent-skills
 COPY templates/openclaw /opt/nbhd/templates/openclaw
 COPY runtime/openclaw/entrypoint.sh /usr/local/bin/nbhd-openclaw-entrypoint
@@ -25,6 +26,7 @@ RUN chmod +x /usr/local/bin/nbhd-openclaw-entrypoint \
 USER node
 
 ENV OPENCLAW_GOOGLE_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-google-tools
+ENV OPENCLAW_JOURNAL_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-journal-tools
 
 EXPOSE 18789
 

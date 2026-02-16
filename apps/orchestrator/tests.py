@@ -50,20 +50,36 @@ class ConfigGeneratorTest(TestCase):
         with override_settings(OPENCLAW_GOOGLE_PLUGIN_ID="nbhd-google-tools"):
             config = generate_openclaw_config(self.tenant)
 
-        self.assertEqual(config["plugins"]["allow"], ["nbhd-google-tools"])
+        self.assertIn("nbhd-google-tools", config["plugins"]["allow"])
         self.assertTrue(config["plugins"]["entries"]["nbhd-google-tools"]["enabled"])
-        self.assertEqual(
+        self.assertIn(
+            "/opt/nbhd/plugins/nbhd-google-tools",
             config["plugins"]["load"]["paths"],
-            ["/opt/nbhd/plugins/nbhd-google-tools"],
         )
         self.assertIn("group:plugins", config["tools"]["alsoAllow"])
 
-    def test_plugin_wiring_omitted_when_plugin_id_not_configured(self):
-        with override_settings(OPENCLAW_GOOGLE_PLUGIN_ID=""):
+    def test_plugin_wiring_omitted_when_no_plugins_configured(self):
+        with override_settings(OPENCLAW_GOOGLE_PLUGIN_ID="", OPENCLAW_JOURNAL_PLUGIN_ID=""):
             config = generate_openclaw_config(self.tenant)
 
         self.assertNotIn("plugins", config)
         self.assertNotIn("alsoAllow", config["tools"])
+
+    def test_multiple_plugins_wired(self):
+        with override_settings(
+            OPENCLAW_GOOGLE_PLUGIN_ID="nbhd-google-tools",
+            OPENCLAW_JOURNAL_PLUGIN_ID="nbhd-journal-tools",
+        ):
+            config = generate_openclaw_config(self.tenant)
+
+        self.assertEqual(
+            sorted(config["plugins"]["allow"]),
+            ["nbhd-google-tools", "nbhd-journal-tools"],
+        )
+        self.assertTrue(config["plugins"]["entries"]["nbhd-journal-tools"]["enabled"])
+        paths = config["plugins"]["load"]["paths"]
+        self.assertIn("/opt/nbhd/plugins/nbhd-journal-tools", paths)
+        self.assertIn("/opt/nbhd/plugins/nbhd-google-tools", paths)
 
     def test_tools_policy_uses_allow_and_deny_lists(self):
         self.tenant.model_tier = "basic"

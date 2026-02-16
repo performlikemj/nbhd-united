@@ -49,8 +49,18 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     tier = tenant.model_tier or "basic"
     models_config = TIER_MODELS.get(tier, TIER_MODELS["basic"])
     model_entries = TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["basic"])
-    plugin_id = str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_ID", "") or "").strip()
-    plugin_path = str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_PATH", "") or "").strip()
+    # Collect all configured plugins
+    _plugin_defs = [
+        (
+            str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_ID", "") or "").strip(),
+            str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_PATH", "") or "").strip(),
+        ),
+        (
+            str(getattr(settings, "OPENCLAW_JOURNAL_PLUGIN_ID", "") or "").strip(),
+            str(getattr(settings, "OPENCLAW_JOURNAL_PLUGIN_PATH", "") or "").strip(),
+        ),
+    ]
+    _active_plugins = [(pid, ppath) for pid, ppath in _plugin_defs if pid]
 
     api_base = str(getattr(settings, "API_BASE_URL", "") or "").strip().rstrip("/")
     webhook_secret = str(getattr(settings, "TELEGRAM_WEBHOOK_SECRET", "") or "").strip()
@@ -133,17 +143,17 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         },
     }
 
-    if plugin_id:
+    if _active_plugins:
         plugin_config: dict[str, Any] = {
-            "allow": [plugin_id],
+            "allow": [pid for pid, _ in _active_plugins],
             "entries": {
-                plugin_id: {
-                    "enabled": True,
-                },
+                pid: {"enabled": True}
+                for pid, _ in _active_plugins
             },
         }
-        if plugin_path:
-            plugin_config["load"] = {"paths": [plugin_path]}
+        paths = [ppath for _, ppath in _active_plugins if ppath]
+        if paths:
+            plugin_config["load"] = {"paths": paths}
 
         config["plugins"] = plugin_config
         config["tools"]["alsoAllow"] = ["group:plugins"]
