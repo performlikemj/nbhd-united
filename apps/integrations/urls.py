@@ -16,6 +16,7 @@ from .runtime_views import (
     RuntimeWeeklyReviewsView,
 )
 from .views import ComposioCallbackView, IntegrationViewSet, OAuthAuthorizeView, OAuthCallbackView
+from apps.platform_logs.views import PlatformIssueReportView as _PlatformIssueReportView
 
 router = DefaultRouter()
 router.register("", IntegrationViewSet, basename="integration")
@@ -84,6 +85,12 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/document/append/",
         RuntimeDocumentAppendView.as_view(),
         name="runtime-document-append",
+    ),
+    # Platform issue logging
+    path(
+        "runtime/<uuid:tenant_id>/platform-issue/report/",
+        _PlatformIssueReportView.as_view(),
+        name="runtime-platform-issue-report",
     ),
     path("", include(router.urls)),
 ]

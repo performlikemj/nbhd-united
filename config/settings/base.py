@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     "apps.automations",
     "apps.dashboard",
     "apps.cron",
+    "apps.platform_logs",
 ]
 
 MIDDLEWARE = [
