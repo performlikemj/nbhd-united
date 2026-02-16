@@ -54,6 +54,7 @@ export default function OnboardingPage() {
   const [linkData, setLinkData] = useState<TelegramLinkResponse | null>(null);
   const [linkSecondsLeft, setLinkSecondsLeft] = useState(0);
   const [selectedPersona, setSelectedPersona] = useState("neighbor");
+  const [selectedTier, setSelectedTier] = useState<"starter" | "premium" | "byok">("starter");
 
   const tenant = me?.tenant;
   const hasTenant = Boolean(tenant);
@@ -128,7 +129,7 @@ export default function OnboardingPage() {
   const handleCheckout = async () => {
     setCheckoutError("");
     try {
-      const result = await checkout.mutateAsync("basic");
+      const result = await checkout.mutateAsync(selectedTier);
       window.location.assign(result.url);
     } catch (err) {
       setCheckoutError(err instanceof Error ? err.message : "Checkout failed.");
@@ -193,17 +194,69 @@ export default function OnboardingPage() {
         return (
           <>
             <p className="mt-1 text-sm text-ink/65">
-              Complete Stripe checkout to trigger provisioning of your dedicated OpenClaw runtime.
+              Choose a plan and complete Stripe checkout to provision your dedicated runtime.
             </p>
             {stepStates[2] !== "completed" && (
               <>
+                <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                  {([
+                    {
+                      tier: "starter" as const,
+                      name: "Starter",
+                      model: "Kimi K2.5",
+                      features: ["50 messages/day", "Basic assistant"],
+                    },
+                    {
+                      tier: "premium" as const,
+                      name: "Premium",
+                      model: "Claude Sonnet 4.5",
+                      features: ["200 messages/day", "+ Opus for complex tasks"],
+                    },
+                    {
+                      tier: "byok" as const,
+                      name: "BYOK",
+                      model: "Your model",
+                      features: ["200 messages/day", "Your own API key"],
+                    },
+                  ]).map((plan) => (
+                    <button
+                      key={plan.tier}
+                      type="button"
+                      onClick={() => setSelectedTier(plan.tier)}
+                      className={`rounded-panel border-2 p-4 text-left transition ${
+                        selectedTier === plan.tier
+                          ? "border-accent bg-accent/5"
+                          : "border-ink/15 bg-white hover:border-ink/30"
+                      }`}
+                    >
+                      <p className="text-sm font-semibold text-ink">{plan.name}</p>
+                      <p className="mt-1 text-xs font-medium text-accent">{plan.model}</p>
+                      <ul className="mt-2 space-y-1">
+                        {plan.features.map((f) => (
+                          <li key={f} className="text-xs text-ink/60">• {f}</li>
+                        ))}
+                      </ul>
+                      <div className="mt-3">
+                        <span
+                          className={`inline-block rounded-full px-3 py-1 text-xs font-medium transition ${
+                            selectedTier === plan.tier
+                              ? "bg-accent text-white"
+                              : "bg-ink/5 text-ink/50"
+                          }`}
+                        >
+                          {selectedTier === plan.tier ? "Selected" : "Select"}
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
                 <button
                   type="button"
                   onClick={handleCheckout}
                   disabled={checkout.isPending}
                   className="mt-4 rounded-full bg-accent px-5 py-2.5 text-sm font-medium text-white transition hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-55"
                 >
-                  {checkout.isPending ? "Redirecting to Stripe..." : "Start subscription"}
+                  {checkout.isPending ? "Redirecting to Stripe..." : `Subscribe to ${selectedTier.charAt(0).toUpperCase() + selectedTier.slice(1)}`}
                 </button>
                 <p className="mt-3 text-xs text-ink/45">
                   By subscribing, you agree to our{" "}

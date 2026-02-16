@@ -37,6 +37,7 @@ import {
   fetchUsageSummary,
   fetchWeeklyReviews,
   generateTelegramLink,
+  getLLMConfig,
   getOAuthAuthorizeUrl,
   onboardTenant,
   pauseAutomation,
@@ -49,6 +50,7 @@ import {
   updateDailyNoteSection,
   updateDailyNoteTemplate,
   updateDailyNoteEntry,
+  updateLLMConfig,
   updateDocument,
   updateJournalEntry,
   updateMemory,
@@ -533,6 +535,23 @@ export function useCreateDocumentMutation() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["sidebar-tree"] });
+    },
+  });
+}
+
+export function useLLMConfigQuery() {
+  return useQuery({
+    queryKey: ["llm-config"],
+    queryFn: getLLMConfig,
+  });
+}
+
+export function useUpdateLLMConfigMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateLLMConfig,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["llm-config"] });
     },
   });
 }

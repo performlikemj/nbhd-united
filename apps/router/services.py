@@ -170,7 +170,7 @@ def send_onboarding_link(chat_id: int) -> dict:
         "text": (
             "👋 Welcome! I don't recognize your account yet.\n\n"
             f"Sign up at {frontend_url} to get your own "
-            "AI assistant for $5/month.\n\n"
+            "AI assistant.\n\n"
             "Once subscribed, come back and send me a message!"
         ),
     }

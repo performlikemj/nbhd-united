@@ -12,7 +12,6 @@ from django.utils import timezone
 from apps.tenants.models import Tenant
 from .constants import (
     DEFAULT_RATE,
-    DEFAULT_SUBSCRIPTION_PRICE,
     MODEL_RATES,
     PLATFORM_MARGIN_TARGET,
 )
@@ -203,13 +202,10 @@ def get_transparency_data(tenant: Tenant) -> dict:
 
 
 def _get_subscription_price() -> float:
-    configured = getattr(
-        settings,
-        "USAGE_DASHBOARD_SUBSCRIPTION_PRICE",
-        DEFAULT_SUBSCRIPTION_PRICE,
-    )
+    default = 5.0
+    configured = getattr(settings, "USAGE_DASHBOARD_SUBSCRIPTION_PRICE", default)
     try:
         value = float(configured)
     except (TypeError, ValueError):
-        return DEFAULT_SUBSCRIPTION_PRICE
-    return value if value >= 0 else DEFAULT_SUBSCRIPTION_PRICE
+        return default
+    return value if value >= 0 else default

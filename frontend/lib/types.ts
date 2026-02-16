@@ -6,7 +6,20 @@ export type TenantStatus =
   | "deprovisioning"
   | "deleted";
 
-export type TenantTier = "basic" | "plus";
+export type TenantTier = "basic" | "plus" | "starter" | "premium" | "byok";
+
+export interface LLMConfig {
+  provider: string;
+  model_id: string;
+  key_masked: string;
+  has_key: boolean;
+}
+
+export interface LLMConfigUpdate {
+  provider: string;
+  model_id?: string;
+  api_key?: string;
+}
 
 export interface TenantUser {
   id: string;

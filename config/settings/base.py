@@ -230,8 +230,9 @@ AZURE_STORAGE_ACCOUNT_NAME = env("AZURE_STORAGE_ACCOUNT_NAME", default="")
 
 # Stripe price IDs
 STRIPE_PRICE_IDS = {
-    "basic": env("STRIPE_PRICE_BASIC", default=""),
-    "plus": env("STRIPE_PRICE_PLUS", default=""),
+    "starter": env("STRIPE_PRICE_STARTER", default=""),
+    "premium": env("STRIPE_PRICE_PREMIUM", default=""),
+    "byok": env("STRIPE_PRICE_BYOK", default=""),
 }
 
 # Frontend URL (for redirects)

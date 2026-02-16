@@ -163,6 +163,7 @@ class TransparencyServiceTest(TestCase):
         self.assertIn("Claude Opus 4.6", names)
         self.assertIn("Claude Sonnet 4.5", names)
         self.assertIn("Claude Haiku 4.5", names)
+        self.assertIn("Kimi K2.5", names)
 
     def test_transparency_no_usage(self):
         tenant2 = create_tenant(display_name="NoUse", telegram_chat_id=999666)

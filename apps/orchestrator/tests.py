@@ -34,20 +34,33 @@ class ConfigGeneratorTest(TestCase):
         allow_from = config["channels"]["telegram"]["allowFrom"]
         self.assertIn("999888777", allow_from)
 
-    def test_basic_tier_model(self):
-        self.tenant.model_tier = "basic"
+    def test_starter_tier_model(self):
+        self.tenant.model_tier = "starter"
         config = generate_openclaw_config(self.tenant)
-        self.assertIn("sonnet", config["agents"]["defaults"]["model"]["primary"].lower())
+        self.assertIn("kimi", config["agents"]["defaults"]["model"]["primary"].lower())
 
-    def test_plus_tier_has_opus(self):
-        self.tenant.model_tier = "plus"
+    def test_starter_tier_has_moonshot_provider(self):
+        self.tenant.model_tier = "starter"
+        config = generate_openclaw_config(self.tenant)
+        self.assertIn("models", config)
+        self.assertIn("moonshot", config["models"]["providers"])
+
+    def test_premium_tier_has_opus(self):
+        self.tenant.model_tier = "premium"
         config = generate_openclaw_config(self.tenant)
         models = config["agents"]["defaults"]["models"]
         aliases = [v.get("alias") for v in models.values()]
         self.assertIn("opus", aliases)
 
+    def test_byok_tier_generates_config(self):
+        self.tenant.model_tier = "byok"
+        config = generate_openclaw_config(self.tenant)
+        self.assertIn("sonnet", config["agents"]["defaults"]["model"]["primary"].lower())
+        # byok should not have moonshot provider
+        self.assertNotIn("models", config)
+
     def test_audio_model_defaults_to_whisper_for_all_tiers(self):
-        for tier in ("basic", "plus"):
+        for tier in ("starter", "premium", "byok"):
             self.tenant.model_tier = tier
             config = generate_openclaw_config(self.tenant)
             audio = config["tools"]["media"]["audio"]
@@ -95,7 +108,7 @@ class ConfigGeneratorTest(TestCase):
         self.assertNotIn("nbhd-journal-tools", config["plugins"]["entries"])
 
     def test_tools_policy_uses_allow_and_deny_lists(self):
-        self.tenant.model_tier = "basic"
+        self.tenant.model_tier = "starter"
         config = generate_openclaw_config(self.tenant)
         tools = config["tools"]
         self.assertIn("allow", tools)
@@ -103,8 +116,8 @@ class ConfigGeneratorTest(TestCase):
         self.assertIn("group:automation", tools["deny"])
         self.assertNotIn("group:browser", tools["allow"])
 
-    def test_plus_tier_tools_enable_browser_and_exec(self):
-        self.tenant.model_tier = "plus"
+    def test_premium_tier_tools_enable_browser_and_exec(self):
+        self.tenant.model_tier = "premium"
         config = generate_openclaw_config(self.tenant)
         tools = config["tools"]
         self.assertIn("group:browser", tools["allow"])

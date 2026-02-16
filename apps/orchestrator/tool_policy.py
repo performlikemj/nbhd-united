@@ -22,8 +22,8 @@ DENIED_TOOLS: tuple[str, ...] = (
     "agents_list",
 )
 
-# Basic tier: non-destructive helper surface only.
-BASIC_ALLOW: tuple[str, ...] = (
+# Starter tier: non-destructive helper surface only.
+STARTER_ALLOW: tuple[str, ...] = (
     "group:network",
     "group:memory",
     "group:files",
@@ -32,19 +32,23 @@ BASIC_ALLOW: tuple[str, ...] = (
     "group:image",
 )
 
-# Plus tier adds browser automation and sandboxed exec capability.
-PLUS_ALLOW: tuple[str, ...] = BASIC_ALLOW + (
+# Premium tier adds browser automation and sandboxed exec capability.
+PREMIUM_ALLOW: tuple[str, ...] = STARTER_ALLOW + (
     "group:browser",
     "exec",
 )
 
+# Legacy aliases for backward compatibility in tests
+BASIC_ALLOW = STARTER_ALLOW
+PLUS_ALLOW = PREMIUM_ALLOW
 
-def get_allowed_tools(tier: str = "basic") -> list[str]:
+
+def get_allowed_tools(tier: str = "starter") -> list[str]:
     """Return documented allow-list entries for a subscriber tier."""
-    normalized = (tier or "basic").lower()
-    if normalized == "plus":
-        return list(PLUS_ALLOW)
-    return list(BASIC_ALLOW)
+    normalized = (tier or "starter").lower()
+    if normalized in ("premium", "byok"):
+        return list(PREMIUM_ALLOW)
+    return list(STARTER_ALLOW)
 
 
 def get_denied_tools() -> list[str]:
@@ -52,7 +56,7 @@ def get_denied_tools() -> list[str]:
     return list(DENIED_TOOLS)
 
 
-def generate_tool_config(tier: str = "basic") -> dict[str, Any]:
+def generate_tool_config(tier: str = "starter") -> dict[str, Any]:
     """Generate the OpenClaw `tools` config block for subscriber tenants."""
     return {
         "allow": get_allowed_tools(tier),

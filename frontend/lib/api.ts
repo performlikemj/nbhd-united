@@ -8,6 +8,8 @@ import {
   DocumentListItem,
   DocumentResponse,
   Integration,
+  LLMConfig,
+  LLMConfigUpdate,
   JournalEntry,
   JournalEntryEnergy,
   NoteTemplate,
@@ -544,6 +546,17 @@ export function fetchSidebarTree(): Promise<SidebarSection[]> {
 export function createDocument(data: { kind: string; slug: string; title: string; markdown?: string }): Promise<DocumentResponse> {
   return apiFetch<DocumentResponse>("/api/v1/journal/documents/", {
     method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function getLLMConfig(): Promise<LLMConfig> {
+  return apiFetch<LLMConfig>("/api/v1/settings/llm-config/");
+}
+
+export function updateLLMConfig(data: LLMConfigUpdate): Promise<LLMConfig> {
+  return apiFetch<LLMConfig>("/api/v1/settings/llm-config/", {
+    method: "PUT",
     body: JSON.stringify(data),
   });
 }

@@ -8,7 +8,7 @@ export default function TermsPage() {
         NBHD United (&ldquo;we,&rdquo; &ldquo;us,&rdquo; &ldquo;our&rdquo;) provides a private AI-powered assistant
         delivered via Telegram. Our service includes a dedicated AI agent that
         responds to your messages in a private Telegram chat. The service is
-        offered on a subscription basis at $5 per month.
+        offered on a subscription basis. Current pricing is available on our website and during checkout.
       </p>
 
       <h2>2. Account Eligibility & Registration</h2>

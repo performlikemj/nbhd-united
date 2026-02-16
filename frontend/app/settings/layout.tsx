@@ -11,6 +11,7 @@ const settingsTabs = [
   { href: "/settings/automations", label: "Automations" },
   { href: "/settings/usage", label: "Usage" },
   { href: "/settings/billing", label: "Billing" },
+  { href: "/settings/ai-provider", label: "AI Provider" },
 ];
 
 export default function SettingsLayout({ children }: { children: ReactNode }) {

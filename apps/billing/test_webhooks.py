@@ -61,7 +61,7 @@ class StripeWebhookViewTest(TestCase):
 
 
 @override_settings(
-    STRIPE_PRICE_IDS={"plus": "price_plus_test"},
+    STRIPE_PRICE_IDS={"premium": "price_premium_test"},
     STRIPE_TEST_SECRET_KEY="sk_test_checkout",
 )
 class StripeCheckoutViewTest(TestCase):
@@ -79,7 +79,7 @@ class StripeCheckoutViewTest(TestCase):
 
         response = self.client.post(
             "/api/v1/billing/checkout/",
-            {"tier": "plus"},
+            {"tier": "premium"},
             content_type="application/json",
             HTTP_AUTHORIZATION=self.auth_header,
         )
@@ -96,7 +96,7 @@ class StripeCheckoutViewTest(TestCase):
     def test_checkout_returns_503_when_stripe_not_configured(self, mock_session_create):
         response = self.client.post(
             "/api/v1/billing/checkout/",
-            {"tier": "plus"},
+            {"tier": "premium"},
             content_type="application/json",
             HTTP_AUTHORIZATION=self.auth_header,
         )

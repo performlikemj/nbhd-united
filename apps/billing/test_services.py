@@ -21,7 +21,7 @@ class BillingWebhookServiceTest(TestCase):
     def test_checkout_completed_sets_provisioning_and_enqueues(self, mock_publish):
         handle_checkout_completed(
             {
-                "metadata": {"user_id": str(self.tenant.user_id), "tier": "plus"},
+                "metadata": {"user_id": str(self.tenant.user_id), "tier": "premium"},
                 "customer": "cus_123",
                 "subscription": "sub_123",
             }
@@ -29,7 +29,7 @@ class BillingWebhookServiceTest(TestCase):
 
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.status, Tenant.Status.PROVISIONING)
-        self.assertEqual(self.tenant.model_tier, Tenant.ModelTier.PLUS)
+        self.assertEqual(self.tenant.model_tier, Tenant.ModelTier.PREMIUM)
         self.assertEqual(self.tenant.stripe_customer_id, "cus_123")
         self.assertEqual(self.tenant.stripe_subscription_id, "sub_123")
         mock_publish.assert_called_once_with("provision_tenant", str(self.tenant.id))
@@ -45,14 +45,14 @@ class BillingWebhookServiceTest(TestCase):
         )
 
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.model_tier, Tenant.ModelTier.BASIC)
+        self.assertEqual(self.tenant.model_tier, Tenant.ModelTier.STARTER)
         mock_publish.assert_called_once()
 
     @patch("apps.cron.publish.publish_task")
     def test_checkout_completed_duplicate_active_event_is_ignored(self, mock_publish):
         self.tenant.status = Tenant.Status.ACTIVE
         self.tenant.container_id = "oc-tenant"
-        self.tenant.model_tier = Tenant.ModelTier.BASIC
+        self.tenant.model_tier = Tenant.ModelTier.STARTER
         self.tenant.stripe_subscription_id = "sub_same"
         self.tenant.save(
             update_fields=["status", "container_id", "model_tier", "stripe_subscription_id", "updated_at"]
@@ -60,7 +60,7 @@ class BillingWebhookServiceTest(TestCase):
 
         handle_checkout_completed(
             {
-                "metadata": {"user_id": str(self.tenant.user_id), "tier": "basic"},
+                "metadata": {"user_id": str(self.tenant.user_id), "tier": "starter"},
                 "customer": "cus_123",
                 "subscription": "sub_same",
             }

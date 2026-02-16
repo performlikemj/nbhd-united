@@ -24,8 +24,8 @@ def _normalize_tier(raw_tier: str) -> str:
     allowed = {choice for choice, _ in Tenant.ModelTier.choices}
     if raw_tier in allowed:
         return raw_tier
-    logger.warning("Invalid tier '%s' from Stripe webhook, defaulting to basic", raw_tier)
-    return Tenant.ModelTier.BASIC
+    logger.warning("Invalid tier '%s' from Stripe webhook, defaulting to starter", raw_tier)
+    return Tenant.ModelTier.STARTER
 
 
 def _find_tenant_for_stripe_event(payload: dict) -> Tenant | None:
@@ -121,7 +121,7 @@ def handle_checkout_completed(session_data: dict) -> None:
     from apps.cron.publish import publish_task
 
     metadata = session_data.get("metadata") or {}
-    tier = _normalize_tier(metadata.get("tier", Tenant.ModelTier.BASIC))
+    tier = _normalize_tier(metadata.get("tier", Tenant.ModelTier.STARTER))
     customer_id = session_data.get("customer") or ""
     subscription_id = session_data.get("subscription") or ""
 

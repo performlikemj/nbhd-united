@@ -35,10 +35,14 @@ MODEL_RATES: dict[str, dict[str, float]] = {
         "output": 5.0,
         "display_name": "Claude Haiku 4.5",
     },
+    "moonshot/kimi-k2.5": {
+        "input": 0.5,
+        "output": 2.0,
+        "display_name": "Kimi K2.5",
+    },
 }
 
 DEFAULT_RATE = {"input": 3.0, "output": 15.0, "display_name": "Unknown Model"}
 
 # Platform pricing defaults
-DEFAULT_SUBSCRIPTION_PRICE = 5.00  # $/month
 PLATFORM_MARGIN_TARGET = 0.30  # 30% target margin
