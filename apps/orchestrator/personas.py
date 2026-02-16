@@ -181,26 +181,69 @@ def render_agents_md(persona_key: str) -> str:
         f"- Use `skills/nbhd-managed/daily-journal/SKILL.md` when the user wants a daily reflection.\n"
         f"- Use `skills/nbhd-managed/weekly-review/SKILL.md` when the user wants end-of-week synthesis.\n"
         f"- Prefer skill tool calls over free-form persistence:\n"
-        f"  - `nbhd_journal_create_entry`\n"
-        f"  - `nbhd_journal_list_entries`\n"
-        f"  - `nbhd_journal_create_weekly_review`\n"
+        f"  - `nbhd_daily_note_get` -- read today's daily note\n"
+        f"  - `nbhd_daily_note_set_section` -- set a section (Morning Report, Weather, etc.)\n"
+        f"  - `nbhd_daily_note_append` -- append a quick log entry\n"
+        f"  - `nbhd_memory_get` / `nbhd_memory_update` -- read/write long-term memory\n"
+        f"  - `nbhd_journal_context` -- session init (recent notes + memory)\n"
         f"- Do not invent storage APIs or bypass tenant-scoped runtime tools.\n"
     )
 
 
-def render_workspace_files(persona_key: str) -> dict[str, str]:
+def render_templates_md(tenant) -> str:
+    """Render templates.md content from a tenant's NoteTemplate sections.
+
+    Produces the agent-facing skill reference that describes what sections
+    the user has configured in their daily note template.
+    """
+    from apps.journal.services import get_default_template
+
+    template = get_default_template(tenant=tenant)
+    if template is None:
+        return "# Daily Note Template\n\nNo template configured yet.\n"
+
+    lines = [
+        "# Daily Note Template",
+        "",
+        f"Template: **{template.name}** (slug: `{template.slug}`)",
+        "",
+        "## Sections",
+        "",
+    ]
+    for section in template.sections:
+        title = section.get("title", section.get("slug", "Section"))
+        slug = section.get("slug", "")
+        source = section.get("source", "shared")
+        content = section.get("content", "")
+        lines.append(f"### {title}")
+        lines.append(f"- **Slug:** `{slug}`")
+        lines.append(f"- **Source:** {source}")
+        if content:
+            lines.append(f"- **Seed content:** {content}")
+        lines.append("")
+
+    lines.append("Use `nbhd_daily_note_set_section` with the slug to write content to a section.")
+    lines.append("Use `nbhd_daily_note_append` (no section_slug) for quick timestamped log entries.")
+    return "\n".join(lines)
+
+
+def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     """Render all persona-aware workspace files.
 
     Returns a dict mapping env var names to content:
     - NBHD_AGENTS_MD
     - NBHD_SOUL_MD
     - NBHD_IDENTITY_MD
+    - NBHD_SKILL_TEMPLATES_MD (when tenant is provided)
     """
-    return {
+    result = {
         "NBHD_AGENTS_MD": render_agents_md(persona_key),
         "NBHD_SOUL_MD": render_soul_md(persona_key),
         "NBHD_IDENTITY_MD": render_identity_md(persona_key),
     }
+    if tenant is not None:
+        result["NBHD_SKILL_TEMPLATES_MD"] = render_templates_md(tenant)
+    return result
 
 
 def list_personas() -> list[dict[str, str]]:

@@ -26,6 +26,14 @@ elif [ -f "$NBHD_MANAGED_AGENTS_TEMPLATE" ]; then
     cp "$NBHD_MANAGED_AGENTS_TEMPLATE" "$NBHD_MANAGED_AGENTS_DST"
 fi
 
+# Skill templates.md — overwrite with tenant-specific content from env var
+if [ -n "${NBHD_SKILL_TEMPLATES_MD:-}" ]; then
+    SKILL_TEMPLATES_DST="${NBHD_MANAGED_SKILLS_DST}/daily-journal/references/templates.md"
+    if [ -d "$(dirname "$SKILL_TEMPLATES_DST")" ]; then
+        printf '%s\n' "$NBHD_SKILL_TEMPLATES_MD" > "$SKILL_TEMPLATES_DST"
+    fi
+fi
+
 # SOUL.md, IDENTITY.md — seed once from env var, don't overwrite
 if [ -n "${NBHD_SOUL_MD:-}" ] && [ ! -f "$OPENCLAW_WORKSPACE_PATH/SOUL.md" ]; then
     printf '%s\n' "$NBHD_SOUL_MD" > "$OPENCLAW_WORKSPACE_PATH/SOUL.md"

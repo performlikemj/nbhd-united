@@ -3,6 +3,7 @@ from django.urls import path
 from .views import (
     DailyNoteEntryDetailView,
     DailyNoteEntryListView,
+    DailyNoteSectionView,
     DailyNoteView,
     JournalEntryDetailView,
     JournalEntryListCreateView,
@@ -21,6 +22,7 @@ urlpatterns = [
     # Daily notes (markdown-first)
     path("daily/<str:date>/", DailyNoteView.as_view(), name="daily-note"),
     path("daily/<str:date>/template/", DailyNoteTemplateView.as_view(), name="daily-note-template"),
+    path("daily/<str:date>/sections/<str:slug>/", DailyNoteSectionView.as_view(), name="daily-note-section"),
     path("daily/<str:date>/entries/", DailyNoteEntryListView.as_view(), name="daily-note-entries"),
     path("daily/<str:date>/entries/<int:index>/", DailyNoteEntryDetailView.as_view(), name="daily-note-entry-detail"),
     # Long-term memory

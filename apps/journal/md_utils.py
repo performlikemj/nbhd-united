@@ -51,6 +51,10 @@ def _slugify_section(title: str) -> str:
 def parse_daily_note(markdown: str) -> list[dict[str, Any]]:
     """Parse a daily-note markdown document into a list of entry dicts.
 
+    .. deprecated::
+        Use ``apps.journal.services.parse_daily_sections`` for the sections-based
+        model instead.
+
     Each entry dict has keys:
         time (str|None), author (str), content (str),
         mood (str|None), energy (int|None),
@@ -199,7 +203,11 @@ def serialise_entry(entry: dict[str, Any]) -> str:
 
 
 def serialise_daily_note(date_str: str, entries: list[dict[str, Any]]) -> str:
-    """Serialise a full daily note from date + entries list."""
+    """Serialise a full daily note from date + entries list.
+
+    .. deprecated::
+        Use ``apps.journal.services.materialize_sections_markdown`` instead.
+    """
     parts = [f"# {date_str}"]
     for entry in entries:
         parts.append("")
@@ -218,7 +226,11 @@ def append_entry_markdown(
     energy: int | None = None,
     date_str: str | None = None,
 ) -> str:
-    """Append a new entry to existing markdown, returning the updated doc."""
+    """Append a new entry to existing markdown, returning the updated doc.
+
+    .. deprecated::
+        Use ``apps.journal.services.append_log_to_note`` instead.
+    """
     author_label = "Agent" if author == "agent" else "MJ"
     lines = []
 

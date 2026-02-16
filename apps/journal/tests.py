@@ -9,8 +9,14 @@ from rest_framework.test import APIClient
 from apps.tenants.models import Tenant, User
 
 from .md_utils import append_entry_markdown, parse_daily_note, serialise_daily_note
-from .models import DailyNote, UserMemory, WeeklyReview
-from .services import get_or_seed_note_template
+from .models import DailyNote, NoteTemplate, UserMemory, WeeklyReview
+from .services import (
+    DEFAULT_TEMPLATE_SECTIONS,
+    append_log_to_note,
+    get_or_seed_note_template,
+    seed_default_templates_for_tenant,
+    set_daily_note_section,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -167,12 +173,115 @@ Legacy entry for migration safety.
         )
 
         self.assertIsNotNone(template)
-        log_section = next(
-            (section for section in sections if section["slug"] == "log"),
-            None,
+        # Legacy entries that don't parse into sections are returned as default
+        # template sections (no "log" section in new defaults).
+        self.assertTrue(len(sections) > 0)
+
+
+class DefaultTemplateSectionsTest(TestCase):
+    def test_default_template_has_five_sections(self):
+        self.assertEqual(len(DEFAULT_TEMPLATE_SECTIONS), 5)
+        slugs = [s["slug"] for s in DEFAULT_TEMPLATE_SECTIONS]
+        self.assertEqual(slugs, [
+            "morning-report", "weather", "news", "focus", "evening-check-in",
+        ])
+
+    def test_seed_creates_template_with_five_sections(self):
+        user = User.objects.create_user(username="seeduser", password="pass")
+        tenant = Tenant.objects.create(user=user, status="active")
+        result = seed_default_templates_for_tenant(tenant=tenant)
+        template = result["template"]
+        self.assertEqual(len(template.sections), 5)
+
+
+class SetSectionTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="sectionuser", password="pass")
+        self.tenant = Tenant.objects.create(user=self.user, status="active")
+
+    def test_set_known_section(self):
+        note = DailyNote.objects.create(tenant=self.tenant, date=date(2026, 2, 16))
+        note, sections = set_daily_note_section(
+            note=note, section_slug="morning-report", content="Hello morning",
         )
-        self.assertIsNotNone(log_section)
-        self.assertIn("Legacy entry for migration safety.", log_section["content"])
+        mr = next(s for s in sections if s["slug"] == "morning-report")
+        self.assertEqual(mr["content"], "Hello morning")
+        self.assertIn("Hello morning", note.markdown)
+
+    def test_set_unknown_slug_auto_creates(self):
+        note = DailyNote.objects.create(tenant=self.tenant, date=date(2026, 2, 16))
+        note, sections = set_daily_note_section(
+            note=note, section_slug="tweet-drafts", content="Some tweet ideas",
+        )
+        slugs = [s["slug"] for s in sections]
+        self.assertIn("tweet-drafts", slugs)
+        # Should be inserted before evening-check-in
+        evening_idx = slugs.index("evening-check-in")
+        tweet_idx = slugs.index("tweet-drafts")
+        self.assertLess(tweet_idx, evening_idx)
+
+    def test_set_unknown_slug_appended_when_no_evening(self):
+        """When evening-check-in doesn't exist, new sections are appended."""
+        note = DailyNote.objects.create(tenant=self.tenant, date=date(2026, 2, 16))
+        # Create a custom template without evening-check-in
+        template = NoteTemplate.objects.create(
+            tenant=self.tenant,
+            slug="custom",
+            name="Custom",
+            sections=[
+                {"slug": "morning-report", "title": "Morning Report", "content": "", "source": "agent"},
+            ],
+            is_default=True,
+        )
+        note.template = template
+        note.save()
+        note, sections = set_daily_note_section(
+            note=note, section_slug="new-section", content="New content",
+        )
+        self.assertEqual(sections[-1]["slug"], "new-section")
+
+
+class AppendLogTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="loguser", password="pass")
+        self.tenant = Tenant.objects.create(user=self.user, status="active")
+
+    def test_append_log_without_log_section(self):
+        """When there's no log section, append to document tail."""
+        note = DailyNote.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 2, 16),
+            markdown="# 2026-02-16\n\n## Morning Report\nHello\n",
+        )
+        note = append_log_to_note(
+            note=note, content="Quick note", author="human", time_str="14:00",
+        )
+        self.assertIn("14:00", note.markdown)
+        self.assertIn("Quick note", note.markdown)
+        self.assertIn("MJ", note.markdown)
+
+    def test_append_log_with_log_section(self):
+        """When a log section exists, append within it."""
+        note = DailyNote.objects.create(tenant=self.tenant, date=date(2026, 2, 16))
+        # Create a template with a log section
+        template = NoteTemplate.objects.create(
+            tenant=self.tenant,
+            slug="with-log",
+            name="With Log",
+            sections=[
+                {"slug": "morning-report", "title": "Morning Report", "content": "", "source": "agent"},
+                {"slug": "log", "title": "Log", "content": "", "source": "shared"},
+                {"slug": "evening-check-in", "title": "Evening Check-in", "content": "", "source": "human"},
+            ],
+            is_default=True,
+        )
+        note.template = template
+        note.save()
+        note = append_log_to_note(
+            note=note, content="Logged this", author="agent", time_str="10:30",
+        )
+        self.assertIn("Logged this", note.markdown)
+        self.assertIn("10:30", note.markdown)
 
 
 class UserMemoryModelTest(TestCase):
@@ -215,7 +324,9 @@ class DailyNoteAPITest(TestCase):
     def test_get_empty_daily_note(self):
         resp = self.client.get("/api/v1/journal/daily/2026-02-15/")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data["entries"], [])
+        # Sections are returned; entries are no longer included by default.
+        self.assertIn("sections", resp.data)
+        self.assertIn("markdown", resp.data)
 
     def test_post_entry_creates_note(self):
         resp = self.client.post(
@@ -259,6 +370,36 @@ class DailyNoteAPITest(TestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, 404)
+
+    def test_patch_section_endpoint(self):
+        resp = self.client.patch(
+            "/api/v1/journal/daily/2026-02-15/sections/morning-report/",
+            {"content": "Good morning!"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        sections = resp.data.get("sections", [])
+        mr = next((s for s in sections if s["slug"] == "morning-report"), None)
+        self.assertIsNotNone(mr)
+        self.assertEqual(mr["content"], "Good morning!")
+
+    def test_patch_section_auto_creates_unknown_slug(self):
+        resp = self.client.patch(
+            "/api/v1/journal/daily/2026-02-15/sections/custom-section/",
+            {"content": "Custom content"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        slugs = [s["slug"] for s in resp.data.get("sections", [])]
+        self.assertIn("custom-section", slugs)
+
+    def test_patch_section_missing_content(self):
+        resp = self.client.patch(
+            "/api/v1/journal/daily/2026-02-15/sections/morning-report/",
+            {},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
 
 
 @override_settings(

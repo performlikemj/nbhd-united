@@ -23,6 +23,7 @@ from .azure_client import (
 )
 from .key_utils import generate_internal_api_key, hash_internal_api_key
 from .config_generator import config_to_json, generate_openclaw_config
+from .personas import render_templates_md
 from .personas import render_workspace_files
 
 logger = logging.getLogger(__name__)
@@ -82,7 +83,7 @@ def provision_tenant(tenant_id: str) -> None:
 
         # 2g. Render workspace templates based on persona
         persona_key = (tenant.user.preferences or {}).get("agent_persona", "neighbor")
-        workspace_env = render_workspace_files(persona_key)
+        workspace_env = render_workspace_files(persona_key, tenant=tenant)
 
         # 3. Create Container App
         container_name = f"oc-{str(tenant.id)[:20]}"
@@ -137,6 +138,16 @@ def update_tenant_config(tenant_id: str) -> None:
     update_container_env_var(
         tenant.container_id, "OPENCLAW_CONFIG_JSON", config_json,
     )
+
+    # Push tenant-specific skill templates
+    try:
+        templates_md = render_templates_md(tenant)
+        update_container_env_var(
+            tenant.container_id, "NBHD_SKILL_TEMPLATES_MD", templates_md,
+        )
+    except Exception:
+        logger.warning("Failed to update skill templates for tenant %s", tenant_id, exc_info=True)
+
     logger.info("Updated OpenClaw config for tenant %s", tenant_id)
 
 

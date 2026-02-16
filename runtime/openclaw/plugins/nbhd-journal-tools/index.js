@@ -148,12 +148,60 @@ export default function register(api) {
     { optional: true },
   );
 
-  // ── Daily Note: Append ───────────────────────────────────────────────
+  // ── Daily Note: Set Section ─────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_daily_note_set_section",
+      description:
+        "Set the content of a specific section in the daily note. Use for writing structured sections like Morning Report, Weather, News, Focus, or Evening Check-in. The section_slug must match a section in the user's template (e.g. 'morning-report', 'weather', 'news', 'focus', 'evening-check-in'). If the section doesn't exist yet, it will be created automatically.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          section_slug: {
+            type: "string",
+            description:
+              "The slug of the section to set (e.g. 'morning-report', 'weather', 'news', 'focus', 'evening-check-in').",
+          },
+          content: {
+            type: "string",
+            description:
+              "Full markdown content for the section. Overwrites existing section content.",
+          },
+          date: {
+            type: "string",
+            description: "ISO date (YYYY-MM-DD). Defaults to today.",
+          },
+        },
+        required: ["section_slug", "content"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const sectionSlug = asTrimmedString(input.section_slug);
+        const content = asTrimmedString(input.content);
+        if (!sectionSlug) throw new Error("section_slug is required");
+        if (!content) throw new Error("content is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/daily-note/append/"),
+          method: "POST",
+          body: {
+            content,
+            date: asTrimmedString(input.date) || undefined,
+            section_slug: sectionSlug,
+          },
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Daily Note: Append Log Entry ──────────────────────────────────────
   api.registerTool(
     {
       name: "nbhd_daily_note_append",
       description:
-        "Append a timestamped entry to the daily note. Use for logging agent actions, research findings, email summaries, or any noteworthy event. Auto-timestamps with current time and author=agent.",
+        "Append a quick timestamped log entry to the daily note. Use for brief notes about things you did during the day (email checks, research completed, tasks finished, issues found). Auto-timestamps with current time and author=agent. For writing full sections (Morning Report, Weather, News, etc.), use nbhd_daily_note_set_section instead.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -280,7 +328,7 @@ export default function register(api) {
     {
       name: "nbhd_journal_evening_checkin",
       description:
-        "Append evening check-in content to today's sectionized daily note.",
+        "[DEPRECATED: Use nbhd_daily_note_set_section with section_slug='evening-check-in' instead.] Set evening check-in content in today's daily note.",
       parameters: {
         type: "object",
         additionalProperties: false,

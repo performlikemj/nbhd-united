@@ -31,14 +31,32 @@ const sectionSeed: NoteTemplateSection[] = [
   {
     slug: "morning-report",
     title: "Morning Report",
-    content: "*Agent update.*",
-    source: "shared",
+    content: "",
+    source: "agent",
   },
   {
-    slug: "log",
-    title: "Log",
-    content: "*Quick notes through the day.*",
-    source: "shared",
+    slug: "weather",
+    title: "Weather",
+    content: "",
+    source: "agent",
+  },
+  {
+    slug: "news",
+    title: "News",
+    content: "",
+    source: "agent",
+  },
+  {
+    slug: "focus",
+    title: "Focus",
+    content: "",
+    source: "agent",
+  },
+  {
+    slug: "evening-check-in",
+    title: "Evening Check-in",
+    content: "",
+    source: "human",
   },
 ];
 

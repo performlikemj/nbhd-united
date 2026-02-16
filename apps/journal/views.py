@@ -63,7 +63,7 @@ DEPRECATION_HEADERS = {
 }
 
 
-def _note_template_response(note: DailyNote, *, include_entries: bool = True) -> dict:
+def _note_template_response(note: DailyNote, *, include_entries: bool = False) -> dict:
     template, sections = get_or_seed_note_template(
         tenant=note.tenant,
         date_value=note.date,
@@ -164,7 +164,10 @@ class DailyNoteView(APIView):
 
 
 class DailyNoteEntryListView(APIView):
-    """POST /api/v1/journal/daily/<date>/entries/ — append an entry."""
+    """POST /api/v1/journal/daily/<date>/entries/ — append an entry.
+
+    .. deprecated:: Use DailyNoteSectionView or log-append instead.
+    """
 
     permission_classes = [IsAuthenticated]
 
@@ -194,11 +197,18 @@ class DailyNoteEntryListView(APIView):
         note.save()
 
         entries = parse_daily_note(note.markdown)
-        return Response({"date": date, "entries": entries}, status=status.HTTP_201_CREATED)
+        return Response(
+            {"date": date, "entries": entries},
+            status=status.HTTP_201_CREATED,
+            headers=DEPRECATION_HEADERS,
+        )
 
 
 class DailyNoteEntryDetailView(APIView):
-    """PATCH/DELETE /api/v1/journal/daily/<date>/entries/<index>/"""
+    """PATCH/DELETE /api/v1/journal/daily/<date>/entries/<index>/
+
+    .. deprecated:: Use DailyNoteSectionView instead.
+    """
 
     permission_classes = [IsAuthenticated]
 
@@ -228,7 +238,7 @@ class DailyNoteEntryDetailView(APIView):
         note.markdown = serialise_daily_note(str(d), entries)
         note.save()
 
-        return Response({"date": date, "entries": entries})
+        return Response({"date": date, "entries": entries}, headers=DEPRECATION_HEADERS)
 
     def delete(self, request, date: str, index: int):
         tenant = _get_tenant_for_user(request.user)
@@ -249,7 +259,7 @@ class DailyNoteEntryDetailView(APIView):
         note.markdown = serialise_daily_note(str(d), entries)
         note.save()
 
-        return Response({"date": date, "entries": entries})
+        return Response({"date": date, "entries": entries}, headers=DEPRECATION_HEADERS)
 
 
 class DailyNoteTemplateView(APIView):
@@ -324,6 +334,33 @@ class DailyNoteTemplateView(APIView):
         note.save()
 
         return Response({"date": date, "entries": entries})
+
+
+class DailyNoteSectionView(APIView):
+    """PATCH /api/v1/journal/daily/<date>/sections/<slug>/"""
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, date: str, slug: str):
+        tenant = _get_tenant_for_user(request.user)
+        try:
+            d = datetime.date.fromisoformat(date)
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=400)
+
+        content = request.data.get("content")
+        if content is None:
+            return Response({"error": "content is required."}, status=400)
+
+        note = upsert_default_daily_note(tenant=tenant, note_date=d)
+        try:
+            note, _sections = set_daily_note_section(
+                note=note, section_slug=slug, content=str(content),
+            )
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=400)
+
+        return Response(_note_template_response(note, include_entries=False))
 
 
 # ---------------------------------------------------------------------------
@@ -445,6 +482,15 @@ class TemplateDetailView(APIView):
         serializer = NoteTemplateSerializer(template, data=request.data, partial=True, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
         template = serializer.save()
+
+        # Push updated skill config to the agent's container when the default template changes.
+        if template.is_default:
+            try:
+                from apps.orchestrator.tasks import update_tenant_config_task
+                update_tenant_config_task.delay(str(tenant.id))
+            except Exception:
+                pass  # Non-blocking; config update is best-effort.
+
         return Response(NoteTemplateSerializer(template).data)
 
     def delete(self, request, template_id: str):

@@ -12,9 +12,10 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.journal.md_utils import append_entry_markdown
+from apps.journal.md_utils import append_entry_markdown  # noqa: F401 — kept for backward compat
 from apps.journal.models import DailyNote, JournalEntry, UserMemory
 from apps.journal.services import (
+    append_log_to_note,
     get_or_seed_note_template,
     set_daily_note_section,
     set_daily_note_sections,
@@ -668,15 +669,11 @@ class RuntimeDailyNoteAppendView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
         else:
-            time_str = tz.now().strftime("%H:%M")
-            note.markdown = append_entry_markdown(
-                note.markdown,
-                time=time_str,
-                author="agent",
+            note = append_log_to_note(
+                note=note,
                 content=content,
-                date_str=str(d),
+                author="agent",
             )
-            note.save(update_fields=["markdown", "updated_at"])
 
         return Response(
             {

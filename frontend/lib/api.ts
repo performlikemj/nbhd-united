@@ -402,6 +402,17 @@ export interface DailyNoteTemplateInput {
   sections: NoteTemplateSection[];
 }
 
+export function updateDailyNoteSection(
+  date: string,
+  slug: string,
+  content: string,
+): Promise<DailyNoteResponse> {
+  return apiFetch<DailyNoteResponse>(`/api/v1/journal/daily/${date}/sections/${slug}/`, {
+    method: "PATCH",
+    body: JSON.stringify({ content }),
+  });
+}
+
 export function updateDailyNoteTemplate(
   date: string,
   data: DailyNoteTemplateInput,

@@ -173,7 +173,8 @@ export interface NoteTemplate {
 export interface DailyNoteResponse {
   date: string;
   markdown: string;
-  entries: DailyNoteEntry[];
+  /** @deprecated Entries are no longer returned by default. */
+  entries?: DailyNoteEntry[];
   template_id?: string | null;
   template_slug?: string;
   template_name?: string;

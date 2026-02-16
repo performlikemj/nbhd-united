@@ -41,6 +41,7 @@ import {
   requestStripePortal,
   unlinkTelegram,
   updateAutomation,
+  updateDailyNoteSection,
   updateDailyNoteTemplate,
   updateDailyNoteEntry,
   updateJournalEntry,
@@ -356,6 +357,17 @@ export function useUpdateDailyNoteTemplateMutation(date: string) {
     mutationFn: (
       data: Parameters<typeof updateDailyNoteTemplate>[1],
     ) => updateDailyNoteTemplate(date, data),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["daily-note", date] });
+    },
+  });
+}
+
+export function useUpdateDailyNoteSectionMutation(date: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, content }: { slug: string; content: string }) =>
+      updateDailyNoteSection(date, slug, content),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["daily-note", date] });
     },
