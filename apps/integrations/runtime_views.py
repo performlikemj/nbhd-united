@@ -896,6 +896,119 @@ class RuntimeDocumentView(APIView):
         )
 
 
+class RuntimeJournalSearchView(APIView):
+    """Full-text search across all documents for a tenant."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        query = request.query_params.get("q", "").strip()
+        kind = request.query_params.get("kind", "").strip()
+        limit = min(int(request.query_params.get("limit", "20")), 50)
+
+        if not query:
+            return Response(
+                {"error": "invalid_request", "detail": "q parameter required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
+
+        qs = Document.objects.filter(tenant=tenant)
+        if kind:
+            qs = qs.filter(kind=kind)
+
+        search_vector = SearchVector("title", weight="A") + SearchVector("markdown", weight="B")
+        search_query = SearchQuery(query, search_type="websearch")
+
+        results = (
+            qs.annotate(rank=SearchRank(search_vector, search_query))
+            .filter(rank__gt=0.0)
+            .order_by("-rank")[:limit]
+        )
+
+        def _make_snippet(text: str, query_terms: str, max_len: int = 300) -> str:
+            """Extract relevant snippet around first match."""
+            if not text:
+                return ""
+            lower_text = text.lower()
+            terms = [t.lower() for t in query_terms.split() if len(t) > 2]
+            best_pos = 0
+            for term in terms:
+                pos = lower_text.find(term)
+                if pos >= 0:
+                    best_pos = max(0, pos - 100)
+                    break
+            snippet = text[best_pos : best_pos + max_len]
+            if best_pos > 0:
+                snippet = "..." + snippet
+            if best_pos + max_len < len(text):
+                snippet = snippet + "..."
+            return snippet
+
+        return Response(
+            {
+                "query": query,
+                "count": len(results),
+                "results": [
+                    {
+                        "kind": doc.kind,
+                        "slug": doc.slug,
+                        "title": doc.title,
+                        "snippet": _make_snippet(doc.markdown, query),
+                        "updated_at": doc.updated_at.isoformat(),
+                        "rank": float(doc.rank),
+                    }
+                    for doc in results
+                ],
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class RuntimeMemorySyncView(APIView):
+    """GET files dict for workspace memory sync (agent/container access).
+
+    Returns all syncable documents as a mapping of workspace-relative paths
+    to markdown content.  The caller writes them to the local filesystem so
+    OpenClaw's ``memory_search`` can index them.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        from apps.orchestrator.memory_sync import render_memory_files
+
+        files = render_memory_files(tenant)
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "files": files,
+                "count": len(files),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class RuntimeDocumentAppendView(APIView):
     """POST append content to a document (agent access)."""
 

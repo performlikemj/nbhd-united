@@ -490,6 +490,50 @@ export default function register(api) {
     { optional: true },
   );
 
+  // ── Journal Search ───────────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_journal_search",
+      description:
+        "Search across all journal documents (daily notes, goals, projects, memory, reviews, etc.) by keyword or phrase. Uses full-text search. Use this to find past entries, recall what was written about a topic, or locate specific notes.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          query: {
+            type: "string",
+            description: "Search query (supports natural phrases and keywords).",
+          },
+          kind: {
+            type: "string",
+            description: "Optional: filter to a specific document kind (daily, weekly, monthly, goal, project, tasks, ideas, memory).",
+          },
+          limit: {
+            type: "number",
+            description: "Max results to return (default 10, max 50).",
+          },
+        },
+        required: ["query"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const query = asTrimmedString(input.query);
+        if (!query) throw new Error("query is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/journal/search/"),
+          method: "GET",
+          query: {
+            q: query,
+            kind: asTrimmedString(input.kind) || undefined,
+            limit: parseInteger(input.limit, { defaultValue: 10, min: 1, max: 50 }),
+          },
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
   // ── Platform Issue Report ────────────────────────────────────────────
   api.registerTool(
     {

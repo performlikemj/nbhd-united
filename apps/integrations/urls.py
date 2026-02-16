@@ -12,6 +12,8 @@ from .runtime_views import (
     RuntimeGmailMessagesView,
     RuntimeJournalContextView,
     RuntimeJournalEntriesView,
+    RuntimeJournalSearchView,
+    RuntimeMemorySyncView,
     RuntimeUserMemoryView,
     RuntimeWeeklyReviewsView,
 )
@@ -75,6 +77,12 @@ urlpatterns = [
         RuntimeJournalContextView.as_view(),
         name="runtime-journal-context",
     ),
+    # Journal search
+    path(
+        "runtime/<uuid:tenant_id>/journal/search/",
+        RuntimeJournalSearchView.as_view(),
+        name="runtime-journal-search",
+    ),
     # v2 Document endpoints
     path(
         "runtime/<uuid:tenant_id>/document/",
@@ -85,6 +93,12 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/document/append/",
         RuntimeDocumentAppendView.as_view(),
         name="runtime-document-append",
+    ),
+    # Memory sync — bulk export documents as workspace files
+    path(
+        "runtime/<uuid:tenant_id>/memory-sync/",
+        RuntimeMemorySyncView.as_view(),
+        name="runtime-memory-sync",
     ),
     # Platform issue logging
     path(
