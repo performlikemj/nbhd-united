@@ -14,26 +14,36 @@ from apps.tenants.models import Tenant
 
 # Model mapping by tier
 TIER_MODELS: dict[str, dict[str, str]] = {
-    "basic": {
-        "primary": "anthropic/claude-sonnet-4-20250514",
-    },
-    "plus": {
-        "primary": "anthropic/claude-sonnet-4-20250514",
-        # Plus users can also use Opus
-    },
+    "starter": {"primary": "moonshot/kimi-k2.5"},
+    "premium": {"primary": "anthropic/claude-sonnet-4-20250514"},
+    "byok": {"primary": "anthropic/claude-sonnet-4-20250514"},  # fallback, overridden by user config
 }
 
 TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
-    "basic": {
-        "anthropic/claude-sonnet-4-20250514": {"alias": "sonnet"},
+    "starter": {
+        "moonshot/kimi-k2.5": {"alias": "kimi"},
     },
-    "plus": {
+    "premium": {
         "anthropic/claude-sonnet-4-20250514": {"alias": "sonnet"},
         "anthropic/claude-opus-4-20250514": {"alias": "opus"},
     },
+    "byok": {},  # populated dynamically from user's config
 }
 
 WHISPER_DEFAULT_MODEL = {"provider": "openai", "model": "gpt-4o-mini-transcribe"}
+
+
+def _build_models_providers(tier: str, tenant: Tenant) -> dict:
+    """Return models.providers config for non-built-in providers."""
+    providers: dict[str, Any] = {}
+    if tier == "starter":
+        providers["moonshot"] = {
+            "baseUrl": "https://api.moonshot.ai/v1",
+            "apiKey": "${MOONSHOT_API_KEY}",
+            "api": "openai-completions",
+            "models": [{"id": "kimi-k2.5", "name": "Kimi K2.5"}],
+        }
+    return providers
 
 
 def _build_tools_section(tier: str) -> dict[str, Any]:
@@ -55,9 +65,9 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     ~/.openclaw/openclaw.json (or mounted via Azure Files).
     """
     chat_id = tenant.user.telegram_chat_id  # may be None before Telegram linking
-    tier = tenant.model_tier or "basic"
-    models_config = TIER_MODELS.get(tier, TIER_MODELS["basic"])
-    model_entries = TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["basic"])
+    tier = tenant.model_tier or "starter"
+    models_config = TIER_MODELS.get(tier, TIER_MODELS["starter"])
+    model_entries = TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["starter"])
     # Collect all configured plugins
     _plugin_defs = [
         (
@@ -151,6 +161,42 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "ackReactionScope": "group-mentions",
         },
     }
+
+    providers = _build_models_providers(tier, tenant)
+    if providers:
+        config["models"] = {"mode": "merge", "providers": providers}
+
+    # BYOK: inject user's own provider config
+    if tier == "byok":
+        try:
+            from apps.tenants.models import UserLLMConfig
+            from apps.tenants.crypto import decrypt_api_key
+
+            llm_config = UserLLMConfig.objects.get(user=tenant.user)
+            if llm_config.encrypted_api_key:
+                api_key = decrypt_api_key(llm_config.encrypted_api_key)
+                provider = llm_config.provider
+                model_id = llm_config.model_id
+
+                ENV_KEY_MAP = {
+                    "openai": "OPENAI_API_KEY",
+                    "anthropic": "ANTHROPIC_API_KEY",
+                    "groq": "GROQ_API_KEY",
+                    "google": "GEMINI_API_KEY",
+                    "openrouter": "OPENROUTER_API_KEY",
+                    "xai": "XAI_API_KEY",
+                }
+                env_key = ENV_KEY_MAP.get(provider)
+                if env_key:
+                    config.setdefault("env", {})[env_key] = api_key
+
+                if model_id:
+                    config["agents"]["defaults"]["model"]["primary"] = model_id
+                    config["agents"]["defaults"]["models"] = {
+                        model_id: {"alias": provider},
+                    }
+        except UserLLMConfig.DoesNotExist:
+            pass  # Fall back to default tier model
 
     if _active_plugins:
         plugin_config: dict[str, Any] = {

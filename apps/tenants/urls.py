@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import OnboardTenantView, PersonaListView, ProfileView, TenantViewSet, UpdatePreferencesView
 from .telegram_views import telegram_generate_link, telegram_status, telegram_unlink
+from .llm_config_views import LLMConfigView
 
 router = DefaultRouter()
 router.register("", TenantViewSet, basename="tenant")
@@ -15,5 +16,6 @@ urlpatterns = [
     path("telegram/generate-link/", telegram_generate_link, name="telegram-generate-link"),
     path("telegram/unlink/", telegram_unlink, name="telegram-unlink"),
     path("telegram/status/", telegram_status, name="telegram-status"),
+    path("settings/llm-config/", LLMConfigView.as_view(), name="llm-config"),
     path("", include(router.urls)),
 ]

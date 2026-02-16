@@ -46,8 +46,9 @@ class Tenant(models.Model):
         DELETED = "deleted", "Deleted"
 
     class ModelTier(models.TextChoices):
-        BASIC = "basic", "Basic (Sonnet)"
-        PLUS = "plus", "Plus (Opus available)"
+        STARTER = "starter", "Starter (Kimi K2.5)"
+        PREMIUM = "premium", "Premium (Sonnet/Opus)"
+        BYOK = "byok", "Bring Your Own Key"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="tenant")
@@ -55,7 +56,7 @@ class Tenant(models.Model):
         max_length=20, choices=Status.choices, default=Status.PENDING
     )
     model_tier = models.CharField(
-        max_length=20, choices=ModelTier.choices, default=ModelTier.BASIC
+        max_length=20, choices=ModelTier.choices, default=ModelTier.STARTER
     )
 
     # OpenClaw container
@@ -123,3 +124,45 @@ class Tenant(models.Model):
     @property
     def is_over_budget(self) -> bool:
         return self.tokens_this_month >= self.monthly_token_budget
+
+
+class UserLLMConfig(models.Model):
+    """Stores a user's BYOK (Bring Your Own Key) LLM configuration."""
+
+    class Provider(models.TextChoices):
+        OPENAI = "openai", "OpenAI"
+        ANTHROPIC = "anthropic", "Anthropic"
+        GROQ = "groq", "Groq"
+        GOOGLE = "google", "Google Gemini"
+        OPENROUTER = "openrouter", "OpenRouter"
+        XAI = "xai", "xAI (Grok)"
+
+    user = models.OneToOneField(
+        "tenants.User",
+        on_delete=models.CASCADE,
+        related_name="llm_config",
+    )
+    provider = models.CharField(
+        max_length=30,
+        choices=Provider.choices,
+        default=Provider.ANTHROPIC,
+    )
+    encrypted_api_key = models.TextField(
+        blank=True,
+        default="",
+        help_text="Fernet-encrypted API key",
+    )
+    model_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Full model ID e.g. 'anthropic/claude-sonnet-4-20250514'",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "user_llm_configs"
+
+    def __str__(self):
+        return f"{self.user.display_name} - {self.provider}"
