@@ -23,7 +23,6 @@ export default function JournalPage() {
         setActiveKind(parts[0]);
         setActiveSlug(parts.slice(1).join("/"));
       } else if (parts.length === 1) {
-        // Singleton: #tasks, #ideas, #memory
         setActiveKind(parts[0]);
         setActiveSlug(parts[0]);
       }
@@ -44,9 +43,14 @@ export default function JournalPage() {
         type="button"
         onClick={() => setMobileSidebarOpen(!mobileSidebarOpen)}
         className="fixed bottom-4 left-4 z-50 rounded-full bg-ink p-3 text-white shadow-lg lg:hidden"
+        aria-label="Toggle sidebar"
       >
         <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+          {mobileSidebarOpen ? (
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          ) : (
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+          )}
         </svg>
       </button>
 
@@ -62,24 +66,30 @@ export default function JournalPage() {
       </div>
 
       {/* Sidebar - mobile overlay */}
-      {mobileSidebarOpen && (
-        <div className="fixed inset-0 z-40 lg:hidden">
-          <div
-            className="absolute inset-0 bg-black/30"
-            onClick={() => setMobileSidebarOpen(false)}
+      <div
+        className={`fixed inset-0 z-40 lg:hidden transition-opacity duration-200 ${
+          mobileSidebarOpen ? "opacity-100" : "pointer-events-none opacity-0"
+        }`}
+      >
+        <div
+          className="absolute inset-0 bg-black/40"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+        <div
+          className={`relative z-10 h-full w-72 bg-white shadow-xl transition-transform duration-200 ease-out ${
+            mobileSidebarOpen ? "translate-x-0" : "-translate-x-full"
+          }`}
+        >
+          <Sidebar
+            activeKind={activeKind}
+            activeSlug={activeSlug}
+            onNavigate={handleNavigate}
           />
-          <div className="relative z-10 h-full w-72">
-            <Sidebar
-              activeKind={activeKind}
-              activeSlug={activeSlug}
-              onNavigate={handleNavigate}
-            />
-          </div>
         </div>
-      )}
+      </div>
 
       {/* Main content */}
-      <div className="flex-1 overflow-hidden bg-white">
+      <div className="min-w-0 flex-1 overflow-hidden bg-white">
         <DocumentView
           kind={activeKind}
           slug={activeSlug}

@@ -28,6 +28,14 @@ function formatDate(dateStr: string): string {
   });
 }
 
+function formatDateShort(dateStr: string): string {
+  return new Date(dateStr + "T00:00:00").toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
 interface DocumentViewProps {
   kind: string;
   slug: string;
@@ -82,7 +90,6 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
       const line = lines[lineIndex];
       if (!line) return;
 
-      // Toggle the checkbox
       if (checked) {
         lines[lineIndex] = line.replace(/\[([ ])\]/, "[x]");
       } else {
@@ -107,7 +114,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
 
   if (isLoading) {
     return (
-      <div className="space-y-4 p-6">
+      <div className="space-y-4 p-4 lg:p-6">
         <div className="h-8 w-48 animate-pulse rounded bg-ink/10" />
         <div className="space-y-2">
           {[1, 2, 3, 4, 5].map((i) => (
@@ -120,7 +127,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
 
   if (error) {
     return (
-      <div className="p-6">
+      <div className="p-4 lg:p-6">
         <p className="rounded-panel border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
           Could not load document.
         </p>
@@ -131,20 +138,23 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-ink/10 px-6 py-3">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink/10 px-4 py-2 lg:px-6 lg:py-3">
+        <div className="flex items-center gap-2 min-w-0">
           {/* Date navigation for daily notes */}
           {kind === "daily" && (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 sm:gap-2">
               <button
                 type="button"
                 onClick={() => handleDateNav(-1)}
-                className="rounded-full border border-ink/20 px-2.5 py-1 text-sm hover:border-ink/40"
+                className="rounded-full border border-ink/20 px-2 py-1 text-sm hover:border-ink/40 min-h-[36px] min-w-[36px] flex items-center justify-center"
               >
                 ←
               </button>
-              <label className="relative cursor-pointer">
-                <span className="text-lg font-semibold text-ink">{formatDate(effectiveSlug)}</span>
+              <label className="relative cursor-pointer min-w-0">
+                <span className="text-base font-semibold text-ink sm:text-lg">
+                  <span className="hidden sm:inline">{formatDate(effectiveSlug)}</span>
+                  <span className="sm:hidden">{formatDateShort(effectiveSlug)}</span>
+                </span>
                 <input
                   type="date"
                   className="absolute inset-0 cursor-pointer opacity-0"
@@ -161,7 +171,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
                 type="button"
                 onClick={() => handleDateNav(1)}
                 disabled={effectiveSlug >= todayISO()}
-                className="rounded-full border border-ink/20 px-2.5 py-1 text-sm hover:border-ink/40 disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded-full border border-ink/20 px-2 py-1 text-sm hover:border-ink/40 disabled:cursor-not-allowed disabled:opacity-40 min-h-[36px] min-w-[36px] flex items-center justify-center"
               >
                 →
               </button>
@@ -172,7 +182,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
                     setCurrentSlug(todayISO());
                     onNavigate?.("daily", todayISO());
                   }}
-                  className="rounded-full border border-ink/20 px-3 py-1 text-sm hover:border-ink/40"
+                  className="rounded-full border border-ink/20 px-2.5 py-1 text-xs sm:text-sm sm:px-3 hover:border-ink/40 min-h-[36px]"
                 >
                   Today
                 </button>
@@ -182,7 +192,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
 
           {/* Title for non-daily docs */}
           {kind !== "daily" && (
-            <h1 className="text-lg font-semibold text-ink">{doc?.title}</h1>
+            <h1 className="truncate text-base font-semibold text-ink sm:text-lg">{doc?.title}</h1>
           )}
         </div>
 
@@ -194,14 +204,14 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
                 type="button"
                 onClick={handleSave}
                 disabled={updateMutation.isPending}
-                className="rounded-full bg-accent px-4 py-1.5 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55"
+                className="rounded-full bg-accent px-3 py-1.5 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55 min-h-[36px]"
               >
-                {updateMutation.isPending ? "Saving..." : "Save"}
+                {updateMutation.isPending ? "..." : "Save"}
               </button>
               <button
                 type="button"
                 onClick={handleCancel}
-                className="rounded-full border border-ink/20 px-4 py-1.5 text-sm hover:border-ink/40"
+                className="rounded-full border border-ink/20 px-3 py-1.5 text-sm hover:border-ink/40 min-h-[36px]"
               >
                 Cancel
               </button>
@@ -210,7 +220,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
             <button
               type="button"
               onClick={handleEdit}
-              className="rounded-full border border-ink/20 px-4 py-1.5 text-sm text-ink/50 hover:border-ink/40 hover:text-ink"
+              className="rounded-full border border-ink/20 px-3 py-1.5 text-sm text-ink/50 hover:border-ink/40 hover:text-ink min-h-[36px]"
             >
               Edit
             </button>
@@ -221,9 +231,9 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
         {editing ? (
-          <div className="p-6">
+          <div className="p-4 lg:p-6">
             <textarea
-              className="w-full rounded-panel border border-ink/15 bg-white px-4 py-3 font-mono text-sm leading-relaxed focus:border-accent/40 focus:outline-none focus:ring-1 focus:ring-accent/20"
+              className="min-h-[50dvh] w-full rounded-panel border border-ink/15 bg-white px-3 py-2.5 font-mono text-sm leading-relaxed focus:border-accent/40 focus:outline-none focus:ring-1 focus:ring-accent/20 lg:px-4 lg:py-3"
               rows={Math.max(20, (draft.split("\n").length + 5))}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -231,7 +241,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
             />
           </div>
         ) : (
-          <div className="p-6">
+          <div className="p-4 lg:p-6">
             {doc?.markdown ? (
               <MarkdownRenderer content={doc.markdown} onCheckboxToggle={handleCheckboxToggle} />
             ) : (
@@ -243,7 +253,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
 
       {/* Quick log for daily notes */}
       {kind === "daily" && !editing && (
-        <div className="border-t border-ink/10 px-6 py-3">
+        <div className="border-t border-ink/10 px-4 py-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] lg:px-6 lg:py-3">
           <QuickLogInput
             onSubmit={handleQuickLog}
             isPending={appendMutation.isPending}
