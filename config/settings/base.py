@@ -227,6 +227,10 @@ AZURE_KV_SECRET_SOUL_MD = env(
     "AZURE_KV_SECRET_SOUL_MD",
     default="nbhd-soul-md",
 )
+AZURE_KV_SECRET_AGENTS_MD = env(
+    "AZURE_KV_SECRET_AGENTS_MD",
+    default="nbhd-agents-md",
+)
 
 # Azure
 AZURE_SUBSCRIPTION_ID = env("AZURE_SUBSCRIPTION_ID", default="")

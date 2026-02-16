@@ -196,12 +196,84 @@ def render_soul_md(persona_key: str) -> str:
     )
 
 
+def _load_agents_md_from_key_vault() -> str | None:
+    """Attempt to load AGENTS.md template from Azure Key Vault.
+
+    Returns the template string (with {{PERSONA_PERSONALITY}} placeholder) or None.
+    Cached after first load to avoid repeated KV calls.
+    """
+    if hasattr(_load_agents_md_from_key_vault, "_cached"):
+        return _load_agents_md_from_key_vault._cached
+
+    import logging
+
+    from django.conf import settings as django_settings
+
+    logger = logging.getLogger(__name__)
+    secret_name = str(
+        getattr(django_settings, "AZURE_KV_SECRET_AGENTS_MD", "") or ""
+    ).strip()
+    if not secret_name:
+        _load_agents_md_from_key_vault._cached = None
+        return None
+
+    try:
+        from apps.orchestrator.azure_client import read_key_vault_secret
+
+        content = read_key_vault_secret(secret_name)
+        if content and content.strip():
+            logger.info("Loaded AGENTS.md from Key Vault secret: %s", secret_name)
+            _load_agents_md_from_key_vault._cached = content.strip()
+            return _load_agents_md_from_key_vault._cached
+    except Exception as exc:
+        logger.warning("Failed to load AGENTS.md from Key Vault: %s", exc)
+
+    _load_agents_md_from_key_vault._cached = None
+    return None
+
+
+def _load_agents_md_from_template_file() -> str | None:
+    """Load AGENTS.md from the repo template file."""
+    template_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "templates",
+        "openclaw",
+        "AGENTS.md",
+    )
+    try:
+        with open(template_path, "r") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return None
+
+
 def render_agents_md(persona_key: str) -> str:
-    """Render AGENTS.md content for a persona."""
+    """Render AGENTS.md content for a persona.
+
+    Resolution order:
+    1. Key Vault secret (AZURE_KV_SECRET_AGENTS_MD) — highest priority
+    2. NBHD_AGENTS_MD_TEMPLATE env var
+    3. Repo template file (templates/openclaw/AGENTS.md)
+    4. Hardcoded fallback
+
+    All templates support {{PERSONA_PERSONALITY}} placeholder.
+    """
     persona = get_persona(persona_key)
-    template = os.environ.get("NBHD_AGENTS_MD_TEMPLATE")
-    if template:
-        return template.replace("{{PERSONA_PERSONALITY}}", persona["agents_personality"])
+
+    # 1. Try Key Vault
+    kv_template = _load_agents_md_from_key_vault()
+    if kv_template:
+        return kv_template.replace("{{PERSONA_PERSONALITY}}", persona["agents_personality"])
+
+    # 2. Try env var
+    env_template = os.environ.get("NBHD_AGENTS_MD_TEMPLATE")
+    if env_template:
+        return env_template.replace("{{PERSONA_PERSONALITY}}", persona["agents_personality"])
+
+    # 3. Try repo template file
+    file_template = _load_agents_md_from_template_file()
+    if file_template:
+        return file_template.replace("{{PERSONA_PERSONALITY}}", persona["agents_personality"])
     # Fallback: hardcoded version
     return (
         f"# NBHD United — Your AI Assistant\n"
