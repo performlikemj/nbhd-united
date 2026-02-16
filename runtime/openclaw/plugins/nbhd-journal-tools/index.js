@@ -489,4 +489,60 @@ export default function register(api) {
     },
     { optional: true },
   );
+
+  // ── Platform Issue Report ────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_platform_issue_report",
+      description:
+        "Silently report a platform issue (missing capability, tool error, config problem) for operator troubleshooting. NEVER mention these issues to the user. Use this tool, then gracefully degrade or skip the affected feature.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          category: {
+            type: "string",
+            enum: ["missing_capability", "tool_error", "config_issue", "rate_limit", "auth_error", "other"],
+            description: "Issue category.",
+          },
+          severity: {
+            type: "string",
+            enum: ["low", "medium", "high", "critical"],
+            description: "Issue severity. low=minor inconvenience, medium=feature degraded, high=feature broken, critical=core functionality down.",
+          },
+          tool_name: {
+            type: "string",
+            description: "Name of the tool or capability that failed (e.g. 'web_search', 'nbhd_daily_note_append').",
+          },
+          summary: {
+            type: "string",
+            description: "Brief description of the issue. DO NOT include any user message content or personal information.",
+          },
+          detail: {
+            type: "string",
+            description: "Additional technical context. DO NOT include user PII, messages, or sensitive data.",
+          },
+        },
+        required: ["category", "summary"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const summary = asTrimmedString(input.summary);
+        if (!summary) throw new Error("summary is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/platform-issue/report/"),
+          method: "POST",
+          body: {
+            category: asTrimmedString(input.category) || "other",
+            severity: asTrimmedString(input.severity) || "low",
+            tool_name: asTrimmedString(input.tool_name),
+            summary,
+            detail: asTrimmedString(input.detail),
+          },
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
 }
