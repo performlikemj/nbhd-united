@@ -10,6 +10,7 @@ from apps.tenants.models import Tenant, User
 
 from .md_utils import append_entry_markdown, parse_daily_note, serialise_daily_note
 from .models import DailyNote, UserMemory, WeeklyReview
+from .services import get_or_seed_note_template
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +79,15 @@ class MarkdownParserTest(TestCase):
         self.assertEqual(parse_daily_note("   "), [])
         self.assertEqual(parse_daily_note(None), [])
 
+    def test_parse_section_heading_without_time(self):
+        markdown = """# 2026-02-16
+
+## Morning Report
+Today I woke up early.
+"""
+        entries = parse_daily_note(markdown)
+        self.assertEqual(entries, [])
+
     def test_roundtrip(self):
         """Parse then serialise should produce parseable output."""
         entries = parse_daily_note(SAMPLE_MARKDOWN)
@@ -137,6 +147,32 @@ class DailyNoteModelTest(TestCase):
         DailyNote.objects.create(tenant=self.tenant, date=date(2026, 2, 15))
         DailyNote.objects.create(tenant=self.tenant, date=date(2026, 2, 16))
         self.assertEqual(DailyNote.objects.filter(tenant=self.tenant).count(), 2)
+
+
+class JournalServiceTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="serviceuser", password="servicepass")
+        self.tenant = Tenant.objects.create(user=self.user, status="active")
+
+    def test_get_or_seed_note_template_preserves_legacy_markdown(self):
+        markdown = """# 2026-02-16
+
+## 09:30 — MJ
+Legacy entry for migration safety.
+"""
+        template, sections = get_or_seed_note_template(
+            tenant=self.tenant,
+            date_value=date(2026, 2, 16),
+            markdown=markdown,
+        )
+
+        self.assertIsNotNone(template)
+        log_section = next(
+            (section for section in sections if section["slug"] == "log"),
+            None,
+        )
+        self.assertIsNotNone(log_section)
+        self.assertIn("Legacy entry for migration safety.", log_section["content"])
 
 
 class UserMemoryModelTest(TestCase):
@@ -430,7 +466,8 @@ class RuntimeDailyNoteAPITest(TestCase):
             **self.headers,
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data["markdown"], "")
+        # Runtime endpoint auto-seeds with template content
+        self.assertIn("Morning Report", resp.data["markdown"])
 
     def test_append_daily_note(self):
         resp = self.client.post(

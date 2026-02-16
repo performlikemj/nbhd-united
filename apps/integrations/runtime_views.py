@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from uuid import UUID
 
 import httpx
+from django.core.exceptions import ValidationError
 from django.utils import timezone as tz
 from rest_framework import status
 from rest_framework.permissions import AllowAny
@@ -13,6 +14,12 @@ from rest_framework.views import APIView
 
 from apps.journal.md_utils import append_entry_markdown
 from apps.journal.models import DailyNote, JournalEntry, UserMemory
+from apps.journal.services import (
+    get_or_seed_note_template,
+    set_daily_note_section,
+    set_daily_note_sections,
+    upsert_default_daily_note,
+)
 from apps.journal.serializers import (
     JournalEntryRuntimeSerializer,
     WeeklyReviewRuntimeSerializer,
@@ -153,6 +160,25 @@ def _integration_error_response(exc: Exception) -> Response:
         {"error": "integration_access_failed"},
         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
+
+
+def _build_note_payload(*, tenant: Tenant, note: DailyNote, include_sections: bool = False) -> dict:
+    template, sections = get_or_seed_note_template(
+        tenant=tenant,
+        date_value=note.date,
+        markdown=note.markdown,
+    )
+    payload = {
+        "tenant_id": str(tenant.id),
+        "date": str(note.date),
+        "markdown": note.markdown,
+        "template_id": str(template.id),
+        "template_slug": template.slug,
+        "template_name": template.name,
+    }
+    if include_sections:
+        payload["sections"] = sections
+    return payload
 
 
 class RuntimeJournalEntriesView(APIView):
@@ -550,29 +576,16 @@ class RuntimeDailyNotesView(APIView):
         if tenant_failure is not None or tenant is None:
             return tenant_failure
 
-        date_str = request.query_params.get("date")
-        if not date_str:
-            return Response(
-                {"error": "invalid_request", "detail": "date query param required (YYYY-MM-DD)"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         try:
-            d = date.fromisoformat(date_str)
-        except ValueError:
+            d = _parse_iso_date(request.query_params.get("date"), field_name="date") or tz.now().date()
+        except ValueError as exc:
             return Response(
-                {"error": "invalid_request", "detail": "date must be YYYY-MM-DD"},
+                {"error": "invalid_request", "detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        note = DailyNote.objects.filter(tenant=tenant, date=d).first()
-        return Response(
-            {
-                "tenant_id": str(tenant.id),
-                "date": str(d),
-                "markdown": note.markdown if note else "",
-            },
-            status=status.HTTP_200_OK,
-        )
+        note = upsert_default_daily_note(tenant=tenant, note_date=d)
+        return Response(_build_note_payload(tenant=tenant, note=note, include_sections=True), status=200)
 
 
 class RuntimeDailyNoteAppendView(APIView):
@@ -590,42 +603,85 @@ class RuntimeDailyNoteAppendView(APIView):
         if tenant_failure is not None or tenant is None:
             return tenant_failure
 
-        content = request.data.get("content", "").strip()
+        content_raw = request.data.get("content")
+        content = str(content_raw or "").strip()
         if not content:
             return Response(
                 {"error": "invalid_request", "detail": "content is required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        date_str = request.data.get("date")
-        if date_str:
-            try:
-                d = date.fromisoformat(date_str)
-            except ValueError:
+        try:
+            d = _parse_iso_date(request.data.get("date"), field_name="date") or tz.now().date()
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        note = upsert_default_daily_note(tenant=tenant, note_date=d)
+        section_slug = request.data.get("section_slug")
+        section_slug_str = str(section_slug).strip() if section_slug else ""
+
+        if section_slug_str:
+            raw_sections = request.data.get("sections")
+            if raw_sections is not None and not isinstance(raw_sections, list):
                 return Response(
-                    {"error": "invalid_request", "detail": "date must be YYYY-MM-DD"},
+                    {"error": "invalid_request", "detail": "sections must be an array"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            try:
+                if raw_sections:
+                    payload_sections: list[dict] = []
+                    for section in raw_sections:
+                        if not isinstance(section, dict):
+                            return Response(
+                                {
+                                    "error": "invalid_request",
+                                    "detail": "each section must be an object",
+                                },
+                                status=status.HTTP_400_BAD_REQUEST,
+                            )
+                        payload_sections.append(
+                            {
+                                "slug": str(section.get("slug") or "").strip(),
+                                "title": str(section.get("title") or "").strip(),
+                                "content": str(section.get("content") or "").strip(),
+                                "source": str(section.get("source") or "shared").strip(),
+                            }
+                        )
+                    note = set_daily_note_sections(
+                        note=note,
+                        sections=payload_sections,
+                        template=note.template,
+                    )
+
+                note, _ = set_daily_note_section(
+                    note=note,
+                    section_slug=section_slug_str,
+                    content=content,
+                )
+            except (ValueError, ValidationError) as exc:
+                return Response(
+                    {"error": "invalid_request", "detail": str(exc)},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
         else:
-            d = tz.now().date()
-
-        note, _ = DailyNote.objects.get_or_create(tenant=tenant, date=d)
-
-        time_str = tz.now().strftime("%H:%M")
-        note.markdown = append_entry_markdown(
-            note.markdown,
-            time=time_str,
-            author="agent",
-            content=content,
-            date_str=str(d),
-        )
-        note.save()
+            time_str = tz.now().strftime("%H:%M")
+            note.markdown = append_entry_markdown(
+                note.markdown,
+                time=time_str,
+                author="agent",
+                content=content,
+                date_str=str(d),
+            )
+            note.save(update_fields=["markdown", "updated_at"])
 
         return Response(
             {
+                **_build_note_payload(tenant=tenant, note=note, include_sections=True),
                 "tenant_id": str(tenant.id),
-                "date": str(d),
-                "markdown": note.markdown,
             },
             status=status.HTTP_201_CREATED,
         )
@@ -717,7 +773,9 @@ class RuntimeJournalContextView(APIView):
         memory = UserMemory.objects.filter(tenant=tenant).first()
 
         notes_data = [
-            {"date": str(n.date), "markdown": n.markdown}
+            {
+                **_build_note_payload(tenant=tenant, note=n, include_sections=True),
+            }
             for n in recent_notes
         ]
 

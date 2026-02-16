@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+from datetime import timedelta
 from uuid import UUID
 
 from django.http import Http404
@@ -15,12 +16,23 @@ from apps.tenants.models import Tenant
 
 from .md_utils import append_entry_markdown, parse_daily_note, serialise_daily_note
 from .models import DailyNote, JournalEntry, UserMemory, WeeklyReview
+from .models import NoteTemplate
 from .serializers import (
     DailyNoteEntryInputSerializer,
     DailyNoteEntryPatchSerializer,
     JournalEntrySerializer,
+    NoteTemplateSerializer,
     MemoryPatchSerializer,
+    DailyNoteTemplateSerializer,
     WeeklyReviewSerializer,
+)
+from .services import (
+    set_daily_note_section,
+    ensure_daily_note_template,
+    get_or_seed_note_template,
+    parse_daily_sections,
+    set_daily_note_sections,
+    upsert_default_daily_note,
 )
 
 
@@ -43,6 +55,31 @@ def _get_weekly_review_for_tenant(*, tenant: Tenant, review_id: UUID) -> WeeklyR
         return WeeklyReview.objects.get(id=review_id, tenant=tenant)
     except WeeklyReview.DoesNotExist as exc:
         raise Http404("Weekly review not found.") from exc
+
+
+DEPRECATION_HEADERS = {
+    "Deprecation": "true",
+    "Warning": '299 - "This endpoint is kept for backward compatibility only."',
+}
+
+
+def _note_template_response(note: DailyNote, *, include_entries: bool = True) -> dict:
+    template, sections = get_or_seed_note_template(
+        tenant=note.tenant,
+        date_value=note.date,
+        markdown=note.markdown,
+    )
+    payload = {
+        "date": str(note.date),
+        "markdown": note.markdown,
+        "template_id": str(template.id),
+        "template_slug": template.slug,
+        "template_name": template.name,
+        "sections": sections,
+    }
+    if include_entries:
+        payload["entries"] = parse_daily_note(note.markdown)
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +147,7 @@ class JournalEntryDetailView(APIView):
 
 
 class DailyNoteView(APIView):
-    """GET /api/v1/journal/daily/<date>/ — parsed structured entries."""
+    """GET /api/v1/journal/daily/<date>/ — sectionized + legacy entries."""
 
     permission_classes = [IsAuthenticated]
 
@@ -121,9 +158,9 @@ class DailyNoteView(APIView):
         except ValueError:
             return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=400)
 
-        note = DailyNote.objects.filter(tenant=tenant, date=d).first()
-        entries = parse_daily_note(note.markdown) if note else []
-        return Response({"date": date, "entries": entries})
+        note = upsert_default_daily_note(tenant=tenant, note_date=d)
+
+        return Response(_note_template_response(note))
 
 
 class DailyNoteEntryListView(APIView):
@@ -142,7 +179,7 @@ class DailyNoteEntryListView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        note, _ = DailyNote.objects.get_or_create(tenant=tenant, date=d)
+        note = upsert_default_daily_note(tenant=tenant, note_date=d)
 
         time_str = data.get("time") or timezone.now().strftime("%H:%M")
         note.markdown = append_entry_markdown(
@@ -215,6 +252,80 @@ class DailyNoteEntryDetailView(APIView):
         return Response({"date": date, "entries": entries})
 
 
+class DailyNoteTemplateView(APIView):
+    """GET/PUT sectionized daily note payload by template sections."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, date: str):
+        tenant = _get_tenant_for_user(request.user)
+        try:
+            d = datetime.date.fromisoformat(date)
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=400)
+
+        note = upsert_default_daily_note(tenant=tenant, note_date=d)
+        return Response(_note_template_response(note))
+
+    def put(self, request, date: str):
+        tenant = _get_tenant_for_user(request.user)
+        try:
+            d = datetime.date.fromisoformat(date)
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=400)
+
+        template_id = request.data.get("template_id")
+        sections = request.data.get("sections")
+        if not isinstance(sections, list):
+            return Response({"error": "sections must be an array."}, status=400)
+
+        note = upsert_default_daily_note(tenant=tenant, note_date=d)
+        template = note.template
+        if template_id:
+            template = NoteTemplate.objects.filter(tenant=tenant, id=template_id).first()
+            if template is None:
+                return Response({"error": "template not found."}, status=404)
+
+        try:
+            serializer = DailyNoteTemplateSerializer(data={
+                "date": str(d),
+                "template_id": str(template.id) if template else None,
+                "template_slug": template.slug if template else "",
+                "template_name": template.name if template else "",
+                "markdown": request.data.get("markdown", ""),
+                "sections": sections,
+            })
+            serializer.is_valid(raise_exception=True)
+        except Exception as exc:
+            return Response({"error": "Invalid payload.", "detail": str(exc)}, status=400)
+
+        section_payload = serializer.validated_data["sections"]
+        set_daily_note_sections(note=note, sections=section_payload, template=template)
+        note.refresh_from_db()
+        return Response(_note_template_response(note, include_entries=False), status=200)
+
+    def delete(self, request, date: str, index: int):
+        tenant = _get_tenant_for_user(request.user)
+        try:
+            d = datetime.date.fromisoformat(date)
+        except ValueError:
+            return Response({"error": "Invalid date format."}, status=400)
+
+        note = DailyNote.objects.filter(tenant=tenant, date=d).first()
+        if not note:
+            raise Http404("Daily note not found.")
+
+        entries = parse_daily_note(note.markdown)
+        if index < 0 or index >= len(entries):
+            return Response({"error": "Entry index out of range."}, status=404)
+
+        entries.pop(index)
+        note.markdown = serialise_daily_note(str(d), entries)
+        note.save()
+
+        return Response({"date": date, "entries": entries})
+
+
 # ---------------------------------------------------------------------------
 # Long-Term Memory views (user-facing)
 # ---------------------------------------------------------------------------
@@ -260,14 +371,14 @@ class WeeklyReviewListCreateView(APIView):
         tenant = _get_tenant_for_user(request.user)
         queryset = WeeklyReview.objects.filter(tenant=tenant).order_by("-week_start")
         serializer = WeeklyReviewSerializer(queryset, many=True)
-        return Response(serializer.data)
+        return Response(serializer.data, headers=DEPRECATION_HEADERS)
 
     def post(self, request):
         tenant = _get_tenant_for_user(request.user)
         serializer = WeeklyReviewSerializer(data=request.data, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=DEPRECATION_HEADERS)
 
 
 class WeeklyReviewDetailView(APIView):
@@ -276,7 +387,7 @@ class WeeklyReviewDetailView(APIView):
     def get(self, request, review_id: UUID):
         tenant = _get_tenant_for_user(request.user)
         review = _get_weekly_review_for_tenant(tenant=tenant, review_id=review_id)
-        return Response(WeeklyReviewSerializer(review).data)
+        return Response(WeeklyReviewSerializer(review).data, headers=DEPRECATION_HEADERS)
 
     def patch(self, request, review_id: UUID):
         tenant = _get_tenant_for_user(request.user)
@@ -284,10 +395,69 @@ class WeeklyReviewDetailView(APIView):
         serializer = WeeklyReviewSerializer(review, data=request.data, partial=True, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
         updated = serializer.save()
-        return Response(WeeklyReviewSerializer(updated).data)
+        return Response(WeeklyReviewSerializer(updated).data, headers=DEPRECATION_HEADERS)
 
     def delete(self, request, review_id: UUID):
         tenant = _get_tenant_for_user(request.user)
         review = _get_weekly_review_for_tenant(tenant=tenant, review_id=review_id)
         review.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# Template management
+# ---------------------------------------------------------------------------
+
+
+class TemplateListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenant = _get_tenant_for_user(request.user)
+        templates = NoteTemplate.objects.filter(tenant=tenant).order_by("-is_default", "name")
+        serializer = NoteTemplateSerializer(templates, many=True, context={"tenant": tenant})
+        return Response(serializer.data)
+
+    def post(self, request):
+        tenant = _get_tenant_for_user(request.user)
+        serializer = NoteTemplateSerializer(data=request.data, context={"tenant": tenant})
+        serializer.is_valid(raise_exception=True)
+        template = serializer.save()
+        return Response(NoteTemplateSerializer(template).data, status=status.HTTP_201_CREATED)
+
+
+class TemplateDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, template_id: str):
+        tenant = _get_tenant_for_user(request.user)
+        template = NoteTemplate.objects.filter(tenant=tenant, id=template_id).first()
+        if not template:
+            return Response({"error": "template not found."}, status=404)
+        serializer = NoteTemplateSerializer(template)
+        return Response(serializer.data)
+
+    def patch(self, request, template_id: str):
+        tenant = _get_tenant_for_user(request.user)
+        template = NoteTemplate.objects.filter(tenant=tenant, id=template_id).first()
+        if not template:
+            return Response({"error": "template not found."}, status=404)
+        serializer = NoteTemplateSerializer(template, data=request.data, partial=True, context={"tenant": tenant})
+        serializer.is_valid(raise_exception=True)
+        template = serializer.save()
+        return Response(NoteTemplateSerializer(template).data)
+
+    def delete(self, request, template_id: str):
+        tenant = _get_tenant_for_user(request.user)
+        template = NoteTemplate.objects.filter(tenant=tenant, id=template_id).first()
+        if not template:
+            return Response({"error": "template not found."}, status=404)
+        if template.is_default:
+            alternate = NoteTemplate.objects.filter(tenant=tenant).exclude(id=template.id).first()
+            if not alternate:
+                return Response({"error": "cannot delete the last template."}, status=400)
+            alternate.is_default = True
+            alternate.save(update_fields=["is_default"])
+
+        template.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

@@ -46,15 +46,38 @@ class ConfigGeneratorTest(TestCase):
         aliases = [v.get("alias") for v in models.values()]
         self.assertIn("opus", aliases)
 
+    def test_audio_model_defaults_to_whisper_for_all_tiers(self):
+        for tier in ("basic", "plus"):
+            self.tenant.model_tier = tier
+            config = generate_openclaw_config(self.tenant)
+            audio = config["tools"]["media"]["audio"]
+            self.assertTrue(audio["enabled"])
+            models = audio["models"]
+            self.assertEqual(len(models), 1)
+            self.assertEqual(
+                models[0],
+                {"provider": "openai", "model": "gpt-4o-mini-transcribe"},
+            )
+
     def test_plugin_wiring_enabled_when_plugin_id_configured(self):
-        with override_settings(OPENCLAW_GOOGLE_PLUGIN_ID="nbhd-google-tools"):
+        with override_settings(
+            OPENCLAW_GOOGLE_PLUGIN_ID="nbhd-google-tools",
+            OPENCLAW_JOURNAL_PLUGIN_ID="nbhd-journal-tools",
+        ):
             config = generate_openclaw_config(self.tenant)
 
-        self.assertEqual(config["plugins"]["allow"], ["nbhd-google-tools"])
+        self.assertEqual(
+            config["plugins"]["allow"],
+            ["nbhd-google-tools", "nbhd-journal-tools"],
+        )
         self.assertTrue(config["plugins"]["entries"]["nbhd-google-tools"]["enabled"])
+        self.assertTrue(config["plugins"]["entries"]["nbhd-journal-tools"]["enabled"])
         self.assertEqual(
             config["plugins"]["load"]["paths"],
-            ["/opt/nbhd/plugins/nbhd-google-tools"],
+            [
+                "/opt/nbhd/plugins/nbhd-google-tools",
+                "/opt/nbhd/plugins/nbhd-journal-tools",
+            ],
         )
         self.assertIn("group:plugins", config["tools"]["alsoAllow"])
 

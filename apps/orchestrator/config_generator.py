@@ -33,10 +33,19 @@ TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     },
 }
 
+WHISPER_DEFAULT_MODEL = {"provider": "openai", "model": "gpt-4o-mini-transcribe"}
+
 
 def _build_tools_section(tier: str) -> dict[str, Any]:
     """Build documented OpenClaw tools policy for subscriber tier."""
-    return generate_tool_config(tier)
+    tools = generate_tool_config(tier)
+    tools["media"] = {
+        "audio": {
+            "enabled": True,
+            "models": [WHISPER_DEFAULT_MODEL],
+        },
+    }
+    return tools
 
 
 def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
@@ -49,8 +58,10 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     tier = tenant.model_tier or "basic"
     models_config = TIER_MODELS.get(tier, TIER_MODELS["basic"])
     model_entries = TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["basic"])
-    plugin_id = str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_ID", "") or "").strip()
-    plugin_path = str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_PATH", "") or "").strip()
+    google_plugin_id = str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_ID", "") or "").strip()
+    google_plugin_path = str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_PATH", "") or "").strip()
+    journal_plugin_id = str(getattr(settings, "OPENCLAW_JOURNAL_PLUGIN_ID", "") or "").strip()
+    journal_plugin_path = str(getattr(settings, "OPENCLAW_JOURNAL_PLUGIN_PATH", "") or "").strip()
 
     api_base = str(getattr(settings, "API_BASE_URL", "") or "").strip().rstrip("/")
     webhook_secret = str(getattr(settings, "TELEGRAM_WEBHOOK_SECRET", "") or "").strip()
@@ -133,17 +144,27 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         },
     }
 
-    if plugin_id:
+    plugin_ids: list[str] = []
+    plugin_paths: list[str] = []
+    if google_plugin_id:
+        plugin_ids.append(google_plugin_id)
+        if google_plugin_path and google_plugin_path not in plugin_paths:
+            plugin_paths.append(google_plugin_path)
+    if journal_plugin_id:
+        plugin_ids.append(journal_plugin_id)
+        if journal_plugin_path and journal_plugin_path not in plugin_paths:
+            plugin_paths.append(journal_plugin_path)
+
+    if plugin_ids:
+        plugin_entries: dict[str, Any] = {}
+        for plugin_id in plugin_ids:
+            plugin_entries[plugin_id] = {"enabled": True}
         plugin_config: dict[str, Any] = {
-            "allow": [plugin_id],
-            "entries": {
-                plugin_id: {
-                    "enabled": True,
-                },
-            },
+            "allow": plugin_ids,
+            "entries": plugin_entries,
         }
-        if plugin_path:
-            plugin_config["load"] = {"paths": [plugin_path]}
+        if plugin_paths:
+            plugin_config["load"] = {"paths": plugin_paths}
 
         config["plugins"] = plugin_config
         config["tools"]["alsoAllow"] = ["group:plugins"]

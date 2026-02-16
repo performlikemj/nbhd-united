@@ -152,9 +152,32 @@ export interface DailyNoteEntry {
   subsections: Record<string, string> | null;
 }
 
+export interface NoteTemplateSection {
+  slug: string;
+  title: string;
+  content: string;
+  source?: string;
+}
+
+export interface NoteTemplate {
+  id: string;
+  slug: string;
+  name: string;
+  sections: NoteTemplateSection[];
+  is_default: boolean;
+  source: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface DailyNoteResponse {
   date: string;
+  markdown: string;
   entries: DailyNoteEntry[];
+  template_id?: string | null;
+  template_slug?: string;
+  template_name?: string;
+  sections?: NoteTemplateSection[];
 }
 
 // User Memory

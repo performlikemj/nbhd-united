@@ -9,6 +9,7 @@ from rest_framework.views import APIView
 
 from .models import Tenant
 from .serializers import TenantRegistrationSerializer, TenantSerializer, UserSerializer
+from apps.journal.services import seed_default_templates_for_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ class OnboardTenantView(APIView):
 
         # Create tenant
         tenant = Tenant.objects.create(user=user)
+        seed_default_templates_for_tenant(tenant=tenant)
         return Response(TenantSerializer(tenant).data, status=status.HTTP_201_CREATED)
 
 

@@ -407,4 +407,166 @@ export default function register(api) {
       return renderPayload(payload);
     },
   });
+
+  registerTool(api, {
+    name: "nbhd_daily_note_get",
+    description: "Get the raw markdown daily note for a specific date.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        date: {
+          type: "string",
+          description: "ISO date (YYYY-MM-DD). Defaults to today.",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const input = asObject(params);
+      const payload = await callNbhdRuntimeRequest(api, {
+        path: tenantPath(api, "/daily-note/"),
+        method: "GET",
+        query: { date: asTrimmedString(input.date) },
+      });
+      return renderPayload(payload);
+    },
+  });
+
+  registerTool(api, {
+    name: "nbhd_daily_note_append",
+    description: "Append a timestamped entry to the daily note.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        content: { type: "string", description: "Markdown content to append." },
+        date: { type: "string", description: "ISO date (YYYY-MM-DD). Defaults to today." },
+        section_slug: { type: "string", description: "Optional section slug to set in sectionized notes." },
+      },
+      required: ["content"],
+    },
+    async execute(_id, params) {
+      const input = asObject(params);
+      const content = asTrimmedString(input.content);
+      if (!content) {
+        throw new Error("content is required");
+      }
+      const payload = await callNbhdRuntimeRequest(api, {
+        path: tenantPath(api, "/daily-note/append/"),
+        method: "POST",
+        body: {
+          content,
+          date: asTrimmedString(input.date) || undefined,
+          section_slug: asTrimmedString(input.section_slug) || undefined,
+        },
+      });
+      return renderPayload(payload);
+    },
+  });
+
+  registerTool(api, {
+    name: "nbhd_memory_get",
+    description: "Get the user's long-term memory document (raw markdown).",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    },
+    async execute() {
+      const payload = await callNbhdRuntimeRequest(api, {
+        path: tenantPath(api, "/long-term-memory/"),
+        method: "GET",
+      });
+      return renderPayload(payload);
+    },
+  });
+
+  registerTool(api, {
+    name: "nbhd_memory_update",
+    description: "Replace the user's long-term memory document.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        markdown: {
+          type: "string",
+          description: "Full markdown content for the memory document.",
+        },
+      },
+      required: ["markdown"],
+    },
+    async execute(_id, params) {
+      const input = asObject(params);
+      const markdown = asTrimmedString(input.markdown);
+      const payload = await callNbhdRuntimeRequest(api, {
+        path: tenantPath(api, "/long-term-memory/"),
+        method: "PUT",
+        body: { markdown },
+      });
+      return renderPayload(payload);
+    },
+  });
+
+  registerTool(api, {
+    name: "nbhd_journal_context",
+    description: "Load recent daily notes and memory in one call.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        days: {
+          type: "number",
+          minimum: 1,
+          maximum: 30,
+          description: "Number of days to load (default 7).",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const input = asObject(params);
+      const payload = await callNbhdRuntimeRequest(api, {
+        path: tenantPath(api, "/journal-context/"),
+        method: "GET",
+        query: {
+          days: parseInteger(input.days, {
+            defaultValue: 7,
+            min: 1,
+            max: 30,
+          }),
+        },
+      });
+      return renderPayload(payload);
+    },
+  });
+
+  registerTool(api, {
+    name: "nbhd_journal_evening_checkin",
+    description: "Append evening check-in content to today's sectionized daily note.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        date: { type: "string", description: "Optional ISO date (YYYY-MM-DD). Defaults to today." },
+        content: { type: "string", description: "Raw markdown check-in content." },
+      },
+      required: ["content"],
+    },
+    async execute(_id, params) {
+      const input = asObject(params);
+      const content = asTrimmedString(input.content);
+      if (!content) {
+        throw new Error("content is required");
+      }
+      const payload = await callNbhdRuntimeRequest(api, {
+        path: tenantPath(api, "/daily-note/append/"),
+        method: "POST",
+        body: {
+          content,
+          date: asTrimmedString(input.date) || undefined,
+          section_slug: "evening-check-in",
+        },
+      });
+      return renderPayload(payload);
+    },
+  });
 }

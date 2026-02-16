@@ -445,6 +445,12 @@ def create_container_app(
             identity_id=identity_id,
         ),
         _build_container_secret(
+            "openai-key",
+            plain_value=settings.OPENAI_API_KEY,
+            key_vault_secret_name=settings.AZURE_KV_SECRET_OPENAI_API_KEY,
+            identity_id=identity_id,
+        ),
+        _build_container_secret(
             "telegram-token",
             plain_value=settings.TELEGRAM_BOT_TOKEN,
             key_vault_secret_name=settings.AZURE_KV_SECRET_TELEGRAM_BOT_TOKEN,
@@ -494,6 +500,7 @@ def create_container_app(
                         "resources": {"cpu": 0.5, "memory": "1Gi"},
                         "env": [
                             {"name": "ANTHROPIC_API_KEY", "secretRef": "anthropic-key"},
+                            {"name": "OPENAI_API_KEY", "secretRef": "openai-key"},
                             {"name": "TELEGRAM_BOT_TOKEN", "secretRef": "telegram-token"},
                             {"name": "NBHD_INTERNAL_API_KEY", "secretRef": "nbhd-internal-api-key"},
                             {"name": "OPENCLAW_GATEWAY_TOKEN", "secretRef": "nbhd-internal-api-key"},

@@ -21,10 +21,10 @@ import re
 from typing import Any
 
 
-# Pattern for ## HH:MM — Author  or  ## HH:MM — Section Title (Author)
+# Pattern for ## HH:MM — Author or ## HH:MM — Section Title (Author)
 _ENTRY_HEADER_RE = re.compile(
     r"^##\s+"
-    r"(?P<time>\d{1,2}:\d{2})?"          # optional time
+    r"(?P<time>\d{1,2}:\d{2})"           # required time
     r"(?:\s*—\s*|\s+)"                    # separator
     r"(?P<title>.+?)"                     # author or "Section Title (Author)"
     r"\s*$"

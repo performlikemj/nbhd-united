@@ -8,6 +8,8 @@ import {
   Integration,
   JournalEntry,
   JournalEntryEnergy,
+  NoteTemplate,
+  NoteTemplateSection,
   Tenant,
   UsageRecord,
   UsageSummary,
@@ -392,6 +394,54 @@ export function deleteDailyNoteEntry(date: string, index: number): Promise<Daily
   return apiFetch<DailyNoteResponse>(`/api/v1/journal/daily/${date}/entries/${index}/`, {
     method: "DELETE",
   });
+}
+
+export interface DailyNoteTemplateInput {
+  template_id?: string | null;
+  markdown: string;
+  sections: NoteTemplateSection[];
+}
+
+export function updateDailyNoteTemplate(
+  date: string,
+  data: DailyNoteTemplateInput,
+): Promise<DailyNoteResponse> {
+  return apiFetch<DailyNoteResponse>(`/api/v1/journal/daily/${date}/template/`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export interface NoteTemplateInput {
+  slug: string;
+  name: string;
+  sections: NoteTemplateSection[];
+  is_default?: boolean;
+}
+
+export function fetchTemplates(): Promise<NoteTemplate[]> {
+  return apiFetch<NoteTemplate[]>("/api/v1/journal/templates/");
+}
+
+export function createTemplate(data: NoteTemplateInput): Promise<NoteTemplate> {
+  return apiFetch<NoteTemplate>("/api/v1/journal/templates/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateTemplate(
+  id: string,
+  data: Partial<NoteTemplateInput>,
+): Promise<NoteTemplate> {
+  return apiFetch<NoteTemplate>(`/api/v1/journal/templates/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteTemplate(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/journal/templates/${id}/`, { method: "DELETE" });
 }
 
 // User Memory

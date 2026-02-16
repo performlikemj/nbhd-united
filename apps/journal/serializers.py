@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from .models import DailyNote, JournalEntry, UserMemory, WeeklyReview
+from .models import DailyNote, JournalEntry, NoteTemplate, UserMemory, WeeklyReview
+from .services import _validate_template_sections
 
 MAX_LIST_ITEMS = 10
 
@@ -199,7 +200,7 @@ class JournalEntrySerializer(serializers.ModelSerializer):
 
 
 # ---------------------------------------------------------------------------
-# DailyNote serializer (user-facing structured entry)
+# Daily note serializers
 # ---------------------------------------------------------------------------
 
 
@@ -218,6 +219,21 @@ class DailyNoteEntryPatchSerializer(serializers.Serializer):
     content = serializers.CharField(required=False)
     mood = serializers.CharField(required=False, allow_blank=True)
     energy = serializers.IntegerField(required=False, allow_null=True)
+
+
+class DailyNoteSectionSerializer(serializers.Serializer):
+    slug = serializers.CharField()
+    title = serializers.CharField()
+    content = serializers.CharField(allow_blank=True)
+
+
+class DailyNoteTemplateSerializer(serializers.Serializer):
+    date = serializers.DateField(read_only=True)
+    template_id = serializers.UUIDField(required=False, allow_null=True)
+    template_slug = serializers.CharField(required=False, allow_blank=True)
+    template_name = serializers.CharField(required=False, allow_blank=True)
+    markdown = serializers.CharField()
+    sections = DailyNoteSectionSerializer(many=True)
 
 
 class MemoryPatchSerializer(serializers.Serializer):
@@ -306,5 +322,62 @@ class WeeklyReviewSerializer(serializers.ModelSerializer):
                 "mood_summary", "week_rating", "top_wins", "top_challenges", "lessons", "intentions_next_week",
             )}
         )
+        instance.save()
+        return instance
+
+
+# ---------------------------------------------------------------------------
+# Journal templates
+# ---------------------------------------------------------------------------
+
+
+class NoteTemplateSectionSerializer(serializers.Serializer):
+    slug = serializers.CharField()
+    title = serializers.CharField()
+    content = serializers.CharField(allow_blank=True)
+    source = serializers.ChoiceField(choices=NoteTemplate.Source.choices, required=False, default="shared")
+
+
+class NoteTemplateSerializer(serializers.ModelSerializer):
+    """User-facing note template serializer."""
+
+    sections = NoteTemplateSectionSerializer(many=True)
+
+    class Meta:
+        model = NoteTemplate
+        fields = (
+            "id",
+            "slug",
+            "name",
+            "sections",
+            "is_default",
+            "source",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("id", "created_at", "updated_at")
+
+    def validate_sections(self, value: list[dict]) -> list[dict[str, str]]:
+        return _validate_template_sections(value)
+
+    def create(self, validated_data: dict) -> NoteTemplate:
+        tenant = self.context["tenant"]
+        if validated_data.get("is_default"):
+            NoteTemplate.objects.filter(tenant=tenant, is_default=True).update(is_default=False)
+        return NoteTemplate.objects.create(tenant=tenant, **validated_data)
+
+    def update(self, instance: NoteTemplate, validated_data: dict) -> NoteTemplate:
+        sections = validated_data.get("sections")
+        if sections is not None:
+            instance.sections = sections
+        if "is_default" in validated_data and validated_data["is_default"]:
+            NoteTemplate.objects.filter(tenant=instance.tenant, is_default=True).exclude(pk=instance.pk).update(
+                is_default=False,
+            )
+
+        for attr, value in validated_data.items():
+            if attr == "sections":
+                continue
+            setattr(instance, attr, value)
         instance.save()
         return instance

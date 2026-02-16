@@ -22,6 +22,7 @@ from apps.orchestrator.azure_client import (
     AZURE_RESOURCE_GROUP="rg-nbhd-prod",
     AZURE_KEY_VAULT_NAME="kv-nbhd-prod",
     ANTHROPIC_API_KEY="anthropic-secret",
+    OPENAI_API_KEY="openai-secret",
     TELEGRAM_BOT_TOKEN="telegram-secret",
     TELEGRAM_WEBHOOK_SECRET="webhook-secret",
     NBHD_INTERNAL_API_KEY="internal-secret",
@@ -72,6 +73,10 @@ class AzureClientTest(SimpleTestCase):
             "https://kv-nbhd-prod.vault.azure.net/secrets/anthropic-api-key",
         )
         self.assertEqual(
+            secret_map["openai-key"]["keyVaultUrl"],
+            "https://kv-nbhd-prod.vault.azure.net/secrets/openai-api-key",
+        )
+        self.assertEqual(
             secret_map["telegram-token"]["keyVaultUrl"],
             "https://kv-nbhd-prod.vault.azure.net/secrets/telegram-bot-token",
         )
@@ -97,6 +102,7 @@ class AzureClientTest(SimpleTestCase):
         self.assertEqual(env_map["NBHD_API_BASE_URL"]["value"], "https://nbhd-django.example.com")
         self.assertEqual(env_map["OPENCLAW_CONFIG_JSON"]["value"], config_json)
         self.assertEqual(env_map["AZURE_CLIENT_ID"]["value"], "client-123")
+        self.assertEqual(env_map["OPENAI_API_KEY"]["secretRef"], "openai-key")
         self.assertEqual(env_map["NBHD_INTERNAL_API_KEY"]["secretRef"], "nbhd-internal-api-key")
         self.assertEqual(env_map["OPENCLAW_GATEWAY_TOKEN"]["secretRef"], "nbhd-internal-api-key")
         self.assertEqual(env_map["OPENCLAW_WEBHOOK_SECRET"]["secretRef"], "telegram-webhook-secret")
@@ -136,6 +142,7 @@ class AzureClientTest(SimpleTestCase):
         secrets = payload["properties"]["configuration"]["secrets"]
         secret_map = {entry["name"]: entry for entry in secrets}
         self.assertEqual(secret_map["anthropic-key"]["value"], "anthropic-secret")
+        self.assertEqual(secret_map["openai-key"]["value"], "openai-secret")
         self.assertEqual(secret_map["telegram-token"]["value"], "telegram-secret")
         self.assertEqual(secret_map["nbhd-internal-api-key"]["value"], "internal-secret")
         self.assertEqual(secret_map["telegram-webhook-secret"]["value"], "webhook-secret")

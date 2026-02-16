@@ -8,6 +8,41 @@ from django.db import models
 from apps.tenants.models import Tenant
 
 
+class NoteTemplate(models.Model):
+    """Per-tenant template definition for sectionized daily notes.
+
+    `sections` stores a JSON list of section descriptors, each with:
+    - slug: stable machine key
+    - title: display heading in markdown
+    - content: template seed content for the section
+    - source: optional ownership hint (agent/human/shared)
+    """
+
+    class Source(models.TextChoices):
+        AGENT = "agent", "Agent"
+        HUMAN = "human", "Human"
+        SHARED = "shared", "Shared"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="note_templates")
+    slug = models.SlugField(max_length=64)
+    name = models.CharField(max_length=128)
+    sections = models.JSONField(default=list)
+    is_default = models.BooleanField(default=False)
+    source = models.CharField(max_length=16, choices=Source.choices, default=Source.SHARED)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "note_templates"
+        unique_together = [
+            ("tenant", "slug"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}:{self.slug}"
+
+
 class JournalEntry(models.Model):
     class Energy(models.TextChoices):
         LOW = "low", "Low"
@@ -72,6 +107,13 @@ class DailyNote(models.Model):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="daily_notes")
     date = models.DateField()
     markdown = models.TextField(default="")
+    template = models.ForeignKey(
+        NoteTemplate,
+        on_delete=models.SET_NULL,
+        related_name="notes",
+        null=True,
+        blank=True,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

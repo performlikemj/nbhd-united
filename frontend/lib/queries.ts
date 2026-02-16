@@ -5,10 +5,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createAutomation,
   createDailyNoteEntry,
+  createTemplate,
   createJournalEntry,
   createWeeklyReview,
   deleteAutomation,
   deleteDailyNoteEntry,
+  deleteTemplate,
   deleteJournalEntry,
   deleteWeeklyReview,
   disconnectIntegration,
@@ -24,6 +26,7 @@ import {
   fetchPersonas,
   fetchPreferences,
   fetchTenant,
+  fetchTemplates,
   fetchTelegramStatus,
   fetchUsageHistory,
   fetchUsageSummary,
@@ -38,10 +41,12 @@ import {
   requestStripePortal,
   unlinkTelegram,
   updateAutomation,
+  updateDailyNoteTemplate,
   updateDailyNoteEntry,
   updateJournalEntry,
   updateMemory,
   updatePreferences,
+  updateTemplate,
   updateWeeklyReview,
 } from "@/lib/api";
 
@@ -345,6 +350,18 @@ export function useDeleteDailyNoteEntryMutation(date: string) {
   });
 }
 
+export function useUpdateDailyNoteTemplateMutation(date: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (
+      data: Parameters<typeof updateDailyNoteTemplate>[1],
+    ) => updateDailyNoteTemplate(date, data),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["daily-note", date] });
+    },
+  });
+}
+
 // User Memory
 export function useMemoryQuery() {
   return useQuery({
@@ -359,6 +376,45 @@ export function useUpdateMemoryMutation() {
     mutationFn: updateMemory,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["memory"] });
+    },
+  });
+}
+
+// Templates
+export function useNoteTemplatesQuery() {
+  return useQuery({
+    queryKey: ["templates"],
+    queryFn: fetchTemplates,
+  });
+}
+
+export function useCreateNoteTemplateMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createTemplate,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["templates"] });
+    },
+  });
+}
+
+export function useUpdateNoteTemplateMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof updateTemplate>[1] }) =>
+      updateTemplate(id, data),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["templates"] });
+    },
+  });
+}
+
+export function useDeleteNoteTemplateMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteTemplate,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["templates"] });
     },
   });
 }

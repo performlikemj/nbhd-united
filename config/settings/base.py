@@ -182,10 +182,16 @@ NBHD_INTERNAL_API_KEY_FALLBACK_ENABLED = env.bool(
 
 # Anthropic API (shared key for all OpenClaw instances)
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
+OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 OPENCLAW_GOOGLE_PLUGIN_ID = env("OPENCLAW_GOOGLE_PLUGIN_ID", default="")
 OPENCLAW_GOOGLE_PLUGIN_PATH = env(
     "OPENCLAW_GOOGLE_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-google-tools",
+)
+OPENCLAW_JOURNAL_PLUGIN_ID = env("OPENCLAW_JOURNAL_PLUGIN_ID", default="")
+OPENCLAW_JOURNAL_PLUGIN_PATH = env(
+    "OPENCLAW_JOURNAL_PLUGIN_PATH",
+    default="/opt/nbhd/plugins/nbhd-journal-tools",
 )
 OPENCLAW_CONTAINER_SECRET_BACKEND = env(
     "OPENCLAW_CONTAINER_SECRET_BACKEND",
@@ -194,6 +200,10 @@ OPENCLAW_CONTAINER_SECRET_BACKEND = env(
 AZURE_KV_SECRET_ANTHROPIC_API_KEY = env(
     "AZURE_KV_SECRET_ANTHROPIC_API_KEY",
     default="anthropic-api-key",
+)
+AZURE_KV_SECRET_OPENAI_API_KEY = env(
+    "AZURE_KV_SECRET_OPENAI_API_KEY",
+    default="openai-api-key",
 )
 AZURE_KV_SECRET_TELEGRAM_BOT_TOKEN = env(
     "AZURE_KV_SECRET_TELEGRAM_BOT_TOKEN",

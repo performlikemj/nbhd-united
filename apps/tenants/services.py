@@ -6,6 +6,7 @@ import logging
 from django.db import IntegrityError, transaction
 
 from .models import Tenant, User
+from apps.journal.services import seed_default_templates_for_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,9 @@ def create_tenant(
                 status=Tenant.Status.PENDING,
                 key_vault_prefix=f"tenants-{user.id}",
             )
+
+            # Seed journal templates for new tenant so daily notes are immediately template-backed.
+            seed_default_templates_for_tenant(tenant=tenant)
     except IntegrityError as exc:
         if "telegram_chat_id" in str(exc):
             raise ValueError(f"Tenant already exists for chat_id={telegram_chat_id}") from exc

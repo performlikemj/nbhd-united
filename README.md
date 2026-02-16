@@ -136,6 +136,7 @@ See `.env.example` for all configuration. Key ones:
 | `STRIPE_PRICE_BASIC` | Stripe price ID for Basic tier checkout |
 | `STRIPE_PRICE_PLUS` | Stripe price ID for Plus tier checkout |
 | `ANTHROPIC_API_KEY` | Shared API key for all OpenClaw instances |
+| `OPENAI_API_KEY` | Shared OpenAI API key for Whisper/voice transcription defaults |
 | `AZURE_SUBSCRIPTION_ID` | Azure subscription for Container Apps |
 | `AZURE_KEY_VAULT_NAME` | Key Vault for tenant secrets |
 | `FRONTEND_URL` | Subscriber console URL used for redirects and onboarding links |
