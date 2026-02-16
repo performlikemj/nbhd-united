@@ -1,8 +1,9 @@
 /**
- * NBHD Journal Tools Plugin
+ * NBHD Journal Tools Plugin (v2)
  *
- * Registers tools for the markdown-first collaborative journaling system:
- * - Daily notes: get, append, get raw markdown
+ * Registers tools for the unified Document-based journaling system:
+ * - Documents: get, update, append (works for any document kind)
+ * - Daily notes: get, set section, append log entry
  * - Long-term memory: get, update
  * - Journal context: combined endpoint for session init
  */
@@ -119,12 +120,140 @@ function tenantPath(api, suffix) {
 }
 
 export default function register(api) {
-  // ── Daily Note: Get ──────────────────────────────────────────────────
+  // ── Document: Get ────────────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_document_get",
+      description:
+        "Get a document by kind and slug. Works for any document type: daily notes, goals, tasks, ideas, projects, memory, weekly/monthly reviews. Returns the full markdown content.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          kind: {
+            type: "string",
+            description: "Document kind: daily, weekly, monthly, goal, project, tasks, ideas, memory.",
+          },
+          slug: {
+            type: "string",
+            description: "Document slug. For daily notes: YYYY-MM-DD. For singleton docs (tasks, ideas, memory): use the kind name. For projects: project-name.",
+          },
+        },
+        required: ["kind"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/document/"),
+          method: "GET",
+          query: {
+            kind: asTrimmedString(input.kind),
+            slug: asTrimmedString(input.slug),
+          },
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Document: Create or Replace ──────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_document_put",
+      description:
+        "Create or replace a document. Use for writing full documents like goals, project notes, weekly reviews. For daily notes, prefer nbhd_daily_note_set_section or nbhd_daily_note_append.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          kind: {
+            type: "string",
+            description: "Document kind: daily, weekly, monthly, goal, project, tasks, ideas, memory.",
+          },
+          slug: {
+            type: "string",
+            description: "Document slug.",
+          },
+          title: {
+            type: "string",
+            description: "Document title (optional, auto-generated if not provided).",
+          },
+          markdown: {
+            type: "string",
+            description: "Full markdown content for the document.",
+          },
+        },
+        required: ["kind", "markdown"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/document/"),
+          method: "PUT",
+          body: {
+            kind: asTrimmedString(input.kind),
+            slug: asTrimmedString(input.slug) || undefined,
+            title: asTrimmedString(input.title) || undefined,
+            markdown: asTrimmedString(input.markdown),
+          },
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Document: Append ─────────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_document_append",
+      description:
+        "Append timestamped content to a document. Creates the document if it doesn't exist. Useful for adding entries to any document type.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          kind: {
+            type: "string",
+            description: "Document kind (default: daily).",
+          },
+          slug: {
+            type: "string",
+            description: "Document slug (default: today's date for daily).",
+          },
+          content: {
+            type: "string",
+            description: "Markdown content to append.",
+          },
+        },
+        required: ["content"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const content = asTrimmedString(input.content);
+        if (!content) throw new Error("content is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/document/append/"),
+          method: "POST",
+          body: {
+            kind: asTrimmedString(input.kind) || "daily",
+            slug: asTrimmedString(input.slug) || undefined,
+            content,
+          },
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Daily Note: Get (legacy-compatible) ──────────────────────────────
   api.registerTool(
     {
       name: "nbhd_daily_note_get",
       description:
-        "Get the raw markdown daily note for a specific date. Returns the full collaborative document (morning report, log entries, evening check-in).",
+        "Get the daily note for a specific date. Returns the full collaborative document (morning report, log entries, evening check-in). Uses the legacy endpoint which also returns template sections.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -148,25 +277,23 @@ export default function register(api) {
     { optional: true },
   );
 
-  // ── Daily Note: Set Section ─────────────────────────────────────────
+  // ── Daily Note: Set Section (legacy-compatible) ─────────────────────
   api.registerTool(
     {
       name: "nbhd_daily_note_set_section",
       description:
-        "Set the content of a specific section in the daily note. Use for writing structured sections like Morning Report, Weather, News, Focus, or Evening Check-in. The section_slug must match a section in the user's template (e.g. 'morning-report', 'weather', 'news', 'focus', 'evening-check-in'). If the section doesn't exist yet, it will be created automatically.",
+        "Set the content of a specific section in the daily note. Use for writing structured sections like Morning Report, Weather, News, Focus, or Evening Check-in.",
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
           section_slug: {
             type: "string",
-            description:
-              "The slug of the section to set (e.g. 'morning-report', 'weather', 'news', 'focus', 'evening-check-in').",
+            description: "The slug of the section to set (e.g. 'morning-report', 'weather', 'news', 'focus', 'evening-check-in').",
           },
           content: {
             type: "string",
-            description:
-              "Full markdown content for the section. Overwrites existing section content.",
+            description: "Full markdown content for the section. Overwrites existing section content.",
           },
           date: {
             type: "string",
@@ -196,12 +323,12 @@ export default function register(api) {
     { optional: true },
   );
 
-  // ── Daily Note: Append Log Entry ──────────────────────────────────────
+  // ── Daily Note: Append Log Entry (legacy-compatible) ─────────────────
   api.registerTool(
     {
       name: "nbhd_daily_note_append",
       description:
-        "Append a quick timestamped log entry to the daily note. Use for brief notes about things you did during the day (email checks, research completed, tasks finished, issues found). Auto-timestamps with current time and author=agent. For writing full sections (Morning Report, Weather, News, etc.), use nbhd_daily_note_set_section instead.",
+        "Append a quick timestamped log entry to the daily note. Auto-timestamps with current time and author=agent.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -212,8 +339,7 @@ export default function register(api) {
           },
           date: {
             type: "string",
-            description:
-              "ISO date (YYYY-MM-DD). Defaults to today. Use for backfilling.",
+            description: "ISO date (YYYY-MM-DD). Defaults to today.",
           },
         },
         required: ["content"],
@@ -241,7 +367,7 @@ export default function register(api) {
     {
       name: "nbhd_memory_get",
       description:
-        "Get the user's long-term memory document (raw markdown). Contains curated preferences, goals, decisions, and lessons the agent has learned about the user over time.",
+        "Get the user's long-term memory document (raw markdown). Contains curated preferences, goals, decisions, and lessons.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -263,7 +389,7 @@ export default function register(api) {
     {
       name: "nbhd_memory_update",
       description:
-        "Replace the user's long-term memory document. Use after reviewing daily notes to curate preferences, goals, decisions, and lessons learned. Overwrites the entire document.",
+        "Replace the user's long-term memory document. Use after reviewing daily notes to curate preferences, goals, decisions, and lessons learned.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -294,7 +420,7 @@ export default function register(api) {
     {
       name: "nbhd_journal_context",
       description:
-        "Load recent daily notes and long-term memory in one call. Use at the start of every session to get caught up on the user's recent activity and what the agent knows about them.",
+        "Load recent daily notes and long-term memory in one call. Use at the start of every session to get caught up.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -324,11 +450,12 @@ export default function register(api) {
     { optional: true },
   );
 
+  // ── Evening Check-in (deprecated, kept for compat) ───────────────────
   api.registerTool(
     {
       name: "nbhd_journal_evening_checkin",
       description:
-        "[DEPRECATED: Use nbhd_daily_note_set_section with section_slug='evening-check-in' instead.] Set evening check-in content in today's daily note.",
+        "[DEPRECATED: Use nbhd_daily_note_set_section with section_slug='evening-check-in' instead.]",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -347,9 +474,7 @@ export default function register(api) {
       async execute(_id, params) {
         const input = asObject(params);
         const content = asTrimmedString(input.content);
-        if (!content) {
-          throw new Error("content is required");
-        }
+        if (!content) throw new Error("content is required");
         const payload = await callRuntime(api, {
           path: tenantPath(api, "/daily-note/append/"),
           method: "POST",

@@ -20,9 +20,6 @@ export function MarkdownRenderer({ content, onCheckboxToggle }: MarkdownRenderer
           if (!onCheckboxToggle) return;
           // Find which checkbox this is by counting checkboxes in the markdown
           const lines = content.split("\n");
-          let checkboxIndex = 0;
-          // We need to find the source position. React-markdown doesn't give us this directly,
-          // so we use a simpler approach: find nth checkbox
           const checked = props.checked ?? false;
 
           // Count through lines to find matching checkbox
@@ -32,11 +29,9 @@ export function MarkdownRenderer({ content, onCheckboxToggle }: MarkdownRenderer
             if (match) {
               const isChecked = match[2] !== " ";
               if (isChecked === checked) {
-                // This could be our checkbox. We use the data-sourcepos if available.
                 onCheckboxToggle(i, !checked);
                 return;
               }
-              checkboxIndex++;
             }
           }
         };
