@@ -218,6 +218,10 @@ AZURE_KV_SECRET_TELEGRAM_WEBHOOK_SECRET = env(
     "AZURE_KV_SECRET_TELEGRAM_WEBHOOK_SECRET",
     default="telegram-webhook-secret",
 )
+AZURE_KV_SECRET_BRAVE_API_KEY = env(
+    "AZURE_KV_SECRET_BRAVE_API_KEY",
+    default="brave-api-key",
+)
 
 # Azure
 AZURE_SUBSCRIPTION_ID = env("AZURE_SUBSCRIPTION_ID", default="")

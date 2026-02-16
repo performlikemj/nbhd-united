@@ -162,10 +162,8 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         },
     }
 
-    # Inject platform API keys for all subscribers
-    brave_key = str(getattr(settings, "BRAVE_API_KEY", "") or "").strip()
-    if brave_key:
-        config.setdefault("env", {})["BRAVE_API_KEY"] = brave_key
+    # Note: BRAVE_API_KEY is injected as a container env var via Key Vault
+    # reference (see azure_client.py). OpenClaw reads it automatically.
 
     providers = _build_models_providers(tier, tenant)
     if providers:

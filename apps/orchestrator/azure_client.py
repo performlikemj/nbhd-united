@@ -468,6 +468,12 @@ def create_container_app(
             key_vault_secret_name=settings.AZURE_KV_SECRET_TELEGRAM_WEBHOOK_SECRET,
             identity_id=identity_id,
         ),
+        _build_container_secret(
+            "brave-key",
+            plain_value=settings.BRAVE_API_KEY,
+            key_vault_secret_name=settings.AZURE_KV_SECRET_BRAVE_API_KEY,
+            identity_id=identity_id,
+        ),
     ]
 
     container_app: dict[str, Any] = {
@@ -505,6 +511,7 @@ def create_container_app(
                             {"name": "NBHD_INTERNAL_API_KEY", "secretRef": "nbhd-internal-api-key"},
                             {"name": "OPENCLAW_GATEWAY_TOKEN", "secretRef": "nbhd-internal-api-key"},
                             {"name": "OPENCLAW_WEBHOOK_SECRET", "secretRef": "telegram-webhook-secret"},
+                            {"name": "BRAVE_API_KEY", "secretRef": "brave-key"},
                             {"name": "NBHD_TENANT_ID", "value": str(tenant_id)},
                             {"name": "NBHD_API_BASE_URL", "value": settings.API_BASE_URL},
                             {"name": "OPENCLAW_CONFIG_JSON", "value": config_json},
