@@ -4,23 +4,30 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   createAutomation,
+  createDailyNoteEntry,
   createJournalEntry,
+  createWeeklyReview,
   deleteAutomation,
+  deleteDailyNoteEntry,
   deleteJournalEntry,
+  deleteWeeklyReview,
   disconnectIntegration,
   fetchAutomationRuns,
   fetchAutomationRunsForAutomation,
   fetchAutomations,
+  fetchDailyNote,
   fetchDashboard,
   fetchIntegrations,
   fetchJournalEntries,
   fetchMe,
+  fetchMemory,
   fetchPersonas,
   fetchPreferences,
   fetchTenant,
   fetchTelegramStatus,
   fetchUsageHistory,
   fetchUsageSummary,
+  fetchWeeklyReviews,
   generateTelegramLink,
   getOAuthAuthorizeUrl,
   onboardTenant,
@@ -31,8 +38,11 @@ import {
   requestStripePortal,
   unlinkTelegram,
   updateAutomation,
+  updateDailyNoteEntry,
   updateJournalEntry,
+  updateMemory,
   updatePreferences,
+  updateWeeklyReview,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -251,7 +261,8 @@ export function useRunAutomationMutation() {
   });
 }
 
-// Journal
+// Journal (legacy)
+/** @deprecated */
 export function useJournalEntriesQuery() {
   return useQuery({
     queryKey: ["journal-entries"],
@@ -259,6 +270,7 @@ export function useJournalEntriesQuery() {
   });
 }
 
+/** @deprecated */
 export function useCreateJournalEntryMutation() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -269,6 +281,7 @@ export function useCreateJournalEntryMutation() {
   });
 }
 
+/** @deprecated */
 export function useUpdateJournalEntryMutation() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -280,12 +293,112 @@ export function useUpdateJournalEntryMutation() {
   });
 }
 
+/** @deprecated */
 export function useDeleteJournalEntryMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: deleteJournalEntry,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["journal-entries"] });
+    },
+  });
+}
+
+// Daily Notes
+export function useDailyNoteQuery(date: string) {
+  return useQuery({
+    queryKey: ["daily-note", date],
+    queryFn: () => fetchDailyNote(date),
+    enabled: !!date,
+  });
+}
+
+export function useCreateDailyNoteEntryMutation(date: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof createDailyNoteEntry>[1]) =>
+      createDailyNoteEntry(date, data),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["daily-note", date] });
+    },
+  });
+}
+
+export function useUpdateDailyNoteEntryMutation(date: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ index, data }: { index: number; data: Parameters<typeof updateDailyNoteEntry>[2] }) =>
+      updateDailyNoteEntry(date, index, data),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["daily-note", date] });
+    },
+  });
+}
+
+export function useDeleteDailyNoteEntryMutation(date: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (index: number) => deleteDailyNoteEntry(date, index),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["daily-note", date] });
+    },
+  });
+}
+
+// User Memory
+export function useMemoryQuery() {
+  return useQuery({
+    queryKey: ["memory"],
+    queryFn: fetchMemory,
+  });
+}
+
+export function useUpdateMemoryMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateMemory,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memory"] });
+    },
+  });
+}
+
+// Weekly Reviews
+export function useWeeklyReviewsQuery() {
+  return useQuery({
+    queryKey: ["weekly-reviews"],
+    queryFn: fetchWeeklyReviews,
+  });
+}
+
+export function useCreateWeeklyReviewMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createWeeklyReview,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["weekly-reviews"] });
+    },
+  });
+}
+
+export function useUpdateWeeklyReviewMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof updateWeeklyReview>[1] }) =>
+      updateWeeklyReview(id, data),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["weekly-reviews"] });
+      void queryClient.invalidateQueries({ queryKey: ["weekly-review"] });
+    },
+  });
+}
+
+export function useDeleteWeeklyReviewMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteWeeklyReview,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["weekly-reviews"] });
     },
   });
 }

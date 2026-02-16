@@ -224,3 +224,87 @@ class MemoryPatchSerializer(serializers.Serializer):
     """Patch memory — full markdown replacement or section-based."""
 
     markdown = serializers.CharField()
+
+
+# ---------------------------------------------------------------------------
+# User-facing WeeklyReview serializer
+# ---------------------------------------------------------------------------
+
+
+def _build_weekly_review_raw_text(data: dict) -> str:
+    parts = []
+    if data.get("mood_summary"):
+        parts.append(f"Mood: {data['mood_summary']}")
+    if data.get("week_rating"):
+        parts.append(f"Rating: {data['week_rating']}")
+    if data.get("top_wins"):
+        parts.append("Top wins: " + ", ".join(data["top_wins"]))
+    if data.get("top_challenges"):
+        parts.append("Top challenges: " + ", ".join(data["top_challenges"]))
+    if data.get("lessons"):
+        parts.append("Lessons: " + ", ".join(data["lessons"]))
+    if data.get("intentions_next_week"):
+        parts.append("Intentions: " + ", ".join(data["intentions_next_week"]))
+    return "\n".join(parts)
+
+
+class WeeklyReviewSerializer(serializers.ModelSerializer):
+    """User-facing serializer (JWT auth). Excludes tenant and auto-generates raw_text."""
+
+    class Meta:
+        model = WeeklyReview
+        fields = (
+            "id",
+            "week_start",
+            "week_end",
+            "mood_summary",
+            "top_wins",
+            "top_challenges",
+            "lessons",
+            "week_rating",
+            "intentions_next_week",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("id", "created_at", "updated_at")
+
+    def validate(self, attrs: dict) -> dict:
+        week_start = attrs.get("week_start")
+        week_end = attrs.get("week_end")
+        if week_start and week_end and week_start > week_end:
+            raise serializers.ValidationError({"week_end": "week_end must be on or after week_start."})
+        return attrs
+
+    def validate_top_wins(self, value):
+        return _validate_string_list(field_name="top_wins", value=value)
+
+    def validate_top_challenges(self, value):
+        return _validate_string_list(field_name="top_challenges", value=value)
+
+    def validate_lessons(self, value):
+        return _validate_string_list(field_name="lessons", value=value)
+
+    def validate_intentions_next_week(self, value):
+        return _validate_string_list(field_name="intentions_next_week", value=value)
+
+    def validate_mood_summary(self, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise serializers.ValidationError("mood_summary is required.")
+        return normalized
+
+    def create(self, validated_data: dict) -> WeeklyReview:
+        tenant = self.context["tenant"]
+        raw_text = _build_weekly_review_raw_text(validated_data)
+        return WeeklyReview.objects.create(tenant=tenant, raw_text=raw_text, **validated_data)
+
+    def update(self, instance: WeeklyReview, validated_data: dict) -> WeeklyReview:
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.raw_text = _build_weekly_review_raw_text(
+            {f: getattr(instance, f) for f in (
+                "mood_summary", "week_rating", "top_wins", "top_challenges", "lessons", "intentions_next_week",
+            )}
+        )
+        instance.save()
+        return instance

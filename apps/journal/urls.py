@@ -7,6 +7,8 @@ from .views import (
     JournalEntryDetailView,
     JournalEntryListCreateView,
     MemoryView,
+    WeeklyReviewDetailView,
+    WeeklyReviewListCreateView,
 )
 
 urlpatterns = [
@@ -19,4 +21,7 @@ urlpatterns = [
     path("daily/<str:date>/entries/<int:index>/", DailyNoteEntryDetailView.as_view(), name="daily-note-entry-detail"),
     # Long-term memory
     path("memory/", MemoryView.as_view(), name="memory"),
+    # Weekly reviews
+    path("reviews/", WeeklyReviewListCreateView.as_view(), name="weekly-review-list-create"),
+    path("reviews/<uuid:review_id>/", WeeklyReviewDetailView.as_view(), name="weekly-review-detail"),
 ]

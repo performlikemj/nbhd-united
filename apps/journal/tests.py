@@ -9,7 +9,7 @@ from rest_framework.test import APIClient
 from apps.tenants.models import Tenant, User
 
 from .md_utils import append_entry_markdown, parse_daily_note, serialise_daily_note
-from .models import DailyNote, UserMemory
+from .models import DailyNote, UserMemory, WeeklyReview
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +258,95 @@ class MemoryAPITest(TestCase):
         self.client.put("/api/v1/journal/memory/", {"markdown": "v2"}, format="json")
         self.assertEqual(UserMemory.objects.filter(tenant=self.tenant).count(), 1)
         self.assertEqual(UserMemory.objects.get(tenant=self.tenant).markdown, "v2")
+
+
+@override_settings(
+    REST_FRAMEWORK={
+        "DEFAULT_AUTHENTICATION_CLASSES": [
+            "rest_framework.authentication.SessionAuthentication",
+        ],
+    }
+)
+class WeeklyReviewAPITest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="testuser", password="testpass")
+        self.tenant = Tenant.objects.create(user=self.user, status="active")
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _create_review(self, **overrides):
+        payload = {
+            "week_start": "2026-02-09",
+            "week_end": "2026-02-15",
+            "mood_summary": "Good week overall",
+            "top_wins": ["Shipped feature"],
+            "top_challenges": ["Tight deadline"],
+            "lessons": ["Start earlier"],
+            "week_rating": "thumbs-up",
+            "intentions_next_week": ["More testing"],
+        }
+        payload.update(overrides)
+        return self.client.post("/api/v1/journal/reviews/", payload, format="json")
+
+    def test_get_empty_list(self):
+        resp = self.client.get("/api/v1/journal/reviews/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data, [])
+
+    def test_create_review(self):
+        resp = self._create_review()
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["mood_summary"], "Good week overall")
+        self.assertEqual(resp.data["week_rating"], "thumbs-up")
+        self.assertIn("id", resp.data)
+
+    def test_list_reviews(self):
+        self._create_review(week_start="2026-02-02", week_end="2026-02-08")
+        self._create_review(week_start="2026-02-09", week_end="2026-02-15")
+        resp = self.client.get("/api/v1/journal/reviews/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data), 2)
+        # Newest first
+        self.assertEqual(resp.data[0]["week_start"], "2026-02-09")
+
+    def test_get_detail(self):
+        create_resp = self._create_review()
+        review_id = create_resp.data["id"]
+        resp = self.client.get(f"/api/v1/journal/reviews/{review_id}/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["mood_summary"], "Good week overall")
+
+    def test_patch_review(self):
+        create_resp = self._create_review()
+        review_id = create_resp.data["id"]
+        resp = self.client.patch(
+            f"/api/v1/journal/reviews/{review_id}/",
+            {"mood_summary": "Updated mood"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["mood_summary"], "Updated mood")
+
+    def test_delete_review(self):
+        create_resp = self._create_review()
+        review_id = create_resp.data["id"]
+        resp = self.client.delete(f"/api/v1/journal/reviews/{review_id}/")
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(WeeklyReview.objects.filter(tenant=self.tenant).count(), 0)
+
+    def test_invalid_week_end_before_start(self):
+        resp = self._create_review(week_start="2026-02-15", week_end="2026-02-09")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_tenant_isolation(self):
+        self._create_review()
+        user2 = User.objects.create_user(username="user2", password="pass")
+        tenant2 = Tenant.objects.create(user=user2, status="active")
+        client2 = APIClient()
+        client2.force_authenticate(user=user2)
+        resp = client2.get("/api/v1/journal/reviews/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data, [])
 
 
 # ---------------------------------------------------------------------------

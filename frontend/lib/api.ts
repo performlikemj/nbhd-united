@@ -3,6 +3,7 @@ import {
   AuthUser,
   Automation,
   AutomationRun,
+  DailyNoteResponse,
   DashboardData,
   Integration,
   JournalEntry,
@@ -10,6 +11,8 @@ import {
   Tenant,
   UsageRecord,
   UsageSummary,
+  UserMemoryResponse,
+  WeeklyReview,
 } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -309,7 +312,8 @@ export function fetchAutomationRunsForAutomation(id: string): Promise<PaginatedR
   return apiFetch<PaginatedResponse<AutomationRun>>(`/api/v1/automations/${id}/runs/`);
 }
 
-// Journal
+// Journal (legacy)
+/** @deprecated Use DailyNote API instead. */
 export interface JournalEntryInput {
   date: string;
   mood: string;
@@ -319,6 +323,7 @@ export interface JournalEntryInput {
   reflection: string;
 }
 
+/** @deprecated */
 export function fetchJournalEntries(
   params?: { date_from?: string; date_to?: string },
 ): Promise<JournalEntry[]> {
@@ -329,6 +334,7 @@ export function fetchJournalEntries(
   return apiFetch<JournalEntry[]>(`/api/v1/journal/${query ? `?${query}` : ""}`);
 }
 
+/** @deprecated */
 export function createJournalEntry(data: JournalEntryInput): Promise<JournalEntry> {
   return apiFetch<JournalEntry>("/api/v1/journal/", {
     method: "POST",
@@ -336,6 +342,7 @@ export function createJournalEntry(data: JournalEntryInput): Promise<JournalEntr
   });
 }
 
+/** @deprecated */
 export function updateJournalEntry(
   id: string,
   data: Partial<JournalEntryInput>,
@@ -346,6 +353,93 @@ export function updateJournalEntry(
   });
 }
 
+/** @deprecated */
 export function deleteJournalEntry(id: string): Promise<void> {
   return apiFetch<void>(`/api/v1/journal/${id}/`, { method: "DELETE" });
+}
+
+// Daily Notes
+export function fetchDailyNote(date: string): Promise<DailyNoteResponse> {
+  return apiFetch<DailyNoteResponse>(`/api/v1/journal/daily/${date}/`);
+}
+
+export interface DailyNoteEntryInput {
+  content: string;
+  mood?: string;
+  energy?: number;
+  time?: string;
+}
+
+export function createDailyNoteEntry(date: string, data: DailyNoteEntryInput): Promise<DailyNoteResponse> {
+  return apiFetch<DailyNoteResponse>(`/api/v1/journal/daily/${date}/entries/`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateDailyNoteEntry(
+  date: string,
+  index: number,
+  data: Partial<{ content: string; mood: string; energy: number }>,
+): Promise<DailyNoteResponse> {
+  return apiFetch<DailyNoteResponse>(`/api/v1/journal/daily/${date}/entries/${index}/`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteDailyNoteEntry(date: string, index: number): Promise<DailyNoteResponse> {
+  return apiFetch<DailyNoteResponse>(`/api/v1/journal/daily/${date}/entries/${index}/`, {
+    method: "DELETE",
+  });
+}
+
+// User Memory
+export function fetchMemory(): Promise<UserMemoryResponse> {
+  return apiFetch<UserMemoryResponse>("/api/v1/journal/memory/");
+}
+
+export function updateMemory(markdown: string): Promise<UserMemoryResponse> {
+  return apiFetch<UserMemoryResponse>("/api/v1/journal/memory/", {
+    method: "PUT",
+    body: JSON.stringify({ markdown }),
+  });
+}
+
+// Weekly Reviews
+export type WeeklyReviewInput = {
+  week_start: string;
+  week_end: string;
+  mood_summary: string;
+  top_wins: string[];
+  top_challenges: string[];
+  lessons: string[];
+  week_rating: string;
+  intentions_next_week: string[];
+};
+
+export function fetchWeeklyReviews(): Promise<WeeklyReview[]> {
+  return apiFetch<WeeklyReview[]>("/api/v1/journal/reviews/");
+}
+
+export function fetchWeeklyReview(id: string): Promise<WeeklyReview> {
+  return apiFetch<WeeklyReview>(`/api/v1/journal/reviews/${id}/`);
+}
+
+export function createWeeklyReview(data: WeeklyReviewInput): Promise<WeeklyReview> {
+  return apiFetch<WeeklyReview>("/api/v1/journal/reviews/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateWeeklyReview(id: string, data: Partial<WeeklyReviewInput>): Promise<WeeklyReview> {
+  return apiFetch<WeeklyReview>(`/api/v1/journal/reviews/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteWeeklyReview(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/journal/reviews/${id}/`, { method: "DELETE" });
 }

@@ -124,9 +124,11 @@ export interface UsageSummary {
   budget: UsageBudgetSummary;
 }
 
-// Journal
+// Journal (legacy structured entries)
+/** @deprecated Use DailyNote types instead. */
 export type JournalEntryEnergy = "low" | "medium" | "high";
 
+/** @deprecated Use DailyNote types instead. */
 export interface JournalEntry {
   id: string;
   date: string;
@@ -135,6 +137,45 @@ export interface JournalEntry {
   wins: string[];
   challenges: string[];
   reflection: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// Daily Notes
+export interface DailyNoteEntry {
+  time: string | null;
+  author: "human" | "agent";
+  content: string;
+  mood: string | null;
+  energy: number | null;
+  section: string | null;
+  subsections: Record<string, string> | null;
+}
+
+export interface DailyNoteResponse {
+  date: string;
+  entries: DailyNoteEntry[];
+}
+
+// User Memory
+export interface UserMemoryResponse {
+  markdown: string;
+  updated_at: string | null;
+}
+
+// Weekly Reviews
+export type WeekRating = "thumbs-up" | "thumbs-down" | "meh";
+
+export interface WeeklyReview {
+  id: string;
+  week_start: string;
+  week_end: string;
+  mood_summary: string;
+  top_wins: string[];
+  top_challenges: string[];
+  lessons: string[];
+  week_rating: WeekRating;
+  intentions_next_week: string[];
   created_at: string;
   updated_at: string;
 }

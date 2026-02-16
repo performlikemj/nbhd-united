@@ -11,7 +11,7 @@ import { useMeQuery } from "@/lib/queries";
 import { SiteFooter } from "@/components/site-footer";
 
 const navItems = [
-  { href: "/", label: "Journal" },
+  { href: "/journal", label: "Journal" },
   { href: "/settings", label: "Settings" },
 ];
 
@@ -123,10 +123,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="flex items-center gap-3">
             <nav className="flex items-center gap-1 rounded-full border border-ink/15 bg-white p-1">
               {navItems.map((item) => {
-                const active =
-                  item.href === "/"
-                    ? pathname === "/"
-                    : pathname.startsWith(item.href);
+                const active = pathname.startsWith(item.href);
                 return (
                   <Link
                     key={item.href}

@@ -14,12 +14,13 @@ from rest_framework.views import APIView
 from apps.tenants.models import Tenant
 
 from .md_utils import append_entry_markdown, parse_daily_note, serialise_daily_note
-from .models import DailyNote, JournalEntry, UserMemory
+from .models import DailyNote, JournalEntry, UserMemory, WeeklyReview
 from .serializers import (
     DailyNoteEntryInputSerializer,
     DailyNoteEntryPatchSerializer,
     JournalEntrySerializer,
     MemoryPatchSerializer,
+    WeeklyReviewSerializer,
 )
 
 
@@ -35,6 +36,13 @@ def _get_entry_for_tenant(*, tenant: Tenant, entry_id: UUID) -> JournalEntry:
         return JournalEntry.objects.get(id=entry_id, tenant=tenant)
     except JournalEntry.DoesNotExist as exc:
         raise Http404("Journal entry not found.") from exc
+
+
+def _get_weekly_review_for_tenant(*, tenant: Tenant, review_id: UUID) -> WeeklyReview:
+    try:
+        return WeeklyReview.objects.get(id=review_id, tenant=tenant)
+    except WeeklyReview.DoesNotExist as exc:
+        raise Http404("Weekly review not found.") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -238,3 +246,48 @@ class MemoryView(APIView):
             "markdown": memory.markdown,
             "updated_at": memory.updated_at.isoformat(),
         })
+
+
+# ---------------------------------------------------------------------------
+# Weekly Review views (user-facing)
+# ---------------------------------------------------------------------------
+
+
+class WeeklyReviewListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenant = _get_tenant_for_user(request.user)
+        queryset = WeeklyReview.objects.filter(tenant=tenant).order_by("-week_start")
+        serializer = WeeklyReviewSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        tenant = _get_tenant_for_user(request.user)
+        serializer = WeeklyReviewSerializer(data=request.data, context={"tenant": tenant})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class WeeklyReviewDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, review_id: UUID):
+        tenant = _get_tenant_for_user(request.user)
+        review = _get_weekly_review_for_tenant(tenant=tenant, review_id=review_id)
+        return Response(WeeklyReviewSerializer(review).data)
+
+    def patch(self, request, review_id: UUID):
+        tenant = _get_tenant_for_user(request.user)
+        review = _get_weekly_review_for_tenant(tenant=tenant, review_id=review_id)
+        serializer = WeeklyReviewSerializer(review, data=request.data, partial=True, context={"tenant": tenant})
+        serializer.is_valid(raise_exception=True)
+        updated = serializer.save()
+        return Response(WeeklyReviewSerializer(updated).data)
+
+    def delete(self, request, review_id: UUID):
+        tenant = _get_tenant_for_user(request.user)
+        review = _get_weekly_review_for_tenant(tenant=tenant, review_id=review_id)
+        review.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
