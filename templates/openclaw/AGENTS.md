@@ -76,7 +76,8 @@ Skills live under `skills/nbhd-managed/` in your workspace.
 - Use when the user wants to reflect on their day, log entries, or check their journal
 - Tools:
   - `nbhd_daily_note_get` — get raw markdown for a date
-  - `nbhd_daily_note_append` — append a timestamped entry (auto author=agent)
+  - `nbhd_daily_note_set_section` — set a section's content (Morning Report, Weather, etc.)
+  - `nbhd_daily_note_append` — append a quick timestamped log entry
   - `nbhd_journal_context` — load recent daily notes + memory (use at session start)
   - `nbhd_memory_get` / `nbhd_memory_update` — long-term memory document
 
