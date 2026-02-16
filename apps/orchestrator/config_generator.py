@@ -107,6 +107,23 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 "userTimezone": str(getattr(tenant.user, "timezone", "") or "UTC"),
                 "compaction": {
                     "mode": "safeguard",
+                    "memoryFlush": {
+                        "enabled": True,
+                        "softThresholdTokens": 4000,
+                        "systemPrompt": (
+                            "Session nearing compaction. Write any important context "
+                            "to memory files now. Use nbhd_memory_update for long-term "
+                            "insights and workspace memory files for session notes."
+                        ),
+                        "prompt": (
+                            "Save any lasting notes before context is compacted. "
+                            "Reply with NO_REPLY if nothing to store."
+                        ),
+                    },
+                },
+                "memorySearch": {
+                    "enabled": True,
+                    # Auto-detects OpenAI for embeddings via OPENAI_API_KEY
                 },
                 "heartbeat": {
                     # Disabled to save cost — agents are reactive only
