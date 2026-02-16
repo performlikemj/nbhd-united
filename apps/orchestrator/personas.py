@@ -1,6 +1,7 @@
 """Agent persona presets for OpenClaw workspace bootstrapping."""
 from __future__ import annotations
 
+import os
 from typing import Any
 
 
@@ -124,6 +125,10 @@ def render_identity_md(persona_key: str) -> str:
 def render_soul_md(persona_key: str) -> str:
     """Render SOUL.md content for a persona."""
     persona = get_persona(persona_key)
+    template = os.environ.get("NBHD_SOUL_MD_TEMPLATE")
+    if template:
+        return f"{template}\n\n## Your Persona\n\n{persona['soul_traits']}"
+    # Fallback: hardcoded version
     return (
         f"# Soul\n"
         f"\n"
@@ -149,6 +154,10 @@ def render_soul_md(persona_key: str) -> str:
 def render_agents_md(persona_key: str) -> str:
     """Render AGENTS.md content for a persona."""
     persona = get_persona(persona_key)
+    template = os.environ.get("NBHD_AGENTS_MD_TEMPLATE")
+    if template:
+        return template.replace("{{PERSONA_PERSONALITY}}", persona["agents_personality"])
+    # Fallback: hardcoded version
     return (
         f"# NBHD United — Your AI Assistant\n"
         f"\n"
