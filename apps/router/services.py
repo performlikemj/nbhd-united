@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 from collections import deque
 import logging
 from time import monotonic
@@ -175,15 +176,36 @@ def send_onboarding_link(chat_id: int) -> dict:
     }
 
 
+_COLD_START_MESSAGES = [
+    "Grabbing my coffee ☕ — try again in about 30 seconds!",
+    "Just doing some stretches 🧘 — hit me up again in ~30 seconds!",
+    "Warming up the engines 🚀 — try again in about 30 seconds!",
+    "BRB, microwaving a burrito 🌯 — send that again in ~30 seconds!",
+    "Sharpening my pencils ✏️ — give me about 30 seconds and try again!",
+    "Doing a quick power nap 😴 — try again in about 30 seconds!",
+    "Watering my plants 🌱 — send that again in ~30 seconds!",
+    "Tuning my guitar 🎸 — try again in about 30 seconds!",
+    "Making a smoothie 🥤 — hit me again in ~30 seconds!",
+    "Tying my shoelaces 👟 — try again in about 30 seconds!",
+    "Flipping pancakes 🥞 — send that again in ~30 seconds!",
+    "Feeding the cat 🐱 — try again in about 30 seconds!",
+    "Organizing my desk 🗂️ — give me ~30 seconds and try again!",
+    "Doing jumping jacks 🏃 — try again in about 30 seconds!",
+    "Toasting some bread 🍞 — send that again in ~30 seconds!",
+    "Brushing up on my jokes 😄 — try again in about 30 seconds!",
+    "Refilling my water bottle 💧 — hit me again in ~30 seconds!",
+    "Taking a deep breath 🌬️ — try again in about 30 seconds!",
+    "Putting on my thinking cap 🎩 — send that again in ~30 seconds!",
+    "Rolling out of bed 🛏️ — give me about 30 seconds and try again!",
+]
+
+
 def send_temporary_error(chat_id: int) -> dict:
     """Build a response telling the user their agent is temporarily unreachable."""
     return {
         "method": "sendMessage",
         "chat_id": chat_id,
-        "text": (
-            "Grabbing my coffee \u2615 \u2014 send that again in about "
-            "30 seconds and I'll be ready!"
-        ),
+        "text": random.choice(_COLD_START_MESSAGES),
     }
 
 
