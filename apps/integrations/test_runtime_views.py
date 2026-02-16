@@ -379,3 +379,42 @@ class RuntimeIntegrationViewsTest(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("week_rating", response.json())
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="shared-key")
+class RuntimeMemorySyncViewTest(TestCase):
+    def setUp(self):
+        from apps.journal.models import Document
+
+        self.tenant = create_tenant(display_name="SyncTest", telegram_chat_id=818181)
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="memory",
+            slug="long-term",
+            title="Long-Term Memory",
+            markdown="Important context",
+        )
+
+    def _headers(self, tenant_id=None, key="shared-key"):
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": key,
+            "HTTP_X_NBHD_TENANT_ID": tenant_id or str(self.tenant.id),
+        }
+
+    def test_requires_auth(self):
+        response = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/memory-sync/",
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_returns_files(self):
+        response = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/memory-sync/",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["tenant_id"], str(self.tenant.id))
+        self.assertEqual(body["count"], 1)
+        self.assertIn("memory/journal/memory/long-term.md", body["files"])
+        self.assertIn("# Long-Term Memory", body["files"]["memory/journal/memory/long-term.md"])
