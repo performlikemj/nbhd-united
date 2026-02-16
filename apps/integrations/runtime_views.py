@@ -564,7 +564,7 @@ class RuntimeCalendarFreeBusyView(APIView):
 
 
 class RuntimeDailyNotesView(APIView):
-    """GET raw markdown daily note, POST append to daily note (agent access)."""
+    """GET raw markdown daily note (agent access). Backed by Document model."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -586,12 +586,38 @@ class RuntimeDailyNotesView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        note = upsert_default_daily_note(tenant=tenant, note_date=d)
-        return Response(_build_note_payload(tenant=tenant, note=note, include_sections=True), status=200)
+        slug = str(d)
+        doc, _created = Document.objects.get_or_create(
+            tenant=tenant,
+            kind="daily",
+            slug=slug,
+            defaults={
+                "title": _default_title("daily", slug),
+                "markdown": _default_markdown("daily", slug),
+            },
+        )
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "date": str(d),
+                "markdown": doc.markdown,
+                "sections": [],
+            },
+            status=200,
+        )
+
+
+_SECTION_SLUG_TITLES: dict[str, str] = {
+    "morning-report": "Morning Report",
+    "weather": "Weather",
+    "news": "News",
+    "focus": "Focus",
+    "evening-check-in": "Evening Check-in",
+}
 
 
 class RuntimeDailyNoteAppendView(APIView):
-    """POST append markdown content to a daily note (agent access)."""
+    """POST append markdown content to a daily note (agent access). Backed by Document model."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -621,72 +647,60 @@ class RuntimeDailyNoteAppendView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        note = upsert_default_daily_note(tenant=tenant, note_date=d)
+        slug = str(d)
+        doc, _created = Document.objects.get_or_create(
+            tenant=tenant,
+            kind="daily",
+            slug=slug,
+            defaults={
+                "title": _default_title("daily", slug),
+                "markdown": _default_markdown("daily", slug),
+            },
+        )
+
         section_slug = request.data.get("section_slug")
         section_slug_str = str(section_slug).strip() if section_slug else ""
 
         if section_slug_str:
-            raw_sections = request.data.get("sections")
-            if raw_sections is not None and not isinstance(raw_sections, list):
-                return Response(
-                    {"error": "invalid_request", "detail": "sections must be an array"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            try:
-                if raw_sections:
-                    payload_sections: list[dict] = []
-                    for section in raw_sections:
-                        if not isinstance(section, dict):
-                            return Response(
-                                {
-                                    "error": "invalid_request",
-                                    "detail": "each section must be an object",
-                                },
-                                status=status.HTTP_400_BAD_REQUEST,
-                            )
-                        payload_sections.append(
-                            {
-                                "slug": str(section.get("slug") or "").strip(),
-                                "title": str(section.get("title") or "").strip(),
-                                "content": str(section.get("content") or "").strip(),
-                                "source": str(section.get("source") or "shared").strip(),
-                            }
-                        )
-                    note = set_daily_note_sections(
-                        note=note,
-                        sections=payload_sections,
-                        template=note.template,
-                    )
-
-                note, _ = set_daily_note_section(
-                    note=note,
-                    section_slug=section_slug_str,
-                    content=content,
-                )
-            except (ValueError, ValidationError) as exc:
-                return Response(
-                    {"error": "invalid_request", "detail": str(exc)},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            heading = _SECTION_SLUG_TITLES.get(section_slug_str, section_slug_str.replace("-", " ").title())
+            marker = f"## {heading}"
+            md = doc.markdown or ""
+            idx = md.find(marker)
+            if idx != -1:
+                # Find next heading or end of string
+                after_marker = idx + len(marker)
+                next_heading = md.find("\n## ", after_marker)
+                if next_heading == -1:
+                    # Append at end of document
+                    doc.markdown = md.rstrip() + "\n\n" + content + "\n"
+                else:
+                    # Insert before next heading
+                    doc.markdown = md[:next_heading].rstrip() + "\n\n" + content + "\n\n" + md[next_heading:]
+            else:
+                # Section heading doesn't exist yet — append it
+                doc.markdown = md.rstrip() + f"\n\n{marker}\n\n" + content + "\n"
         else:
-            note = append_log_to_note(
-                note=note,
-                content=content,
-                author="agent",
-            )
+            # Quick-log append with timestamp
+            now = tz.now()
+            timestamp = now.strftime("%H:%M")
+            entry = f"- **{timestamp}** (agent) — {content}"
+            doc.markdown = (doc.markdown or "").rstrip() + "\n\n" + entry + "\n"
+
+        doc.save()
 
         return Response(
             {
-                **_build_note_payload(tenant=tenant, note=note, include_sections=True),
                 "tenant_id": str(tenant.id),
+                "date": str(d),
+                "markdown": doc.markdown,
+                "sections": [],
             },
             status=status.HTTP_201_CREATED,
         )
 
 
 class RuntimeUserMemoryView(APIView):
-    """GET/PUT raw markdown long-term memory (agent access)."""
+    """GET/PUT raw markdown long-term memory (agent access). Backed by Document model."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -700,12 +714,17 @@ class RuntimeUserMemoryView(APIView):
         if tenant_failure is not None or tenant is None:
             return tenant_failure
 
-        memory = UserMemory.objects.filter(tenant=tenant).first()
-        return Response(
-            {
-                "tenant_id": str(tenant.id),
-                "markdown": memory.markdown if memory else "",
+        doc, _created = Document.objects.get_or_create(
+            tenant=tenant,
+            kind="memory",
+            slug="long-term",
+            defaults={
+                "title": _default_title("memory", "long-term"),
+                "markdown": _default_markdown("memory", "long-term"),
             },
+        )
+        return Response(
+            {"tenant_id": str(tenant.id), "markdown": doc.markdown},
             status=status.HTTP_200_OK,
         )
 
@@ -719,15 +738,21 @@ class RuntimeUserMemoryView(APIView):
             return tenant_failure
 
         markdown = request.data.get("markdown", "")
-        memory, _ = UserMemory.objects.get_or_create(tenant=tenant)
-        memory.markdown = markdown
-        memory.save()
+        doc, created = Document.objects.get_or_create(
+            tenant=tenant,
+            kind="memory",
+            slug="long-term",
+            defaults={
+                "title": _default_title("memory", "long-term"),
+                "markdown": markdown,
+            },
+        )
+        if not created:
+            doc.markdown = markdown
+            doc.save()
 
         return Response(
-            {
-                "tenant_id": str(tenant.id),
-                "markdown": memory.markdown,
-            },
+            {"tenant_id": str(tenant.id), "markdown": doc.markdown},
             status=status.HTTP_200_OK,
         )
 
@@ -764,24 +789,29 @@ class RuntimeJournalContextView(APIView):
 
         cutoff = (tz.now() - timedelta(days=days)).date()
 
-        recent_notes = DailyNote.objects.filter(
-            tenant=tenant, date__gte=cutoff
-        ).order_by("date")
+        recent_docs = Document.objects.filter(
+            tenant=tenant, kind="daily", slug__gte=str(cutoff)
+        ).order_by("slug")
 
-        memory = UserMemory.objects.filter(tenant=tenant).first()
+        memory_doc = Document.objects.filter(
+            tenant=tenant, kind="memory", slug="long-term"
+        ).first()
 
         notes_data = [
             {
-                **_build_note_payload(tenant=tenant, note=n, include_sections=True),
+                "tenant_id": str(tenant.id),
+                "date": doc.slug,
+                "markdown": doc.markdown,
+                "sections": [],
             }
-            for n in recent_notes
+            for doc in recent_docs
         ]
 
         return Response(
             {
                 "tenant_id": str(tenant.id),
                 "recent_notes": notes_data,
-                "long_term_memory": memory.markdown if memory else "",
+                "long_term_memory": memory_doc.markdown if memory_doc else "",
                 "recent_notes_count": len(notes_data),
                 "days_back": days,
             },
