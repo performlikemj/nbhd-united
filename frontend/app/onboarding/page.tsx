@@ -203,20 +203,23 @@ export default function OnboardingPage() {
                     {
                       tier: "starter" as const,
                       name: "Starter",
+                      price: "$8/mo",
                       model: "Kimi K2.5",
                       features: ["50 messages/day", "Basic assistant"],
                     },
                     {
                       tier: "premium" as const,
                       name: "Premium",
-                      model: "Claude Sonnet 4.5",
-                      features: ["200 messages/day", "+ Opus for complex tasks"],
+                      price: "$25/mo",
+                      model: "Claude Sonnet & Opus",
+                      features: ["200 messages/day", "Best-in-class AI models"],
                     },
                     {
                       tier: "byok" as const,
-                      name: "BYOK",
-                      model: "Your model",
-                      features: ["200 messages/day", "Your own API key"],
+                      name: "Bring Your Own Key",
+                      price: "$8/mo",
+                      model: "Your choice",
+                      features: ["200 messages/day", "Use your own API key"],
                     },
                   ]).map((plan) => (
                     <button
@@ -229,7 +232,10 @@ export default function OnboardingPage() {
                           : "border-ink/15 bg-white hover:border-ink/30"
                       }`}
                     >
-                      <p className="text-sm font-semibold text-ink">{plan.name}</p>
+                      <div className="flex items-baseline justify-between">
+                        <p className="text-sm font-semibold text-ink">{plan.name}</p>
+                        <p className="text-sm font-bold text-ink">{plan.price}</p>
+                      </div>
                       <p className="mt-1 text-xs font-medium text-accent">{plan.model}</p>
                       <ul className="mt-2 space-y-1">
                         {plan.features.map((f) => (
