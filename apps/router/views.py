@@ -159,6 +159,9 @@ def telegram_webhook(request):
                 tenant.container_fqdn,
                 update,
                 user_timezone=user_timezone,
+                timeout=30.0,
+                max_retries=1,
+                retry_delay=5.0,
             )
         )
     finally:

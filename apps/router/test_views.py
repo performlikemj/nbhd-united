@@ -75,6 +75,9 @@ class TelegramWebhookViewTest(TestCase):
         self.assertEqual(response.json(), {"ok": True})
         mock_forward.assert_awaited_once()
         self.assertEqual(mock_forward.await_args.kwargs.get("user_timezone"), "UTC")
+        self.assertEqual(mock_forward.await_args.kwargs.get("timeout"), 30.0)
+        self.assertEqual(mock_forward.await_args.kwargs.get("max_retries"), 1)
+        self.assertEqual(mock_forward.await_args.kwargs.get("retry_delay"), 5.0)
 
     @patch("apps.router.views.record_usage")
     @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
