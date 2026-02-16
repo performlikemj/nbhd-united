@@ -58,10 +58,18 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     tier = tenant.model_tier or "basic"
     models_config = TIER_MODELS.get(tier, TIER_MODELS["basic"])
     model_entries = TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["basic"])
-    google_plugin_id = str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_ID", "") or "").strip()
-    google_plugin_path = str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_PATH", "") or "").strip()
-    journal_plugin_id = str(getattr(settings, "OPENCLAW_JOURNAL_PLUGIN_ID", "") or "").strip()
-    journal_plugin_path = str(getattr(settings, "OPENCLAW_JOURNAL_PLUGIN_PATH", "") or "").strip()
+    # Collect all configured plugins
+    _plugin_defs = [
+        (
+            str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_ID", "") or "").strip(),
+            str(getattr(settings, "OPENCLAW_GOOGLE_PLUGIN_PATH", "") or "").strip(),
+        ),
+        (
+            str(getattr(settings, "OPENCLAW_JOURNAL_PLUGIN_ID", "") or "").strip(),
+            str(getattr(settings, "OPENCLAW_JOURNAL_PLUGIN_PATH", "") or "").strip(),
+        ),
+    ]
+    _active_plugins = [(pid, ppath) for pid, ppath in _plugin_defs if pid]
 
     api_base = str(getattr(settings, "API_BASE_URL", "") or "").strip().rstrip("/")
     webhook_secret = str(getattr(settings, "TELEGRAM_WEBHOOK_SECRET", "") or "").strip()
@@ -144,27 +152,17 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         },
     }
 
-    plugin_ids: list[str] = []
-    plugin_paths: list[str] = []
-    if google_plugin_id:
-        plugin_ids.append(google_plugin_id)
-        if google_plugin_path and google_plugin_path not in plugin_paths:
-            plugin_paths.append(google_plugin_path)
-    if journal_plugin_id:
-        plugin_ids.append(journal_plugin_id)
-        if journal_plugin_path and journal_plugin_path not in plugin_paths:
-            plugin_paths.append(journal_plugin_path)
-
-    if plugin_ids:
-        plugin_entries: dict[str, Any] = {}
-        for plugin_id in plugin_ids:
-            plugin_entries[plugin_id] = {"enabled": True}
+    if _active_plugins:
         plugin_config: dict[str, Any] = {
-            "allow": plugin_ids,
-            "entries": plugin_entries,
+            "allow": [pid for pid, _ in _active_plugins],
+            "entries": {
+                pid: {"enabled": True}
+                for pid, _ in _active_plugins
+            },
         }
-        if plugin_paths:
-            plugin_config["load"] = {"paths": plugin_paths}
+        paths = [ppath for _, ppath in _active_plugins if ppath]
+        if paths:
+            plugin_config["load"] = {"paths": paths}
 
         config["plugins"] = plugin_config
         config["tools"]["alsoAllow"] = ["group:plugins"]

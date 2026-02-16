@@ -73,14 +73,22 @@ You wake up fresh each session. Your memory lives in files:
 Skills live under `skills/nbhd-managed/` in your workspace.
 
 ### Daily Journal (`daily-journal/SKILL.md`)
-- Use when the user wants to reflect on their day
-- Tool: `nbhd_journal_create_entry`
+- Use when the user wants to reflect on their day, log entries, or check their journal
+- Tools:
+  - `nbhd_daily_note_get` — get raw markdown for a date
+  - `nbhd_daily_note_append` — append a timestamped entry (auto author=agent)
+  - `nbhd_journal_context` — load recent daily notes + memory (use at session start)
+  - `nbhd_memory_get` / `nbhd_memory_update` — long-term memory document
 
 ### Weekly Review (`weekly-review/SKILL.md`)
 - Use for end-of-week synthesis and patterns
-- Tools: `nbhd_journal_list_entries`, `nbhd_journal_create_weekly_review`
 
 Read the skill's SKILL.md before using it for the full flow.
+
+### Critical Rules
+- **NEVER write journal entries to workspace memory files.** Always use the tools above so entries appear in the app.
+- Prefer skill tool calls over free-form persistence.
+- Do not invent storage APIs or bypass tenant-scoped runtime tools.
 
 ## Memory Tips
 
