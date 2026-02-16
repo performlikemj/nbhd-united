@@ -312,6 +312,7 @@ class TenantIsolationTest(TestCase):
 
 
 @override_settings(NBHD_INTERNAL_KEY="test-key")
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
 class RuntimeDailyNoteAPITest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="testuser", password="testpass")
@@ -356,6 +357,7 @@ class RuntimeDailyNoteAPITest(TestCase):
 
 
 @override_settings(NBHD_INTERNAL_KEY="test-key")
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
 class RuntimeUserMemoryAPITest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="testuser", password="testpass")
@@ -401,7 +403,7 @@ class RuntimeUserMemoryAPITest(TestCase):
         self.assertEqual(mem.markdown, "v2")
 
 
-@override_settings(NBHD_INTERNAL_KEY="test-key")
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
 class RuntimeJournalContextAPITest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="testuser", password="testpass")
