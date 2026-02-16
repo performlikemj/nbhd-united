@@ -224,6 +224,37 @@ export interface Automation {
   updated_at: string;
 }
 
+// Journal v2 Documents
+export type DocumentKind = "daily" | "weekly" | "monthly" | "goal" | "project" | "tasks" | "ideas" | "memory";
+
+export interface DocumentResponse {
+  id: string;
+  kind: DocumentKind;
+  slug: string;
+  title: string;
+  markdown: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocumentListItem {
+  id: string;
+  kind: DocumentKind;
+  slug: string;
+  title: string;
+  updated_at: string;
+}
+
+export interface SidebarSection {
+  kind: string;
+  label: string;
+  items: Array<{
+    slug: string;
+    title: string;
+    updated_at: string | null;
+  }>;
+}
+
 export type AutomationRunStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
 export type AutomationTriggerSource = "manual" | "schedule";
 

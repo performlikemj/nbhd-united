@@ -5,11 +5,14 @@ import {
   AutomationRun,
   DailyNoteResponse,
   DashboardData,
+  DocumentListItem,
+  DocumentResponse,
   Integration,
   JournalEntry,
   JournalEntryEnergy,
   NoteTemplate,
   NoteTemplateSection,
+  SidebarSection,
   Tenant,
   UsageRecord,
   UsageSummary,
@@ -503,4 +506,44 @@ export function updateWeeklyReview(id: string, data: Partial<WeeklyReviewInput>)
 
 export function deleteWeeklyReview(id: string): Promise<void> {
   return apiFetch<void>(`/api/v1/journal/reviews/${id}/`, { method: "DELETE" });
+}
+
+// ── Journal v2 Documents ──────────────────────────────────────────────
+
+export function fetchDocument(kind: string, slug: string): Promise<DocumentResponse> {
+  return apiFetch<DocumentResponse>(`/api/v1/journal/documents/${kind}/${slug}/`);
+}
+
+export function fetchDocuments(kind?: string): Promise<DocumentListItem[]> {
+  const query = kind ? `?kind=${kind}` : "";
+  return apiFetch<DocumentListItem[]>(`/api/v1/journal/documents/${query}`);
+}
+
+export function updateDocument(kind: string, slug: string, data: { markdown?: string; title?: string }): Promise<DocumentResponse> {
+  return apiFetch<DocumentResponse>(`/api/v1/journal/documents/${kind}/${slug}/`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function appendToDocument(kind: string, slug: string, content: string): Promise<DocumentResponse> {
+  return apiFetch<DocumentResponse>(`/api/v1/journal/documents/${kind}/${slug}/append/`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
+}
+
+export function fetchToday(): Promise<DocumentResponse> {
+  return apiFetch<DocumentResponse>("/api/v1/journal/today/");
+}
+
+export function fetchSidebarTree(): Promise<SidebarSection[]> {
+  return apiFetch<SidebarSection[]>("/api/v1/journal/tree/");
+}
+
+export function createDocument(data: { kind: string; slug: string; title: string; markdown?: string }): Promise<DocumentResponse> {
+  return apiFetch<DocumentResponse>("/api/v1/journal/documents/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
 }

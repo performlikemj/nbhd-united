@@ -3,8 +3,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  appendToDocument,
   createAutomation,
   createDailyNoteEntry,
+  createDocument,
   createTemplate,
   createJournalEntry,
   createWeeklyReview,
@@ -19,12 +21,15 @@ import {
   fetchAutomations,
   fetchDailyNote,
   fetchDashboard,
+  fetchDocument,
+  fetchDocuments,
   fetchIntegrations,
   fetchJournalEntries,
   fetchMe,
   fetchMemory,
   fetchPersonas,
   fetchPreferences,
+  fetchSidebarTree,
   fetchTenant,
   fetchTemplates,
   fetchTelegramStatus,
@@ -44,6 +49,7 @@ import {
   updateDailyNoteSection,
   updateDailyNoteTemplate,
   updateDailyNoteEntry,
+  updateDocument,
   updateJournalEntry,
   updateMemory,
   updatePreferences,
@@ -467,6 +473,66 @@ export function useDeleteWeeklyReviewMutation() {
     mutationFn: deleteWeeklyReview,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["weekly-reviews"] });
+    },
+  });
+}
+
+// ── Journal v2 Documents ──────────────────────────────────────────────
+
+export function useDocumentQuery(kind: string, slug: string) {
+  return useQuery({
+    queryKey: ["document", kind, slug],
+    queryFn: () => fetchDocument(kind, slug),
+    enabled: !!kind && !!slug,
+  });
+}
+
+export function useDocumentsQuery(kind?: string) {
+  return useQuery({
+    queryKey: ["documents", kind ?? "all"],
+    queryFn: () => fetchDocuments(kind),
+  });
+}
+
+export function useSidebarTreeQuery() {
+  return useQuery({
+    queryKey: ["sidebar-tree"],
+    queryFn: fetchSidebarTree,
+    staleTime: 30_000,
+  });
+}
+
+export function useUpdateDocumentMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ kind, slug, data }: { kind: string; slug: string; data: { markdown?: string; title?: string } }) =>
+      updateDocument(kind, slug, data),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ["document", variables.kind, variables.slug] });
+      void queryClient.invalidateQueries({ queryKey: ["sidebar-tree"] });
+    },
+  });
+}
+
+export function useAppendDocumentMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ kind, slug, content }: { kind: string; slug: string; content: string }) =>
+      appendToDocument(kind, slug, content),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ["document", variables.kind, variables.slug] });
+      void queryClient.invalidateQueries({ queryKey: ["sidebar-tree"] });
+    },
+  });
+}
+
+export function useCreateDocumentMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createDocument,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["sidebar-tree"] });
     },
   });
 }
