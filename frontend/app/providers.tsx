@@ -11,7 +11,7 @@ export function Providers({ children }: { children: ReactNode }) {
       new QueryClient({
         defaultOptions: {
           queries: {
-            refetchOnWindowFocus: false,
+            refetchOnWindowFocus: true,
             retry: 1,
           },
         },

@@ -324,6 +324,7 @@ export function useDailyNoteQuery(date: string) {
     queryKey: ["daily-note", date],
     queryFn: () => fetchDailyNote(date),
     enabled: !!date,
+    refetchInterval: 30_000,
   });
 }
 
@@ -486,6 +487,7 @@ export function useDocumentQuery(kind: string, slug: string) {
     queryKey: ["document", kind, slug],
     queryFn: () => fetchDocument(kind, slug),
     enabled: !!kind && !!slug,
+    refetchInterval: 30_000,
   });
 }
 
@@ -501,6 +503,7 @@ export function useSidebarTreeQuery() {
     queryKey: ["sidebar-tree"],
     queryFn: fetchSidebarTree,
     staleTime: 30_000,
+    refetchInterval: 60_000,
   });
 }
 
