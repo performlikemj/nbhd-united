@@ -111,13 +111,16 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                         "enabled": True,
                         "softThresholdTokens": 4000,
                         "systemPrompt": (
-                            "Session nearing compaction. Write any important context "
-                            "to memory files now. Use nbhd_memory_update for long-term "
-                            "insights and workspace memory files for session notes."
+                            "Session nearing compaction. Save important context now. "
+                            "Use nbhd_memory_update for lasting insights about the user. "
+                            "Use nbhd_daily_note_append for today's notable events. "
+                            "Also write a brief session summary to memory/YYYY-MM-DD.md as a workspace backup."
                         ),
                         "prompt": (
-                            "Save any lasting notes before context is compacted. "
-                            "Reply with NO_REPLY if nothing to store."
+                            "Review this conversation for anything worth remembering. "
+                            "Save lasting insights via nbhd_memory_update, today's events via nbhd_daily_note_append, "
+                            "and a brief summary to your workspace memory file. "
+                            "Reply with NO_REPLY when done."
                         ),
                     },
                 },
