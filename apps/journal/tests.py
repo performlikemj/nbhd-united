@@ -9,7 +9,7 @@ from rest_framework.test import APIClient
 from apps.tenants.models import Tenant, User
 
 from .md_utils import append_entry_markdown, parse_daily_note, serialise_daily_note
-from .models import DailyNote, NoteTemplate, UserMemory, WeeklyReview
+from .models import DailyNote, Document, NoteTemplate, UserMemory, WeeklyReview
 from .services import (
     DEFAULT_TEMPLATE_SECTIONS,
     append_log_to_note,
@@ -696,3 +696,248 @@ class RuntimeJournalContextAPITest(TestCase):
         self.assertEqual(resp.data["recent_notes_count"], 1)
         self.assertEqual(resp.data["long_term_memory"], "# Memory")
         self.assertEqual(resp.data["recent_notes"][0]["markdown"], "# Today")
+
+
+# ---------------------------------------------------------------------------
+# Document model tests (Journal v2)
+# ---------------------------------------------------------------------------
+
+
+class DocumentModelTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="docuser", password="pass")
+        self.tenant = Tenant.objects.create(user=self.user, status="active")
+
+    def test_create_daily_document(self):
+        doc = Document.objects.create(
+            tenant=self.tenant, kind="daily", slug="2026-02-16",
+            title="2026-02-16", markdown="# Hello",
+        )
+        self.assertEqual(doc.kind, "daily")
+        self.assertEqual(doc.slug, "2026-02-16")
+
+    def test_create_each_kind(self):
+        for kind_val, _label in Document.Kind.choices:
+            doc = Document.objects.create(
+                tenant=self.tenant, kind=kind_val, slug=f"test-{kind_val}",
+                title=f"Test {kind_val}", markdown="",
+            )
+            self.assertEqual(doc.kind, kind_val)
+
+    def test_unique_constraint(self):
+        Document.objects.create(
+            tenant=self.tenant, kind="daily", slug="2026-02-16",
+            title="Day", markdown="",
+        )
+        with self.assertRaises(Exception):
+            Document.objects.create(
+                tenant=self.tenant, kind="daily", slug="2026-02-16",
+                title="Dupe", markdown="",
+            )
+
+    def test_same_slug_different_kind_ok(self):
+        Document.objects.create(
+            tenant=self.tenant, kind="daily", slug="2026-02-16",
+            title="Daily", markdown="",
+        )
+        Document.objects.create(
+            tenant=self.tenant, kind="weekly", slug="2026-02-16",
+            title="Weekly", markdown="",
+        )
+        self.assertEqual(Document.objects.filter(tenant=self.tenant).count(), 2)
+
+
+# ---------------------------------------------------------------------------
+# Document API tests — user-facing (Journal v2)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    REST_FRAMEWORK={
+        "DEFAULT_AUTHENTICATION_CLASSES": [
+            "rest_framework.authentication.SessionAuthentication",
+        ],
+    }
+)
+class DocumentAPITest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="docapiuser", password="pass")
+        self.tenant = Tenant.objects.create(user=self.user, status="active")
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_list_documents_by_kind(self):
+        Document.objects.create(
+            tenant=self.tenant, kind="daily", slug="2026-02-15",
+            title="Feb 15", markdown="# 15",
+        )
+        Document.objects.create(
+            tenant=self.tenant, kind="daily", slug="2026-02-16",
+            title="Feb 16", markdown="# 16",
+        )
+        Document.objects.create(
+            tenant=self.tenant, kind="goal", slug="fitness",
+            title="Fitness", markdown="# Fitness",
+        )
+        resp = self.client.get("/api/v1/journal/documents/", {"kind": "daily"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data), 2)
+        # Daily notes ordered by slug desc
+        self.assertEqual(resp.data[0]["slug"], "2026-02-16")
+
+    def test_get_or_create_document(self):
+        resp = self.client.get("/api/v1/journal/documents/daily/2026-02-16/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("markdown", resp.data)
+        # Should have applied default template
+        self.assertIn("2026-02-16", resp.data["markdown"])
+        self.assertIn("Morning Report", resp.data["markdown"])
+        # Document should now exist
+        self.assertTrue(Document.objects.filter(
+            tenant=self.tenant, kind="daily", slug="2026-02-16",
+        ).exists())
+
+    def test_patch_document(self):
+        self.client.get("/api/v1/journal/documents/daily/2026-02-16/")
+        resp = self.client.patch(
+            "/api/v1/journal/documents/daily/2026-02-16/",
+            {"markdown": "# Updated content"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["markdown"], "# Updated content")
+
+    def test_append_to_document(self):
+        self.client.get("/api/v1/journal/documents/daily/2026-02-16/")
+        resp = self.client.post(
+            "/api/v1/journal/documents/daily/2026-02-16/append/",
+            {"content": "Appended entry"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertIn("Appended entry", resp.data["markdown"])
+
+    def test_sidebar_tree(self):
+        Document.objects.create(
+            tenant=self.tenant, kind="daily", slug="2026-02-16",
+            title="Feb 16", markdown="",
+        )
+        Document.objects.create(
+            tenant=self.tenant, kind="goal", slug="fitness",
+            title="Fitness", markdown="",
+        )
+        resp = self.client.get("/api/v1/journal/tree/")
+        self.assertEqual(resp.status_code, 200)
+        kinds = [node["kind"] for node in resp.data]
+        self.assertIn("daily", kinds)
+        self.assertIn("goals", kinds)
+        daily_node = next(n for n in resp.data if n["kind"] == "daily")
+        self.assertEqual(len(daily_node["items"]), 1)
+
+    def test_auth_required(self):
+        client = APIClient()  # unauthenticated
+        resp = client.get("/api/v1/journal/documents/")
+        self.assertIn(resp.status_code, [401, 403])
+
+    def test_delete_document(self):
+        self.client.get("/api/v1/journal/documents/daily/2026-02-16/")
+        resp = self.client.delete("/api/v1/journal/documents/daily/2026-02-16/")
+        self.assertEqual(resp.status_code, 204)
+        self.assertFalse(Document.objects.filter(
+            tenant=self.tenant, kind="daily", slug="2026-02-16",
+        ).exists())
+
+    def test_today_endpoint(self):
+        resp = self.client.get("/api/v1/journal/today/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("markdown", resp.data)
+
+
+# ---------------------------------------------------------------------------
+# Runtime Document API tests (Journal v2)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
+class RuntimeDocumentAPITest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="rtdocuser", password="pass")
+        self.tenant = Tenant.objects.create(user=self.user, status="active")
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def test_get_document(self):
+        resp = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+            {"kind": "daily", "slug": "2026-02-16"},
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["kind"], "daily")
+        self.assertEqual(resp.data["slug"], "2026-02-16")
+        self.assertIn("Morning Report", resp.data["markdown"])
+
+    def test_put_document(self):
+        resp = self.client.put(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+            {"kind": "daily", "slug": "2026-02-16", "markdown": "# Agent wrote this"},
+            format="json",
+            **self.headers,
+        )
+        self.assertIn(resp.status_code, [200, 201])
+        self.assertIn("Agent wrote this", resp.data["markdown"])
+
+    def test_put_updates_existing(self):
+        # Create first
+        self.client.put(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+            {"kind": "daily", "slug": "2026-02-16", "markdown": "v1"},
+            format="json",
+            **self.headers,
+        )
+        # Update
+        resp = self.client.put(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+            {"kind": "daily", "slug": "2026-02-16", "markdown": "v2"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["markdown"], "v2")
+
+    def test_append_document(self):
+        resp = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/append/",
+            {"kind": "daily", "slug": "2026-02-16", "content": "Agent log entry"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertIn("Agent log entry", resp.data["markdown"])
+
+    def test_auth_required(self):
+        resp = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+            {"kind": "daily", "slug": "2026-02-16"},
+        )
+        self.assertEqual(resp.status_code, 401)
+
+    def test_wrong_key_rejected(self):
+        resp = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+            {"kind": "daily", "slug": "2026-02-16"},
+            HTTP_X_NBHD_INTERNAL_KEY="wrong-key",
+            HTTP_X_NBHD_TENANT_ID=str(self.tenant.id),
+        )
+        self.assertEqual(resp.status_code, 401)
+
+    def test_missing_kind_returns_400(self):
+        resp = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+            {"slug": "2026-02-16"},
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
