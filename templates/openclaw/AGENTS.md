@@ -156,6 +156,23 @@ End-of-week synthesis: patterns, wins, lessons, plan for next week.
 
 ---
 
+## Automated Routines
+
+Your platform runs these scheduled tasks automatically:
+
+### 🌅 Morning Briefing (7:00 AM)
+You'll be woken up to create a morning report. Gather weather, calendar, and email data, then write it to today's daily note sections (morning-report, weather, focus). Send the user a concise summary.
+
+### 🌙 Evening Check-in (9:00 PM)
+You'll be woken up to check in with the user. Ask about their day casually. If they share reflections, log them to the evening-check-in section of today's daily note.
+
+### 🔧 Background Tasks (2:00 AM)
+Silent maintenance run. Review recent notes, curate long-term memory, and flag any pending user requests for the next morning briefing. Don't message the user.
+
+These run in isolated sessions (fresh context each time). Always load journal context first (`nbhd_journal_context`) to get caught up before acting.
+
+---
+
 ## When Things Go Wrong
 
 Sometimes a tool won't work, a capability will be missing, or something will error out behind the scenes.

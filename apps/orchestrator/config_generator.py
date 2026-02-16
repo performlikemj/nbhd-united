@@ -12,6 +12,47 @@ from django.conf import settings
 from apps.orchestrator.tool_policy import generate_tool_config
 from apps.tenants.models import Tenant
 
+_MORNING_BRIEFING_PROMPT = (
+    "Good morning! Create today's morning briefing.\n\n"
+    "Use your tools to gather context:\n"
+    "1. Get today's weather for the user's location\n"
+    "2. Check their calendar for today's events (nbhd_calendar_list_events)\n"
+    "3. Check for important unread emails (nbhd_gmail_list_messages)\n"
+    "4. Load recent journal context (nbhd_journal_context)\n\n"
+    "Then write to today's daily note:\n"
+    "- Use nbhd_daily_note_set_section with section_slug='morning-report' for the main briefing\n"
+    "- Use nbhd_daily_note_set_section with section_slug='weather' for weather\n"
+    "- Use nbhd_daily_note_set_section with section_slug='focus' for today's priorities\n\n"
+    "Finally, send a friendly morning summary highlighting the key things for today. "
+    "Keep it concise, warm, and actionable."
+)
+
+_EVENING_CHECKIN_PROMPT = (
+    "It's evening check-in time.\n\n"
+    "Send the user a friendly message asking about their day. Prompt them with:\n"
+    "- What went well today?\n"
+    "- Anything on their mind they want to capture?\n"
+    "- Any tasks or notes for tomorrow?\n\n"
+    "Keep it casual and warm — like a friend checking in, not a form to fill out.\n"
+    "Don't write to the journal yet. Just start the conversation.\n"
+    "If they share reflections, log them using nbhd_daily_note_set_section "
+    "with section_slug='evening-check-in'."
+)
+
+_BACKGROUND_TASKS_PROMPT = (
+    "Background maintenance run. Perform these tasks silently:\n\n"
+    "1. Load recent context: nbhd_journal_context\n"
+    "2. Review long-term memory (nbhd_memory_get) and recent daily notes\n"
+    "3. Curate long-term memory if there are new patterns, preferences, or insights "
+    "(nbhd_memory_update)\n"
+    "4. Check recent daily notes for any unaddressed user requests or tasks\n"
+    "5. If you find pending items, append a reminder to tomorrow's daily note "
+    "(nbhd_daily_note_append with tomorrow's date)\n\n"
+    "Do NOT message the user. This is a silent background run.\n"
+    "Reply with a brief internal summary of what you did."
+)
+
+
 # Model mapping by tier
 TIER_MODELS: dict[str, dict[str, str]] = {
     "starter": {"primary": "moonshot/kimi-k2.5"},
@@ -44,6 +85,49 @@ def _build_models_providers(tier: str, tenant: Tenant) -> dict:
             "models": [{"id": "kimi-k2.5", "name": "Kimi K2.5"}],
         }
     return providers
+
+
+def _build_cron_jobs(tenant: Tenant) -> dict:
+    """Build cron jobs for subscriber's OpenClaw config."""
+    user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
+
+    jobs = [
+        {
+            "name": "Morning Briefing",
+            "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": user_tz},
+            "sessionTarget": "isolated",
+            "payload": {
+                "kind": "agentTurn",
+                "message": _MORNING_BRIEFING_PROMPT,
+            },
+            "delivery": {"mode": "announce", "channel": "telegram"},
+            "enabled": True,
+        },
+        {
+            "name": "Evening Check-in",
+            "schedule": {"kind": "cron", "expr": "0 21 * * *", "tz": user_tz},
+            "sessionTarget": "isolated",
+            "payload": {
+                "kind": "agentTurn",
+                "message": _EVENING_CHECKIN_PROMPT,
+            },
+            "delivery": {"mode": "announce", "channel": "telegram"},
+            "enabled": True,
+        },
+        {
+            "name": "Background Tasks",
+            "schedule": {"kind": "cron", "expr": "0 2 * * *", "tz": user_tz},
+            "sessionTarget": "isolated",
+            "payload": {
+                "kind": "agentTurn",
+                "message": _BACKGROUND_TASKS_PROMPT,
+            },
+            "delivery": {"mode": "none"},
+            "enabled": True,
+        },
+    ]
+
+    return {"jobs": jobs}
 
 
 def _build_tools_section(tier: str) -> dict[str, Any]:
@@ -180,6 +264,9 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         "messages": {
             "ackReactionScope": "group-mentions",
         },
+
+        # Cron jobs
+        "cron": _build_cron_jobs(tenant),
     }
 
     # Note: BRAVE_API_KEY is injected as a container env var via Key Vault
