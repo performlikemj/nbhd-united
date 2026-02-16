@@ -87,7 +87,7 @@ class StripeCheckoutViewTest(TestCase):
         self.assertEqual(response.status_code, 200)
         mock_session_create.assert_called_once()
         call_kwargs = mock_session_create.call_args[1]
-        self.assertEqual(call_kwargs["metadata"]["tier"], "plus")
+        self.assertEqual(call_kwargs["metadata"]["tier"], "premium")
         self.assertEqual(call_kwargs["metadata"]["user_id"], str(self.user.id))
         self.assertEqual(call_kwargs["api_key"], "sk_test_checkout")
 
