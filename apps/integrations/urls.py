@@ -6,6 +6,8 @@ from .runtime_views import (
     RuntimeCalendarFreeBusyView,
     RuntimeDailyNoteAppendView,
     RuntimeDailyNotesView,
+    RuntimeDocumentAppendView,
+    RuntimeDocumentView,
     RuntimeGmailMessageDetailView,
     RuntimeGmailMessagesView,
     RuntimeJournalContextView,
@@ -71,6 +73,17 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/journal-context/",
         RuntimeJournalContextView.as_view(),
         name="runtime-journal-context",
+    ),
+    # v2 Document endpoints
+    path(
+        "runtime/<uuid:tenant_id>/document/",
+        RuntimeDocumentView.as_view(),
+        name="runtime-document",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/document/append/",
+        RuntimeDocumentAppendView.as_view(),
+        name="runtime-document-append",
     ),
     path("", include(router.urls)),
 ]

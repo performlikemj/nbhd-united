@@ -13,7 +13,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.journal.md_utils import append_entry_markdown  # noqa: F401 — kept for backward compat
-from apps.journal.models import DailyNote, JournalEntry, UserMemory
+from apps.journal.models import DailyNote, Document, JournalEntry, UserMemory
+from apps.journal.document_views import _default_markdown, _default_title
 from apps.journal.services import (
     append_log_to_note,
     get_or_seed_note_template,
@@ -785,4 +786,170 @@ class RuntimeJournalContextView(APIView):
                 "days_back": days,
             },
             status=status.HTTP_200_OK,
+        )
+
+
+# ---------------------------------------------------------------------------
+# v2 Document runtime endpoints (unified model)
+# ---------------------------------------------------------------------------
+
+
+class RuntimeDocumentView(APIView):
+    """GET/PUT a document by kind+slug (agent access)."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        kind = request.query_params.get("kind", "").strip()
+        slug = request.query_params.get("slug", "").strip()
+
+        if not kind:
+            return Response(
+                {"error": "invalid_request", "detail": "kind is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not slug:
+            # For singleton docs, use kind as slug
+            slug = kind
+
+        doc, _created = Document.objects.get_or_create(
+            tenant=tenant,
+            kind=kind,
+            slug=slug,
+            defaults={
+                "title": _default_title(kind, slug),
+                "markdown": _default_markdown(kind, slug),
+            },
+        )
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "id": str(doc.id),
+                "kind": doc.kind,
+                "slug": doc.slug,
+                "title": doc.title,
+                "markdown": doc.markdown,
+                "updated_at": doc.updated_at.isoformat(),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def put(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        kind = str(request.data.get("kind", "")).strip()
+        slug = str(request.data.get("slug", "")).strip()
+        markdown = str(request.data.get("markdown", ""))
+        title = str(request.data.get("title", "")).strip()
+
+        if not kind:
+            return Response(
+                {"error": "invalid_request", "detail": "kind is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not slug:
+            slug = kind
+
+        doc, created = Document.objects.get_or_create(
+            tenant=tenant,
+            kind=kind,
+            slug=slug,
+            defaults={
+                "title": title or _default_title(kind, slug),
+                "markdown": markdown,
+            },
+        )
+
+        if not created:
+            doc.markdown = markdown
+            if title:
+                doc.title = title
+            doc.save()
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "id": str(doc.id),
+                "kind": doc.kind,
+                "slug": doc.slug,
+                "title": doc.title,
+                "markdown": doc.markdown,
+                "updated_at": doc.updated_at.isoformat(),
+            },
+            status=status.HTTP_200_OK if not created else status.HTTP_201_CREATED,
+        )
+
+
+class RuntimeDocumentAppendView(APIView):
+    """POST append content to a document (agent access)."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        kind = str(request.data.get("kind", "daily")).strip()
+        slug = str(request.data.get("slug", "")).strip()
+        content = str(request.data.get("content", "")).strip()
+
+        if not content:
+            return Response(
+                {"error": "invalid_request", "detail": "content is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not slug:
+            if kind == "daily":
+                slug = str(tz.now().date())
+            else:
+                slug = kind
+
+        doc, _created = Document.objects.get_or_create(
+            tenant=tenant,
+            kind=kind,
+            slug=slug,
+            defaults={
+                "title": _default_title(kind, slug),
+                "markdown": _default_markdown(kind, slug),
+            },
+        )
+
+        time_str = tz.now().strftime("%H:%M")
+        entry_block = f"\n\n### {time_str} — Agent\n{content}\n"
+        doc.markdown = (doc.markdown or "").rstrip() + entry_block
+        doc.save()
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "id": str(doc.id),
+                "kind": doc.kind,
+                "slug": doc.slug,
+                "title": doc.title,
+                "markdown": doc.markdown,
+                "updated_at": doc.updated_at.isoformat(),
+            },
+            status=status.HTTP_201_CREATED,
         )

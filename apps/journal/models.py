@@ -134,3 +134,40 @@ class UserMemory(models.Model):
 
     def __str__(self) -> str:
         return f"{self.tenant_id}:memory"
+
+
+class Document(models.Model):
+    """One markdown document. Can be a daily note, goal, project, review, etc.
+
+    This is the v2 unified model replacing DailyNote, JournalEntry, WeeklyReview,
+    UserMemory, and NoteTemplate.
+    """
+
+    class Kind(models.TextChoices):
+        DAILY = "daily", "Daily Note"
+        WEEKLY = "weekly", "Weekly Review"
+        MONTHLY = "monthly", "Monthly Review"
+        GOAL = "goal", "Goal"
+        PROJECT = "project", "Project"
+        TASKS = "tasks", "Tasks"
+        IDEAS = "ideas", "Ideas"
+        MEMORY = "memory", "Memory"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="documents")
+    kind = models.CharField(max_length=32, choices=Kind.choices)
+    slug = models.CharField(max_length=128)
+    title = models.CharField(max_length=256)
+    markdown = models.TextField(default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ["tenant", "kind", "slug"]
+        ordering = ["-updated_at"]
+        indexes = [
+            models.Index(fields=["tenant", "kind"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}:{self.kind}:{self.slug}"
