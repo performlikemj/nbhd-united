@@ -272,26 +272,40 @@ export default function SettingsPage() {
     setSavingField(field);
 
     const previousTimezone = me?.timezone;
-    await updateProfile.mutateAsync(payload);
 
-    if (field === "display_name") {
-      setEditingDisplayName(false);
-    }
-    if (field === "language") {
-      setEditingLanguage(false);
-    }
-    if (field === "timezone") {
-      setEditingTimezone(false);
-    }
+    try {
+      await updateProfile.mutateAsync(payload);
 
-    if (field === "timezone" && payload.timezone && previousTimezone !== payload.timezone) {
-      setSaveMessage("Saved! Agent timezone updated. Changes take effect on next message.");
-    } else {
-      setSaveMessage("Saved!");
-    }
+      if (field === "display_name") {
+        setEditingDisplayName(false);
+      }
+      if (field === "language") {
+        setEditingLanguage(false);
+      }
+      if (field === "timezone") {
+        setEditingTimezone(false);
+      }
 
-    setSavingField(null);
-    window.setTimeout(clearStatus, 3000);
+      if (field === "timezone" && payload.timezone && previousTimezone !== payload.timezone) {
+        setSaveMessage("Saved! Agent timezone updated. Changes take effect on next message.");
+      } else {
+        setSaveMessage("Saved!");
+      }
+    } catch (error) {
+      setSaveMessage(error instanceof Error ? error.message : "Failed to save. Please try again.");
+    } finally {
+      setSavingField(null);
+      if (field === "display_name") {
+        setEditingDisplayName(false);
+      }
+      if (field === "language") {
+        setEditingLanguage(false);
+      }
+      if (field === "timezone") {
+        setEditingTimezone(false);
+      }
+      window.setTimeout(clearStatus, 3000);
+    }
   };
 
   const handleTimezoneSave = async () => {
@@ -483,14 +497,11 @@ export default function SettingsPage() {
                 <div className="space-y-3">
                   <label className="block text-sm text-ink/70">
                     <span className="sr-only">Timezone</span>
-                    <input
-                      list="timezones"
+                    <select
                       value={timezone}
                       onChange={(e) => setTimezone(e.target.value)}
                       className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-                      placeholder="Search timezone"
-                    />
-                    <datalist id="timezones">
+                    >
                       {TIMEZONE_GROUPS.map((group) => (
                         <optgroup key={group.region} label={group.region}>
                           {group.zones.map((tz) => (
@@ -500,7 +511,7 @@ export default function SettingsPage() {
                           ))}
                         </optgroup>
                       ))}
-                    </datalist>
+                    </select>
                   </label>
                   <div className="flex flex-wrap items-center gap-3">
                     <button
