@@ -14,14 +14,14 @@ class ToolPolicyTest(TestCase):
     def test_starter_allowlist_has_expected_groups(self):
         allowed = get_allowed_tools("starter")
         self.assertEqual(allowed, list(STARTER_ALLOW))
-        self.assertNotIn("group:browser", allowed)
-        self.assertNotIn("exec", allowed)
+        self.assertNotIn("group:ui", allowed)
+        self.assertNotIn("group:runtime", allowed)
 
     def test_premium_allowlist_extends_starter(self):
         allowed = get_allowed_tools("premium")
         self.assertEqual(allowed, list(PREMIUM_ALLOW))
-        self.assertIn("group:browser", allowed)
-        self.assertIn("exec", allowed)
+        self.assertIn("group:ui", allowed)
+        self.assertIn("group:runtime", allowed)
 
     def test_byok_gets_premium_tools(self):
         self.assertEqual(get_allowed_tools("byok"), list(PREMIUM_ALLOW))
