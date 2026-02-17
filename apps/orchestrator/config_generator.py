@@ -162,13 +162,17 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     webhook_secret = str(getattr(settings, "TELEGRAM_WEBHOOK_SECRET", "") or "").strip()
 
     config: dict[str, Any] = {
-        # Auth — uses shared API key injected via env var
+        # Auth — provider tokens read from env vars automatically
         "auth": {
             "profiles": {
                 "anthropic:default": {
                     "provider": "anthropic",
                     "mode": "token",
-                    # Token read from ANTHROPIC_API_KEY env var automatically
+                },
+                "openrouter:default": {
+                    "provider": "openrouter",
+                    "mode": "token",
+                    # Token read from OPENROUTER_API_KEY env var automatically
                 },
             },
         },
@@ -314,7 +318,12 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             plugin_config["load"] = {"paths": paths}
 
         config["plugins"] = plugin_config
-        config["tools"]["allow"].append("group:plugins")
+        # Merge group:plugins into the existing allow list (not alsoAllow)
+        # to avoid the allow/alsoAllow conflict that OpenClaw rejects.
+        allow = config["tools"].get("allow", [])
+        if "group:plugins" not in allow:
+            allow.append("group:plugins")
+            config["tools"]["allow"] = allow
 
     return config
 

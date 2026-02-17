@@ -39,9 +39,11 @@ class ConfigGeneratorTest(TestCase):
         config = generate_openclaw_config(self.tenant)
         self.assertIn("kimi", config["agents"]["defaults"]["model"]["primary"].lower())
 
-    def test_starter_tier_uses_kimi_model(self):
+    def test_starter_tier_uses_openrouter(self):
         self.tenant.model_tier = "starter"
         config = generate_openclaw_config(self.tenant)
+        primary = config["agents"]["defaults"]["model"]["primary"]
+        self.assertTrue(primary.startswith("openrouter/"))
         # OpenRouter is built-in; no custom providers block needed
         self.assertNotIn("models", config)
 
@@ -56,6 +58,7 @@ class ConfigGeneratorTest(TestCase):
         self.tenant.model_tier = "byok"
         config = generate_openclaw_config(self.tenant)
         self.assertIn("sonnet", config["agents"]["defaults"]["model"]["primary"].lower())
+        # byok should not have extra models block
         self.assertNotIn("models", config)
 
     def test_audio_model_defaults_to_whisper_for_all_tiers(self):
