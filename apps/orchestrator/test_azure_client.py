@@ -106,6 +106,7 @@ class AzureClientTest(SimpleTestCase):
         self.assertEqual(env_map["NBHD_INTERNAL_API_KEY"]["secretRef"], "nbhd-internal-api-key")
         self.assertEqual(env_map["OPENCLAW_GATEWAY_TOKEN"]["secretRef"], "nbhd-internal-api-key")
         self.assertEqual(env_map["OPENCLAW_WEBHOOK_SECRET"]["secretRef"], "telegram-webhook-secret")
+        self.assertEqual(env_map["OPENROUTER_API_KEY"]["secretRef"], "openrouter-key")
 
         ingress = payload["properties"]["configuration"]["ingress"]
         self.assertEqual(ingress["targetPort"], 8080)

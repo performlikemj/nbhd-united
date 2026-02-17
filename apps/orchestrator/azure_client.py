@@ -501,6 +501,12 @@ def create_container_app(
             key_vault_secret_name=settings.AZURE_KV_SECRET_BRAVE_API_KEY,
             identity_id=identity_id,
         ),
+        _build_container_secret(
+            "openrouter-key",
+            plain_value=settings.OPENROUTER_API_KEY,
+            key_vault_secret_name=settings.AZURE_KV_SECRET_OPENROUTER_API_KEY,
+            identity_id=identity_id,
+        ),
     ]
 
     container_app: dict[str, Any] = {
@@ -539,6 +545,7 @@ def create_container_app(
                             {"name": "OPENCLAW_GATEWAY_TOKEN", "secretRef": "nbhd-internal-api-key"},
                             {"name": "OPENCLAW_WEBHOOK_SECRET", "secretRef": "telegram-webhook-secret"},
                             {"name": "BRAVE_API_KEY", "secretRef": "brave-key"},
+                            {"name": "OPENROUTER_API_KEY", "secretRef": "openrouter-key"},
                             {"name": "NBHD_TENANT_ID", "value": str(tenant_id)},
                             {"name": "NBHD_API_BASE_URL", "value": settings.API_BASE_URL},
                             {"name": "OPENCLAW_CONFIG_JSON", "value": config_json},

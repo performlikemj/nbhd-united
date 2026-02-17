@@ -74,18 +74,6 @@ TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
 WHISPER_DEFAULT_MODEL = {"provider": "openai", "model": "gpt-4o-mini-transcribe"}
 
 
-def _build_models_providers(tier: str, tenant: Tenant) -> dict:
-    """Return models.providers config for non-built-in providers."""
-    providers: dict[str, Any] = {}
-    if tier == "starter":
-        providers["moonshot"] = {
-            "baseUrl": "https://api.moonshot.ai/v1",
-            "apiKey": "${MOONSHOT_API_KEY}",
-            "api": "openai-completions",
-            "models": [{"id": "kimi-k2.5", "name": "Kimi K2.5"}],
-        }
-    return providers
-
 
 def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     """Build cron job definitions for seeding via the Gateway API.
@@ -277,9 +265,9 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     # Note: BRAVE_API_KEY is injected as a container env var via Key Vault
     # reference (see azure_client.py). OpenClaw reads it automatically.
 
-    providers = _build_models_providers(tier, tenant)
-    if providers:
-        config["models"] = {"mode": "merge", "providers": providers}
+    # Note: OPENROUTER_API_KEY is injected as a container env var via Key Vault
+    # reference (see azure_client.py). OpenClaw reads it automatically for
+    # models routed through OpenRouter (e.g. moonshot/kimi-k2.5).
 
     # BYOK: inject user's own provider config
     if tier == "byok":
@@ -326,7 +314,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             plugin_config["load"] = {"paths": paths}
 
         config["plugins"] = plugin_config
-        config["tools"]["alsoAllow"] = ["group:plugins"]
+        config["tools"]["allow"].append("group:plugins")
 
     return config
 

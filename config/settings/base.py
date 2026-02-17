@@ -223,6 +223,11 @@ AZURE_KV_SECRET_BRAVE_API_KEY = env(
     "AZURE_KV_SECRET_BRAVE_API_KEY",
     default="brave-api-key",
 )
+OPENROUTER_API_KEY = env("OPENROUTER_API_KEY", default="")
+AZURE_KV_SECRET_OPENROUTER_API_KEY = env(
+    "AZURE_KV_SECRET_OPENROUTER_API_KEY",
+    default="openrouter-api-key",
+)
 AZURE_KV_SECRET_SOUL_MD = env(
     "AZURE_KV_SECRET_SOUL_MD",
     default="nbhd-soul-md",

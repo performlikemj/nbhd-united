@@ -39,11 +39,11 @@ class ConfigGeneratorTest(TestCase):
         config = generate_openclaw_config(self.tenant)
         self.assertIn("kimi", config["agents"]["defaults"]["model"]["primary"].lower())
 
-    def test_starter_tier_has_moonshot_provider(self):
+    def test_starter_tier_uses_kimi_model(self):
         self.tenant.model_tier = "starter"
         config = generate_openclaw_config(self.tenant)
-        self.assertIn("models", config)
-        self.assertIn("moonshot", config["models"]["providers"])
+        # OpenRouter is built-in; no custom providers block needed
+        self.assertNotIn("models", config)
 
     def test_premium_tier_has_opus(self):
         self.tenant.model_tier = "premium"
@@ -56,7 +56,6 @@ class ConfigGeneratorTest(TestCase):
         self.tenant.model_tier = "byok"
         config = generate_openclaw_config(self.tenant)
         self.assertIn("sonnet", config["agents"]["defaults"]["model"]["primary"].lower())
-        # byok should not have moonshot provider
         self.assertNotIn("models", config)
 
     def test_audio_model_defaults_to_whisper_for_all_tiers(self):
@@ -88,14 +87,14 @@ class ConfigGeneratorTest(TestCase):
         paths = config["plugins"]["load"]["paths"]
         self.assertIn("/opt/nbhd/plugins/nbhd-google-tools", paths)
         self.assertIn("/opt/nbhd/plugins/nbhd-journal-tools", paths)
-        self.assertIn("group:plugins", config["tools"]["alsoAllow"])
+        self.assertIn("group:plugins", config["tools"]["allow"])
 
     def test_plugin_wiring_omitted_when_no_plugins_configured(self):
         with override_settings(OPENCLAW_GOOGLE_PLUGIN_ID="", OPENCLAW_JOURNAL_PLUGIN_ID=""):
             config = generate_openclaw_config(self.tenant)
 
         self.assertNotIn("plugins", config)
-        self.assertNotIn("alsoAllow", config["tools"])
+        self.assertNotIn("group:plugins", config["tools"]["allow"])
 
     def test_single_plugin_wired_when_only_one_configured(self):
         with override_settings(
