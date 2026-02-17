@@ -10,8 +10,6 @@ from datetime import date, timedelta
 DAILY_NOTE_TEMPLATE = """\
 # {{date}} ({{weekday}})
 
-[[{{yesterday}}]] | [[{{tomorrow}}]]
-
 ---
 
 ## Morning Report
