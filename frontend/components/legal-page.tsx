@@ -21,9 +21,9 @@ export function LegalPage({
   return (
     <div className="flex min-h-[60vh] justify-center py-12">
       <div className="w-full max-w-3xl rounded-panel border border-ink/10 bg-white/90 p-8 shadow-panel animate-reveal">
-        <p className="font-mono text-xs uppercase tracking-[0.24em] text-ink/70">
+        <Link href="/" className="font-mono text-xs uppercase tracking-[0.24em] text-ink/70 transition hover:text-ink">
           NBHD United
-        </p>
+        </Link>
         <h1 className="mt-2 text-2xl font-semibold text-ink">{title}</h1>
         <p className="mt-1 text-sm text-ink/50">Last updated: {lastUpdated}</p>
         <hr className="my-6 border-ink/10" />

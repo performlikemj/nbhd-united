@@ -103,6 +103,13 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="relative flex min-h-screen flex-col">
         <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(circle_at_20%_20%,rgba(255,194,153,0.42),transparent_40%),radial-gradient(circle_at_85%_15%,rgba(112,194,184,0.45),transparent_32%),linear-gradient(180deg,#f8f6ef_0%,#eef4f4_48%,#f9f9f6_100%)]" />
         <div className="pointer-events-none absolute inset-0 -z-10 bg-[linear-gradient(rgba(18,31,38,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(18,31,38,0.05)_1px,transparent_1px)] bg-[size:32px_32px] opacity-70 animate-pulseGrid" />
+        <header className="border-b border-ink/10 bg-white/75 backdrop-blur">
+          <div className="mx-auto flex w-full max-w-6xl items-center px-4 py-3 sm:px-6">
+            <Link href="/" className="font-mono text-xs uppercase tracking-[0.24em] text-ink/70 transition hover:text-ink">
+              NBHD United
+            </Link>
+          </div>
+        </header>
         <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">{children}</main>
         <SiteFooter />
       </div>
