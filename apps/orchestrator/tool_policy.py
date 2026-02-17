@@ -30,6 +30,7 @@ STARTER_ALLOW: tuple[str, ...] = (
     "group:messaging",
     "group:tts",
     "group:image",
+    "cron",
 )
 
 # Premium tier adds browser automation and sandboxed exec capability.
