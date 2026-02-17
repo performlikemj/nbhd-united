@@ -147,7 +147,7 @@ export function fetchMe(): Promise<AuthUser> {
 }
 
 export function updateProfile(data: { display_name?: string; language?: string; timezone?: string }): Promise<AuthUser> {
-  return apiFetch<AuthUser>("/api/v1/profile/", {
+  return apiFetch<AuthUser>("/api/v1/tenants/profile/", {
     method: "PATCH",
     body: JSON.stringify(data),
   });
