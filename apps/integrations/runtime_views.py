@@ -12,7 +12,6 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.journal.md_utils import append_entry_markdown  # noqa: F401 — kept for backward compat
 from apps.journal.models import DailyNote, Document, JournalEntry, UserMemory
 from apps.journal.document_views import _default_markdown, _default_title
 from apps.journal.services import (

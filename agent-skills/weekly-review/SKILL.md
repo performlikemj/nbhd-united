@@ -17,42 +17,44 @@ description: Review the week, synthesize patterns, and save a structured weekly 
 
 ## Flow
 1. Set context for a short reflection session.
-2. Fetch journal entries for the window using `nbhd_journal_list_entries`.
+2. Load the past 7 days of daily notes and memory using `nbhd_journal_context({ days: 7 })`.
 3. Reflect on patterns (wins, challenges, mood/energy arc).
 4. Capture lessons and 1-3 intentions for next week.
 5. Ask for a simple week rating (`thumbs-up|thumbs-down|meh`).
-6. Summarize and persist the weekly review.
+6. Save the weekly review as a Document using `nbhd_document_put`.
 
-## Tooling
+## Tools
 
-### Read journal entries
+| Tool | Purpose |
+|------|---------|
+| `nbhd_journal_context` | Load recent daily notes + memory (days: 7) |
+| `nbhd_document_put` | Save weekly review document (kind: "weekly", slug: "YYYY-MM-DD" Monday of week) |
+| `nbhd_journal_search` | Search past notes for specific topics if needed |
 
-`nbhd_journal_list_entries`
+### Load context
+
+`nbhd_journal_context`
 
 ```json
 {
-  "date_from": "YYYY-MM-DD",
-  "date_to": "YYYY-MM-DD"
+  "days": 7
 }
 ```
 
 ### Save weekly review
 
-`nbhd_journal_create_weekly_review`
+`nbhd_document_put`
 
 ```json
 {
-  "week_start": "YYYY-MM-DD",
-  "week_end": "YYYY-MM-DD",
-  "mood_summary": "string",
-  "top_wins": ["string"],
-  "top_challenges": ["string"],
-  "lessons": ["string"],
-  "week_rating": "thumbs-up|thumbs-down|meh",
-  "intentions_next_week": ["string"],
-  "raw_text": "natural language summary of session"
+  "kind": "weekly",
+  "slug": "YYYY-MM-DD",
+  "title": "Weekly Review — YYYY-MM-DD",
+  "markdown": "Free-form markdown: patterns, wins, challenges, lessons, intentions, rating"
 }
 ```
+
+The slug should be the Monday of the review week (ISO date). The markdown body is free-form — include sections for patterns, wins, challenges, lessons learned, intentions for next week, and the user's week rating.
 
 ## Output to User
 - Keep tone reflective, not evaluative.

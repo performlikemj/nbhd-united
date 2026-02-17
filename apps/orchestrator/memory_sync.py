@@ -74,6 +74,7 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
     if not account_name:
         raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
 
+    from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
     from azure.storage.fileshare import ShareDirectoryClient, ShareFileClient
 
     from apps.orchestrator.azure_client import get_storage_client
@@ -103,8 +104,13 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
                         credential=account_key,
                     )
                     dir_client.create_directory()
-                except Exception:
+                except ResourceExistsError:
                     pass  # Directory already exists
+                except Exception:
+                    logger.warning(
+                        "memory_sync: failed to create directory %s/%s",
+                        share_name, dir_path, exc_info=True,
+                    )
                 created_dirs.add(dir_path)
 
         file_client = ShareFileClient(
@@ -123,8 +129,13 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
                 existing = file_client.download_file().readall()
                 if existing == encoded:
                     continue
-        except Exception:
+        except ResourceNotFoundError:
             pass  # File doesn't exist yet
+        except Exception:
+            logger.warning(
+                "memory_sync: failed to check file %s/%s",
+                share_name, rel_path, exc_info=True,
+            )
 
         file_client.upload_file(encoded, overwrite=True)
         written += 1

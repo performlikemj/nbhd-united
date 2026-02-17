@@ -48,38 +48,24 @@ test("nbhd_gmail_list_messages uses GET with tenant-scoped headers", async () =>
   assert.match(calls[0].url, /\/api\/v1\/integrations\/runtime\/tenant-1\/gmail\/messages\/\?q=in%3Ainbox&max_results=3$/);
 });
 
-test("nbhd_journal_create_entry uses POST with JSON payload", async () => {
-  process.env.NBHD_TENANT_ID = "tenant-abc";
+test("registers exactly 4 Google tools (no journal duplicates)", () => {
+  process.env.NBHD_TENANT_ID = "tenant-check";
   process.env.NBHD_INTERNAL_API_KEY = "shared-key";
 
   const { api, tools } = buildApi();
-  const calls = [];
-  global.fetch = async (url, options) => {
-    calls.push({ url: String(url), options });
-    return mockResponse({ payload: { tenant_id: "tenant-abc", entry: { id: "entry-1" } } });
-  };
-
   register(api);
-  const tool = tools.get("nbhd_journal_create_entry");
-  assert.ok(tool, "journal create tool should be registered");
 
-  const result = await tool.execute("2", {
-    date: "2026-02-12",
-    mood: "focused",
-    energy: "medium",
-    wins: ["Ship feature"],
-    challenges: ["Meetings"],
-    reflection: "Protect deep work",
-    raw_text: "Session summary",
-  });
+  const expected = [
+    "nbhd_gmail_list_messages",
+    "nbhd_gmail_get_message_detail",
+    "nbhd_calendar_list_events",
+    "nbhd_calendar_get_freebusy",
+  ];
 
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].options.method, "POST");
-  assert.equal(calls[0].options.headers["Content-Type"], "application/json");
-  const parsed = JSON.parse(calls[0].options.body);
-  assert.equal(parsed.date, "2026-02-12");
-  assert.deepEqual(parsed.wins, ["Ship feature"]);
-  assert.equal(result.details.json.entry.id, "entry-1");
+  assert.equal(tools.size, expected.length, `expected ${expected.length} tools, got ${tools.size}`);
+  for (const name of expected) {
+    assert.ok(tools.has(name), `missing tool: ${name}`);
+  }
 });
 
 test("runtime error payloads are surfaced with error code/detail", async () => {
@@ -90,15 +76,15 @@ test("runtime error payloads are surfaced with error code/detail", async () => {
   global.fetch = async () =>
     mockResponse({
       status: 400,
-      payload: { error: "invalid_request", detail: "bad date range" },
+      payload: { error: "invalid_request", detail: "bad query" },
     });
 
   register(api);
-  const tool = tools.get("nbhd_journal_list_entries");
-  assert.ok(tool, "journal list tool should be registered");
+  const tool = tools.get("nbhd_gmail_list_messages");
+  assert.ok(tool, "gmail tool should be registered");
 
   await assert.rejects(
-    () => tool.execute("3", { date_from: "2026-02-12", date_to: "2026-02-01" }),
-    /invalid_request \(bad date range\)/,
+    () => tool.execute("3", { q: "invalid" }),
+    /invalid_request \(bad query\)/,
   );
 });

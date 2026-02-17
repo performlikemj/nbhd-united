@@ -11,9 +11,11 @@ These skills are team-authored and deployed with the runtime image. They are syn
 
 ## Tool Contracts
 
-- `nbhd_journal_create_entry`
-- `nbhd_journal_list_entries`
-- `nbhd_journal_create_weekly_review`
+- `nbhd_document_get` / `nbhd_document_put` / `nbhd_document_append`
+- `nbhd_daily_note_get` / `nbhd_daily_note_set_section` / `nbhd_daily_note_append`
+- `nbhd_memory_get` / `nbhd_memory_update`
+- `nbhd_journal_context` / `nbhd_journal_search`
+- `nbhd_platform_issue_report`
 
 ## Runtime Contracts
 
