@@ -201,10 +201,18 @@ def deprovision_tenant(tenant_id: str) -> None:
         raise
 
 
+def _get_gateway_token(tenant_id: str) -> str | None:
+    """Retrieve the Gateway Bearer token for a tenant from Key Vault."""
+    from .azure_client import read_key_vault_secret
+
+    secret_name = f"tenant-{tenant_id}-internal-key"
+    return read_key_vault_secret(secret_name)
+
+
 def seed_cron_jobs(tenant: Tenant | str) -> dict:
     """Seed cron job definitions into a tenant's running OpenClaw container.
 
-    Posts each job to the Gateway's ``POST /api/cron/jobs`` endpoint.
+    Uses the Gateway ``POST /tools/invoke`` endpoint with ``cron.add``.
     The container must be running and reachable.
     """
     import httpx
@@ -216,7 +224,13 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
         raise ValueError(f"Tenant {tenant.id} has no container FQDN")
 
     gateway_base = f"https://{tenant.container_fqdn}"
+    invoke_url = f"{gateway_base}/tools/invoke"
     jobs = build_cron_seed_jobs(tenant)
+
+    token = _get_gateway_token(str(tenant.id))
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
 
     created = 0
     errors = 0
@@ -224,15 +238,35 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
     with httpx.Client(timeout=15) as client:
         for job in jobs:
             try:
-                resp = client.post(f"{gateway_base}/api/cron/jobs", json=job)
-                resp.raise_for_status()
-                created += 1
-                logger.info(
-                    "Seeded cron job '%s' for tenant %s",
-                    job["name"], tenant.id,
+                resp = client.post(
+                    invoke_url,
+                    json={"tool": "cron.add", "args": job},
+                    headers=headers,
                 )
+                resp.raise_for_status()
+                body = resp.json()
+                if body.get("ok"):
+                    created += 1
+                    logger.info(
+                        "Seeded cron job '%s' for tenant %s",
+                        job["name"], tenant.id,
+                    )
+                else:
+                    error_msg = body.get("error", {}).get("message", "unknown")
+                    # "already exists" style errors → treat as success
+                    if "exist" in error_msg.lower():
+                        created += 1
+                        logger.info(
+                            "Cron job '%s' already exists for tenant %s",
+                            job["name"], tenant.id,
+                        )
+                    else:
+                        errors += 1
+                        logger.warning(
+                            "Failed to seed cron job '%s' for tenant %s: %s",
+                            job["name"], tenant.id, error_msg,
+                        )
             except httpx.HTTPStatusError as exc:
-                # 409 = job already exists, treat as success
                 if exc.response.status_code == 409:
                     created += 1
                     logger.info(
