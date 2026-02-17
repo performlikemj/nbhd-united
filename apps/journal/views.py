@@ -15,7 +15,7 @@ from rest_framework.views import APIView
 from apps.tenants.models import Tenant
 
 from .md_utils import append_entry_markdown, parse_daily_note, serialise_daily_note
-from .models import DailyNote, JournalEntry, UserMemory, WeeklyReview
+from .models import DailyNote, Document, JournalEntry, UserMemory, WeeklyReview
 from .models import NoteTemplate
 from .serializers import (
     DailyNoteEntryInputSerializer,
@@ -369,16 +369,16 @@ class DailyNoteSectionView(APIView):
 
 
 class MemoryView(APIView):
-    """GET/PATCH /api/v1/journal/memory/"""
+    """GET/PUT /api/v1/journal/memory/ — backed by Document model."""
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         tenant = _get_tenant_for_user(request.user)
-        memory = UserMemory.objects.filter(tenant=tenant).first()
+        doc = Document.objects.filter(tenant=tenant, kind="memory", slug="long-term").first()
         return Response({
-            "markdown": memory.markdown if memory else "",
-            "updated_at": memory.updated_at.isoformat() if memory else None,
+            "markdown": doc.markdown if doc else "",
+            "updated_at": doc.updated_at.isoformat() if doc else None,
         })
 
     def put(self, request):
@@ -386,13 +386,18 @@ class MemoryView(APIView):
         serializer = MemoryPatchSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        memory, _ = UserMemory.objects.get_or_create(tenant=tenant)
-        memory.markdown = serializer.validated_data["markdown"]
-        memory.save()
+        doc, _ = Document.objects.get_or_create(
+            tenant=tenant,
+            kind="memory",
+            slug="long-term",
+            defaults={"title": "Memory"},
+        )
+        doc.markdown = serializer.validated_data["markdown"]
+        doc.save()
 
         return Response({
-            "markdown": memory.markdown,
-            "updated_at": memory.updated_at.isoformat(),
+            "markdown": doc.markdown,
+            "updated_at": doc.updated_at.isoformat(),
         })
 
 

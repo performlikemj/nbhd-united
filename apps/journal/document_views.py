@@ -20,10 +20,14 @@ from .document_serializers import (
     DocumentSerializer,
 )
 from .models import Document
+from .services import (
+    get_default_template as get_tenant_template,
+    materialize_sections_markdown,
+    seed_default_templates_for_tenant,
+)
 from .templates_md import (
-    DAILY_NOTE_TEMPLATE,
     daily_note_context,
-    get_default_template,
+    get_default_template as get_static_template,
     render_template,
 )
 
@@ -43,7 +47,7 @@ def _get_or_create_document(tenant: Tenant, kind: str, slug: str) -> Document:
         slug=slug,
         defaults={
             "title": _default_title(kind, slug),
-            "markdown": _default_markdown(kind, slug),
+            "markdown": _default_markdown(kind, slug, tenant=tenant),
         },
     )
     return doc
@@ -75,21 +79,44 @@ def _default_title(kind: str, slug: str) -> str:
     return slug
 
 
-def _default_markdown(kind: str, slug: str) -> str:
-    """Generate default markdown content for a new document."""
-    template = get_default_template(kind)
-    if not template:
+def _default_markdown(kind: str, slug: str, tenant=None) -> str:
+    """Generate default markdown content for a new document.
+
+    For daily notes, uses the tenant's NoteTemplate sections when available
+    so that the document matches the user's customised template.
+    """
+    if kind == "daily" and tenant is not None:
+        try:
+            d = datetime.date.fromisoformat(slug)
+        except ValueError:
+            d = None
+
+        if d is not None:
+            note_template = get_tenant_template(tenant=tenant)
+            if note_template is None:
+                result = seed_default_templates_for_tenant(tenant=tenant)
+                note_template = result["template"]
+            if note_template is not None:
+                return materialize_sections_markdown(
+                    note_date=d,
+                    sections=note_template.sections,
+                    template_name=note_template.name,
+                )
+
+    # Fallback to static templates for non-daily kinds or when no tenant
+    static = get_static_template(kind)
+    if not static:
         return ""
 
     if kind == "daily":
         try:
             d = datetime.date.fromisoformat(slug)
-            return render_template(template, daily_note_context(d))
+            return render_template(static, daily_note_context(d))
         except ValueError:
-            return template
+            return static
 
     context = {"date": slug, "title": _default_title(kind, slug)}
-    return render_template(template, context)
+    return render_template(static, context)
 
 
 class DocumentListCreateView(APIView):
@@ -134,7 +161,7 @@ class DocumentListCreateView(APIView):
             slug=data["slug"],
             defaults={
                 "title": data["title"],
-                "markdown": data.get("markdown") or _default_markdown(data["kind"], data["slug"]),
+                "markdown": data.get("markdown") or _default_markdown(data["kind"], data["slug"], tenant=tenant),
             },
         )
 

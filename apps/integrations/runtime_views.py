@@ -18,6 +18,7 @@ from apps.journal.document_views import _default_markdown, _default_title
 from apps.journal.services import (
     append_log_to_note,
     get_or_seed_note_template,
+    parse_daily_sections,
     set_daily_note_section,
     set_daily_note_sections,
     upsert_default_daily_note,
@@ -593,7 +594,7 @@ class RuntimeDailyNotesView(APIView):
             slug=slug,
             defaults={
                 "title": _default_title("daily", slug),
-                "markdown": _default_markdown("daily", slug),
+                "markdown": _default_markdown("daily", slug, tenant=tenant),
             },
         )
         return Response(
@@ -601,19 +602,10 @@ class RuntimeDailyNotesView(APIView):
                 "tenant_id": str(tenant.id),
                 "date": str(d),
                 "markdown": doc.markdown,
-                "sections": [],
+                "sections": parse_daily_sections(doc.markdown),
             },
             status=200,
         )
-
-
-_SECTION_SLUG_TITLES: dict[str, str] = {
-    "morning-report": "Morning Report",
-    "weather": "Weather",
-    "news": "News",
-    "focus": "Focus",
-    "evening-check-in": "Evening Check-in",
-}
 
 
 class RuntimeDailyNoteAppendView(APIView):
@@ -654,7 +646,7 @@ class RuntimeDailyNoteAppendView(APIView):
             slug=slug,
             defaults={
                 "title": _default_title("daily", slug),
-                "markdown": _default_markdown("daily", slug),
+                "markdown": _default_markdown("daily", slug, tenant=tenant),
             },
         )
 
@@ -662,23 +654,26 @@ class RuntimeDailyNoteAppendView(APIView):
         section_slug_str = str(section_slug).strip() if section_slug else ""
 
         if section_slug_str:
-            heading = _SECTION_SLUG_TITLES.get(section_slug_str, section_slug_str.replace("-", " ").title())
+            # Derive heading from slug (e.g. "morning-report" → "Morning Report")
+            heading = section_slug_str.replace("-", " ").title()
             marker = f"## {heading}"
             md = doc.markdown or ""
             idx = md.find(marker)
             if idx != -1:
-                # Find next heading or end of string
-                after_marker = idx + len(marker)
-                next_heading = md.find("\n## ", after_marker)
-                if next_heading == -1:
-                    # Append at end of document
-                    doc.markdown = md.rstrip() + "\n\n" + content + "\n"
+                # Replace section content (everything between this heading and the next)
+                heading_end = md.find("\n", idx)
+                if heading_end == -1:
+                    heading_end = len(md)
                 else:
-                    # Insert before next heading
-                    doc.markdown = md[:next_heading].rstrip() + "\n\n" + content + "\n\n" + md[next_heading:]
+                    heading_end += 1  # include the newline
+                next_heading = md.find("\n## ", heading_end)
+                if next_heading == -1:
+                    doc.markdown = md[:heading_end] + content + "\n"
+                else:
+                    doc.markdown = md[:heading_end] + content + "\n" + md[next_heading:]
             else:
                 # Section heading doesn't exist yet — append it
-                doc.markdown = md.rstrip() + f"\n\n{marker}\n\n" + content + "\n"
+                doc.markdown = md.rstrip() + f"\n\n{marker}\n{content}\n"
         else:
             # Quick-log append with timestamp
             now = tz.now()
@@ -693,7 +688,7 @@ class RuntimeDailyNoteAppendView(APIView):
                 "tenant_id": str(tenant.id),
                 "date": str(d),
                 "markdown": doc.markdown,
-                "sections": [],
+                "sections": parse_daily_sections(doc.markdown),
             },
             status=status.HTTP_201_CREATED,
         )
@@ -720,7 +715,7 @@ class RuntimeUserMemoryView(APIView):
             slug="long-term",
             defaults={
                 "title": _default_title("memory", "long-term"),
-                "markdown": _default_markdown("memory", "long-term"),
+                "markdown": _default_markdown("memory", "long-term", tenant=tenant),
             },
         )
         return Response(
@@ -857,7 +852,7 @@ class RuntimeDocumentView(APIView):
             slug=slug,
             defaults={
                 "title": _default_title(kind, slug),
-                "markdown": _default_markdown(kind, slug),
+                "markdown": _default_markdown(kind, slug, tenant=tenant),
             },
         )
 
@@ -1075,7 +1070,7 @@ class RuntimeDocumentAppendView(APIView):
             slug=slug,
             defaults={
                 "title": _default_title(kind, slug),
-                "markdown": _default_markdown(kind, slug),
+                "markdown": _default_markdown(kind, slug, tenant=tenant),
             },
         )
 

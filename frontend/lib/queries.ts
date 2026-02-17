@@ -5,13 +5,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   appendToDocument,
   createAutomation,
-  createDailyNoteEntry,
   createDocument,
   createTemplate,
   createJournalEntry,
   createWeeklyReview,
   deleteAutomation,
-  deleteDailyNoteEntry,
   deleteTemplate,
   deleteJournalEntry,
   deleteWeeklyReview,
@@ -19,14 +17,12 @@ import {
   fetchAutomationRuns,
   fetchAutomationRunsForAutomation,
   fetchAutomations,
-  fetchDailyNote,
   fetchDashboard,
   fetchDocument,
   fetchDocuments,
   fetchIntegrations,
   fetchJournalEntries,
   fetchMe,
-  fetchMemory,
   fetchPersonas,
   fetchPreferences,
   fetchSidebarTree,
@@ -47,13 +43,9 @@ import {
   requestStripePortal,
   unlinkTelegram,
   updateAutomation,
-  updateDailyNoteSection,
-  updateDailyNoteTemplate,
-  updateDailyNoteEntry,
   updateLLMConfig,
   updateDocument,
   updateJournalEntry,
-  updateMemory,
   updatePreferences,
   updateTemplate,
   updateWeeklyReview,
@@ -314,89 +306,6 @@ export function useDeleteJournalEntryMutation() {
     mutationFn: deleteJournalEntry,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["journal-entries"] });
-    },
-  });
-}
-
-// Daily Notes
-export function useDailyNoteQuery(date: string) {
-  return useQuery({
-    queryKey: ["daily-note", date],
-    queryFn: () => fetchDailyNote(date),
-    enabled: !!date,
-    refetchInterval: 30_000,
-  });
-}
-
-export function useCreateDailyNoteEntryMutation(date: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (data: Parameters<typeof createDailyNoteEntry>[1]) =>
-      createDailyNoteEntry(date, data),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["daily-note", date] });
-    },
-  });
-}
-
-export function useUpdateDailyNoteEntryMutation(date: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ index, data }: { index: number; data: Parameters<typeof updateDailyNoteEntry>[2] }) =>
-      updateDailyNoteEntry(date, index, data),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["daily-note", date] });
-    },
-  });
-}
-
-export function useDeleteDailyNoteEntryMutation(date: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (index: number) => deleteDailyNoteEntry(date, index),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["daily-note", date] });
-    },
-  });
-}
-
-export function useUpdateDailyNoteTemplateMutation(date: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (
-      data: Parameters<typeof updateDailyNoteTemplate>[1],
-    ) => updateDailyNoteTemplate(date, data),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["daily-note", date] });
-    },
-  });
-}
-
-export function useUpdateDailyNoteSectionMutation(date: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ slug, content }: { slug: string; content: string }) =>
-      updateDailyNoteSection(date, slug, content),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["daily-note", date] });
-    },
-  });
-}
-
-// User Memory
-export function useMemoryQuery() {
-  return useQuery({
-    queryKey: ["memory"],
-    queryFn: fetchMemory,
-  });
-}
-
-export function useUpdateMemoryMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: updateMemory,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["memory"] });
     },
   });
 }

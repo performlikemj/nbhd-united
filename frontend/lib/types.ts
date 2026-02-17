@@ -154,17 +154,6 @@ export interface JournalEntry {
   updated_at: string;
 }
 
-// Daily Notes
-export interface DailyNoteEntry {
-  time: string | null;
-  author: "human" | "agent";
-  content: string;
-  mood: string | null;
-  energy: number | null;
-  section: string | null;
-  subsections: Record<string, string> | null;
-}
-
 export interface NoteTemplateSection {
   slug: string;
   title: string;
@@ -181,23 +170,6 @@ export interface NoteTemplate {
   source: string;
   created_at: string;
   updated_at: string;
-}
-
-export interface DailyNoteResponse {
-  date: string;
-  markdown: string;
-  /** @deprecated Entries are no longer returned by default. */
-  entries?: DailyNoteEntry[];
-  template_id?: string | null;
-  template_slug?: string;
-  template_name?: string;
-  sections?: NoteTemplateSection[];
-}
-
-// User Memory
-export interface UserMemoryResponse {
-  markdown: string;
-  updated_at: string | null;
 }
 
 // Weekly Reviews

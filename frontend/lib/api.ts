@@ -3,7 +3,6 @@ import {
   AuthUser,
   Automation,
   AutomationRun,
-  DailyNoteResponse,
   DashboardData,
   DocumentListItem,
   DocumentResponse,
@@ -18,7 +17,6 @@ import {
   Tenant,
   UsageRecord,
   UsageSummary,
-  UserMemoryResponse,
   WeeklyReview,
 } from "@/lib/types";
 
@@ -365,69 +363,7 @@ export function deleteJournalEntry(id: string): Promise<void> {
   return apiFetch<void>(`/api/v1/journal/${id}/`, { method: "DELETE" });
 }
 
-// Daily Notes
-export function fetchDailyNote(date: string): Promise<DailyNoteResponse> {
-  return apiFetch<DailyNoteResponse>(`/api/v1/journal/daily/${date}/`);
-}
-
-export interface DailyNoteEntryInput {
-  content: string;
-  mood?: string;
-  energy?: number;
-  time?: string;
-}
-
-export function createDailyNoteEntry(date: string, data: DailyNoteEntryInput): Promise<DailyNoteResponse> {
-  return apiFetch<DailyNoteResponse>(`/api/v1/journal/daily/${date}/entries/`, {
-    method: "POST",
-    body: JSON.stringify(data),
-  });
-}
-
-export function updateDailyNoteEntry(
-  date: string,
-  index: number,
-  data: Partial<{ content: string; mood: string; energy: number }>,
-): Promise<DailyNoteResponse> {
-  return apiFetch<DailyNoteResponse>(`/api/v1/journal/daily/${date}/entries/${index}/`, {
-    method: "PATCH",
-    body: JSON.stringify(data),
-  });
-}
-
-export function deleteDailyNoteEntry(date: string, index: number): Promise<DailyNoteResponse> {
-  return apiFetch<DailyNoteResponse>(`/api/v1/journal/daily/${date}/entries/${index}/`, {
-    method: "DELETE",
-  });
-}
-
-export interface DailyNoteTemplateInput {
-  template_id?: string | null;
-  markdown: string;
-  sections: NoteTemplateSection[];
-}
-
-export function updateDailyNoteSection(
-  date: string,
-  slug: string,
-  content: string,
-): Promise<DailyNoteResponse> {
-  return apiFetch<DailyNoteResponse>(`/api/v1/journal/daily/${date}/sections/${slug}/`, {
-    method: "PATCH",
-    body: JSON.stringify({ content }),
-  });
-}
-
-export function updateDailyNoteTemplate(
-  date: string,
-  data: DailyNoteTemplateInput,
-): Promise<DailyNoteResponse> {
-  return apiFetch<DailyNoteResponse>(`/api/v1/journal/daily/${date}/template/`, {
-    method: "PUT",
-    body: JSON.stringify(data),
-  });
-}
-
+// Templates
 export interface NoteTemplateInput {
   slug: string;
   name: string;
@@ -458,18 +394,6 @@ export function updateTemplate(
 
 export function deleteTemplate(id: string): Promise<void> {
   return apiFetch<void>(`/api/v1/journal/templates/${id}/`, { method: "DELETE" });
-}
-
-// User Memory
-export function fetchMemory(): Promise<UserMemoryResponse> {
-  return apiFetch<UserMemoryResponse>("/api/v1/journal/memory/");
-}
-
-export function updateMemory(markdown: string): Promise<UserMemoryResponse> {
-  return apiFetch<UserMemoryResponse>("/api/v1/journal/memory/", {
-    method: "PUT",
-    body: JSON.stringify({ markdown }),
-  });
 }
 
 // Weekly Reviews
