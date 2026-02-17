@@ -15,7 +15,7 @@ from apps.tenants.models import Tenant
 _MORNING_BRIEFING_PROMPT = (
     "Good morning! Create today's morning briefing.\n\n"
     "Use your tools to gather context:\n"
-    "1. Get today's weather for the user's location\n"
+    "1. Get today's weather for the user's location (use web_search)\n"
     "2. Check their calendar for today's events (nbhd_calendar_list_events)\n"
     "3. Check for important unread emails (nbhd_gmail_list_messages)\n"
     "4. Load recent journal context (nbhd_journal_context)\n\n"
@@ -49,7 +49,7 @@ _BACKGROUND_TASKS_PROMPT = (
     "5. If you find pending items, append a reminder to tomorrow's daily note "
     "(nbhd_daily_note_append with tomorrow's date)\n\n"
     "Do NOT message the user. This is a silent background run.\n"
-    "Reply with a brief internal summary of what you did."
+    "Log a brief summary of what you did to tomorrow's daily note using nbhd_daily_note_append."
 )
 
 
@@ -87,11 +87,18 @@ def _build_models_providers(tier: str, tenant: Tenant) -> dict:
     return providers
 
 
-def _build_cron_jobs(tenant: Tenant) -> dict:
-    """Build cron jobs for subscriber's OpenClaw config."""
+def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
+    """Build cron job definitions for seeding via the Gateway API.
+
+    NOTE: These cannot go in openclaw.json (the ``cron`` config key only
+    accepts runtime settings like ``enabled``).  Job definitions must be
+    provisioned through the Gateway's ``/api/cron/jobs`` endpoint or the
+    ``openclaw cron add`` CLI.  This helper is called during tenant
+    provisioning — see ``apps/orchestrator/tasks.py``.
+    """
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
 
-    jobs = [
+    return [
         {
             "name": "Morning Briefing",
             "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": user_tz},
@@ -126,8 +133,6 @@ def _build_cron_jobs(tenant: Tenant) -> dict:
             "enabled": True,
         },
     ]
-
-    return {"jobs": jobs}
 
 
 def _build_tools_section(tier: str) -> dict[str, Any]:
@@ -265,8 +270,8 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "ackReactionScope": "group-mentions",
         },
 
-        # Cron jobs
-        "cron": _build_cron_jobs(tenant),
+        # Cron runtime settings (job definitions are seeded via Gateway API)
+        "cron": {"enabled": True},
     }
 
     # Note: BRAVE_API_KEY is injected as a container env var via Key Vault
