@@ -44,10 +44,21 @@ def invoke_gateway_tool(tenant: Tenant, tool: str, args: dict[str, Any]) -> dict
     token = _get_gateway_token(tenant)
     url = f"https://{tenant.container_fqdn}/tools/invoke"
 
+    # OpenClaw /tools/invoke expects {"tool": "<name>", "action": "<action>", "args": {}}
+    # e.g. "cron.list" → tool="cron", action="list"
+    if "." in tool:
+        tool_name, action = tool.rsplit(".", 1)
+    else:
+        tool_name, action = tool, None
+
+    body: dict[str, Any] = {"tool": tool_name, "args": args}
+    if action:
+        body["action"] = action
+
     try:
         resp = requests.post(
             url,
-            json={"tool": tool, "args": args},
+            json=body,
             headers={"Authorization": f"Bearer {token}"},
             timeout=15,
         )
@@ -55,6 +66,10 @@ def invoke_gateway_tool(tenant: Tenant, tool: str, args: dict[str, Any]) -> dict
         raise GatewayError(f"Gateway request failed: {exc}") from exc
 
     if resp.status_code != 200:
+        logger.error(
+            "Gateway %s.%s returned %s: %s",
+            tool_name, action or "", resp.status_code, resp.text[:500],
+        )
         raise GatewayError(
             f"Gateway returned {resp.status_code}: {resp.text[:500]}",
             status_code=resp.status_code,
