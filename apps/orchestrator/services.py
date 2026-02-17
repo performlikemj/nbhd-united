@@ -110,12 +110,12 @@ def provision_tenant(tenant_id: str) -> None:
 
         logger.info("Provisioned tenant %s → container %s", tenant_id, result["name"])
 
-        # 5. Seed cron jobs via Gateway API (best-effort; container may need a moment)
+        # 5. Seed default cron jobs to file share (loaded by Gateway on boot)
         try:
             seed_cron_jobs(tenant)
         except Exception:
             logger.warning(
-                "Could not seed cron jobs for tenant %s (container may still be starting)",
+                "Could not seed cron jobs for tenant %s",
                 tenant_id,
                 exc_info=True,
             )
@@ -201,99 +201,79 @@ def deprovision_tenant(tenant_id: str) -> None:
         raise
 
 
-def _get_gateway_token(tenant_id: str) -> str | None:
-    """Retrieve the Gateway Bearer token for a tenant from Key Vault."""
-    from .azure_client import read_key_vault_secret
-
-    secret_name = f"tenant-{tenant_id}-internal-key"
-    return read_key_vault_secret(secret_name)
-
-
 def seed_cron_jobs(tenant: Tenant | str) -> dict:
-    """Seed cron job definitions into a tenant's running OpenClaw container.
+    """Seed default cron job definitions into a tenant's workspace file share.
 
-    Uses the Gateway ``POST /tools/invoke`` endpoint with ``cron.add``.
-    The container must be running and reachable.
+    Writes ``cron/jobs.json`` to the Azure File Share so the Gateway loads
+    them on startup.  Only writes if the file is empty (no existing jobs),
+    preserving any user modifications.
     """
-    import httpx
+    import json as _json
+
+    from .azure_client import get_storage_client, _is_mock
 
     if isinstance(tenant, str):
         tenant = Tenant.objects.select_related("user").get(id=tenant)
 
-    if not tenant.container_fqdn:
-        raise ValueError(f"Tenant {tenant.id} has no container FQDN")
-
-    gateway_base = f"https://{tenant.container_fqdn}"
-    invoke_url = f"{gateway_base}/tools/invoke"
+    tenant_id = str(tenant.id)
+    share_name = f"ws-{tenant_id[:20]}"
     jobs = build_cron_seed_jobs(tenant)
 
-    token = _get_gateway_token(str(tenant.id))
-    headers = {}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    if _is_mock():
+        logger.info("[MOCK] seed_cron_jobs for tenant %s (%d jobs)", tenant_id, len(jobs))
+        return {"tenant_id": tenant_id, "jobs_total": len(jobs), "created": len(jobs), "errors": 0}
 
-    created = 0
-    errors = 0
+    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
+    if not account_name:
+        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
 
-    with httpx.Client(timeout=15) as client:
-        for job in jobs:
-            try:
-                resp = client.post(
-                    invoke_url,
-                    json={"tool": "cron.add", "args": job},
-                    headers=headers,
-                )
-                resp.raise_for_status()
-                body = resp.json()
-                if body.get("ok"):
-                    created += 1
-                    logger.info(
-                        "Seeded cron job '%s' for tenant %s",
-                        job["name"], tenant.id,
-                    )
-                else:
-                    error_msg = body.get("error", {}).get("message", "unknown")
-                    # "already exists" style errors → treat as success
-                    if "exist" in error_msg.lower():
-                        created += 1
-                        logger.info(
-                            "Cron job '%s' already exists for tenant %s",
-                            job["name"], tenant.id,
-                        )
-                    else:
-                        errors += 1
-                        logger.warning(
-                            "Failed to seed cron job '%s' for tenant %s: %s",
-                            job["name"], tenant.id, error_msg,
-                        )
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 409:
-                    created += 1
-                    logger.info(
-                        "Cron job '%s' already exists for tenant %s",
-                        job["name"], tenant.id,
-                    )
-                else:
-                    errors += 1
-                    logger.warning(
-                        "Failed to seed cron job '%s' for tenant %s: %s",
-                        job["name"], tenant.id, exc,
-                    )
-            except httpx.HTTPError as exc:
-                errors += 1
-                logger.warning(
-                    "Failed to seed cron job '%s' for tenant %s: %s",
-                    job["name"], tenant.id, exc,
-                )
+    from azure.storage.fileshare import ShareFileClient
 
-    result = {
-        "tenant_id": str(tenant.id),
+    storage_client = get_storage_client()
+    keys = storage_client.storage_accounts.list_keys(
+        settings.AZURE_RESOURCE_GROUP, account_name,
+    )
+    account_key = keys.keys[0].value
+
+    file_client = ShareFileClient(
+        account_url=f"https://{account_name}.file.core.windows.net",
+        share_name=share_name,
+        file_path="cron/jobs.json",
+        credential=account_key,
+    )
+
+    # Read existing jobs — only seed if the file is empty or missing.
+    existing_jobs: list = []
+    try:
+        data = file_client.download_file().readall()
+        parsed = _json.loads(data)
+        existing_jobs = parsed.get("jobs", [])
+    except Exception:
+        pass  # File missing or unparseable — will create fresh
+
+    if existing_jobs:
+        logger.info(
+            "seed_cron_jobs: tenant %s already has %d jobs, skipping seed",
+            tenant_id, len(existing_jobs),
+        )
+        return {
+            "tenant_id": tenant_id,
+            "jobs_total": len(jobs),
+            "created": 0,
+            "errors": 0,
+            "skipped": True,
+        }
+
+    jobs_json = _json.dumps({"version": 1, "jobs": jobs}, indent=2)
+    file_client.upload_file(jobs_json.encode("utf-8"), overwrite=True)
+    logger.info("seed_cron_jobs: wrote %d jobs to %s/cron/jobs.json", len(jobs), share_name)
+
+    return {
+        "tenant_id": tenant_id,
         "jobs_total": len(jobs),
-        "created": created,
-        "errors": errors,
+        "created": len(jobs),
+        "errors": 0,
     }
-    logger.info("seed_cron_jobs: %s", result)
-    return result
 
 
 def check_tenant_health(tenant_id: str) -> dict:

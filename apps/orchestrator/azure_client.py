@@ -519,7 +519,7 @@ def create_container_app(
                 ],
                 "ingress": {
                     "external": False,
-                    "targetPort": 8787,
+                    "targetPort": 18789,
                     "transport": "http",
                 },
                 "secrets": secrets,

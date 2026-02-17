@@ -1,4 +1,4 @@
-"""Seed cron job definitions into a running OpenClaw container via its Gateway API."""
+"""Seed default cron job definitions into a tenant's workspace file share."""
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.orchestrator.services import seed_cron_jobs
@@ -28,17 +28,17 @@ class Command(BaseCommand):
                 f"Tenant {tenant_id} is not active (status={tenant.status})"
             )
 
-        if not tenant.container_fqdn:
-            raise CommandError(f"Tenant {tenant_id} has no container FQDN")
-
         self.stdout.write(
-            f"Seeding cron jobs for {tenant.user.display_name} "
-            f"({tenant.container_fqdn}) ..."
+            f"Seeding cron jobs for {tenant.user.display_name} ..."
         )
 
         result = seed_cron_jobs(tenant)
 
-        if result["errors"] == 0:
+        if result.get("skipped"):
+            self.stdout.write(self.style.WARNING(
+                f"Skipped: tenant already has cron jobs configured."
+            ))
+        elif result["errors"] == 0:
             self.stdout.write(self.style.SUCCESS(
                 f"Done: {result['created']}/{result['jobs_total']} jobs seeded."
             ))
