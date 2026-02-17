@@ -108,7 +108,7 @@ class AzureClientTest(SimpleTestCase):
         self.assertEqual(env_map["OPENCLAW_WEBHOOK_SECRET"]["secretRef"], "telegram-webhook-secret")
 
         ingress = payload["properties"]["configuration"]["ingress"]
-        self.assertEqual(ingress["targetPort"], 18789)
+        self.assertEqual(ingress["targetPort"], 8080)
 
     @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="env")
     @patch("apps.orchestrator.azure_client._is_mock", return_value=False)

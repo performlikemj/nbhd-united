@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 set -eu
 
 OPENCLAW_HOME="${OPENCLAW_HOME:-/home/node/.openclaw}"
@@ -74,19 +74,41 @@ if [ ! -f "$OPENCLAW_CONFIG_PATH" ]; then
     exit 1
 fi
 
+# --- Dual-process supervisor: OpenClaw gateway + reverse proxy ---
+
 if [ "$#" -gt 0 ]; then
     case "$1" in
         gateway)
             shift
-            exec openclaw gateway --allow-unconfigured "$@"
+            GATEWAY_ARGS="$*"
             ;;
         -*)
-            exec openclaw gateway --allow-unconfigured "$@"
+            GATEWAY_ARGS="$*"
             ;;
         *)
+            # Non-gateway subcommand — run directly (no proxy needed)
             exec openclaw "$@"
             ;;
     esac
+else
+    GATEWAY_ARGS=""
 fi
 
-exec openclaw gateway --allow-unconfigured
+# Start both processes in background
+# shellcheck disable=SC2086
+openclaw gateway --allow-unconfigured $GATEWAY_ARGS &
+GATEWAY_PID=$!
+
+node /opt/nbhd/proxy.js &
+PROXY_PID=$!
+
+# Forward termination signals to both children
+trap 'kill $GATEWAY_PID $PROXY_PID 2>/dev/null; wait' SIGTERM SIGINT
+
+# Wait for either child to exit, then shut down the other
+wait -n "$GATEWAY_PID" "$PROXY_PID" 2>/dev/null
+EXIT_CODE=$?
+echo "[entrypoint] child exited with code $EXIT_CODE, shutting down"
+kill "$GATEWAY_PID" "$PROXY_PID" 2>/dev/null || true
+wait
+exit "$EXIT_CODE"

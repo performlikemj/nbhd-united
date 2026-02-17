@@ -18,6 +18,7 @@ COPY runtime/openclaw/plugins/nbhd-google-tools /opt/nbhd/plugins/nbhd-google-to
 COPY runtime/openclaw/plugins/nbhd-journal-tools /opt/nbhd/plugins/nbhd-journal-tools
 COPY agent-skills /opt/nbhd/agent-skills
 COPY templates/openclaw /opt/nbhd/templates/openclaw
+COPY runtime/openclaw/proxy.js /opt/nbhd/proxy.js
 COPY runtime/openclaw/entrypoint.sh /usr/local/bin/nbhd-openclaw-entrypoint
 
 RUN chmod +x /usr/local/bin/nbhd-openclaw-entrypoint \
@@ -29,6 +30,6 @@ ENV OPENCLAW_GOOGLE_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-google-tools
 ENV OPENCLAW_JOURNAL_PLUGIN_ID=nbhd-journal-tools
 ENV OPENCLAW_JOURNAL_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-journal-tools
 
-EXPOSE 18789
+EXPOSE 8080
 
 ENTRYPOINT ["/usr/local/bin/nbhd-openclaw-entrypoint"]
