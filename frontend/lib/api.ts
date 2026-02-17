@@ -4,6 +4,9 @@ import {
   Automation,
   AutomationRun,
   CronJob,
+  CronJobDelivery,
+  CronJobPayload,
+  CronJobSchedule,
   DashboardData,
   DocumentListItem,
   DocumentResponse,
@@ -487,9 +490,24 @@ export function updateLLMConfig(data: LLMConfigUpdate): Promise<LLMConfig> {
 }
 
 // Cron Jobs (scheduled tasks managed via OpenClaw Gateway)
+function normalizeCronJob(raw: Record<string, unknown>): CronJob {
+  const schedule = (raw.schedule as Partial<CronJobSchedule>) ?? {};
+  const payload = (raw.payload as Partial<CronJobPayload>) ?? {};
+  const delivery = (raw.delivery as Partial<CronJobDelivery>) ?? {};
+  return {
+    name: (raw.name as string) ?? "Untitled",
+    schedule: { kind: schedule.kind ?? "cron", expr: schedule.expr ?? "", tz: schedule.tz ?? "UTC" },
+    sessionTarget: (raw.sessionTarget as string) ?? "isolated",
+    payload: { kind: payload.kind ?? "agentTurn", message: payload.message ?? "" },
+    delivery: { mode: delivery.mode ?? "none", channel: delivery.channel },
+    enabled: (raw.enabled as boolean) ?? false,
+  };
+}
+
 export async function fetchCronJobs(): Promise<CronJob[]> {
-  const data = await apiFetch<{ jobs?: CronJob[] }>("/api/v1/cron-jobs/");
-  return data.jobs ?? [];
+  const data = await apiFetch<{ jobs?: unknown[] }>("/api/v1/cron-jobs/");
+  const rawJobs = data.jobs ?? (Array.isArray(data) ? data : []);
+  return rawJobs.map((j) => normalizeCronJob(j as Record<string, unknown>));
 }
 
 export function createCronJob(data: Partial<CronJob>): Promise<CronJob> {

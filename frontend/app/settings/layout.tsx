@@ -8,7 +8,6 @@ import { ReactNode } from "react";
 const settingsTabs = [
   { href: "/settings", label: "Account" },
   { href: "/settings/integrations", label: "Integrations" },
-  { href: "/settings/automations", label: "Automations" },
   { href: "/settings/cron-jobs", label: "Scheduled Tasks" },
   { href: "/settings/usage", label: "Usage" },
   { href: "/settings/billing", label: "Billing" },
@@ -23,7 +22,7 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
       <div>
         <h1 className="text-2xl font-semibold text-ink">Settings</h1>
         <p className="mt-1 text-sm text-ink/65">
-          Manage your account, integrations, automations, usage, and billing.
+          Manage your account, integrations, scheduled tasks, usage, and billing.
         </p>
       </div>
 

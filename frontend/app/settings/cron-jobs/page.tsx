@@ -76,7 +76,13 @@ export default function SettingsCronJobsPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [createForm, setCreateForm] = useState<CreateFormState>(defaultCreateForm());
   const [editingName, setEditingName] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<EditFormState>(toEditForm({} as CronJob));
+  const [editForm, setEditForm] = useState<EditFormState>({
+    expr: "",
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    message: "",
+    deliveryMode: "announce",
+    deliveryChannel: "",
+  });
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
@@ -240,12 +246,12 @@ export default function SettingsCronJobsPage() {
                   <div>
                     <p className="text-base font-medium">{job.name}</p>
                     <p className="text-sm text-ink/70">
-                      {cronToHumanReadable(job.schedule.expr)} ({job.schedule.tz})
+                      {cronToHumanReadable(job.schedule?.expr ?? "")} ({job.schedule?.tz ?? "UTC"})
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
                     <StatusPill status={job.enabled ? "active" : "paused"} />
-                    {job.delivery.mode !== "none" && job.delivery.channel ? (
+                    {job.delivery?.mode !== "none" && job.delivery?.channel ? (
                       <span className="rounded-full bg-ink/5 px-2.5 py-0.5 text-xs text-ink/60">
                         {job.delivery.channel}
                       </span>
@@ -254,7 +260,7 @@ export default function SettingsCronJobsPage() {
                 </div>
 
                 <p className="mt-2 text-sm text-ink/60 line-clamp-2">
-                  {job.payload.message.slice(0, 200)}
+                  {(job.payload?.message ?? "").slice(0, 200)}
                 </p>
 
                 <div className="mt-3 flex flex-wrap gap-2">

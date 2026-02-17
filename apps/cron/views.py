@@ -83,7 +83,6 @@ TASK_MAP = {
     "reset_monthly_counters": "apps.tenants.tasks.reset_monthly_counters_task",
     "cleanup_expired_telegram_tokens": "apps.tenants.tasks.cleanup_expired_telegram_tokens",
     "refresh_expiring_integrations": "apps.integrations.tasks.refresh_expiring_integrations_task",
-    "run_due_automations": "apps.automations.tasks.run_due_automations_task",
     # Journal memory sync (on-demand via signal or QStash publish)
     "sync_documents_to_workspace": "apps.journal.tasks.sync_documents_to_workspace",
     # Provisioning (on-demand via QStash publish)
