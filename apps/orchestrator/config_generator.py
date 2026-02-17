@@ -247,11 +247,13 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             },
         },
 
-        # Gateway — local mode, accessible to internal callers in the container network
+        # Gateway — local mode; bind to loopback so internal tool calls
+        # (cron, etc.) auto-pair via localhost.  The OpenClaw proxy sidecar
+        # (listening on 0.0.0.0:8080) handles external traffic forwarding.
         "gateway": {
             "port": 18789,
             "mode": "local",
-            "bind": "lan",
+            "bind": "loopback",
         },
 
         # Tools

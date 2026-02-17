@@ -26,7 +26,7 @@ class ConfigGeneratorTest(TestCase):
 
     def test_gateway_defaults_use_supported_bind_mode(self):
         config = generate_openclaw_config(self.tenant)
-        self.assertEqual(config["gateway"]["bind"], "lan")
+        self.assertEqual(config["gateway"]["bind"], "loopback")
         self.assertNotIn("auth", config["gateway"])
 
     def test_chat_id_in_allow_from(self):
@@ -117,14 +117,14 @@ class ConfigGeneratorTest(TestCase):
         self.assertIn("deny", tools)
         self.assertIn("gateway", tools["deny"])
         self.assertNotIn("group:automation", tools["deny"])
-        self.assertNotIn("group:browser", tools["allow"])
+        self.assertNotIn("group:ui", tools["allow"])
 
     def test_premium_tier_tools_enable_browser_and_exec(self):
         self.tenant.model_tier = "premium"
         config = generate_openclaw_config(self.tenant)
         tools = config["tools"]
-        self.assertIn("group:browser", tools["allow"])
-        self.assertIn("exec", tools["allow"])
+        self.assertIn("group:ui", tools["allow"])
+        self.assertIn("group:runtime", tools["allow"])
         self.assertEqual(tools["elevated"], {"enabled": False})
 
     @override_settings(
