@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 
+import ScheduleBuilder, { cronToHuman } from "@/components/schedule-builder";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
@@ -10,6 +11,7 @@ import {
   useCronJobsQuery,
   useCreateCronJobMutation,
   useDeleteCronJobMutation,
+  useMeQuery,
   useToggleCronJobMutation,
   useUpdateCronJobMutation,
 } from "@/lib/queries";
@@ -23,12 +25,13 @@ type CreateFormState = {
   deliveryChannel: string;
 };
 
-function defaultCreateForm(): CreateFormState {
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+function defaultCreateForm(tz?: string): CreateFormState {
+  const profileTz =
+    tz || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   return {
     name: "",
     expr: "0 9 * * *",
-    tz,
+    tz: profileTz,
     message: "",
     deliveryMode: "announce",
     deliveryChannel: "telegram",
@@ -53,20 +56,13 @@ function toEditForm(job: CronJob): EditFormState {
   };
 }
 
-function cronToHumanReadable(expr: string): string {
-  const parts = expr.split(" ");
-  if (parts.length !== 5) return expr;
-  const [min, hour] = parts;
-  const time = `${hour.padStart(2, "0")}:${min.padStart(2, "0")}`;
-  return `Daily at ${time}`;
-}
-
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return "Request failed.";
 }
 
 export default function SettingsCronJobsPage() {
+  const { data: me } = useMeQuery();
   const { data: cronJobs, isLoading, error } = useCronJobsQuery();
   const createMutation = useCreateCronJobMutation();
   const deleteMutation = useDeleteCronJobMutation();
@@ -74,7 +70,7 @@ export default function SettingsCronJobsPage() {
   const updateMutation = useUpdateCronJobMutation();
 
   const [showCreate, setShowCreate] = useState(false);
-  const [createForm, setCreateForm] = useState<CreateFormState>(defaultCreateForm());
+  const [createForm, setCreateForm] = useState<CreateFormState>(() => defaultCreateForm(me?.timezone));
   const [editingName, setEditingName] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<EditFormState>({
     expr: "",
@@ -84,6 +80,7 @@ export default function SettingsCronJobsPage() {
     deliveryChannel: "",
   });
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -98,7 +95,7 @@ export default function SettingsCronJobsPage() {
       },
       enabled: true,
     });
-    setCreateForm(defaultCreateForm());
+    setCreateForm(defaultCreateForm(me?.timezone));
     setShowCreate(false);
   };
 
@@ -138,7 +135,10 @@ export default function SettingsCronJobsPage() {
         {!showCreate ? (
           <button
             type="button"
-            onClick={() => setShowCreate(true)}
+            onClick={() => {
+              setCreateForm(defaultCreateForm(me?.timezone));
+              setShowCreate(true);
+            }}
             className="rounded-full border border-ink/20 px-4 py-2 text-sm hover:border-ink/40"
           >
             Add scheduled task
@@ -157,17 +157,6 @@ export default function SettingsCronJobsPage() {
             </label>
 
             <label className="text-sm text-ink/70">
-              Cron Expression
-              <input
-                className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm font-mono"
-                placeholder="0 9 * * *"
-                value={createForm.expr}
-                onChange={(e) => setCreateForm((prev) => ({ ...prev, expr: e.target.value }))}
-                required
-              />
-            </label>
-
-            <label className="text-sm text-ink/70">
               Timezone
               <input
                 className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
@@ -175,6 +164,11 @@ export default function SettingsCronJobsPage() {
                 onChange={(e) => setCreateForm((prev) => ({ ...prev, tz: e.target.value }))}
               />
             </label>
+
+            <ScheduleBuilder
+              expr={createForm.expr}
+              onChange={(expr) => setCreateForm((prev) => ({ ...prev, expr }))}
+            />
 
             <label className="text-sm text-ink/70">
               Delivery
@@ -250,7 +244,7 @@ export default function SettingsCronJobsPage() {
                   <div>
                     <p className="text-base font-medium">{job.name}</p>
                     <p className="text-sm text-ink/70">
-                      {cronToHumanReadable(job.schedule?.expr ?? "")} ({job.schedule?.tz ?? "UTC"})
+                      {cronToHuman(job.schedule?.expr ?? "", job.schedule?.tz ?? "UTC")}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -322,26 +316,18 @@ export default function SettingsCronJobsPage() {
                     onSubmit={handleUpdate}
                   >
                     <label className="text-sm text-ink/70">
-                      Cron Expression
-                      <input
-                        className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm font-mono"
-                        value={editForm.expr}
-                        onChange={(e) =>
-                          setEditForm((prev) => ({ ...prev, expr: e.target.value }))
-                        }
-                      />
-                    </label>
-
-                    <label className="text-sm text-ink/70">
                       Timezone
                       <input
                         className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
                         value={editForm.tz}
-                        onChange={(e) =>
-                          setEditForm((prev) => ({ ...prev, tz: e.target.value }))
-                        }
+                        onChange={(e) => setEditForm((prev) => ({ ...prev, tz: e.target.value }))}
                       />
                     </label>
+
+                    <ScheduleBuilder
+                      expr={editForm.expr}
+                      onChange={(expr) => setEditForm((prev) => ({ ...prev, expr }))}
+                    />
 
                     <label className="text-sm text-ink/70">
                       Delivery
@@ -366,9 +352,7 @@ export default function SettingsCronJobsPage() {
                         className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
                         rows={3}
                         value={editForm.message}
-                        onChange={(e) =>
-                          setEditForm((prev) => ({ ...prev, message: e.target.value }))
-                        }
+                        onChange={(e) => setEditForm((prev) => ({ ...prev, message: e.target.value }))}
                       />
                     </label>
 
