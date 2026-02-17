@@ -3,6 +3,7 @@ import {
   AuthUser,
   Automation,
   AutomationRun,
+  CronJob,
   DashboardData,
   DocumentListItem,
   DocumentResponse,
@@ -482,5 +483,38 @@ export function updateLLMConfig(data: LLMConfigUpdate): Promise<LLMConfig> {
   return apiFetch<LLMConfig>("/api/v1/settings/llm-config/", {
     method: "PUT",
     body: JSON.stringify(data),
+  });
+}
+
+// Cron Jobs (scheduled tasks managed via OpenClaw Gateway)
+export async function fetchCronJobs(): Promise<CronJob[]> {
+  const data = await apiFetch<{ jobs?: CronJob[] }>("/api/v1/cron-jobs/");
+  return data.jobs ?? [];
+}
+
+export function createCronJob(data: Partial<CronJob>): Promise<CronJob> {
+  return apiFetch<CronJob>("/api/v1/cron-jobs/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateCronJob(name: string, data: Partial<CronJob>): Promise<CronJob> {
+  return apiFetch<CronJob>(`/api/v1/cron-jobs/${encodeURIComponent(name)}/`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteCronJob(name: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/cron-jobs/${encodeURIComponent(name)}/`, {
+    method: "DELETE",
+  });
+}
+
+export function toggleCronJob(name: string, enabled: boolean): Promise<CronJob> {
+  return apiFetch<CronJob>(`/api/v1/cron-jobs/${encodeURIComponent(name)}/toggle/`, {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
   });
 }

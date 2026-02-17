@@ -9,6 +9,7 @@ const settingsTabs = [
   { href: "/settings", label: "Account" },
   { href: "/settings/integrations", label: "Integrations" },
   { href: "/settings/automations", label: "Automations" },
+  { href: "/settings/cron-jobs", label: "Scheduled Tasks" },
   { href: "/settings/usage", label: "Usage" },
   { href: "/settings/billing", label: "Billing" },
   { href: "/settings/ai-provider", label: "AI Provider" },

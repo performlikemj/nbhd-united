@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from typing import Any
 
-# Always deny runtime-management and cross-session controls for subscribers.
+# Deny runtime-management and cross-session controls for subscribers.
+# Cron tools are intentionally ALLOWED so users can manage scheduled tasks
+# via the agent or the settings UI.
 DENIED_TOOLS: tuple[str, ...] = (
-    "group:automation",  # includes gateway + cron controls
     "gateway",
-    "cron",
     "sessions_spawn",
     "sessions_send",
     "sessions_list",

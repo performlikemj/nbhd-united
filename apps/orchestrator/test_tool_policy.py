@@ -39,6 +39,13 @@ class ToolPolicyTest(TestCase):
         config = generate_tool_config("premium")
         self.assertEqual(config["elevated"], {"enabled": False})
 
+    def test_cron_tools_not_denied(self):
+        """Cron tools must be allowed so users can manage scheduled tasks."""
+        config = generate_tool_config("starter")
+        denied = config["deny"]
+        self.assertNotIn("cron", denied)
+        self.assertNotIn("group:automation", denied)
+
     def test_policy_uses_documented_keys_only(self):
         config = generate_tool_config("premium")
         self.assertNotIn("agent_tool_policy", config)

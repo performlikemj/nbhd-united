@@ -11,6 +11,7 @@ urlpatterns = [
     path("api/v1/journal/", include("apps.journal.urls")),
     path("api/v1/dashboard/", include("apps.dashboard.urls")),
     path("api/v1/telegram/", include("apps.router.urls")),
+    path("api/v1/cron-jobs/", include("apps.cron.tenant_urls")),
     path("api/cron/", include("apps.cron.urls")),
     path("stripe/", include("djstripe.urls", namespace="djstripe")),
 ]

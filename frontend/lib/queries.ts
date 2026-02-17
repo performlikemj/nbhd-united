@@ -5,11 +5,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   appendToDocument,
   createAutomation,
+  createCronJob,
   createDocument,
   createTemplate,
   createJournalEntry,
   createWeeklyReview,
   deleteAutomation,
+  deleteCronJob,
   deleteTemplate,
   deleteJournalEntry,
   deleteWeeklyReview,
@@ -17,6 +19,7 @@ import {
   fetchAutomationRuns,
   fetchAutomationRunsForAutomation,
   fetchAutomations,
+  fetchCronJobs,
   fetchDashboard,
   fetchDocument,
   fetchDocuments,
@@ -41,8 +44,10 @@ import {
   runAutomationNow,
   requestStripeCheckout,
   requestStripePortal,
+  toggleCronJob,
   unlinkTelegram,
   updateAutomation,
+  updateCronJob,
   updateLLMConfig,
   updateDocument,
   updateJournalEntry,
@@ -464,6 +469,56 @@ export function useUpdateLLMConfigMutation() {
     mutationFn: updateLLMConfig,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["llm-config"] });
+    },
+  });
+}
+
+// Cron Jobs
+export function useCronJobsQuery() {
+  return useQuery({
+    queryKey: ["cron-jobs"],
+    queryFn: fetchCronJobs,
+  });
+}
+
+export function useCreateCronJobMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createCronJob,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
+    },
+  });
+}
+
+export function useUpdateCronJobMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, data }: { name: string; data: Parameters<typeof updateCronJob>[1] }) =>
+      updateCronJob(name, data),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
+    },
+  });
+}
+
+export function useDeleteCronJobMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteCronJob,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
+    },
+  });
+}
+
+export function useToggleCronJobMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) =>
+      toggleCronJob(name, enabled),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
     },
   });
 }

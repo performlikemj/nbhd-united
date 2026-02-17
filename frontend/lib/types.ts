@@ -189,6 +189,32 @@ export interface WeeklyReview {
   updated_at: string;
 }
 
+// Cron Jobs (OpenClaw Gateway scheduled tasks)
+export interface CronJobSchedule {
+  kind: string;
+  expr: string;
+  tz: string;
+}
+
+export interface CronJobPayload {
+  kind: string;
+  message: string;
+}
+
+export interface CronJobDelivery {
+  mode: string;
+  channel?: string;
+}
+
+export interface CronJob {
+  name: string;
+  schedule: CronJobSchedule;
+  sessionTarget: string;
+  payload: CronJobPayload;
+  delivery: CronJobDelivery;
+  enabled: boolean;
+}
+
 export type AutomationKind = "daily_brief" | "weekly_review";
 export type AutomationStatus = "active" | "paused";
 export type AutomationScheduleType = "daily" | "weekly";
