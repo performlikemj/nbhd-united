@@ -433,8 +433,8 @@ class MemoryAPITest(TestCase):
     def test_put_memory_updates(self):
         self.client.put("/api/v1/journal/memory/", {"markdown": "v1"}, format="json")
         self.client.put("/api/v1/journal/memory/", {"markdown": "v2"}, format="json")
-        self.assertEqual(UserMemory.objects.filter(tenant=self.tenant).count(), 1)
-        self.assertEqual(UserMemory.objects.get(tenant=self.tenant).markdown, "v2")
+        self.assertEqual(Document.objects.filter(tenant=self.tenant, kind="memory", slug="long-term").count(), 1)
+        self.assertEqual(Document.objects.get(tenant=self.tenant, kind="memory", slug="long-term").markdown, "v2")
 
 
 @override_settings(
@@ -552,8 +552,8 @@ class TenantIsolationTest(TestCase):
         DailyNote.objects.create(
             tenant=self.tenant2, date=date(2026, 2, 15), markdown="# T2 note"
         )
-        UserMemory.objects.create(tenant=self.tenant1, markdown="# T1 mem")
-        UserMemory.objects.create(tenant=self.tenant2, markdown="# T2 mem")
+        Document.objects.create(tenant=self.tenant1, kind="memory", slug="long-term", title="Memory", markdown="# T1 mem")
+        Document.objects.create(tenant=self.tenant2, kind="memory", slug="long-term", title="Memory", markdown="# T2 mem")
 
     def test_user1_sees_only_own_daily_note(self):
         client = APIClient()
@@ -589,8 +589,9 @@ class RuntimeDailyNoteAPITest(TestCase):
         }
 
     def test_get_daily_note_raw_markdown(self):
-        DailyNote.objects.create(
-            tenant=self.tenant, date=date(2026, 2, 15), markdown=SAMPLE_MARKDOWN
+        Document.objects.create(
+            tenant=self.tenant, kind="daily", slug="2026-02-15",
+            title="2026-02-15", markdown=SAMPLE_MARKDOWN,
         )
         resp = self.client.get(
             f"/api/v1/integrations/runtime/{self.tenant.id}/daily-note/",
@@ -639,7 +640,8 @@ class RuntimeUserMemoryAPITest(TestCase):
             **self.headers,
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data["markdown"], "")
+        # Runtime endpoint auto-seeds with template content when memory doesn't exist
+        self.assertIn("Memory", resp.data["markdown"])
 
     def test_put_memory(self):
         resp = self.client.put(
@@ -664,7 +666,7 @@ class RuntimeUserMemoryAPITest(TestCase):
             format="json",
             **self.headers,
         )
-        mem = UserMemory.objects.get(tenant=self.tenant)
+        mem = Document.objects.get(tenant=self.tenant, kind="memory", slug="long-term")
         self.assertEqual(mem.markdown, "v2")
 
 
@@ -685,8 +687,8 @@ class RuntimeJournalContextAPITest(TestCase):
         from django.utils import timezone as tz
 
         today = tz.now().date()
-        DailyNote.objects.create(tenant=self.tenant, date=today, markdown="# Today")
-        UserMemory.objects.create(tenant=self.tenant, markdown="# Memory")
+        Document.objects.create(tenant=self.tenant, kind="daily", slug=str(today), title=str(today), markdown="# Today")
+        Document.objects.create(tenant=self.tenant, kind="memory", slug="long-term", title="Memory", markdown="# Memory")
 
         resp = self.client.get(
             f"/api/v1/integrations/runtime/{self.tenant.id}/journal-context/",

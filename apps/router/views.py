@@ -86,7 +86,7 @@ def _build_budget_exhausted_message(chat_id: int, tenant: Tenant) -> dict:
     budget_remaining = max(tenant.monthly_token_budget - tenant.tokens_this_month, 0)
     plus_message = (
         " Opus requests are paused while at quota."
-        if tenant.model_tier == Tenant.ModelTier.PLUS
+        if tenant.model_tier == Tenant.ModelTier.PREMIUM
         else ""
     )
 
