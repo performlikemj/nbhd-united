@@ -113,7 +113,8 @@ class ConfigGeneratorTest(TestCase):
         tools = config["tools"]
         self.assertIn("allow", tools)
         self.assertIn("deny", tools)
-        self.assertIn("group:automation", tools["deny"])
+        self.assertIn("gateway", tools["deny"])
+        self.assertNotIn("group:automation", tools["deny"])
         self.assertNotIn("group:browser", tools["allow"])
 
     def test_premium_tier_tools_enable_browser_and_exec(self):
