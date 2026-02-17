@@ -55,14 +55,14 @@ _BACKGROUND_TASKS_PROMPT = (
 
 # Model mapping by tier
 TIER_MODELS: dict[str, dict[str, str]] = {
-    "starter": {"primary": "moonshotai/kimi-k2.5"},
+    "starter": {"primary": "openrouter/moonshotai/kimi-k2.5"},
     "premium": {"primary": "anthropic/claude-sonnet-4-20250514"},
     "byok": {"primary": "anthropic/claude-sonnet-4-20250514"},  # fallback, overridden by user config
 }
 
 TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     "starter": {
-        "moonshotai/kimi-k2.5": {"alias": "kimi"},
+        "openrouter/moonshotai/kimi-k2.5": {"alias": "kimi"},
     },
     "premium": {
         "anthropic/claude-sonnet-4-20250514": {"alias": "sonnet"},
@@ -267,7 +267,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
 
     # Note: OPENROUTER_API_KEY is injected as a container env var via Key Vault
     # reference (see azure_client.py). OpenClaw reads it automatically for
-    # models routed through OpenRouter (e.g. moonshotai/kimi-k2.5).
+    # models routed through OpenRouter (e.g. openrouter/moonshotai/kimi-k2.5).
 
     # BYOK: inject user's own provider config
     if tier == "byok":
