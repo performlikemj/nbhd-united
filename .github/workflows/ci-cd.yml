@@ -117,6 +117,7 @@ jobs:
           SECRET_KEY: test-secret-key-not-for-production
           DEBUG: "True"
           ALLOWED_HOSTS: "*"
+          MOONSHOT_API_KEY: "sk-smoke-test-dummy"
         run: |
           ./scripts/openclaw_config_doctor_smoke.sh
 

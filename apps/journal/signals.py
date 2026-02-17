@@ -14,11 +14,11 @@ logger = logging.getLogger(__name__)
 @receiver(post_save, sender=Document)
 def queue_memory_sync_on_document_save(sender, instance, **kwargs):
     """Queue a workspace memory sync whenever a Document is saved."""
-    from apps.journal.tasks import sync_documents_to_workspace
+    from apps.cron.publish import publish_task
 
     tenant_id = str(instance.tenant_id)
     try:
-        sync_documents_to_workspace.delay(tenant_id)
+        publish_task("sync_documents_to_workspace", tenant_id)
     except Exception:
         logger.warning(
             "Failed to queue memory sync for tenant %s",

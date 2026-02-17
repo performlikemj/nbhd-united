@@ -1,15 +1,12 @@
-"""Celery tasks for journal memory sync."""
+"""Tasks for journal memory sync (executed via QStash, not Celery)."""
 from __future__ import annotations
 
 import logging
 
-from celery import shared_task
-
 logger = logging.getLogger(__name__)
 
 
-@shared_task(bind=True, max_retries=2, default_retry_delay=30)
-def sync_documents_to_workspace(self, tenant_id: str):
+def sync_documents_to_workspace(tenant_id: str):
     """Mirror tenant's DB documents to their Azure File Share workspace.
 
     Renders recent documents as markdown files and uploads them so
@@ -54,8 +51,8 @@ def sync_documents_to_workspace(self, tenant_id: str):
         written = upload_memory_files_to_share(str(tenant.id), files)
         return {"synced": written, "total": len(files)}
 
-    except Exception as exc:
+    except Exception:
         logger.exception(
             "sync_documents_to_workspace failed for tenant %s", tenant_id
         )
-        raise self.retry(exc=exc)
+        raise
