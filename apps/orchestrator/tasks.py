@@ -1,5 +1,5 @@
 """Tasks for async provisioning/deprovisioning (executed via QStash)."""
-from .services import deprovision_tenant, provision_tenant, update_tenant_config
+from .services import deprovision_tenant, provision_tenant, seed_cron_jobs, update_tenant_config
 
 
 def provision_tenant_task(tenant_id: str) -> None:
@@ -15,3 +15,8 @@ def deprovision_tenant_task(tenant_id: str) -> None:
 def update_tenant_config_task(tenant_id: str) -> None:
     """Update an active tenant's OpenClaw container config."""
     update_tenant_config(tenant_id)
+
+
+def seed_cron_jobs_task(tenant_id: str) -> None:
+    """Seed cron job definitions into a tenant's running OpenClaw container."""
+    seed_cron_jobs(tenant_id)

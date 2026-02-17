@@ -90,6 +90,7 @@ TASK_MAP = {
     "provision_tenant": "apps.orchestrator.tasks.provision_tenant_task",
     "deprovision_tenant": "apps.orchestrator.tasks.deprovision_tenant_task",
     "update_tenant_config": "apps.orchestrator.tasks.update_tenant_config_task",
+    "seed_cron_jobs": "apps.orchestrator.tasks.seed_cron_jobs_task",
 }
 
 
