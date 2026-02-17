@@ -23,20 +23,22 @@ DENIED_TOOLS: tuple[str, ...] = (
 )
 
 # Starter tier: non-destructive helper surface only.
+# Group names must match OpenClaw docs: group:web, group:fs, group:memory,
+# group:messaging, group:automation.  "tts" and "image" are standalone tools.
 STARTER_ALLOW: tuple[str, ...] = (
-    "group:network",
+    "group:web",
     "group:memory",
-    "group:files",
+    "group:fs",
     "group:messaging",
-    "group:tts",
-    "group:image",
+    "tts",
+    "image",
     "cron",
 )
 
 # Premium tier adds browser automation and sandboxed exec capability.
 PREMIUM_ALLOW: tuple[str, ...] = STARTER_ALLOW + (
-    "group:browser",
-    "exec",
+    "group:ui",
+    "group:runtime",
 )
 
 # Legacy aliases for backward compatibility in tests
