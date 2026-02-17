@@ -87,18 +87,11 @@ def _build_models_providers(tier: str, tenant: Tenant) -> dict:
     return providers
 
 
-def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
-    """Build cron job definitions for seeding via the Gateway API.
-
-    NOTE: These cannot go in openclaw.json (the ``cron`` config key only
-    accepts runtime settings like ``enabled``).  Job definitions must be
-    provisioned through the Gateway's ``/api/cron/jobs`` endpoint or the
-    ``openclaw cron add`` CLI.  This helper is called during tenant
-    provisioning — see ``apps/orchestrator/tasks.py``.
-    """
+def _build_cron_jobs(tenant: Tenant) -> dict:
+    """Build the cron section of the OpenClaw config including job definitions."""
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
 
-    return [
+    jobs = [
         {
             "name": "Morning Briefing",
             "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": user_tz},
@@ -133,6 +126,8 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "enabled": True,
         },
     ]
+
+    return {"enabled": True, "jobs": jobs}
 
 
 def _build_tools_section(tier: str) -> dict[str, Any]:
@@ -270,8 +265,8 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "ackReactionScope": "group-mentions",
         },
 
-        # Cron runtime settings (job definitions are seeded via Gateway API)
-        "cron": {"enabled": True},
+        # Cron jobs
+        "cron": _build_cron_jobs(tenant),
     }
 
     # Note: BRAVE_API_KEY is injected as a container env var via Key Vault
