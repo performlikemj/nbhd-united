@@ -265,7 +265,8 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
         }
 
     jobs_json = _json.dumps({"version": 1, "jobs": jobs}, indent=2)
-    file_client.upload_file(jobs_json.encode("utf-8"), overwrite=True)
+    data = jobs_json.encode("utf-8")
+    file_client.upload_file(data, length=len(data))
     logger.info("seed_cron_jobs: wrote %d jobs to %s/cron/jobs.json", len(jobs), share_name)
 
     return {

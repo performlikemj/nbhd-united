@@ -339,7 +339,8 @@ def upload_config_to_file_share(tenant_id: str, config_json: str) -> None:
         file_path="openclaw.json",
         credential=account_key,
     )
-    file_client.upload_file(config_json.encode("utf-8"), overwrite=True)
+    data = config_json.encode("utf-8")
+    file_client.upload_file(data, length=len(data))
     logger.info("Uploaded openclaw.json to file share %s", share_name)
 
 
