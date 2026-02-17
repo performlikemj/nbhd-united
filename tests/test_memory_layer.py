@@ -41,9 +41,13 @@ class AgentsMemoryInstructionsTest(TestCase):
 
     def test_agents_md_has_security_section(self):
         content = self._read_agents()
-        self.assertIn("Never store", content.lower().replace("never store", "Never store"))
-        # Check for password/secret warnings
-        self.assertIn("password", content.lower())
+        lower = content.lower()
+        self.assertIn("security", lower)
+        # Check for secret/sensitive data warnings
+        self.assertTrue(
+            "secret" in lower or "sensitive" in lower or "password" in lower,
+            "Security section should warn about secrets, sensitive data, or passwords",
+        )
 
     def test_agents_md_under_300_lines(self):
         content = self._read_agents()

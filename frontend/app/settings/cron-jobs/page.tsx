@@ -232,6 +232,10 @@ export default function SettingsCronJobsPage() {
         <SectionCard title="Your Tasks">
           <p className="rounded-panel border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
             Could not load scheduled tasks.
+            {error instanceof Error ? ` ${error.message}` : ""}
+          </p>
+          <p className="mt-2 text-xs text-ink/50">
+            If this persists, run: python manage.py check_gateway_health
           </p>
         </SectionCard>
       ) : cronJobs && cronJobs.length > 0 ? (

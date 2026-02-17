@@ -578,6 +578,54 @@ class TenantIsolationTest(TestCase):
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")
+class RuntimeToFrontendIntegrationTest(TestCase):
+    """Verify agent writes via runtime endpoint are visible on the user-facing Journal API."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="testuser_integ", password="testpass")
+        self.tenant = Tenant.objects.create(user=self.user, status="active")
+        self.client = APIClient()
+        self.runtime_headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def test_agent_section_write_visible_on_document_api(self):
+        """Morning briefing writes → visible on /api/v1/journal/documents/daily/{date}/"""
+        # 1. Agent writes via runtime endpoint (simulates nbhd_daily_note_set_section)
+        resp = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/daily-note/append/",
+            {"content": "Sunny, 72F, clear skies.", "date": "2026-02-17", "section_slug": "weather"},
+            format="json",
+            **self.runtime_headers,
+        )
+        self.assertEqual(resp.status_code, 201)
+
+        # 2. User fetches the same document via the user-facing API
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.get("/api/v1/journal/documents/daily/2026-02-17/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Sunny, 72F", resp.data["markdown"])
+        self.assertIn("## Weather", resp.data["markdown"])
+
+    def test_agent_quick_log_visible_on_document_api(self):
+        """Quick log append → visible as timestamped entry."""
+        resp = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/daily-note/append/",
+            {"content": "Checked email, nothing urgent.", "date": "2026-02-17"},
+            format="json",
+            **self.runtime_headers,
+        )
+        self.assertEqual(resp.status_code, 201)
+
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.get("/api/v1/journal/documents/daily/2026-02-17/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Checked email", resp.data["markdown"])
+        self.assertIn("(agent)", resp.data["markdown"])
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
 class RuntimeDailyNoteAPITest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="testuser", password="testpass")
