@@ -65,6 +65,7 @@ export interface AuthUser {
   username: string;
   display_name: string;
   language: string;
+  timezone: string;
   telegram_chat_id: number | null;
   telegram_username: string;
   tenant: Tenant | null;

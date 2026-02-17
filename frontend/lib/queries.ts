@@ -33,6 +33,7 @@ import {
   fetchTemplates,
   fetchTelegramStatus,
   fetchUsageHistory,
+  updateProfile,
   fetchUsageSummary,
   fetchWeeklyReviews,
   generateTelegramLink,
@@ -61,6 +62,16 @@ export function useMeQuery() {
     queryKey: ["me"],
     queryFn: fetchMe,
     retry: false,
+  });
+}
+
+export function useUpdateProfileMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: updateProfile,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["me"] });
+    },
   });
 }
 
