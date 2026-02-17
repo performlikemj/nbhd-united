@@ -35,7 +35,7 @@ MODEL_RATES: dict[str, dict[str, float]] = {
         "output": 5.0,
         "display_name": "Claude Haiku 4.5",
     },
-    "moonshot/kimi-k2.5": {
+    "moonshotai/kimi-k2.5": {
         "input": 0.5,
         "output": 2.0,
         "display_name": "Kimi K2.5",
