@@ -37,6 +37,9 @@ export interface Tenant {
   status: TenantStatus;
   model_tier: TenantTier;
   has_active_subscription: boolean;
+  is_trial: boolean;
+  trial_ends_at: string | null;
+  trial_days_remaining: number | null;
   container_id: string;
   container_fqdn: string;
   messages_today: number;

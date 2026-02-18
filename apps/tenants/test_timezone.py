@@ -168,7 +168,8 @@ class OnboardTimezoneTest(TestCase):
         self.client = APIClient()
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
 
-    def test_onboard_with_timezone_and_persona(self):
+    @patch("apps.tenants.views.publish_task")
+    def test_onboard_with_timezone_and_persona(self, mock_publish):
         response = self.client.post(
             "/api/v1/tenants/onboard/",
             {
@@ -183,7 +184,8 @@ class OnboardTimezoneTest(TestCase):
         self.assertEqual(self.user.timezone, "Europe/London")
         self.assertEqual(self.user.preferences.get("agent_persona"), "neighbor")
 
-    def test_onboard_defaults_timezone(self):
+    @patch("apps.tenants.views.publish_task")
+    def test_onboard_defaults_timezone(self, mock_publish):
         response = self.client.post(
             "/api/v1/tenants/onboard/",
             {"display_name": "Default TZ"},

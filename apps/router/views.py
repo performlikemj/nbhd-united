@@ -154,6 +154,21 @@ def telegram_webhook(request):
         logger.info("Unknown chat_id %s, sending onboarding link", chat_id)
         return JsonResponse(response_data)
 
+    frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
+    if (
+        tenant.status == Tenant.Status.SUSPENDED
+        and not tenant.is_trial
+        and not bool(tenant.stripe_subscription_id)
+    ):
+        return JsonResponse({
+            "method": "sendMessage",
+            "chat_id": chat_id,
+            "text": (
+                "Your free trial has ended. Subscribe to continue using your assistant: "
+                f"{frontend_url}/settings/billing"
+            ),
+        })
+
     if not check_budget(tenant):
         return JsonResponse(_build_budget_exhausted_message(chat_id, tenant))
 

@@ -68,6 +68,32 @@ function UserMenu({ onLogout }: { onLogout: () => void }) {
   );
 }
 
+function TrialBadge() {
+  const { data: me } = useMeQuery();
+  const tenant = me?.tenant;
+  const isTrialEnded = tenant?.is_trial && !tenant?.has_active_subscription;
+  const daysLeft = tenant?.trial_days_remaining;
+
+  if (!tenant?.is_trial) {
+    return null;
+  }
+
+  return (
+    <span
+      className={clsx(
+        "inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium",
+        isTrialEnded
+          ? "border-rose-200 bg-rose-50 text-rose-600"
+          : "border-accent/30 bg-accent/10 text-accent",
+      )}
+    >
+      {isTrialEnded
+        ? "Trial ended"
+        : `Trial: ${daysLeft ?? 0} days left`}
+    </span>
+  );
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -128,6 +154,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <h1 className="text-lg font-semibold text-ink">Subscriber Control Console</h1>
           </div>
           <div className="flex items-center gap-3">
+            <TrialBadge />
             <nav className="flex items-center gap-1 rounded-full border border-ink/15 bg-white p-1">
               {navItems.map((item) => {
                 const active = pathname.startsWith(item.href);

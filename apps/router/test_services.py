@@ -47,10 +47,20 @@ class ResolveContainerEdgeCaseTest(TestCase):
         self.assertIsNotNone(resolved)
         self.assertEqual(resolved.id, self.tenant.id)
 
-    def test_resolve_tenant_by_chat_id_returns_none_for_inactive(self):
+    def test_resolve_tenant_by_chat_id_returns_suspended_tenant(self):
+        """Suspended tenants are returned so the webhook can send trial-ended messages."""
         self.tenant.status = Tenant.Status.SUSPENDED
         self.tenant.container_fqdn = ""
         self.tenant.save(update_fields=["status", "container_fqdn", "updated_at"])
+
+        resolved = resolve_tenant_by_chat_id(111999)
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.status, Tenant.Status.SUSPENDED)
+
+    def test_resolve_tenant_by_chat_id_returns_none_for_pending(self):
+        """Non-active, non-suspended tenants still return None."""
+        self.tenant.status = Tenant.Status.PENDING
+        self.tenant.save(update_fields=["status", "updated_at"])
 
         self.assertIsNone(resolve_tenant_by_chat_id(111999))
 

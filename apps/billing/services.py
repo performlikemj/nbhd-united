@@ -99,6 +99,7 @@ def record_usage(
 def check_budget(tenant: Tenant) -> bool:
     """Return True if tenant can send messages (within budget)."""
     tenant.refresh_from_db()
+    # Trial users share starter-tier budget behavior.
     if tenant.is_over_budget:
         logger.warning("Tenant %s over personal budget", tenant.id)
         return False
@@ -141,18 +142,27 @@ def handle_checkout_completed(session_data: dict) -> None:
     tenant.stripe_customer_id = customer_id
     tenant.stripe_subscription_id = subscription_id
     tenant.model_tier = tier
-    tenant.status = Tenant.Status.PROVISIONING
+    tenant.is_trial = False
+
+    if tenant.status == Tenant.Status.SUSPENDED:
+        tenant.status = Tenant.Status.ACTIVE
+        should_provision = False
+    else:
+        tenant.status = Tenant.Status.PROVISIONING
+        should_provision = True
+
     tenant.save(update_fields=[
         "stripe_customer_id", "stripe_subscription_id",
-        "model_tier", "status", "updated_at",
+        "model_tier", "is_trial", "status", "updated_at",
     ])
 
     if was_provisioning and same_subscription:
         logger.info("Tenant %s already provisioning for current subscription", tenant.id)
         return
 
-    publish_task("provision_tenant", str(tenant.id))
-    logger.info("Triggered provisioning for tenant %s", tenant.id)
+    if should_provision:
+        publish_task("provision_tenant", str(tenant.id))
+        logger.info("Triggered provisioning for tenant %s", tenant.id)
 
 
 def handle_subscription_deleted(subscription_data: dict) -> None:
