@@ -10,6 +10,8 @@ import {
   useMeQuery,
   usePersonasQuery,
   usePreferencesQuery,
+  useRefreshConfigMutation,
+  useRefreshConfigStatusQuery,
   useUpdateProfileMutation,
   useUpdatePreferencesMutation,
 } from "@/lib/queries";
@@ -212,10 +214,20 @@ function findTimezoneLabel(tz: string) {
   return `${tz} (${offsetLabel(tz)})`;
 }
 
+function timeAgo(dateStr: string): string {
+  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} minutes ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`;
+  return `${Math.floor(seconds / 86400)} days ago`;
+}
+
 export default function SettingsPage() {
   const { data: me, isLoading } = useMeQuery();
   const { data: personas } = usePersonasQuery();
   const { data: prefs } = usePreferencesQuery();
+  const { data: refreshConfigStatus, refetch: refetchRefreshConfigStatus } = useRefreshConfigStatusQuery();
+  const refreshConfigMutation = useRefreshConfigMutation();
   const updatePrefs = useUpdatePreferencesMutation();
   const updateProfile = useUpdateProfileMutation();
 
@@ -228,6 +240,8 @@ export default function SettingsPage() {
   const [displayName, setDisplayName] = useState("");
   const [language, setLanguage] = useState("en");
   const [timezone, setTimezone] = useState("UTC");
+  const [refreshMessage, setRefreshMessage] = useState("");
+  const [refreshError, setRefreshError] = useState("");
 
   const [savingField, setSavingField] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState("");
@@ -240,6 +254,9 @@ export default function SettingsPage() {
 
   const currentPersona = prefs?.agent_persona ?? "neighbor";
   const currentPersonaLabel = personas?.find((p) => p.key === currentPersona);
+
+  const canRefreshConfig = refreshConfigStatus?.can_refresh ?? true;
+  const cooldownMinutes = refreshConfigStatus ? Math.max(1, Math.ceil(refreshConfigStatus.cooldown_seconds / 60)) : 0;
 
   useEffect(() => {
     if (!editingDisplayName && me) {
@@ -262,6 +279,11 @@ export default function SettingsPage() {
   const clearStatus = () => {
     setSavingField(null);
     setSaveMessage("");
+  };
+
+  const clearRefreshStatus = () => {
+    setRefreshMessage("");
+    setRefreshError("");
   };
 
   const handleSaveProfileField = async (
@@ -343,7 +365,33 @@ export default function SettingsPage() {
     setEditingPersona(false);
   };
 
+  const handleRefreshConfig = async () => {
+    setRefreshMessage("");
+    setRefreshError("");
+    try {
+      await refreshConfigMutation.mutateAsync();
+      setRefreshMessage("Configuration refreshed. Your assistant will restart momentarily.");
+      window.setTimeout(clearRefreshStatus, 4000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to refresh configuration.";
+      const statusResult = await refetchRefreshConfigStatus().catch(() => undefined);
+      const status = statusResult?.data as { can_refresh?: boolean; cooldown_seconds?: number } | undefined;
+      const canRefresh = status?.can_refresh ?? canRefreshConfig;
+      const cooldown = status?.cooldown_seconds ?? refreshConfigStatus?.cooldown_seconds ?? 0;
+      const nextCooldownMinutes = Math.max(1, Math.ceil(Math.max(cooldown, 0) / 60));
+
+      if (!canRefresh || message.includes("429")) {
+        setRefreshError(cooldown > 0 ? `Available in ${nextCooldownMinutes} minutes` : "Configuration refresh is on cooldown.");
+        return;
+      }
+
+      setRefreshError(message);
+      window.setTimeout(clearRefreshStatus, 5000);
+    }
+  };
+
   const isSaving = savingField !== null || updatePrefs.isPending;
+  const isRefreshingConfig = refreshConfigMutation.isPending;
 
   if (isLoading) {
     return (
@@ -618,6 +666,35 @@ export default function SettingsPage() {
             <p className="text-xs text-ink/45">Changes take effect on the next container restart or reprovision.</p>
           </div>
         )}
+      </SectionCard>
+
+      <SectionCard
+        title="Agent Configuration"
+        subtitle="Refresh your agent's configuration to apply the latest platform updates"
+      >
+        <dl className="grid gap-3 text-sm sm:grid-cols-2">
+          <div className="rounded-panel border border-ink/15 bg-white p-4 sm:col-span-2">
+            <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Last Refreshed</dt>
+            <dd className="mt-1 text-base text-ink">
+              {refreshConfigStatus?.last_refreshed ? `Last refreshed: ${timeAgo(refreshConfigStatus.last_refreshed)}` : "Never refreshed"}
+            </dd>
+          </div>
+        </dl>
+
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={handleRefreshConfig}
+            disabled={isRefreshingConfig || !canRefreshConfig}
+            className="rounded-full border border-ink/20 px-5 py-2 text-sm text-ink/75 transition hover:border-ink/30 hover:text-ink disabled:cursor-not-allowed disabled:opacity-55"
+          >
+            {isRefreshingConfig ? "Refreshing..." : canRefreshConfig ? "Refresh Configuration" : `Available in ${cooldownMinutes} minutes`}
+          </button>
+          {(refreshMessage || refreshError) ? (
+            <p className={`text-sm ${refreshMessage ? "text-signal" : "text-rose-600"}`}>{refreshMessage || refreshError}</p>
+          ) : null}
+        </div>
+        <p className="mt-2 text-xs text-ink/45">This will restart your assistant. Active conversations may be briefly interrupted.</p>
       </SectionCard>
     </div>
   );
