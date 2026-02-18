@@ -19,22 +19,32 @@ def get_current_tenant():
 def set_rls_context(*, tenant_id=None, user_id=None, service_role=False):
     """Set Postgres session variables for RLS policies.
 
-    Variables are transaction-scoped (auto-reset when the connection is
-    returned to the pool), so no manual RESET is needed.
+    Variables are session-scoped (persist for the connection lifetime).
+    Cleared by reset_rls_context() in middleware process_response.
+    Django's default CONN_MAX_AGE=0 also closes connections after each
+    request as a safety net.
     """
     with connection.cursor() as cursor:
         if tenant_id:
             cursor.execute(
-                "SELECT set_config('app.tenant_id', %s, true)", [str(tenant_id)]
+                "SELECT set_config('app.tenant_id', %s, false)", [str(tenant_id)]
             )
         if user_id:
             cursor.execute(
-                "SELECT set_config('app.user_id', %s, true)", [str(user_id)]
+                "SELECT set_config('app.user_id', %s, false)", [str(user_id)]
             )
         if service_role:
             cursor.execute(
-                "SELECT set_config('app.service_role', 'true', true)"
+                "SELECT set_config('app.service_role', 'true', false)"
             )
+
+
+def reset_rls_context():
+    """Clear all RLS session variables (defense-in-depth)."""
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT set_config('app.tenant_id', '', false)")
+        cursor.execute("SELECT set_config('app.user_id', '', false)")
+        cursor.execute("SELECT set_config('app.service_role', '', false)")
 
 
 class TenantContextMiddleware(MiddlewareMixin):
@@ -56,6 +66,10 @@ class TenantContextMiddleware(MiddlewareMixin):
 
     def process_response(self, request, response):
         _tenant_context.tenant = None
+        try:
+            reset_rls_context()
+        except Exception:
+            pass  # Connection may already be closed
         return response
 
 

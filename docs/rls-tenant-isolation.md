@@ -43,11 +43,12 @@ session variables:
 set_rls_context(tenant_id=..., user_id=..., service_role=...)
 ```
 
-This executes `SELECT set_config('app.tenant_id', '<uuid>', true)` (and
+This executes `SELECT set_config('app.tenant_id', '<uuid>', false)` (and
 similarly for `app.user_id` and `app.service_role`). The third argument
-(`true`) makes the variable **transaction-local** — it is automatically reset
-when the transaction ends and the connection returns to the pool. No manual
-`RESET` is required.
+(`false`) makes the variable **session-scoped** — it persists for the
+lifetime of the database connection. Variables are explicitly cleared by
+`reset_rls_context()` in middleware `process_response`. Django's default
+`CONN_MAX_AGE=0` also closes connections after each request as a safety net.
 
 RLS policies reference these variables via `current_setting('app.tenant_id')`.
 
