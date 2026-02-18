@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { type MouseEvent, useCallback, useState } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownEditor } from "@/components/journal/markdown-editor";
 import { MarkdownHelpSheet } from "@/components/journal/markdown-help-sheet";
@@ -63,6 +63,15 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
   const handleEdit = () => {
     setDraft(doc?.markdown || "");
     setEditing(true);
+  };
+
+  const handleContentAreaClick = (e: MouseEvent<HTMLDivElement>) => {
+    const target = e.target as Element | null;
+    if (target?.closest("input[type='checkbox']")) {
+      return;
+    }
+
+    handleEdit();
   };
 
   const handleSave = async () => {
@@ -245,11 +254,17 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
             />
           </div>
         ) : (
-          <div className="p-4 lg:p-6">
+          <div
+            className="group cursor-text rounded-sm border border-transparent p-4 transition-colors duration-150 hover:border-ink/10 hover:bg-ink/[0.03] lg:p-6"
+            onClick={handleContentAreaClick}
+          >
+            <p className="pointer-events-none mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-ink/25">
+              ✎ Tap anywhere to edit
+            </p>
             {doc?.markdown ? (
               <MarkdownRenderer content={doc.markdown} onCheckboxToggle={handleCheckboxToggle} />
             ) : (
-              <p className="text-sm italic text-ink/40">Empty document. Click Edit to start writing.</p>
+              <p className="text-sm italic text-ink/40">Tap anywhere to start writing...</p>
             )}
           </div>
         )}
