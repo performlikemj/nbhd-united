@@ -107,6 +107,14 @@ class Tenant(models.Model):
 
     # Metadata
     last_message_at = models.DateTimeField(null=True, blank=True)
+    config_version = models.IntegerField(
+        default=0,
+        help_text="Current applied config version",
+    )
+    pending_config_version = models.IntegerField(
+        default=0,
+        help_text="Latest available config version; > config_version means update pending",
+    )
     provisioned_at = models.DateTimeField(null=True, blank=True)
     config_refreshed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

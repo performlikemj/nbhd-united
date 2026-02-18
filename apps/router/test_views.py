@@ -2,6 +2,8 @@
 import json
 from unittest.mock import AsyncMock, patch
 
+from django.utils import timezone
+
 from django.test import TestCase, override_settings
 
 from apps.tenants.models import Tenant
@@ -78,6 +80,22 @@ class TelegramWebhookViewTest(TestCase):
         self.assertEqual(mock_forward.await_args.kwargs.get("timeout"), 30.0)
         self.assertEqual(mock_forward.await_args.kwargs.get("max_retries"), 1)
         self.assertEqual(mock_forward.await_args.kwargs.get("retry_delay"), 5.0)
+
+    @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
+    def test_active_tenant_updates_last_message_at(self, mock_forward):
+        tenant = create_tenant(display_name="ActiveLastMessage", telegram_chat_id=123450)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.container_fqdn = "oc-active.internal.azurecontainerapps.io"
+        tenant.last_message_at = None
+        tenant.save(update_fields=["status", "container_fqdn", "last_message_at", "updated_at"])
+        mock_forward.return_value = {"ok": True}
+
+        response = self._post_update({"message": {"chat": {"id": 123450}}})
+
+        self.assertEqual(response.status_code, 200)
+        tenant.refresh_from_db()
+        self.assertIsNotNone(tenant.last_message_at)
+        self.assertLessEqual((timezone.now() - tenant.last_message_at).total_seconds(), 5)
 
     @patch("apps.router.views.record_usage")
     @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)

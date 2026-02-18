@@ -54,6 +54,7 @@ export interface RefreshConfigStatus {
   last_refreshed: string | null;
   cooldown_seconds: number;
   status: string;
+  has_pending_update: boolean;
 }
 
 export interface Integration {

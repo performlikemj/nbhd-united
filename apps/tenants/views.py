@@ -97,6 +97,7 @@ class RefreshConfigView(APIView):
             "last_refreshed": tenant.config_refreshed_at,
             "cooldown_seconds": self.COOLDOWN_SECONDS,
             "status": tenant.status,
+            "has_pending_update": tenant.pending_config_version > tenant.config_version,
         })
 
     def post(self, request):
@@ -122,12 +123,14 @@ class RefreshConfigView(APIView):
             from apps.orchestrator.services import update_tenant_config
             update_tenant_config(str(tenant.id))
 
-            tenant.config_refreshed_at = timezone.now()
-            tenant.save(update_fields=["config_refreshed_at"])
+            now = timezone.now()
+            tenant.config_refreshed_at = now
+            tenant.config_version = tenant.pending_config_version
+            tenant.save(update_fields=["config_refreshed_at", "config_version"])
 
             return Response({
                 "detail": "Configuration refreshed. Your assistant will restart momentarily.",
-                "last_refreshed": tenant.config_refreshed_at,
+                "last_refreshed": now,
             })
         except Exception:
             logger.exception("Config refresh failed for tenant %s", tenant.id)

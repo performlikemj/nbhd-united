@@ -6,6 +6,7 @@ import logging
 
 from django.conf import settings
 from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseForbidden, JsonResponse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
@@ -155,6 +156,9 @@ def telegram_webhook(request):
 
     if not check_budget(tenant):
         return JsonResponse(_build_budget_exhausted_message(chat_id, tenant))
+
+    tenant.last_message_at = timezone.now()
+    tenant.save(update_fields=["last_message_at"])
 
     # Forward to the correct OpenClaw instance
     loop = asyncio.new_event_loop()

@@ -10,10 +10,17 @@ import traceback
 import uuid
 from importlib import import_module
 
+from datetime import timedelta
+
+from django.db import models
 from django.conf import settings
 from django.http import JsonResponse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
+
+from apps.orchestrator.services import update_tenant_config
+from apps.tenants.models import Tenant
 
 
 logger = logging.getLogger(__name__)
@@ -221,3 +228,49 @@ def list_tasks(request):
         return JsonResponse({"error": "Endpoint disabled"}, status=403)
 
     return JsonResponse({"tasks": list(TASK_MAP.keys()), "count": len(TASK_MAP)})
+
+
+@csrf_exempt
+@require_POST
+def apply_pending_configs(request):
+    """Apply queued config updates for idle active tenants.
+
+    URL: /api/cron/apply-pending-configs/
+    """
+    if not verify_qstash_signature(request):
+        logger.warning("Unauthorized apply-pending-configs cron attempt")
+        return JsonResponse({"error": "Invalid signature"}, status=401)
+
+    cutoff = timezone.now() - timedelta(minutes=15)
+    query = Tenant.objects.filter(
+        pending_config_version__gt=models.F("config_version"),
+        status=Tenant.Status.ACTIVE,
+        container_id__gt="",
+    )
+    query = query.filter(
+        models.Q(last_message_at__isnull=True) | models.Q(last_message_at__lt=cutoff),
+    )
+    evaluated = query.count()
+
+    updated = 0
+    failed = 0
+    for tenant in query:
+        try:
+            update_tenant_config(str(tenant.id))
+        except Exception:
+            logger.exception("Auto apply config failed for tenant %s", tenant.id)
+            failed += 1
+            continue
+
+        now = timezone.now()
+        Tenant.objects.filter(id=tenant.id).update(
+            config_version=models.F("pending_config_version"),
+            config_refreshed_at=now,
+        )
+        updated += 1
+
+    return JsonResponse({
+        "updated": updated,
+        "failed": failed,
+        "evaluated": evaluated,
+    })
