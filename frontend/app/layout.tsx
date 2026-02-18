@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { AppShell } from "@/components/app-shell";
+import { ThemeProvider } from "@/components/theme-provider";
 import { Providers } from "@/app/providers";
 
 import "./globals.css";
@@ -15,10 +16,12 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className="h-full">
-      <body className="overflow-x-hidden">
-        <Providers>
-          <AppShell>{children}</AppShell>
-        </Providers>
+      <body className="overflow-x-hidden bg-bg">
+        <ThemeProvider>
+          <Providers>
+            <AppShell>{children}</AppShell>
+          </Providers>
+        </ThemeProvider>
       </body>
     </html>
   );

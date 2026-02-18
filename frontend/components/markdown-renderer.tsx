@@ -41,7 +41,7 @@ export function MarkdownRenderer({ content, onCheckboxToggle }: MarkdownRenderer
             {...props}
             disabled={!onCheckboxToggle}
             onChange={handleChange}
-            className="mr-2 h-4 w-4 cursor-pointer rounded border-ink/30 accent-accent"
+            className="mr-2 h-4 w-4 cursor-pointer rounded border-border accent-accent"
           />
         );
       },
@@ -50,7 +50,7 @@ export function MarkdownRenderer({ content, onCheckboxToggle }: MarkdownRenderer
   };
 
   return (
-    <div className="prose prose-sm max-w-none text-ink/80 prose-headings:text-ink prose-h1:text-xl prose-h2:text-lg prose-h3:text-base prose-strong:text-ink prose-a:text-accent prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1 prose-p:my-2 prose-hr:my-4">
+    <div className="prose prose-sm max-w-none text-ink-muted prose-headings:text-ink prose-h1:text-xl prose-h2:text-lg prose-h3:text-base prose-strong:text-ink prose-a:text-accent prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1 prose-p:my-2 prose-hr:my-4">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {content}
       </ReactMarkdown>

@@ -228,7 +228,7 @@ export default function SettingsCronJobsPage() {
               setCreateForm(defaultCreateForm(me?.timezone));
               setShowCreate(true);
             }}
-            className="rounded-full border border-ink/20 px-4 py-2 text-sm hover:border-ink/40"
+            className="rounded-full border border-border-strong px-4 py-2 text-sm hover:border-border-strong"
           >
             Add scheduled task
           </button>
@@ -236,7 +236,7 @@ export default function SettingsCronJobsPage() {
           <div className="space-y-4">
             {/* Quick-start templates */}
             <div>
-              <p className="mb-2 text-sm font-medium text-ink/70">Quick start — pick a template</p>
+              <p className="mb-2 text-sm font-medium text-ink-muted">Quick start — pick a template</p>
               <div className="flex flex-wrap gap-2">
                 {TASK_TEMPLATES.map((tpl) => (
                   <button
@@ -246,7 +246,7 @@ export default function SettingsCronJobsPage() {
                     className={`rounded-full border px-3 py-1.5 text-sm transition ${
                       createForm.name === tpl.name
                         ? "border-accent bg-accent/10 text-accent"
-                        : "border-ink/15 text-ink/70 hover:border-ink/30 hover:text-ink"
+                        : "border-border text-ink-muted hover:border-border-strong hover:text-ink"
                     }`}
                   >
                     {tpl.icon} {tpl.name}
@@ -257,10 +257,10 @@ export default function SettingsCronJobsPage() {
 
             {/* Create form */}
             <form className="grid gap-3 md:grid-cols-2" onSubmit={handleCreate}>
-              <label className="text-sm text-ink/70">
+              <label className="text-sm text-ink-muted">
                 Name
                 <input
-                  className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                   placeholder="e.g. Morning Briefing"
                   value={createForm.name}
                   onChange={(e) => setCreateForm((prev) => ({ ...prev, name: e.target.value }))}
@@ -279,10 +279,10 @@ export default function SettingsCronJobsPage() {
                 onChange={(expr) => setCreateForm((prev) => ({ ...prev, expr }))}
               />
 
-              <label className="text-sm text-ink/70">
+              <label className="text-sm text-ink-muted">
                 Delivery
                 <select
-                  className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                   value={createForm.deliveryMode}
                   onChange={(e) => setCreateForm((prev) => ({ ...prev, deliveryMode: e.target.value }))}
                 >
@@ -291,10 +291,10 @@ export default function SettingsCronJobsPage() {
                 </select>
               </label>
 
-              <label className="text-sm text-ink/70 md:col-span-2">
+              <label className="text-sm text-ink-muted md:col-span-2">
                 What should your agent do?
                 <textarea
-                  className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                   rows={3}
                   placeholder="Describe the task in plain language — e.g. 'Check my calendar and weather, then send me a morning summary'"
                   value={createForm.message}
@@ -313,13 +313,13 @@ export default function SettingsCronJobsPage() {
                   {showCapabilities ? "Hide" : "Show"} what your agent can do ↗
                 </button>
                 {showCapabilities && (
-                  <div className="mt-2 grid gap-1.5 rounded-panel border border-ink/10 bg-ink/[0.02] p-3 sm:grid-cols-2">
+                  <div className="mt-2 grid gap-1.5 rounded-panel border border-border bg-surface-hover p-3 sm:grid-cols-2">
                     {AGENT_CAPABILITIES.map((cap) => (
                       <div key={cap.name} className="flex items-start gap-2 text-sm">
                         <span className="text-base leading-5">{cap.icon}</span>
                         <div>
-                          <span className="font-medium text-ink/80">{cap.name}</span>
-                          <span className="text-ink/50"> — {cap.desc}</span>
+                          <span className="font-medium text-ink-muted">{cap.name}</span>
+                          <span className="text-ink-faint"> — {cap.desc}</span>
                         </div>
                       </div>
                     ))}
@@ -331,14 +331,14 @@ export default function SettingsCronJobsPage() {
                 <button
                   type="submit"
                   disabled={createMutation.isPending}
-                  className="rounded-full border border-ink/20 px-4 py-2 text-sm hover:border-ink/40 disabled:cursor-not-allowed disabled:opacity-45"
+                  className="rounded-full border border-border-strong px-4 py-2 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   {createMutation.isPending ? "Creating..." : "Create"}
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowCreate(false)}
-                  className="rounded-full border border-ink/20 px-4 py-2 text-sm hover:border-ink/40"
+                  className="rounded-full border border-border-strong px-4 py-2 text-sm hover:border-border-strong"
                 >
                   Cancel
                 </button>
@@ -348,7 +348,7 @@ export default function SettingsCronJobsPage() {
         )}
 
         {createMutation.isError ? (
-          <p className="mt-3 rounded-panel border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+          <p className="mt-3 rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
             {getErrorMessage(createMutation.error)}
           </p>
         ) : null}
@@ -358,11 +358,11 @@ export default function SettingsCronJobsPage() {
         <SectionCardSkeleton lines={5} />
       ) : error ? (
         <SectionCard title="Your Tasks">
-          <p className="rounded-panel border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+          <p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
             Could not load scheduled tasks.
             {error instanceof Error ? ` ${error.message}` : ""}
           </p>
-          <p className="mt-2 text-xs text-ink/50">
+          <p className="mt-2 text-xs text-ink-faint">
             If this persists, run: python manage.py check_gateway_health
           </p>
         </SectionCard>
@@ -372,26 +372,26 @@ export default function SettingsCronJobsPage() {
             {cronJobs.map((job) => (
               <article
                 key={job.name}
-                className="rounded-panel border border-ink/15 bg-white p-4"
+                className="rounded-panel border border-border bg-surface p-4"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <p className="text-base font-medium break-words">{job.name}</p>
-                    <p className="text-sm text-ink/70 break-words">
+                    <p className="text-sm text-ink-muted break-words">
                       {cronToHuman(job.schedule?.expr ?? "", job.schedule?.tz ?? "UTC")}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
                     <StatusPill status={job.enabled ? "active" : "paused"} />
                     {job.delivery?.mode !== "none" && job.delivery?.channel ? (
-                      <span className="rounded-full bg-ink/5 px-2.5 py-0.5 text-xs text-ink/60">
+                      <span className="rounded-full bg-surface-hover px-2.5 py-0.5 text-xs text-ink-muted">
                         {job.delivery.channel}
                       </span>
                     ) : null}
                   </div>
                 </div>
 
-                <p className="mt-2 text-sm text-ink/60 line-clamp-2">
+                <p className="mt-2 text-sm text-ink-muted line-clamp-2">
                   {(job.payload?.message ?? "").slice(0, 200)}
                 </p>
 
@@ -402,7 +402,7 @@ export default function SettingsCronJobsPage() {
                       toggleMutation.mutate({ name: job.name, enabled: !job.enabled })
                     }
                     disabled={toggleMutation.isPending}
-                    className="rounded-full border border-ink/20 px-3 py-1.5 text-sm hover:border-ink/40 disabled:cursor-not-allowed disabled:opacity-45"
+                    className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
                   >
                     {job.enabled ? "Disable" : "Enable"}
                   </button>
@@ -410,7 +410,7 @@ export default function SettingsCronJobsPage() {
                   <button
                     type="button"
                     onClick={() => handleStartEdit(job)}
-                    className="rounded-full border border-ink/20 px-3 py-1.5 text-sm hover:border-ink/40"
+                    className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong"
                   >
                     Edit
                   </button>
@@ -421,14 +421,14 @@ export default function SettingsCronJobsPage() {
                         type="button"
                         onClick={() => handleDelete(job.name)}
                         disabled={deleteMutation.isPending}
-                        className="rounded-full border border-rose-300 px-3 py-1.5 text-sm text-rose-700 hover:border-rose-500 disabled:cursor-not-allowed disabled:opacity-45"
+                        className="rounded-full border border-rose-border px-3 py-1.5 text-sm text-rose-text hover:border-rose-border disabled:cursor-not-allowed disabled:opacity-45"
                       >
                         {deleteMutation.isPending ? "Deleting..." : "Confirm delete"}
                       </button>
                       <button
                         type="button"
                         onClick={() => setConfirmDelete(null)}
-                        className="rounded-full border border-ink/20 px-3 py-1.5 text-sm hover:border-ink/40"
+                        className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong"
                       >
                         Cancel
                       </button>
@@ -437,7 +437,7 @@ export default function SettingsCronJobsPage() {
                     <button
                       type="button"
                       onClick={() => setConfirmDelete(job.name)}
-                      className="rounded-full border border-rose-300 px-3 py-1.5 text-sm text-rose-700 hover:border-rose-500"
+                      className="rounded-full border border-rose-border px-3 py-1.5 text-sm text-rose-text hover:border-rose-border"
                     >
                       Delete
                     </button>
@@ -446,7 +446,7 @@ export default function SettingsCronJobsPage() {
 
                 {editingName === job.name ? (
                   <form
-                    className="mt-4 grid gap-3 rounded-panel border border-ink/10 p-3 md:grid-cols-2"
+                    className="mt-4 grid gap-3 rounded-panel border border-border p-3 md:grid-cols-2"
                     onSubmit={handleUpdate}
                   >
                     <TimezoneSelector
@@ -460,10 +460,10 @@ export default function SettingsCronJobsPage() {
                       onChange={(expr) => setEditForm((prev) => ({ ...prev, expr }))}
                     />
 
-                    <label className="text-sm text-ink/70">
+                    <label className="text-sm text-ink-muted">
                       Delivery
                       <select
-                        className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+                        className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                         value={editForm.deliveryMode}
                         onChange={(e) =>
                           setEditForm((prev) => ({
@@ -477,10 +477,10 @@ export default function SettingsCronJobsPage() {
                       </select>
                     </label>
 
-                    <label className="text-sm text-ink/70 md:col-span-2">
+                    <label className="text-sm text-ink-muted md:col-span-2">
                       What should your agent do?
                       <textarea
-                        className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+                        className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                         rows={3}
                         value={editForm.message}
                         onChange={(e) => setEditForm((prev) => ({ ...prev, message: e.target.value }))}
@@ -491,14 +491,14 @@ export default function SettingsCronJobsPage() {
                       <button
                         type="submit"
                         disabled={updateMutation.isPending}
-                        className="rounded-full border border-ink/20 px-3 py-1.5 text-sm hover:border-ink/40 disabled:cursor-not-allowed disabled:opacity-45"
+                        className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
                       >
                         {updateMutation.isPending ? "Saving..." : "Save"}
                       </button>
                       <button
                         type="button"
                         onClick={() => setEditingName(null)}
-                        className="rounded-full border border-ink/20 px-3 py-1.5 text-sm hover:border-ink/40"
+                        className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong"
                       >
                         Cancel
                       </button>
@@ -511,7 +511,7 @@ export default function SettingsCronJobsPage() {
         </SectionCard>
       ) : (
         <SectionCard title="Your Tasks">
-          <p className="text-sm text-ink/70">No scheduled tasks configured yet.</p>
+          <p className="text-sm text-ink-muted">No scheduled tasks configured yet.</p>
         </SectionCard>
       )}
     </div>

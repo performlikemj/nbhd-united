@@ -1,37 +1,50 @@
-import clsx from "clsx";
+import { useMemo } from "react";
 
-const tones: Record<string, string> = {
-  active: "bg-emerald-100 text-emerald-800",
-  paused: "bg-slate-100 text-slate-700",
-  pending: "bg-amber-100 text-amber-800",
-  running: "bg-sky-100 text-sky-800",
-  succeeded: "bg-emerald-100 text-emerald-800",
-  failed: "bg-rose-100 text-rose-800",
-  skipped: "bg-slate-100 text-slate-700",
-  manual: "bg-indigo-100 text-indigo-800",
-  schedule: "bg-violet-100 text-violet-800",
-  provisioning: "bg-sky-100 text-sky-800",
-  suspended: "bg-rose-100 text-rose-800",
-  deprovisioning: "bg-orange-100 text-orange-800",
-  deleted: "bg-slate-100 text-slate-700",
-  revoked: "bg-slate-100 text-slate-700",
-  expired: "bg-amber-100 text-amber-800",
-  error: "bg-rose-100 text-rose-800",
-  low: "bg-amber-100 text-amber-800",
-  medium: "bg-sky-100 text-sky-800",
-  high: "bg-emerald-100 text-emerald-800",
-  "thumbs-up": "bg-emerald-100 text-emerald-800",
-  "thumbs-down": "bg-rose-100 text-rose-800",
-  meh: "bg-amber-100 text-amber-800",
+type StyleTuple = {
+  bg: string;
+  text: string;
+};
+
+const tones: Record<string, StyleTuple> = {
+  active: { bg: "var(--status-emerald-bg)", text: "var(--status-emerald-text)" },
+  paused: { bg: "var(--status-slate-bg)", text: "var(--status-slate-text)" },
+  pending: { bg: "var(--status-amber-bg)", text: "var(--status-amber-text)" },
+  running: { bg: "var(--status-sky-bg)", text: "var(--status-sky-text)" },
+  succeeded: { bg: "var(--status-emerald-bg)", text: "var(--status-emerald-text)" },
+  failed: { bg: "var(--status-rose-bg)", text: "var(--status-rose-text)" },
+  skipped: { bg: "var(--status-slate-bg)", text: "var(--status-slate-text)" },
+  manual: { bg: "var(--status-indigo-bg)", text: "var(--status-indigo-text)" },
+  schedule: { bg: "var(--status-violet-bg)", text: "var(--status-violet-text)" },
+  provisioning: { bg: "var(--status-sky-bg)", text: "var(--status-sky-text)" },
+  suspended: { bg: "var(--status-rose-bg)", text: "var(--status-rose-text)" },
+  deprovisioning: { bg: "var(--status-orange-bg)", text: "var(--status-orange-text)" },
+  deleted: { bg: "var(--status-slate-bg)", text: "var(--status-slate-text)" },
+  revoked: { bg: "var(--status-slate-bg)", text: "var(--status-slate-text)" },
+  expired: { bg: "var(--status-amber-bg)", text: "var(--status-amber-text)" },
+  error: { bg: "var(--status-rose-bg)", text: "var(--status-rose-text)" },
+  low: { bg: "var(--status-amber-bg)", text: "var(--status-amber-text)" },
+  medium: { bg: "var(--status-sky-bg)", text: "var(--status-sky-text)" },
+  high: { bg: "var(--status-emerald-bg)", text: "var(--status-emerald-text)" },
+  "thumbs-up": { bg: "var(--status-emerald-bg)", text: "var(--status-emerald-text)" },
+  "thumbs-down": { bg: "var(--status-rose-bg)", text: "var(--status-rose-text)" },
+  meh: { bg: "var(--status-amber-bg)", text: "var(--status-amber-text)" },
+};
+
+const fallbackTone: StyleTuple = {
+  bg: "var(--status-slate-bg)",
+  text: "var(--status-slate-text)",
 };
 
 export function StatusPill({ status }: { status: string }) {
+  const style = useMemo(() => tones[status] ?? fallbackTone, [status]);
+
   return (
     <span
-      className={clsx(
-        "inline-flex rounded-full px-2.5 py-1 text-xs font-medium capitalize",
-        tones[status] ?? "bg-slate-100 text-slate-700"
-      )}
+      className="inline-flex rounded-full px-2.5 py-1 text-xs font-medium capitalize"
+      style={{
+        backgroundColor: style.bg,
+        color: style.text,
+      }}
     >
       {status}
     </span>

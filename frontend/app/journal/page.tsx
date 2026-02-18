@@ -72,11 +72,11 @@ export default function JournalPage() {
         }`}
       >
         <div
-          className="absolute inset-0 bg-black/40"
+          className="absolute inset-0 bg-overlay"
           onClick={() => setMobileSidebarOpen(false)}
         />
         <div
-          className={`relative z-10 h-full w-72 bg-white shadow-xl transition-transform duration-200 ease-out ${
+          className={`relative z-10 h-full w-72 bg-surface shadow-xl transition-transform duration-200 ease-out ${
             mobileSidebarOpen ? "translate-x-0" : "-translate-x-full"
           }`}
         >
@@ -89,7 +89,7 @@ export default function JournalPage() {
       </div>
 
       {/* Main content */}
-      <div className="min-w-0 flex-1 overflow-hidden bg-white">
+      <div className="min-w-0 flex-1 overflow-hidden bg-surface">
         <DocumentView
           kind={activeKind}
           slug={activeSlug}

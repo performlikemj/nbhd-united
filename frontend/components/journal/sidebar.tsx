@@ -46,11 +46,11 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
 
   if (collapsed) {
     return (
-      <div className="flex flex-col items-center border-r border-ink/10 bg-white/50 py-4">
+      <div className="flex flex-col items-center border-r border-border bg-surface/50 py-4">
         <button
           type="button"
           onClick={onToggle}
-          className="rounded p-2 text-ink/50 hover:bg-ink/5 hover:text-ink"
+          className="rounded p-2 text-ink-faint hover:bg-surface-hover hover:text-ink"
           title="Expand sidebar"
         >
           <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -71,15 +71,15 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
   ];
 
   return (
-    <div className="flex h-full w-64 flex-col border-r border-ink/10 bg-white/50">
+    <div className="flex h-full w-64 flex-col border-r border-border bg-surface/50">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-ink/10 px-4 py-3">
-        <h2 className="text-sm font-semibold text-ink/70">Journal</h2>
+      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+        <h2 className="text-sm font-semibold text-ink-muted">Journal</h2>
         {onToggle && (
           <button
             type="button"
             onClick={onToggle}
-            className="rounded p-1 text-ink/40 hover:bg-ink/5 hover:text-ink"
+            className="rounded p-1 text-ink-faint hover:bg-surface-hover hover:text-ink"
             title="Collapse sidebar"
           >
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -90,7 +90,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
       </div>
 
       {/* Quick nav */}
-      <div className="border-b border-ink/10 px-2 py-2">
+      <div className="border-b border-border px-2 py-2">
         {staticItems.map((item) => (
           <button
             key={`${item.kind}-${item.slug}`}
@@ -99,8 +99,8 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
             className={clsx(
               "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-sm transition",
               activeKind === item.kind && activeSlug === item.slug
-                ? "bg-ink/10 font-medium text-ink"
-                : "text-ink/65 hover:bg-ink/5 hover:text-ink",
+                ? "bg-border font-medium text-ink"
+                : "text-ink-muted hover:bg-surface-hover hover:text-ink",
             )}
           >
             <span>{item.icon}</span>
@@ -114,7 +114,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
         {isLoading ? (
           <div className="space-y-2 px-3">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="h-4 animate-pulse rounded bg-ink/10" />
+              <div key={i} className="h-4 animate-pulse rounded bg-border" />
             ))}
           </div>
         ) : (
@@ -131,7 +131,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
                 <button
                   type="button"
                   onClick={() => toggleSection(section.kind)}
-                  className="flex w-full items-center gap-1 rounded px-3 py-1 text-xs font-medium uppercase tracking-wider text-ink/45 hover:text-ink/70"
+                  className="flex w-full items-center gap-1 rounded px-3 py-1 text-xs font-medium uppercase tracking-wider text-ink-faint hover:text-ink-muted"
                 >
                   <svg
                     className={clsx("h-3 w-3 transition-transform", expanded && "rotate-90")}
@@ -143,7 +143,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
                   </svg>
                   <span>{KIND_ICONS[section.kind] || "📄"}</span>
                   <span>{section.label}</span>
-                  <span className="ml-auto text-[10px] text-ink/30">{items.length}</span>
+                  <span className="ml-auto text-[10px] text-ink-faint">{items.length}</span>
                 </button>
                 {expanded && (
                   <div className="ml-2 mt-0.5">
@@ -155,8 +155,8 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
                         className={clsx(
                           "flex w-full items-center rounded-lg px-3 py-1 text-left text-sm transition",
                           activeKind === section.kind && activeSlug === item.slug
-                            ? "bg-ink/10 font-medium text-ink"
-                            : "text-ink/55 hover:bg-ink/5 hover:text-ink/80",
+                            ? "bg-border font-medium text-ink"
+                            : "text-ink-muted hover:bg-surface-hover hover:text-ink-muted",
                         )}
                       >
                         <span className="truncate">{item.title}</span>

@@ -4,12 +4,104 @@
 
 :root {
   --ink: #12232c;
+  --ink-muted: rgba(18, 35, 44, 0.65);
+  --ink-faint: rgba(18, 35, 44, 0.40);
   --mist: #f6f4ee;
-  --card: #fcfcf8;
+  --bg: #f8f6ef;
+  --surface: #ffffff;
+  --surface-hover: rgba(18, 35, 44, 0.05);
+  --card: rgba(252, 252, 248, 0.95);
   --accent: #2563eb;
+  --accent-hover: rgba(37, 99, 235, 0.85);
   --signal: #5fbaaf;
+  --signal-faint: rgba(95, 186, 175, 0.12);
+  --border: rgba(18, 35, 44, 0.10);
+  --border-strong: rgba(18, 35, 44, 0.20);
+  --rose-bg: #fef2f2;
+  --rose-border: #fecaca;
+  --rose-text: #881337;
+  --amber-bg: #fffbeb;
+  --amber-border: rgba(217, 119, 6, 0.20);
+  --amber-text: #78350f;
+  --emerald-bg: #ecfdf5;
+  --emerald-text: #065f46;
+  --overlay: rgba(0, 0, 0, 0.30);
+  --shadow-panel: 0 20px 55px rgba(18, 31, 38, 0.14);
+  --bg-gradient: radial-gradient(circle at 20% 20%, rgba(255,194,153,0.42), transparent 40%),
+    radial-gradient(circle at 85% 15%, rgba(112,194,184,0.45), transparent 32%),
+    linear-gradient(180deg, #f8f6ef 0%, #eef4f4 48%, #f9f9f6 100%);
+  --grid-opacity: 0.7;
   --font-body: "Avenir Next", "Trebuchet MS", "Verdana", sans-serif;
   --font-mono: "IBM Plex Mono", "Consolas", "Menlo", monospace;
+  color-scheme: light;
+
+  /* Status tones */
+  --status-emerald-bg: #ecfdf5;
+  --status-emerald-text: #065f46;
+  --status-rose-bg: #fff1f2;
+  --status-rose-text: #881337;
+  --status-amber-bg: #fffbeb;
+  --status-amber-text: #78350f;
+  --status-sky-bg: #f0f9ff;
+  --status-sky-text: #075985;
+  --status-slate-bg: #f1f5f9;
+  --status-slate-text: #334155;
+  --status-indigo-bg: #eef2ff;
+  --status-indigo-text: #3730a3;
+  --status-violet-bg: #f5f3ff;
+  --status-violet-text: #5b21b6;
+  --status-orange-bg: #fff7ed;
+  --status-orange-text: #9a3412;
+}
+
+[data-theme="dark"] {
+  --ink: #e2e8f0;
+  --ink-muted: rgba(226, 232, 240, 0.65);
+  --ink-faint: rgba(226, 232, 240, 0.35);
+  --mist: #0f1419;
+  --bg: #0b0f13;
+  --surface: #161b22;
+  --surface-hover: rgba(226, 232, 240, 0.06);
+  --card: rgba(22, 27, 34, 0.95);
+  --accent: #3b82f6;
+  --accent-hover: rgba(59, 130, 246, 0.85);
+  --signal: #5fbaaf;
+  --signal-faint: rgba(95, 186, 175, 0.15);
+  --border: rgba(226, 232, 240, 0.10);
+  --border-strong: rgba(226, 232, 240, 0.20);
+  --rose-bg: rgba(136, 19, 55, 0.15);
+  --rose-border: rgba(244, 63, 94, 0.25);
+  --rose-text: #fda4af;
+  --amber-bg: rgba(120, 53, 15, 0.15);
+  --amber-border: rgba(245, 158, 11, 0.25);
+  --amber-text: #fcd34d;
+  --emerald-bg: rgba(6, 95, 70, 0.15);
+  --emerald-text: #6ee7b7;
+  --overlay: rgba(0, 0, 0, 0.60);
+  --shadow-panel: 0 20px 55px rgba(0, 0, 0, 0.35);
+  --bg-gradient: radial-gradient(circle at 20% 20%, rgba(255,194,153,0.08), transparent 40%),
+    radial-gradient(circle at 85% 15%, rgba(112,194,184,0.10), transparent 32%),
+    linear-gradient(180deg, #0b0f13 0%, #0d1218 48%, #0b0f13 100%);
+  --grid-opacity: 0.15;
+  color-scheme: dark;
+
+  /* Status tones - dark */
+  --status-emerald-bg: rgba(6, 95, 70, 0.2);
+  --status-emerald-text: #6ee7b7;
+  --status-rose-bg: rgba(136, 19, 55, 0.2);
+  --status-rose-text: #fda4af;
+  --status-amber-bg: rgba(120, 53, 15, 0.2);
+  --status-amber-text: #fcd34d;
+  --status-sky-bg: rgba(7, 89, 133, 0.2);
+  --status-sky-text: #7dd3fc;
+  --status-slate-bg: rgba(51, 65, 85, 0.2);
+  --status-slate-text: #cbd5e1;
+  --status-indigo-bg: rgba(55, 48, 163, 0.2);
+  --status-indigo-text: #a5b4fc;
+  --status-violet-bg: rgba(91, 33, 182, 0.2);
+  --status-violet-text: #c4b5fd;
+  --status-orange-bg: rgba(154, 52, 18, 0.2);
+  --status-orange-text: #fdba74;
 }
 
 * {
@@ -23,6 +115,7 @@ body {
 }
 
 body {
+  background: var(--bg);
   color: var(--ink);
   font-family: var(--font-body), sans-serif;
   text-rendering: optimizeLegibility;

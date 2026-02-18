@@ -80,13 +80,13 @@ export default function AIProviderPage() {
       >
         {!isByok ? (
           <div className="space-y-4">
-            <div className="rounded-panel border border-ink/15 bg-white p-4">
-              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Current Model</dt>
+            <div className="rounded-panel border border-border bg-surface p-4">
+              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Current Model</dt>
               <dd className="mt-1 text-sm text-ink">{TIER_MODEL_INFO[tier] ?? tier}</dd>
             </div>
             <div className="rounded-panel border-2 border-dashed border-accent/30 bg-accent/5 p-5">
               <p className="text-sm font-medium text-ink">Want to use your own model?</p>
-              <p className="mt-1 text-sm text-ink/65">
+              <p className="mt-1 text-sm text-ink-muted">
                 Upgrade to the BYOK plan to bring your own API key and choose from OpenAI, Anthropic, Groq, Google Gemini, OpenRouter, or xAI.
               </p>
             </div>
@@ -95,7 +95,7 @@ export default function AIProviderPage() {
           <div className="space-y-5">
             {/* Provider */}
             <div>
-              <label htmlFor="provider" className="block font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">
+              <label htmlFor="provider" className="block font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">
                 Provider
               </label>
               <select
@@ -105,7 +105,7 @@ export default function AIProviderPage() {
                   setProvider(e.target.value);
                   setModelId("");
                 }}
-                className="mt-1.5 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                className="mt-1.5 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
               >
                 {PROVIDERS.map((p) => (
                   <option key={p.value} value={p.value}>{p.label}</option>
@@ -115,7 +115,7 @@ export default function AIProviderPage() {
 
             {/* API Key */}
             <div>
-              <label htmlFor="api-key" className="block font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">
+              <label htmlFor="api-key" className="block font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">
                 API Key
               </label>
               <input
@@ -124,13 +124,13 @@ export default function AIProviderPage() {
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 placeholder={config?.has_key ? config.key_masked : "Enter your API key"}
-                className="mt-1.5 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm text-ink placeholder:text-ink/35 focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                className="mt-1.5 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
               />
             </div>
 
             {/* Model */}
             <div>
-              <label htmlFor="model-id" className="block font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">
+              <label htmlFor="model-id" className="block font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">
                 Model
               </label>
               <input
@@ -140,7 +140,7 @@ export default function AIProviderPage() {
                 onChange={(e) => setModelId(e.target.value)}
                 placeholder={provider === "openrouter" ? "e.g. openrouter/auto" : suggestions[0] ?? ""}
                 list="model-suggestions"
-                className="mt-1.5 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm text-ink placeholder:text-ink/35 focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                className="mt-1.5 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
               />
               {suggestions.length > 0 && (
                 <datalist id="model-suggestions">
@@ -164,24 +164,24 @@ export default function AIProviderPage() {
               <button
                 type="button"
                 disabled
-                className="rounded-full border border-ink/20 px-5 py-2.5 text-sm text-ink/40 cursor-not-allowed opacity-55"
+                className="rounded-full border border-border-strong px-5 py-2.5 text-sm text-ink-faint cursor-not-allowed opacity-55"
               >
                 Test Connection
               </button>
             </div>
 
             {saved && (
-              <p className="rounded-panel border border-signal/30 bg-signal/5 px-3 py-2 text-sm text-signal">
+              <p className="rounded-panel border border-signal/30 bg-signal-faint px-3 py-2 text-sm text-signal">
                 Configuration saved successfully.
               </p>
             )}
             {updateMutation.isError && (
-              <p className="rounded-panel border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900">
+              <p className="rounded-panel border border-rose-border bg-rose-bg px-3 py-2 text-sm text-rose-text">
                 Failed to save configuration. Please try again.
               </p>
             )}
 
-            <p className="text-xs text-ink/45">
+            <p className="text-xs text-ink-faint">
               Your API key is encrypted and stored securely. We never share it.
             </p>
           </div>

@@ -9,6 +9,7 @@ import { logout } from "@/lib/api";
 import { clearTokens, isLoggedIn } from "@/lib/auth";
 import { useMeQuery } from "@/lib/queries";
 import { SiteFooter } from "@/components/site-footer";
+import { useTheme } from "@/components/theme-provider";
 
 const navItems = [
   { href: "/journal", label: "Journal" },
@@ -16,6 +17,22 @@ const navItems = [
 ];
 
 const publicPages = ["/login", "/signup"];
+
+function ThemeToggle() {
+  const { theme, toggleTheme } = useTheme();
+
+  return (
+    <button
+      type="button"
+      onClick={toggleTheme}
+      className="rounded-full border border-border p-2 text-sm transition hover:border-border-strong"
+      aria-label="Toggle theme"
+      title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+    >
+      {theme === "dark" ? "☀️" : "🌙"}
+    </button>
+  );
+}
 
 function UserMenu({ onLogout }: { onLogout: () => void }) {
   const { data: me } = useMeQuery();
@@ -45,20 +62,23 @@ function UserMenu({ onLogout }: { onLogout: () => void }) {
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 rounded-full border border-ink/15 px-3 py-1.5 text-sm text-ink/75 transition hover:border-ink/30 hover:text-ink"
+        className="flex items-center gap-2 rounded-full border border-border px-3 py-1.5 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink"
       >
-        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-ink/10 font-mono text-[10px] font-medium text-ink/70">
+        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-surface-hover font-mono text-[10px] font-medium text-ink-faint">
           {initials}
         </span>
         <span className="hidden sm:inline">{displayName}</span>
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-48 rounded-panel border border-ink/10 bg-white p-1 shadow-panel animate-reveal z-40">
+        <div className="absolute right-0 top-full mt-2 w-48 rounded-panel border border-border bg-surface p-1 shadow-panel animate-reveal z-40">
           <button
             type="button"
-            onClick={() => { setOpen(false); onLogout(); }}
-            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-ink/75 hover:bg-ink/5 hover:text-ink"
+            onClick={() => {
+              setOpen(false);
+              onLogout();
+            }}
+            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-ink-muted hover:bg-surface-hover hover:text-ink"
           >
             Sign out
           </button>
@@ -83,7 +103,7 @@ function TrialBadge() {
       className={clsx(
         "inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium",
         isTrialEnded
-          ? "border-rose-200 bg-rose-50 text-rose-600"
+          ? "border-rose-border bg-rose-bg text-rose-text"
           : "border-accent/30 bg-accent/10 text-accent",
       )}
     >
@@ -91,6 +111,21 @@ function TrialBadge() {
         ? "Trial ended"
         : `Trial: ${daysLeft ?? 0} days left`}
     </span>
+  );
+}
+
+function BackgroundLayers() {
+  return (
+    <>
+      <div
+        className="pointer-events-none absolute inset-0 -z-10"
+        style={{ background: "var(--bg-gradient)" }}
+      />
+      <div
+        className="pointer-events-none absolute inset-0 -z-10 bg-[linear-gradient(rgba(18,31,38,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(18,31,38,0.05)_1px,transparent_1px)] bg-[size:32px_32px]"
+        style={{ opacity: "var(--grid-opacity)" }}
+      />
+    </>
   );
 }
 
@@ -127,11 +162,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   if (isPublicPage) {
     return (
       <div className="relative flex min-h-screen flex-col overflow-x-hidden">
-        <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(circle_at_20%_20%,rgba(255,194,153,0.42),transparent_40%),radial-gradient(circle_at_85%_15%,rgba(112,194,184,0.45),transparent_32%),linear-gradient(180deg,#f8f6ef_0%,#eef4f4_48%,#f9f9f6_100%)]" />
-        <div className="pointer-events-none absolute inset-0 -z-10 bg-[linear-gradient(rgba(18,31,38,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(18,31,38,0.05)_1px,transparent_1px)] bg-[size:32px_32px] opacity-70 animate-pulseGrid" />
-        <header className="border-b border-ink/10 bg-white/75 backdrop-blur">
+        <BackgroundLayers />
+        <header className="border-b border-border bg-surface/75 backdrop-blur">
           <div className="mx-auto flex w-full max-w-6xl items-center px-4 py-3 sm:px-6">
-            <Link href="/" className="font-mono text-xs uppercase tracking-[0.24em] text-ink/70 transition hover:text-ink">
+            <Link href="/" className="font-mono text-xs uppercase tracking-[0.24em] text-ink-faint transition hover:text-ink">
               NBHD United
             </Link>
           </div>
@@ -144,13 +178,12 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="relative flex min-h-screen flex-col overflow-x-hidden">
-      <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(circle_at_20%_20%,rgba(255,194,153,0.42),transparent_40%),radial-gradient(circle_at_85%_15%,rgba(112,194,184,0.45),transparent_32%),linear-gradient(180deg,#f8f6ef_0%,#eef4f4_48%,#f9f9f6_100%)]" />
-      <div className="pointer-events-none absolute inset-0 -z-10 bg-[linear-gradient(rgba(18,31,38,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(18,31,38,0.05)_1px,transparent_1px)] bg-[size:32px_32px] opacity-70 animate-pulseGrid" />
+      <BackgroundLayers />
 
-      <header className="sticky top-0 z-30 border-b border-ink/10 bg-white/75 backdrop-blur">
+      <header className="sticky top-0 z-30 border-b border-border bg-surface/75 backdrop-blur">
         <div className="mx-auto flex w-full max-w-6xl min-w-0 flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-6">
           <div className="min-w-0">
-            <p className="font-mono text-xs uppercase tracking-[0.24em] text-ink/70">NBHD United</p>
+            <p className="font-mono text-xs uppercase tracking-[0.24em] text-ink-faint">NBHD United</p>
             <h1 className="text-sm font-semibold text-ink sm:text-lg">
               <span className="hidden sm:inline">Subscriber Control Console</span>
               <span className="sm:hidden">Subscriber</span>
@@ -160,7 +193,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <div className="shrink-0">
               <TrialBadge />
             </div>
-            <nav className="flex min-w-0 flex-1 items-center gap-1 rounded-full border border-ink/15 bg-white p-1 sm:flex-initial">
+            <nav className="flex min-w-0 flex-1 items-center gap-1 rounded-full border border-border bg-surface p-1 sm:flex-initial">
               {navItems.map((item) => {
                 const active = pathname.startsWith(item.href);
                 return (
@@ -171,7 +204,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                       "shrink-0 rounded-full px-3 py-1.5 text-sm transition",
                       active
                         ? "bg-ink text-white"
-                        : "text-ink/75 hover:bg-ink/8 hover:text-ink"
+                        : "text-ink-muted hover:bg-surface-hover hover:text-ink",
                     )}
                   >
                     {item.label}
@@ -179,6 +212,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 );
               })}
             </nav>
+            <ThemeToggle />
             <UserMenu onLogout={handleLogout} />
           </div>
         </div>

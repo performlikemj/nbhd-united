@@ -190,10 +190,10 @@ export default function TemplatesPage() {
       <SectionCard title={editingId ? "Edit template" : "Create template"} subtitle="Define sectionized note structure">
         <form className="space-y-3" onSubmit={handleSubmit}>
           <div className="grid gap-3 md:grid-cols-2">
-            <label className="text-sm text-ink/70">
+            <label className="text-sm text-ink-muted">
               Name
               <input
-                className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                 value={formState.name}
                 onChange={(event) =>
                   setFormState((prev) => ({ ...prev, name: event.target.value }))
@@ -201,10 +201,10 @@ export default function TemplatesPage() {
                 placeholder="Template name"
               />
             </label>
-            <label className="text-sm text-ink/70">
+            <label className="text-sm text-ink-muted">
               Slug
               <input
-                className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                 value={formState.slug}
                 onChange={(event) =>
                   setFormState((prev) => ({
@@ -217,7 +217,7 @@ export default function TemplatesPage() {
             </label>
           </div>
 
-          <label className="inline-flex items-center gap-2 text-sm text-ink/80">
+          <label className="inline-flex items-center gap-2 text-sm text-ink-muted">
             <input
               type="checkbox"
               checked={formState.is_default}
@@ -229,14 +229,14 @@ export default function TemplatesPage() {
           </label>
 
           <div className="space-y-3">
-            <p className="text-sm text-ink/70">Sections</p>
+            <p className="text-sm text-ink-muted">Sections</p>
             {formState.sections.map((section, index) => (
-              <div key={`${section.slug}-${index}`} className="rounded-panel border border-ink/12 bg-white p-4">
+              <div key={`${section.slug}-${index}`} className="rounded-panel border border-border bg-surface p-4">
                 <div className="grid gap-3 md:grid-cols-2">
-                  <label className="text-sm text-ink/70">
+                  <label className="text-sm text-ink-muted">
                     Slug
                     <input
-                      className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+                      className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                       value={section.slug}
                       onChange={(event) =>
                         handleSectionFieldChange(index, "slug", normalizeSlug(event.target.value))
@@ -244,10 +244,10 @@ export default function TemplatesPage() {
                       placeholder="morning-report"
                     />
                   </label>
-                  <label className="text-sm text-ink/70">
+                  <label className="text-sm text-ink-muted">
                     Title
                     <input
-                      className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+                      className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                       value={section.title}
                       onChange={(event) =>
                         handleSectionFieldChange(index, "title", event.target.value)
@@ -256,10 +256,10 @@ export default function TemplatesPage() {
                     />
                   </label>
                 </div>
-                <label className="mt-3 block text-sm text-ink/70">
+                <label className="mt-3 block text-sm text-ink-muted">
                   Seed content
                   <textarea
-                    className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+                    className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                     rows={2}
                     value={section.content}
                     onChange={(event) =>
@@ -272,7 +272,7 @@ export default function TemplatesPage() {
                   <button
                     type="button"
                     onClick={() => removeSectionField(index)}
-                    className="rounded-full border border-rose-300 px-3 py-1.5 text-sm text-rose-700 hover:border-rose-500"
+                    className="rounded-full border border-rose-border px-3 py-1.5 text-sm text-rose-text hover:border-rose-border"
                   >
                     Remove section
                   </button>
@@ -284,7 +284,7 @@ export default function TemplatesPage() {
           <button
             type="button"
             onClick={addSectionField}
-            className="text-sm text-ink/50 hover:text-ink/70"
+            className="text-sm text-ink-faint hover:text-ink-muted"
           >
             + Add section
           </button>
@@ -307,12 +307,12 @@ export default function TemplatesPage() {
         </form>
 
         {createMutation.isError ? (
-          <p className="mt-3 rounded-panel border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+          <p className="mt-3 rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
             {getErrorMessage(createMutation.error)}
           </p>
         ) : null}
         {updateMutation.isError ? (
-          <p className="mt-3 rounded-panel border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+          <p className="mt-3 rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
             {getErrorMessage(updateMutation.error)}
           </p>
         ) : null}
@@ -322,7 +322,7 @@ export default function TemplatesPage() {
         <SectionCardSkeleton lines={6} />
       ) : error ? (
         <SectionCard title="Templates" subtitle="Failed to load templates">
-          <p className="rounded-panel border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+          <p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
             Could not load templates.
           </p>
         </SectionCard>
@@ -330,21 +330,21 @@ export default function TemplatesPage() {
         <SectionCard title="Saved templates" subtitle={`${data?.length ?? 0} templates`}>
           <div className="space-y-3">
             {!data || data.length === 0 ? (
-              <p className="text-sm text-ink/70">No templates yet. Create your first template above.</p>
+              <p className="text-sm text-ink-muted">No templates yet. Create your first template above.</p>
             ) : (
               data.map((template) => (
-                <article key={template.id} className="rounded-panel border border-ink/15 bg-white p-4">
+                <article key={template.id} className="rounded-panel border border-border bg-surface p-4">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
                       <p className="font-medium text-ink">{template.name}</p>
-                      <p className="mt-1 text-xs text-ink/50">/{template.slug}</p>
+                      <p className="mt-1 text-xs text-ink-faint">/{template.slug}</p>
                     </div>
                     <div className="flex gap-2">
                       {template.is_default ? <StatusPill status="active" /> : null}
                       <button
                         type="button"
                         onClick={() => handleStartEdit(template)}
-                        className="rounded-full border border-ink/20 px-3 py-1.5 text-sm hover:border-ink/40"
+                        className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong"
                       >
                         Edit
                       </button>
@@ -352,13 +352,13 @@ export default function TemplatesPage() {
                         type="button"
                         onClick={() => deleteMutation.mutate(template.id)}
                         disabled={deleteMutation.isPending}
-                        className="rounded-full border border-rose-300 px-3 py-1.5 text-sm text-rose-700 hover:border-rose-500 disabled:opacity-45"
+                        className="rounded-full border border-rose-border px-3 py-1.5 text-sm text-rose-text hover:border-rose-border disabled:opacity-45"
                       >
                         Delete
                       </button>
                     </div>
                   </div>
-                  <p className="mt-2 text-sm text-ink/70">Sections: {template.sections.length}</p>
+                  <p className="mt-2 text-sm text-ink-muted">Sections: {template.sections.length}</p>
                 </article>
               ))
             )}
@@ -367,7 +367,7 @@ export default function TemplatesPage() {
       )}
 
       {deleteMutation.isError ? (
-        <p className="rounded-panel border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+        <p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
           {getErrorMessage(deleteMutation.error)}
         </p>
       ) : null}
