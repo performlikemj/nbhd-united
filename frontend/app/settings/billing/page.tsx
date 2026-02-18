@@ -135,8 +135,8 @@ export default function SettingsBillingPage() {
                     onClick={() => setSelectedTier(tier.id)}
                     className={`rounded-full px-4 py-1.5 text-sm transition ${
                       selectedTier === tier.id
-                        ? "bg-ink text-white"
-                        : "border border-border-strong text-ink-muted hover:border-border-strong"
+                        ? "bg-accent text-white"
+                        : "border border-border-strong bg-surface-elevated text-ink hover:border-accent/40"
                     }`}
                   >
                     {tier.name} ({tier.price}) — {tier.description}
@@ -148,7 +148,7 @@ export default function SettingsBillingPage() {
             <div className="flex flex-wrap items-center gap-3">
               {tenant.has_active_subscription && (
                 <button
-                  className="rounded-full bg-ink px-4 py-2 text-sm text-white transition hover:bg-surface-hover5 disabled:cursor-not-allowed disabled:opacity-55"
+                  className="rounded-full bg-accent px-4 py-2 text-sm text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-55"
                   type="button"
                   onClick={openPortal}
                   disabled={portalMutation.isPending}
