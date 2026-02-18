@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { RefreshConfigStatus } from "@/lib/types";
 import {
   appendToDocument,
   createAutomation,
@@ -205,7 +206,7 @@ export function useUpdatePreferencesMutation() {
 }
 
 export function useRefreshConfigStatusQuery() {
-  return useQuery({
+  return useQuery<RefreshConfigStatus>({
     queryKey: ["refresh-config-status"],
     queryFn: fetchRefreshConfigStatus,
   });

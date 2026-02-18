@@ -255,6 +255,7 @@ export default function SettingsPage() {
   const currentPersona = prefs?.agent_persona ?? "neighbor";
   const currentPersonaLabel = personas?.find((p) => p.key === currentPersona);
 
+  const hasPendingConfigUpdate = refreshConfigStatus?.has_pending_update ?? false;
   const canRefreshConfig = refreshConfigStatus?.can_refresh ?? true;
   const cooldownMinutes = refreshConfigStatus ? Math.max(1, Math.ceil(refreshConfigStatus.cooldown_seconds / 60)) : 0;
 
@@ -670,31 +671,46 @@ export default function SettingsPage() {
 
       <SectionCard
         title="Agent Configuration"
-        subtitle="Refresh your agent's configuration to apply the latest platform updates"
+        subtitle="Configuration updates are applied automatically when your assistant is idle"
       >
-        <dl className="grid gap-3 text-sm sm:grid-cols-2">
-          <div className="rounded-panel border border-ink/15 bg-white p-4 sm:col-span-2">
-            <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Last Refreshed</dt>
-            <dd className="mt-1 text-base text-ink">
-              {refreshConfigStatus?.last_refreshed ? `Last refreshed: ${timeAgo(refreshConfigStatus.last_refreshed)}` : "Never refreshed"}
-            </dd>
-          </div>
-        </dl>
-
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={handleRefreshConfig}
-            disabled={isRefreshingConfig || !canRefreshConfig}
-            className="rounded-full border border-ink/20 px-5 py-2 text-sm text-ink/75 transition hover:border-ink/30 hover:text-ink disabled:cursor-not-allowed disabled:opacity-55"
-          >
-            {isRefreshingConfig ? "Refreshing..." : canRefreshConfig ? "Refresh Configuration" : `Available in ${cooldownMinutes} minutes`}
-          </button>
-          {(refreshMessage || refreshError) ? (
-            <p className={`text-sm ${refreshMessage ? "text-signal" : "text-rose-600"}`}>{refreshMessage || refreshError}</p>
-          ) : null}
+        <div className="rounded-panel border border-ink/15 bg-white p-4">
+          <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">
+            Agent Configuration
+          </p>
+          <p className="mt-1 text-base text-ink">
+            {refreshConfigStatus?.last_refreshed
+              ? `Last updated: ${timeAgo(refreshConfigStatus.last_refreshed)}`
+              : "Last updated: never"}
+          </p>
         </div>
-        <p className="mt-2 text-xs text-ink/45">This will restart your assistant. Active conversations may be briefly interrupted.</p>
+
+        {hasPendingConfigUpdate ? (
+          <>
+            <div className="mt-3 rounded-panel border border-amber-200/80 bg-amber-50 px-3.5 py-2.5 text-sm text-amber-900">
+              🔄 An update is available and will be applied automatically when your assistant is idle.
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={handleRefreshConfig}
+                disabled={isRefreshingConfig || !canRefreshConfig}
+                className="rounded-full border border-ink/20 px-5 py-2 text-sm text-ink/75 transition hover:border-ink/30 hover:text-ink disabled:cursor-not-allowed disabled:opacity-55"
+              >
+                {isRefreshingConfig
+                  ? "Applying..."
+                  : canRefreshConfig
+                    ? "Apply Now"
+                    : `Available in ${cooldownMinutes} minutes`}
+              </button>
+              {(refreshMessage || refreshError) ? (
+                <p className={`text-sm ${refreshMessage ? "text-signal" : "text-rose-600"}`}>{refreshMessage || refreshError}</p>
+              ) : null}
+            </div>
+            <p className="mt-2 text-xs text-ink/45">Or wait — it&apos;ll apply automatically within 15 minutes of inactivity.</p>
+          </>
+        ) : (
+          <p className="mt-3 text-sm text-ink/80">✓ Your assistant is up to date</p>
+        )}
       </SectionCard>
     </div>
   );
