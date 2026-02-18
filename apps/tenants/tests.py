@@ -197,7 +197,8 @@ class RefreshConfigViewTest(TestCase):
     def test_refresh_config_success(self, mock_update):
         tenant = self._create_user_with_tenant("Refresh User", 600)
         tenant.status = Tenant.Status.ACTIVE
-        tenant.save(update_fields=["status"])
+        tenant.pending_config_version = 2
+        tenant.save(update_fields=["status", "pending_config_version"])
         self.client.force_authenticate(user=tenant.user)
 
         response = self.client.post("/api/v1/tenants/refresh-config/")
@@ -212,6 +213,7 @@ class RefreshConfigViewTest(TestCase):
 
         tenant.refresh_from_db()
         self.assertIsNotNone(tenant.config_refreshed_at)
+        self.assertEqual(tenant.config_version, tenant.pending_config_version)
 
     @patch("apps.orchestrator.services.update_tenant_config")
     def test_refresh_config_cooldown(self, mock_update):
@@ -271,4 +273,21 @@ class RefreshConfigViewTest(TestCase):
         self.assertEqual(response.data["cooldown_seconds"], 300)
         self.assertEqual(response.data["status"], tenant.status)
         self.assertTrue(response.data["can_refresh"])
+        self.assertFalse(response.data["has_pending_update"])
+        mock_update.assert_not_called()
+
+    @patch("apps.orchestrator.services.update_tenant_config")
+    def test_refresh_config_get_status_with_pending_update(self, mock_update):
+        tenant = self._create_user_with_tenant("Pending Status User", 604)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.pending_config_version = 3
+        tenant.config_version = 1
+        tenant.config_refreshed_at = timezone.now() - timedelta(minutes=10)
+        tenant.save(update_fields=["status", "pending_config_version", "config_version", "config_refreshed_at"])
+        self.client.force_authenticate(user=tenant.user)
+
+        response = self.client.get("/api/v1/tenants/refresh-config/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["has_pending_update"])
         mock_update.assert_not_called()
