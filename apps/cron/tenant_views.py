@@ -41,7 +41,7 @@ class CronJobListCreateView(APIView):
             result = invoke_gateway_tool(tenant, "cron.list", {})
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
-        return Response(result)
+        return Response(result.get("details", result))
 
     def post(self, request):
         tenant = _get_tenant_for_user(request.user)
@@ -58,7 +58,7 @@ class CronJobListCreateView(APIView):
             result = invoke_gateway_tool(tenant, "cron.add", data)
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
-        return Response(result, status=status.HTTP_201_CREATED)
+        return Response(result.get("details", result), status=status.HTTP_201_CREATED)
 
 
 class CronJobDetailView(APIView):
@@ -73,7 +73,7 @@ class CronJobDetailView(APIView):
             )
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
-        return Response(result)
+        return Response(result.get("details", result))
 
     def delete(self, request, job_name: str):
         tenant = _get_tenant_for_user(request.user)
@@ -105,4 +105,4 @@ class CronJobToggleView(APIView):
             )
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
-        return Response(result)
+        return Response(result.get("details", result))
