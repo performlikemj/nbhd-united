@@ -8,13 +8,25 @@ import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
 import { useCheckoutMutation, useStripePortalMutation, useTenantQuery } from "@/lib/queries";
 
+const PLAN_OPTIONS = [
+  { id: "starter", name: "Starter", price: "$8/mo", description: "Kimi K2.5" },
+  { id: "premium", name: "Premium", price: "$25/mo", description: "Claude Sonnet & Opus" },
+  { id: "byok", name: "BYOK", price: "$8/mo", description: "Bring Your Own Key" },
+] as const;
+
+const TIERS: Record<"starter" | "premium" | "byok", { label: string }> = {
+  starter: { label: "Starter" },
+  premium: { label: "Premium" },
+  byok: { label: "BYOK" },
+};
+
 export default function SettingsBillingPage() {
   const { data: tenant, isLoading, error } = useTenantQuery();
   const portalMutation = useStripePortalMutation();
   const checkoutMutation = useCheckoutMutation();
   const [portalError, setPortalError] = useState("");
   const [checkoutError, setCheckoutError] = useState("");
-  const [selectedTier, setSelectedTier] = useState<"basic" | "plus">("basic");
+  const [selectedTier, setSelectedTier] = useState<"starter" | "premium" | "byok">("starter");
 
   const openPortal = async () => {
     setPortalError("");
@@ -46,6 +58,10 @@ export default function SettingsBillingPage() {
 
   const hasTenant = Boolean(tenant) && !error;
 
+  const trialDays = tenant?.trial_days_remaining ?? null;
+  const isTrialActive = Boolean(tenant?.is_trial && trialDays !== null && trialDays > 0);
+  const isTrialExpired = Boolean(tenant?.is_trial && tenant?.trial_days_remaining === 0);
+
   return (
     <div className="space-y-4">
       <SectionCard
@@ -54,6 +70,20 @@ export default function SettingsBillingPage() {
       >
         {hasTenant && tenant ? (
           <div className="space-y-4">
+            {tenant.is_trial && (
+              <div
+                className={`rounded-panel border px-4 py-3 text-sm ${
+                  isTrialActive
+                    ? "border-accent/25 bg-accent/5 text-ink/75"
+                    : "border-rose-200 bg-rose-50 text-rose-600"
+                }`}
+              >
+                {isTrialActive
+                  ? `🎉 You're on a free trial! ${trialDays} days remaining. Subscribe to keep your assistant.`
+                  : "Your free trial has ended. Subscribe to reactivate your assistant."}
+              </div>
+            )}
+
             <dl className="grid gap-3 text-sm sm:grid-cols-2">
               <div className="rounded-panel border border-ink/15 bg-white p-4">
                 <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Tier</dt>
@@ -70,9 +100,19 @@ export default function SettingsBillingPage() {
             </dl>
 
             {!tenant.has_active_subscription && (
-              <div className="rounded-panel border-2 border-dashed border-accent/30 bg-accent/5 p-5 text-center">
+              <div className={`rounded-panel border border-dashed p-5 text-center ${
+                isTrialActive
+                  ? "border-accent/30 bg-accent/5"
+                  : isTrialExpired
+                    ? "border-rose-200 bg-rose-50"
+                    : "border-amber-300 bg-amber-50"
+              }`}>
                 <p className="text-sm font-medium text-ink">
-                  Your tenant is provisioned but you need an active subscription to use your agent.
+                  {isTrialActive
+                    ? "Trial mode is active. You can still subscribe now to keep your assistant after 7 days."
+                    : isTrialExpired
+                      ? "Your trial has ended. Subscribe to reactivate your assistant."
+                      : "Your tenant is provisioned but you need an active subscription to use your agent."}
                 </p>
                 <button
                   type="button"
@@ -80,7 +120,7 @@ export default function SettingsBillingPage() {
                   disabled={checkoutMutation.isPending}
                   className="mt-3 rounded-full bg-accent px-5 py-2.5 text-sm font-medium text-white transition hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-55"
                 >
-                  {checkoutMutation.isPending ? "Redirecting..." : `Subscribe to ${selectedTier === "basic" ? "Basic" : "Plus"}`}
+                  {checkoutMutation.isPending ? "Redirecting..." : `Subscribe to ${TIERS[selectedTier].label}`}
                 </button>
               </div>
             )}
@@ -88,18 +128,18 @@ export default function SettingsBillingPage() {
             <div className="rounded-panel border border-ink/15 bg-white p-4">
               <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Select plan</p>
               <div className="mt-2 flex gap-2">
-                {(["basic", "plus"] as const).map((tier) => (
+                {(PLAN_OPTIONS as readonly { id: "starter" | "premium" | "byok"; name: string; price: string; description: string }[]).map((tier) => (
                   <button
-                    key={tier}
+                    key={tier.id}
                     type="button"
-                    onClick={() => setSelectedTier(tier)}
+                    onClick={() => setSelectedTier(tier.id)}
                     className={`rounded-full px-4 py-1.5 text-sm transition ${
-                      selectedTier === tier
+                      selectedTier === tier.id
                         ? "bg-ink text-white"
                         : "border border-ink/20 text-ink/75 hover:border-ink/40"
                     }`}
                   >
-                    {tier === "basic" ? "Basic (Sonnet)" : "Plus (Opus)"}
+                    {tier.name} ({tier.price}) — {tier.description}
                   </button>
                 ))}
               </div>
@@ -152,8 +192,7 @@ export default function SettingsBillingPage() {
             </div>
             <h3 className="mt-4 text-lg font-semibold text-ink">No subscription yet</h3>
             <p className="mt-2 max-w-sm text-sm text-ink/65">
-              Complete onboarding to create your tenant and start a subscription.
-              You can choose between our Basic (Sonnet) and Plus (Opus) plans.
+              You&apos;ll get a 7-day free trial on onboarding, then choose a plan to keep your assistant running.
             </p>
             <div className="mt-6 flex gap-3">
               <Link

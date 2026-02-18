@@ -7,7 +7,6 @@ import { PersonaSelector } from "@/components/persona-selector";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import {
-  useCheckoutMutation,
   useGenerateTelegramLinkMutation,
   useMeQuery,
   useOnboardMutation,
@@ -18,12 +17,11 @@ import type { TelegramLinkResponse } from "@/lib/api";
 
 type StepState = "completed" | "current" | "upcoming";
 
-const STEP_LABELS = ["Account", "Persona", "Subscribe", "Telegram", "Ready"] as const;
+const STEP_LABELS = ["Account", "Persona", "Telegram", "Ready"] as const;
 
 const STEP_TITLES = [
   "Create your account",
   "Choose your agent",
-  "Start your subscription",
   "Connect Telegram",
   "Your agent is ready",
 ] as const;
@@ -46,33 +44,28 @@ export default function OnboardingPage() {
     isPending: onboardingPending,
     isSuccess: onboardingSuccess,
   } = onboard;
-  const checkout = useCheckoutMutation();
   const generateLink = useGenerateTelegramLinkMutation();
   const { data: personas } = usePersonasQuery();
 
-  const [checkoutError, setCheckoutError] = useState("");
   const [linkData, setLinkData] = useState<TelegramLinkResponse | null>(null);
   const [linkSecondsLeft, setLinkSecondsLeft] = useState(0);
   const [selectedPersona, setSelectedPersona] = useState("neighbor");
-  const [selectedTier, setSelectedTier] = useState<"starter" | "premium" | "byok">("starter");
 
   const tenant = me?.tenant;
   const hasTenant = Boolean(tenant);
-  const subscriptionActive = tenant?.has_active_subscription ?? false;
   const runtimeReady = tenant?.status === "active";
 
-  const shouldPollTelegram = subscriptionActive;
+  const shouldPollTelegram = hasTenant;
   const { data: telegramStatus } = useTelegramStatusQuery(shouldPollTelegram);
   const telegramLinked = telegramStatus?.linked ?? false;
 
-  // Compute step states (5 steps now)
+  // Compute step states (4 steps)
   const personaDone = hasTenant; // persona is selected when tenant is created
   const stepStates: StepState[] = [
     "completed", // Account — always done
     personaDone ? "completed" : "current",
-    subscriptionActive ? "completed" : personaDone ? "current" : "upcoming",
-    telegramLinked ? "completed" : subscriptionActive && !telegramLinked ? "current" : "upcoming",
-    runtimeReady ? "completed" : telegramLinked && !runtimeReady ? "current" : "upcoming",
+    personaDone ? (telegramLinked ? "completed" : "current") : "upcoming",
+    telegramLinked ? (runtimeReady ? "completed" : "current") : "upcoming",
   ];
 
   const currentStepIndex = stepStates.findIndex((s) => s === "current");
@@ -123,16 +116,6 @@ export default function OnboardingPage() {
       });
     } catch {
       autoOnboardAttempted.delete(userId);
-    }
-  };
-
-  const handleCheckout = async () => {
-    setCheckoutError("");
-    try {
-      const result = await checkout.mutateAsync(selectedTier);
-      window.location.assign(result.url);
-    } catch (err) {
-      setCheckoutError(err instanceof Error ? err.message : "Checkout failed.");
     }
   };
 
@@ -194,106 +177,14 @@ export default function OnboardingPage() {
         return (
           <>
             <p className="mt-1 text-sm text-ink/65">
-              Choose a plan and complete Stripe checkout to provision your dedicated runtime.
-            </p>
-            {stepStates[2] !== "completed" && (
-              <>
-                <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                  {([
-                    {
-                      tier: "starter" as const,
-                      name: "Starter",
-                      price: "$8/mo",
-                      model: "Kimi K2.5",
-                      features: ["50 messages/day", "Basic assistant"],
-                    },
-                    {
-                      tier: "premium" as const,
-                      name: "Premium",
-                      price: "$25/mo",
-                      model: "Claude Sonnet & Opus",
-                      features: ["200 messages/day", "Best-in-class AI models"],
-                    },
-                    {
-                      tier: "byok" as const,
-                      name: "Bring Your Own Key",
-                      price: "$8/mo",
-                      model: "Your choice",
-                      features: ["200 messages/day", "Use your own API key"],
-                    },
-                  ]).map((plan) => (
-                    <button
-                      key={plan.tier}
-                      type="button"
-                      onClick={() => setSelectedTier(plan.tier)}
-                      className={`rounded-panel border-2 p-4 text-left transition ${
-                        selectedTier === plan.tier
-                          ? "border-accent bg-accent/5"
-                          : "border-ink/15 bg-white hover:border-ink/30"
-                      }`}
-                    >
-                      <div className="flex items-baseline justify-between">
-                        <p className="text-sm font-semibold text-ink">{plan.name}</p>
-                        <p className="text-sm font-bold text-ink">{plan.price}</p>
-                      </div>
-                      <p className="mt-1 text-xs font-medium text-accent">{plan.model}</p>
-                      <ul className="mt-2 space-y-1">
-                        {plan.features.map((f) => (
-                          <li key={f} className="text-xs text-ink/60">• {f}</li>
-                        ))}
-                      </ul>
-                      <div className="mt-3">
-                        <span
-                          className={`inline-block rounded-full px-3 py-1 text-xs font-medium transition ${
-                            selectedTier === plan.tier
-                              ? "bg-accent text-white"
-                              : "bg-ink/5 text-ink/50"
-                          }`}
-                        >
-                          {selectedTier === plan.tier ? "Selected" : "Select"}
-                        </span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  onClick={handleCheckout}
-                  disabled={checkout.isPending}
-                  className="mt-4 rounded-full bg-accent px-5 py-2.5 text-sm font-medium text-white transition hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-55"
-                >
-                  {checkout.isPending ? "Redirecting to Stripe..." : `Subscribe to ${selectedTier.charAt(0).toUpperCase() + selectedTier.slice(1)}`}
-                </button>
-                <p className="mt-3 text-xs text-ink/45">
-                  By subscribing, you agree to our{" "}
-                  <a href="/legal/terms" className="underline hover:text-ink/70">Terms</a>,{" "}
-                  <a href="/legal/privacy" className="underline hover:text-ink/70">Privacy Policy</a>, and{" "}
-                  <a href="/legal/refund" className="underline hover:text-ink/70">Refund Policy</a>.
-                </p>
-              </>
-            )}
-            {stepStates[2] === "completed" && (
-              <p className="mt-1 text-sm text-signal">Subscription active</p>
-            )}
-            {checkoutError && (
-              <p className="mt-3 rounded-panel border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900">
-                {checkoutError}
-              </p>
-            )}
-          </>
-        );
-      case 3:
-        return (
-          <>
-            <p className="mt-1 text-sm text-ink/65">
               Link your Telegram account so the assistant can message you.
             </p>
-            {stepStates[3] === "completed" && telegramStatus?.telegram_username && (
+            {stepStates[2] === "completed" && telegramStatus?.telegram_username && (
               <p className="mt-1 text-sm text-signal">
                 Connected as @{telegramStatus.telegram_username}
               </p>
             )}
-            {stepStates[3] === "current" && !linkData && (
+            {stepStates[2] === "current" && !linkData && (
               <button
                 type="button"
                 onClick={handleGenerateLink}
@@ -303,7 +194,7 @@ export default function OnboardingPage() {
                 {generateLink.isPending ? "Generating..." : "Connect Telegram"}
               </button>
             )}
-            {stepStates[3] === "current" && linkData && (
+            {stepStates[2] === "current" && linkData && (
               <div className="mt-4 space-y-3">
                 <p className="text-sm text-ink/70">
                   Scan the QR code or tap the link to connect your Telegram:
@@ -347,29 +238,39 @@ export default function OnboardingPage() {
                 </div>
               </div>
             )}
-            {stepStates[3] === "upcoming" && (
-              <p className="mt-1 text-sm text-ink/35">Complete the subscription step first</p>
+            {stepStates[2] === "upcoming" && (
+              <p className="mt-1 text-sm text-ink/35">Complete your persona setup first.</p>
             )}
           </>
         );
-      case 4:
+      case 3:
         return (
           <>
-            {stepStates[4] === "completed" ? (
-              <p className="mt-1 text-sm text-signal">
-                Your assistant is active and ready to receive messages!
-              </p>
-            ) : stepStates[4] === "current" ? (
-              <div className="mt-3 flex items-center gap-3">
-                <div className="h-2.5 w-2.5 rounded-full bg-accent animate-pulse" />
-                <p className="text-sm text-ink/65">
-                  {tenant?.status === "provisioning"
-                    ? "Your runtime is being provisioned. This usually takes a minute..."
-                    : "Finalizing your agent setup..."}
+            {stepStates[3] === "completed" ? (
+              <>
+                <p className="mt-1 text-sm text-signal">
+                  Your assistant is active and ready to receive messages!
                 </p>
-              </div>
+                <p className="mt-3 rounded-panel border border-accent/20 bg-accent/5 px-3 py-2 text-sm text-ink/75">
+                  You&apos;re on a 7-day free trial. Subscribe anytime at Settings → Billing to keep your assistant after the trial.
+                </p>
+              </>
+            ) : stepStates[3] === "current" ? (
+              <>
+                <div className="mt-3 flex items-center gap-3">
+                  <div className="h-2.5 w-2.5 rounded-full bg-accent animate-pulse" />
+                  <p className="text-sm text-ink/65">
+                    {tenant?.status === "provisioning"
+                      ? "Your runtime is being provisioned. This usually takes a minute..."
+                      : "Finalizing your agent setup..."}
+                  </p>
+                </div>
+                <p className="mt-3 rounded-panel border border-accent/20 bg-accent/5 px-3 py-2 text-sm text-ink/75">
+                  You&apos;re on a 7-day free trial. Subscribe anytime at Settings → Billing to keep your assistant after the trial.
+                </p>
+              </>
             ) : (
-              <p className="mt-1 text-sm text-ink/35">Complete the previous steps first</p>
+              <p className="mt-1 text-sm text-ink/35">Complete the previous steps first.</p>
             )}
           </>
         );
@@ -496,9 +397,8 @@ export default function OnboardingPage() {
                     <p className="text-sm text-signal">
                       {i === 0 && `Signed in as ${me?.display_name || me?.email || "you"}`}
                       {i === 1 && "Persona selected"}
-                      {i === 2 && "Subscription active"}
-                      {i === 3 && (telegramStatus?.telegram_username ? `Connected as @${telegramStatus.telegram_username}` : "Connected")}
-                      {i === 4 && "Your assistant is active and ready!"}
+                      {i === 2 && `Connected ${telegramStatus?.telegram_username ? `as @${telegramStatus.telegram_username}` : ""}`}
+                      {i === 3 && "Your agent is active and ready!"}
                     </p>
                   </div>
                 </button>
