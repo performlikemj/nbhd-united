@@ -6,6 +6,7 @@ import ScheduleBuilder, { cronToHuman } from "@/components/schedule-builder";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
+import TimezoneSelector from "@/components/timezone-selector";
 import { CronJob } from "@/lib/types";
 import {
   useCronJobsQuery,
@@ -15,6 +16,81 @@ import {
   useToggleCronJobMutation,
   useUpdateCronJobMutation,
 } from "@/lib/queries";
+
+/* ------------------------------------------------------------------ */
+/*  Task templates                                                     */
+/* ------------------------------------------------------------------ */
+
+interface TaskTemplate {
+  icon: string;
+  name: string;
+  message: string;
+  expr: string;
+}
+
+const TASK_TEMPLATES: TaskTemplate[] = [
+  {
+    icon: "☀️",
+    name: "Morning Briefing",
+    message:
+      "Check my calendar, weather, and any important emails. Give me a quick summary to start my day.",
+    expr: "0 7 * * *",
+  },
+  {
+    icon: "📰",
+    name: "News Digest",
+    message:
+      "Search for the latest news in tech, AI, and my areas of interest. Summarize the top 5 stories.",
+    expr: "0 12 * * *",
+  },
+  {
+    icon: "🌤️",
+    name: "Weather Report",
+    message:
+      "Check the weather forecast for today and tomorrow. Let me know if I should bring an umbrella or dress warm.",
+    expr: "0 6 * * *",
+  },
+  {
+    icon: "📅",
+    name: "Daily Schedule",
+    message:
+      "Review my calendar for today and remind me of upcoming events, deadlines, or meetings.",
+    expr: "0 8 * * 1-5",
+  },
+  {
+    icon: "🌙",
+    name: "Evening Recap",
+    message:
+      "Summarize what happened today — any messages I missed, tasks completed, and what's coming up tomorrow.",
+    expr: "0 21 * * *",
+  },
+  {
+    icon: "💪",
+    name: "Weekly Review",
+    message:
+      "Give me a weekly review: what got done this week, what's pending, and priorities for next week.",
+    expr: "0 10 * * 1",
+  },
+];
+
+/* ------------------------------------------------------------------ */
+/*  Agent capabilities reference                                       */
+/* ------------------------------------------------------------------ */
+
+const AGENT_CAPABILITIES = [
+  { icon: "🌐", name: "Web Search", desc: "Search the internet for current information" },
+  { icon: "🌤️", name: "Weather", desc: "Check weather forecasts for any location" },
+  { icon: "📅", name: "Calendar", desc: "Check your upcoming events and schedule" },
+  { icon: "📧", name: "Email", desc: "Check for new or important emails" },
+  { icon: "📰", name: "News", desc: "Find and summarize news articles" },
+  { icon: "💬", name: "Message", desc: "Send you updates via Telegram" },
+  { icon: "🧠", name: "Memory", desc: "Access your notes, preferences, and past conversations" },
+  { icon: "📝", name: "Journal", desc: "Read and write to your journal entries" },
+];
+
+/* ------------------------------------------------------------------ */
+/*  Form types                                                         */
+/* ------------------------------------------------------------------ */
 
 type CreateFormState = {
   name: string;
@@ -61,6 +137,10 @@ function getErrorMessage(error: unknown): string {
   return "Request failed.";
 }
 
+/* ------------------------------------------------------------------ */
+/*  Page component                                                     */
+/* ------------------------------------------------------------------ */
+
 export default function SettingsCronJobsPage() {
   const { data: me } = useMeQuery();
   const { data: cronJobs, isLoading, error } = useCronJobsQuery();
@@ -80,7 +160,16 @@ export default function SettingsCronJobsPage() {
     deliveryChannel: "",
   });
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [showCapabilities, setShowCapabilities] = useState(false);
 
+  const handleApplyTemplate = (template: TaskTemplate) => {
+    setCreateForm((prev) => ({
+      ...prev,
+      name: template.name,
+      message: template.message,
+      expr: template.expr,
+    }));
+  };
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -130,7 +219,7 @@ export default function SettingsCronJobsPage() {
     <div className="space-y-4">
       <SectionCard
         title="Scheduled Tasks"
-        subtitle="Manage cron jobs that run on your OpenClaw agent — morning briefings, evening check-ins, and more"
+        subtitle="Set up recurring tasks for your AI assistant — morning briefings, news digests, reminders, and more"
       >
         {!showCreate ? (
           <button
@@ -144,73 +233,118 @@ export default function SettingsCronJobsPage() {
             Add scheduled task
           </button>
         ) : (
-          <form className="grid gap-3 md:grid-cols-2" onSubmit={handleCreate}>
-            <label className="text-sm text-ink/70">
-              Name
-              <input
-                className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
-                placeholder="e.g. Morning Briefing"
-                value={createForm.name}
-                onChange={(e) => setCreateForm((prev) => ({ ...prev, name: e.target.value }))}
-                required
-              />
-            </label>
-
-            <label className="text-sm text-ink/70">
-              Timezone
-              <input
-                className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
-                value={createForm.tz}
-                onChange={(e) => setCreateForm((prev) => ({ ...prev, tz: e.target.value }))}
-              />
-            </label>
-
-            <ScheduleBuilder
-              expr={createForm.expr}
-              onChange={(expr) => setCreateForm((prev) => ({ ...prev, expr }))}
-            />
-
-            <label className="text-sm text-ink/70">
-              Delivery
-              <select
-                className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
-                value={createForm.deliveryMode}
-                onChange={(e) => setCreateForm((prev) => ({ ...prev, deliveryMode: e.target.value }))}
-              >
-                <option value="announce">Announce (send message)</option>
-                <option value="none">Silent (no message)</option>
-              </select>
-            </label>
-
-            <label className="text-sm text-ink/70 md:col-span-2">
-              Prompt message
-              <textarea
-                className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
-                rows={3}
-                placeholder="What should the agent do when this task runs?"
-                value={createForm.message}
-                onChange={(e) => setCreateForm((prev) => ({ ...prev, message: e.target.value }))}
-                required
-              />
-            </label>
-
-            <div className="flex gap-2 md:col-span-2">
-              <button
-                type="submit"
-                disabled={createMutation.isPending}
-                className="rounded-full border border-ink/20 px-4 py-2 text-sm hover:border-ink/40 disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                {createMutation.isPending ? "Creating..." : "Create"}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowCreate(false)}
-                className="rounded-full border border-ink/20 px-4 py-2 text-sm hover:border-ink/40"
-              >
-                Cancel
-              </button>
+          <div className="space-y-4">
+            {/* Quick-start templates */}
+            <div>
+              <p className="mb-2 text-sm font-medium text-ink/70">Quick start — pick a template</p>
+              <div className="flex flex-wrap gap-2">
+                {TASK_TEMPLATES.map((tpl) => (
+                  <button
+                    key={tpl.name}
+                    type="button"
+                    onClick={() => handleApplyTemplate(tpl)}
+                    className={`rounded-full border px-3 py-1.5 text-sm transition ${
+                      createForm.name === tpl.name
+                        ? "border-accent bg-accent/10 text-accent"
+                        : "border-ink/15 text-ink/70 hover:border-ink/30 hover:text-ink"
+                    }`}
+                  >
+                    {tpl.icon} {tpl.name}
+                  </button>
+                ))}
+              </div>
             </div>
-          </form>
+
+            {/* Create form */}
+            <form className="grid gap-3 md:grid-cols-2" onSubmit={handleCreate}>
+              <label className="text-sm text-ink/70">
+                Name
+                <input
+                  className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+                  placeholder="e.g. Morning Briefing"
+                  value={createForm.name}
+                  onChange={(e) => setCreateForm((prev) => ({ ...prev, name: e.target.value }))}
+                  required
+                />
+              </label>
+
+              <TimezoneSelector
+                value={createForm.tz}
+                onChange={(tz) => setCreateForm((prev) => ({ ...prev, tz }))}
+                defaultTimezone={me?.timezone}
+              />
+
+              <ScheduleBuilder
+                expr={createForm.expr}
+                onChange={(expr) => setCreateForm((prev) => ({ ...prev, expr }))}
+              />
+
+              <label className="text-sm text-ink/70">
+                Delivery
+                <select
+                  className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+                  value={createForm.deliveryMode}
+                  onChange={(e) => setCreateForm((prev) => ({ ...prev, deliveryMode: e.target.value }))}
+                >
+                  <option value="announce">Announce (send message)</option>
+                  <option value="none">Silent (no message)</option>
+                </select>
+              </label>
+
+              <label className="text-sm text-ink/70 md:col-span-2">
+                What should your agent do?
+                <textarea
+                  className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+                  rows={3}
+                  placeholder="Describe the task in plain language — e.g. 'Check my calendar and weather, then send me a morning summary'"
+                  value={createForm.message}
+                  onChange={(e) => setCreateForm((prev) => ({ ...prev, message: e.target.value }))}
+                  required
+                />
+              </label>
+
+              {/* Capabilities reference */}
+              <div className="md:col-span-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCapabilities(!showCapabilities)}
+                  className="text-xs text-accent hover:underline"
+                >
+                  {showCapabilities ? "Hide" : "Show"} what your agent can do ↗
+                </button>
+                {showCapabilities && (
+                  <div className="mt-2 grid gap-1.5 rounded-panel border border-ink/10 bg-ink/[0.02] p-3 sm:grid-cols-2">
+                    {AGENT_CAPABILITIES.map((cap) => (
+                      <div key={cap.name} className="flex items-start gap-2 text-sm">
+                        <span className="text-base leading-5">{cap.icon}</span>
+                        <div>
+                          <span className="font-medium text-ink/80">{cap.name}</span>
+                          <span className="text-ink/50"> — {cap.desc}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-2 md:col-span-2">
+                <button
+                  type="submit"
+                  disabled={createMutation.isPending}
+                  className="rounded-full border border-ink/20 px-4 py-2 text-sm hover:border-ink/40 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {createMutation.isPending ? "Creating..." : "Create"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCreate(false)}
+                  className="rounded-full border border-ink/20 px-4 py-2 text-sm hover:border-ink/40"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
         )}
 
         {createMutation.isError ? (
@@ -315,14 +449,11 @@ export default function SettingsCronJobsPage() {
                     className="mt-4 grid gap-3 rounded-panel border border-ink/10 p-3 md:grid-cols-2"
                     onSubmit={handleUpdate}
                   >
-                    <label className="text-sm text-ink/70">
-                      Timezone
-                      <input
-                        className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
-                        value={editForm.tz}
-                        onChange={(e) => setEditForm((prev) => ({ ...prev, tz: e.target.value }))}
-                      />
-                    </label>
+                    <TimezoneSelector
+                      value={editForm.tz}
+                      onChange={(tz) => setEditForm((prev) => ({ ...prev, tz }))}
+                      defaultTimezone={me?.timezone}
+                    />
 
                     <ScheduleBuilder
                       expr={editForm.expr}
@@ -347,7 +478,7 @@ export default function SettingsCronJobsPage() {
                     </label>
 
                     <label className="text-sm text-ink/70 md:col-span-2">
-                      Prompt message
+                      What should your agent do?
                       <textarea
                         className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
                         rows={3}

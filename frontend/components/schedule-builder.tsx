@@ -467,9 +467,11 @@ export default function ScheduleBuilder({ expr, onChange }: ScheduleBuilderProps
         </label>
       )}
 
-      <div className="inline-flex items-center rounded-full bg-ink/5 px-3 py-1.5 text-xs font-mono text-ink/60">
-        📋 Cron expression: {shownCron}
-      </div>
+      {mode === "advanced" && (
+        <div className="inline-flex items-center rounded-full bg-ink/5 px-3 py-1.5 text-xs font-mono text-ink/60">
+          📋 Cron expression: {shownCron}
+        </div>
+      )}
     </section>
   );
 }
