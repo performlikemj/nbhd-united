@@ -219,6 +219,7 @@ export interface CronJobDelivery {
 }
 
 export interface CronJob {
+  jobId?: string;
   name: string;
   schedule: CronJobSchedule;
   sessionTarget: string;

@@ -512,6 +512,7 @@ function normalizeCronJob(raw: Record<string, unknown>): CronJob {
   const payload = (raw.payload as Partial<CronJobPayload>) ?? {};
   const delivery = (raw.delivery as Partial<CronJobDelivery>) ?? {};
   return {
+    jobId: (raw.jobId as string) ?? (raw.id as string) ?? undefined,
     name: (raw.name as string) ?? "Untitled",
     schedule: { kind: schedule.kind ?? "cron", expr: schedule.expr ?? "", tz: schedule.tz ?? "UTC" },
     sessionTarget: (raw.sessionTarget as string) ?? "isolated",
@@ -534,21 +535,21 @@ export function createCronJob(data: Partial<CronJob>): Promise<CronJob> {
   });
 }
 
-export function updateCronJob(name: string, data: Partial<CronJob>): Promise<CronJob> {
-  return apiFetch<CronJob>(`/api/v1/cron-jobs/${encodeURIComponent(name)}/`, {
+export function updateCronJob(nameOrId: string, data: Partial<CronJob>): Promise<CronJob> {
+  return apiFetch<CronJob>(`/api/v1/cron-jobs/${encodeURIComponent(nameOrId)}/`, {
     method: "PATCH",
     body: JSON.stringify(data),
   });
 }
 
-export function deleteCronJob(name: string): Promise<void> {
-  return apiFetch<void>(`/api/v1/cron-jobs/${encodeURIComponent(name)}/`, {
+export function deleteCronJob(nameOrId: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/cron-jobs/${encodeURIComponent(nameOrId)}/`, {
     method: "DELETE",
   });
 }
 
-export function toggleCronJob(name: string, enabled: boolean): Promise<CronJob> {
-  return apiFetch<CronJob>(`/api/v1/cron-jobs/${encodeURIComponent(name)}/toggle/`, {
+export function toggleCronJob(nameOrId: string, enabled: boolean): Promise<CronJob> {
+  return apiFetch<CronJob>(`/api/v1/cron-jobs/${encodeURIComponent(nameOrId)}/toggle/`, {
     method: "POST",
     body: JSON.stringify({ enabled }),
   });
