@@ -24,7 +24,7 @@ export function QuickLogInput({ onSubmit, isPending }: QuickLogInputProps) {
         placeholder="Quick log entry..."
         value={content}
         onChange={(e) => setContent(e.target.value)}
-        className="min-h-[44px] flex-1 rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+        className="min-h-[44px] flex-1 rounded-panel border border-border bg-surface px-3 py-2 text-sm"
       />
       <button
         type="submit"

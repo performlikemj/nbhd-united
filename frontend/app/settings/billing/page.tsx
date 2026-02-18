@@ -74,8 +74,8 @@ export default function SettingsBillingPage() {
               <div
                 className={`rounded-panel border px-4 py-3 text-sm ${
                   isTrialActive
-                    ? "border-accent/25 bg-accent/5 text-ink/75"
-                    : "border-rose-200 bg-rose-50 text-rose-600"
+                    ? "border-accent/25 bg-accent/5 text-ink-muted"
+                    : "border-rose-border bg-rose-bg text-rose-text"
                 }`}
               >
                 {isTrialActive
@@ -85,16 +85,16 @@ export default function SettingsBillingPage() {
             )}
 
             <dl className="grid gap-3 text-sm sm:grid-cols-2">
-              <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
-                <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Tier</dt>
+              <div className="rounded-panel border border-border bg-surface p-4 min-w-0 overflow-hidden">
+                <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Tier</dt>
                 <dd className="mt-1 text-lg font-semibold uppercase">{tenant.model_tier}</dd>
               </div>
-              <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
-                <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Tenant State</dt>
+              <div className="rounded-panel border border-border bg-surface p-4 min-w-0 overflow-hidden">
+                <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Tenant State</dt>
                 <dd className="mt-1"><StatusPill status={tenant.status} /></dd>
               </div>
-              <div className="rounded-panel border border-ink/15 bg-white p-4 sm:col-span-2">
-                <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Subscription</dt>
+              <div className="rounded-panel border border-border bg-surface p-4 sm:col-span-2">
+                <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Subscription</dt>
                 <dd className="mt-1"><StatusPill status={tenant.has_active_subscription ? "active" : "pending"} /></dd>
               </div>
             </dl>
@@ -104,8 +104,8 @@ export default function SettingsBillingPage() {
                 isTrialActive
                   ? "border-accent/30 bg-accent/5"
                   : isTrialExpired
-                    ? "border-rose-200 bg-rose-50"
-                    : "border-amber-300 bg-amber-50"
+                    ? "border-rose-border bg-rose-bg"
+                    : "border-amber-border bg-amber-bg"
               }`}>
                 <p className="text-sm font-medium text-ink">
                   {isTrialActive
@@ -125,8 +125,8 @@ export default function SettingsBillingPage() {
               </div>
             )}
 
-            <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
-              <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Select plan</p>
+            <div className="rounded-panel border border-border bg-surface p-4 min-w-0 overflow-hidden">
+              <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Select plan</p>
               <div className="mt-2 flex gap-2">
                 {(PLAN_OPTIONS as readonly { id: "starter" | "premium" | "byok"; name: string; price: string; description: string }[]).map((tier) => (
                   <button
@@ -136,7 +136,7 @@ export default function SettingsBillingPage() {
                     className={`rounded-full px-4 py-1.5 text-sm transition ${
                       selectedTier === tier.id
                         ? "bg-ink text-white"
-                        : "border border-ink/20 text-ink/75 hover:border-ink/40"
+                        : "border border-border-strong text-ink-muted hover:border-border-strong"
                     }`}
                   >
                     {tier.name} ({tier.price}) — {tier.description}
@@ -148,7 +148,7 @@ export default function SettingsBillingPage() {
             <div className="flex flex-wrap items-center gap-3">
               {tenant.has_active_subscription && (
                 <button
-                  className="rounded-full bg-ink px-4 py-2 text-sm text-white transition hover:bg-ink/85 disabled:cursor-not-allowed disabled:opacity-55"
+                  className="rounded-full bg-ink px-4 py-2 text-sm text-white transition hover:bg-surface-hover5 disabled:cursor-not-allowed disabled:opacity-55"
                   type="button"
                   onClick={openPortal}
                   disabled={portalMutation.isPending}
@@ -157,7 +157,7 @@ export default function SettingsBillingPage() {
                 </button>
               )}
               <button
-                className="rounded-full border border-ink/20 px-4 py-2 text-sm text-ink transition hover:border-ink/40 disabled:cursor-not-allowed disabled:opacity-55"
+                className="rounded-full border border-border-strong px-4 py-2 text-sm text-ink transition hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-55"
                 type="button"
                 onClick={handleCheckout}
                 disabled={checkoutMutation.isPending}
@@ -165,39 +165,39 @@ export default function SettingsBillingPage() {
                 {checkoutMutation.isPending ? "Redirecting..." : "Start/Change Plan"}
               </button>
             </div>
-            <p className="text-xs text-ink/45">
+            <p className="text-xs text-ink-faint">
               By subscribing, you agree to our{" "}
-              <Link href="/legal/terms" className="underline hover:text-ink/70">Terms</Link>,{" "}
-              <Link href="/legal/privacy" className="underline hover:text-ink/70">Privacy Policy</Link>, and{" "}
-              <Link href="/legal/refund" className="underline hover:text-ink/70">Refund Policy</Link>.
+              <Link href="/legal/terms" className="underline hover:text-ink-muted">Terms</Link>,{" "}
+              <Link href="/legal/privacy" className="underline hover:text-ink-muted">Privacy Policy</Link>, and{" "}
+              <Link href="/legal/refund" className="underline hover:text-ink-muted">Refund Policy</Link>.
             </p>
 
             {portalError && (
-              <p className="rounded-panel border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <p className="rounded-panel border border-amber-border bg-amber-bg p-3 text-sm text-amber-text">
                 {portalError}
               </p>
             )}
             {checkoutError && (
-              <p className="rounded-panel border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+              <p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
                 {checkoutError}
               </p>
             )}
           </div>
         ) : (
           <div className="flex flex-col items-center py-8 text-center">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-ink/5">
-              <svg className="h-8 w-8 text-ink/30" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-surface-hover">
+              <svg className="h-8 w-8 text-ink-faint" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25v10.5A2.25 2.25 0 004.5 19.5z" />
               </svg>
             </div>
             <h3 className="mt-4 text-lg font-semibold text-ink">No subscription yet</h3>
-            <p className="mt-2 max-w-sm text-sm text-ink/65">
+            <p className="mt-2 max-w-sm text-sm text-ink-muted">
               You&apos;ll get a 7-day free trial on onboarding, then choose a plan to keep your assistant running.
             </p>
             <div className="mt-6 flex gap-3">
               <Link
                 href="/onboarding"
-                className="rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-white transition hover:bg-ink/85"
+                className="rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-white transition hover:bg-surface-hover5"
               >
                 Start onboarding
               </Link>
@@ -205,19 +205,19 @@ export default function SettingsBillingPage() {
                 type="button"
                 onClick={handleCheckout}
                 disabled={checkoutMutation.isPending}
-                className="rounded-full border border-ink/20 px-5 py-2.5 text-sm text-ink transition hover:border-ink/40 disabled:cursor-not-allowed disabled:opacity-55"
+                className="rounded-full border border-border-strong px-5 py-2.5 text-sm text-ink transition hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-55"
               >
                 {checkoutMutation.isPending ? "Redirecting..." : "Subscribe now"}
               </button>
             </div>
-            <p className="mt-3 text-xs text-ink/45">
+            <p className="mt-3 text-xs text-ink-faint">
               By subscribing, you agree to our{" "}
-              <Link href="/legal/terms" className="underline hover:text-ink/70">Terms</Link>,{" "}
-              <Link href="/legal/privacy" className="underline hover:text-ink/70">Privacy Policy</Link>, and{" "}
-              <Link href="/legal/refund" className="underline hover:text-ink/70">Refund Policy</Link>.
+              <Link href="/legal/terms" className="underline hover:text-ink-muted">Terms</Link>,{" "}
+              <Link href="/legal/privacy" className="underline hover:text-ink-muted">Privacy Policy</Link>, and{" "}
+              <Link href="/legal/refund" className="underline hover:text-ink-muted">Refund Policy</Link>.
             </p>
             {checkoutError && (
-              <p className="mt-4 rounded-panel border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-900">
+              <p className="mt-4 rounded-panel border border-rose-border bg-rose-bg px-4 py-2.5 text-sm text-rose-text">
                 {checkoutError}
               </p>
             )}

@@ -118,21 +118,21 @@ export default function TimezoneSelector({
 
   return (
     <div className={`space-y-2 ${className}`.trim()}>
-      <label className="text-sm text-ink/70">
+      <label className="text-sm text-ink-muted">
         Search timezone
         <input
           type="text"
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
-          className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+          className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
           placeholder="Type region, city, or UTC offset"
         />
       </label>
 
-      <label className="text-sm text-ink/70">
+      <label className="text-sm text-ink-muted">
         Timezone
         <select
-          className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+          className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
           value={currentValue}
           onChange={(event) => onChange(event.target.value)}
         >

@@ -9,7 +9,7 @@ interface MarkdownHelpSheetProps {
 
 function Syntax({ children }: { children: React.ReactNode }) {
   return (
-    <code className="font-mono text-sm bg-ink/5 px-1.5 py-0.5 rounded">
+    <code className="font-mono text-sm bg-surface-hover px-1.5 py-0.5 rounded">
       {children}
     </code>
   );
@@ -17,7 +17,7 @@ function Syntax({ children }: { children: React.ReactNode }) {
 
 function SectionHeader({ children }: { children: React.ReactNode }) {
   return (
-    <h3 className="text-xs font-semibold uppercase tracking-wider text-ink/50 mt-4 mb-2 first:mt-0">
+    <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-faint mt-4 mb-2 first:mt-0">
       {children}
     </h3>
   );
@@ -27,7 +27,7 @@ function Row({ syntax, result }: { syntax: React.ReactNode; result: string }) {
   return (
     <div className="flex items-baseline gap-4 py-1.5">
       <div className="w-1/2 shrink-0">{typeof syntax === "string" ? <Syntax>{syntax}</Syntax> : syntax}</div>
-      <div className="w-1/2 text-sm text-ink/70">{result}</div>
+      <div className="w-1/2 text-sm text-ink-muted">{result}</div>
     </div>
   );
 }
@@ -74,20 +74,20 @@ export function MarkdownHelpSheet({ open, onClose }: MarkdownHelpSheetProps) {
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center">
       {/* Backdrop */}
       <div
-        className={`absolute inset-0 bg-black/30 transition-opacity duration-200 ${animating ? "opacity-100" : "opacity-0"}`}
+        className={`absolute inset-0 bg-overlay transition-opacity duration-200 ${animating ? "opacity-100" : "opacity-0"}`}
         onClick={onClose}
       />
 
       {/* Panel */}
       <div
-        className={`relative bg-white w-full max-h-[70dvh] rounded-t-2xl sm:max-w-lg sm:mx-auto sm:rounded-2xl sm:max-h-[80vh] flex flex-col transition-transform duration-200 ease-out ${animating ? "translate-y-0" : "translate-y-full sm:translate-y-8"}`}
+        className={`relative bg-surface w-full max-h-[70dvh] rounded-t-2xl sm:max-w-lg sm:mx-auto sm:rounded-2xl sm:max-h-[80vh] flex flex-col transition-transform duration-200 ease-out ${animating ? "translate-y-0" : "translate-y-full sm:translate-y-8"}`}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-ink/10 shrink-0">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
           <h2 className="text-base font-semibold text-ink">Markdown Guide</h2>
           <button
             onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-ink/5 text-ink/50 hover:text-ink transition-colors"
+            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-surface-hover text-ink-faint hover:text-ink transition-colors"
             aria-label="Close"
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">

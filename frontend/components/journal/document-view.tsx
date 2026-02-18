@@ -127,10 +127,10 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
   if (isLoading) {
     return (
       <div className="space-y-4 p-4 lg:p-6">
-        <div className="h-8 w-48 animate-pulse rounded bg-ink/10" />
+        <div className="h-8 w-48 animate-pulse rounded bg-border" />
         <div className="space-y-2">
           {[1, 2, 3, 4, 5].map((i) => (
-            <div key={i} className="h-4 animate-pulse rounded bg-ink/10" style={{ width: `${60 + Math.random() * 30}%` }} />
+            <div key={i} className="h-4 animate-pulse rounded bg-border" style={{ width: `${60 + Math.random() * 30}%` }} />
           ))}
         </div>
       </div>
@@ -140,7 +140,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
   if (error) {
     return (
       <div className="p-4 lg:p-6">
-        <p className="rounded-panel border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+        <p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
           Could not load document.
         </p>
       </div>
@@ -150,7 +150,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink/10 px-4 py-2 lg:px-6 lg:py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2 lg:px-6 lg:py-3">
         <div className="flex items-center gap-2 min-w-0">
           {/* Date navigation for daily notes */}
           {kind === "daily" && (
@@ -158,7 +158,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
               <button
                 type="button"
                 onClick={() => handleDateNav(-1)}
-                className="rounded-full border border-ink/20 px-2 py-1 text-sm hover:border-ink/40 min-h-[36px] min-w-[36px] flex items-center justify-center"
+                className="rounded-full border border-border-strong px-2 py-1 text-sm hover:border-border-strong min-h-[36px] min-w-[36px] flex items-center justify-center"
               >
                 ←
               </button>
@@ -183,7 +183,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
                 type="button"
                 onClick={() => handleDateNav(1)}
                 disabled={effectiveSlug >= todayISO()}
-                className="rounded-full border border-ink/20 px-2 py-1 text-sm hover:border-ink/40 disabled:cursor-not-allowed disabled:opacity-40 min-h-[36px] min-w-[36px] flex items-center justify-center"
+                className="rounded-full border border-border-strong px-2 py-1 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-40 min-h-[36px] min-w-[36px] flex items-center justify-center"
               >
                 →
               </button>
@@ -194,7 +194,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
                     setCurrentSlug(todayISO());
                     onNavigate?.("daily", todayISO());
                   }}
-                  className="rounded-full border border-ink/20 px-2.5 py-1 text-xs sm:text-sm sm:px-3 hover:border-ink/40 min-h-[36px]"
+                  className="rounded-full border border-border-strong px-2.5 py-1 text-xs sm:text-sm sm:px-3 hover:border-border-strong min-h-[36px]"
                 >
                   Today
                 </button>
@@ -223,7 +223,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
               <button
                 type="button"
                 onClick={handleCancel}
-                className="rounded-full border border-ink/20 px-3 py-1.5 text-sm hover:border-ink/40 min-h-[36px]"
+                className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong min-h-[36px]"
               >
                 Cancel
               </button>
@@ -232,7 +232,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
             <button
               type="button"
               onClick={handleEdit}
-              className="rounded-full border border-ink/20 px-3 py-1.5 text-sm text-ink/50 hover:border-ink/40 hover:text-ink min-h-[36px]"
+              className="rounded-full border border-border-strong px-3 py-1.5 text-sm text-ink-faint hover:border-border-strong hover:text-ink min-h-[36px]"
             >
               Edit
             </button>
@@ -255,16 +255,16 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
           </div>
         ) : (
           <div
-            className="group cursor-text rounded-sm border border-transparent p-4 transition-colors duration-150 hover:border-ink/10 hover:bg-ink/[0.03] lg:p-6"
+            className="group cursor-text rounded-sm border border-transparent p-4 transition-colors duration-150 hover:border-border hover:bg-surface-hover lg:p-6"
             onClick={handleContentAreaClick}
           >
-            <p className="pointer-events-none mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-ink/25">
+            <p className="pointer-events-none mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-ink-faint">
               ✎ Tap anywhere to edit
             </p>
             {doc?.markdown ? (
               <MarkdownRenderer content={doc.markdown} onCheckboxToggle={handleCheckboxToggle} />
             ) : (
-              <p className="text-sm italic text-ink/40">Tap anywhere to start writing...</p>
+              <p className="text-sm italic text-ink-faint">Tap anywhere to start writing...</p>
             )}
           </div>
         )}
@@ -272,13 +272,13 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
 
       {/* Quick log for daily notes */}
       {kind === "daily" && !editing && (
-        <div className="border-t border-ink/10 px-4 py-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] lg:px-6 lg:py-3">
+        <div className="border-t border-border px-4 py-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] lg:px-6 lg:py-3">
           <QuickLogInput
             onSubmit={handleQuickLog}
             isPending={appendMutation.isPending}
           />
           {appendMutation.isError && (
-            <p className="mt-1 text-xs text-rose-600">Failed to add entry.</p>
+            <p className="mt-1 text-xs text-rose-text">Failed to add entry.</p>
           )}
         </div>
       )}

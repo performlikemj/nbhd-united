@@ -29,20 +29,20 @@ export class ErrorBoundary extends Component<Props, State> {
     if (this.state.hasError) {
       return (
         <div className="mx-auto w-full max-w-2xl px-4 py-16">
-          <div className="rounded-panel border border-rose-200 bg-rose-50 p-6 shadow-panel">
-            <p className="font-mono text-xs uppercase tracking-[0.24em] text-rose-400">
+          <div className="rounded-panel border border-rose-border bg-rose-bg p-6 shadow-panel">
+            <p className="font-mono text-xs uppercase tracking-[0.24em] text-rose-text">
               Runtime Error
             </p>
-            <h2 className="mt-2 text-xl font-semibold text-rose-900">
+            <h2 className="mt-2 text-xl font-semibold text-rose-text">
               Something went wrong
             </h2>
-            <p className="mt-2 text-sm text-rose-800">
+            <p className="mt-2 text-sm text-rose-text">
               {this.state.error?.message || "An unexpected error occurred."}
             </p>
             <button
               type="button"
               onClick={() => this.setState({ hasError: false, error: null })}
-              className="mt-4 rounded-full bg-rose-900 px-4 py-2 text-sm text-white transition hover:bg-rose-800"
+              className="mt-4 rounded-full bg-rose-bg px-4 py-2 text-sm text-white transition hover:bg-rose-border"
             >
               Try again
             </button>

@@ -307,12 +307,12 @@ export function MarkdownEditor({
   // ── Toolbar button component ────────────────────────────────────────────
 
   const btnClass =
-    "p-1.5 rounded hover:bg-ink/10 text-ink/50 hover:text-ink min-h-[36px] min-w-[36px] flex items-center justify-center transition-colors";
+    "p-1.5 rounded hover:bg-border text-ink-faint hover:text-ink min-h-[36px] min-w-[36px] flex items-center justify-center transition-colors";
 
   return (
-    <div className={clsx("rounded-lg border border-ink/15 overflow-hidden", className)}>
+    <div className={clsx("rounded-lg border border-border overflow-hidden", className)}>
       {/* Toolbar */}
-      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-ink/10 bg-ink/[0.02] overflow-x-auto flex-nowrap">
+      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border bg-surface-hover overflow-x-auto flex-nowrap">
         <button type="button" className={btnClass} onClick={handleBold} title="Bold (⌘B)">
           <BoldIcon />
         </button>
@@ -336,7 +336,7 @@ export function MarkdownEditor({
         </button>
 
         {/* Divider */}
-        <div className="w-px h-5 bg-ink/10 mx-1 shrink-0" />
+        <div className="w-px h-5 bg-border mx-1 shrink-0" />
 
         <button
           type="button"
@@ -356,7 +356,7 @@ export function MarkdownEditor({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={handleKeyDown}
-        className="w-full bg-white px-4 py-3 font-mono text-sm leading-relaxed focus:outline-none resize-y min-h-[50dvh] md:min-h-[300px]"
+        className="w-full bg-surface px-4 py-3 font-mono text-sm leading-relaxed focus:outline-none resize-y min-h-[50dvh] md:min-h-[300px]"
         autoFocus={autoFocus}
       />
     </div>

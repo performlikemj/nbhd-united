@@ -50,9 +50,9 @@ export default function SettingsUsagePage() {
               />
             </div>
             {isOverQuota && (
-              <div className="rounded-panel border border-signal/30 bg-signal/5 p-4 text-sm text-ink">
+              <div className="rounded-panel border border-signal/30 bg-signal-faint p-4 text-sm text-ink">
                 <p className="font-medium">Token quota reached.</p>
-                <p className="mt-2 text-ink/75">
+                <p className="mt-2 text-ink-muted">
                   You cannot go over the token budget. Upgrade your plan or wait until next month.
                 </p>
                 <Link href="/settings/billing" className="mt-3 inline-flex underline">
@@ -61,18 +61,18 @@ export default function SettingsUsagePage() {
               </div>
             )}
 
-            <article className="rounded-panel border border-ink/15 bg-white p-4">
+            <article className="rounded-panel border border-border bg-surface p-4">
               <div className="flex items-center justify-between gap-2 text-sm">
                 <p className="font-medium">Token budget</p>
-                <p className="font-mono text-xs tracking-[0.1em] text-ink/65">
+                <p className="font-mono text-xs tracking-[0.1em] text-ink-muted">
                   {effectiveUsed.toLocaleString()} / {effectiveBudget.toLocaleString()}
                 </p>
               </div>
 
-              <div className="mt-3 h-3 overflow-hidden rounded-full bg-ink/10">
+              <div className="mt-3 h-3 overflow-hidden rounded-full bg-border">
                 <div className="h-full rounded-full bg-gradient-to-r from-accent to-signal" style={{ width: `${budgetPct}%` }} />
               </div>
-              <p className="mt-2 text-xs text-ink/65">
+              <p className="mt-2 text-xs text-ink-muted">
                 {budgetPct}% of monthly budget consumed.{" "}
                 {budgetRemaining > 0
                   ? `${budgetRemaining.toLocaleString()} tokens remaining this month.`
@@ -81,7 +81,7 @@ export default function SettingsUsagePage() {
             </article>
           </div>
         ) : (
-          <p className="text-sm text-ink/70">No usage data available yet.</p>
+          <p className="text-sm text-ink-muted">No usage data available yet.</p>
         )}
       </SectionCard>
 
@@ -90,31 +90,31 @@ export default function SettingsUsagePage() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-ink/10">
-                  <th className="pb-2 pr-4 text-left font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Model</th>
-                  <th className="pb-2 pr-4 text-right font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Inputs</th>
-                  <th className="pb-2 pr-4 text-right font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Outputs</th>
-                  <th className="pb-2 pr-4 text-right font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Calls</th>
-                  <th className="pb-2 text-right font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Cost</th>
+                <tr className="border-b border-border">
+                  <th className="pb-2 pr-4 text-left font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Model</th>
+                  <th className="pb-2 pr-4 text-right font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Inputs</th>
+                  <th className="pb-2 pr-4 text-right font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Outputs</th>
+                  <th className="pb-2 pr-4 text-right font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Calls</th>
+                  <th className="pb-2 text-right font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Cost</th>
                 </tr>
               </thead>
               <tbody>
                 {modelBreakdown.map((entry) => (
-                  <tr key={entry.model} className="border-b border-ink/5">
-                    <td className="py-2 pr-4 text-ink/80">
+                  <tr key={entry.model} className="border-b border-border">
+                    <td className="py-2 pr-4 text-ink-muted">
                       {entry.display_name || entry.model}
                     </td>
-                    <td className="py-2 pr-4 text-right text-ink/70">{entry.input_tokens.toLocaleString()}</td>
-                    <td className="py-2 pr-4 text-right text-ink/70">{entry.output_tokens.toLocaleString()}</td>
-                    <td className="py-2 pr-4 text-right text-ink/70">{entry.count}</td>
-                    <td className="py-2 text-right text-ink/70">${entry.cost.toFixed(4)}</td>
+                    <td className="py-2 pr-4 text-right text-ink-muted">{entry.input_tokens.toLocaleString()}</td>
+                    <td className="py-2 pr-4 text-right text-ink-muted">{entry.output_tokens.toLocaleString()}</td>
+                    <td className="py-2 pr-4 text-right text-ink-muted">{entry.count}</td>
+                    <td className="py-2 text-right text-ink-muted">${entry.cost.toFixed(4)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         ) : (
-          <p className="text-sm text-ink/70">No usage by model yet.</p>
+          <p className="text-sm text-ink-muted">No usage by model yet.</p>
         )}
       </SectionCard>
 
@@ -125,26 +125,26 @@ export default function SettingsUsagePage() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-ink/10">
-                  <th className="pb-2 pr-4 text-left font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Date</th>
-                  <th className="pb-2 pr-4 text-left font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Event Type</th>
-                  <th className="pb-2 pr-4 text-left font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Model</th>
-                  <th className="pb-2 pr-4 text-right font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Tokens</th>
-                  <th className="pb-2 text-right font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Cost</th>
+                <tr className="border-b border-border">
+                  <th className="pb-2 pr-4 text-left font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Date</th>
+                  <th className="pb-2 pr-4 text-left font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Event Type</th>
+                  <th className="pb-2 pr-4 text-left font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Model</th>
+                  <th className="pb-2 pr-4 text-right font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Tokens</th>
+                  <th className="pb-2 text-right font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Cost</th>
                 </tr>
               </thead>
               <tbody>
                 {usageData.results.map((record) => (
-                  <tr key={record.id} className="border-b border-ink/5">
-                    <td className="py-2 pr-4 text-ink/80">
+                  <tr key={record.id} className="border-b border-border">
+                    <td className="py-2 pr-4 text-ink-muted">
                       {new Date(record.created_at).toLocaleDateString()}
                     </td>
-                    <td className="py-2 pr-4 text-ink/80">{record.event_type}</td>
-                    <td className="py-2 pr-4 text-ink/70">{record.model_used || "-"}</td>
-                    <td className="py-2 pr-4 text-right font-mono text-ink/80">
+                    <td className="py-2 pr-4 text-ink-muted">{record.event_type}</td>
+                    <td className="py-2 pr-4 text-ink-muted">{record.model_used || "-"}</td>
+                    <td className="py-2 pr-4 text-right font-mono text-ink-muted">
                       {(record.input_tokens + record.output_tokens).toLocaleString()}
                     </td>
-                    <td className="py-2 text-right font-mono text-ink/80">
+                    <td className="py-2 text-right font-mono text-ink-muted">
                       ${Number(record.cost_estimate).toFixed(4)}
                     </td>
                   </tr>
@@ -153,7 +153,7 @@ export default function SettingsUsagePage() {
             </table>
           </div>
         ) : (
-          <p className="text-sm text-ink/70">No usage records yet.</p>
+          <p className="text-sm text-ink-muted">No usage records yet.</p>
         )}
       </SectionCard>
     </div>

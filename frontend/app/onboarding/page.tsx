@@ -141,14 +141,14 @@ export default function OnboardingPage() {
     switch (stepIndex) {
       case 0:
         return (
-          <p className="text-sm text-ink/60">
+          <p className="text-sm text-ink-muted">
             Signed in as {me?.display_name || me?.email || "you"}
           </p>
         );
       case 1:
         return (
           <>
-            <p className="mt-1 text-sm text-ink/65">
+            <p className="mt-1 text-sm text-ink-muted">
               Pick a personality for your AI assistant. You can change this later in settings.
             </p>
             {stepStates[1] !== "completed" && personas && (
@@ -176,7 +176,7 @@ export default function OnboardingPage() {
       case 2:
         return (
           <>
-            <p className="mt-1 text-sm text-ink/65">
+            <p className="mt-1 text-sm text-ink-muted">
               Link your Telegram account so the assistant can message you.
             </p>
             {stepStates[2] === "completed" && telegramStatus?.telegram_username && (
@@ -196,7 +196,7 @@ export default function OnboardingPage() {
             )}
             {stepStates[2] === "current" && linkData && (
               <div className="mt-4 space-y-3">
-                <p className="text-sm text-ink/70">
+                <p className="text-sm text-ink-muted">
                   Scan the QR code or tap the link to connect your Telegram:
                 </p>
                 <div className="flex items-start gap-4">
@@ -204,7 +204,7 @@ export default function OnboardingPage() {
                   <img
                     src={linkData.qr_code}
                     alt="Telegram QR Code"
-                    className="h-40 w-40 rounded-panel border border-ink/15"
+                    className="h-40 w-40 rounded-panel border border-border"
                   />
                   <div className="space-y-2">
                     <a
@@ -217,12 +217,12 @@ export default function OnboardingPage() {
                     </a>
                     <div className="flex items-center gap-2">
                       <div className="h-2 w-2 rounded-full bg-accent animate-pulse" />
-                      <p className="text-xs text-ink/50">
+                      <p className="text-xs text-ink-faint">
                         Waiting for you to connect...
                       </p>
                     </div>
                     {linkSecondsLeft > 0 && (
-                      <p className="text-xs text-ink/40">
+                      <p className="text-xs text-ink-faint">
                         Link expires in {Math.floor(linkSecondsLeft / 60)}:{String(linkSecondsLeft % 60).padStart(2, "0")}
                       </p>
                     )}
@@ -239,7 +239,7 @@ export default function OnboardingPage() {
               </div>
             )}
             {stepStates[2] === "upcoming" && (
-              <p className="mt-1 text-sm text-ink/35">Complete your persona setup first.</p>
+              <p className="mt-1 text-sm text-ink-faint">Complete your persona setup first.</p>
             )}
           </>
         );
@@ -251,7 +251,7 @@ export default function OnboardingPage() {
                 <p className="mt-1 text-sm text-signal">
                   Your assistant is active and ready to receive messages!
                 </p>
-                <p className="mt-3 rounded-panel border border-accent/20 bg-accent/5 px-3 py-2 text-sm text-ink/75">
+                <p className="mt-3 rounded-panel border border-accent/20 bg-accent/5 px-3 py-2 text-sm text-ink-muted">
                   You&apos;re on a 7-day free trial. Subscribe anytime at Settings → Billing to keep your assistant after the trial.
                 </p>
               </>
@@ -259,18 +259,18 @@ export default function OnboardingPage() {
               <>
                 <div className="mt-3 flex items-center gap-3">
                   <div className="h-2.5 w-2.5 rounded-full bg-accent animate-pulse" />
-                  <p className="text-sm text-ink/65">
+                  <p className="text-sm text-ink-muted">
                     {tenant?.status === "provisioning"
                       ? "Your runtime is being provisioned. This usually takes a minute..."
                       : "Finalizing your agent setup..."}
                   </p>
                 </div>
-                <p className="mt-3 rounded-panel border border-accent/20 bg-accent/5 px-3 py-2 text-sm text-ink/75">
+                <p className="mt-3 rounded-panel border border-accent/20 bg-accent/5 px-3 py-2 text-sm text-ink-muted">
                   You&apos;re on a 7-day free trial. Subscribe anytime at Settings → Billing to keep your assistant after the trial.
                 </p>
               </>
             ) : (
-              <p className="mt-1 text-sm text-ink/35">Complete the previous steps first.</p>
+              <p className="mt-1 text-sm text-ink-faint">Complete the previous steps first.</p>
             )}
           </>
         );
@@ -299,8 +299,8 @@ export default function OnboardingPage() {
                     "flex h-10 w-10 items-center justify-center rounded-full border-2 font-mono text-sm font-semibold transition",
                     stepStates[i] === "completed" && "border-signal bg-signal text-white",
                     stepStates[i] === "current" && "border-accent bg-accent text-white",
-                    stepStates[i] === "upcoming" && "border-ink/15 bg-white text-ink/35",
-                    activeStep === i && "ring-2 ring-offset-2 ring-ink/20",
+                    stepStates[i] === "upcoming" && "border-border bg-surface text-ink-faint",
+                    activeStep === i && "ring-2 ring-offset-2 ring-border",
                   )}
                 >
                   {stepStates[i] === "completed" ? (
@@ -314,7 +314,7 @@ export default function OnboardingPage() {
                     "mt-2 text-xs font-medium",
                     stepStates[i] === "completed" && "text-signal",
                     stepStates[i] === "current" && "text-accent",
-                    stepStates[i] === "upcoming" && "text-ink/40",
+                    stepStates[i] === "upcoming" && "text-ink-faint",
                   )}
                 >
                   {label}
@@ -326,7 +326,7 @@ export default function OnboardingPage() {
                   <div
                     className={clsx(
                       "h-full rounded-full transition-all",
-                      stepStates[i + 1] !== "upcoming" ? "bg-signal" : "bg-ink/10",
+                      stepStates[i + 1] !== "upcoming" ? "bg-signal" : "bg-border",
                     )}
                   />
                 </div>
@@ -346,13 +346,13 @@ export default function OnboardingPage() {
               const borderColor =
                 state === "completed" ? "border-signal/30" :
                 state === "current" ? "border-accent/30" :
-                "border-ink/15";
+                "border-border";
 
               return (
                 <div
                   key={i}
                   className={clsx(
-                    "rounded-panel border bg-white p-6 shadow-panel transition",
+                    "rounded-panel border bg-surface p-6 shadow-panel transition",
                     borderColor,
                   )}
                 >
@@ -362,7 +362,7 @@ export default function OnboardingPage() {
                         "flex h-10 w-10 shrink-0 items-center justify-center rounded-full font-mono text-sm font-semibold text-white",
                         state === "completed" && "bg-signal",
                         state === "current" && "bg-accent",
-                        state === "upcoming" && "bg-ink/20",
+                        state === "upcoming" && "bg-surface-hover",
                       )}
                     >
                       {state === "completed" ? (
@@ -387,7 +387,7 @@ export default function OnboardingPage() {
                   key={i}
                   type="button"
                   onClick={() => setActiveStep(i)}
-                  className="flex w-full items-center gap-3 rounded-panel border border-signal/20 bg-signal/5 p-4 text-left cursor-pointer transition hover:border-signal/35"
+                  className="flex w-full items-center gap-3 rounded-panel border border-signal/20 bg-signal-faint p-4 text-left cursor-pointer transition hover:border-signal/35"
                 >
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-signal text-white">
                     <CheckIcon className="h-4 w-4" />
@@ -414,8 +414,8 @@ export default function OnboardingPage() {
                 className={clsx(
                   "flex w-full items-center gap-3 rounded-panel border p-4 text-left cursor-pointer transition",
                   state === "current"
-                    ? "border-accent/20 bg-white hover:border-accent/40"
-                    : "border-ink/10 bg-white/50 opacity-50 hover:opacity-70",
+                    ? "border-accent/20 bg-surface hover:border-accent/40"
+                    : "border-border bg-surface/50 opacity-50 hover:opacity-70",
                 )}
               >
                 <div
@@ -423,16 +423,16 @@ export default function OnboardingPage() {
                     "flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 font-mono text-sm",
                     state === "current"
                       ? "border-accent bg-accent text-white"
-                      : "border-ink/15 text-ink/30",
+                      : "border-border text-ink-faint",
                   )}
                 >
                   {i + 1}
                 </div>
                 <div>
-                  <p className={clsx("font-medium", state === "current" ? "text-ink" : "text-ink/50")}>
+                  <p className={clsx("font-medium", state === "current" ? "text-ink" : "text-ink-faint")}>
                     {STEP_TITLES[i]}
                   </p>
-                  <p className={clsx("text-sm", state === "current" ? "text-accent" : "text-ink/35")}>
+                  <p className={clsx("text-sm", state === "current" ? "text-accent" : "text-ink-faint")}>
                     {state === "current" ? "Click to expand" : "Complete the previous step first"}
                   </p>
                 </div>

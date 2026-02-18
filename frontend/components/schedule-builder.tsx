@@ -342,7 +342,7 @@ export default function ScheduleBuilder({ expr, onChange }: ScheduleBuilderProps
   return (
     <section className="space-y-2 md:col-span-2">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm font-medium text-ink/80">Runs: {humanLabel}</p>
+        <p className="text-sm font-medium text-ink-muted">Runs: {humanLabel}</p>
         <button
           type="button"
           onClick={handleModeToggle}
@@ -352,14 +352,14 @@ export default function ScheduleBuilder({ expr, onChange }: ScheduleBuilderProps
         </button>
       </div>
 
-      {parseError ? <p className="text-xs text-rose-600">{parseError}</p> : null}
+      {parseError ? <p className="text-xs text-rose-text">{parseError}</p> : null}
 
       {mode === "easy" ? (
-        <div className="grid gap-2 rounded-panel border border-ink/15 bg-white p-2">
-          <label className="text-sm text-ink/70">
+        <div className="grid gap-2 rounded-panel border border-border bg-surface p-2">
+          <label className="text-sm text-ink-muted">
             Frequency
             <select
-              className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+              className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
               value={state.frequency}
               onChange={(e) => handleFrequencyChange(e.target.value as Frequency)}
             >
@@ -373,7 +373,7 @@ export default function ScheduleBuilder({ expr, onChange }: ScheduleBuilderProps
 
           {state.frequency === "weekly" ? (
             <div>
-              <p className="mb-1 text-sm text-ink/70">Days</p>
+              <p className="mb-1 text-sm text-ink-muted">Days</p>
               <div className="flex flex-wrap gap-1.5">
                 {WEEKDAY_LABELS.map((dayLabel, index) => {
                   const selected = state.weekdays.includes(index);
@@ -396,7 +396,7 @@ export default function ScheduleBuilder({ expr, onChange }: ScheduleBuilderProps
                       className={`rounded-full border px-2.5 py-1 text-xs ${
                         selected
                           ? "border-accent bg-accent text-white"
-                          : "border-ink/15 bg-white text-ink"
+                          : "border-border bg-surface text-ink"
                       }`}
                     >
                       {dayLabel}
@@ -408,10 +408,10 @@ export default function ScheduleBuilder({ expr, onChange }: ScheduleBuilderProps
           ) : null}
 
           {state.frequency === "monthly" ? (
-            <label className="text-sm text-ink/70">
+            <label className="text-sm text-ink-muted">
               Day of month
               <select
-                className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                 value={state.monthDay}
                 onChange={(e) => setState((prev) => ({ ...prev, monthDay: e.target.value }))}
               >
@@ -425,10 +425,10 @@ export default function ScheduleBuilder({ expr, onChange }: ScheduleBuilderProps
           ) : null}
 
           <div className="grid gap-2 sm:grid-cols-2">
-            <label className="text-sm text-ink/70">
+            <label className="text-sm text-ink-muted">
               Hour
               <select
-                className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                 value={state.hour}
                 onChange={(e) => setState((prev) => ({ ...prev, hour: e.target.value }))}
               >
@@ -439,10 +439,10 @@ export default function ScheduleBuilder({ expr, onChange }: ScheduleBuilderProps
                 ))}
               </select>
             </label>
-            <label className="text-sm text-ink/70">
+            <label className="text-sm text-ink-muted">
               Minute
               <select
-                className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                 value={state.minute}
                 onChange={(e) => setState((prev) => ({ ...prev, minute: e.target.value }))}
               >
@@ -456,10 +456,10 @@ export default function ScheduleBuilder({ expr, onChange }: ScheduleBuilderProps
           </div>
         </div>
       ) : (
-        <label className="text-sm text-ink/70">
+        <label className="text-sm text-ink-muted">
           Cron Expression
           <input
-            className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm font-mono"
+            className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm font-mono"
             value={expr}
             onChange={(event) => onChange(event.target.value)}
             required
@@ -468,7 +468,7 @@ export default function ScheduleBuilder({ expr, onChange }: ScheduleBuilderProps
       )}
 
       {mode === "advanced" && (
-        <div className="inline-flex items-center rounded-full bg-ink/5 px-3 py-1.5 text-xs font-mono text-ink/60">
+        <div className="inline-flex items-center rounded-full bg-surface-hover px-3 py-1.5 text-xs font-mono text-ink-muted">
           📋 Cron expression: {shownCron}
         </div>
       )}

@@ -408,9 +408,9 @@ export default function SettingsPage() {
         {me ? (
           <dl className="grid min-w-0 gap-3 text-sm sm:grid-cols-2">
             {/* Display Name */}
-            <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
+            <div className="rounded-panel border border-border bg-surface p-4 min-w-0 overflow-hidden">
               <div className="mb-2 flex items-start justify-between gap-2">
-                <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Display Name</dt>
+                <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Display Name</dt>
                 {!editingDisplayName ? (
                   <button
                     type="button"
@@ -418,7 +418,7 @@ export default function SettingsPage() {
                       setDisplayName(me.display_name || "");
                       setEditingDisplayName(true);
                     }}
-                    className="rounded-full border border-ink/15 px-4 py-1.5 text-sm text-ink/75 transition hover:border-ink/30 hover:text-ink"
+                    className="rounded-full border border-border px-4 py-1.5 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink"
                   >
                     Edit
                   </button>
@@ -431,7 +431,7 @@ export default function SettingsPage() {
                   <input
                     value={displayName}
                     onChange={(e) => setDisplayName(e.target.value)}
-                    className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm text-ink placeholder:text-ink/40 focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                    className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
                     placeholder="Enter display name"
                   />
                   <div className="flex flex-wrap items-center gap-3">
@@ -446,7 +446,7 @@ export default function SettingsPage() {
                     <button
                       type="button"
                       onClick={() => setEditingDisplayName(false)}
-                      className="rounded-full border border-ink/15 px-4 py-1.5 text-sm transition hover:border-ink/30"
+                      className="rounded-full border border-border px-4 py-1.5 text-sm transition hover:border-border-strong"
                     >
                       Cancel
                     </button>
@@ -456,21 +456,21 @@ export default function SettingsPage() {
             </div>
 
             {/* Email */}
-            <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
-              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Email</dt>
+            <div className="rounded-panel border border-border bg-surface p-4 min-w-0 overflow-hidden">
+              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Email</dt>
               <dd className="mt-1 break-words text-base text-ink">{me.email}</dd>
             </div>
 
             {/* Username */}
-            <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
-              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Username</dt>
+            <div className="rounded-panel border border-border bg-surface p-4 min-w-0 overflow-hidden">
+              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Username</dt>
               <dd className="mt-1 break-words text-base text-ink">{me.username}</dd>
             </div>
 
             {/* Language */}
-            <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
+            <div className="rounded-panel border border-border bg-surface p-4 min-w-0 overflow-hidden">
               <div className="mb-2 flex items-start justify-between gap-2">
-                <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Language</dt>
+                <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Language</dt>
                 {!editingLanguage ? (
                   <button
                     type="button"
@@ -478,7 +478,7 @@ export default function SettingsPage() {
                       setLanguage(me.language || "en");
                       setEditingLanguage(true);
                     }}
-                    className="rounded-full border border-ink/15 px-4 py-1.5 text-sm text-ink/75 transition hover:border-ink/30 hover:text-ink"
+                    className="rounded-full border border-border px-4 py-1.5 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink"
                   >
                     Edit
                   </button>
@@ -488,12 +488,12 @@ export default function SettingsPage() {
                 <dd className="mt-1 break-words text-base text-ink">{languageLookup.get(me.language || "en") || me.language || "en"}</dd>
               ) : (
                 <div className="space-y-3">
-                  <label className="block text-sm text-ink/70">
+                  <label className="block text-sm text-ink-muted">
                     <span className="sr-only">Language</span>
                     <select
                       value={language}
                       onChange={(e) => setLanguage(e.target.value)}
-                      className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                      className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
                     >
                       {LANGUAGE_OPTIONS.map((option) => (
                         <option key={option.value} value={option.value}>
@@ -514,7 +514,7 @@ export default function SettingsPage() {
                     <button
                       type="button"
                       onClick={() => setEditingLanguage(false)}
-                      className="rounded-full border border-ink/15 px-4 py-1.5 text-sm transition hover:border-ink/30"
+                      className="rounded-full border border-border px-4 py-1.5 text-sm transition hover:border-border-strong"
                     >
                       Cancel
                     </button>
@@ -524,9 +524,9 @@ export default function SettingsPage() {
             </div>
 
             {/* Timezone */}
-            <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden sm:col-span-2">
+            <div className="rounded-panel border border-border bg-surface p-4 min-w-0 overflow-hidden sm:col-span-2">
               <div className="mb-2 flex items-start justify-between gap-2">
-                <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Timezone</dt>
+                <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Timezone</dt>
                 {!editingTimezone ? (
                   <button
                     type="button"
@@ -534,7 +534,7 @@ export default function SettingsPage() {
                       setTimezone(me.timezone || "UTC");
                       setEditingTimezone(true);
                     }}
-                    className="rounded-full border border-ink/15 px-4 py-1.5 text-sm text-ink/75 transition hover:border-ink/30 hover:text-ink"
+                    className="rounded-full border border-border px-4 py-1.5 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink"
                   >
                     Edit
                   </button>
@@ -544,12 +544,12 @@ export default function SettingsPage() {
                 <dd className="mt-1 break-words text-base text-ink">{findTimezoneLabel(me.timezone || "UTC")}</dd>
               ) : (
                 <div className="space-y-3">
-                  <label className="block text-sm text-ink/70">
+                  <label className="block text-sm text-ink-muted">
                     <span className="sr-only">Timezone</span>
                     <select
                       value={timezone}
                       onChange={(e) => setTimezone(e.target.value)}
-                      className="mt-1 w-full rounded-panel border border-ink/15 bg-white px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                      className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
                     >
                       {TIMEZONE_GROUPS.map((group) => (
                         <optgroup key={group.region} label={group.region}>
@@ -574,7 +574,7 @@ export default function SettingsPage() {
                     <button
                       type="button"
                       onClick={() => setEditingTimezone(false)}
-                      className="rounded-full border border-ink/15 px-4 py-1.5 text-sm transition hover:border-ink/30"
+                      className="rounded-full border border-border px-4 py-1.5 text-sm transition hover:border-border-strong"
                     >
                       Cancel
                     </button>
@@ -584,8 +584,8 @@ export default function SettingsPage() {
             </div>
 
             {/* Telegram */}
-            <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
-              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Telegram</dt>
+            <div className="rounded-panel border border-border bg-surface p-4 min-w-0 overflow-hidden">
+              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Telegram</dt>
               <dd className="mt-1">
                 {me.telegram_username ? (
                   <span className="break-words text-base text-ink">@{me.telegram_username}</span>
@@ -596,24 +596,24 @@ export default function SettingsPage() {
             </div>
 
             {/* Tenant */}
-            <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
-              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Tenant</dt>
+            <div className="rounded-panel border border-border bg-surface p-4 min-w-0 overflow-hidden">
+              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Tenant</dt>
               <dd className="mt-1">
                 {me.tenant ? (
                   <StatusPill status={me.tenant.status} />
                 ) : (
-                  <span className="text-sm text-ink/65">No tenant provisioned</span>
+                  <span className="text-sm text-ink-muted">No tenant provisioned</span>
                 )}
               </dd>
             </div>
           </dl>
         ) : (
-          <p className="text-sm text-ink/70">Could not load account details.</p>
+          <p className="text-sm text-ink-muted">Could not load account details.</p>
         )}
       </SectionCard>
 
       {saveMessage ? (
-        <div className="rounded-panel border border-signal/30 bg-signal/5 px-3 py-2 text-sm text-signal">
+        <div className="rounded-panel border border-signal/30 bg-signal-faint px-3 py-2 text-sm text-signal">
           {saveMessage}
         </div>
       ) : null}
@@ -627,11 +627,11 @@ export default function SettingsPage() {
                   <span className="text-2xl">{currentPersonaLabel.emoji}</span>
                   <div>
                     <p className="font-medium text-ink">{currentPersonaLabel.label}</p>
-                    <p className="text-sm text-ink/60">{currentPersonaLabel.description}</p>
+                    <p className="text-sm text-ink-muted">{currentPersonaLabel.description}</p>
                   </div>
                 </>
               )}
-              {!currentPersonaLabel && <p className="text-sm text-ink/60">No persona selected</p>}
+              {!currentPersonaLabel && <p className="text-sm text-ink-muted">No persona selected</p>}
             </div>
             <button
               type="button"
@@ -639,7 +639,7 @@ export default function SettingsPage() {
                 setSelectedPersona(currentPersona);
                 setEditingPersona(true);
               }}
-              className="rounded-full border border-ink/15 px-4 py-1.5 text-sm text-ink/75 transition hover:border-ink/30 hover:text-ink"
+              className="rounded-full border border-border px-4 py-1.5 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink"
             >
               Change
             </button>
@@ -659,12 +659,12 @@ export default function SettingsPage() {
               <button
                 type="button"
                 onClick={() => setEditingPersona(false)}
-                className="rounded-full border border-ink/15 px-4 py-2 text-sm text-ink/75 transition hover:border-ink/30"
+                className="rounded-full border border-border px-4 py-2 text-sm text-ink-muted transition hover:border-border-strong"
               >
                 Cancel
               </button>
             </div>
-            <p className="text-xs text-ink/45">Changes take effect on the next container restart or reprovision.</p>
+            <p className="text-xs text-ink-faint">Changes take effect on the next container restart or reprovision.</p>
           </div>
         )}
       </SectionCard>
@@ -673,8 +673,8 @@ export default function SettingsPage() {
         title="Agent Configuration"
         subtitle="Configuration updates are applied automatically when your assistant is idle"
       >
-        <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
-          <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">
+        <div className="rounded-panel border border-border bg-surface p-4 min-w-0 overflow-hidden">
+          <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">
             Agent Configuration
           </p>
           <p className="mt-1 text-base text-ink">
@@ -686,7 +686,7 @@ export default function SettingsPage() {
 
         {hasPendingConfigUpdate ? (
           <>
-            <div className="mt-3 rounded-panel border border-amber-200/80 bg-amber-50 px-3.5 py-2.5 text-sm text-amber-900">
+            <div className="mt-3 rounded-panel border border-amber-border/80 bg-amber-bg px-3.5 py-2.5 text-sm text-amber-text">
               🔄 An update is available and will be applied automatically when your assistant is idle.
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-3">
@@ -694,7 +694,7 @@ export default function SettingsPage() {
                 type="button"
                 onClick={handleRefreshConfig}
                 disabled={isRefreshingConfig || !canRefreshConfig}
-                className="rounded-full border border-ink/20 px-5 py-2 text-sm text-ink/75 transition hover:border-ink/30 hover:text-ink disabled:cursor-not-allowed disabled:opacity-55"
+                className="rounded-full border border-border-strong px-5 py-2 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-55"
               >
                 {isRefreshingConfig
                   ? "Applying..."
@@ -703,13 +703,13 @@ export default function SettingsPage() {
                     : `Available in ${cooldownMinutes} minutes`}
               </button>
               {(refreshMessage || refreshError) ? (
-                <p className={`text-sm ${refreshMessage ? "text-signal" : "text-rose-600"}`}>{refreshMessage || refreshError}</p>
+                <p className={`text-sm ${refreshMessage ? "text-signal" : "text-rose-text"}`}>{refreshMessage || refreshError}</p>
               ) : null}
             </div>
-            <p className="mt-2 text-xs text-ink/45">Or wait — it&apos;ll apply automatically within 15 minutes of inactivity.</p>
+            <p className="mt-2 text-xs text-ink-faint">Or wait — it&apos;ll apply automatically within 15 minutes of inactivity.</p>
           </>
         ) : (
-          <p className="mt-3 text-sm text-ink/80">✓ Your assistant is up to date</p>
+          <p className="mt-3 text-sm text-ink-muted">✓ Your assistant is up to date</p>
         )}
       </SectionCard>
     </div>

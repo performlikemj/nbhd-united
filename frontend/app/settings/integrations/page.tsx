@@ -40,7 +40,7 @@ function TelegramCard() {
   };
 
   return (
-    <article className="rounded-panel border border-ink/15 bg-white p-4">
+    <article className="rounded-panel border border-border bg-surface p-4">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-base font-medium">Telegram</h3>
         <StatusPill status={linked ? "active" : "pending"} />
@@ -48,12 +48,12 @@ function TelegramCard() {
 
       {linked ? (
         <>
-          <p className="mt-2 text-sm text-ink/70">
+          <p className="mt-2 text-sm text-ink-muted">
             Connected as @{status?.telegram_username ?? "unknown"}
           </p>
           <div className="mt-4">
             <button
-              className="rounded-full border border-ink/20 px-3 py-1.5 text-sm hover:border-ink/40 disabled:cursor-not-allowed disabled:opacity-45"
+              className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
               type="button"
               disabled={unlinkMutation.isPending}
               onClick={() => unlinkMutation.mutate()}
@@ -64,12 +64,12 @@ function TelegramCard() {
         </>
       ) : (
         <>
-          <p className="mt-2 text-sm text-ink/70">Not connected yet.</p>
+          <p className="mt-2 text-sm text-ink-muted">Not connected yet.</p>
 
           {!linkData && (
             <div className="mt-4">
               <button
-                className="rounded-full border border-ink/20 px-3 py-1.5 text-sm hover:border-ink/40 disabled:cursor-not-allowed disabled:opacity-45"
+                className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
                 type="button"
                 disabled={generateLink.isPending}
                 onClick={handleConnect}
@@ -81,13 +81,13 @@ function TelegramCard() {
 
           {linkData && (
             <div className="mt-3 space-y-3">
-              <p className="text-sm text-ink/70">Scan the QR code or tap the link:</p>
+              <p className="text-sm text-ink-muted">Scan the QR code or tap the link:</p>
               <div className="flex items-start gap-4">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={linkData.qr_code}
                   alt="Telegram QR Code"
-                  className="h-32 w-32 rounded-panel border border-ink/15"
+                  className="h-32 w-32 rounded-panel border border-border"
                 />
                 <a
                   href={linkData.deep_link}
@@ -138,19 +138,19 @@ function IntegrationsContent() {
       subtitle="OAuth tokens are stored in tenant-scoped Azure Key Vault secrets"
     >
       {connectedProvider && (
-        <p className="mb-4 rounded-panel border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
+        <p className="mb-4 rounded-panel border border-emerald-bg bg-emerald-bg p-3 text-sm text-emerald-text">
           Successfully connected {connectedProvider}.
         </p>
       )}
 
       {oauthError && (
-        <p className="mb-4 rounded-panel border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+        <p className="mb-4 rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
           OAuth error: {oauthError}
         </p>
       )}
 
       {error ? (
-        <p className="rounded-panel border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+        <p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
           Could not fetch integrations. Confirm authentication/session wiring.
         </p>
       ) : null}
@@ -163,13 +163,13 @@ function IntegrationsContent() {
           const connected = Boolean(integration);
 
           return (
-            <article key={provider.key} className="rounded-panel border border-ink/15 bg-white p-4">
+            <article key={provider.key} className="rounded-panel border border-border bg-surface p-4">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="text-base font-medium">{provider.label}</h3>
                 <StatusPill status={integration?.status ?? "pending"} />
               </div>
 
-              <p className="mt-2 text-sm text-ink/70">
+              <p className="mt-2 text-sm text-ink-muted">
                 {connected
                   ? integration?.provider_email || "Connected"
                   : "Not connected yet."}
@@ -177,7 +177,7 @@ function IntegrationsContent() {
 
               <div className="mt-4 flex gap-2">
                 <button
-                  className="rounded-full border border-ink/20 px-3 py-1.5 text-sm hover:border-ink/40 disabled:cursor-not-allowed disabled:opacity-45"
+                  className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
                   type="button"
                   disabled={connected || connectingProvider !== null}
                   onClick={() => handleConnect(provider.key)}
@@ -185,7 +185,7 @@ function IntegrationsContent() {
                   {connectingProvider === provider.key ? "Redirecting..." : "Connect"}
                 </button>
                 <button
-                  className="rounded-full border border-ink/20 px-3 py-1.5 text-sm hover:border-ink/40 disabled:cursor-not-allowed disabled:opacity-45"
+                  className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
                   type="button"
                   disabled={!integration || disconnect.isPending}
                   onClick={() => {
