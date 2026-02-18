@@ -189,7 +189,7 @@ export default function SettingsCronJobsPage() {
   };
 
   const handleStartEdit = (job: CronJob) => {
-    setEditingName(job.name);
+    setEditingName(job.jobId ?? job.name);
     setEditForm(toEditForm(job));
   };
 
@@ -210,8 +210,8 @@ export default function SettingsCronJobsPage() {
     setEditingName(null);
   };
 
-  const handleDelete = async (name: string) => {
-    await deleteMutation.mutateAsync(name);
+  const handleDelete = async (nameOrId: string) => {
+    await deleteMutation.mutateAsync({ name: nameOrId });
     setConfirmDelete(null);
   };
 
@@ -369,7 +369,9 @@ export default function SettingsCronJobsPage() {
       ) : cronJobs && cronJobs.length > 0 ? (
         <SectionCard title="Your Tasks" subtitle="Toggle, edit, or remove scheduled tasks">
           <div className="space-y-3">
-            {cronJobs.map((job) => (
+            {cronJobs.map((job) => {
+              const jobIdentifier = job.jobId ?? job.name;
+              return (
               <article
                 key={job.name}
                 className="rounded-panel border border-border bg-surface-elevated p-4"
@@ -399,7 +401,7 @@ export default function SettingsCronJobsPage() {
                   <button
                     type="button"
                     onClick={() =>
-                      toggleMutation.mutate({ name: job.name, enabled: !job.enabled })
+                      toggleMutation.mutate({ name: jobIdentifier, enabled: !job.enabled })
                     }
                     disabled={toggleMutation.isPending}
                     className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
@@ -415,11 +417,11 @@ export default function SettingsCronJobsPage() {
                     Edit
                   </button>
 
-                  {confirmDelete === job.name ? (
+                  {confirmDelete === jobIdentifier ? (
                     <>
                       <button
                         type="button"
-                        onClick={() => handleDelete(job.name)}
+                        onClick={() => handleDelete(jobIdentifier)}
                         disabled={deleteMutation.isPending}
                         className="rounded-full border border-rose-border px-3 py-1.5 text-sm text-rose-text hover:border-rose-border disabled:cursor-not-allowed disabled:opacity-45"
                       >
@@ -436,7 +438,7 @@ export default function SettingsCronJobsPage() {
                   ) : (
                     <button
                       type="button"
-                      onClick={() => setConfirmDelete(job.name)}
+                      onClick={() => setConfirmDelete(jobIdentifier)}
                       className="rounded-full border border-rose-border px-3 py-1.5 text-sm text-rose-text hover:border-rose-border"
                     >
                       Delete
@@ -444,7 +446,7 @@ export default function SettingsCronJobsPage() {
                   )}
                 </div>
 
-                {editingName === job.name ? (
+                {editingName === jobIdentifier ? (
                   <form
                     className="mt-4 grid gap-3 rounded-panel border border-border p-3 md:grid-cols-2"
                     onSubmit={handleUpdate}
@@ -506,7 +508,8 @@ export default function SettingsCronJobsPage() {
                   </form>
                 ) : null}
               </article>
-            ))}
+              );
+            })}
           </div>
         </SectionCard>
       ) : (

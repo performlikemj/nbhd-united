@@ -55,7 +55,7 @@ class CronJobListCreateView(APIView):
 
         try:
             _require_active_tenant(tenant)
-            result = invoke_gateway_tool(tenant, "cron.add", data)
+            result = invoke_gateway_tool(tenant, "cron.add", {"job": data})
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         return Response(result.get("details", result), status=status.HTTP_201_CREATED)
@@ -69,7 +69,7 @@ class CronJobDetailView(APIView):
         try:
             _require_active_tenant(tenant)
             result = invoke_gateway_tool(
-                tenant, "cron.update", {"name": job_name, **request.data},
+                tenant, "cron.update", {"jobId": job_name, "patch": request.data},
             )
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
@@ -79,7 +79,7 @@ class CronJobDetailView(APIView):
         tenant = _get_tenant_for_user(request.user)
         try:
             _require_active_tenant(tenant)
-            invoke_gateway_tool(tenant, "cron.remove", {"name": job_name})
+            invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_name})
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -101,7 +101,9 @@ class CronJobToggleView(APIView):
         try:
             _require_active_tenant(tenant)
             result = invoke_gateway_tool(
-                tenant, "cron.update", {"name": job_name, "enabled": bool(enabled)},
+                tenant,
+                "cron.update",
+                {"jobId": job_name, "patch": {"enabled": bool(enabled)}},
             )
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)

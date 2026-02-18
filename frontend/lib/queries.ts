@@ -525,8 +525,8 @@ export function useCreateCronJobMutation() {
 export function useUpdateCronJobMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ name, data }: { name: string; data: Parameters<typeof updateCronJob>[1] }) =>
-      updateCronJob(name, data),
+    mutationFn: ({ name, jobId, data }: { name: string; jobId?: string; data: Parameters<typeof updateCronJob>[1] }) =>
+      updateCronJob(jobId ?? name, data),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
     },
@@ -536,7 +536,8 @@ export function useUpdateCronJobMutation() {
 export function useDeleteCronJobMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: deleteCronJob,
+    mutationFn: ({ name, jobId }: { name: string; jobId?: string }) =>
+      deleteCronJob(jobId ?? name),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
     },
@@ -546,8 +547,8 @@ export function useDeleteCronJobMutation() {
 export function useToggleCronJobMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) =>
-      toggleCronJob(name, enabled),
+    mutationFn: ({ name, jobId, enabled }: { name: string; jobId?: string; enabled: boolean }) =>
+      toggleCronJob(jobId ?? name, enabled),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
     },

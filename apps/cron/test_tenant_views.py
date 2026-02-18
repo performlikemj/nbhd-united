@@ -51,6 +51,9 @@ class CronJobListCreateTest(TestCase):
         mock_invoke.assert_called_once()
         call_args = mock_invoke.call_args
         self.assertEqual(call_args[0][1], "cron.add")
+        self.assertEqual(call_args[0][2], {
+            "job": {"name": "New Job", "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"}},
+        })
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_create_requires_name(self, mock_invoke):
@@ -81,7 +84,15 @@ class CronJobDetailTest(TestCase):
         self.assertEqual(resp.status_code, 200)
         call_args = mock_invoke.call_args
         self.assertEqual(call_args[0][1], "cron.update")
-        self.assertEqual(call_args[0][2]["name"], "Morning Briefing")
+        self.assertEqual(
+            call_args[0][2],
+            {
+                "jobId": "Morning Briefing",
+                "patch": {
+                    "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"},
+                },
+            },
+        )
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_delete_cron_job(self, mock_invoke):
@@ -89,7 +100,9 @@ class CronJobDetailTest(TestCase):
         resp = self.client.delete("/api/v1/cron-jobs/Morning Briefing/")
         self.assertEqual(resp.status_code, 204)
         mock_invoke.assert_called_once_with(
-            self.tenant, "cron.remove", {"name": "Morning Briefing"},
+            self.tenant,
+            "cron.remove",
+            {"jobId": "Morning Briefing"},
         )
 
 
@@ -110,7 +123,13 @@ class CronJobToggleTest(TestCase):
         self.assertEqual(resp.status_code, 200)
         call_args = mock_invoke.call_args
         self.assertEqual(call_args[0][1], "cron.update")
-        self.assertEqual(call_args[0][2]["enabled"], False)
+        self.assertEqual(
+            call_args[0][2],
+            {
+                "jobId": "Morning Briefing",
+                "patch": {"enabled": False},
+            },
+        )
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_toggle_requires_enabled_field(self, mock_invoke):
