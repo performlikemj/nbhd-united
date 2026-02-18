@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .crypto import decrypt_api_key, encrypt_api_key
-from .models import UserLLMConfig
+from .models import Tenant, UserLLMConfig
 
 
 class LLMConfigSerializer(serializers.Serializer):
@@ -66,4 +66,12 @@ class LLMConfigView(APIView):
             config.encrypted_api_key = encrypt_api_key(api_key)
 
         config.save()
+
+        try:
+            tenant = request.user.tenant
+            if tenant.status == Tenant.Status.ACTIVE:
+                tenant.bump_pending_config()
+        except Tenant.DoesNotExist:
+            pass
+
         return Response(LLMConfigSerializer(config).data)

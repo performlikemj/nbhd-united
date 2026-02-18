@@ -150,6 +150,11 @@ class Tenant(models.Model):
     def is_over_budget(self) -> bool:
         return self.tokens_this_month >= self.monthly_token_budget
 
+    def bump_pending_config(self):
+        """Signal that agent config needs refreshing."""
+        self.pending_config_version = (self.pending_config_version or 0) + 1
+        self.save(update_fields=["pending_config_version"])
+
 
 class UserLLMConfig(models.Model):
     """Stores a user's BYOK (Bring Your Own Key) LLM configuration."""
