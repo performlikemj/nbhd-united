@@ -120,6 +120,12 @@ def telegram_webhook(request):
     if not hmac.compare_digest(secret, configured_secret):
         return HttpResponseForbidden("Invalid secret")
 
+    # Telegram webhooks are unauthenticated — set service-role so
+    # resolve_tenant_by_chat_id and record_usage can read/write RLS tables.
+    from apps.tenants.middleware import set_rls_context
+
+    set_rls_context(service_role=True)
+
     try:
         update = json.loads(request.body)
     except json.JSONDecodeError:

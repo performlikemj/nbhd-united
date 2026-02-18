@@ -2,7 +2,7 @@
 set -e
 
 echo "Running database migrations..."
-python manage.py migrate --noinput
+DATABASE_URL="${ADMIN_DATABASE_URL:-$DATABASE_URL}" python manage.py migrate --noinput
 
 echo "Starting gunicorn..."
 exec gunicorn config.wsgi:application \

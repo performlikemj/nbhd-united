@@ -78,6 +78,10 @@ def _internal_auth_or_401(request, tenant_id: UUID) -> Response | None:
             {"error": "internal_auth_failed", "detail": str(exc)},
             status=status.HTTP_401_UNAUTHORIZED,
         )
+    # Auth passed — set RLS context so tenant-scoped queries work
+    from apps.tenants.middleware import set_rls_context
+
+    set_rls_context(tenant_id=tenant_id, service_role=True)
     return None
 
 

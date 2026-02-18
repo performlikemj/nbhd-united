@@ -52,6 +52,12 @@ def stripe_webhook(request):
         logger.warning("Stripe webhook verification failed: %s", e)
         return HttpResponseBadRequest("Invalid signature")
 
+    # Stripe webhooks are unauthenticated (no JWT) so TenantContextMiddleware
+    # does not fire.  Grant service-role access for the cross-tenant DB writes.
+    from apps.tenants.middleware import set_rls_context
+
+    set_rls_context(service_role=True)
+
     event_type = event["type"]
     data = event["data"]["object"]
     logger.info("Stripe webhook: %s", event_type)

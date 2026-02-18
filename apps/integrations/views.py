@@ -294,6 +294,10 @@ class OAuthCallbackView(APIView):
         if not hasattr(user, "tenant"):
             return _redirect_to_integrations(frontend_url, {"error": "no_tenant"})
 
+        from apps.tenants.middleware import set_rls_context
+
+        set_rls_context(tenant_id=user.tenant.id, service_role=True)
+
         try:
             config = get_provider_config(provider)
             client_id, client_secret = _get_credentials(provider)
@@ -363,6 +367,10 @@ class ComposioCallbackView(APIView):
 
         if not hasattr(user, "tenant"):
             return _redirect_to_integrations(frontend_url, {"error": "no_tenant"})
+
+        from apps.tenants.middleware import set_rls_context
+
+        set_rls_context(tenant_id=user.tenant.id, service_role=True)
 
         connection_request_id = cache.get(f"composio-conn-req:{state}")
         if not connection_request_id:

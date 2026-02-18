@@ -108,6 +108,11 @@ def trigger_task(request, task_name):
         logger.warning("Unauthorized cron trigger attempt for task: %s", task_name)
         return JsonResponse({"error": "Invalid signature"}, status=401)
 
+    # Signature verified — set RLS service role so tasks can access all tenants
+    from apps.tenants.middleware import set_rls_context
+
+    set_rls_context(service_role=True)
+
     if task_name not in TASK_MAP:
         logger.warning("Unknown task requested: %s", task_name)
         return JsonResponse({"error": "Unknown task"}, status=404)
@@ -161,6 +166,10 @@ def trigger_task_debug(request, task_name):
     """
     if not settings.DEBUG:
         return JsonResponse({"error": "Debug endpoint disabled"}, status=403)
+
+    from apps.tenants.middleware import set_rls_context
+
+    set_rls_context(service_role=True)
 
     if task_name not in TASK_MAP:
         return JsonResponse({"error": "Unknown task"}, status=404)

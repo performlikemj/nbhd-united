@@ -56,6 +56,11 @@ class PlatformIssueReportView(APIView):
                 status=http_status.HTTP_401_UNAUTHORIZED,
             )
 
+        # Auth passed — set RLS context so tenant-scoped queries work
+        from apps.tenants.middleware import set_rls_context
+
+        set_rls_context(tenant_id=tenant_id, service_role=True)
+
         tenant = Tenant.objects.filter(id=tenant_id).first()
         if tenant is None:
             return Response(
