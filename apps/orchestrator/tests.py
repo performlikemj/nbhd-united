@@ -187,9 +187,8 @@ class ProvisioningTest(TestCase):
         self.assertEqual(self.tenant.status, Tenant.Status.DELETED)
         self.assertEqual(self.tenant.container_id, "")
 
-    @patch("apps.orchestrator.services.update_container_env_var")
     @patch("apps.orchestrator.services.upload_config_to_file_share")
-    def test_update_tenant_config_pushes_new_config(self, mock_upload, mock_update_env):
+    def test_update_tenant_config_pushes_new_config(self, mock_upload):
         provision_tenant(str(self.tenant.id))
         self.tenant.refresh_from_db()
 
@@ -201,15 +200,3 @@ class ProvisioningTest(TestCase):
         upload_args = mock_upload.call_args[0]
         self.assertEqual(upload_args[0], str(self.tenant.id))
         self.assertIn("111222333", upload_args[1])
-
-        # Env var also updated for consistency (config + skill templates)
-        self.assertGreaterEqual(mock_update_env.call_count, 1)
-        config_call = mock_update_env.call_args_list[0]
-        self.assertEqual(config_call[0][0], self.tenant.container_id)
-        self.assertEqual(config_call[0][1], "OPENCLAW_CONFIG_JSON")
-        self.assertIn("111222333", config_call[0][2])
-
-        # Skill templates env var also pushed
-        if mock_update_env.call_count >= 2:
-            templates_call = mock_update_env.call_args_list[1]
-            self.assertEqual(templates_call[0][1], "NBHD_SKILL_TEMPLATES_MD")

@@ -20,13 +20,11 @@ from .azure_client import (
     delete_tenant_file_share,
     register_environment_storage,
     store_tenant_internal_key_in_key_vault,
-    update_container_env_var,
     upload_config_to_file_share,
 )
 from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
 from .key_utils import generate_internal_api_key, hash_internal_api_key
 from .config_generator import build_cron_seed_jobs, config_to_json, generate_openclaw_config
-from .personas import render_templates_md
 from .personas import render_workspace_files
 
 logger = logging.getLogger(__name__)
@@ -158,19 +156,8 @@ def update_tenant_config(tenant_id: str) -> None:
     # Write to file share (source of truth — OpenClaw reads from file after first boot)
     upload_config_to_file_share(str(tenant.id), config_json)
 
-    # Also update env var for consistency (used on first-ever boot of new revisions)
-    update_container_env_var(
-        tenant.container_id, "OPENCLAW_CONFIG_JSON", config_json,
-    )
-
-    # Push tenant-specific skill templates
-    try:
-        templates_md = render_templates_md(tenant)
-        update_container_env_var(
-            tenant.container_id, "NBHD_SKILL_TEMPLATES_MD", templates_md,
-        )
-    except Exception:
-        logger.warning("Failed to update skill templates for tenant %s", tenant_id, exc_info=True)
+    # TODO: migrate tenant skill templates to file-share-backed storage and read them during startup,
+    # so future updates do not require container environment variable revisions.
 
     logger.info("Updated OpenClaw config for tenant %s", tenant_id)
 
