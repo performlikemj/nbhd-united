@@ -273,30 +273,16 @@ export default function ScheduleBuilder({ expr, onChange }: ScheduleBuilderProps
     initialParsed ? "" : "This expression uses a custom pattern not supported by the schedule builder.",
   );
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (mode === "easy") {
-      const parsed = parseCronExpr(expr);
-      if (parsed) {
-        setState({
-          frequency: parsed.frequency,
-          hour: pad2(parsed.hour),
-          minute: pad2(parsed.minute),
-          weekdays: parsed.weekdays,
-          monthDay: parsed.monthDay,
-        });
-        setParseError("");
-      }
-    }
-  }, [expr, mode]);
-
-  useEffect(() => {
+    // In easy mode, treat builder state as source of truth to avoid easy-mode <-> parent ping-pong.
     if (mode === "easy") {
       const exprFromState = buildCronFromState(state);
       if (exprFromState !== expr) {
         onChange(exprFromState);
       }
     }
-  }, [expr, mode, onChange, state]);
+  }, [mode, state, onChange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const humanLabel = useMemo(() => cronToHuman(expr), [expr]);
   const shownCron = mode === "easy" ? buildCronFromState(state) : expr || buildCronFromState(state);
