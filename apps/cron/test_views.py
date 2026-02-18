@@ -100,3 +100,50 @@ class CronAuthTest(TestCase):
         response = self.client.post("/api/v1/cron/apply-pending-configs/")
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["error"], "Invalid signature")
+
+
+class ExpireTrialsCronTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        user = User.objects.create_user(username="trial-expired-owner", password="testpass123")
+        self.user = user
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    def test_expire_trials_suspends_unpaid_expired_trials(self, mock_verify):
+        expired_trial = Tenant.objects.create(
+            user=self.user,
+            status=Tenant.Status.ACTIVE,
+            is_trial=True,
+            trial_started_at=timezone.now() - timedelta(days=8),
+            trial_ends_at=timezone.now() - timedelta(hours=1),
+            stripe_subscription_id="",
+        )
+
+        active_premium = Tenant.objects.create(
+            user=User.objects.create_user(username="trial-paid-owner", password="testpass123"),
+            status=Tenant.Status.ACTIVE,
+            is_trial=True,
+            trial_started_at=timezone.now() - timedelta(days=8),
+            trial_ends_at=timezone.now() - timedelta(hours=1),
+            stripe_subscription_id="sub_123",
+        )
+
+        response = self.client.post("/api/v1/cron/expire-trials/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["updated"], 1)
+
+        expired_trial.refresh_from_db()
+        active_premium.refresh_from_db()
+
+        self.assertFalse(expired_trial.is_trial)
+        self.assertEqual(expired_trial.status, Tenant.Status.SUSPENDED)
+        self.assertEqual(active_premium.status, Tenant.Status.ACTIVE)
+        self.assertTrue(active_premium.is_trial)
+        self.assertEqual(active_premium.stripe_subscription_id, "sub_123")
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=False)
+    def test_expire_trials_rejects_invalid_or_missing_signature(self, mock_verify):
+        response = self.client.post("/api/v1/cron/expire-trials/")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"], "Invalid signature")

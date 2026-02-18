@@ -45,13 +45,18 @@ def resolve_container(chat_id: int) -> str | None:
 
 
 def resolve_tenant_by_chat_id(chat_id: int) -> Tenant | None:
-    """Resolve an active tenant for the chat_id."""
+    """Resolve tenant by Telegram chat_id, including suspended users for messaging."""
     try:
         user = User.objects.select_related("tenant").get(telegram_chat_id=chat_id)
         tenant = user.tenant
-        if tenant.status != Tenant.Status.ACTIVE or not tenant.container_fqdn:
-            return None
-        return tenant
+
+        if tenant.status == Tenant.Status.SUSPENDED:
+            return tenant
+
+        if tenant.status == Tenant.Status.ACTIVE and tenant.container_fqdn:
+            return tenant
+
+        return None
     except (User.DoesNotExist, Tenant.DoesNotExist):
         return None
 

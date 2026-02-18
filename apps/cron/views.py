@@ -12,8 +12,8 @@ from importlib import import_module
 
 from datetime import timedelta
 
-from django.db import models
 from django.conf import settings
+from django.db import models
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -21,48 +21,10 @@ from django.views.decorators.http import require_POST
 
 from apps.orchestrator.services import update_tenant_config
 from apps.tenants.models import Tenant
+from apps.cron.qstash_verify import verify_qstash_signature
 
 
 logger = logging.getLogger(__name__)
-
-
-def verify_qstash_signature(request):
-    """
-    Verify the request came from QStash using the official SDK.
-
-    Uses the qstash Receiver class for proper JWT verification.
-    See: https://upstash.com/docs/qstash/howto/signature
-    """
-    try:
-        from qstash import Receiver
-    except ImportError:
-        logger.error("qstash package not installed — cannot verify signatures")
-        return False
-
-    signature = request.headers.get("Upstash-Signature")
-    if not signature:
-        logger.warning("QStash request missing Upstash-Signature header")
-        return False
-
-    current_key = getattr(settings, "QSTASH_CURRENT_SIGNING_KEY", None)
-    next_key = getattr(settings, "QSTASH_NEXT_SIGNING_KEY", None)
-
-    if not current_key:
-        logger.error("QSTASH_CURRENT_SIGNING_KEY not configured")
-        return False
-
-    try:
-        receiver = Receiver(
-            current_signing_key=current_key,
-            next_signing_key=next_key or current_key,
-        )
-        url = request.build_absolute_uri()
-        body = request.body.decode("utf-8") if request.body else ""
-        receiver.verify(signature=signature, body=body, url=url)
-        return True
-    except Exception as e:
-        logger.warning("QStash signature verification failed: %s", e)
-        return False
 
 
 def execute_task_sync(task_path: str, *args, **kwargs):
@@ -274,3 +236,32 @@ def apply_pending_configs(request):
         "failed": failed,
         "evaluated": evaluated,
     })
+
+
+@csrf_exempt
+@require_POST
+def expire_trials(request):
+    """Suspend trials that have reached their end date and are unpaid.
+
+    URL: /api/v1/cron/expire-trials/
+    """
+    if not verify_qstash_signature(request):
+        logger.warning("Unauthorized expire-trials cron attempt")
+        return JsonResponse({"error": "Invalid signature"}, status=401)
+
+    now = timezone.now()
+    query = Tenant.objects.filter(
+        is_trial=True,
+        trial_ends_at__lte=now,
+    ).filter(
+        models.Q(stripe_subscription_id__isnull=True) | models.Q(stripe_subscription_id=""),
+    )
+
+    updated = 0
+    for tenant in query:  # noqa: PERF401
+        tenant.is_trial = False
+        tenant.status = Tenant.Status.SUSPENDED
+        tenant.save(update_fields=["is_trial", "status", "updated_at"])
+        updated += 1
+
+    return JsonResponse({"updated": updated})

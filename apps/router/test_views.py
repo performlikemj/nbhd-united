@@ -63,6 +63,21 @@ class TelegramWebhookViewTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["method"], "sendMessage")
 
+    def test_suspended_trial_tenant_is_prompted_to_subscribe(self):
+        tenant = create_tenant(display_name="Trial Expired", telegram_chat_id=777222)
+        tenant.status = Tenant.Status.SUSPENDED
+        tenant.is_trial = False
+        tenant.container_fqdn = "oc-inactive.internal.azurecontainerapps.io"
+        tenant.save(update_fields=["status", "is_trial", "container_fqdn", "updated_at"] )
+
+        response = self._post_update({"message": {"chat": {"id": 777222}}})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["method"], "sendMessage")
+        self.assertIn("Your free trial has ended", body["text"])
+        self.assertIn("/settings/billing", body["text"])
+
     @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
     def test_active_tenant_update_is_forwarded(self, mock_forward):
         tenant = create_tenant(display_name="Active", telegram_chat_id=123456)

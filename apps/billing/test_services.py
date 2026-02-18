@@ -5,12 +5,7 @@ from django.test import TestCase
 
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
-
-from .services import (
-    handle_checkout_completed,
-    handle_invoice_payment_failed,
-    handle_subscription_deleted,
-)
+from .services import handle_checkout_completed, handle_invoice_payment_failed, handle_subscription_deleted
 
 
 class BillingWebhookServiceTest(TestCase):
@@ -68,6 +63,26 @@ class BillingWebhookServiceTest(TestCase):
 
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+        mock_publish.assert_not_called()
+
+    @patch("apps.cron.publish.publish_task")
+    def test_checkout_completed_reactivates_expired_trial_users(self, mock_publish):
+        self.tenant.is_trial = False
+        self.tenant.status = Tenant.Status.SUSPENDED
+        self.tenant.save(update_fields=["is_trial", "status", "updated_at"])
+
+        handle_checkout_completed(
+            {
+                "metadata": {"user_id": str(self.tenant.user_id), "tier": "starter"},
+                "customer": "cus_999",
+                "subscription": "sub_999",
+            }
+        )
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+        self.assertFalse(self.tenant.is_trial)
+        self.assertEqual(self.tenant.stripe_subscription_id, "sub_999")
         mock_publish.assert_not_called()
 
     @patch("apps.cron.publish.publish_task")

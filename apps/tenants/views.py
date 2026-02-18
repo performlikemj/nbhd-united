@@ -1,6 +1,8 @@
 """Tenant views."""
 import logging
 
+from datetime import timedelta
+
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -10,6 +12,7 @@ from rest_framework.views import APIView
 
 from .models import Tenant
 from .serializers import TenantRegistrationSerializer, TenantSerializer, UserSerializer
+from apps.cron.publish import publish_task
 from apps.journal.services import seed_default_templates_for_tenant
 
 logger = logging.getLogger(__name__)
@@ -63,9 +66,19 @@ class OnboardTenantView(APIView):
         }
         user.save(update_fields=["display_name", "language", "timezone", "preferences"])
 
-        # Create tenant
-        tenant = Tenant.objects.create(user=user)
+        # Create tenant and provision immediately for 7-day free trial
+        now = timezone.now()
+        tenant = Tenant.objects.create(
+            user=user,
+            is_trial=True,
+            trial_started_at=now,
+            trial_ends_at=now + timedelta(days=7),
+            model_tier=Tenant.ModelTier.STARTER,
+            status=Tenant.Status.PROVISIONING,
+        )
         seed_default_templates_for_tenant(tenant=tenant)
+        publish_task("provision_tenant", str(tenant.id))
+
         return Response(TenantSerializer(tenant).data, status=status.HTTP_201_CREATED)
 
 

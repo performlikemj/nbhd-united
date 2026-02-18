@@ -2,6 +2,7 @@
 from zoneinfo import available_timezones
 
 from django.contrib.auth import authenticate
+from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -33,12 +34,14 @@ class UserSerializer(serializers.ModelSerializer):
 class TenantSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
     has_active_subscription = serializers.SerializerMethodField()
+    trial_days_remaining = serializers.SerializerMethodField()
 
     class Meta:
         model = Tenant
         fields = (
             "id", "user", "status", "model_tier",
-            "has_active_subscription",
+            "has_active_subscription", "trial_days_remaining",
+            "trial_started_at", "trial_ends_at", "is_trial",
             "container_id", "container_fqdn",
             "messages_today", "messages_this_month",
             "tokens_this_month", "estimated_cost_this_month",
@@ -48,7 +51,16 @@ class TenantSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_has_active_subscription(self, obj):
-        return bool(obj.stripe_subscription_id) and obj.status != Tenant.Status.DELETED
+        has_real_subscription = bool(obj.stripe_subscription_id) and obj.status != Tenant.Status.DELETED
+        on_trial = bool(obj.is_trial) and obj.trial_ends_at and obj.trial_ends_at > timezone.now()
+        return has_real_subscription or on_trial
+
+    def get_trial_days_remaining(self, obj):
+        if not obj.is_trial or not obj.trial_ends_at:
+            return None
+
+        days = (obj.trial_ends_at - timezone.now()).days
+        return max(0, days)
 
 
 class TenantRegistrationSerializer(serializers.Serializer):

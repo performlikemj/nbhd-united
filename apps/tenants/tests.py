@@ -168,6 +168,29 @@ class TenantSerializerTest(TestCase):
         data = TenantSerializer(tenant).data
         self.assertTrue(data["has_active_subscription"])
 
+    def test_trial_with_valid_end_date_returns_true(self):
+        tenant = create_tenant(display_name="Trial", telegram_chat_id=530)
+        now = timezone.now()
+        tenant.is_trial = True
+        tenant.trial_started_at = now - timedelta(hours=1)
+        tenant.trial_ends_at = now + timedelta(days=5, hours=1)
+        tenant.save(update_fields=["is_trial", "trial_started_at", "trial_ends_at", "updated_at"])
+
+        data = TenantSerializer(tenant).data
+        self.assertTrue(data["has_active_subscription"])
+        self.assertEqual(data["trial_days_remaining"], 5)
+
+    def test_trial_expired_without_subscription_returns_false(self):
+        tenant = create_tenant(display_name="Trial Expired", telegram_chat_id=531)
+        tenant.is_trial = True
+        tenant.trial_started_at = timezone.now() - timedelta(days=10)
+        tenant.trial_ends_at = timezone.now() - timedelta(days=1)
+        tenant.save(update_fields=["is_trial", "trial_started_at", "trial_ends_at", "updated_at"])
+
+        data = TenantSerializer(tenant).data
+        self.assertFalse(data["has_active_subscription"])
+        self.assertEqual(data["trial_days_remaining"], 0)
+
     def test_deleted_with_subscription_returns_false(self):
         tenant = create_tenant(display_name="Del", telegram_chat_id=501)
         tenant.stripe_subscription_id = "sub_x"
@@ -183,6 +206,47 @@ class TenantSerializerTest(TestCase):
         tenant.save()
         data = TenantSerializer(tenant).data
         self.assertFalse(data["has_active_subscription"])
+
+
+class OnboardTenantViewTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="onboard_trial",
+            email="onboard_trial@example.com",
+            password="testpass123",
+        )
+        refresh = RefreshToken.for_user(self.user)
+        self.client = APIClient()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    @patch("apps.tenants.views.publish_task")
+    @patch("apps.tenants.views.seed_default_templates_for_tenant")
+    def test_onboard_creates_trial_and_triggers_provisioning(self, mock_seed, mock_publish):
+        response = self.client.post(
+            "/api/v1/tenants/onboard/",
+            {
+                "display_name": "Trial User",
+                "timezone": "UTC",
+                "agent_persona": "neighbor",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.user.refresh_from_db()
+        tenant = self.user.tenant
+
+        self.assertTrue(tenant.is_trial)
+        self.assertIsNotNone(tenant.trial_started_at)
+        self.assertIsNotNone(tenant.trial_ends_at)
+        self.assertEqual(tenant.model_tier, Tenant.ModelTier.STARTER)
+        self.assertEqual(tenant.status, Tenant.Status.PROVISIONING)
+        self.assertLessEqual(
+            tenant.trial_ends_at - tenant.trial_started_at,
+            timedelta(days=7),
+        )
+        mock_publish.assert_called_once_with("provision_tenant", str(tenant.id))
+        mock_seed.assert_called_once_with(tenant=tenant)
 
 
 class RefreshConfigViewTest(TestCase):

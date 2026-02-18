@@ -83,6 +83,22 @@ class Tenant(models.Model):
     stripe_customer_id = models.CharField(max_length=255, blank=True, default="")
     stripe_subscription_id = models.CharField(max_length=255, blank=True, default="")
 
+    # Free trial
+    trial_started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When free trial began",
+    )
+    trial_ends_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When free trial expires",
+    )
+    is_trial = models.BooleanField(
+        default=False,
+        help_text="Currently on free trial",
+    )
+
     # Usage tracking
     messages_today = models.IntegerField(default=0)
     messages_this_month = models.IntegerField(default=0)
