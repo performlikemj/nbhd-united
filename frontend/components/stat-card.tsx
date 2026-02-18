@@ -12,7 +12,7 @@ export function StatCard({
   const toneClass = tone === "accent" ? "border-accent/30" : "border-signal/35";
 
   return (
-    <article className={`rounded-panel border ${toneClass} bg-surface p-4`}>
+    <article className={`rounded-panel border ${toneClass} bg-surface-elevated p-4`}>
       <p className="font-mono text-xs uppercase tracking-[0.15em] text-ink-muted">{label}</p>
       <p className="mt-3 text-2xl font-semibold text-ink">{value}</p>
       {hint ? <p className="mt-2 text-sm text-ink-muted">{hint}</p> : null}

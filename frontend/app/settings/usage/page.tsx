@@ -61,7 +61,7 @@ export default function SettingsUsagePage() {
               </div>
             )}
 
-            <article className="rounded-panel border border-border bg-surface p-4">
+            <article className="rounded-panel border border-border bg-surface-elevated p-4">
               <div className="flex items-center justify-between gap-2 text-sm">
                 <p className="font-medium">Token budget</p>
                 <p className="font-mono text-xs tracking-[0.1em] text-ink-muted">

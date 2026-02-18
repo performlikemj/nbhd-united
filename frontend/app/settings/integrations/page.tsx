@@ -40,7 +40,7 @@ function TelegramCard() {
   };
 
   return (
-    <article className="rounded-panel border border-border bg-surface p-4">
+    <article className="rounded-panel border border-border bg-surface-elevated p-4">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-base font-medium">Telegram</h3>
         <StatusPill status={linked ? "active" : "pending"} />
@@ -163,7 +163,7 @@ function IntegrationsContent() {
           const connected = Boolean(integration);
 
           return (
-            <article key={provider.key} className="rounded-panel border border-border bg-surface p-4">
+            <article key={provider.key} className="rounded-panel border border-border bg-surface-elevated p-4">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="text-base font-medium">{provider.label}</h3>
                 <StatusPill status={integration?.status ?? "pending"} />

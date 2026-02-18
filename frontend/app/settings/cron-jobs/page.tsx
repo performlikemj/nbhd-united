@@ -372,7 +372,7 @@ export default function SettingsCronJobsPage() {
             {cronJobs.map((job) => (
               <article
                 key={job.name}
-                className="rounded-panel border border-border bg-surface p-4"
+                className="rounded-panel border border-border bg-surface-elevated p-4"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>

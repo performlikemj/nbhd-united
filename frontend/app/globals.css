@@ -9,6 +9,7 @@
   --mist: #f6f4ee;
   --bg: #f8f6ef;
   --surface: #ffffff;
+  --surface-elevated: #ffffff;
   --surface-hover: rgba(18, 35, 44, 0.05);
   --card: rgba(252, 252, 248, 0.95);
   --accent: #2563eb;
@@ -61,6 +62,7 @@
   --mist: #0f1419;
   --bg: #0b0f13;
   --surface: #161b22;
+  --surface-elevated: #1e252e;
   --surface-hover: rgba(226, 232, 240, 0.06);
   --card: rgba(22, 27, 34, 0.95);
   --accent: #3b82f6;

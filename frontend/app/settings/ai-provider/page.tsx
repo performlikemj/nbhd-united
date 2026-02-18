@@ -80,7 +80,7 @@ export default function AIProviderPage() {
       >
         {!isByok ? (
           <div className="space-y-4">
-            <div className="rounded-panel border border-border bg-surface p-4">
+            <div className="rounded-panel border border-border bg-surface-elevated p-4">
               <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Current Model</dt>
               <dd className="mt-1 text-sm text-ink">{TIER_MODEL_INFO[tier] ?? tier}</dd>
             </div>

@@ -16,6 +16,7 @@ const config: Config = {
         mist: "var(--mist)",
         bg: "var(--bg)",
         surface: "var(--surface)",
+        "surface-elevated": "var(--surface-elevated)",
         "surface-hover": "var(--surface-hover)",
         card: "var(--card)",
         accent: "var(--accent)",
