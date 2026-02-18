@@ -14,8 +14,8 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
-      <body>
+    <html lang="en" className="h-full">
+      <body className="overflow-x-hidden">
         <Providers>
           <AppShell>{children}</AppShell>
         </Providers>

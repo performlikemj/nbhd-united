@@ -376,8 +376,8 @@ export default function SettingsCronJobsPage() {
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <p className="text-base font-medium">{job.name}</p>
-                    <p className="text-sm text-ink/70">
+                    <p className="text-base font-medium break-words">{job.name}</p>
+                    <p className="text-sm text-ink/70 break-words">
                       {cronToHuman(job.schedule?.expr ?? "", job.schedule?.tz ?? "UTC")}
                     </p>
                   </div>

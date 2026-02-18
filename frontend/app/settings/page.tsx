@@ -406,9 +406,9 @@ export default function SettingsPage() {
     <div className="space-y-4">
       <SectionCard title="Account" subtitle="Your profile and authentication details">
         {me ? (
-          <dl className="grid gap-3 text-sm sm:grid-cols-2">
+          <dl className="grid min-w-0 gap-3 text-sm sm:grid-cols-2">
             {/* Display Name */}
-            <div className="rounded-panel border border-ink/15 bg-white p-4">
+            <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
               <div className="mb-2 flex items-start justify-between gap-2">
                 <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Display Name</dt>
                 {!editingDisplayName ? (
@@ -425,7 +425,7 @@ export default function SettingsPage() {
                 ) : null}
               </div>
               {!editingDisplayName ? (
-                <dd className="mt-1 text-base font-medium text-ink">{me.display_name || "Not set"}</dd>
+                <dd className="mt-1 break-words text-base font-medium text-ink">{me.display_name || "Not set"}</dd>
               ) : (
                 <div className="space-y-3">
                   <input
@@ -456,19 +456,19 @@ export default function SettingsPage() {
             </div>
 
             {/* Email */}
-            <div className="rounded-panel border border-ink/15 bg-white p-4">
+            <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
               <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Email</dt>
-              <dd className="mt-1 text-base text-ink">{me.email}</dd>
+              <dd className="mt-1 break-words text-base text-ink">{me.email}</dd>
             </div>
 
             {/* Username */}
-            <div className="rounded-panel border border-ink/15 bg-white p-4">
+            <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
               <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Username</dt>
-              <dd className="mt-1 text-base text-ink">{me.username}</dd>
+              <dd className="mt-1 break-words text-base text-ink">{me.username}</dd>
             </div>
 
             {/* Language */}
-            <div className="rounded-panel border border-ink/15 bg-white p-4">
+            <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
               <div className="mb-2 flex items-start justify-between gap-2">
                 <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Language</dt>
                 {!editingLanguage ? (
@@ -485,7 +485,7 @@ export default function SettingsPage() {
                 ) : null}
               </div>
               {!editingLanguage ? (
-                <dd className="mt-1 text-base text-ink">{languageLookup.get(me.language || "en") || me.language || "en"}</dd>
+                <dd className="mt-1 break-words text-base text-ink">{languageLookup.get(me.language || "en") || me.language || "en"}</dd>
               ) : (
                 <div className="space-y-3">
                   <label className="block text-sm text-ink/70">
@@ -524,7 +524,7 @@ export default function SettingsPage() {
             </div>
 
             {/* Timezone */}
-            <div className="rounded-panel border border-ink/15 bg-white p-4 sm:col-span-2">
+            <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden sm:col-span-2">
               <div className="mb-2 flex items-start justify-between gap-2">
                 <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Timezone</dt>
                 {!editingTimezone ? (
@@ -541,7 +541,7 @@ export default function SettingsPage() {
                 ) : null}
               </div>
               {!editingTimezone ? (
-                <dd className="mt-1 text-base text-ink">{findTimezoneLabel(me.timezone || "UTC")}</dd>
+                <dd className="mt-1 break-words text-base text-ink">{findTimezoneLabel(me.timezone || "UTC")}</dd>
               ) : (
                 <div className="space-y-3">
                   <label className="block text-sm text-ink/70">
@@ -584,11 +584,11 @@ export default function SettingsPage() {
             </div>
 
             {/* Telegram */}
-            <div className="rounded-panel border border-ink/15 bg-white p-4">
+            <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
               <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Telegram</dt>
               <dd className="mt-1">
                 {me.telegram_username ? (
-                  <span className="text-base text-ink">@{me.telegram_username}</span>
+                  <span className="break-words text-base text-ink">@{me.telegram_username}</span>
                 ) : (
                   <StatusPill status="pending" />
                 )}
@@ -596,7 +596,7 @@ export default function SettingsPage() {
             </div>
 
             {/* Tenant */}
-            <div className="rounded-panel border border-ink/15 bg-white p-4">
+            <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
               <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">Tenant</dt>
               <dd className="mt-1">
                 {me.tenant ? (
@@ -673,7 +673,7 @@ export default function SettingsPage() {
         title="Agent Configuration"
         subtitle="Configuration updates are applied automatically when your assistant is idle"
       >
-        <div className="rounded-panel border border-ink/15 bg-white p-4">
+        <div className="rounded-panel border border-ink/15 bg-white p-4 min-w-0 overflow-hidden">
           <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink/60">
             Agent Configuration
           </p>
