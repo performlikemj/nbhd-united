@@ -184,6 +184,13 @@ class UpdatePreferencesView(APIView):
             }
             request.user.save(update_fields=["preferences"])
 
+            try:
+                tenant = request.user.tenant
+                if tenant.status == Tenant.Status.ACTIVE:
+                    tenant.bump_pending_config()
+            except Tenant.DoesNotExist:
+                pass
+
         return Response({
             "agent_persona": request.user.preferences.get("agent_persona", "neighbor"),
         })
@@ -205,16 +212,18 @@ class ProfileView(APIView):
         if serializer.validated_data.get("timezone") and request.user.timezone != original_timezone:
             try:
                 tenant = request.user.tenant
+                if tenant and tenant.status == Tenant.Status.ACTIVE:
+                    tenant.bump_pending_config()
+                    if tenant.container_id:
+                        from apps.orchestrator.services import update_tenant_config
+                        try:
+                            update_tenant_config(str(tenant.id))
+                        except Exception:
+                            logger.exception(
+                                "Failed to refresh config after tz update for tenant %s",
+                                tenant.id,
+                            )
             except Tenant.DoesNotExist:
-                tenant = None
-            if tenant and tenant.status == Tenant.Status.ACTIVE and tenant.container_id:
-                from apps.orchestrator.services import update_tenant_config
-                try:
-                    update_tenant_config(str(tenant.id))
-                except Exception:
-                    logger.exception(
-                        "Failed to refresh OpenClaw config after timezone update for tenant %s",
-                        tenant.id,
-                    )
+                pass
 
         return Response(serializer.data)
