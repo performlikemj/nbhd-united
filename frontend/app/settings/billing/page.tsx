@@ -197,7 +197,7 @@ export default function SettingsBillingPage() {
             <div className="mt-6 flex gap-3">
               <Link
                 href="/onboarding"
-                className="rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-white transition hover:bg-surface-hover5"
+                className="rounded-full bg-accent px-5 py-2.5 text-sm font-medium text-white transition hover:bg-accent-hover"
               >
                 Start onboarding
               </Link>

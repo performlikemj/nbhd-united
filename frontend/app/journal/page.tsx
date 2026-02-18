@@ -42,7 +42,7 @@ export default function JournalPage() {
       <button
         type="button"
         onClick={() => setMobileSidebarOpen(!mobileSidebarOpen)}
-        className="fixed bottom-4 left-4 z-50 rounded-full bg-ink p-3 text-white shadow-lg lg:hidden"
+        className="fixed bottom-4 left-4 z-50 rounded-full bg-accent p-3 text-white shadow-lg lg:hidden"
         aria-label="Toggle sidebar"
       >
         <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

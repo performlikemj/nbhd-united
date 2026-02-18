@@ -138,7 +138,7 @@ function IntegrationsContent() {
       subtitle="OAuth tokens are stored in tenant-scoped Azure Key Vault secrets"
     >
       {connectedProvider && (
-        <p className="mb-4 rounded-panel border border-emerald-bg bg-emerald-bg p-3 text-sm text-emerald-text">
+        <p className="mb-4 rounded-panel border border-emerald-text/20 bg-emerald-bg p-3 text-sm text-emerald-text">
           Successfully connected {connectedProvider}.
         </p>
       )}

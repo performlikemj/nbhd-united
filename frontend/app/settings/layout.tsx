@@ -36,7 +36,7 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
               className={clsx(
                 "rounded-full px-3 py-1.5 text-sm transition",
                 active
-                  ? "bg-ink text-white"
+                  ? "bg-accent text-white"
                   : "text-ink-muted hover:bg-surface-hover hover:text-ink",
               )}
             >
