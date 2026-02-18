@@ -13,7 +13,7 @@ export function SectionCard({
 }) {
   return (
     <section
-      className="rounded-panel border border-ink/10 bg-card/95 p-5 shadow-panel animate-reveal"
+      className="rounded-panel border border-ink/10 bg-card/95 p-4 shadow-panel animate-reveal sm:p-5 min-w-0 overflow-hidden"
       style={{ animationDelay: `${delay}ms` }}
     >
       <header className="mb-4">
