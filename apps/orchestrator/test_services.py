@@ -3,9 +3,10 @@ from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 
+from apps.cron.gateway_client import GatewayError
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
-from apps.orchestrator.services import deprovision_tenant, provision_tenant
+from apps.orchestrator.services import deprovision_tenant, provision_tenant, seed_cron_jobs
 
 
 class OrchestratorServiceTest(TestCase):
@@ -25,6 +26,8 @@ class OrchestratorServiceTest(TestCase):
         "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
         return_value="tenant-xxx-internal-key",
     )
+    @patch("apps.orchestrator.services.seed_cron_jobs", return_value={"tenant_id": "seed", "jobs_total": 3, "created": 3, "errors": 0})
+    @patch("apps.cron.views._schedule_qstash_task", create=True, return_value=None)
     @patch("apps.orchestrator.services.create_tenant_file_share")
     @patch("apps.orchestrator.services.register_environment_storage")
     @patch("apps.orchestrator.services.upload_config_to_file_share")
@@ -38,6 +41,8 @@ class OrchestratorServiceTest(TestCase):
         _mock_upload_config,
         _mock_register_storage,
         _mock_create_file_share,
+        _mock_schedule_qstash,
+        _mock_seed_cron_jobs,
         _mock_store_kv_key,
         _mock_assign_acr_role,
         _mock_assign_kv_role,
@@ -74,6 +79,8 @@ class OrchestratorServiceTest(TestCase):
         "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
         return_value="tenant-xxx-internal-key",
     )
+    @patch("apps.orchestrator.services.seed_cron_jobs", return_value={"tenant_id": "seed", "jobs_total": 3, "created": 3, "errors": 0})
+    @patch("apps.cron.views._schedule_qstash_task", create=True, return_value=None)
     @patch("apps.orchestrator.services.create_tenant_file_share")
     @patch("apps.orchestrator.services.register_environment_storage")
     @patch("apps.orchestrator.services.upload_config_to_file_share")
@@ -87,6 +94,8 @@ class OrchestratorServiceTest(TestCase):
         _mock_upload_config,
         _mock_register_storage,
         _mock_create_file_share,
+        _mock_schedule_qstash,
+        _mock_seed_cron_jobs,
         _mock_store_kv_key,
         _mock_assign_acr_role,
         _mock_assign_kv_role,
@@ -179,3 +188,109 @@ class OrchestratorServiceTest(TestCase):
 
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.status, Tenant.Status.SUSPENDED)
+
+
+class SeedCronJobsTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Cron Seeder", telegram_chat_id=515152)
+
+    @patch("time.sleep")
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_seed_creates_jobs_via_gateway(
+        self,
+        mock_invoke,
+        mock_sleep,
+    ):
+        mock_invoke.side_effect = [
+            {"jobs": []},
+            {"name": "Morning Briefing", "enabled": True},
+            {"name": "Evening Check-in", "enabled": True},
+            {"name": "Background Tasks", "enabled": True},
+        ]
+
+        result = seed_cron_jobs(self.tenant)
+
+        self.assertEqual(result["created"], 3)
+        self.assertEqual(result["errors"], 0)
+        self.assertEqual(mock_invoke.call_count, 4)
+        self.assertEqual(mock_invoke.call_args_list[0].args[1], "cron.list")
+        self.assertEqual(mock_invoke.call_args_list[1].args[1], "cron.add")
+        self.assertEqual(mock_invoke.call_args_list[2].args[1], "cron.add")
+        self.assertEqual(mock_invoke.call_args_list[3].args[1], "cron.add")
+        mock_sleep.assert_not_called()
+
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_seed_skips_when_jobs_exist(
+        self,
+        mock_invoke,
+    ):
+        mock_invoke.return_value = {"jobs": [{"name": "existing"}]}
+
+        result = seed_cron_jobs(self.tenant)
+
+        self.assertTrue(result.get("skipped"))
+        self.assertEqual(result["created"], 0)
+        self.assertEqual(result["errors"], 0)
+        self.assertEqual(mock_invoke.call_count, 1)
+        self.assertEqual(mock_invoke.call_args.args[0], self.tenant)
+        self.assertEqual(mock_invoke.call_args.args[1], "cron.list")
+
+
+    @patch("time.sleep")
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_seed_handles_add_failure(
+        self,
+        mock_invoke,
+        mock_sleep,
+    ):
+        mock_invoke.side_effect = [
+            {"jobs": []},
+            {"name": "Morning Briefing", "enabled": True},
+            GatewayError("temporary API error"),
+            {"name": "Background Tasks", "enabled": True},
+        ]
+
+        result = seed_cron_jobs(self.tenant)
+
+        self.assertEqual(result["created"], 2)
+        self.assertEqual(result["errors"], 1)
+        self.assertEqual(mock_invoke.call_count, 4)
+        mock_sleep.assert_not_called()
+
+    @patch("time.sleep")
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_seed_retries_on_transient_error(
+        self,
+        mock_invoke,
+        mock_sleep,
+    ):
+        mock_invoke.side_effect = [
+            {"jobs": []},
+            GatewayError("temporary", status_code=502),
+            {"name": "Morning Briefing", "enabled": True},
+            {"name": "Evening Check-in", "enabled": True},
+            {"name": "Background Tasks", "enabled": True},
+        ]
+
+        result = seed_cron_jobs(self.tenant)
+
+        self.assertEqual(result["created"], 3)
+        self.assertEqual(result["errors"], 0)
+        self.assertEqual(mock_invoke.call_count, 5)
+        mock_sleep.assert_called_once_with(5)
+
+    @patch("time.sleep")
+    @patch("apps.orchestrator.services._is_mock", return_value=True)
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_seed_mock_mode(
+        self,
+        mock_invoke,
+        mock_is_mock,
+        mock_sleep,
+    ):
+        result = seed_cron_jobs(self.tenant)
+
+        self.assertEqual(result["created"], 3)
+        self.assertEqual(result["errors"], 0)
+        self.assertFalse(result.get("skipped", False))
+        mock_invoke.assert_not_called()

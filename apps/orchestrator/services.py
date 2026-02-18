@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from django.conf import settings
 from django.utils import timezone
 
 from apps.tenants.models import Tenant
 from .azure_client import (
+    _is_mock,
     assign_acr_pull_role,
     assign_key_vault_role,
     create_container_app,
@@ -21,6 +23,7 @@ from .azure_client import (
     update_container_env_var,
     upload_config_to_file_share,
 )
+from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
 from .key_utils import generate_internal_api_key, hash_internal_api_key
 from .config_generator import build_cron_seed_jobs, config_to_json, generate_openclaw_config
 from .personas import render_templates_md
@@ -110,15 +113,26 @@ def provision_tenant(tenant_id: str) -> None:
 
         logger.info("Provisioned tenant %s → container %s", tenant_id, result["name"])
 
-        # 5. Seed default cron jobs to file share (loaded by Gateway on boot)
+        # 5. Seed default cron jobs to Gateway (delayed for container warm-up)
         try:
-            seed_cron_jobs(tenant)
+            from apps.cron.views import _schedule_qstash_task
+
+            _schedule_qstash_task("seed_cron_jobs", str(tenant.id), delay_seconds=60)
         except Exception:
+            # TODO: schedule with delay
             logger.warning(
-                "Could not seed cron jobs for tenant %s",
+                "Could not schedule cron job seeding for tenant %s",
                 tenant_id,
                 exc_info=True,
             )
+            try:
+                seed_cron_jobs(tenant)
+            except Exception:
+                logger.warning(
+                    "Could not seed cron jobs directly for tenant %s",
+                    tenant_id,
+                    exc_info=True,
+                )
 
     except Exception:
         logger.exception("Failed to provision tenant %s", tenant_id)
@@ -202,59 +216,59 @@ def deprovision_tenant(tenant_id: str) -> None:
 
 
 def seed_cron_jobs(tenant: Tenant | str) -> dict:
-    """Seed default cron job definitions into a tenant's workspace file share.
-
-    Writes ``cron/jobs.json`` to the Azure File Share so the Gateway loads
-    them on startup.  Only writes if the file is empty (no existing jobs),
-    preserving any user modifications.
-    """
-    import json as _json
-
-    from .azure_client import get_storage_client, _is_mock
-
+    """Seed default cron jobs for a tenant through the Gateway API."""
     if isinstance(tenant, str):
         tenant = Tenant.objects.select_related("user").get(id=tenant)
 
     tenant_id = str(tenant.id)
-    share_name = f"ws-{tenant_id[:20]}"
     jobs = build_cron_seed_jobs(tenant)
 
     if _is_mock():
         logger.info("[MOCK] seed_cron_jobs for tenant %s (%d jobs)", tenant_id, len(jobs))
-        return {"tenant_id": tenant_id, "jobs_total": len(jobs), "created": len(jobs), "errors": 0}
+        return {
+            "tenant_id": tenant_id,
+            "jobs_total": len(jobs),
+            "created": len(jobs),
+            "errors": 0,
+        }
 
-    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
-    if not account_name:
-        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
+    # Check existing jobs first with retry on transient gateway failures.
+    list_result = None
+    for attempt in range(1, 4):
+        try:
+            list_result = invoke_gateway_tool(
+                tenant,
+                "cron.list",
+                {"includeDisabled": True},
+            )
+            break
+        except GatewayError as exc:
+            status_code = getattr(exc, "status_code", None)
+            if status_code in (502, 503, 504) and attempt < 3:
+                logger.warning(
+                    "Transient failure checking cron jobs for tenant %s (attempt %d/3): %s",
+                    tenant_id,
+                    attempt,
+                    exc,
+                )
+                time.sleep(10)
+                continue
+            raise
 
-    from azure.storage.fileshare import ShareFileClient
+    if list_result is None:
+        raise RuntimeError(f"Failed to list cron jobs for tenant {tenant_id}")
 
-    storage_client = get_storage_client()
-    keys = storage_client.storage_accounts.list_keys(
-        settings.AZURE_RESOURCE_GROUP, account_name,
-    )
-    account_key = keys.keys[0].value
-
-    file_client = ShareFileClient(
-        account_url=f"https://{account_name}.file.core.windows.net",
-        share_name=share_name,
-        file_path="cron/jobs.json",
-        credential=account_key,
-    )
-
-    # Read existing jobs — only seed if the file is empty or missing.
-    existing_jobs: list = []
-    try:
-        data = file_client.download_file().readall()
-        parsed = _json.loads(data)
-        existing_jobs = parsed.get("jobs", [])
-    except Exception:
-        pass  # File missing or unparseable — will create fresh
+    existing_jobs = []
+    if isinstance(list_result, dict) and isinstance(list_result.get("jobs", []), list):
+        existing_jobs = list_result.get("jobs", [])
+    elif isinstance(list_result, list):
+        existing_jobs = list_result
 
     if existing_jobs:
         logger.info(
             "seed_cron_jobs: tenant %s already has %d jobs, skipping seed",
-            tenant_id, len(existing_jobs),
+            tenant_id,
+            len(existing_jobs),
         )
         return {
             "tenant_id": tenant_id,
@@ -264,16 +278,51 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
             "skipped": True,
         }
 
-    jobs_json = _json.dumps({"version": 1, "jobs": jobs}, indent=2)
-    data = jobs_json.encode("utf-8")
-    file_client.upload_file(data, length=len(data))
-    logger.info("seed_cron_jobs: wrote %d jobs to %s/cron/jobs.json", len(jobs), share_name)
+    created = 0
+    errors = 0
+    for job in jobs:
+        for attempt in range(1, 4):
+            try:
+                invoke_gateway_tool(tenant, "cron.add", {"job": job})
+                created += 1
+                break
+            except GatewayError as exc:
+                status_code = getattr(exc, "status_code", None)
+                if status_code in (502, 503, 504) and attempt < 3:
+                    logger.warning(
+                        "Transient failure creating cron job for tenant %s (attempt %d/3): %s",
+                        tenant_id,
+                        attempt,
+                        exc,
+                    )
+                    time.sleep(5)
+                    continue
+                errors += 1
+                logger.warning(
+                    "Failed to create cron job for tenant %s (attempt %d): %s",
+                    tenant_id,
+                    attempt,
+                    exc,
+                )
+                break
+            except Exception:
+                errors += 1
+                logger.exception("Failed to create cron job for tenant %s", tenant_id)
+                break
+
+    logger.info(
+        "seed_cron_jobs: tenant %s -> created=%d errors=%d (total=%d)",
+        tenant_id,
+        created,
+        errors,
+        len(jobs),
+    )
 
     return {
         "tenant_id": tenant_id,
         "jobs_total": len(jobs),
-        "created": len(jobs),
-        "errors": 0,
+        "created": created,
+        "errors": errors,
     }
 
 
