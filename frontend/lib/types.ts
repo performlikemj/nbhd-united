@@ -49,6 +49,13 @@ export interface Tenant {
   created_at: string;
 }
 
+export interface RefreshConfigStatus {
+  can_refresh: boolean;
+  last_refreshed: string | null;
+  cooldown_seconds: number;
+  status: string;
+}
+
 export interface Integration {
   id: string;
   provider: "gmail" | "google-calendar" | "sautai";

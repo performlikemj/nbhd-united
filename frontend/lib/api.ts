@@ -21,6 +21,7 @@ import {
   Tenant,
   UsageRecord,
   UsageSummary,
+  RefreshConfigStatus,
   WeeklyReview,
 } from "@/lib/types";
 
@@ -199,6 +200,15 @@ export function updatePreferences(data: { agent_persona: string }): Promise<{ ag
     method: "PATCH",
     body: JSON.stringify(data),
   });
+}
+
+// Refresh Config
+export function fetchRefreshConfigStatus(): Promise<RefreshConfigStatus> {
+  return apiFetch<RefreshConfigStatus>("/api/v1/tenants/refresh-config/");
+}
+
+export function refreshConfig(): Promise<{ detail: string; last_refreshed: string }> {
+  return apiFetch<{ detail: string; last_refreshed: string }>("/api/v1/tenants/refresh-config/", { method: "POST" });
 }
 
 // Telegram linking

@@ -28,6 +28,7 @@ import {
   fetchMe,
   fetchPersonas,
   fetchPreferences,
+  fetchRefreshConfigStatus,
   fetchSidebarTree,
   fetchTenant,
   fetchTemplates,
@@ -53,6 +54,7 @@ import {
   updateDocument,
   updateJournalEntry,
   updatePreferences,
+  refreshConfig,
   updateTemplate,
   updateWeeklyReview,
 } from "@/lib/api";
@@ -198,6 +200,23 @@ export function useUpdatePreferencesMutation() {
     mutationFn: updatePreferences,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["preferences"] });
+    },
+  });
+}
+
+export function useRefreshConfigStatusQuery() {
+  return useQuery({
+    queryKey: ["refresh-config-status"],
+    queryFn: fetchRefreshConfigStatus,
+  });
+}
+
+export function useRefreshConfigMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: refreshConfig,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["refresh-config-status"] });
     },
   });
 }
