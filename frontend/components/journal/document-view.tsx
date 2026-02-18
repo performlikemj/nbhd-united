@@ -47,20 +47,14 @@ interface DocumentViewProps {
 }
 
 export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
-  const [currentSlug, setCurrentSlug] = useState(slug);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [helpOpen, setHelpOpen] = useState(false);
 
-  const effectiveSlug = kind === "daily" ? currentSlug : slug;
+  const effectiveSlug = slug;
   const { data: doc, isLoading, error } = useDocumentQuery(kind, effectiveSlug);
   const updateMutation = useUpdateDocumentMutation();
   const appendMutation = useAppendDocumentMutation();
-
-  // Update currentSlug when slug prop changes
-  if (kind === "daily" && slug !== currentSlug) {
-    setCurrentSlug(slug);
-  }
 
   const handleEdit = () => {
     setDraft(doc?.markdown || "");
@@ -121,8 +115,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
   );
 
   const handleDateNav = (days: number) => {
-    const newSlug = shiftDate(currentSlug, days);
-    setCurrentSlug(newSlug);
+    const newSlug = shiftDate(slug, days);
     onNavigate?.("daily", newSlug);
   };
 
@@ -175,7 +168,6 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
                   value={effectiveSlug}
                   onChange={(e) => {
                     if (e.target.value) {
-                      setCurrentSlug(e.target.value);
                       onNavigate?.("daily", e.target.value);
                     }
                   }}
@@ -193,7 +185,6 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
                 <button
                   type="button"
                   onClick={() => {
-                    setCurrentSlug(todayISO());
                     onNavigate?.("daily", todayISO());
                   }}
                   className="rounded-full border border-border-strong px-2.5 py-1 text-xs sm:text-sm sm:px-3 hover:border-border-strong min-h-[36px]"
