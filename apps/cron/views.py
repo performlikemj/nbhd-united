@@ -5,6 +5,7 @@ QStash sends HTTP POST requests on a schedule (or on-demand via publish),
 which this endpoint executes synchronously. This eliminates the need for
 Celery workers polling Redis continuously.
 """
+import json
 import logging
 import traceback
 import uuid
@@ -19,6 +20,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
+from apps.orchestrator.azure_client import restart_container_app
 from apps.orchestrator.services import update_tenant_config
 from apps.tenants.models import Tenant
 from apps.cron.qstash_verify import verify_qstash_signature
@@ -236,6 +238,36 @@ def apply_pending_configs(request):
         "failed": failed,
         "evaluated": evaluated,
     })
+
+
+@csrf_exempt
+@require_POST
+def restart_tenant_container(request):
+    """Restart a tenant's OpenClaw container. QStash-verified."""
+    if not verify_qstash_signature(request):
+        return JsonResponse({"error": "Invalid signature"}, status=401)
+
+    body = {}
+    if request.body:
+        try:
+            body = json.loads(request.body)
+        except (json.JSONDecodeError, TypeError):
+            body = {}
+
+    tenant_id = request.POST.get("tenant_id") or body.get("tenant_id")
+    if not tenant_id:
+        return JsonResponse({"error": "tenant_id required"}, status=400)
+
+    try:
+        tenant = Tenant.objects.get(id=tenant_id, status=Tenant.Status.ACTIVE)
+    except Tenant.DoesNotExist:
+        return JsonResponse({"error": "Tenant not found"}, status=404)
+
+    if not tenant.container_id:
+        return JsonResponse({"error": "No container"}, status=400)
+
+    restart_container_app(tenant.container_id)
+    return JsonResponse({"restarted": True, "container": tenant.container_id})
 
 
 @csrf_exempt

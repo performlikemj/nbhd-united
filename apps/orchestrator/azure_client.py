@@ -626,6 +626,32 @@ def update_container_env_var(
     logger.info("Updated env var %s on container %s", env_name, container_name)
 
 
+def restart_container_app(container_name: str) -> None:
+    """Restart the active revision of a Container App."""
+    if _is_mock():
+        logger.info("[MOCK] Restarted container %s", container_name)
+        return
+
+    client = get_container_client()
+
+    app = client.container_apps.get(
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+    )
+
+    import time
+
+    template = app.template
+    template.revision_suffix = f"restart-{int(time.time())}"
+
+    client.container_apps.begin_create_or_update(
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+        app,
+    ).result()
+    logger.info("Restarted container app %s", container_name)
+
+
 def delete_container_app(container_name: str) -> None:
     """Delete an Azure Container App."""
     if _is_mock():

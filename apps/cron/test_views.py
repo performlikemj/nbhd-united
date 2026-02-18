@@ -1,6 +1,8 @@
 """Tests for QStash cron trigger endpoints."""
 from __future__ import annotations
 
+import json
+
 from datetime import timedelta
 
 from django.test import TestCase
@@ -145,5 +147,39 @@ class ExpireTrialsCronTest(TestCase):
     @patch("apps.cron.views.verify_qstash_signature", return_value=False)
     def test_expire_trials_rejects_invalid_or_missing_signature(self, mock_verify):
         response = self.client.post("/api/v1/cron/expire-trials/")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"], "Invalid signature")
+
+
+class RestartTenantContainerTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    @patch("apps.cron.views.restart_container_app")
+    def test_restart_tenant_container_calls_restart(self, mock_restart, mock_verify):
+        user = User.objects.create_user(username="tenant-restart", password="testpass123")
+        tenant = Tenant.objects.create(
+            user=user,
+            status=Tenant.Status.ACTIVE,
+            model_tier=Tenant.ModelTier.STARTER,
+            container_id="oc-restart-test",
+            container_fqdn="oc-restart.internal.azurecontainerapps.io",
+        )
+
+        response = self.client.post(
+            "/api/v1/cron/restart-tenant-container/",
+            data=json.dumps({"tenant_id": str(tenant.id)}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["restarted"], True)
+        self.assertEqual(response.json()["container"], "oc-restart-test")
+        mock_restart.assert_called_once_with("oc-restart-test")
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=False)
+    def test_restart_tenant_container_rejects_invalid_signature(self, mock_verify):
+        response = self.client.post("/api/v1/cron/restart-tenant-container/")
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["error"], "Invalid signature")

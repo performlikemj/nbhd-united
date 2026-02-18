@@ -7,5 +7,6 @@ urlpatterns = [
     path("trigger-debug/<str:task_name>/", views.trigger_task_debug, name="cron-trigger-debug"),
     path("tasks/", views.list_tasks, name="cron-list-tasks"),
     path("apply-pending-configs/", views.apply_pending_configs, name="cron-apply-pending-configs"),
+    path("restart-tenant-container/", views.restart_tenant_container, name="cron-restart-tenant-container"),
     path("expire-trials/", views.expire_trials, name="cron-expire-trials"),
 ]
