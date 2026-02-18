@@ -12,13 +12,15 @@ import {
 } from "@/lib/queries";
 
 function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 function shiftDate(dateStr: string, days: number): string {
-  const d = new Date(dateStr + "T00:00:00");
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  date.setDate(date.getDate() + days);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 function formatDate(dateStr: string): string {
@@ -56,7 +58,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
   const appendMutation = useAppendDocumentMutation();
 
   // Update currentSlug when slug prop changes
-  if (kind === "daily" && slug !== currentSlug && slug !== currentSlug) {
+  if (kind === "daily" && slug !== currentSlug) {
     setCurrentSlug(slug);
   }
 
