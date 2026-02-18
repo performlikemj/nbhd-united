@@ -587,8 +587,10 @@ export default function SettingsPage() {
             <div className="rounded-panel border border-border bg-surface p-4 min-w-0 overflow-hidden">
               <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Telegram</dt>
               <dd className="mt-1">
-                {me.telegram_username ? (
-                  <span className="break-words text-base text-ink">@{me.telegram_username}</span>
+                {me.telegram_chat_id ? (
+                  <span className="break-words text-base text-ink">
+                    {me.telegram_username ? `@${me.telegram_username}` : "Connected"}
+                  </span>
                 ) : (
                   <StatusPill status="pending" />
                 )}

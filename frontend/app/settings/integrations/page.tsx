@@ -49,7 +49,7 @@ function TelegramCard() {
       {linked ? (
         <>
           <p className="mt-2 text-sm text-ink-muted">
-            Connected as @{status?.telegram_username ?? "unknown"}
+            {status?.telegram_username ? `Connected as @${status.telegram_username}` : "Connected"}
           </p>
           <div className="mt-4">
             <button
