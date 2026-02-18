@@ -1,6 +1,11 @@
 """Tests for tenants app."""
+from datetime import timedelta
+
 from django.test import TestCase, override_settings
+from django.utils import timezone
+from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
+from unittest.mock import patch
 
 from .models import Tenant, User
 from .serializers import TenantSerializer
@@ -178,3 +183,92 @@ class TenantSerializerTest(TestCase):
         tenant.save()
         data = TenantSerializer(tenant).data
         self.assertFalse(data["has_active_subscription"])
+
+
+class RefreshConfigViewTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    def _create_user_with_tenant(self, display_name: str, chat_id: int) -> Tenant:
+        tenant = create_tenant(display_name=display_name, telegram_chat_id=chat_id)
+        return tenant
+
+    @patch("apps.orchestrator.services.update_tenant_config")
+    def test_refresh_config_success(self, mock_update):
+        tenant = self._create_user_with_tenant("Refresh User", 600)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.save(update_fields=["status"])
+        self.client.force_authenticate(user=tenant.user)
+
+        response = self.client.post("/api/v1/tenants/refresh-config/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data["detail"],
+            "Configuration refreshed. Your assistant will restart momentarily.",
+        )
+        self.assertIn("last_refreshed", response.data)
+        mock_update.assert_called_once_with(str(tenant.id))
+
+        tenant.refresh_from_db()
+        self.assertIsNotNone(tenant.config_refreshed_at)
+
+    @patch("apps.orchestrator.services.update_tenant_config")
+    def test_refresh_config_cooldown(self, mock_update):
+        tenant = self._create_user_with_tenant("Cooldown User", 601)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.config_refreshed_at = timezone.now() - timedelta(minutes=1)
+        tenant.save(update_fields=["status", "config_refreshed_at"])
+        self.client.force_authenticate(user=tenant.user)
+
+        response = self.client.post("/api/v1/tenants/refresh-config/")
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.data["detail"], "Please wait before refreshing again.")
+        self.assertEqual(response.data["cooldown_seconds"], 300)
+        mock_update.assert_not_called()
+
+    @patch("apps.orchestrator.services.update_tenant_config")
+    def test_refresh_config_inactive_tenant(self, mock_update):
+        tenant = self._create_user_with_tenant("Pending User", 602)
+        tenant.status = Tenant.Status.PENDING
+        tenant.save(update_fields=["status"])
+        self.client.force_authenticate(user=tenant.user)
+
+        response = self.client.post("/api/v1/tenants/refresh-config/")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["detail"], "Agent is not active.")
+        mock_update.assert_not_called()
+
+    @patch("apps.orchestrator.services.update_tenant_config")
+    def test_refresh_config_no_tenant(self, mock_update):
+        user = User.objects.create_user(
+            username="notenant@example.com",
+            email="notenant@example.com",
+            password="pass1234",
+        )
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post("/api/v1/tenants/refresh-config/")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.data["detail"], "No tenant found.")
+        mock_update.assert_not_called()
+
+    @patch("apps.orchestrator.services.update_tenant_config")
+    def test_refresh_config_get_status(self, mock_update):
+        tenant = self._create_user_with_tenant("Status User", 603)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.save(update_fields=["status"])
+        tenant.config_refreshed_at = timezone.now() - timedelta(minutes=10)
+        tenant.save(update_fields=["config_refreshed_at"])
+        self.client.force_authenticate(user=tenant.user)
+
+        response = self.client.get("/api/v1/tenants/refresh-config/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["cooldown_seconds"], 300)
+        self.assertEqual(response.data["status"], tenant.status)
+        self.assertTrue(response.data["can_refresh"])
+        mock_update.assert_not_called()

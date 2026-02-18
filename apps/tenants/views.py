@@ -1,6 +1,7 @@
 """Tenant views."""
 import logging
 
+from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -75,6 +76,71 @@ class PersonaListView(APIView):
     def get(self, request):
         from apps.orchestrator.personas import list_personas
         return Response(list_personas())
+
+
+class RefreshConfigView(APIView):
+    """Allow users to refresh their OpenClaw agent configuration."""
+    permission_classes = [IsAuthenticated]
+
+    # 5 minute cooldown
+    COOLDOWN_SECONDS = 300
+
+    def get(self, request):
+        """Return current refresh status."""
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            "can_refresh": self._can_refresh(tenant),
+            "last_refreshed": tenant.config_refreshed_at,
+            "cooldown_seconds": self.COOLDOWN_SECONDS,
+            "status": tenant.status,
+        })
+
+    def post(self, request):
+        """Trigger a config refresh."""
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if tenant.status != Tenant.Status.ACTIVE:
+            return Response(
+                {"detail": "Agent is not active."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not self._can_refresh(tenant):
+            return Response(
+                {"detail": "Please wait before refreshing again.", "cooldown_seconds": self.COOLDOWN_SECONDS},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        try:
+            from apps.orchestrator.services import update_tenant_config
+            update_tenant_config(str(tenant.id))
+
+            tenant.config_refreshed_at = timezone.now()
+            tenant.save(update_fields=["config_refreshed_at"])
+
+            return Response({
+                "detail": "Configuration refreshed. Your assistant will restart momentarily.",
+                "last_refreshed": tenant.config_refreshed_at,
+            })
+        except Exception:
+            logger.exception("Config refresh failed for tenant %s", tenant.id)
+            return Response(
+                {"detail": "Refresh failed. Please try again later."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+    def _can_refresh(self, tenant):
+        if not tenant.config_refreshed_at:
+            return True
+        elapsed = (timezone.now() - tenant.config_refreshed_at).total_seconds()
+        return elapsed >= self.COOLDOWN_SECONDS
 
 
 class UpdatePreferencesView(APIView):

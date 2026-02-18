@@ -108,6 +108,7 @@ class Tenant(models.Model):
     # Metadata
     last_message_at = models.DateTimeField(null=True, blank=True)
     provisioned_at = models.DateTimeField(null=True, blank=True)
+    config_refreshed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
