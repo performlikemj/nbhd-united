@@ -196,7 +196,7 @@ class SeedCronJobsTest(TestCase):
 
     @patch("time.sleep")
     @patch("apps.orchestrator.services.invoke_gateway_tool")
-    def test_seed_cron_jobs_creates_via_gateway(
+    def test_seed_creates_jobs_via_gateway(
         self,
         mock_invoke,
         mock_sleep,
@@ -220,7 +220,7 @@ class SeedCronJobsTest(TestCase):
         mock_sleep.assert_not_called()
 
     @patch("apps.orchestrator.services.invoke_gateway_tool")
-    def test_seed_cron_jobs_skips_when_jobs_exist(
+    def test_seed_skips_when_jobs_exist(
         self,
         mock_invoke,
     ):
@@ -235,9 +235,10 @@ class SeedCronJobsTest(TestCase):
         self.assertEqual(mock_invoke.call_args.args[0], self.tenant)
         self.assertEqual(mock_invoke.call_args.args[1], "cron.list")
 
+
     @patch("time.sleep")
     @patch("apps.orchestrator.services.invoke_gateway_tool")
-    def test_seed_cron_jobs_handles_gateway_error(
+    def test_seed_handles_add_failure(
         self,
         mock_invoke,
         mock_sleep,
@@ -258,7 +259,7 @@ class SeedCronJobsTest(TestCase):
 
     @patch("time.sleep")
     @patch("apps.orchestrator.services.invoke_gateway_tool")
-    def test_seed_cron_jobs_retries_on_transient_error(
+    def test_seed_retries_on_transient_error(
         self,
         mock_invoke,
         mock_sleep,
@@ -278,12 +279,14 @@ class SeedCronJobsTest(TestCase):
         self.assertEqual(mock_invoke.call_count, 5)
         mock_sleep.assert_called_once_with(5)
 
+    @patch("time.sleep")
     @patch("apps.orchestrator.services._is_mock", return_value=True)
     @patch("apps.orchestrator.services.invoke_gateway_tool")
-    def test_seed_cron_jobs_mock_mode(
+    def test_seed_mock_mode(
         self,
         mock_invoke,
         mock_is_mock,
+        mock_sleep,
     ):
         result = seed_cron_jobs(self.tenant)
 
