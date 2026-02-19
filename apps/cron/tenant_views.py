@@ -93,21 +93,11 @@ class CronJobDetailView(APIView):
 
         try:
             _require_active_tenant(tenant)
-            logger.info(
-                "cron.update job_name=%s patch_keys=%s patch_tz=%s",
-                job_name,
-                list(patch_data.keys()),
-                patch_data.get("schedule", {}).get("tz", "<missing>"),
-            )
+            logger.info("cron.update job_name=%s patch_keys=%s", job_name, list(patch_data.keys()))
             result = invoke_gateway_tool(
                 tenant, "cron.update", {"jobId": job_name, "patch": patch_data},
             )
-            logger.info(
-                "cron.update success job_name=%s result_tz=%s",
-                job_name,
-                result.get("details", result).get("schedule", {}).get("tz", "<missing>")
-                if isinstance(result.get("details", result), dict) else "<non-dict>",
-            )
+            logger.info("cron.update success job_name=%s", job_name)
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         return Response(result.get("details", result))
