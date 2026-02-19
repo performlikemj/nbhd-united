@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import clsx from "clsx";
+import { useQueryClient } from "@tanstack/react-query";
+import { fetchDocument } from "@/lib/api";
 import { useSidebarTreeQuery } from "@/lib/queries";
 import type { SidebarSection } from "@/lib/types";
 
@@ -27,6 +29,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggle }: SidebarProps) {
+  const queryClient = useQueryClient();
   const { data: tree, isLoading } = useSidebarTreeQuery();
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set(["daily", "weekly", "tasks", "goals", "ideas", "project", "memory"]),
@@ -60,6 +63,13 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
       </div>
     );
   }
+
+  const prefetchDocument = (kind: string, slug: string) => {
+    void queryClient.prefetchQuery({
+      queryKey: ["document", kind, slug],
+      queryFn: () => fetchDocument(kind, slug),
+    });
+  };
 
   // Static items that always show (even if no documents exist yet)
   const staticItems: Array<{ kind: string; slug: string; label: string; icon: string }> = [
@@ -95,6 +105,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
           <button
             key={`${item.kind}-${item.slug}`}
             type="button"
+            onMouseEnter={() => prefetchDocument(item.kind, item.slug)}
             onClick={() => onNavigate(item.kind, item.slug)}
             className={clsx(
               "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-sm transition",
@@ -151,6 +162,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
                       <button
                         key={`${section.kind}-${item.slug}`}
                         type="button"
+                        onMouseEnter={() => prefetchDocument(section.kind, item.slug)}
                         onClick={() => onNavigate(section.kind, item.slug)}
                         className={clsx(
                           "flex w-full items-center rounded-lg px-3 py-1 text-left text-sm transition",

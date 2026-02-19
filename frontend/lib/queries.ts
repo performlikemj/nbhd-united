@@ -64,6 +64,7 @@ export function useMeQuery() {
   return useQuery({
     queryKey: ["me"],
     queryFn: fetchMe,
+    staleTime: 5 * 60_000,
     retry: false,
   });
 }
@@ -82,6 +83,7 @@ export function useTenantQuery() {
   return useQuery({
     queryKey: ["tenant"],
     queryFn: fetchTenant,
+    staleTime: 5 * 60_000,
   });
 }
 
@@ -89,6 +91,7 @@ export function useDashboardQuery() {
   return useQuery({
     queryKey: ["dashboard"],
     queryFn: fetchDashboard,
+    staleTime: 30_000,
   });
 }
 
@@ -96,6 +99,7 @@ export function useUsageHistoryQuery() {
   return useQuery({
     queryKey: ["usage-history"],
     queryFn: fetchUsageHistory,
+    staleTime: 30_000,
   });
 }
 
@@ -103,6 +107,7 @@ export function useUsageSummaryQuery() {
   return useQuery({
     queryKey: ["usage-summary"],
     queryFn: fetchUsageSummary,
+    staleTime: 30_000,
   });
 }
 
@@ -110,6 +115,7 @@ export function useIntegrationsQuery() {
   return useQuery({
     queryKey: ["integrations"],
     queryFn: fetchIntegrations,
+    staleTime: 5 * 60_000,
   });
 }
 
@@ -185,6 +191,7 @@ export function usePersonasQuery() {
   return useQuery({
     queryKey: ["personas"],
     queryFn: fetchPersonas,
+    staleTime: Infinity,
   });
 }
 
@@ -192,6 +199,7 @@ export function usePreferencesQuery() {
   return useQuery({
     queryKey: ["preferences"],
     queryFn: fetchPreferences,
+    staleTime: 5 * 60_000,
   });
 }
 
@@ -309,6 +317,7 @@ export function useJournalEntriesQuery() {
   return useQuery({
     queryKey: ["journal-entries"],
     queryFn: () => fetchJournalEntries(),
+    staleTime: 30_000,
   });
 }
 
@@ -351,6 +360,7 @@ export function useNoteTemplatesQuery() {
   return useQuery({
     queryKey: ["templates"],
     queryFn: fetchTemplates,
+    staleTime: Infinity,
   });
 }
 
@@ -440,6 +450,7 @@ export function useDocumentsQuery(kind?: string) {
   return useQuery({
     queryKey: ["documents", kind ?? "all"],
     queryFn: () => fetchDocuments(kind),
+    staleTime: 30_000,
   });
 }
 
@@ -491,6 +502,7 @@ export function useLLMConfigQuery() {
   return useQuery({
     queryKey: ["llm-config"],
     queryFn: getLLMConfig,
+    staleTime: 5 * 60_000,
   });
 }
 
@@ -509,6 +521,7 @@ export function useCronJobsQuery() {
   return useQuery({
     queryKey: ["cron-jobs"],
     queryFn: fetchCronJobs,
+    staleTime: 30_000,
   });
 }
 

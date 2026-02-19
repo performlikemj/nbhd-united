@@ -1,15 +1,17 @@
 "use client";
 
-import { type MouseEvent, useCallback, useState } from "react";
+import { type MouseEvent, useCallback, useEffect, useState } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownEditor } from "@/components/journal/markdown-editor";
 import { MarkdownHelpSheet } from "@/components/journal/markdown-help-sheet";
 import { QuickLogInput } from "@/components/journal/quick-log-input";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   useDocumentQuery,
   useUpdateDocumentMutation,
   useAppendDocumentMutation,
 } from "@/lib/queries";
+import { fetchDocument } from "@/lib/api";
 
 function todayISO(): string {
   const d = new Date();
@@ -50,11 +52,28 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [helpOpen, setHelpOpen] = useState(false);
+  const queryClient = useQueryClient();
 
   const effectiveSlug = slug;
   const { data: doc, isLoading, error } = useDocumentQuery(kind, effectiveSlug);
   const updateMutation = useUpdateDocumentMutation();
   const appendMutation = useAppendDocumentMutation();
+
+  useEffect(() => {
+    if (kind !== "daily") return;
+
+    const prevSlug = shiftDate(effectiveSlug, -1);
+    const nextSlug = shiftDate(effectiveSlug, 1);
+
+    void queryClient.prefetchQuery({
+      queryKey: ["document", kind, prevSlug],
+      queryFn: () => fetchDocument(kind, prevSlug),
+    });
+    void queryClient.prefetchQuery({
+      queryKey: ["document", kind, nextSlug],
+      queryFn: () => fetchDocument(kind, nextSlug),
+    });
+  }, [effectiveSlug, kind, queryClient]);
 
   const handleEdit = () => {
     setDraft(doc?.markdown || "");
