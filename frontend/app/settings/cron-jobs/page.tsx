@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 
 import ScheduleBuilder, { cronToHuman } from "@/components/schedule-builder";
 import { SectionCard } from "@/components/section-card";
@@ -137,6 +137,31 @@ function getErrorMessage(error: unknown): string {
   return "Request failed.";
 }
 
+type SaveButtonStatus = "idle" | "saving" | "success" | "error";
+
+type ActionFeedback = {
+  status: SaveButtonStatus;
+  text: string;
+};
+
+const SAVE_CLEAR_DELAY_MS = 2000;
+const ERROR_CLEAR_DELAY_MS = 4000;
+
+function getSaveButtonClass(status: SaveButtonStatus): string {
+  const base =
+    "rounded-full border border-border-strong px-4 py-2 text-sm transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-45";
+
+  if (status === "success") {
+    return `${base} border-emerald-500 bg-emerald-500 text-white hover:bg-emerald-600`;
+  }
+
+  if (status === "error") {
+    return `${base} border-rose-500 bg-rose-500 text-white hover:bg-rose-600`;
+  }
+
+  return `${base} hover:border-border-strong`;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Page component                                                     */
 /* ------------------------------------------------------------------ */
@@ -161,11 +186,61 @@ export default function SettingsCronJobsPage() {
   });
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [showCapabilities, setShowCapabilities] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [createFeedback, setCreateFeedback] = useState<ActionFeedback>({ status: "idle", text: "" });
+  const [editFeedback, setEditFeedback] = useState<ActionFeedback>({ status: "idle", text: "" });
+  const [deleteFeedback, setDeleteFeedback] = useState<ActionFeedback>({ status: "idle", text: "" });
+  const createTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const editTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deleteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const flashStatus = (type: "success" | "error", text: string) => {
-    setStatusMessage({ type, text });
-    setTimeout(() => setStatusMessage(null), 4000);
+  const clearCreateTimer = () => {
+    if (createTimeoutRef.current) {
+      clearTimeout(createTimeoutRef.current);
+      createTimeoutRef.current = null;
+    }
+  };
+
+  const clearEditTimer = () => {
+    if (editTimeoutRef.current) {
+      clearTimeout(editTimeoutRef.current);
+      editTimeoutRef.current = null;
+    }
+  };
+
+  const clearDeleteTimer = () => {
+    if (deleteTimeoutRef.current) {
+      clearTimeout(deleteTimeoutRef.current);
+      deleteTimeoutRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      clearCreateTimer();
+      clearEditTimer();
+      clearDeleteTimer();
+    };
+  }, []);
+
+  const setSuccess = (
+    setState: (state: ActionFeedback) => void,
+    timeoutRef: { current: ReturnType<typeof setTimeout> | null },
+  ) => {
+    setState({ status: "success", text: "" });
+    timeoutRef.current = setTimeout(() => {
+      setState({ status: "idle", text: "" });
+    }, SAVE_CLEAR_DELAY_MS);
+  };
+
+  const setError = (
+    setState: (state: ActionFeedback) => void,
+    timeoutRef: { current: ReturnType<typeof setTimeout> | null },
+    message: string,
+  ) => {
+    setState({ status: "error", text: message });
+    timeoutRef.current = setTimeout(() => {
+      setState({ status: "idle", text: "" });
+    }, ERROR_CLEAR_DELAY_MS);
   };
 
   const handleApplyTemplate = (template: TaskTemplate) => {
@@ -179,6 +254,9 @@ export default function SettingsCronJobsPage() {
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    clearCreateTimer();
+    setCreateFeedback({ status: "saving", text: "" });
+
     try {
       await createMutation.mutateAsync({
         name: createForm.name.trim(),
@@ -191,15 +269,19 @@ export default function SettingsCronJobsPage() {
         },
         enabled: true,
       });
+
       setCreateForm(defaultCreateForm(me?.timezone));
       setShowCreate(false);
-      flashStatus("success", "Task created!");
+      setSuccess(setCreateFeedback, createTimeoutRef);
     } catch (err) {
-      flashStatus("error", getErrorMessage(err));
+      clearCreateTimer();
+      setError(setCreateFeedback, createTimeoutRef, getErrorMessage(err));
     }
   };
 
   const handleStartEdit = (job: CronJob) => {
+    clearEditTimer();
+    setEditFeedback({ status: "idle", text: "" });
     setEditingName(job.jobId ?? job.name);
     setEditForm(toEditForm(job));
   };
@@ -207,6 +289,9 @@ export default function SettingsCronJobsPage() {
   const handleUpdate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!editingName) return;
+    clearEditTimer();
+    setEditFeedback({ status: "saving", text: "" });
+
     try {
       await updateMutation.mutateAsync({
         name: editingName,
@@ -220,35 +305,29 @@ export default function SettingsCronJobsPage() {
         },
       });
       setEditingName(null);
-      flashStatus("success", "Task updated!");
+      setSuccess(setEditFeedback, editTimeoutRef);
     } catch (err) {
-      flashStatus("error", getErrorMessage(err));
+      clearEditTimer();
+      setError(setEditFeedback, editTimeoutRef, getErrorMessage(err));
     }
   };
 
   const handleDelete = async (nameOrId: string) => {
+    clearDeleteTimer();
+    setDeleteFeedback({ status: "saving", text: "" });
+
     try {
       await deleteMutation.mutateAsync({ name: nameOrId });
       setConfirmDelete(null);
-      flashStatus("success", "Task deleted.");
+      setSuccess(setDeleteFeedback, deleteTimeoutRef);
     } catch (err) {
-      flashStatus("error", getErrorMessage(err));
+      clearDeleteTimer();
+      setError(setDeleteFeedback, deleteTimeoutRef, getErrorMessage(err));
     }
   };
 
   return (
     <div className="space-y-4">
-      {statusMessage && (
-        <div
-          className={`rounded-panel border px-4 py-2 text-sm ${
-            statusMessage.type === "success"
-              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-              : "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
-          }`}
-        >
-          {statusMessage.text}
-        </div>
-      )}
       <SectionCard
         title="Scheduled Tasks"
         subtitle="Set up recurring tasks for your AI assistant — morning briefings, news digests, reminders, and more"
@@ -257,6 +336,8 @@ export default function SettingsCronJobsPage() {
           <button
             type="button"
             onClick={() => {
+              clearCreateTimer();
+              setCreateFeedback({ status: "idle", text: "" });
               setCreateForm(defaultCreateForm(me?.timezone));
               setShowCreate(true);
             }}
@@ -359,17 +440,28 @@ export default function SettingsCronJobsPage() {
                 )}
               </div>
 
-              <div className="flex gap-2 md:col-span-2">
+              <div className="flex flex-col gap-2 md:col-span-2">
                 <button
                   type="submit"
                   disabled={createMutation.isPending}
-                  className="rounded-full border border-border-strong px-4 py-2 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
+                  className={getSaveButtonClass(createFeedback.status)}
                 >
-                  {createMutation.isPending ? "Creating..." : "Create"}
+                  {createMutation.isPending
+                    ? "Creating..."
+                    : createFeedback.status === "success"
+                      ? "✓ Created"
+                      : "Create"}
                 </button>
+                {createFeedback.status === "error" ? (
+                  <p className="text-xs text-rose-500">{createFeedback.text}</p>
+                ) : null}
                 <button
                   type="button"
-                  onClick={() => setShowCreate(false)}
+                  onClick={() => {
+                    clearCreateTimer();
+                    setCreateFeedback({ status: "idle", text: "" });
+                    setShowCreate(false);
+                  }}
                   className="rounded-full border border-border-strong px-4 py-2 text-sm hover:border-border-strong"
                 >
                   Cancel
@@ -378,12 +470,6 @@ export default function SettingsCronJobsPage() {
             </form>
           </div>
         )}
-
-        {createMutation.isError ? (
-          <p className="mt-3 rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
-            {getErrorMessage(createMutation.error)}
-          </p>
-        ) : null}
       </SectionCard>
 
       {isLoading ? (
@@ -450,27 +536,44 @@ export default function SettingsCronJobsPage() {
                   </button>
 
                   {confirmDelete === jobIdentifier ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => handleDelete(jobIdentifier)}
-                        disabled={deleteMutation.isPending}
-                        className="rounded-full border border-rose-border px-3 py-1.5 text-sm text-rose-text hover:border-rose-border disabled:cursor-not-allowed disabled:opacity-45"
-                      >
-                        {deleteMutation.isPending ? "Deleting..." : "Confirm delete"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setConfirmDelete(null)}
-                        className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong"
-                      >
-                        Cancel
-                      </button>
-                    </>
+                    <div className="flex flex-col gap-1.5">
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(jobIdentifier)}
+                          disabled={deleteMutation.isPending}
+                          className={getSaveButtonClass(deleteFeedback.status)}
+                        >
+                          {deleteMutation.isPending
+                            ? "Deleting..."
+                            : deleteFeedback.status === "success"
+                              ? "✓ Deleted"
+                              : "Confirm delete"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            clearDeleteTimer();
+                            setDeleteFeedback({ status: "idle", text: "" });
+                            setConfirmDelete(null);
+                          }}
+                          className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      {deleteFeedback.status === "error" && confirmDelete === jobIdentifier ? (
+                        <p className="text-xs text-rose-500">{deleteFeedback.text}</p>
+                      ) : null}
+                    </div>
                   ) : (
                     <button
                       type="button"
-                      onClick={() => setConfirmDelete(jobIdentifier)}
+                      onClick={() => {
+                        clearDeleteTimer();
+                        setDeleteFeedback({ status: "idle", text: "" });
+                        setConfirmDelete(jobIdentifier);
+                      }}
                       className="rounded-full border border-rose-border px-3 py-1.5 text-sm text-rose-text hover:border-rose-border"
                     >
                       Delete
@@ -521,21 +624,34 @@ export default function SettingsCronJobsPage() {
                       />
                     </label>
 
-                    <div className="flex gap-2 md:col-span-2">
-                      <button
-                        type="submit"
-                        disabled={updateMutation.isPending}
-                        className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
-                      >
-                        {updateMutation.isPending ? "Saving..." : "Save"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEditingName(null)}
-                        className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong"
-                      >
-                        Cancel
-                      </button>
+                    <div className="flex flex-col gap-2 md:col-span-2">
+                      <div className="flex gap-2">
+                        <button
+                          type="submit"
+                          disabled={updateMutation.isPending}
+                          className={getSaveButtonClass(editFeedback.status)}
+                        >
+                          {updateMutation.isPending
+                            ? "Saving..."
+                            : editFeedback.status === "success"
+                              ? "✓ Saved"
+                              : "Save"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            clearEditTimer();
+                            setEditFeedback({ status: "idle", text: "" });
+                            setEditingName(null);
+                          }}
+                          className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      {editFeedback.status === "error" ? (
+                        <p className="text-xs text-rose-500">{editFeedback.text}</p>
+                      ) : null}
                     </div>
                   </form>
                 ) : null}
