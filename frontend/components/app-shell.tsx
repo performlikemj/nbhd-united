@@ -189,29 +189,31 @@ export function AppShell({ children }: { children: ReactNode }) {
               <span className="sm:hidden">Subscriber</span>
             </h1>
           </div>
-          <div className="flex w-full min-w-0 items-center gap-2 overflow-x-auto pb-1 sm:w-auto sm:overflow-visible sm:pb-0">
-            <div className="shrink-0">
-              <TrialBadge />
+          <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
+            <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto pb-1 sm:overflow-visible sm:pb-0">
+              <div className="shrink-0">
+                <TrialBadge />
+              </div>
+              <nav className="flex min-w-0 flex-1 items-center gap-1 rounded-full border border-border bg-surface p-1 sm:flex-initial">
+                {navItems.map((item) => {
+                  const active = pathname.startsWith(item.href);
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      className={clsx(
+                        "shrink-0 rounded-full px-3 py-1.5 text-sm transition",
+                        active
+                          ? "bg-accent text-white"
+                          : "text-ink-muted hover:bg-surface-hover hover:text-ink",
+                      )}
+                    >
+                      {item.label}
+                    </Link>
+                  );
+                })}
+              </nav>
             </div>
-            <nav className="flex min-w-0 flex-1 items-center gap-1 rounded-full border border-border bg-surface p-1 sm:flex-initial">
-              {navItems.map((item) => {
-                const active = pathname.startsWith(item.href);
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    className={clsx(
-                      "shrink-0 rounded-full px-3 py-1.5 text-sm transition",
-                      active
-                        ? "bg-accent text-white"
-                        : "text-ink-muted hover:bg-surface-hover hover:text-ink",
-                    )}
-                  >
-                    {item.label}
-                  </Link>
-                );
-              })}
-            </nav>
             <ThemeToggle />
             <UserMenu onLogout={handleLogout} />
           </div>
