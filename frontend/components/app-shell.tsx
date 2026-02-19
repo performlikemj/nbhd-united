@@ -16,7 +16,7 @@ const navItems = [
   { href: "/settings", label: "Settings" },
 ];
 
-const publicPages = ["/", "/login", "/signup", "/legal/terms", "/legal/privacy", "/legal/refund"];
+const publicPages = ["/login", "/signup"];
 
 function ThemeToggle() {
   const { theme, toggleTheme } = useTheme();
