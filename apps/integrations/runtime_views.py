@@ -600,12 +600,13 @@ class RuntimeDailyNotesView(APIView):
                 "markdown": _default_markdown("daily", slug, tenant=tenant),
             },
         )
+        content = doc.markdown_plaintext
         return Response(
             {
                 "tenant_id": str(tenant.id),
                 "date": str(d),
-                "markdown": doc.markdown,
-                "sections": parse_daily_sections(doc.markdown),
+                "markdown": content,
+                "sections": parse_daily_sections(content),
             },
             status=200,
         )
@@ -656,11 +657,12 @@ class RuntimeDailyNoteAppendView(APIView):
         section_slug = request.data.get("section_slug")
         section_slug_str = str(section_slug).strip() if section_slug else ""
 
+        md = doc.markdown_plaintext
+
         if section_slug_str:
             # Derive heading from slug (e.g. "morning-report" → "Morning Report")
             heading = section_slug_str.replace("-", " ").title()
             marker = f"## {heading}"
-            md = doc.markdown or ""
             idx = md.find(marker)
             if idx != -1:
                 # Replace section content (everything between this heading and the next)
@@ -682,16 +684,17 @@ class RuntimeDailyNoteAppendView(APIView):
             now = tz.now()
             timestamp = now.strftime("%H:%M")
             entry = f"- **{timestamp}** (agent) — {content}"
-            doc.markdown = (doc.markdown or "").rstrip() + "\n\n" + entry + "\n"
+            doc.markdown = (md or "").rstrip() + "\n\n" + entry + "\n"
 
         doc.save()
 
+        markdown_out = doc.markdown_plaintext
         return Response(
             {
                 "tenant_id": str(tenant.id),
                 "date": str(d),
-                "markdown": doc.markdown,
-                "sections": parse_daily_sections(doc.markdown),
+                "markdown": markdown_out,
+                "sections": parse_daily_sections(markdown_out),
             },
             status=status.HTTP_201_CREATED,
         )
@@ -722,7 +725,7 @@ class RuntimeUserMemoryView(APIView):
             },
         )
         return Response(
-            {"tenant_id": str(tenant.id), "markdown": doc.markdown},
+            {"tenant_id": str(tenant.id), "markdown": doc.markdown_plaintext},
             status=status.HTTP_200_OK,
         )
 
@@ -750,7 +753,7 @@ class RuntimeUserMemoryView(APIView):
             doc.save()
 
         return Response(
-            {"tenant_id": str(tenant.id), "markdown": doc.markdown},
+            {"tenant_id": str(tenant.id), "markdown": doc.markdown_plaintext},
             status=status.HTTP_200_OK,
         )
 
@@ -799,7 +802,7 @@ class RuntimeJournalContextView(APIView):
             {
                 "tenant_id": str(tenant.id),
                 "date": doc.slug,
-                "markdown": doc.markdown,
+                "markdown": doc.markdown_plaintext,
                 "sections": [],
             }
             for doc in recent_docs
@@ -809,7 +812,7 @@ class RuntimeJournalContextView(APIView):
             {
                 "tenant_id": str(tenant.id),
                 "recent_notes": notes_data,
-                "long_term_memory": memory_doc.markdown if memory_doc else "",
+                "long_term_memory": memory_doc.markdown_plaintext if memory_doc else "",
                 "recent_notes_count": len(notes_data),
                 "days_back": days,
             },
@@ -865,8 +868,8 @@ class RuntimeDocumentView(APIView):
                 "id": str(doc.id),
                 "kind": doc.kind,
                 "slug": doc.slug,
-                "title": doc.title,
-                "markdown": doc.markdown,
+                "title": doc.title_plaintext,
+                "markdown": doc.markdown_plaintext,
                 "updated_at": doc.updated_at.isoformat(),
             },
             status=status.HTTP_200_OK,
@@ -916,8 +919,8 @@ class RuntimeDocumentView(APIView):
                 "id": str(doc.id),
                 "kind": doc.kind,
                 "slug": doc.slug,
-                "title": doc.title,
-                "markdown": doc.markdown,
+                "title": doc.title_plaintext,
+                "markdown": doc.markdown_plaintext,
                 "updated_at": doc.updated_at.isoformat(),
             },
             status=status.HTTP_200_OK if not created else status.HTTP_201_CREATED,
@@ -949,20 +952,29 @@ class RuntimeJournalSearchView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
-
-        qs = Document.objects.filter(tenant=tenant)
+        base_qs = Document.objects.filter(tenant=tenant)
         if kind:
-            qs = qs.filter(kind=kind)
+            base_qs = base_qs.filter(kind=kind)
 
-        search_vector = SearchVector("title", weight="A") + SearchVector("markdown", weight="B")
-        search_query = SearchQuery(query, search_type="websearch")
+        query_terms = [term.strip().lower() for term in query.lower().split() if term.strip()]
+        results_with_rank: list[tuple[Document, float]] = []
 
-        results = (
-            qs.annotate(rank=SearchRank(search_vector, search_query))
-            .filter(rank__gt=0.0)
-            .order_by("-rank")[:limit]
-        )
+        for doc in base_qs:
+            plaintext = doc.decrypt()
+            haystack = f"{plaintext['title']} {plaintext['markdown']}".lower()
+            if not all(term in haystack for term in query_terms):
+                continue
+
+            rank = float(sum(haystack.count(term) for term in query_terms))
+            results_with_rank.append((doc, max(rank, 1.0)))
+
+        results_with_rank.sort(key=lambda row: row[1], reverse=True)
+        limited = results_with_rank[:limit]
+
+        results = [
+            (doc, rank)
+            for doc, rank in limited
+        ]
 
         def _make_snippet(text: str, query_terms: str, max_len: int = 300) -> str:
             """Extract relevant snippet around first match."""
@@ -991,12 +1003,12 @@ class RuntimeJournalSearchView(APIView):
                     {
                         "kind": doc.kind,
                         "slug": doc.slug,
-                        "title": doc.title,
-                        "snippet": _make_snippet(doc.markdown, query),
+                        "title": doc.title_plaintext,
+                        "snippet": _make_snippet(doc.markdown_plaintext, query),
                         "updated_at": doc.updated_at.isoformat(),
-                        "rank": float(doc.rank),
+                        "rank": rank,
                     }
-                    for doc in results
+                    for doc, rank in results
                 ],
             },
             status=status.HTTP_200_OK,
@@ -1079,7 +1091,8 @@ class RuntimeDocumentAppendView(APIView):
 
         time_str = tz.now().strftime("%H:%M")
         entry_block = f"\n\n### {time_str} — Agent\n{content}\n"
-        doc.markdown = (doc.markdown or "").rstrip() + entry_block
+        current = doc.markdown_plaintext
+        doc.markdown = (current or "").rstrip() + entry_block
         doc.save()
 
         return Response(
@@ -1088,8 +1101,8 @@ class RuntimeDocumentAppendView(APIView):
                 "id": str(doc.id),
                 "kind": doc.kind,
                 "slug": doc.slug,
-                "title": doc.title,
-                "markdown": doc.markdown,
+                "title": doc.title_plaintext,
+                "markdown": doc.markdown_plaintext,
                 "updated_at": doc.updated_at.isoformat(),
             },
             status=status.HTTP_201_CREATED,

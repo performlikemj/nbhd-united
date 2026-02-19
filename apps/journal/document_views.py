@@ -223,7 +223,8 @@ class DocumentAppendView(APIView):
         time_str = data.get("time") or timezone.now().strftime("%H:%M")
         entry_block = f"\n\n### {time_str} — MJ\n{data['content'].strip()}\n"
 
-        doc.markdown = (doc.markdown or "").rstrip() + entry_block
+        current_markdown = doc.markdown_plaintext
+        doc.markdown = (current_markdown or "").rstrip() + entry_block
         doc.save()
 
         return Response(DocumentSerializer(doc).data, status=status.HTTP_201_CREATED)
@@ -248,15 +249,15 @@ class SidebarTreeView(APIView):
 
     def get(self, request):
         tenant = _get_tenant(request.user)
-        documents = Document.objects.filter(tenant=tenant).values("kind", "slug", "title", "updated_at")
+        documents = Document.objects.filter(tenant=tenant).all()
 
         # Group by kind
         tree: dict[str, list] = defaultdict(list)
         for doc in documents:
-            tree[doc["kind"]].append({
-                "slug": doc["slug"],
-                "title": doc["title"],
-                "updated_at": doc["updated_at"].isoformat() if doc["updated_at"] else None,
+            tree[doc.kind].append({
+                "slug": doc.slug,
+                "title": doc.title_plaintext,
+                "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
             })
 
         # Sort daily notes by slug (date) descending

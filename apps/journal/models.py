@@ -5,6 +5,7 @@ import uuid
 
 from django.db import models
 
+from apps.journal import encryption
 from apps.tenants.models import Tenant
 
 
@@ -159,6 +160,7 @@ class Document(models.Model):
     slug = models.CharField(max_length=128)
     title = models.CharField(max_length=256)
     markdown = models.TextField(default="")
+    is_encrypted = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -171,3 +173,69 @@ class Document(models.Model):
 
     def __str__(self) -> str:
         return f"{self.tenant_id}:{self.kind}:{self.slug}"
+
+    def _tenant_has_encryption_ref(self) -> bool:
+        if not self.tenant_id:
+            return False
+        return bool(self.tenant.encryption_key_ref)
+
+    def _normalize_plaintext(self, value: str) -> str:
+        return "" if value is None else str(value)
+
+    def _needs_encryption(self, value: str) -> bool:
+        if value is None:
+            return False
+        text = str(value)
+        if text == "":
+            return False
+        return not encryption._is_encryption_format(text)
+
+    def decrypt(self) -> dict[str, str]:
+        """Return plaintext title and markdown for this row."""
+        if not self.is_encrypted:
+            return {
+                "title": self._normalize_plaintext(self.title),
+                "markdown": self._normalize_plaintext(self.markdown),
+            }
+
+        if not self.tenant_id:
+            raise ValueError("Cannot decrypt document: tenant is not set")
+
+        key = encryption.get_tenant_key(self.tenant_id)
+        plaintext_title = encryption.decrypt(self.title, key) if self.title else ""
+        plaintext_markdown = encryption.decrypt(self.markdown, key) if self.markdown else ""
+        return {
+            "title": plaintext_title,
+            "markdown": plaintext_markdown,
+        }
+
+    @property
+    def title_plaintext(self) -> str:
+        return self.decrypt().get("title", "")
+
+    @property
+    def markdown_plaintext(self) -> str:
+        return self.decrypt().get("markdown", "")
+
+    def _encrypt_if_needed(self) -> None:
+        if not self._tenant_has_encryption_ref():
+            return
+
+        if not self.is_encrypted:
+            key = encryption.get_tenant_key(self.tenant_id)
+            self.title = encryption.encrypt(self._normalize_plaintext(self.title), key)
+            self.markdown = encryption.encrypt(self._normalize_plaintext(self.markdown), key)
+            self.is_encrypted = True
+            return
+
+        if self._needs_encryption(self.title):
+            key = encryption.get_tenant_key(self.tenant_id)
+            self.title = encryption.encrypt(self._normalize_plaintext(self.title), key)
+
+        if self._needs_encryption(self.markdown):
+            key = encryption.get_tenant_key(self.tenant_id)
+            self.markdown = encryption.encrypt(self._normalize_plaintext(self.markdown), key)
+
+    def save(self, *args, **kwargs):
+        self._encrypt_if_needed()
+        super().save(*args, **kwargs)

@@ -61,6 +61,8 @@ azure-mgmt-msi==7.1.0
     # via -r requirements.in
 azure-mgmt-storage==24.0.0
     # via -r requirements.in
+azure-storage-blob==12.24.0
+    # via -r requirements.in
 azure-storage-file-share==12.24.0
     # via -r requirements.in
 build==1.4.0

@@ -43,6 +43,7 @@ azure-mgmt-msi
 azure-mgmt-authorization
 azure-mgmt-storage
 azure-storage-file-share
+azure-storage-blob
 azure-keyvault-secrets
 
 # Utils

@@ -377,7 +377,7 @@ class MemoryView(APIView):
         tenant = _get_tenant_for_user(request.user)
         doc = Document.objects.filter(tenant=tenant, kind="memory", slug="long-term").first()
         return Response({
-            "markdown": doc.markdown if doc else "",
+            "markdown": doc.markdown_plaintext if doc else "",
             "updated_at": doc.updated_at.isoformat() if doc else None,
         })
 
@@ -396,7 +396,7 @@ class MemoryView(APIView):
         doc.save()
 
         return Response({
-            "markdown": doc.markdown,
+            "markdown": doc.markdown_plaintext,
             "updated_at": doc.updated_at.isoformat(),
         })
 

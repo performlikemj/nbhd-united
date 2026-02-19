@@ -38,7 +38,7 @@ def render_memory_files(tenant) -> dict[str, str]:
     files: dict[str, str] = {}
     for doc in documents:
         path = f"memory/journal/{doc.kind}/{doc.slug}.md"
-        content = f"# {doc.title}\n\n{doc.markdown}"
+        content = f"# {doc.title_plaintext}\n\n{doc.markdown_plaintext}"
         files[path] = content
 
     return files

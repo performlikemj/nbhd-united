@@ -82,6 +82,12 @@ class Tenant(models.Model):
         max_length=512, blank=True, default="",
         help_text="Azure User-Assigned Managed Identity resource ID",
     )
+    encryption_key_ref = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Key Vault secret name for tenant journal encryption",
+    )
 
     # Stripe (dj-stripe handles subscription objects; this is a quick-lookup cache)
     stripe_customer_id = models.CharField(max_length=255, blank=True, default="")

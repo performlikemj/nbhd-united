@@ -75,7 +75,15 @@ def provision_tenant(tenant_id: str) -> None:
             "internal_api_key_hash", "internal_api_key_set_at", "updated_at",
         ])
 
-        # 2f. Create Azure File Share and register with Container Environment
+        # 2f. Ensure tenant journal encryption key in Key Vault
+        from apps.journal.encryption import create_tenant_key, backup_tenant_key
+
+        if not tenant.encryption_key_ref:
+            tenant.encryption_key_ref = create_tenant_key(str(tenant.id))
+            tenant.save(update_fields=["encryption_key_ref", "updated_at"])
+        backup_tenant_key(str(tenant.id))
+
+        # 2g. Create Azure File Share and register with Container Environment
         create_tenant_file_share(str(tenant.id))
         register_environment_storage(str(tenant.id))
 
