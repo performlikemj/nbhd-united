@@ -174,31 +174,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Footer */}
-      <footer className="mt-auto border-t border-border px-6 py-8">
-        <div className="mx-auto flex max-w-4xl flex-col items-center gap-4 sm:flex-row sm:justify-between">
-          <p className="font-mono text-xs uppercase tracking-[0.24em] text-ink-faint">
-            Neighborhood United
-          </p>
-          <div className="flex gap-6 text-sm text-ink-muted">
-            <Link href="/legal/terms" className="transition hover:text-ink">
-              Terms
-            </Link>
-            <Link href="/legal/privacy" className="transition hover:text-ink">
-              Privacy
-            </Link>
-            <Link href="/legal/refund" className="transition hover:text-ink">
-              Refunds
-            </Link>
-            <Link href="/legal/commerce-disclosure" className="transition hover:text-ink">
-              特定商取引法
-            </Link>
-            <a href="mailto:mj@bywayofmj.com" className="transition hover:text-ink">
-              Contact
-            </a>
-          </div>
-        </div>
-      </footer>
+      {/* Footer provided by AppShell's SiteFooter */}
     </div>
   );
 }

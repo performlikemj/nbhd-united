@@ -19,6 +19,9 @@ export function SiteFooter() {
           <Link href="/legal/refund" className="transition hover:text-ink-muted">
             Refund Policy
           </Link>
+          <Link href="/legal/commerce-disclosure" className="transition hover:text-ink-muted">
+            特定商取引法
+          </Link>
           <a
             href="mailto:mj@bywayofmj.com"
             className="transition hover:text-ink-muted"
