@@ -80,7 +80,6 @@ class CronJobDetailView(APIView):
 
     def patch(self, request, job_name: str):
         tenant = _get_tenant_for_user(request.user)
-
         patch_data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
         delivery = patch_data.get("delivery")
         if (
@@ -94,9 +93,14 @@ class CronJobDetailView(APIView):
 
         try:
             _require_active_tenant(tenant)
+            logger.info(
+                "cron.update job_name=%s patch_keys=%s",
+                job_name, list(patch_data.keys()),
+            )
             result = invoke_gateway_tool(
                 tenant, "cron.update", {"jobId": job_name, "patch": patch_data},
             )
+            logger.info("cron.update success job_name=%s", job_name)
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         return Response(result.get("details", result))
