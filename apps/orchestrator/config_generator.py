@@ -14,42 +14,39 @@ from apps.tenants.models import Tenant
 
 _MORNING_BRIEFING_PROMPT = (
     "Good morning! Create today's morning briefing.\n\n"
-    "Use your tools to gather context:\n"
-    "1. Get today's weather for the user's location (use web_search)\n"
-    "2. Check their calendar for today's events (nbhd_calendar_list_events)\n"
-    "3. Check for important unread emails (nbhd_gmail_list_messages)\n"
-    "4. Load recent journal context (nbhd_journal_context)\n\n"
+    "Gather context:\n"
+    "1. Get today's weather for the user's location\n"
+    "2. Check their calendar for today's events\n"
+    "3. Check for important unread emails\n"
+    "4. Load recent journal context\n\n"
     "Then write to today's daily note:\n"
-    "- Use nbhd_daily_note_set_section with section_slug='morning-report' for the main briefing\n"
-    "- Use nbhd_daily_note_set_section with section_slug='weather' for weather\n"
-    "- Use nbhd_daily_note_set_section with section_slug='focus' for today's priorities\n\n"
+    "- Set the 'morning-report' section with the main briefing\n"
+    "- Set the 'weather' section with the forecast\n"
+    "- Set the 'focus' section with today's priorities\n\n"
     "Finally, send a friendly morning summary highlighting the key things for today. "
     "Keep it concise, warm, and actionable."
 )
 
 _EVENING_CHECKIN_PROMPT = (
-    "It's evening check-in time.\n\n"
-    "Send the user a friendly message asking about their day. Prompt them with:\n"
+    "It's evening check-in time. Send the user a friendly message asking about their day.\n\n"
+    "Prompt them with:\n"
     "- What went well today?\n"
     "- Anything on their mind they want to capture?\n"
     "- Any tasks or notes for tomorrow?\n\n"
     "Keep it casual and warm — like a friend checking in, not a form to fill out.\n"
     "Don't write to the journal yet. Just start the conversation.\n"
-    "If they share reflections, log them using nbhd_daily_note_set_section "
-    "with section_slug='evening-check-in'."
+    "If they share reflections, save them to the 'evening-check-in' section of today's daily note."
 )
 
 _BACKGROUND_TASKS_PROMPT = (
     "Background maintenance run. Perform these tasks silently:\n\n"
-    "1. Load recent context: nbhd_journal_context\n"
-    "2. Review long-term memory (nbhd_memory_get) and recent daily notes\n"
-    "3. Curate long-term memory if there are new patterns, preferences, or insights "
-    "(nbhd_memory_update)\n"
+    "1. Load recent journal context\n"
+    "2. Review long-term memory and recent daily notes\n"
+    "3. Curate long-term memory if there are new patterns, preferences, or insights\n"
     "4. Check recent daily notes for any unaddressed user requests or tasks\n"
-    "5. If you find pending items, append a reminder to tomorrow's daily note "
-    "(nbhd_daily_note_append with tomorrow's date)\n\n"
+    "5. If you find pending items, append a reminder to tomorrow's daily note\n\n"
     "Do NOT message the user. This is a silent background run.\n"
-    "Log a brief summary of what you did to tomorrow's daily note using nbhd_daily_note_append."
+    "Log a brief summary of what you did to tomorrow's daily note."
 )
 
 
