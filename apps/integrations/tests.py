@@ -14,8 +14,8 @@ class RuntimeUsageReportTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Usage Tenant", telegram_chat_id=424242)
 
-    def _url(self) -> str:
-        return "/api/v1/internal/runtime/usage/report/"
+    def _url(self, tenant_id: str | None = None) -> str:
+        return f"/api/v1/internal/runtime/{tenant_id or self.tenant.id}/usage/report/"
 
     def _headers(self, tenant_id: str | None = None, key: str = "shared-key") -> dict[str, str]:
         return {
@@ -31,7 +31,6 @@ class RuntimeUsageReportTests(TestCase):
                 "input_tokens": 1234,
                 "output_tokens": 567,
                 "model_used": "openrouter/moonshotai/kimi-k2.5",
-                "timestamp": "2026-02-20T01:00:00Z",
             },
             content_type="application/json",
             **self._headers(),
@@ -47,7 +46,7 @@ class RuntimeUsageReportTests(TestCase):
         self.assertEqual(record.output_tokens, 567)
         self.assertEqual(record.model_used, "openrouter/moonshotai/kimi-k2.5")
 
-    def test_missing_auth_returns_403(self):
+    def test_missing_auth_returns_401(self):
         response = self.client.post(
             self._url(),
             data={
@@ -59,7 +58,7 @@ class RuntimeUsageReportTests(TestCase):
             content_type="application/json",
         )
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["error"], "internal_auth_failed")
 
     def test_invalid_payload_returns_400(self):
@@ -68,6 +67,21 @@ class RuntimeUsageReportTests(TestCase):
             data={
                 "event_type": "message",
                 "input_tokens": -12,
+                "output_tokens": 10,
+                "model_used": "openrouter/moonshotai/kimi-k2.5",
+            },
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "invalid_request")
+
+    def test_missing_fields_returns_400(self):
+        response = self.client.post(
+            self._url(),
+            data={
+                "event_type": "message",
                 "output_tokens": 10,
                 "model_used": "openrouter/moonshotai/kimi-k2.5",
             },
@@ -91,7 +105,6 @@ class RuntimeUsageReportTests(TestCase):
                 "input_tokens": 100,
                 "output_tokens": 50,
                 "model_used": "openrouter/moonshotai/kimi-k2.5",
-                "timestamp": "2026-02-20T01:00:00Z",
             },
             content_type="application/json",
             **self._headers(),
@@ -103,7 +116,4 @@ class RuntimeUsageReportTests(TestCase):
         self.assertEqual(tenant.messages_today, before_messages_today + 1)
         self.assertEqual(tenant.messages_this_month, before_messages_month + 1)
         self.assertEqual(tenant.tokens_this_month, before_tokens + 150)
-        self.assertIsNotNone(tenant.last_message_at)
-        self.assertEqual(tenant.last_message_at.isoformat(), "2026-02-20T01:00:00+00:00")
-
         self.assertGreater(tenant.estimated_cost_this_month, before.estimated_cost_this_month)

@@ -31,6 +31,7 @@ RUN chmod +x /usr/local/bin/nbhd-openclaw-entrypoint \
 USER node
 
 ENV OPENCLAW_GOOGLE_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-google-tools
+ENV OPENCLAW_USAGE_PLUGIN_ID=nbhd-usage-reporter
 ENV OPENCLAW_USAGE_REPORTER_PLUGIN_ID=
 ENV OPENCLAW_JOURNAL_PLUGIN_ID=nbhd-journal-tools
 ENV OPENCLAW_USAGE_REPORTER_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-usage-reporter

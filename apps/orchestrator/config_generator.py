@@ -153,7 +153,10 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             str(getattr(settings, "OPENCLAW_JOURNAL_PLUGIN_PATH", "") or "").strip(),
         ),
         (
-            str(getattr(settings, "OPENCLAW_USAGE_REPORTER_PLUGIN_ID", "") or "").strip(),
+            str(
+                getattr(settings, "OPENCLAW_USAGE_PLUGIN_ID", "")
+                or getattr(settings, "OPENCLAW_USAGE_REPORTER_PLUGIN_ID", "")
+            ).strip(),
             str(getattr(settings, "OPENCLAW_USAGE_REPORTER_PLUGIN_PATH", "") or "").strip(),
         ),
     ]

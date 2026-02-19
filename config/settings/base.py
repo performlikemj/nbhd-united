@@ -195,7 +195,15 @@ OPENCLAW_JOURNAL_PLUGIN_PATH = env(
     "OPENCLAW_JOURNAL_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-journal-tools",
 )
-OPENCLAW_USAGE_REPORTER_PLUGIN_ID = env("OPENCLAW_USAGE_REPORTER_PLUGIN_ID", default="")
+OPENCLAW_USAGE_PLUGIN_ID = env(
+    "OPENCLAW_USAGE_PLUGIN_ID",
+    default="nbhd-usage-reporter",
+)
+# Backward-compatibility alias for container/image wiring.
+OPENCLAW_USAGE_REPORTER_PLUGIN_ID = env(
+    "OPENCLAW_USAGE_REPORTER_PLUGIN_ID",
+    default="",
+)
 OPENCLAW_USAGE_REPORTER_PLUGIN_PATH = env(
     "OPENCLAW_USAGE_REPORTER_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-usage-reporter",
