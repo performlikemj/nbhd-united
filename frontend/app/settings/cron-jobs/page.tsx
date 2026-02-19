@@ -78,14 +78,14 @@ const TASK_TEMPLATES: TaskTemplate[] = [
 /* ------------------------------------------------------------------ */
 
 const AGENT_CAPABILITIES = [
-  { icon: "🌐", name: "Web Search", desc: "Search the internet for current information" },
-  { icon: "🌤️", name: "Weather", desc: "Check weather forecasts for any location" },
-  { icon: "📅", name: "Calendar", desc: "Check your upcoming events and schedule" },
-  { icon: "📧", name: "Email", desc: "Check for new or important emails" },
-  { icon: "📰", name: "News", desc: "Find and summarize news articles" },
-  { icon: "💬", name: "Message", desc: "Send you updates via Telegram" },
-  { icon: "🧠", name: "Memory", desc: "Access your notes, preferences, and past conversations" },
-  { icon: "📝", name: "Journal", desc: "Read and write to your journal entries" },
+  { icon: "🌐", name: "Web Search", desc: "Search the internet for current information", example: "Search for the latest AI news" },
+  { icon: "🌤️", name: "Weather", desc: "Check weather forecasts for any location", example: "What's the weather like tomorrow?" },
+  { icon: "📰", name: "News", desc: "Find and summarize news articles", example: "Give me a summary of today's tech news" },
+  { icon: "💬", name: "Message", desc: "Send you updates via Telegram", example: "Let me know if anything important comes up" },
+  { icon: "🧠", name: "Memory", desc: "Remember things about you and recall past conversations", example: "Remember that I prefer morning meetings" },
+  { icon: "📝", name: "Journal", desc: "Write to your daily notes and long-term memory", example: "Write a summary of my day in my journal" },
+  { icon: "🎯", name: "Goals & Projects", desc: "Track goals, projects, tasks, and ideas", example: "Update my fitness goal with this week's progress" },
+  { icon: "🔍", name: "Search Notes", desc: "Search across all your journal entries and notes", example: "What did I write about last week's meeting?" },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -426,16 +426,20 @@ export default function SettingsCronJobsPage() {
                   {showCapabilities ? "Hide" : "Show"} what your agent can do ↗
                 </button>
                 {showCapabilities && (
-                  <div className="mt-2 grid gap-1.5 rounded-panel border border-border bg-surface-hover p-3 sm:grid-cols-2">
-                    {AGENT_CAPABILITIES.map((cap) => (
-                      <div key={cap.name} className="flex items-start gap-2 text-sm">
-                        <span className="text-base leading-5">{cap.icon}</span>
-                        <div>
-                          <span className="font-medium text-ink-muted">{cap.name}</span>
-                          <span className="text-ink-faint"> — {cap.desc}</span>
+                  <div className="mt-2 rounded-panel border border-border bg-surface-hover p-3">
+                    <p className="mb-2 text-xs text-ink-faint">Write your task in plain language — your agent understands these capabilities:</p>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {AGENT_CAPABILITIES.map((cap) => (
+                        <div key={cap.name} className="flex items-start gap-2 text-sm">
+                          <span className="text-base leading-5">{cap.icon}</span>
+                          <div>
+                            <span className="font-medium text-ink">{cap.name}</span>
+                            <span className="text-ink-muted"> — {cap.desc}</span>
+                            <p className="text-xs text-ink-faint italic">&ldquo;{cap.example}&rdquo;</p>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
