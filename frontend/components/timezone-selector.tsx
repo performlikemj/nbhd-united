@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 interface TimezoneSelectorProps {
   value: string;
@@ -115,6 +115,14 @@ export default function TimezoneSelector({
   const currentValue = supportedTimezones.includes(value)
     ? value
     : normalizedDefaultTimezone || "UTC";
+
+  // When the filter hides the currently selected timezone, auto-select the
+  // first visible option so the displayed value matches what will be saved.
+  useEffect(() => {
+    if (filteredTimezones.length > 0 && !filteredTimezones.includes(currentValue)) {
+      onChange(filteredTimezones[0]);
+    }
+  }, [filteredTimezones, currentValue, onChange]);
 
   return (
     <div className={`space-y-2 ${className}`.trim()}>
