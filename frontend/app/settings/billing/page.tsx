@@ -85,11 +85,11 @@ export default function SettingsBillingPage() {
             )}
 
             <dl className="grid gap-3 text-sm sm:grid-cols-2">
-              <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-hidden">
+              <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
                 <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Tier</dt>
                 <dd className="mt-1 text-lg font-semibold uppercase">{tenant.model_tier}</dd>
               </div>
-              <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-hidden">
+              <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
                 <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Tenant State</dt>
                 <dd className="mt-1"><StatusPill status={tenant.status} /></dd>
               </div>
@@ -125,7 +125,7 @@ export default function SettingsBillingPage() {
               </div>
             )}
 
-            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-hidden">
+            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
               <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Select plan</p>
               <div className="mt-2 flex gap-2">
                 {(PLAN_OPTIONS as readonly { id: "starter" | "premium" | "byok"; name: string; price: string; description: string }[]).map((tier) => (

@@ -408,7 +408,7 @@ export default function SettingsPage() {
         {me ? (
           <dl className="grid min-w-0 gap-3 text-sm sm:grid-cols-2">
             {/* Display Name */}
-            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-hidden">
+            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
               <div className="mb-2 flex items-start justify-between gap-2">
                 <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Display Name</dt>
                 {!editingDisplayName ? (
@@ -456,19 +456,19 @@ export default function SettingsPage() {
             </div>
 
             {/* Email */}
-            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-hidden">
+            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
               <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Email</dt>
               <dd className="mt-1 break-words text-base text-ink">{me.email}</dd>
             </div>
 
             {/* Username */}
-            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-hidden">
+            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
               <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Username</dt>
               <dd className="mt-1 break-words text-base text-ink">{me.username}</dd>
             </div>
 
             {/* Language */}
-            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-hidden">
+            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
               <div className="mb-2 flex items-start justify-between gap-2">
                 <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Language</dt>
                 {!editingLanguage ? (
@@ -524,7 +524,7 @@ export default function SettingsPage() {
             </div>
 
             {/* Timezone */}
-            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-hidden sm:col-span-2">
+            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible sm:col-span-2">
               <div className="mb-2 flex items-start justify-between gap-2">
                 <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Timezone</dt>
                 {!editingTimezone ? (
@@ -584,7 +584,7 @@ export default function SettingsPage() {
             </div>
 
             {/* Telegram */}
-            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-hidden">
+            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
               <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Telegram</dt>
               <dd className="mt-1">
                 {me.telegram_chat_id ? (
@@ -598,7 +598,7 @@ export default function SettingsPage() {
             </div>
 
             {/* Tenant */}
-            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-hidden">
+            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
               <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Tenant</dt>
               <dd className="mt-1">
                 {me.tenant ? (
@@ -675,7 +675,7 @@ export default function SettingsPage() {
         title="Agent Configuration"
         subtitle="Configuration updates are applied automatically when your assistant is idle"
       >
-        <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-hidden">
+        <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
           <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">
             Agent Configuration
           </p>
