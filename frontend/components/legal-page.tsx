@@ -27,7 +27,7 @@ export function LegalPage({
         <h1 className="mt-2 text-2xl font-semibold text-ink">{title}</h1>
         <p className="mt-1 text-sm text-ink-faint">Last updated: {lastUpdated}</p>
         <hr className="my-6 border-border" />
-        <div className="prose prose-sm max-w-none text-ink-muted prose-headings:text-ink prose-h2:text-lg prose-h2:font-semibold prose-h2:mt-8 prose-h2:mb-3 prose-h3:text-base prose-h3:font-medium prose-h3:mt-6 prose-h3:mb-2 prose-p:leading-relaxed prose-ul:my-2 prose-li:my-0.5 prose-a:text-ink prose-a:underline hover:prose-a:text-ink-muted">
+        <div className="prose prose-sm max-w-none text-ink-muted prose-headings:text-ink prose-h2:text-lg prose-h2:font-semibold prose-h2:mt-8 prose-h2:mb-3 prose-h3:text-base prose-h3:font-medium prose-h3:mt-6 prose-h3:mb-2 prose-p:leading-relaxed prose-ul:my-2 prose-li:my-0.5 prose-a:text-accent prose-a:underline hover:prose-a:text-accent-hover">
           {children}
         </div>
         <hr className="my-8 border-border" />
