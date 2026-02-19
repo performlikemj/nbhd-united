@@ -19,6 +19,7 @@ import {
   NoteTemplateSection,
   SidebarSection,
   Tenant,
+  TransparencyData,
   UsageRecord,
   UsageSummary,
   RefreshConfigStatus,
@@ -271,6 +272,10 @@ export function requestStripeCheckout(tier: string): Promise<{ url: string }> {
     method: "POST",
     body: JSON.stringify({ tier }),
   });
+}
+
+export function fetchTransparency(): Promise<TransparencyData> {
+  return apiFetch<TransparencyData>("/api/v1/billing/usage/transparency/");
 }
 
 // Automations

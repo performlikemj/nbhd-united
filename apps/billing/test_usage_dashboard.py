@@ -142,20 +142,34 @@ class TransparencyServiceTest(TestCase):
 
     def test_transparency_fields(self):
         data = get_transparency_data(self.tenant)
-        self.assertEqual(data["subscription_price"], 5.0)
+        self.assertEqual(data["subscription_price"], 12.0)
         self.assertIn("your_actual_cost", data)
         self.assertIn("platform_margin", data)
         self.assertIn("margin_percentage", data)
         self.assertIn("model_rates", data)
+        self.assertIn("infra_breakdown", data)
         self.assertIn("explanation", data)
 
     def test_transparency_margin_calc(self):
         data = get_transparency_data(self.tenant)
         self.assertAlmostEqual(
             data["platform_margin"],
-            5.0 - data["your_actual_cost"],
+            12.0 - data["your_actual_cost"],
             places=2,
         )
+
+    def test_transparency_infra_breakdown(self):
+        data = get_transparency_data(self.tenant)
+        self.assertEqual(data["infra_breakdown"], {
+            "container": 4.00,
+            "database_share": 0.5,
+            "storage_share": 0.25,
+            "total": 4.75,
+        })
+
+    def test_transparency_explanation_mentions_infra(self):
+        data = get_transparency_data(self.tenant)
+        self.assertIn("Infrastructure", data["explanation"])
 
     def test_transparency_rate_card(self):
         data = get_transparency_data(self.tenant)
@@ -169,7 +183,7 @@ class TransparencyServiceTest(TestCase):
         tenant2 = create_tenant(display_name="NoUse", telegram_chat_id=999666)
         data = get_transparency_data(tenant2)
         self.assertEqual(data["your_actual_cost"], 0.0)
-        self.assertEqual(data["platform_margin"], 5.0)
+        self.assertEqual(data["platform_margin"], 12.0)
 
     @override_settings(USAGE_DASHBOARD_SUBSCRIPTION_PRICE=12.5)
     def test_transparency_uses_setting_driven_subscription_price(self):
