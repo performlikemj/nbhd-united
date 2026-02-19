@@ -19,7 +19,6 @@ from .services import (
     handle_start_command,
     is_rate_limited,
     send_onboarding_link,
-    send_temporary_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -195,5 +194,7 @@ def telegram_webhook(request):
     if result:
         _record_usage_from_openclaw_result(tenant, result)
         return JsonResponse(result)
-    # Forwarding failed (timeout or error) — tell the user to retry
-    return JsonResponse(send_temporary_error(chat_id))
+    # Forwarding timed out — the agent likely received the message and will
+    # reply asynchronously via the bot token.  Silently ack to Telegram
+    # instead of sending a confusing "try again" message.
+    return HttpResponse("ok")
