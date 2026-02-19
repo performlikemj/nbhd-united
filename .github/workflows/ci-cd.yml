@@ -118,6 +118,7 @@ jobs:
           DEBUG: "True"
           ALLOWED_HOSTS: "*"
           MOONSHOT_API_KEY: "sk-smoke-test-dummy"
+          NBHD_INTERNAL_API_KEY: "smoke-test-internal-key"
         run: |
           ./scripts/openclaw_config_doctor_smoke.sh
 
