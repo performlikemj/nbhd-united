@@ -31,6 +31,10 @@ def _require_active_tenant(tenant: Tenant) -> None:
         raise GatewayError("Tenant container is not active")
 
 
+def _tenant_telegram_chat_id(tenant: Tenant) -> int | None:
+    return getattr(tenant.user, "telegram_chat_id", None) if tenant.user_id else None
+
+
 class CronJobListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -46,12 +50,22 @@ class CronJobListCreateView(APIView):
     def post(self, request):
         tenant = _get_tenant_for_user(request.user)
 
-        data = request.data
+        data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
         if not data.get("name"):
             return Response(
                 {"detail": "Job name is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        delivery = data.get("delivery", {})
+        if (
+            isinstance(delivery, dict)
+            and delivery.get("channel") == "telegram"
+            and delivery.get("mode") != "none"
+        ):
+            chat_id = _tenant_telegram_chat_id(tenant)
+            if chat_id and not delivery.get("to"):
+                data = {**data, "delivery": {**delivery, "to": str(chat_id)}}
 
         try:
             _require_active_tenant(tenant)
@@ -66,10 +80,22 @@ class CronJobDetailView(APIView):
 
     def patch(self, request, job_name: str):
         tenant = _get_tenant_for_user(request.user)
+
+        patch_data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+        delivery = patch_data.get("delivery")
+        if (
+            isinstance(delivery, dict)
+            and delivery.get("channel") == "telegram"
+            and delivery.get("mode") != "none"
+        ):
+            chat_id = _tenant_telegram_chat_id(tenant)
+            if chat_id and not delivery.get("to"):
+                patch_data = {**patch_data, "delivery": {**delivery, "to": str(chat_id)}}
+
         try:
             _require_active_tenant(tenant)
             result = invoke_gateway_tool(
-                tenant, "cron.update", {"jobId": job_name, "patch": request.data},
+                tenant, "cron.update", {"jobId": job_name, "patch": patch_data},
             )
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)

@@ -216,6 +216,7 @@ export interface CronJobPayload {
 export interface CronJobDelivery {
   mode: string;
   channel?: string;
+  to?: string;
 }
 
 export interface CronJob {
