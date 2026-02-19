@@ -1,7 +1,7 @@
 """Internal runtime capability endpoints."""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from uuid import UUID
 
 import httpx
@@ -34,6 +34,7 @@ from .google_api import (
     list_calendar_events,
     list_gmail_messages,
 )
+from apps.billing.services import record_usage
 from .internal_auth import InternalAuthError, validate_internal_runtime_request
 from .services import (
     IntegrationInactiveError,
@@ -64,6 +65,78 @@ def _parse_positive_int(
         raise ValueError("must be greater than zero")
 
     return min(value, max_value)
+
+
+def _parse_non_negative_int(value, *, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a non-negative integer")
+
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError(f"{field_name} must be a non-negative integer")
+        return value
+
+    if isinstance(value, float):
+        if value < 0 or not value.is_integer():
+            raise ValueError(f"{field_name} must be a non-negative integer")
+        return int(value)
+
+    if isinstance(value, str):
+        value = value.strip()
+        if value == "":
+            raise ValueError(f"{field_name} is required")
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field_name} must be a non-negative integer") from exc
+        if parsed < 0:
+            raise ValueError(f"{field_name} must be a non-negative integer")
+        return parsed
+
+    raise ValueError(f"{field_name} must be a non-negative integer")
+
+
+def _parse_iso_timestamp(value):
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("timestamp must be ISO format")
+
+    timestamp = value.strip()
+    if timestamp == "":
+        return None
+
+    normalized = timestamp[:-1] + "+00:00" if timestamp.endswith("Z") else timestamp
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError("timestamp must be ISO format") from exc
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=tz.utc)
+    return parsed
+
+
+def _internal_auth_or_403(request):
+    provided_key = request.headers.get("X-NBHD-Internal-Key", "")
+    provided_tenant_id = request.headers.get("X-NBHD-Tenant-Id", "")
+
+    try:
+        validate_internal_runtime_request(
+            provided_key=provided_key,
+            provided_tenant_id=provided_tenant_id,
+        )
+    except InternalAuthError as exc:
+        return Response(
+            {"error": "internal_auth_failed", "detail": str(exc)},
+            status=status.HTTP_403_FORBIDDEN,
+        ), None
+
+    # Auth passed — set RLS context so tenant-scoped queries and writes work
+    from apps.tenants.middleware import set_rls_context
+
+    set_rls_context(tenant_id=UUID(provided_tenant_id), service_role=True)
+    return None, provided_tenant_id
 
 
 def _internal_auth_or_401(request, tenant_id: UUID) -> Response | None:
@@ -1001,6 +1074,76 @@ class RuntimeJournalSearchView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class RuntimeUsageReportView(APIView):
+    """Record token usage reported by polling-mode runtime executions."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        if not isinstance(request.data, dict):
+            return Response(
+                {"error": "invalid_request", "detail": "invalid JSON payload"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        payload = request.data
+
+        event_type = str(payload.get("event_type", "")).strip()
+        if not event_type:
+            return Response(
+                {"error": "invalid_request", "detail": "event_type is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        model_used = str(payload.get("model_used", "")).strip()
+        if not model_used:
+            return Response(
+                {"error": "invalid_request", "detail": "model_used is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            input_tokens = _parse_non_negative_int(
+                payload.get("input_tokens"),
+                field_name="input_tokens",
+            )
+            output_tokens = _parse_non_negative_int(
+                payload.get("output_tokens"),
+                field_name="output_tokens",
+            )
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            record_usage(
+                tenant=tenant,
+                event_type=event_type,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                model_used=model_used,
+            )
+        except Exception as exc:  # pragma: no cover - defensive only
+            return Response(
+                {"error": "usage_record_failed", "detail": str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response({"status": "ok"}, status=status.HTTP_200_OK)
+
 
 
 class RuntimeMemorySyncView(APIView):
