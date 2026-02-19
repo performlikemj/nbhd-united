@@ -8,7 +8,7 @@ import { isLoggedIn } from "@/lib/auth";
 const plans = [
   {
     name: "Starter",
-    price: "$8",
+    price: "$12",
     model: "Kimi K2.5",
     features: [
       "Private AI assistant via Telegram",
