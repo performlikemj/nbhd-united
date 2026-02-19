@@ -4,7 +4,7 @@ export default function PrivacyPage() {
   return (
     <LegalPage title="Privacy Policy" lastUpdated="February 13, 2026">
       <h2>1. Data We Collect</h2>
-      <p>We collect the following information when you use NBHD United:</p>
+      <p>We collect the following information when you use Neighborhood United:</p>
       <ul>
         <li>
           <strong>Account information</strong> — email address and display name
@@ -107,7 +107,7 @@ export default function PrivacyPage() {
 
       <h2>8. Children&apos;s Privacy</h2>
       <p>
-        NBHD United is not intended for use by anyone under the age of 13. We do
+        Neighborhood United is not intended for use by anyone under the age of 13. We do
         not knowingly collect personal information from children under 13. If we
         become aware that we have collected data from a child under 13, we will
         take steps to delete it promptly.

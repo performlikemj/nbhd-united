@@ -8,7 +8,7 @@ export default function RefundPage() {
     >
       <h2>1. Cancellation</h2>
       <p>
-        You may cancel your NBHD United subscription at any time. When you
+        You may cancel your Neighborhood United subscription at any time. When you
         cancel, your access to the AI assistant continues until the end of your
         current billing period. After that, your subscription will not renew and
         access will end.
@@ -30,7 +30,7 @@ export default function RefundPage() {
 
       <h2>3. Refunds</h2>
       <p>
-        NBHD United subscriptions are generally non-refundable. Cancellation
+        Neighborhood United subscriptions are generally non-refundable. Cancellation
         stops future charges but does not generate a prorated refund for the
         remaining days in your current billing period.
       </p>
