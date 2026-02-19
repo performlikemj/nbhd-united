@@ -88,8 +88,9 @@ export default function TermsPage() {
           management.
         </li>
         <li>
-          <strong>Anthropic</strong> — provides the AI language model that powers
-          your assistant.
+          <strong>AI model providers</strong> (Anthropic, OpenRouter, and others)
+          — provide the language models that power your assistant. The specific
+          provider depends on your subscription plan.
         </li>
       </ul>
       <p>

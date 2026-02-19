@@ -50,9 +50,10 @@ export default function PrivacyPage() {
           assistant responses.
         </li>
         <li>
-          <strong>Anthropic</strong> — receives your message content to generate
-          AI responses. Messages are processed according to Anthropic&apos;s usage
-          policies.
+          <strong>AI model providers</strong> (Anthropic, OpenRouter, and others)
+          — receive your message content to generate AI responses. The specific
+          provider depends on your subscription plan. Messages are processed
+          according to each provider&apos;s usage policies.
         </li>
         <li>
           <strong>Microsoft Azure</strong> — hosts our infrastructure. Data is
