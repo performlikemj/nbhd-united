@@ -35,9 +35,10 @@ import {
   fetchTemplates,
   fetchTelegramStatus,
   fetchUsageHistory,
-  updateProfile,
   fetchUsageSummary,
+  fetchTransparency,
   fetchWeeklyReviews,
+  updateProfile,
   generateTelegramLink,
   getLLMConfig,
   getOAuthAuthorizeUrl,
@@ -108,6 +109,14 @@ export function useUsageSummaryQuery() {
     queryKey: ["usage-summary"],
     queryFn: fetchUsageSummary,
     staleTime: 30_000,
+  });
+}
+
+export function useTransparencyQuery() {
+  return useQuery({
+    queryKey: ["usage-transparency"],
+    queryFn: fetchTransparency,
+    staleTime: 5 * 60_000,
   });
 }
 

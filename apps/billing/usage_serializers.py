@@ -51,6 +51,13 @@ class ModelRateSerializer(serializers.Serializer):
     output_per_million = serializers.FloatField()
 
 
+class InfraBreakdownSerializer(serializers.Serializer):
+    container = serializers.FloatField()
+    database_share = serializers.FloatField()
+    storage_share = serializers.FloatField()
+    total = serializers.FloatField()
+
+
 class TransparencySerializer(serializers.Serializer):
     period = PeriodSerializer()
     subscription_price = serializers.FloatField()
@@ -60,4 +67,5 @@ class TransparencySerializer(serializers.Serializer):
     target_margin_percentage = serializers.FloatField()
     message_count = serializers.IntegerField()
     model_rates = ModelRateSerializer(many=True)
+    infra_breakdown = InfraBreakdownSerializer()
     explanation = serializers.CharField()

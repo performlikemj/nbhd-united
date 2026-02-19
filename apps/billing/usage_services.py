@@ -166,9 +166,6 @@ def get_transparency_data(tenant: Tenant) -> dict:
 
     actual_cost = float(totals["total_cost"])
     subscription = _get_subscription_price()
-    margin = subscription - actual_cost if actual_cost < subscription else 0.0
-    margin_pct = (margin / subscription * 100) if subscription > 0 else 0.0
-
     # Build rate card
     rate_card = []
     seen = set()
@@ -184,25 +181,39 @@ def get_transparency_data(tenant: Tenant) -> dict:
             "output_per_million": rate["output"],
         })
 
+    infra_breakdown = {
+        "container": 4.00,
+        "database_share": 0.50,
+        "storage_share": 0.25,
+        "total": 4.75,
+    }
+    platform_margin = max(subscription - actual_cost, 0.0)
+    platform_other = max(platform_margin - infra_breakdown["total"], 0)
+    platform_total = round(platform_margin, 4)
+    margin_pct = (platform_total / subscription * 100) if subscription > 0 else 0.0
+
     return {
         "period": {"start": first.isoformat(), "end": last.isoformat()},
         "subscription_price": subscription,
         "your_actual_cost": round(actual_cost, 4),
-        "platform_margin": round(margin, 4),
+        "platform_margin": platform_total,
         "margin_percentage": round(margin_pct, 1),
         "target_margin_percentage": PLATFORM_MARGIN_TARGET * 100,
         "message_count": totals["message_count"],
         "model_rates": rate_card,
+        "infra_breakdown": infra_breakdown,
         "explanation": (
-            f"You pay ${subscription:.2f}/mo. This month, your AI usage actually cost "
-            f"${actual_cost:.4f}. The remaining ${margin:.4f} ({margin_pct:.1f}%) covers "
-            f"platform costs (hosting, development, support)."
+            f"You pay ${subscription:.2f}/mo. This month your AI usage actually cost "
+            f"${actual_cost:.4f}. Platform & Infrastructure costs were estimated at "
+            f"${infra_breakdown['total']:.2f} (container ${infra_breakdown['container']:.2f}, "
+            f"database ${infra_breakdown['database_share']:.2f}, storage ${infra_breakdown['storage_share']:.2f}) "
+            f"with an additional ${platform_other:.4f} for ops/development."
         ),
     }
 
 
 def _get_subscription_price() -> float:
-    default = 5.0
+    default = 12.0
     configured = getattr(settings, "USAGE_DASHBOARD_SUBSCRIPTION_PRICE", default)
     try:
         value = float(configured)

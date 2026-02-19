@@ -149,6 +149,32 @@ export interface UsageSummary {
   budget: UsageBudgetSummary;
 }
 
+export interface TransparencyData {
+  period: {
+    start: string;
+    end: string;
+  };
+  subscription_price: number;
+  your_actual_cost: number;
+  platform_margin: number;
+  margin_percentage: number;
+  target_margin_percentage: number;
+  message_count: number;
+  model_rates: Array<{
+    model: string;
+    display_name: string;
+    input_per_million: number;
+    output_per_million: number;
+  }>;
+  infra_breakdown: {
+    container: number;
+    database_share: number;
+    storage_share: number;
+    total: number;
+  };
+  explanation: string;
+}
+
 // Journal (legacy structured entries)
 /** @deprecated Use DailyNote types instead. */
 export type JournalEntryEnergy = "low" | "medium" | "high";
