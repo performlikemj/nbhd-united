@@ -163,7 +163,8 @@ jobs:
           az containerapp update \
             --name ${{ env.DJANGO_APP }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --image ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }}
+            --image ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }} \
+            --set-env-vars OPENCLAW_IMAGE_TAG=${{ github.sha }}
 
   # ==========================================================================
   # Deploy Frontend to Azure Static Web App (push to main only)

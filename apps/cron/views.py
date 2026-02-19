@@ -20,7 +20,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from apps.orchestrator.azure_client import restart_container_app
+from apps.orchestrator.azure_client import restart_container_app, update_container_image
 from apps.orchestrator.services import update_tenant_config
 from apps.tenants.models import Tenant
 from apps.cron.qstash_verify import verify_qstash_signature
@@ -233,10 +233,37 @@ def apply_pending_configs(request):
         )
         updated += 1
 
+    desired_tag = getattr(settings, "OPENCLAW_IMAGE_TAG", "latest")
+    image_updated = 0
+    image_failed = 0
+    if desired_tag and desired_tag != "latest":
+        stale_image_tenants = Tenant.objects.filter(
+            status=Tenant.Status.ACTIVE,
+            container_id__gt="",
+        ).exclude(
+            container_image_tag=desired_tag,
+        ).filter(
+            models.Q(last_message_at__isnull=True) | models.Q(last_message_at__lt=cutoff),
+        )
+        desired_image = f"{settings.AZURE_ACR_SERVER}/nbhd-openclaw:{desired_tag}"
+
+        for tenant in stale_image_tenants:
+            try:
+                update_container_image(tenant.container_id, desired_image)
+                Tenant.objects.filter(id=tenant.id).update(
+                    container_image_tag=desired_tag,
+                )
+                image_updated += 1
+            except Exception:
+                logger.exception("Auto image update failed for tenant %s", tenant.id)
+                image_failed += 1
+
     return JsonResponse({
         "updated": updated,
         "failed": failed,
         "evaluated": evaluated,
+        "image_updated": image_updated,
+        "image_failed": image_failed,
     })
 
 

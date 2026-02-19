@@ -68,6 +68,10 @@ class Tenant(models.Model):
         max_length=512, blank=True, default="",
         help_text="Internal FQDN of the container",
     )
+    container_image_tag = models.CharField(
+        max_length=255, blank=True, default="",
+        help_text="Current OpenClaw container image tag (git SHA)",
+    )
 
     # Azure Key Vault
     key_vault_prefix = models.CharField(

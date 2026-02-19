@@ -652,6 +652,31 @@ def restart_container_app(container_name: str) -> None:
     logger.info("Restarted container app %s", container_name)
 
 
+def update_container_image(container_name: str, image: str) -> None:
+    """Update the container image of an existing Container App.
+
+    This triggers a new revision, effectively restarting the container.
+    """
+    if _is_mock():
+        logger.info("[MOCK] Updated image to %s on %s", image, container_name)
+        return
+
+    client = get_container_client()
+    app = client.container_apps.get(
+        settings.AZURE_RESOURCE_GROUP, container_name,
+    )
+
+    for container in app.template.containers:
+        if container.name == "openclaw":
+            container.image = image
+            break
+
+    client.container_apps.begin_create_or_update(
+        settings.AZURE_RESOURCE_GROUP, container_name, app,
+    ).result()
+    logger.info("Updated image to %s on %s", image, container_name)
+
+
 def delete_container_app(container_name: str) -> None:
     """Delete an Azure Container App."""
     if _is_mock():

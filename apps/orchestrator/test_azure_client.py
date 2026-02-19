@@ -9,6 +9,7 @@ from django.test import SimpleTestCase, override_settings
 from apps.orchestrator.azure_client import (
     assign_key_vault_role,
     create_container_app,
+    update_container_image,
     create_tenant_file_share,
     register_environment_storage,
     store_tenant_internal_key_in_key_vault,
@@ -350,3 +351,45 @@ class PerTenantSecretTest(SimpleTestCase):
             secret_map["nbhd-internal-api-key"]["keyVaultUrl"],
             "https://kv-nbhd-prod.vault.azure.net/secrets/tenant-tenant-123-internal-key",
         )
+
+
+@override_settings(
+    AZURE_SUBSCRIPTION_ID="sub-123",
+    AZURE_RESOURCE_GROUP="rg-test",
+)
+class UpdateContainerImageTest(SimpleTestCase):
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=True)
+    def test_mock_mode_skips_azure_call(self, _mock_is_mock):
+        # should be no-op in mock mode
+        update_container_image("oc-tenant", "nbhdunited.azurecr.io/nbhd-openclaw:abc123")
+
+    @override_settings(
+        AZURE_ACR_SERVER="nbhdunited.azurecr.io",
+    )
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_updates_openclaw_container_image(self, mock_get_container_client, _mock_is_mock):
+        mock_client = MagicMock()
+        mock_get_container_client.return_value = mock_client
+
+        container = MagicMock()
+        container.name = "openclaw"
+        container.image = "nbhdunited.azurecr.io/nbhd-openclaw:old"
+
+        app = MagicMock()
+        app.template.containers = [container]
+        mock_client.container_apps.get.return_value = app
+
+        poller = MagicMock()
+        mock_client.container_apps.begin_create_or_update.return_value = poller
+
+        update_container_image(
+            "oc-tenant", "nbhdunited.azurecr.io/nbhd-openclaw:abc123",
+        )
+
+        self.assertEqual(container.image, "nbhdunited.azurecr.io/nbhd-openclaw:abc123")
+        mock_client.container_apps.get.assert_called_once_with("rg-test", "oc-tenant")
+        mock_client.container_apps.begin_create_or_update.assert_called_once_with(
+            "rg-test", "oc-tenant", app,
+        )
+        poller.result.assert_called_once()

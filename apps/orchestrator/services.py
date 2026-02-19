@@ -102,11 +102,12 @@ def provision_tenant(tenant_id: str) -> None:
         tenant.container_id = result["name"]
         tenant.container_fqdn = result["fqdn"]
         tenant.managed_identity_id = identity["id"]
+        tenant.container_image_tag = getattr(settings, "OPENCLAW_IMAGE_TAG", "latest") or "latest"
         tenant.status = Tenant.Status.ACTIVE
         tenant.provisioned_at = timezone.now()
         tenant.save(update_fields=[
             "container_id", "container_fqdn", "managed_identity_id",
-            "status", "provisioned_at", "updated_at",
+            "container_image_tag", "status", "provisioned_at", "updated_at",
         ])
 
         logger.info("Provisioned tenant %s → container %s", tenant_id, result["name"])
