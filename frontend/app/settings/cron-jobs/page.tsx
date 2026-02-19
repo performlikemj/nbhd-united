@@ -125,7 +125,7 @@ type EditFormState = {
 function toEditForm(job: CronJob): EditFormState {
   return {
     expr: job.schedule.expr,
-    tz: job.schedule.tz,
+    tz: job.schedule.tz || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
     message: job.payload.message,
     deliveryMode: job.delivery.mode,
     deliveryChannel: job.delivery.channel ?? "",
@@ -161,6 +161,12 @@ export default function SettingsCronJobsPage() {
   });
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [showCapabilities, setShowCapabilities] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  const flashStatus = (type: "success" | "error", text: string) => {
+    setStatusMessage({ type, text });
+    setTimeout(() => setStatusMessage(null), 4000);
+  };
 
   const handleApplyTemplate = (template: TaskTemplate) => {
     setCreateForm((prev) => ({
@@ -173,19 +179,24 @@ export default function SettingsCronJobsPage() {
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    await createMutation.mutateAsync({
-      name: createForm.name.trim(),
-      schedule: { kind: "cron", expr: createForm.expr.trim(), tz: createForm.tz.trim() },
-      sessionTarget: "isolated",
-      payload: { kind: "agentTurn", message: createForm.message.trim() },
-      delivery: {
-        mode: createForm.deliveryMode,
-        ...(createForm.deliveryChannel ? { channel: createForm.deliveryChannel } : {}),
-      },
-      enabled: true,
-    });
-    setCreateForm(defaultCreateForm(me?.timezone));
-    setShowCreate(false);
+    try {
+      await createMutation.mutateAsync({
+        name: createForm.name.trim(),
+        schedule: { kind: "cron", expr: createForm.expr.trim(), tz: createForm.tz.trim() },
+        sessionTarget: "isolated",
+        payload: { kind: "agentTurn", message: createForm.message.trim() },
+        delivery: {
+          mode: createForm.deliveryMode,
+          ...(createForm.deliveryChannel ? { channel: createForm.deliveryChannel } : {}),
+        },
+        enabled: true,
+      });
+      setCreateForm(defaultCreateForm(me?.timezone));
+      setShowCreate(false);
+      flashStatus("success", "Task created!");
+    } catch (err) {
+      flashStatus("error", getErrorMessage(err));
+    }
   };
 
   const handleStartEdit = (job: CronJob) => {
@@ -196,27 +207,48 @@ export default function SettingsCronJobsPage() {
   const handleUpdate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!editingName) return;
-    await updateMutation.mutateAsync({
-      name: editingName,
-      data: {
-        schedule: { kind: "cron", expr: editForm.expr.trim(), tz: editForm.tz.trim() },
-        payload: { kind: "agentTurn", message: editForm.message.trim() },
-        delivery: {
-          mode: editForm.deliveryMode,
-          ...(editForm.deliveryChannel ? { channel: editForm.deliveryChannel } : {}),
+    try {
+      await updateMutation.mutateAsync({
+        name: editingName,
+        data: {
+          schedule: { kind: "cron", expr: editForm.expr.trim(), tz: editForm.tz.trim() },
+          payload: { kind: "agentTurn", message: editForm.message.trim() },
+          delivery: {
+            mode: editForm.deliveryMode,
+            ...(editForm.deliveryChannel ? { channel: editForm.deliveryChannel } : {}),
+          },
         },
-      },
-    });
-    setEditingName(null);
+      });
+      setEditingName(null);
+      flashStatus("success", "Task updated!");
+    } catch (err) {
+      flashStatus("error", getErrorMessage(err));
+    }
   };
 
   const handleDelete = async (nameOrId: string) => {
-    await deleteMutation.mutateAsync({ name: nameOrId });
-    setConfirmDelete(null);
+    try {
+      await deleteMutation.mutateAsync({ name: nameOrId });
+      setConfirmDelete(null);
+      flashStatus("success", "Task deleted.");
+    } catch (err) {
+      flashStatus("error", getErrorMessage(err));
+    }
   };
 
   return (
     <div className="space-y-4">
+      {statusMessage && (
+        <div
+          className={`rounded-panel border px-4 py-2 text-sm ${
+            statusMessage.type === "success"
+              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+              : "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
+          }`}
+        >
+          {statusMessage.text}
+        </div>
+      )}
       <SectionCard
         title="Scheduled Tasks"
         subtitle="Set up recurring tasks for your AI assistant — morning briefings, news digests, reminders, and more"
