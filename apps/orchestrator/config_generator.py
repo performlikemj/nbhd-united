@@ -246,10 +246,16 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         # Gateway — local mode; bind to loopback so internal tool calls
         # (cron, etc.) auto-pair via localhost.  The OpenClaw proxy sidecar
         # (listening on 0.0.0.0:8080) handles external traffic forwarding.
+        # Auth token read from NBHD_INTERNAL_API_KEY env var (per-tenant
+        # Key Vault secret) so Django can call /tools/invoke for cron CRUD.
         "gateway": {
             "port": 18789,
             "mode": "local",
             "bind": "loopback",
+            "auth": {
+                "mode": "token",
+                "token": "${NBHD_INTERNAL_API_KEY}",
+            },
         },
 
         # Tools

@@ -22,7 +22,15 @@ class GatewayError(Exception):
 
 
 def _get_gateway_token(tenant: Tenant) -> str:
-    """Read the tenant's internal API key from Key Vault."""
+    """Read the tenant's gateway auth token from Key Vault.
+
+    The gateway's auth.token is configured from the container's
+    NBHD_INTERNAL_API_KEY env var. Both the container env and this
+    client must read the same Key Vault secret.
+
+    Convention: per-tenant secret is ``tenant-{uuid}-internal-key``.
+    The container's secret ref and this function must agree on the name.
+    """
     secret_name = f"tenant-{tenant.id}-internal-key"
     token = read_key_vault_secret(secret_name)
     if not token:
