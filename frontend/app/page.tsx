@@ -190,6 +190,9 @@ export default function LandingPage() {
             <Link href="/legal/refund" className="transition hover:text-ink">
               Refunds
             </Link>
+            <Link href="/legal/commerce-disclosure" className="transition hover:text-ink">
+              特定商取引法
+            </Link>
             <a href="mailto:mj@bywayofmj.com" className="transition hover:text-ink">
               Contact
             </a>
