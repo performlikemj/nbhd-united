@@ -7,6 +7,7 @@ const legalLinks = [
   { href: "/legal/terms", label: "Terms of Service" },
   { href: "/legal/privacy", label: "Privacy Policy" },
   { href: "/legal/refund", label: "Refund Policy" },
+  { href: "/legal/commerce-disclosure", label: "Commerce Disclosure" },
 ];
 
 export function LegalPage({
