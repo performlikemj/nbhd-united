@@ -447,10 +447,10 @@ export default function SettingsCronJobsPage() {
                   className={getSaveButtonClass(createFeedback.status)}
                 >
                   {createMutation.isPending
-                    ? "Saving..."
+                    ? "Creating..."
                     : createFeedback.status === "success"
-                      ? "✓ Saved"
-                      : "Save"}
+                      ? "✓ Created"
+                      : "Create"}
                 </button>
                 {createFeedback.status === "error" ? (
                   <p className="text-xs text-rose-500">{createFeedback.text}</p>
@@ -545,10 +545,10 @@ export default function SettingsCronJobsPage() {
                           className={getSaveButtonClass(deleteFeedback.status)}
                         >
                           {deleteMutation.isPending
-                            ? "Saving..."
+                            ? "Deleting..."
                             : deleteFeedback.status === "success"
-                              ? "✓ Saved"
-                              : "Save"}
+                              ? "✓ Deleted"
+                              : "Confirm delete"}
                         </button>
                         <button
                           type="button"
