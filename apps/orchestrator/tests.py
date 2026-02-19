@@ -127,30 +127,19 @@ class ConfigGeneratorTest(TestCase):
         self.assertIn("group:runtime", tools["allow"])
         self.assertEqual(tools["elevated"], {"enabled": False})
 
-    @override_settings(
-        API_BASE_URL="https://api.example.com",
-        TELEGRAM_WEBHOOK_SECRET="runtime-webhook-secret",
-    )
-    def test_webhook_fields_set_when_settings_available(self):
-        config = generate_openclaw_config(self.tenant)
-        tg = config["channels"]["telegram"]
-        self.assertEqual(tg["webhookUrl"], "https://api.example.com/api/v1/telegram/webhook/")
-        self.assertEqual(tg["webhookHost"], "0.0.0.0")
-        self.assertEqual(tg["webhookSecret"], "runtime-webhook-secret")
-
-    @override_settings(API_BASE_URL="")
-    def test_webhook_fields_omitted_when_settings_missing(self):
+    def test_polling_mode_no_webhook_fields(self):
+        """Polling mode: no webhookUrl/webhookHost/webhookSecret in config."""
         config = generate_openclaw_config(self.tenant)
         tg = config["channels"]["telegram"]
         self.assertNotIn("webhookUrl", tg)
+        self.assertNotIn("webhookHost", tg)
         self.assertNotIn("webhookSecret", tg)
 
-    @override_settings(API_BASE_URL="https://api.example.com", TELEGRAM_WEBHOOK_SECRET="")
-    def test_webhook_fields_omitted_when_webhook_secret_missing(self):
+    def test_network_auto_select_family_disabled(self):
+        """IPv6 autoSelectFamily disabled to prevent Azure Container Apps issues."""
         config = generate_openclaw_config(self.tenant)
         tg = config["channels"]["telegram"]
-        self.assertNotIn("webhookUrl", tg)
-        self.assertNotIn("webhookSecret", tg)
+        self.assertFalse(tg["network"]["autoSelectFamily"])
 
     def test_config_with_no_chat_id_uses_disabled_dm_policy(self):
         self.tenant.user.telegram_chat_id = None

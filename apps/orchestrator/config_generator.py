@@ -222,8 +222,10 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         },
 
         # Telegram channel — locked to this user's chat_id
-        # Webhook mode: OpenClaw serves POST /telegram-webhook on the gateway
-        # port so our Django router can forward Telegram updates to it.
+        # Polling mode: OpenClaw connects outbound to api.telegram.org.
+        # Webhook mode is disabled due to an OpenClaw bug where the webhook
+        # startup generates an unhandled promise rejection on hosts with
+        # unreliable IPv6 (Azure Container Apps), causing crash loops.
         "channels": {
             "telegram": {
                 "name": tenant.user.display_name,
@@ -235,15 +237,9 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 ),
                 "groupPolicy": "disabled",
                 "streamMode": "partial",
-                **(
-                    {
-                        "webhookUrl": f"{api_base}/api/v1/telegram/webhook/",
-                        "webhookHost": "0.0.0.0",
-                        "webhookSecret": webhook_secret,
-                    }
-                    if api_base and webhook_secret
-                    else {}
-                ),
+                "network": {
+                    "autoSelectFamily": False,
+                },
             },
         },
 
