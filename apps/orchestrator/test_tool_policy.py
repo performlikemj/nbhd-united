@@ -16,6 +16,10 @@ class ToolPolicyTest(TestCase):
         self.assertEqual(allowed, list(STARTER_ALLOW))
         self.assertNotIn("group:ui", allowed)
         self.assertNotIn("group:runtime", allowed)
+        # Workspace file tools excluded — persistence via journal plugins only
+        self.assertNotIn("group:fs", allowed)
+        self.assertNotIn("group:memory", allowed)
+        self.assertIn("group:plugins", allowed)
 
     def test_premium_allowlist_extends_starter(self):
         allowed = get_allowed_tools("premium")

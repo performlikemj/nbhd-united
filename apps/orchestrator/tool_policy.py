@@ -25,10 +25,14 @@ DENIED_TOOLS: tuple[str, ...] = (
 # Starter tier: non-destructive helper surface only.
 # Group names must match OpenClaw docs: group:web, group:fs, group:memory,
 # group:messaging, group:automation.  "tts" and "image" are standalone tools.
+#
+# NOTE: group:fs and group:memory are intentionally EXCLUDED.
+# Subscribers should not interact with raw workspace files.
+# All persistence goes through NBHD journal tools (group:plugins)
+# which write to the Django database — visible on the journal UI.
 STARTER_ALLOW: tuple[str, ...] = (
     "group:web",
-    "group:memory",
-    "group:fs",
+    "group:plugins",
     "group:messaging",
     "tts",
     "image",
