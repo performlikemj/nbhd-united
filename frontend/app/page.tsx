@@ -8,7 +8,7 @@ import { isLoggedIn } from "@/lib/auth";
 const plans = [
   {
     name: "Starter",
-    price: "$9",
+    price: "$8",
     model: "Kimi K2.5",
     features: [
       "Private AI assistant via Telegram",
@@ -18,26 +18,26 @@ const plans = [
     ],
   },
   {
-    name: "Pro",
-    price: "$29",
-    model: "Claude Sonnet 4",
+    name: "Premium",
+    price: "$25",
+    model: "Claude Sonnet / Opus",
     features: [
       "Everything in Starter",
-      "Advanced reasoning model",
+      "Advanced reasoning models",
       "Higher usage limits",
       "Priority support",
     ],
     highlight: true,
   },
   {
-    name: "Ultra",
-    price: "$99",
-    model: "Claude Opus 4",
+    name: "Bring Your Own Key",
+    price: "$8",
+    model: "Your API key",
     features: [
-      "Everything in Pro",
-      "Most capable AI model",
-      "Highest usage limits",
-      "Early access to new features",
+      "Everything in Starter",
+      "Use your own AI provider key",
+      "Full model flexibility",
+      "Pay only for what you use",
     ],
   },
 ];
