@@ -27,7 +27,8 @@ class ConfigGeneratorTest(TestCase):
     def test_gateway_defaults_use_supported_bind_mode(self):
         config = generate_openclaw_config(self.tenant)
         self.assertEqual(config["gateway"]["bind"], "loopback")
-        self.assertNotIn("auth", config["gateway"])
+        # Auth is intentionally present — token from env var for Django→OC calls
+        self.assertEqual(config["gateway"]["auth"]["mode"], "token")
 
     def test_chat_id_in_allow_from(self):
         config = generate_openclaw_config(self.tenant)
@@ -97,7 +98,8 @@ class ConfigGeneratorTest(TestCase):
             config = generate_openclaw_config(self.tenant)
 
         self.assertNotIn("plugins", config)
-        self.assertNotIn("group:plugins", config["tools"]["allow"])
+        # group:plugins is in the base tool policy (tool_policy.py), not added by plugin wiring
+        self.assertIn("group:plugins", config["tools"]["allow"])
 
     def test_single_plugin_wired_when_only_one_configured(self):
         with override_settings(
