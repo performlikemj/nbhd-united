@@ -1,4 +1,7 @@
 """BYOK LLM configuration API views."""
+import logging
+
+import requests as http_requests
 from rest_framework import serializers, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -6,6 +9,9 @@ from rest_framework.views import APIView
 
 from .crypto import decrypt_api_key, encrypt_api_key
 from .models import Tenant, UserLLMConfig
+from .provider_models import fetch_models
+
+logger = logging.getLogger(__name__)
 
 
 class LLMConfigSerializer(serializers.Serializer):
@@ -75,3 +81,74 @@ class LLMConfigView(APIView):
             pass
 
         return Response(LLMConfigSerializer(config).data)
+
+
+class FetchModelsView(APIView):
+    """POST: fetch available models from a provider using the user's API key."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        # Only BYOK users can fetch models
+        try:
+            tenant = request.user.tenant
+            if tenant.model_tier != "byok":
+                return Response(
+                    {"error": "Only available on the BYOK plan."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        except Tenant.DoesNotExist:
+            return Response(
+                {"error": "No active subscription."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        provider = request.data.get("provider", "").strip()
+        api_key = request.data.get("api_key", "").strip()
+
+        if not provider:
+            return Response(
+                {"error": "Provider is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Fall back to stored key if none provided
+        if not api_key:
+            try:
+                config = request.user.llm_config
+                if config.encrypted_api_key:
+                    api_key = decrypt_api_key(config.encrypted_api_key)
+            except UserLLMConfig.DoesNotExist:
+                pass
+
+        if not api_key:
+            return Response(
+                {"error": "No API key provided and no key stored."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            models = fetch_models(provider, api_key)
+            return Response({"models": models})
+        except ValueError as exc:
+            return Response(
+                {"error": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except http_requests.HTTPError as exc:
+            resp = exc.response
+            if resp is not None and resp.status_code == 401:
+                return Response(
+                    {"error": "Invalid API key."},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+            logger.warning("Provider API error for %s: %s", provider, exc)
+            return Response(
+                {"error": "Could not reach provider. Try again later."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except http_requests.Timeout:
+            return Response(
+                {"error": "Provider did not respond in time."},
+                status=status.HTTP_504_GATEWAY_TIMEOUT,
+            )
