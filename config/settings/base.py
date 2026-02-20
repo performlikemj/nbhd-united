@@ -197,7 +197,7 @@ OPENCLAW_JOURNAL_PLUGIN_PATH = env(
 )
 OPENCLAW_USAGE_PLUGIN_ID = env(
     "OPENCLAW_USAGE_PLUGIN_ID",
-    default="nbhd-usage-reporter",
+    default="",
 )
 # Backward-compatibility alias for container/image wiring.
 OPENCLAW_USAGE_REPORTER_PLUGIN_ID = env(
