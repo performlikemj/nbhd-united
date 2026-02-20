@@ -10,7 +10,6 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import Lesson, LessonConnection
-from .services import process_approved_lesson, search_lessons
 from .serializers import (
     ConstellationEdgeSerializer,
     ConstellationNodeSerializer,

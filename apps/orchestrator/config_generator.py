@@ -35,7 +35,10 @@ _EVENING_CHECKIN_PROMPT = (
     "- Any tasks or notes for tomorrow?\n\n"
     "Keep it casual and warm — like a friend checking in, not a form to fill out.\n"
     "Don't write to the journal yet. Just start the conversation.\n"
-    "If they share reflections, save them to the 'evening-check-in' section of today's daily note."
+    "If they share reflections, save them to the 'evening-check-in' section of today's daily note.\n"
+    "After the reflection, review today's conversations for things the user learned. "
+    "If you find notable lessons or insights, suggest them via nbhd_lesson_suggest. "
+    "Mention briefly: 'I found a couple of learnings from today — check your approval queue when you get a chance.'\n"
 )
 
 _WEEK_AHEAD_REVIEW_PROMPT = (
@@ -61,11 +64,11 @@ _BACKGROUND_TASKS_PROMPT = (
     "2. Review long-term memory and recent daily notes\n"
     "3. Curate long-term memory if there are new patterns, preferences, or insights\n"
     "4. Check recent daily notes for any unaddressed user requests or tasks\n"
-    "5. If you find pending items, append a reminder to tomorrow's daily note\n\n"
+    "5. If you find pending items, append a reminder to tomorrow's daily note\n"
+    "6. Check the lessons constellation — if there are new approved lessons, the clusters and positions may need refreshing. The system handles this automatically.\n\n"
     "Do NOT message the user. This is a silent background run.\n"
     "Log a brief summary of what you did to tomorrow's daily note."
 )
-
 
 # Model mapping by tier
 TIER_MODELS: dict[str, dict[str, str]] = {
