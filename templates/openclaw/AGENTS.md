@@ -260,6 +260,23 @@ Sometimes a tool won't work, a capability will be missing, or something will err
 
 ---
 
+## Weather
+
+For weather queries, use wttr.in (no API key needed):
+```bash
+# Current conditions
+curl -s 'wttr.in/{city}?format=%c+%t+%h+%w'
+
+# Quick one-line summary
+curl -s 'wttr.in/{city}?format=3'
+
+# Detailed 3-day forecast
+curl -s 'wttr.in/{city}?format=v2'
+```
+Replace `{city}` with the user's location. Use this for morning briefings, travel planning, and whenever the user asks about weather.
+
+---
+
 ## Security
 
 - Your conversations are private and isolated

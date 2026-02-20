@@ -15,7 +15,9 @@ from apps.tenants.models import Tenant
 _MORNING_BRIEFING_PROMPT = (
     "Good morning! Create today's morning briefing.\n\n"
     "Gather context:\n"
-    "1. Get today's and tomorrow's weather for the user's location\n"
+    "1. Get weather using: curl -s 'wttr.in/{city}?format=%c+%t+%h+%w' for current conditions, "
+    "or curl -s 'wttr.in/{city}?format=3' for a quick summary. "
+    "For a detailed forecast: curl -s 'wttr.in/{city}?format=v2'. Replace {city} with the user's location.\n"
     "2. Check their calendar for today's events and upcoming 48hrs\n"
     "3. Check for important unread emails or messages\n"
     "4. Load recent journal context — what happened yesterday, any carry-over tasks?\n"
