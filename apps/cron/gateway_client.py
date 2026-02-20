@@ -28,11 +28,13 @@ def _get_gateway_token(tenant: Tenant) -> str:
     NBHD_INTERNAL_API_KEY env var. Both the container env and this
     client must read the same Key Vault secret.
 
-    Convention: per-tenant secret is ``tenant-{uuid}-internal-key``.
-    The container's secret ref and this function must agree on the name.
+    Try the shared secret first (nbhd-internal-api-key), then fall back
+    to the per-tenant secret for backward compatibility.
     """
-    secret_name = f"tenant-{tenant.id}-internal-key"
-    token = read_key_vault_secret(secret_name)
+    token = read_key_vault_secret("nbhd-internal-api-key")
+    if not token:
+        secret_name = f"tenant-{tenant.id}-internal-key"
+        token = read_key_vault_secret(secret_name)
     if not token:
         raise GatewayError(f"Could not read gateway token for tenant {tenant.id}")
     return token
