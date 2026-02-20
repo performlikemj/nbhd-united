@@ -183,7 +183,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <header className="sticky top-0 z-30 border-b border-border bg-surface/75 backdrop-blur">
         <div className="mx-auto flex w-full max-w-6xl min-w-0 flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-6">
           <div className="min-w-0">
-            <p className="font-mono text-xs uppercase tracking-[0.24em] text-ink-faint">NBHD United</p>
+            <Link href="/" className="font-mono text-xs uppercase tracking-[0.24em] text-ink-faint transition hover:text-ink">NBHD United</Link>
             <h1 className="text-sm font-semibold text-ink sm:text-lg">
               <span className="hidden sm:inline">Subscriber Control Console</span>
               <span className="sm:hidden">Subscriber</span>
