@@ -36,13 +36,21 @@ print(f"Tenant {t.id} set to BYOK, status: {t.status}")
 3. You should see the BYOK form (provider dropdown, API key input, model ID)
 4. If you see "Upgrade to BYOK" instead, the tier didn't save — recheck Step 1
 
-## Step 3: Save a BYOK configuration
+## Step 3: Fetch available models and save
 
 1. Select a provider (e.g., Anthropic)
 2. Enter your API key
-3. Optionally enter a model ID (e.g., `anthropic/claude-sonnet-4-20250514`)
-4. Click Save
-5. Verify the success message appears
+3. Click **Fetch Models** — this validates your key and pulls available models from the provider
+4. You should see a dropdown populate with your available models (with context window sizes)
+5. Select a model from the dropdown (or toggle "or enter manually" to type a model ID)
+6. Click Save
+7. Verify the success message appears
+
+**What to check:**
+- Fetch Models button is disabled until a key is entered (or a stored key exists)
+- Invalid key shows "Invalid API key" error
+- Provider timeout shows "Could not reach provider" error
+- Models dropdown shows name + context window (e.g., "Claude Opus 4 (200K)")
 
 ## Step 4: Verify the API stored it correctly
 
@@ -90,9 +98,12 @@ If you have a local OpenClaw gateway running:
 | BYOK user sees the config form | ✅ Provider dropdown, key input, model input |
 | Saving without a key keeps existing key | ✅ `has_key` stays true, `key_masked` unchanged |
 | Saving with a new key updates it | ✅ New masked key shown on reload |
+| Fetch Models with valid key | ✅ Dropdown populates with provider's models |
+| Fetch Models with invalid key | ✅ "Invalid API key" error shown |
+| Fetch Models with stored key (no new input) | ✅ Uses stored key, shows models |
+| Manual model entry fallback | ✅ Toggle to text input works |
 | Config generator includes the key | ✅ Correct env var set (e.g., `ANTHROPIC_API_KEY`) |
 | Config generator sets the model | ✅ `agents.defaults.model.primary` matches input |
-| "Test Connection" button | 🚧 Currently disabled — future feature |
 
 ## Supported providers and their env vars
 
