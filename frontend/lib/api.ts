@@ -125,11 +125,10 @@ export async function signup(
   email: string,
   password: string,
   displayName?: string,
-  inviteCode?: string,
 ): Promise<{ access: string; refresh: string }> {
   return apiFetch<{ access: string; refresh: string }>("/api/v1/auth/signup/", {
     method: "POST",
-    body: JSON.stringify({ email, password, display_name: displayName, invite_code: inviteCode }),
+    body: JSON.stringify({ email, password, display_name: displayName }),
   });
 }
 
