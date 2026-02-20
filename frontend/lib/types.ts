@@ -15,6 +15,12 @@ export interface LLMConfig {
   has_key: boolean;
 }
 
+export interface ProviderModel {
+  id: string;
+  name: string;
+  context_window?: number;
+}
+
 export interface LLMConfigUpdate {
   provider: string;
   model_id?: string;

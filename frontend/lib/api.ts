@@ -23,6 +23,7 @@ import {
   UsageRecord,
   UsageSummary,
   RefreshConfigStatus,
+  ProviderModel,
   WeeklyReview,
 } from "@/lib/types";
 
@@ -502,6 +503,13 @@ export function createDocument(data: { kind: string; slug: string; title: string
 
 export function getLLMConfig(): Promise<LLMConfig> {
   return apiFetch<LLMConfig>("/api/v1/settings/llm-config/");
+}
+
+export function fetchProviderModels(provider: string, api_key?: string): Promise<{ models: ProviderModel[] }> {
+  return apiFetch<{ models: ProviderModel[] }>("/api/v1/settings/llm-config/models/", {
+    method: "POST",
+    body: JSON.stringify({ provider, ...(api_key ? { api_key } : {}) }),
+  });
 }
 
 export function updateLLMConfig(data: LLMConfigUpdate): Promise<LLMConfig> {
