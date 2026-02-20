@@ -42,7 +42,18 @@ DEFAULT_TEMPLATE_SECTIONS: list[dict[str, str]] = [
     {
         "slug": "evening-check-in",
         "title": "Evening Check-in",
-        "content": "*Fill this in at the end of your day.*",
+        "content": (
+            "### What got done today?\n"
+            "- \n\n"
+            "### What didn't get done? Why?\n"
+            "- \n\n"
+            "### Plan for tomorrow (top 3)\n"
+            "1. \n2. \n3. \n\n"
+            "### Blockers or decisions needed?\n"
+            "- \n\n"
+            "### Energy/mood (1-10)\n"
+            "- "
+        ),
         "source": "human",
     },
 ]
