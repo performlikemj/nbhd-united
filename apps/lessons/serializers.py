@@ -52,13 +52,11 @@ class ConstellationNodeSerializer(serializers.ModelSerializer):
             "created_at",
         ]
 
-    def get_x(self, _obj):
-        # TODO: populate from clustering/embedding projection service when available.
-        return None
+    def get_x(self, obj):
+        return getattr(obj, "position_x", None)
 
-    def get_y(self, _obj):
-        # TODO: populate from clustering/embedding projection service when available.
-        return None
+    def get_y(self, obj):
+        return getattr(obj, "position_y", None)
 
 
 class ConstellationEdgeSerializer(serializers.ModelSerializer):
