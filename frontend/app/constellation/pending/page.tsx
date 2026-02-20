@@ -58,7 +58,7 @@ export default function PendingLessonQueuePage() {
     window.setTimeout(() => {
       setItems((current) => current.filter((item) => item.id !== id));
       setRemovingIds((current) => current.filter((itemId) => itemId !== id));
-    }, 230);
+    }, 220);
   };
 
   const handleApprove = async (lesson: Lesson) => {
@@ -71,11 +71,6 @@ export default function PendingLessonQueuePage() {
     } finally {
       setProcessing(null);
     }
-  };
-
-  const handleEditAndApprove = async (lesson: Lesson) => {
-    // No dedicated edit endpoint available in scope; treat as approve action to retain parity with UX intent.
-    await handleApprove(lesson);
   };
 
   const handleDismiss = async (lesson: Lesson) => {
@@ -91,21 +86,20 @@ export default function PendingLessonQueuePage() {
   };
 
   if (loading) {
-    return (
-      <div className="rounded-panel border border-border bg-surface p-4 text-ink-muted">
-        Loading pending lessons...
-      </div>
-    );
+    return <div className="rounded-panel border border-border bg-surface p-4 text-ink-muted">Loading pending lessons...</div>;
   }
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold text-ink">Pending Lesson Queue</h1>
           <p className="text-sm text-ink-muted">Approve and curate suggestions before they enter the constellation.</p>
         </div>
-        <Link href="/constellation" className="rounded-full border border-border px-4 py-2 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink">
+        <Link
+          href="/constellation"
+          className="rounded-full border border-border px-3.5 py-2 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink"
+        >
           ← Back to constellation
         </Link>
       </div>
@@ -113,66 +107,51 @@ export default function PendingLessonQueuePage() {
       {error ? <div className="rounded-panel border border-rose-border bg-rose-bg px-3 py-2 text-sm text-rose-text">{error}</div> : null}
 
       {totalCount === 0 ? (
-        <div className="rounded-panel border border-border bg-surface p-4 text-sm text-ink-muted">
-          No pending lessons right now.
-        </div>
+        <div className="rounded-panel border border-border bg-surface p-4 text-sm text-ink-muted">No pending lessons right now.</div>
       ) : (
         <div className="space-y-3">
           {sortedItems.map((lesson) => (
-            <div
+            <article
               key={lesson.id}
-              className={`rounded-panel border border-border bg-surface p-4 transition-all duration-200 ${
-                removingIds.includes(lesson.id)
-                  ? "translate-x-2 scale-[0.99] opacity-0"
-                  : "translate-x-0 opacity-100"
+              className={`w-full rounded-panel border border-border bg-surface p-4 transition-all duration-200 ${
+                removingIds.includes(lesson.id) ? "scale-[0.99] opacity-0" : "opacity-100"
               }`}
             >
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="min-w-0 flex-1">
-                  <h2 className="text-sm font-semibold text-ink">{lesson.text}</h2>
-                  <p className="mt-1 text-sm text-ink-muted">{lesson.context || "No context provided."}</p>
-                  <p className="mt-2 text-xs text-ink-faint">Suggested: {formatDate(lesson.suggested_at)}</p>
-                  {lesson.tags.length ? (
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {lesson.tags.map((tag) => (
-                        <span
-                          key={`${lesson.id}-${tag}`}
-                          className="rounded-full border border-border bg-surface px-2 py-0.5 text-xs text-ink-muted"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
+              <h2 className="text-sm font-semibold text-ink">{lesson.text}</h2>
+              <p className="mt-1 text-sm text-ink-muted">{lesson.context || "No context provided."}</p>
+              <p className="mt-2 text-xs text-ink-faint">Suggested: {formatDate(lesson.suggested_at)}</p>
+              {lesson.tags.length ? (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {lesson.tags.map((tag) => (
+                    <span
+                      key={`${lesson.id}-${tag}`}
+                      className="rounded-full border border-border bg-surface px-2.5 py-1 text-xs text-ink-muted"
+                    >
+                      {tag}
+                    </span>
+                  ))}
                 </div>
-                <div className="flex shrink-0 flex-wrap gap-2">
-                  <button
-                    type="button"
-                    disabled={processing === lesson.id}
-                    onClick={() => handleApprove(lesson)}
-                    className="rounded-full bg-accent px-3.5 py-2 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55"
-                  >
-                    {processing === lesson.id ? "Working..." : "Approve"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={processing === lesson.id}
-                    onClick={() => handleEditAndApprove(lesson)}
-                    className="rounded-full border border-border bg-surface px-3.5 py-2 text-sm text-ink-muted transition hover:border-border-strong disabled:opacity-55"
-                  >
-                    {processing === lesson.id ? "Working..." : "Edit & Approve"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={processing === lesson.id}
-                    onClick={() => handleDismiss(lesson)}
-                    className="rounded-full border border-rose-border bg-rose-bg px-3.5 py-2 text-sm text-rose-text transition hover:bg-rose-bg/80 disabled:opacity-55"
-                  >
-                    {processing === lesson.id ? "Working..." : "Dismiss"}
-                  </button>
-                </div>
+              ) : null}
+
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:justify-end">
+                <button
+                  type="button"
+                  disabled={processing === lesson.id}
+                  onClick={() => handleApprove(lesson)}
+                  className="h-11 rounded-full bg-accent px-4 py-2 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55"
+                >
+                  {processing === lesson.id ? "Working..." : "Approve"}
+                </button>
+                <button
+                  type="button"
+                  disabled={processing === lesson.id}
+                  onClick={() => handleDismiss(lesson)}
+                  className="h-11 rounded-full border border-rose-border bg-rose-bg px-4 py-2 text-sm text-rose-text transition hover:bg-rose-bg/80 disabled:opacity-55"
+                >
+                  {processing === lesson.id ? "Working..." : "Dismiss"}
+                </button>
               </div>
-            </div>
+            </article>
           ))}
         </div>
       )}
