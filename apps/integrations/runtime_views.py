@@ -13,6 +13,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.journal.models import DailyNote, Document, JournalEntry, UserMemory
+from apps.lessons.models import Lesson
+from apps.lessons.serializers import LessonSerializer
+from apps.lessons.services import search_lessons
 from apps.journal.document_views import _default_markdown, _default_title
 from apps.journal.services import (
     append_log_to_note,
@@ -867,6 +870,165 @@ class RuntimeJournalContextView(APIView):
             status=status.HTTP_200_OK,
         )
 
+
+
+
+
+class RuntimeLessonCreateView(APIView):
+    """Create runtime lesson suggestions for a tenant."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        text = str(request.data.get("text", "")).strip()
+        if not text:
+            return Response(
+                {"error": "invalid_request", "detail": "text is required"},
+                status=400,
+            )
+
+        context = str(request.data.get("context", "")).strip()
+        source_type = str(request.data.get("source_type", "conversation")).strip() or "conversation"
+        source_ref = str(request.data.get("source_ref", "")).strip()
+
+        allowed_source_types = {
+            "conversation",
+            "journal",
+            "reflection",
+            "article",
+            "experience",
+        }
+        if source_type not in allowed_source_types:
+            return Response(
+                {"error": "invalid_request", "detail": "invalid source_type"},
+                status=400,
+            )
+
+        raw_tags = request.data.get("tags", [])
+        if raw_tags is None:
+            tags: list[str] = []
+        elif isinstance(raw_tags, list):
+            tags = [str(item).strip() for item in raw_tags if str(item).strip()]
+        else:
+            return Response(
+                {"error": "invalid_request", "detail": "tags must be a list of strings"},
+                status=400,
+            )
+
+        lesson = Lesson.objects.create(
+            tenant=tenant,
+            text=text,
+            context=context,
+            source_type=source_type,
+            source_ref=source_ref,
+            tags=tags,
+            status="pending",
+        )
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "lesson": LessonSerializer(lesson).data,
+            },
+            status=201,
+        )
+
+
+class RuntimeLessonSearchView(APIView):
+    """Search approved lessons for a tenant."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        query = str(request.query_params.get("q", "")).strip()
+        if not query:
+            return Response(
+                {"error": "invalid_request", "detail": "q parameter required"},
+                status=400,
+            )
+
+        try:
+            limit = _parse_positive_int(request.query_params.get("limit"), default=10, max_value=50)
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": str(exc)},
+                status=400,
+            )
+
+        try:
+            lessons = search_lessons(tenant=tenant, query=query, limit=limit)
+        except ValueError as exc:
+            return Response(
+                {"error": "search_failed", "detail": str(exc)},
+                status=500,
+            )
+        except Exception as exc:
+            return Response(
+                {"error": "search_failed", "detail": str(exc)},
+                status=500,
+            )
+
+        payload = []
+        for lesson in lessons:
+            lesson_payload = LessonSerializer(lesson).data
+            lesson_payload["similarity"] = float(getattr(lesson, "similarity", 0.0))
+            payload.append(lesson_payload)
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "query": query,
+                "count": len(payload),
+                "results": payload,
+            },
+            status=200,
+        )
+
+
+class RuntimeLessonPendingView(APIView):
+    """Get pending lessons for a tenant."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        lessons = Lesson.objects.filter(tenant=tenant, status="pending").order_by("-suggested_at")
+        serializer = LessonSerializer(lessons, many=True)
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "count": len(serializer.data),
+                "lessons": serializer.data,
+            },
+            status=200,
+        )
 
 # ---------------------------------------------------------------------------
 # v2 Document runtime endpoints (unified model)

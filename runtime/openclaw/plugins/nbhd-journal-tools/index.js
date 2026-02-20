@@ -534,6 +534,132 @@ export default function register(api) {
     { optional: true },
   );
 
+  // ── Lessons: suggest/search/pending ─────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_lesson_suggest",
+      description:
+        "Suggest a candidate lesson for user approval. Creates a pending lesson with user-facing text, optional context, source metadata, and auto-generated tags.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          text: {
+            type: "string",
+            description: "The lesson/insight in 1-3 sentences.",
+          },
+          context: {
+            type: "string",
+            description: "Optional context where the lesson came from.",
+          },
+          source_type: {
+            type: "string",
+            description: "Optional provenance type (conversation, journal, reflection, article, experience).",
+          },
+          source_ref: {
+            type: "string",
+            description: "Optional provenance reference (date, URL, message id, etc.).",
+          },
+          tags: {
+            type: "array",
+            description: "Optional tags for auto-categorization.",
+            items: {
+              type: "string",
+            },
+          },
+        },
+        required: ["text"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const text = asTrimmedString(input.text);
+        if (!text) throw new Error("text is required");
+
+        let tags = [];
+        if (Array.isArray(input.tags)) {
+          tags = input.tags
+            .map((item) => asTrimmedString(item))
+            .filter((item) => item.length > 0);
+        }
+
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/lessons/"),
+          method: "POST",
+          body: {
+            text,
+            context: asTrimmedString(input.context) || undefined,
+            source_type: asTrimmedString(input.source_type) || undefined,
+            source_ref: asTrimmedString(input.source_ref) || undefined,
+            tags,
+          },
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Lessons: text similarity search ────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_lesson_search",
+      description:
+        "Search lessons by text or semantic similarity. Use for recall during conversation and review workflows.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          query: {
+            type: "string",
+            description: "Search query or idea summary to find similar lessons.",
+          },
+          limit: {
+            type: "number",
+            description: "Max results to return (default 10, max 50).",
+          },
+        },
+        required: ["query"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const query = asTrimmedString(input.query);
+        if (!query) throw new Error("query is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/lessons/search/"),
+          method: "GET",
+          query: {
+            q: query,
+            limit: parseInteger(input.limit, { defaultValue: 10, min: 1, max: 50 }),
+          },
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Lessons: pending queue ────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_lessons_pending",
+      description:
+        "Get the current count and list of pending lessons waiting for user approval.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {},
+      },
+      async execute() {
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/lessons/pending/"),
+          method: "GET",
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
   // ── Platform Issue Report ────────────────────────────────────────────
   api.registerTool(
     {

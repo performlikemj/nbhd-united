@@ -8,6 +8,7 @@ from django.test import TestCase
 from django.test.utils import override_settings
 
 from apps.journal.models import JournalEntry, WeeklyReview
+from apps.lessons.models import Lesson
 from apps.tenants.services import create_tenant
 
 from .services import (
@@ -418,3 +419,68 @@ class RuntimeMemorySyncViewTest(TestCase):
         self.assertEqual(body["count"], 1)
         self.assertIn("memory/journal/memory/long-term.md", body["files"])
         self.assertIn("# Long-Term Memory", body["files"]["memory/journal/memory/long-term.md"])
+
+
+    def test_runtime_lessons_create_endpoint_creates_pending_lesson(self):
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/lessons/",
+            data={
+                "text": "Keep your promises to yourself",
+                "context": "evening check-in",
+                "source_type": "reflection",
+                "source_ref": "conversation:msg-1",
+                "tags": ["growth", "discipline"],
+            },
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 201)
+        created = Lesson.objects.filter(tenant=self.tenant).get(text="Keep your promises to yourself")
+        self.assertEqual(created.status, "pending")
+        self.assertEqual(created.source_type, "reflection")
+
+    @patch("apps.integrations.runtime_views.search_lessons")
+    def test_runtime_lesson_search_endpoint_supports_query(self, mock_search):
+        lesson = Lesson.objects.create(
+            tenant=self.tenant,
+            text="Focus creates momentum",
+            context="reflection",
+            source_type="reflection",
+            source_ref="",
+            tags=["focus"],
+            status="approved",
+        )
+        lesson.similarity = 0.87
+        mock_search.return_value = [lesson]
+
+        response = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/lessons/search/?q=focus&limit=5",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["results"][0]["id"], lesson.id)
+
+    def test_runtime_lessons_pending_endpoint_lists_tenant_pending(self):
+        Lesson.objects.create(
+            tenant=self.tenant,
+            text="Pending one",
+            context="",
+            source_type="conversation",
+            source_ref="",
+            tags=["x"],
+            status="pending",
+        )
+
+        response = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/lessons/pending/",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["lessons"][0]["text"], "Pending one")
