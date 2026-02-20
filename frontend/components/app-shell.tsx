@@ -13,6 +13,7 @@ import { useTheme } from "@/components/theme-provider";
 
 const navItems = [
   { href: "/journal", label: "Journal" },
+  { href: "/constellation", label: "★ Constellation" },
   { href: "/settings", label: "Settings" },
 ];
 

@@ -25,6 +25,8 @@ import {
   RefreshConfigStatus,
   ProviderModel,
   WeeklyReview,
+  Lesson,
+  ConstellationData,
 } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -460,6 +462,33 @@ export function updateWeeklyReview(id: string, data: Partial<WeeklyReviewInput>)
 export function deleteWeeklyReview(id: string): Promise<void> {
   return apiFetch<void>(`/api/v1/journal/reviews/${id}/`, { method: "DELETE" });
 }
+
+// Lessons / constellation API
+export function fetchLessons(status?: string): Promise<Lesson[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  return apiFetch<Lesson[]>(`/api/v1/lessons/${query}`);
+}
+
+export function fetchPendingLessons(): Promise<Lesson[]> {
+  return apiFetch<Lesson[]>("/api/v1/lessons/pending/");
+}
+
+export function approveLesson(id: number): Promise<Lesson> {
+  return apiFetch<Lesson>(`/api/v1/lessons/${id}/approve/`, {
+    method: "POST",
+  });
+}
+
+export function dismissLesson(id: number): Promise<Lesson> {
+  return apiFetch<Lesson>(`/api/v1/lessons/${id}/dismiss/`, {
+    method: "POST",
+  });
+}
+
+export function fetchConstellation(): Promise<ConstellationData> {
+  return apiFetch<ConstellationData>("/api/v1/lessons/constellation/");
+}
+
 
 // ── Journal v2 Documents ──────────────────────────────────────────────
 
