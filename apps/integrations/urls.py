@@ -16,6 +16,7 @@ from .runtime_views import (
     RuntimeMemorySyncView,
     RuntimeUserMemoryView,
     RuntimeWeeklyReviewsView,
+    RuntimeUsageReportView,
 )
 from .views import ComposioCallbackView, IntegrationViewSet, OAuthAuthorizeView, OAuthCallbackView
 from apps.platform_logs.views import PlatformIssueReportView as _PlatformIssueReportView
@@ -99,6 +100,12 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/memory-sync/",
         RuntimeMemorySyncView.as_view(),
         name="runtime-memory-sync",
+    ),
+    # Usage reporting for polling-mode runtime turns
+    path(
+        "runtime/<uuid:tenant_id>/usage/report/",
+        RuntimeUsageReportView.as_view(),
+        name="runtime-usage-report",
     ),
     # Platform issue logging
     path(

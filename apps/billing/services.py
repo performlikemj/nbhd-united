@@ -9,15 +9,16 @@ from django.db.models import F
 
 from apps.tenants.models import Tenant
 from .models import MonthlyBudget, UsageRecord
+from .constants import DEFAULT_RATE as MODELS_DEFAULT_RATE, MODEL_RATES
 
 logger = logging.getLogger(__name__)
 
 # Cost per 1M tokens (approximate, for budget tracking)
 MODEL_COSTS: dict[str, dict[str, float]] = {
-    "anthropic/claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0},
-    "anthropic/claude-opus-4-20250514": {"input": 15.0, "output": 75.0},
+    key: {"input": value["input"], "output": value["output"]}
+    for key, value in MODEL_RATES.items()
 }
-DEFAULT_COST = {"input": 3.0, "output": 15.0}
+DEFAULT_COST = {"input": MODELS_DEFAULT_RATE["input"], "output": MODELS_DEFAULT_RATE["output"]}
 
 
 def _normalize_tier(raw_tier: str) -> str:
