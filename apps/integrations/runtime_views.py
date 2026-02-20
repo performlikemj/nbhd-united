@@ -117,28 +117,6 @@ def _parse_iso_timestamp(value):
     return parsed
 
 
-def _internal_auth_or_403(request):
-    provided_key = request.headers.get("X-NBHD-Internal-Key", "")
-    provided_tenant_id = request.headers.get("X-NBHD-Tenant-Id", "")
-
-    try:
-        validate_internal_runtime_request(
-            provided_key=provided_key,
-            provided_tenant_id=provided_tenant_id,
-        )
-    except InternalAuthError as exc:
-        return Response(
-            {"error": "internal_auth_failed", "detail": str(exc)},
-            status=status.HTTP_403_FORBIDDEN,
-        ), None
-
-    # Auth passed — set RLS context so tenant-scoped queries and writes work
-    from apps.tenants.middleware import set_rls_context
-
-    set_rls_context(tenant_id=UUID(provided_tenant_id), service_role=True)
-    return None, provided_tenant_id
-
-
 def _internal_auth_or_401(request, tenant_id: UUID) -> Response | None:
     try:
         validate_internal_runtime_request(
