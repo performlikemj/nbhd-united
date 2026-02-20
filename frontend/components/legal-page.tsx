@@ -23,7 +23,7 @@ export function LegalPage({
     <div className="flex min-h-[60vh] justify-center py-12">
       <div className="w-full max-w-3xl rounded-panel border border-border bg-surface/90 p-8 shadow-panel animate-reveal">
         <Link href="/" className="font-mono text-xs uppercase tracking-[0.24em] text-ink-muted transition hover:text-ink">
-          NBHD United
+          Neighborhood United
         </Link>
         <h1 className="mt-2 text-2xl font-semibold text-ink">{title}</h1>
         <p className="mt-1 text-sm text-ink-faint">Last updated: {lastUpdated}</p>

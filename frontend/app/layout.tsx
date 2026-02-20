@@ -7,8 +7,8 @@ import { Providers } from "@/app/providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "NBHD United Console",
-  description: "Subscriber onboarding and operations dashboard for NBHD United.",
+  title: "Neighborhood United",
+  description: "Your AI-powered personal assistant.",
 };
 
 export default function RootLayout({

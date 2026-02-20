@@ -7,7 +7,7 @@ export function SiteFooter() {
     <footer className="mt-auto border-t border-border bg-surface/50">
       <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
         <Link href="/" className="font-mono text-xs uppercase tracking-[0.24em] text-ink-faint transition hover:text-ink-muted">
-          NBHD United
+          Neighborhood United
         </Link>
         <nav className="flex flex-wrap items-center gap-4 text-xs text-ink-faint">
           <Link href="/legal/terms" className="transition hover:text-ink-muted">
