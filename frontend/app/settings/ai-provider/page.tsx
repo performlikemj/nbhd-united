@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
-import { useLLMConfigQuery, useUpdateLLMConfigMutation, useTenantQuery } from "@/lib/queries";
-import type { LLMConfigUpdate } from "@/lib/types";
+import { useLLMConfigQuery, useTenantQuery, useUpdateLLMConfigMutation } from "@/lib/queries";
+import { fetchProviderModels } from "@/lib/api";
+import type { LLMConfigUpdate, ProviderModel } from "@/lib/types";
 
 const PROVIDERS = [
   { value: "openai", label: "OpenAI" },
@@ -16,21 +17,28 @@ const PROVIDERS = [
   { value: "xai", label: "xAI" },
 ] as const;
 
-const MODEL_SUGGESTIONS: Record<string, string[]> = {
-  openai: ["openai/gpt-5.2", "openai/gpt-5.1-codex", "openai/gpt-4.1"],
-  anthropic: ["anthropic/claude-opus-4-6", "anthropic/claude-sonnet-4-5"],
-  groq: ["groq/llama-4-scout", "groq/llama-4-maverick"],
-  google: ["google/gemini-3-pro-preview"],
-  openrouter: [],
-  xai: ["xai/grok-3"],
-};
-
 const TIER_MODEL_INFO: Record<string, string> = {
   starter: "Kimi K2.5 — 50 messages/day",
   premium: "Claude Sonnet 4.5 + Opus access — 200 messages/day",
   basic: "Claude Sonnet — included with your plan",
   plus: "Claude Opus — included with your plan",
 };
+
+function formatContextWindow(contextWindow?: number): string {
+  if (!contextWindow) return "";
+  if (contextWindow >= 1000) {
+    return `${Math.round(contextWindow / 1000)}K`;
+  }
+  return `${contextWindow}`;
+}
+
+function formatFetchError(error: unknown): "Invalid API key" | "Could not reach provider" {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  if (message.includes("invalid") || message.includes("unauth") || message.includes("401") || message.includes("403")) {
+    return "Invalid API key";
+  }
+  return "Could not reach provider";
+}
 
 export default function AIProviderPage() {
   const { data: tenant, isLoading: tenantLoading } = useTenantQuery();
@@ -41,6 +49,13 @@ export default function AIProviderPage() {
   const [apiKey, setApiKey] = useState("");
   const [modelId, setModelId] = useState("");
   const [saved, setSaved] = useState(false);
+  const [models, setModels] = useState<ProviderModel[]>([]);
+  const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const [fetchError, setFetchError] = useState("");
+  const [isManualModelInput, setIsManualModelInput] = useState(true);
+
+  const hasStoredKey = Boolean(config?.has_key);
+  const canFetchModels = hasStoredKey || apiKey.trim().length > 0;
 
   const tier = tenant?.model_tier ?? "basic";
   const isByok = tier === "byok";
@@ -49,10 +64,9 @@ export default function AIProviderPage() {
     if (config) {
       setProvider(config.provider || "openai");
       setModelId(config.model_id || "");
+      setIsManualModelInput(true);
     }
   }, [config]);
-
-  const suggestions = MODEL_SUGGESTIONS[provider] ?? [];
 
   const handleSave = async () => {
     setSaved(false);
@@ -63,6 +77,44 @@ export default function AIProviderPage() {
     setSaved(true);
     setTimeout(() => setSaved(false), 3000);
   };
+
+  const fetchModels = async () => {
+    if (!provider || !canFetchModels || isFetchingModels) return;
+
+    setIsFetchingModels(true);
+    setFetchError("");
+    try {
+      const resolvedApiKey = apiKey.trim().length > 0 ? apiKey.trim() : undefined;
+      const response = await fetchProviderModels(provider, resolvedApiKey);
+      const resolvedModels = response?.models ?? [];
+      setModels(resolvedModels);
+      setIsManualModelInput(false);
+      if (resolvedModels.length > 0 && !resolvedModels.some((model) => model.id === modelId)) {
+        setModelId(resolvedModels[0].id);
+      }
+      if (resolvedModels.length === 0) {
+        setIsManualModelInput(true);
+      }
+    } catch (error) {
+      setFetchError(formatFetchError(error));
+      setModels([]);
+      setIsManualModelInput(true);
+    } finally {
+      setIsFetchingModels(false);
+    }
+  };
+
+  const shouldShowSelect = !isManualModelInput && models.length > 0;
+  const modelOptions = useMemo(
+    () =>
+      models.map((model) => ({
+        value: model.id,
+        label: model.context_window
+          ? `${model.name} (${formatContextWindow(model.context_window)})`
+          : model.name,
+      })),
+    [models],
+  );
 
   if (tenantLoading || configLoading) {
     return (
@@ -104,6 +156,9 @@ export default function AIProviderPage() {
                 onChange={(e) => {
                   setProvider(e.target.value);
                   setModelId("");
+                  setModels([]);
+                  setIsManualModelInput(true);
+                  setFetchError("");
                 }}
                 className="mt-1.5 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
               >
@@ -128,26 +183,70 @@ export default function AIProviderPage() {
               />
             </div>
 
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={fetchModels}
+                disabled={!canFetchModels || isFetchingModels}
+                className="rounded-full border border-border-strong px-5 py-2.5 text-sm text-ink-faint transition hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-55"
+              >
+                {isFetchingModels ? (
+                  <span className="inline-flex items-center gap-2">
+                    <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-ink-faint border-t-transparent" />
+                    Fetching...
+                  </span>
+                ) : (
+                  "Fetch Models"
+                )}
+              </button>
+            </div>
+
             {/* Model */}
             <div>
               <label htmlFor="model-id" className="block font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">
                 Model
               </label>
-              <input
-                id="model-id"
-                type="text"
-                value={modelId}
-                onChange={(e) => setModelId(e.target.value)}
-                placeholder={provider === "openrouter" ? "e.g. openrouter/auto" : suggestions[0] ?? ""}
-                list="model-suggestions"
-                className="mt-1.5 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-              />
-              {suggestions.length > 0 && (
-                <datalist id="model-suggestions">
-                  {suggestions.map((m) => (
-                    <option key={m} value={m} />
-                  ))}
-                </datalist>
+
+              {shouldShowSelect ? (
+                <>
+                  <select
+                    id="model-id"
+                    value={modelId}
+                    onChange={(e) => setModelId(e.target.value)}
+                    className="mt-1.5 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                  >
+                    {modelOptions.map((model) => (
+                      <option key={model.value} value={model.value}>{model.label}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setIsManualModelInput(true)}
+                    className="mt-2 text-xs text-ink-faint underline underline-offset-2"
+                  >
+                    or enter manually
+                  </button>
+                </>
+              ) : (
+                <>
+                  <input
+                    id="model-id"
+                    type="text"
+                    value={modelId}
+                    onChange={(e) => setModelId(e.target.value)}
+                    placeholder="Enter model id"
+                    className="mt-1.5 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                  />
+                  {models.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setIsManualModelInput(false)}
+                      className="mt-2 text-xs text-ink-faint underline underline-offset-2"
+                    >
+                      choose from fetched models
+                    </button>
+                  )}
+                </>
               )}
             </div>
 
@@ -161,15 +260,13 @@ export default function AIProviderPage() {
               >
                 {updateMutation.isPending ? "Saving..." : "Save"}
               </button>
-              <button
-                type="button"
-                disabled
-                className="rounded-full border border-border-strong px-5 py-2.5 text-sm text-ink-faint cursor-not-allowed opacity-55"
-              >
-                Test Connection
-              </button>
             </div>
 
+            {fetchError && (
+              <p className="rounded-panel border border-rose-border bg-rose-bg px-3 py-2 text-sm text-rose-text">
+                {fetchError}
+              </p>
+            )}
             {saved && (
               <p className="rounded-panel border border-signal/30 bg-signal-faint px-3 py-2 text-sm text-signal">
                 Configuration saved successfully.

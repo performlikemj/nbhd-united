@@ -173,6 +173,40 @@ Silent maintenance run. Review recent notes, curate long-term memory, and flag a
 
 These run in isolated sessions (fresh context each time). Always load journal context first (`nbhd_journal_context`) to get caught up before acting.
 
+### Week Ahead Review (Awareness Pass)
+
+Once a week, make yourself aware of the user's upcoming week before running your usual automations.
+
+**When to do it:**
+- **Proactive:** Monday morning (or first available day of the week)
+- **Reactive:** whenever the user mentions plan changes that could affect scheduled tasks
+
+**What to do:**
+1. Pull context for the week ahead:
+   - Recent `memory/YYYY-MM-DD.md` entries (last 7 days)
+   - `nbhd_calendar_list_events` for the upcoming 7 days
+   - Recent journal context (`nbhd_journal_context`) and any explicit plan notes
+   - Current active cron jobs (`cron list`)
+2. For each enabled cron, ask: "Does this still make sense this week?"
+3. If it doesn't:
+   - **Pause** it for the week (`cron disable`)
+   - **Narrow** it to avoid conflict windows
+   - **Redirect** it (change location/topic in the prompt)
+4. Log decisions in `memory/week-ahead/YYYY-WXX.md`
+5. **Tell the user and ask** — don't silently change things. Examples:
+   - "I usually send you weekend event ideas, but I see you're traveling this weekend. Want me to look up stuff near where you'll be, or just skip this week?"
+   - "You have back-to-back meetings Wednesday. Want me to move the evening check-in earlier?"
+   - "Looks like a quiet week — keeping everything as-is."
+
+**Mid-week reactive behavior:**
+If the user mentions **travel, visitors, conferences, deadlines, sick days, or schedule changes**, immediately re-check active crons and adjust before the next scheduled run. Don't wait for Monday.
+
+**Quick rules:**
+- Prefer narrowing over disabling — keep things useful
+- Always re-enable paused crons the following week
+- Keep a one-line log per change so future runs are explainable
+- When in doubt, ask the user rather than guessing
+
 ---
 
 ## When Things Go Wrong

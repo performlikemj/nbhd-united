@@ -38,6 +38,23 @@ _EVENING_CHECKIN_PROMPT = (
     "If they share reflections, save them to the 'evening-check-in' section of today's daily note."
 )
 
+_WEEK_AHEAD_REVIEW_PROMPT = (
+    "It's Monday morning. Run the Week Ahead Review.\n\n"
+    "1. Load journal context (`nbhd_journal_context`) and recent memory files\n"
+    "2. Check the calendar for the upcoming 7 days (`nbhd_calendar_list_events`)\n"
+    "3. List all active cron jobs (`cron list`)\n"
+    "4. For each cron job, check: does this make sense given the user's week?\n"
+    "   - If the user is traveling, skip or redirect location-based crons\n"
+    "   - If the user has a packed schedule, consider adjusting timing\n"
+    "   - If everything looks fine, note 'no changes needed'\n"
+    "5. Before making any changes, tell the user what you found and ask.\n"
+    "   Example: 'I see you're in Bali this week — want me to skip the local "
+    "event search or look up things to do there instead?'\n"
+    "6. Log decisions in `memory/week-ahead/` with a brief note\n\n"
+    "Be helpful, not noisy. If nothing conflicts, just send a quick "
+    "'All good for this week, no changes needed.'"
+)
+
 _BACKGROUND_TASKS_PROMPT = (
     "Background maintenance run. Perform these tasks silently:\n\n"
     "1. Load recent journal context\n"
@@ -101,6 +118,17 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "payload": {
                 "kind": "agentTurn",
                 "message": _EVENING_CHECKIN_PROMPT,
+            },
+            "delivery": {"mode": "announce", "channel": "telegram"},
+            "enabled": True,
+        },
+        {
+            "name": "Week Ahead Review",
+            "schedule": {"kind": "cron", "expr": "0 8 * * 1", "tz": user_tz},
+            "sessionTarget": "isolated",
+            "payload": {
+                "kind": "agentTurn",
+                "message": _WEEK_AHEAD_REVIEW_PROMPT,
             },
             "delivery": {"mode": "announce", "channel": "telegram"},
             "enabled": True,
