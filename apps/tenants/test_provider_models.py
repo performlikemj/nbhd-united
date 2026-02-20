@@ -107,7 +107,7 @@ class FetchModelsViewTest(TestCase):
             {"id": "openai/gpt-5.2", "name": "gpt-5.2", "context_window": None}
         ]
         resp = self.client.post(
-            "/api/v1/settings/llm-config/models/",
+            "/api/v1/tenants/settings/llm-config/models/",
             {"provider": "openai", "api_key": "sk-test"},
             format="json",
         )
@@ -124,7 +124,7 @@ class FetchModelsViewTest(TestCase):
             encrypted_api_key=encrypt_api_key("sk-stored-key"),
         )
         resp = self.client.post(
-            "/api/v1/settings/llm-config/models/",
+            "/api/v1/tenants/settings/llm-config/models/",
             {"provider": "anthropic"},
             format="json",
         )
@@ -135,7 +135,7 @@ class FetchModelsViewTest(TestCase):
         self.tenant.model_tier = "starter"
         self.tenant.save()
         resp = self.client.post(
-            "/api/v1/settings/llm-config/models/",
+            "/api/v1/tenants/settings/llm-config/models/",
             {"provider": "openai", "api_key": "sk-test"},
             format="json",
         )
@@ -143,7 +143,7 @@ class FetchModelsViewTest(TestCase):
 
     def test_missing_provider(self):
         resp = self.client.post(
-            "/api/v1/settings/llm-config/models/",
+            "/api/v1/tenants/settings/llm-config/models/",
             {"api_key": "sk-test"},
             format="json",
         )
@@ -151,7 +151,7 @@ class FetchModelsViewTest(TestCase):
 
     def test_no_key_anywhere(self):
         resp = self.client.post(
-            "/api/v1/settings/llm-config/models/",
+            "/api/v1/tenants/settings/llm-config/models/",
             {"provider": "openai"},
             format="json",
         )
@@ -165,7 +165,7 @@ class FetchModelsViewTest(TestCase):
         mock_resp.status_code = 401
         mock_fetch.side_effect = HTTPError(response=mock_resp)
         resp = self.client.post(
-            "/api/v1/settings/llm-config/models/",
+            "/api/v1/tenants/settings/llm-config/models/",
             {"provider": "openai", "api_key": "sk-bad"},
             format="json",
         )
