@@ -10,6 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import Lesson, LessonConnection
+from .services import process_approved_lesson, search_lessons
 from .serializers import (
     ConstellationEdgeSerializer,
     ConstellationNodeSerializer,
@@ -65,6 +66,28 @@ class LessonViewSet(viewsets.ModelViewSet):
         lesson.status = "approved"
         lesson.approved_at = timezone.now()
         lesson.save(update_fields=["status", "approved_at"])
+
+        # Process embedding and connections
+        try:
+            process_approved_lesson(lesson)
+        except Exception:
+            # Don't fail approval if embedding/connection processing breaks.
+            pass
+
+        # Re-cluster if enough lessons are approved
+        try:
+            from .clustering import refresh_constellation
+
+            approved_count = Lesson.objects.filter(
+                tenant=lesson.tenant,
+                status="approved",
+            ).count()
+            if approved_count >= 5:
+                refresh_constellation(lesson.tenant)
+        except Exception:
+            # Don't fail approval if clustering fails.
+            pass
+
         return Response(LessonSerializer(lesson).data)
 
     @action(detail=True, methods=["post"], url_path="dismiss")
@@ -82,6 +105,21 @@ class LessonViewSet(viewsets.ModelViewSet):
         lesson.approved_at = None
         lesson.save(update_fields=["status", "approved_at"])
         return Response(LessonSerializer(lesson).data)
+
+    @action(detail=False, methods=["post"], url_path="refresh")
+    def refresh(self, request):
+        """Re-run clustering and position calculation for this tenant."""
+
+        if not hasattr(request.user, "tenant"):
+            return Response(
+                {"error": "tenant_required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from .clustering import refresh_constellation
+
+        result = refresh_constellation(request.user.tenant)
+        return Response(result)
 
     @action(detail=False, methods=["get"], url_path="pending")
     def pending(self, request):
@@ -128,3 +166,23 @@ class LessonViewSet(viewsets.ModelViewSet):
             )
 
         return Response(clusters)
+
+    @action(detail=False, methods=["get"], url_path="search")
+    def search(self, request):
+        query = (request.query_params.get("q") or "").strip()
+        if not query:
+            return Response({"detail": "Missing query parameter 'q'."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            limit = int(request.query_params.get("limit", 10))
+            if limit <= 0:
+                raise ValueError
+        except ValueError:
+            return Response({"detail": "Invalid 'limit' value."}, status=status.HTTP_400_BAD_REQUEST)
+
+        lessons = search_lessons(tenant=request.user.tenant, query=query, limit=limit)
+        payload = [
+            {**LessonSerializer(lesson).data, "similarity": lesson.similarity}
+            for lesson in lessons
+        ]
+        return Response(payload)
