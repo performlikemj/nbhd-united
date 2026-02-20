@@ -19,7 +19,7 @@ import type { TelegramLinkResponse } from "@/lib/api";
 const providers = [
   { key: "gmail", label: "Gmail" },
   { key: "google-calendar", label: "Google Calendar" },
-  { key: "sautai", label: "Sautai" },
+  // { key: "sautai", label: "Sautai — Coming Soon" },
 ];
 
 function TelegramCard() {
