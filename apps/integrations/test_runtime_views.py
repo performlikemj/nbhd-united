@@ -388,6 +388,8 @@ class RuntimeMemorySyncViewTest(TestCase):
         from apps.journal.models import Document
 
         self.tenant = create_tenant(display_name="SyncTest", telegram_chat_id=818181)
+        # Clear seeded starter docs to test with controlled data only.
+        Document.objects.filter(tenant=self.tenant).delete()
         Document.objects.create(
             tenant=self.tenant,
             kind="memory",
