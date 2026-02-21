@@ -157,8 +157,26 @@ def update_tenant_config(tenant_id: str) -> None:
     # Write to file share (source of truth — OpenClaw reads from file after first boot)
     upload_config_to_file_share(str(tenant.id), config_json)
 
-    # TODO: migrate tenant skill templates to file-share-backed storage and read them during startup,
-    # so future updates do not require container environment variable revisions.
+    # Write workspace files (AGENTS.md, SOUL.md, etc.) to file share
+    # so updates propagate without needing container env var changes.
+    try:
+        from .azure_client import upload_workspace_file
+        from .personas import render_workspace_files
+
+        persona_key = (tenant.user.preferences or {}).get("agent_persona", "neighbor")
+        workspace_files = render_workspace_files(persona_key, tenant=tenant)
+
+        file_map = {
+            "NBHD_AGENTS_MD": "workspace/AGENTS.md",
+            "NBHD_SOUL_MD": "workspace/SOUL.md",
+            "NBHD_IDENTITY_MD": "workspace/IDENTITY.md",
+        }
+        for env_key, file_path in file_map.items():
+            content = workspace_files.get(env_key, "")
+            if content:
+                upload_workspace_file(str(tenant.id), file_path, content)
+    except Exception:
+        logger.exception("Failed to upload workspace files for tenant %s", tenant_id)
 
     logger.info("Updated OpenClaw config for tenant %s", tenant_id)
 

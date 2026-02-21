@@ -344,6 +344,40 @@ def upload_config_to_file_share(tenant_id: str, config_json: str) -> None:
     logger.info("Uploaded openclaw.json to file share %s", share_name)
 
 
+def upload_workspace_file(tenant_id: str, file_path: str, content: str) -> None:
+    """Upload a workspace file to the tenant's Azure File Share.
+
+    file_path is relative to the workspace root, e.g. 'workspace/AGENTS.md'.
+    """
+    share_name = f"ws-{str(tenant_id)[:20]}"
+
+    if _is_mock():
+        logger.info("[MOCK] Uploaded %s to file share %s", file_path, share_name)
+        return
+
+    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
+    if not account_name:
+        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
+
+    from azure.storage.fileshare import ShareFileClient
+
+    storage_client = get_storage_client()
+    keys = storage_client.storage_accounts.list_keys(
+        settings.AZURE_RESOURCE_GROUP, account_name,
+    )
+    account_key = keys.keys[0].value
+
+    file_client = ShareFileClient(
+        account_url=f"https://{account_name}.file.core.windows.net",
+        share_name=share_name,
+        file_path=file_path,
+        credential=account_key,
+    )
+    data = content.encode("utf-8")
+    file_client.upload_file(data, length=len(data))
+    logger.info("Uploaded %s to file share %s", file_path, share_name)
+
+
 def register_environment_storage(tenant_id: str) -> None:
     """Register a tenant's file share with the Container Apps Environment."""
     if _is_mock():
