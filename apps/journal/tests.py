@@ -1,7 +1,9 @@
 """Tests for journal models, markdown parser, and API endpoints."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
@@ -669,6 +671,42 @@ class RuntimeDailyNoteAPITest(TestCase):
         self.assertEqual(resp.status_code, 201)
         self.assertIn("Agent appended this", resp.data["markdown"])
         self.assertIn("Agent", resp.data["markdown"])
+
+    @patch("apps.integrations.runtime_views.tz.now")
+    def test_get_daily_note_defaults_to_tenant_local_date(self, mock_now):
+        self.user.timezone = "Asia/Tokyo"
+        self.user.save(update_fields=["timezone"])
+
+        utc_now = datetime(2026, 2, 21, 15, 0, 0, tzinfo=ZoneInfo("UTC"))
+        mock_now.return_value = utc_now
+
+        expected_local_date = utc_now.astimezone(ZoneInfo("Asia/Tokyo")).date()
+
+        resp = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/daily-note/",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["date"], str(expected_local_date))
+
+    @patch("apps.integrations.runtime_views.tz.now")
+    def test_append_daily_note_defaults_to_tenant_local_date(self, mock_now):
+        self.user.timezone = "Asia/Tokyo"
+        self.user.save(update_fields=["timezone"])
+
+        utc_now = datetime(2026, 2, 21, 15, 0, 0, tzinfo=ZoneInfo("UTC"))
+        mock_now.return_value = utc_now
+
+        expected_local_date = utc_now.astimezone(ZoneInfo("Asia/Tokyo")).date()
+
+        resp = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/daily-note/append/",
+            {"content": "Local append test"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["date"], str(expected_local_date))
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")

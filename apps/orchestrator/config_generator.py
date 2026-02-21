@@ -13,7 +13,7 @@ from apps.orchestrator.tool_policy import generate_tool_config
 from apps.tenants.models import Tenant
 
 _MORNING_BRIEFING_PROMPT = (
-    "Good morning! Create today's morning briefing.\n\n"
+    "Good morning! Create today's morning briefing (based on the user's local timezone).\n\n"
     "Gather context:\n"
     "1. Get weather using: curl -s 'wttr.in/{city}?format=%c+%t+%h+%w' for current conditions, "
     "or curl -s 'wttr.in/{city}?format=3' for a quick summary. "
@@ -46,6 +46,8 @@ _MORNING_BRIEFING_PROMPT = (
     "Finally, send a friendly morning summary via Telegram highlighting the key things. "
     "Keep the Telegram message concise (the detail lives in the journal). "
     "Mention the weather, top priority, and anything time-sensitive.\n\n"
+    "When writing daily note sections, include the local target date if supported by your tool call. "
+    "Use YYYY-MM-DD in the user's timezone context when passing `date` explicitly (avoid UTC drift).\n\n"
     "Note: These are default sections. The user may customize or remove them — "
     "only fill in sections that exist in their template."
 )
@@ -68,6 +70,7 @@ _EVENING_CHECKIN_PROMPT = (
     "1. Top priority\n"
     "2. Second priority\n"
     "3. Third priority\n\n"
+    "Use the local user date when writing with date arguments to avoid timezone drift.\n\n"
     "### Blockers or decisions needed?\n"
     "- Any open decisions or things blocking progress\n\n"
     "### Energy/mood (1-10)\n"

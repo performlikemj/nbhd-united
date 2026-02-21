@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from uuid import UUID
 
 import httpx
@@ -157,6 +158,23 @@ def _parse_iso_date(raw_value: str | None, *, field_name: str) -> date | None:
         return date.fromisoformat(str(raw_value))
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field_name} must be YYYY-MM-DD") from exc
+
+
+def _tenant_timezone_name(tenant: Tenant) -> str:
+    timezone_name = str(getattr(tenant.user, "timezone", "") or "UTC")
+    try:
+        ZoneInfo(timezone_name)
+        return timezone_name
+    except ZoneInfoNotFoundError:
+        return "UTC"
+
+
+def _tenant_now(tenant: Tenant) -> datetime:
+    return tz.now().astimezone(ZoneInfo(_tenant_timezone_name(tenant)))
+
+
+def _tenant_today(tenant: Tenant) -> date:
+    return _tenant_now(tenant).date()
 
 
 def _parse_journal_date_range(request) -> tuple[date | None, date | None]:
@@ -637,7 +655,7 @@ class RuntimeDailyNotesView(APIView):
             return tenant_failure
 
         try:
-            d = _parse_iso_date(request.query_params.get("date"), field_name="date") or tz.now().date()
+            d = _parse_iso_date(request.query_params.get("date"), field_name="date") or _tenant_today(tenant)
         except ValueError as exc:
             return Response(
                 {"error": "invalid_request", "detail": str(exc)},
@@ -689,7 +707,7 @@ class RuntimeDailyNoteAppendView(APIView):
             )
 
         try:
-            d = _parse_iso_date(request.data.get("date"), field_name="date") or tz.now().date()
+            d = _parse_iso_date(request.data.get("date"), field_name="date") or _tenant_today(tenant)
         except ValueError as exc:
             return Response(
                 {"error": "invalid_request", "detail": str(exc)},
@@ -733,7 +751,7 @@ class RuntimeDailyNoteAppendView(APIView):
                 doc.markdown = md.rstrip() + f"\n\n{marker}\n{content}\n"
         else:
             # Quick-log append with timestamp
-            now = tz.now()
+            now = _tenant_now(tenant)
             timestamp = now.strftime("%H:%M")
             entry = f"- **{timestamp}** (agent) — {content}"
             doc.markdown = (doc.markdown or "").rstrip() + "\n\n" + entry + "\n"
@@ -839,7 +857,7 @@ class RuntimeJournalContextView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        cutoff = (tz.now() - timedelta(days=days)).date()
+        cutoff = (_tenant_now(tenant) - timedelta(days=days)).date()
 
         recent_docs = Document.objects.filter(
             tenant=tenant, kind="daily", slug__gte=str(cutoff)
@@ -1346,7 +1364,7 @@ class RuntimeDocumentAppendView(APIView):
             )
         if not slug:
             if kind == "daily":
-                slug = str(tz.now().date())
+                slug = str(_tenant_today(tenant))
             else:
                 slug = kind
 
@@ -1360,7 +1378,7 @@ class RuntimeDocumentAppendView(APIView):
             },
         )
 
-        time_str = tz.now().strftime("%H:%M")
+        time_str = _tenant_now(tenant).strftime("%H:%M")
         entry_block = f"\n\n### {time_str} — Agent\n{content}\n"
         doc.markdown = (doc.markdown or "").rstrip() + entry_block
         doc.save()
