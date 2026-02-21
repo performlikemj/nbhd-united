@@ -5,7 +5,17 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { isLoggedIn } from "@/lib/auth";
 
-const plans = [
+type PlanCard = {
+  name: string;
+  price: string;
+  model: string;
+  features: string[];
+  comingSoon?: boolean;
+  comingSoonLabel?: string;
+  highlight?: boolean;
+};
+
+const plans: PlanCard[] = [
   {
     name: "Starter",
     price: "$0",
