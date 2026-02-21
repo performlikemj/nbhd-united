@@ -161,7 +161,7 @@ class TelegramWebhookViewTest(TestCase):
             },
         }
 
-        response = self._post_update({"message": {"chat": {"id": 123459}})
+        response = self._post_update({"message": {"chat": {"id": 123459}}})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["ok"], True)
