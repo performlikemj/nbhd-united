@@ -153,14 +153,19 @@ def _build_automation_prompt(automation: Automation, run_id: uuid.UUID) -> str:
     if automation.kind == Automation.Kind.DAILY_BRIEF:
         return (
             f"[AUTOMATION:daily_brief run_id={run_id}] "
-            "Prepare today's brief using available tools and memory. "
-            "Respond with sections: Top Priorities, Calendar Constraints, Inbox Actions, Suggested Next Step."
+            "Run PKM Loop in daily-reflection mode. "
+            "Use context + extraction workflow from the pkm-loop skill: "
+            "pull today’s context, capture candidate goals/tasks/ideas/lessons, "
+            "cross-check duplicates, and present a friendly grouped confirmation before any writes. "
+            "If approved, draft a short daily summary in weekly/monthly-friendly style and optionally persist via tools."
         )
     if automation.kind == Automation.Kind.WEEKLY_REVIEW:
         return (
             f"[AUTOMATION:weekly_review run_id={run_id}] "
-            "Prepare a concise weekly review. "
-            "Respond with sections: Wins, Misses, Risks, Next Week Focus (top 3)."
+            "Run PKM Loop weekly-review mode. "
+            "Use context from the last 7 days, assemble a weekly review draft, "
+            "check pending lessons, then ask one grouped approval to save under `weekly`. "
+            "If today is the 1st of month, include monthly goals-check proposals in the same pass."
         )
     raise AutomationValidationError(f"Unsupported automation kind: {automation.kind}")
 
