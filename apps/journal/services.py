@@ -8,7 +8,7 @@ import re
 from django.core.exceptions import ValidationError
 from django.utils import timezone as tz
 
-from .models import DailyNote, NoteTemplate
+from .models import DailyNote, NoteTemplate, Document
 
 
 DEFAULT_TEMPLATE_SLUG = "default"
