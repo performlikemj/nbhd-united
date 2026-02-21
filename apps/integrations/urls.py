@@ -11,6 +11,9 @@ from .runtime_views import (
     RuntimeGmailMessageDetailView,
     RuntimeGmailMessagesView,
     RuntimeJournalContextView,
+    RuntimeLessonCreateView,
+    RuntimeLessonPendingView,
+    RuntimeLessonSearchView,
     RuntimeJournalEntriesView,
     RuntimeJournalSearchView,
     RuntimeMemorySyncView,
@@ -77,6 +80,23 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/journal-context/",
         RuntimeJournalContextView.as_view(),
         name="runtime-journal-context",
+    ),
+    # Lessons runtime endpoints
+    path(
+        "runtime/<uuid:tenant_id>/lessons/",
+        RuntimeLessonCreateView.as_view(),
+        name="runtime-lessons",
+    ),
+    # Lessons search and queue endpoints (runtime clients)
+    path(
+        "runtime/<uuid:tenant_id>/lessons/search/",
+        RuntimeLessonSearchView.as_view(),
+        name="runtime-lessons-search",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/lessons/pending/",
+        RuntimeLessonPendingView.as_view(),
+        name="runtime-lessons-pending",
     ),
     # Journal search
     path(

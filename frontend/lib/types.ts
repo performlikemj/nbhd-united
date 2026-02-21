@@ -331,3 +331,43 @@ export interface AutomationRun {
   created_at: string;
   updated_at: string;
 }
+
+
+export interface Lesson {
+  id: number;
+  text: string;
+  context: string;
+  tags: string[];
+  cluster_id: number | null;
+  cluster_label: string;
+  source_type: string;
+  source_ref: string;
+  status: "pending" | "approved" | "dismissed";
+  suggested_at: string;
+  approved_at: string | null;
+  created_at: string;
+}
+
+export interface ConstellationNode {
+  id: number;
+  text: string;
+  tags: string[];
+  cluster_id: number | null;
+  cluster_label: string;
+  x: number;
+  y: number;
+  created_at: string;
+}
+
+export interface ConstellationEdge {
+  source: number;
+  target: number;
+  similarity: number;
+  connection_type: string;
+}
+
+export interface ConstellationData {
+  nodes: ConstellationNode[];
+  edges: ConstellationEdge[];
+  clusters: { id: number; label: string; count: number; tags: string[] }[];
+}

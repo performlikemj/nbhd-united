@@ -20,6 +20,7 @@ from .services import (
     is_rate_limited,
     send_onboarding_link,
 )
+from .lesson_callbacks import handle_lesson_callback
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +165,12 @@ def telegram_webhook(request):
         return HttpResponse("Too many requests", status=429)
 
     tenant = resolve_tenant_by_chat_id(chat_id)
+
+    # Handle lesson approval callbacks
+    if "callback_query" in update and tenant is not None:
+        callback_data = update["callback_query"].get("data", "")
+        if callback_data.startswith("lesson:"):
+            return handle_lesson_callback(update, tenant)
 
     # Unknown/inactive users are guided through onboarding.
     if not tenant:

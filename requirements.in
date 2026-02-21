@@ -25,6 +25,7 @@ qrcode[pil]
 litellm
 openai
 tiktoken
+pgvector
 
 # HTTP client (for routing to OpenClaw instances)
 httpx

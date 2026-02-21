@@ -16,10 +16,14 @@ class RenderMemoryFilesTest(TestCase):
         self.tenant = create_tenant(display_name="Sync", telegram_chat_id=808080)
 
     def test_empty_when_no_documents(self):
+        # Tenant creation seeds starter docs; clear them to test empty state.
+        Document.objects.filter(tenant=self.tenant).delete()
         files = render_memory_files(self.tenant)
         self.assertEqual(files, {})
 
     def test_renders_non_daily_documents(self):
+        # Clear seeded docs to test with controlled data only.
+        Document.objects.filter(tenant=self.tenant).delete()
         Document.objects.create(
             tenant=self.tenant,
             kind="memory",
@@ -68,7 +72,10 @@ class RenderMemoryFilesTest(TestCase):
         self.assertNotIn(f"memory/journal/daily/{old_date}.md", files)
 
     def test_excludes_other_tenants(self):
+        # Clear seeded docs to test isolation with controlled data only.
+        Document.objects.filter(tenant=self.tenant).delete()
         other = create_tenant(display_name="Other", telegram_chat_id=909090)
+        Document.objects.filter(tenant=other).delete()
         Document.objects.create(
             tenant=other,
             kind="memory",
