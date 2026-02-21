@@ -136,10 +136,30 @@ class LessonViewSet(viewsets.ModelViewSet):
             to_lesson_id__in=lesson_ids,
         )
 
+        # Build cluster summaries for the frontend sidebar.
+        grouped: dict[tuple[int, str], list[Lesson]] = {}
+        for lesson in lessons:
+            if lesson.cluster_id is not None:
+                grouped.setdefault((lesson.cluster_id, lesson.cluster_label or ""), []).append(lesson)
+
+        clusters = []
+        for (cluster_id, cluster_label), cluster_lessons in grouped.items():
+            all_tags = [tag for lesson in cluster_lessons for tag in lesson.tags]
+            common_tags = [tag for tag, _count in Counter(all_tags).most_common(3)]
+            clusters.append(
+                {
+                    "id": cluster_id,
+                    "label": cluster_label,
+                    "count": len(cluster_lessons),
+                    "tags": common_tags,
+                }
+            )
+
         return Response(
             {
                 "nodes": ConstellationNodeSerializer(lessons, many=True).data,
                 "edges": ConstellationEdgeSerializer(edges, many=True).data,
+                "clusters": clusters,
             }
         )
 
