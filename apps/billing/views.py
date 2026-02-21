@@ -21,6 +21,11 @@ from .services import (
 logger = logging.getLogger(__name__)
 
 
+def _billing_is_enabled() -> bool:
+    """Whether paid billing flows should be allowed."""
+    return bool(settings.ENABLED_STRIPE_TIERS)
+
+
 def _get_stripe_api_key() -> str:
     """Return the Stripe API key matching the configured mode."""
     if settings.STRIPE_LIVE_MODE:
@@ -82,6 +87,12 @@ class StripePortalView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        if not _billing_is_enabled():
+            return Response(
+                {"detail": "Billing is temporarily disabled. Enjoy your free trial."},
+                status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         api_key = _require_stripe_api_key()
         if not api_key:
             return Response(
@@ -122,7 +133,7 @@ class StripeCheckoutView(APIView):
                 status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        if not settings.ENABLED_STRIPE_TIERS:
+        if not _billing_is_enabled():
             return Response(
                 {"detail": "Billing is temporarily disabled. Enjoy your free trial."},
                 status=http_status.HTTP_503_SERVICE_UNAVAILABLE,

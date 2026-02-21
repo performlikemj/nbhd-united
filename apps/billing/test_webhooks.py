@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase, override_settings
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from apps.tenants.models import User
 from apps.tenants.services import create_tenant
 
 
@@ -132,6 +131,33 @@ class StripeCheckoutViewTest(TestCase):
 
         self.assertEqual(response.status_code, 503)
         mock_session_create.assert_not_called()
+
+
+class StripePortalGatingTest(TestCase):
+    """Billing should stay offline until launch re-opens."""
+
+    @override_settings(
+        ENABLED_STRIPE_TIERS=[],
+        STRIPE_TEST_SECRET_KEY="sk_test_portal",
+    )
+    @patch("apps.billing.views.stripe.billing_portal.Session.create")
+    def test_portal_is_blocked_while_billing_disabled(self, mock_portal_create):
+        tenant = create_tenant(display_name="Portal Disabled", telegram_chat_id=607)
+        tenant.stripe_customer_id = "cus_portal_321"
+        tenant.save(update_fields=["stripe_customer_id", "updated_at"])
+        user = tenant.user
+        refresh = RefreshToken.for_user(user)
+
+        response = self.client.post(
+            "/api/v1/billing/portal/",
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}",
+        )
+
+        self.assertEqual(response.status_code, 503)
+        mock_portal_create.assert_not_called()
+        self.assertIn("temporarily disabled", response.json()["detail"])
+
 
 
 @override_settings(STRIPE_TEST_SECRET_KEY="sk_test_portal")
