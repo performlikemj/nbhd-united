@@ -258,12 +258,38 @@ def apply_pending_configs(request):
                 logger.exception("Auto image update failed for tenant %s", tenant.id)
                 image_failed += 1
 
+    # Re-seed cron jobs for active tenants that have none.
+    cron_seeded = 0
+    cron_seed_failed = 0
+    from apps.orchestrator.services import seed_cron_jobs
+
+    active_tenants_with_containers = Tenant.objects.filter(
+        status=Tenant.Status.ACTIVE,
+        container_id__gt="",
+    ).select_related("user")
+
+    for tenant in active_tenants_with_containers:
+        try:
+            result = seed_cron_jobs(tenant)
+            if result.get("created", 0) > 0:
+                cron_seeded += 1
+                logger.info(
+                    "Re-seeded %d cron jobs for tenant %s",
+                    result["created"],
+                    tenant.id,
+                )
+        except Exception:
+            cron_seed_failed += 1
+            logger.exception("Cron re-seed failed for tenant %s", tenant.id)
+
     return JsonResponse({
         "updated": updated,
         "failed": failed,
         "evaluated": evaluated,
         "image_updated": image_updated,
         "image_failed": image_failed,
+        "cron_seeded": cron_seeded,
+        "cron_seed_failed": cron_seed_failed,
     })
 
 
