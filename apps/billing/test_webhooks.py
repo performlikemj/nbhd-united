@@ -61,7 +61,8 @@ class StripeWebhookViewTest(TestCase):
 
 
 @override_settings(
-    STRIPE_PRICE_IDS={"premium": "price_premium_test"},
+    STRIPE_PRICE_IDS={"starter": "price_starter_test", "premium": "price_premium_test"},
+    ENABLED_STRIPE_TIERS=["starter", "premium"],
     STRIPE_TEST_SECRET_KEY="sk_test_checkout",
 )
 class StripeCheckoutViewTest(TestCase):
@@ -90,6 +91,20 @@ class StripeCheckoutViewTest(TestCase):
         self.assertEqual(call_kwargs["metadata"]["tier"], "premium")
         self.assertEqual(call_kwargs["metadata"]["user_id"], str(self.user.id))
         self.assertEqual(call_kwargs["api_key"], "sk_test_checkout")
+
+    @override_settings(ENABLED_STRIPE_TIERS=["starter"])
+    @patch("apps.billing.views.stripe.checkout.Session.create")
+    def test_checkout_rejects_disabled_tier(self, mock_session_create):
+        response = self.client.post(
+            "/api/v1/billing/checkout/",
+            {"tier": "premium"},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self.auth_header,
+        )
+
+        self.assertEqual(response.status_code, 400)
+        mock_session_create.assert_not_called()
+        self.assertIn("temporarily unavailable", response.json()["detail"])
 
     @override_settings(STRIPE_TEST_SECRET_KEY="")
     @patch("apps.billing.views.stripe.checkout.Session.create")

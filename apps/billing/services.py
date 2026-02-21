@@ -5,6 +5,7 @@ import logging
 from datetime import date
 from decimal import Decimal
 
+from django.conf import settings
 from django.db.models import F
 
 from apps.tenants.models import Tenant
@@ -23,10 +24,17 @@ DEFAULT_COST = {"input": MODELS_DEFAULT_RATE["input"], "output": MODELS_DEFAULT_
 
 def _normalize_tier(raw_tier: str) -> str:
     allowed = {choice for choice, _ in Tenant.ModelTier.choices}
-    if raw_tier in allowed:
-        return raw_tier
-    logger.warning("Invalid tier '%s' from Stripe webhook, defaulting to starter", raw_tier)
-    return Tenant.ModelTier.STARTER
+    enabled = {tier for tier in settings.ENABLED_STRIPE_TIERS}
+
+    if raw_tier not in allowed:
+        logger.warning("Invalid tier '%s' from Stripe webhook, defaulting to starter", raw_tier)
+        return Tenant.ModelTier.STARTER
+
+    if raw_tier not in enabled:
+        logger.warning("Disabled tier '%s' from Stripe webhook, defaulting to starter", raw_tier)
+        return Tenant.ModelTier.STARTER
+
+    return raw_tier
 
 
 def _find_tenant_for_stripe_event(payload: dict) -> Tenant | None:

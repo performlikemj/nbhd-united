@@ -1,7 +1,7 @@
 """Additional billing service coverage."""
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
@@ -36,6 +36,21 @@ class BillingWebhookServiceTest(TestCase):
                 "metadata": {"user_id": str(self.tenant.user_id), "tier": "enterprise"},
                 "customer": "cus_123",
                 "subscription": "sub_123",
+            }
+        )
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.model_tier, Tenant.ModelTier.STARTER)
+        mock_publish.assert_called_once()
+
+    @override_settings(ENABLED_STRIPE_TIERS=["starter"])
+    @patch("apps.cron.publish.publish_task")
+    def test_checkout_completed_disabled_tier_defaults_to_basic(self, mock_publish):
+        handle_checkout_completed(
+            {
+                "metadata": {"user_id": str(self.tenant.user_id), "tier": "premium"},
+                "customer": "cus_456",
+                "subscription": "sub_456",
             }
         )
 

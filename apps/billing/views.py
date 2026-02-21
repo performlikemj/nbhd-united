@@ -122,9 +122,15 @@ class StripeCheckoutView(APIView):
                 status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        tier = request.data.get("tier", "basic")
-        price_id = settings.STRIPE_PRICE_IDS.get(tier)
+        tier = (request.data.get("tier", "starter") or "").strip()
 
+        if tier not in set(settings.ENABLED_STRIPE_TIERS):
+            return Response(
+                {"detail": f"Tier '{tier}' is temporarily unavailable."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        price_id = settings.STRIPE_PRICE_IDS.get(tier)
         if not price_id:
             return Response(
                 {"detail": f"Unknown tier: {tier}"},

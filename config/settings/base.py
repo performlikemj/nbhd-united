@@ -262,12 +262,18 @@ AZURE_KEY_VAULT_NAME = env("AZURE_KEY_VAULT_NAME", default="kv-nbhd-prod")
 AZURE_PROVISIONER_CLIENT_ID = env("AZURE_PROVISIONER_CLIENT_ID", default="")
 AZURE_STORAGE_ACCOUNT_NAME = env("AZURE_STORAGE_ACCOUNT_NAME", default="")
 
-# Stripe price IDs
+# Stripe pricing controls
 STRIPE_PRICE_IDS = {
     "starter": env("STRIPE_PRICE_STARTER", default=""),
     "premium": env("STRIPE_PRICE_PREMIUM", default=""),
     "byok": env("STRIPE_PRICE_BYOK", default=""),
 }
+
+# Programmatic plan controls for checkout (frontend is also filtered, but this keeps payments safe)
+ENABLED_STRIPE_TIERS = env.list(
+    "ENABLED_STRIPE_TIERS",
+    default=["starter"],
+)
 
 # Frontend URL (for redirects)
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
