@@ -8,6 +8,7 @@ These skills are team-authored and deployed with the runtime image. They are syn
 
 1. `daily-journal`
 2. `weekly-review`
+3. `pkm-loop`
 
 ## Tool Contracts
 
