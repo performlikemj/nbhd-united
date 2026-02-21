@@ -10,8 +10,8 @@ import { useCheckoutMutation, useStripePortalMutation, useTenantQuery } from "@/
 
 const PLAN_OPTIONS = [
   { id: "starter", name: "Starter", price: "Free", description: "7-day free trial", available: false },
-  { id: "premium", name: "Premium", price: "$25/mo", description: "Claude Sonnet & Opus (coming in March)", available: false },
-  { id: "byok", name: "BYOK", price: "$8/mo", description: "Bring Your Own Key (coming in March)", available: false },
+  { id: "premium", name: "Premium", price: "$25/mo", description: "Claude Sonnet & Opus (coming in 1 week)", available: false },
+  { id: "byok", name: "BYOK", price: "$8/mo", description: "Bring Your Own Key (coming in 1 week)", available: false },
 ] as const;
 
 const HAS_BILLABLE_PLANS = false;
@@ -192,7 +192,7 @@ export default function SettingsBillingPage() {
                 <Link href="/legal/refund" className="underline hover:text-ink-muted">Refund Policy</Link>.
                 </>
               ) : (
-                <>Enjoy your free trial and check back in March for paid plans and invoice upgrades.</>
+                <>Enjoy your free trial and check back in 1 week for paid plans and invoice upgrades.</>
               )}
             </p>
 
@@ -216,7 +216,7 @@ export default function SettingsBillingPage() {
             </div>
             <h3 className="mt-4 text-lg font-semibold text-ink">No subscription yet</h3>
             <p className="mt-2 max-w-sm text-sm text-ink-muted">
-              You&apos;ll get a 7-day free setup trial — paid plans return in March.
+              You&apos;ll get a 7-day free setup trial — paid plans return in 1 week.
             </p>
             <div className="mt-6">
               <Link
@@ -234,7 +234,7 @@ export default function SettingsBillingPage() {
                 <Link href="/legal/refund" className="underline hover:text-ink-muted">Refund Policy</Link>.
                 </>
               ) : (
-                <>Enjoy your free trial and check back in March for paid plans and invoice upgrades.</>
+                <>Enjoy your free trial and check back in 1 week for paid plans and invoice upgrades.</>
               )}
             </p>
             {checkoutError && (

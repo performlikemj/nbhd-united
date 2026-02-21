@@ -24,7 +24,7 @@ const plans = [
     price: "$25",
     model: "Claude Sonnet / Opus",
     comingSoon: true,
-    comingSoonLabel: "March",
+    comingSoonLabel: "in 1 week",
     features: [
       "Everything in Starter",
       "Advanced reasoning models",
@@ -37,7 +37,7 @@ const plans = [
     price: "$8",
     model: "Your API key",
     comingSoon: true,
-    comingSoonLabel: "March",
+    comingSoonLabel: "in 1 week",
     features: [
       "Everything in Starter",
       "Use your own AI provider key",
