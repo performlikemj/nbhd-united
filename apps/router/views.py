@@ -31,6 +31,21 @@ def _coerce_non_negative_int(value: object) -> int:
         return value
     if isinstance(value, float) and value.is_integer() and value >= 0:
         return int(value)
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return 0
+        try:
+            parsed = int(value)
+        except ValueError:
+            try:
+                parsed_float = float(value)
+            except ValueError:
+                return 0
+            if parsed_float.is_integer():
+                return int(parsed_float)
+            return 0
+        return parsed if parsed >= 0 else 0
     return 0
 
 
@@ -56,8 +71,12 @@ def _record_usage_from_openclaw_result(tenant: Tenant, result: object) -> None:
         return
 
     usage = _extract_usage_payload(result)
-    input_tokens = _coerce_non_negative_int(usage.get("input_tokens"))
-    output_tokens = _coerce_non_negative_int(usage.get("output_tokens"))
+    input_tokens = _coerce_non_negative_int(
+        usage.get("input_tokens", usage.get("input"))
+    )
+    output_tokens = _coerce_non_negative_int(
+        usage.get("output_tokens", usage.get("output"))
+    )
     model_used = ""
     if isinstance(usage.get("model_used"), str):
         model_used = usage.get("model_used") or ""

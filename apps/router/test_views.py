@@ -142,6 +142,38 @@ class TelegramWebhookViewTest(TestCase):
             model_used="anthropic/claude-sonnet-4-20250514",
         )
 
+    @patch("apps.router.views.record_usage")
+    @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
+    def test_active_tenant_records_usage_with_raw_token_fields_and_string_values(
+        self, mock_forward, mock_record_usage
+    ):
+        tenant = create_tenant(display_name="ActiveAliasedUsage", telegram_chat_id=123459)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.container_fqdn = "oc-active.internal.azurecontainerapps.io"
+        tenant.save(update_fields=["status", "container_fqdn", "updated_at"])
+
+        mock_forward.return_value = {
+            "ok": True,
+            "usage": {
+                "input": "15",
+                "output": "27",
+                "model": "anthropic/claude-opus-4-20250514",
+            },
+        }
+
+        response = self._post_update({"message": {"chat": {"id": 123459}})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["ok"], True)
+        self.assertEqual(mock_record_usage.call_count, 1)
+        mock_record_usage.assert_called_once_with(
+            tenant=tenant,
+            event_type="message",
+            input_tokens=15,
+            output_tokens=27,
+            model_used="anthropic/claude-opus-4-20250514",
+        )
+
     @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
     def test_active_tenant_over_budget_is_blocked(self, mock_forward):
         tenant = create_tenant(display_name="QuotaBlocked", telegram_chat_id=123458)
