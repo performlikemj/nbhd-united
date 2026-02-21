@@ -19,12 +19,14 @@ class LessonCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Lesson
         fields = [
+            "id",
             "text",
             "context",
             "source_type",
             "source_ref",
             "tags",
         ]
+        read_only_fields = ["id"]
 
 
 class LessonApprovalSerializer(serializers.Serializer):
