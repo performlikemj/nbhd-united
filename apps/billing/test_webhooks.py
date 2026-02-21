@@ -160,7 +160,10 @@ class StripePortalGatingTest(TestCase):
 
 
 
-@override_settings(STRIPE_TEST_SECRET_KEY="sk_test_portal")
+@override_settings(
+    STRIPE_TEST_SECRET_KEY="sk_test_portal",
+    ENABLED_STRIPE_TIERS=["starter"],
+)
 class StripePortalViewTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Portal", telegram_chat_id=601)
