@@ -14,35 +14,28 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         with connection.cursor() as cursor:
+            # Only select tables owned by the current database user,
+            # skipping Supabase internal tables (e.g. saml_relay_states).
             cursor.execute(
                 """
                 SELECT schemaname, tablename
                 FROM pg_tables
                 WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
                   AND rowsecurity = true
+                  AND tableowner = current_user
                 """
             )
             tables = cursor.fetchall()
 
             if not tables:
-                self.stdout.write("No tables with RLS enabled.")
+                self.stdout.write("No tables with RLS enabled (owned by current user).")
                 return
 
-            disabled = 0
-            skipped = 0
             for schema, table in tables:
                 fqn = f'"{schema}"."{table}"'
-                try:
-                    cursor.execute("SAVEPOINT disable_rls_sp;")
-                    cursor.execute(f"ALTER TABLE {fqn} DISABLE ROW LEVEL SECURITY;")
-                    cursor.execute("RELEASE SAVEPOINT disable_rls_sp;")
-                    disabled += 1
-                    self.stdout.write(f"  Disabled RLS on {fqn}")
-                except Exception:
-                    cursor.execute("ROLLBACK TO SAVEPOINT disable_rls_sp;")
-                    skipped += 1
+                cursor.execute(f"ALTER TABLE {fqn} DISABLE ROW LEVEL SECURITY;")
+                self.stdout.write(f"  Disabled RLS on {fqn}")
 
-            msg = f"Disabled RLS on {disabled} table(s)."
-            if skipped:
-                msg += f" Skipped {skipped} (not owner)."
-            self.stdout.write(self.style.SUCCESS(msg))
+            self.stdout.write(
+                self.style.SUCCESS(f"Disabled RLS on {len(tables)} table(s).")
+            )
