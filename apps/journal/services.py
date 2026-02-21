@@ -161,6 +161,70 @@ def seed_default_templates_for_tenant(*, tenant, dry_run: bool = False):
     return {"created": created, "template": template}
 
 
+STARTER_DOCUMENT_TEMPLATES = [
+    {
+        "kind": "tasks",
+        "slug": "tasks",
+        "title": "Tasks",
+        "markdown": """# Tasks\n\n## What to work on\n- [ ] Add one tiny task\n- [ ] Add another tiny task\n- [ ] Keep going\n\nWhen you finish one, check it off and add a new one.\n""",
+    },
+    {
+        "kind": "goal",
+        "slug": "goals",
+        "title": "Goals",
+        "markdown": """# Goals\n\n## Short-term goals\n- What can you finish soon?\n- Small win for this week:\n\n## Long-term goals\n- What would you be proud of in a few months?\n\nKeep these simple and update when your focus changes.\n""",
+    },
+    {
+        "kind": "ideas",
+        "slug": "ideas",
+        "title": "Ideas",
+        "markdown": """# Ideas\n\n## Brainstorming\n- A thought to try\n- Another half-formed idea\n\nEverything is welcome here. No idea is too small.\n""",
+    },
+    {
+        "kind": "memory",
+        "slug": "memory",
+        "title": "Memory",
+        "markdown": """# Memory\n\nThis document is your long-term memory about you.\nUse it to record preferences, recurring details, and lessons for your helper to remember.\n\n- What makes you feel supported\n- Things you care about\n- Decisions and context you'd like to keep forever\n""",
+    },
+]
+
+
+def seed_default_documents_for_tenant(*, tenant, dry_run: bool = False):
+    """Seed starter documents for PKM sections if they do not already exist."""
+    if dry_run:
+        return {
+            "created": {
+                spec["slug"]: not Document.objects.filter(
+                    tenant=tenant,
+                    kind=spec["kind"],
+                    slug=spec["slug"],
+                ).exists()
+                for spec in STARTER_DOCUMENT_TEMPLATES
+            },
+            "documents": {},
+        }
+
+    documents = {}
+    created = {}
+    for spec in STARTER_DOCUMENT_TEMPLATES:
+        doc, doc_created = Document.objects.get_or_create(
+            tenant=tenant,
+            kind=spec["kind"],
+            slug=spec["slug"],
+            defaults={
+                "title": spec["title"],
+                "markdown": spec["markdown"],
+            },
+        )
+        created[spec["slug"]] = doc_created
+        documents[spec["slug"]] = doc
+
+    return {
+        "created": created,
+        "documents": documents,
+    }
+
+
 def get_default_template(*, tenant):
     template = NoteTemplate.objects.filter(tenant=tenant, is_default=True).order_by("-updated_at").first()
     if template is not None:
