@@ -106,6 +106,20 @@ class StripeCheckoutViewTest(TestCase):
         mock_session_create.assert_not_called()
         self.assertIn("temporarily unavailable", response.json()["detail"])
 
+    @override_settings(ENABLED_STRIPE_TIERS=[])
+    @patch("apps.billing.views.stripe.checkout.Session.create")
+    def test_checkout_disabled_globally(self, mock_session_create):
+        response = self.client.post(
+            "/api/v1/billing/checkout/",
+            {"tier": "starter"},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self.auth_header,
+        )
+
+        self.assertEqual(response.status_code, 503)
+        mock_session_create.assert_not_called()
+        self.assertIn("Billing is temporarily disabled", response.json()["detail"])
+
     @override_settings(STRIPE_TEST_SECRET_KEY="")
     @patch("apps.billing.views.stripe.checkout.Session.create")
     def test_checkout_returns_503_when_stripe_not_configured(self, mock_session_create):

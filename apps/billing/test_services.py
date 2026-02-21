@@ -8,6 +8,7 @@ from apps.tenants.services import create_tenant
 from .services import handle_checkout_completed, handle_invoice_payment_failed, handle_subscription_deleted
 
 
+@override_settings(ENABLED_STRIPE_TIERS=["starter", "premium", "byok"])
 class BillingWebhookServiceTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Billing", telegram_chat_id=424242)

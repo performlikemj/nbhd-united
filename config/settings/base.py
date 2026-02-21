@@ -269,10 +269,11 @@ STRIPE_PRICE_IDS = {
     "byok": env("STRIPE_PRICE_BYOK", default=""),
 }
 
-# Programmatic plan controls for checkout (frontend is also filtered, but this keeps payments safe)
+# Programmatic plan controls for checkout (frontend is also filtered, but this keeps payments safe).
+# Empty means no paid plans are offered.
 ENABLED_STRIPE_TIERS = env.list(
     "ENABLED_STRIPE_TIERS",
-    default=["starter"],
+    default=[],
 )
 
 # Frontend URL (for redirects)

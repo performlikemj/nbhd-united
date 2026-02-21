@@ -122,6 +122,12 @@ class StripeCheckoutView(APIView):
                 status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        if not settings.ENABLED_STRIPE_TIERS:
+            return Response(
+                {"detail": "Billing is temporarily disabled. Enjoy your free trial."},
+                status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         tier = (request.data.get("tier", "starter") or "").strip()
 
         if tier not in set(settings.ENABLED_STRIPE_TIERS):

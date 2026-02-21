@@ -8,21 +8,23 @@ import { isLoggedIn } from "@/lib/auth";
 const plans = [
   {
     name: "Starter",
-    price: "$12",
+    price: "$0",
     model: "Kimi K2.5",
+    comingSoon: true,
+    comingSoonLabel: "Free week",
     features: [
       "Private AI assistant via Telegram",
       "Journaling & daily notes",
       "Scheduled tasks & reminders",
       "7-day free trial",
     ],
-    highlight: true,
   },
   {
     name: "Premium",
     price: "$25",
     model: "Claude Sonnet / Opus",
     comingSoon: true,
+    comingSoonLabel: "March",
     features: [
       "Everything in Starter",
       "Advanced reasoning models",
@@ -35,6 +37,7 @@ const plans = [
     price: "$8",
     model: "Your API key",
     comingSoon: true,
+    comingSoonLabel: "March",
     features: [
       "Everything in Starter",
       "Use your own AI provider key",
@@ -151,7 +154,7 @@ export default function LandingPage() {
                 <h3 className="text-lg font-semibold text-ink">{plan.name}</h3>
                 {"comingSoon" in plan && plan.comingSoon && (
                   <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
-                    Coming soon
+                    {plan.comingSoonLabel || "Coming soon"}
                   </span>
                 )}
               </div>
@@ -170,7 +173,7 @@ export default function LandingPage() {
               </ul>
               {"comingSoon" in plan && plan.comingSoon ? (
                 <span className="mt-6 block rounded-full border border-border-strong px-4 py-2.5 text-center text-sm font-medium text-ink-muted cursor-default opacity-60">
-                  Coming next week
+                  {plan.comingSoonLabel || "Coming soon"}
                 </span>
               ) : (
                 <Link
