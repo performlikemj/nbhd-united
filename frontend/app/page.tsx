@@ -16,23 +16,25 @@ const plans = [
       "Scheduled tasks & reminders",
       "7-day free trial",
     ],
+    highlight: true,
   },
   {
     name: "Premium",
     price: "$25",
     model: "Claude Sonnet / Opus",
+    comingSoon: true,
     features: [
       "Everything in Starter",
       "Advanced reasoning models",
       "Higher usage limits",
       "Priority support",
     ],
-    highlight: true,
   },
   {
     name: "Bring Your Own Key",
     price: "$8",
     model: "Your API key",
+    comingSoon: true,
     features: [
       "Everything in Starter",
       "Use your own AI provider key",
@@ -145,9 +147,16 @@ export default function LandingPage() {
                   : "border-border bg-surface-elevated"
               }`}
             >
-              <h3 className="text-lg font-semibold text-ink">{plan.name}</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-semibold text-ink">{plan.name}</h3>
+                {"comingSoon" in plan && plan.comingSoon && (
+                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                    Coming soon
+                  </span>
+                )}
+              </div>
               <p className="mt-1 text-sm text-ink-muted">{plan.model}</p>
-              <p className="mt-3 text-3xl font-bold text-ink">
+              <p className={`mt-3 text-3xl font-bold ${"comingSoon" in plan && plan.comingSoon ? "text-ink-muted" : "text-ink"}`}>
                 {plan.price}
                 <span className="text-base font-normal text-ink-muted">/mo</span>
               </p>
@@ -159,16 +168,22 @@ export default function LandingPage() {
                   </li>
                 ))}
               </ul>
-              <Link
-                href="/signup"
-                className={`mt-6 block rounded-full px-4 py-2.5 text-center text-sm font-medium transition ${
-                  plan.highlight
-                    ? "bg-accent text-white hover:bg-accent/85"
-                    : "border border-border-strong text-ink hover:bg-surface-hover"
-                }`}
-              >
-                Get started
-              </Link>
+              {"comingSoon" in plan && plan.comingSoon ? (
+                <span className="mt-6 block rounded-full border border-border-strong px-4 py-2.5 text-center text-sm font-medium text-ink-muted cursor-default opacity-60">
+                  Coming next week
+                </span>
+              ) : (
+                <Link
+                  href="/signup"
+                  className={`mt-6 block rounded-full px-4 py-2.5 text-center text-sm font-medium transition ${
+                    plan.highlight
+                      ? "bg-accent text-white hover:bg-accent/85"
+                      : "border border-border-strong text-ink hover:bg-surface-hover"
+                  }`}
+                >
+                  Get started
+                </Link>
+              )}
             </div>
           ))}
         </div>
