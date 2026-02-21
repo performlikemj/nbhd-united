@@ -37,7 +37,7 @@ function CheckIcon({ className }: { className?: string }) {
 }
 
 export default function OnboardingPage() {
-  const { data: me, isLoading } = useMeQuery();
+  const { data: me, isLoading, isFetching } = useMeQuery();
   const onboard = useOnboardMutation();
   const {
     mutateAsync: onboardTenant,
@@ -50,15 +50,54 @@ export default function OnboardingPage() {
   const [linkData, setLinkData] = useState<TelegramLinkResponse | null>(null);
   const [linkSecondsLeft, setLinkSecondsLeft] = useState(0);
   const [selectedPersona, setSelectedPersona] = useState("neighbor");
+  const [showCta, setShowCta] = useState(false);
 
   const tenant = me?.tenant;
   const hasTenant = Boolean(tenant);
   const runtimeReady = tenant?.status === "active";
+  const isTelegramLinkedInProfile = Boolean(tenant?.user.telegram_chat_id);
 
   const shouldPollTelegram = hasTenant;
   const { data: telegramStatus } = useTelegramStatusQuery(shouldPollTelegram);
-  const telegramLinked = telegramStatus?.linked ?? false;
+  const telegramLinked = isTelegramLinkedInProfile || Boolean(telegramStatus?.linked);
+  const ctaStorageKey = `nbhd:telegram-onboarding-cta:${me?.id ?? "anon"}`;
+  const showTelegramCta = !isLoading && !isFetching && showCta && !telegramLinked;
 
+  useEffect(() => {
+    if (typeof window === "undefined" || !me?.id) {
+      return;
+    }
+    if (telegramLinked) {
+      window.localStorage.removeItem(ctaStorageKey);
+      setShowCta(false);
+      return;
+    }
+
+    const state = window.localStorage.getItem(ctaStorageKey);
+    if (state === "dismissed" || state === "action" || state === "seen") {
+      setShowCta(false);
+      return;
+    }
+
+    setShowCta(true);
+    window.localStorage.setItem(ctaStorageKey, "seen");
+  }, [me?.id, telegramLinked, ctaStorageKey]);
+
+  const persistCtaAction = (state: "dismissed" | "action") => {
+    setShowCta(false);
+    if (typeof window !== "undefined" && me?.id) {
+      window.localStorage.setItem(ctaStorageKey, state);
+    }
+  };
+
+  const jumpToTelegramStep = () => {
+    persistCtaAction("action");
+    if (hasTenant) {
+      setActiveStep(2);
+    } else {
+      setActiveStep(1);
+    }
+  };
   // Compute step states (4 steps)
   const personaDone = hasTenant; // persona is selected when tenant is created
   const stepStates: StepState[] = [
@@ -123,6 +162,7 @@ export default function OnboardingPage() {
     try {
       const data = await generateLink.mutateAsync();
       setLinkData(data);
+      persistCtaAction("action");
     } catch {
       // error handled by mutation state
     }
@@ -281,6 +321,30 @@ export default function OnboardingPage() {
 
   return (
     <div className="space-y-4">
+      {showTelegramCta && (
+        <div className="relative rounded-panel border border-[#0088cc]/45 bg-gradient-to-r from-[#0088cc]/15 to-[#00a3ff]/10 px-4 py-3 shadow-[0_0_28px_rgba(0,136,204,0.35)]">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-ink">
+            Your assistant is powered by Telegram
+          </p>
+          <p className="mt-1 text-sm text-ink-muted">
+            Connect Telegram now to unlock messaging, reminders, and the upcoming feature set.
+          </p>
+          <button
+            type="button"
+            onClick={jumpToTelegramStep}
+            className="mt-3 rounded-full bg-[#0088cc] px-4 py-2 text-sm font-medium text-white shadow-[0_0_20px_rgba(0,136,204,0.45)] transition hover:bg-[#0077b5] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0088cc]"
+          >
+            {hasTenant ? "Connect Telegram" : "Set up your assistant"}
+          </button>
+          <button
+            type="button"
+            onClick={() => persistCtaAction("dismissed")}
+            className="ml-3 rounded-full border border-[#0088cc]/30 bg-surface/70 px-4 py-2 text-sm text-ink-muted transition hover:border-[#0088cc]/45 hover:text-ink"
+          >
+            Maybe later
+          </button>
+        </div>
+      )}
       <SectionCard
         title="Onboarding"
         subtitle="Complete these steps to activate your private Telegram assistant"

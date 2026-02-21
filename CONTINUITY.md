@@ -152,6 +152,11 @@ CONTINUITY.md
 - [2026-02-15] Fixed journal runtime tests to use `NBHD_INTERNAL_API_KEY` in overrides for consistent internal auth checks.
 - [2026-02-15] Merged `merge/journal-memory-updates` into `main` and pushed final integration commit; branch closed.
 - [2026-02-16] Added default OpenClaw Whisper transcription model config and OpenAI secret/env wiring for tenant OpenClaw containers.
+- [2026-02-21] Redirected signup completion to `/onboarding` so new accounts land on the Telegram setup flow before Journal.
+- [2026-02-21] Extended signup/login post-auth routing to go to `/onboarding` unless tenant is active and Telegram-linked; added Telegram-first glowing onboarding callout with CTA on the onboarding page.
+- [2026-02-21] Made Telegram onboarding callout dismissible with persistent hide preference; it now reads backend/DB link state so it no longer renders for already-linked users (including page-load state).
+- [2026-02-21] Refined Telegram callout UX: show only first `/onboarding` visit per user, auto-hide after one CTA action (`Maybe later`/open Telegram), and keep hidden for linked users to avoid return flicker.
+- [2026-02-21] Reduced onboarding nudge duplication by making the billing-page onboarding CTA context-aware and adding a small Telegram-connect entrypoint in Account settings when Telegram is not yet linked.
 
 ## Open Questions (UNCONFIRMED)
 - UNCONFIRMED: Preferred production auth/session contract for frontend API calls.

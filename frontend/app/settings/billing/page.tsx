@@ -61,6 +61,10 @@ export default function SettingsBillingPage() {
   const trialDays = tenant?.trial_days_remaining ?? null;
   const isTrialActive = Boolean(tenant?.is_trial && trialDays !== null && trialDays > 0);
   const isTrialExpired = Boolean(tenant?.is_trial && tenant?.trial_days_remaining === 0);
+  const isTelegramLinked = Boolean(tenant?.user.telegram_chat_id);
+  const onboardingCta = isTelegramLinked
+    ? { href: "/settings/integrations", label: "Review Telegram setup" }
+    : { href: "/onboarding", label: "Connect Telegram" };
 
   return (
     <div className="space-y-4">
@@ -192,14 +196,14 @@ export default function SettingsBillingPage() {
             </div>
             <h3 className="mt-4 text-lg font-semibold text-ink">No subscription yet</h3>
             <p className="mt-2 max-w-sm text-sm text-ink-muted">
-              You&apos;ll get a 7-day free trial on onboarding, then choose a plan to keep your assistant running.
+              You&apos;ll get a 7-day free setup trial, then choose a plan to keep your assistant running.
             </p>
             <div className="mt-6 flex gap-3">
               <Link
-                href="/onboarding"
+                href={onboardingCta.href}
                 className="rounded-full bg-accent px-5 py-2.5 text-sm font-medium text-white transition hover:bg-accent-hover"
               >
-                Start onboarding
+                {onboardingCta.label}
               </Link>
               <button
                 type="button"

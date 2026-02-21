@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 
-import { login } from "@/lib/api";
+import { fetchMe, login } from "@/lib/api";
 import { setTokens } from "@/lib/auth";
 
 export default function LoginPage() {
@@ -22,7 +22,13 @@ export default function LoginPage() {
     try {
       const tokens = await login(email, password);
       setTokens(tokens.access, tokens.refresh);
-      router.push("/");
+      try {
+        const me = await fetchMe();
+        const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active" || !me.tenant.user.telegram_chat_id;
+        router.push(isOnboardingNeeded ? "/onboarding" : "/journal");
+      } catch {
+        router.push("/onboarding");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed.");
     } finally {

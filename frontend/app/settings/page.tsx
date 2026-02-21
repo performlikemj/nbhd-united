@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { PersonaSelector } from "@/components/persona-selector";
@@ -592,7 +593,15 @@ export default function SettingsPage() {
                     {me.telegram_username ? `@${me.telegram_username}` : "Connected"}
                   </span>
                 ) : (
-                  <StatusPill status="pending" />
+                  <div className="space-y-2">
+                    <StatusPill status="pending" />
+                    <Link
+                      href="/settings/integrations"
+                      className="inline-flex rounded-full border border-border-strong px-3 py-1.5 text-xs text-ink hover:border-border transition"
+                    >
+                      Connect Telegram
+                    </Link>
+                  </div>
                 )}
               </dd>
             </div>
