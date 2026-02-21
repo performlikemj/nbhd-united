@@ -13,7 +13,7 @@ if [ -x ".venv/bin/python" ]; then
   PYTHON_BIN=".venv/bin/python"
 fi
 
-export DATABASE_URL="sqlite:///$DB_PATH"
+export DATABASE_URL="${DATABASE_URL:-sqlite:///$DB_PATH}"
 export AZURE_MOCK="true"
 
 $PYTHON_BIN manage.py migrate --noinput >/dev/null

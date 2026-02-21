@@ -49,7 +49,7 @@ class LessonViewSetTests(TestCase):
         self.assertEqual(list_response.status_code, 200)
         list_body = list_response.json()
         returned_ids = {item["id"] for item in list_body}
-        self.assertEqual(returned_ids, {str(own_lesson.id)})
+        self.assertEqual(returned_ids, {own_lesson.id})
 
         retrieve = self.client.get(f"/api/v1/lessons/{own_lesson.id}/")
         self.assertEqual(retrieve.status_code, 200)
@@ -117,7 +117,7 @@ class LessonViewSetTests(TestCase):
 
         list_response = self.client.get("/api/v1/lessons/")
         self.assertEqual(list_response.status_code, 200)
-        self.assertNotIn(str(lesson_other.id), {item["id"] for item in list_response.json()})
+        self.assertNotIn(lesson_other.id, {item["id"] for item in list_response.json()})
 
         detail = self.client.get(f"/api/v1/lessons/{lesson_other.id}/")
         self.assertEqual(detail.status_code, 404)
@@ -131,4 +131,4 @@ class LessonViewSetTests(TestCase):
         payload = response.json()
 
         self.assertEqual(len(payload), 1)
-        self.assertEqual(payload[0]["id"], str(pending.id))
+        self.assertEqual(payload[0]["id"], pending.id)

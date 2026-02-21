@@ -93,6 +93,20 @@ jobs:
   # ==========================================================================
   openclaw-config-smoke:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: smoke_db
+          POSTGRES_USER: smoke_user
+          POSTGRES_PASSWORD: smoke_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -116,6 +130,7 @@ jobs:
           DJANGO_SETTINGS_MODULE: config.settings.development
           SECRET_KEY: test-secret-key-not-for-production
           DEBUG: "True"
+          DATABASE_URL: postgres://smoke_user:smoke_password@localhost:5432/smoke_db
           ALLOWED_HOSTS: "*"
           MOONSHOT_API_KEY: "sk-smoke-test-dummy"
           NBHD_INTERNAL_API_KEY: "smoke-test-internal-key"
