@@ -28,11 +28,21 @@ class Command(BaseCommand):
                 self.stdout.write("No tables with RLS enabled.")
                 return
 
+            disabled = 0
+            skipped = 0
             for schema, table in tables:
                 fqn = f'"{schema}"."{table}"'
-                cursor.execute(f"ALTER TABLE {fqn} DISABLE ROW LEVEL SECURITY;")
-                self.stdout.write(f"  Disabled RLS on {fqn}")
+                try:
+                    cursor.execute("SAVEPOINT disable_rls_sp;")
+                    cursor.execute(f"ALTER TABLE {fqn} DISABLE ROW LEVEL SECURITY;")
+                    cursor.execute("RELEASE SAVEPOINT disable_rls_sp;")
+                    disabled += 1
+                    self.stdout.write(f"  Disabled RLS on {fqn}")
+                except Exception:
+                    cursor.execute("ROLLBACK TO SAVEPOINT disable_rls_sp;")
+                    skipped += 1
 
-            self.stdout.write(
-                self.style.SUCCESS(f"Disabled RLS on {len(tables)} table(s).")
-            )
+            msg = f"Disabled RLS on {disabled} table(s)."
+            if skipped:
+                msg += f" Skipped {skipped} (not owner)."
+            self.stdout.write(self.style.SUCCESS(msg))
