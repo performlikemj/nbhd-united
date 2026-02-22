@@ -248,6 +248,45 @@ class OnboardTenantViewTest(TestCase):
         mock_publish.assert_called_once_with("provision_tenant", str(tenant.id))
         mock_seed.assert_called_once_with(tenant=tenant)
 
+    @patch("apps.tenants.views.publish_task", side_effect=RuntimeError("qstash down"))
+    @patch("apps.tenants.views.seed_default_templates_for_tenant")
+    def test_onboard_returns_503_and_marks_pending_when_publish_fails(self, mock_seed, _mock_publish):
+        response = self.client.post(
+            "/api/v1/tenants/onboard/",
+            {
+                "display_name": "Trial User",
+                "timezone": "UTC",
+                "agent_persona": "neighbor",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("provisioning could not be started", response.data["detail"].lower())
+
+        self.user.refresh_from_db()
+        tenant = self.user.tenant
+        self.assertEqual(tenant.status, Tenant.Status.PENDING)
+        self.assertEqual(response.data["tenant_status"], Tenant.Status.PENDING)
+        mock_seed.assert_called_once_with(tenant=tenant)
+
+    def test_onboard_existing_pending_tenant_returns_provisioning_message(self):
+        Tenant.objects.create(user=self.user, status=Tenant.Status.PROVISIONING)
+
+        response = self.client.post(
+            "/api/v1/tenants/onboard/",
+            {
+                "display_name": "Trial User",
+                "timezone": "UTC",
+                "agent_persona": "neighbor",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["tenant_status"], Tenant.Status.PROVISIONING)
+        self.assertIn("provisioning", response.data["detail"].lower())
+
 
 class RefreshConfigViewTest(TestCase):
     def setUp(self):
@@ -295,7 +334,7 @@ class RefreshConfigViewTest(TestCase):
         mock_update.assert_not_called()
 
     @patch("apps.orchestrator.services.update_tenant_config")
-    def test_refresh_config_inactive_tenant(self, mock_update):
+    def test_refresh_config_pending_tenant_returns_provisioning_message(self, mock_update):
         tenant = self._create_user_with_tenant("Pending User", 602)
         tenant.status = Tenant.Status.PENDING
         tenant.save(update_fields=["status"])
@@ -303,8 +342,9 @@ class RefreshConfigViewTest(TestCase):
 
         response = self.client.post("/api/v1/tenants/refresh-config/")
 
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.data["detail"], "Agent is not active.")
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("provisioning", response.data["detail"].lower())
+        self.assertEqual(response.data["tenant_status"], Tenant.Status.PENDING)
         mock_update.assert_not_called()
 
     @patch("apps.orchestrator.services.update_tenant_config")

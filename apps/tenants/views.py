@@ -50,8 +50,17 @@ class OnboardTenantView(APIView):
         serializer.is_valid(raise_exception=True)
 
         if hasattr(request.user, "tenant"):
+            tenant = request.user.tenant
+            if tenant.status in {Tenant.Status.PENDING, Tenant.Status.PROVISIONING}:
+                return Response(
+                    {
+                        "detail": "Provisioning is still in progress. Please wait a moment and refresh.",
+                        "tenant_status": tenant.status,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
             return Response(
-                {"detail": "Tenant already exists."},
+                {"detail": "Tenant already exists.", "tenant_status": tenant.status},
                 status=status.HTTP_409_CONFLICT,
             )
 
@@ -77,7 +86,36 @@ class OnboardTenantView(APIView):
             status=Tenant.Status.PROVISIONING,
         )
         seed_default_templates_for_tenant(tenant=tenant)
-        publish_task("provision_tenant", str(tenant.id))
+
+        try:
+            publish_task("provision_tenant", str(tenant.id))
+        except Exception:
+            tenant.status = Tenant.Status.PENDING
+            tenant.save(update_fields=["status", "updated_at"])
+            logger.exception(
+                "tenant_provision_publish_failed",
+                extra={
+                    "tenant_id": str(tenant.id),
+                    "user_id": str(user.id),
+                    "email": user.email,
+                },
+            )
+            return Response(
+                {
+                    "detail": "Signup succeeded, but provisioning could not be started. Please retry shortly.",
+                    "tenant_status": tenant.status,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        logger.info(
+            "tenant_provision_publish_scheduled",
+            extra={
+                "tenant_id": str(tenant.id),
+                "user_id": str(user.id),
+                "email": user.email,
+            },
+        )
 
         return Response(TenantSerializer(tenant).data, status=status.HTTP_201_CREATED)
 
@@ -121,8 +159,16 @@ class RefreshConfigView(APIView):
             return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
 
         if tenant.status != Tenant.Status.ACTIVE:
+            if tenant.status in {Tenant.Status.PENDING, Tenant.Status.PROVISIONING}:
+                return Response(
+                    {
+                        "detail": "Provisioning is in progress. Try again once your assistant is ready.",
+                        "tenant_status": tenant.status,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
             return Response(
-                {"detail": "Agent is not active."},
+                {"detail": "Agent is not active.", "tenant_status": tenant.status},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

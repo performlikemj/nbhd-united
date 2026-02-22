@@ -12,6 +12,17 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 
+def _publish_log_context(task_name: str, args, kwargs):
+    context = {"task_name": task_name}
+    if task_name == "provision_tenant" and args:
+        context["tenant_id"] = str(args[0])
+    if "tenant_id" in kwargs:
+        context["tenant_id"] = str(kwargs["tenant_id"])
+    if "user_id" in kwargs:
+        context["user_id"] = str(kwargs["user_id"])
+    return context
+
+
 def publish_task(task_name: str, *args, **kwargs):
     """
     Publish a one-off task to QStash for async execution.
@@ -25,13 +36,15 @@ def publish_task(task_name: str, *args, **kwargs):
     """
     qstash_token = getattr(settings, "QSTASH_TOKEN", "")
     api_base_url = getattr(settings, "API_BASE_URL", "")
+    log_context = _publish_log_context(task_name, args, kwargs)
 
     if not qstash_token or not api_base_url:
         # Fallback: execute synchronously (useful in development)
         logger.warning(
-            "QStash not configured — executing task '%s' synchronously", task_name
+            "QStash not configured - executing task synchronously",
+            extra=log_context,
         )
-        from .views import execute_task_sync, TASK_MAP
+        from .views import TASK_MAP, execute_task_sync
 
         task_path = TASK_MAP[task_name]
         return execute_task_sync(task_path, *args, **kwargs)
@@ -47,7 +60,10 @@ def publish_task(task_name: str, *args, **kwargs):
             body={"args": list(args), "kwargs": kwargs},
             retries=3,
         )
-        logger.info("Published task '%s' to QStash -> %s", task_name, url)
-    except Exception as e:
-        logger.error("Failed to publish task '%s' to QStash: %s", task_name, e)
+        logger.info(
+            "Published task to QStash",
+            extra={**log_context, "url": url},
+        )
+    except Exception:
+        logger.exception("Failed to publish task to QStash", extra=log_context)
         raise
