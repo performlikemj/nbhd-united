@@ -94,9 +94,11 @@ else
     GATEWAY_ARGS=""
 fi
 
-# Unset TELEGRAM_BOT_TOKEN so OpenClaw doesn't auto-enable Telegram polling.
-# The central Django poller handles all inbound Telegram messages now.
-unset TELEGRAM_BOT_TOKEN
+# Set TELEGRAM_BOT_TOKEN to a dummy value so the Telegram provider
+# initialises its webhook server on :8787, but cannot poll getUpdates
+# (Telegram rejects the invalid token with 401).
+# The central Django poller handles all inbound Telegram messages.
+export TELEGRAM_BOT_TOKEN="disabled"
 
 # Start both processes in background
 # shellcheck disable=SC2086

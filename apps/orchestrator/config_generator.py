@@ -296,15 +296,9 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             },
         },
 
-        # Telegram channel — DISABLED for inbound polling.
-        # The central Django poller handles all inbound Telegram messages
-        # and forwards them to containers via /telegram-webhook.
-        #
-        # enabled=False starts the Telegram provider (webhook server on
-        # port 8787) without actively polling.  TELEGRAM_BOT_TOKEN is
-        # unset in entrypoint.sh so the provider cannot poll even if it
-        # tries.  The webhook server must be running for the poller's
-        # /telegram-webhook forwarding to work.
+        # Telegram channel — provider starts with a dummy bot token so the
+        # webhook server runs on :8787, but cannot poll getUpdates (401).
+        # The central Django poller forwards raw Telegram updates here.
         #
         # Note: entrypoint.sh injects webhookSecret into config at runtime.
         "channels": {
