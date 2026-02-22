@@ -179,6 +179,17 @@ def telegram_webhook(request):
         logger.info("Unknown chat_id %s, sending onboarding link", chat_id)
         return JsonResponse(response_data)
 
+    # Provisioning tenant — assistant is still waking up
+    if tenant.status in (Tenant.Status.PENDING, Tenant.Status.PROVISIONING):
+        return JsonResponse({
+            "method": "sendMessage",
+            "chat_id": chat_id,
+            "text": (
+                "Your assistant is waking up! 🌅 This usually takes about a minute. "
+                "I'll be ready to chat shortly — just send your message again in a moment!"
+            ),
+        })
+
     frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
     if (
         tenant.status == Tenant.Status.SUSPENDED

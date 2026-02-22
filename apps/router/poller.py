@@ -232,6 +232,15 @@ class TelegramPoller:
             logger.info("Unknown chat_id %s, sent onboarding link", chat_id)
             return
 
+        # Provisioning tenant — assistant is still waking up
+        if tenant.status in (Tenant.Status.PENDING, Tenant.Status.PROVISIONING):
+            self._send_message(
+                chat_id,
+                "Your assistant is waking up! 🌅 This usually takes about a minute. "
+                "I'll be ready to chat shortly — just send your message again in a moment!",
+            )
+            return
+
         # Suspended tenant without subscription
         frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
         if (

@@ -57,12 +57,14 @@ class ResolveContainerEdgeCaseTest(TestCase):
         self.assertIsNotNone(resolved)
         self.assertEqual(resolved.status, Tenant.Status.SUSPENDED)
 
-    def test_resolve_tenant_by_chat_id_returns_none_for_pending(self):
-        """Non-active, non-suspended tenants still return None."""
+    def test_resolve_tenant_by_chat_id_returns_tenant_for_pending(self):
+        """Pending tenants are returned so poller can send 'waking up' message."""
         self.tenant.status = Tenant.Status.PENDING
         self.tenant.save(update_fields=["status", "updated_at"])
 
-        self.assertIsNone(resolve_tenant_by_chat_id(111999))
+        tenant = resolve_tenant_by_chat_id(111999)
+        self.assertIsNotNone(tenant)
+        self.assertEqual(tenant.status, Tenant.Status.PENDING)
 
     def test_resolve_user_timezone_returns_utc_when_user_missing(self):
         self.assertEqual(resolve_user_timezone(404404), "UTC")
