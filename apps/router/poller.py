@@ -348,11 +348,8 @@ class TelegramPoller:
             # Container likely received it and will respond async — don't send error
             return
         except httpx.HTTPStatusError as e:
-            logger.error(
-                "Error forwarding to %s: status=%s body=%s",
-                tenant.container_fqdn, e.response.status_code,
-                e.response.text[:500] if e.response else "no-body",
-            )
+            logger.error("FWD_FAIL %s HTTP %s", tenant.container_fqdn, e.response.status_code)
+            logger.error("FWD_BODY %s", (e.response.text[:300] if e.response else "none"))
             self._send_message(chat_id, "Sorry, I'm having trouble connecting right now. Please try again shortly.")
             return
         except httpx.HTTPError as e:
