@@ -30,9 +30,11 @@ class ConfigGeneratorTest(TestCase):
         # Auth is intentionally present — token from env var for Django→OC calls
         self.assertEqual(config["gateway"]["auth"]["mode"], "token")
 
-    def test_channels_empty_for_central_poller(self):
+    def test_telegram_channel_disabled_for_central_poller(self):
+        """Telegram channel disabled — central Django poller handles inbound."""
         config = generate_openclaw_config(self.tenant)
-        self.assertEqual(config["channels"], {})
+        tg = config["channels"]["telegram"]
+        self.assertFalse(tg["enabled"])
 
     def test_starter_tier_model(self):
         self.tenant.model_tier = "starter"
@@ -128,17 +130,24 @@ class ConfigGeneratorTest(TestCase):
         self.assertIn("group:runtime", tools["allow"])
         self.assertEqual(tools["elevated"], {"enabled": False})
 
-    def test_telegram_channel_removed_for_central_poller(self):
-        """Telegram channel absent — central Django poller handles all Telegram."""
+    def test_chat_id_in_allow_from(self):
         config = generate_openclaw_config(self.tenant)
-        self.assertNotIn("telegram", config["channels"])
+        allow_from = config["channels"]["telegram"]["allowFrom"]
+        self.assertIn("999888777", allow_from)
 
-    def test_no_telegram_channel_regardless_of_chat_id(self):
-        """No telegram channel even when chat_id is missing."""
+    def test_no_chat_id_uses_disabled_dm_policy(self):
         self.tenant.user.telegram_chat_id = None
         self.tenant.user.save(update_fields=["telegram_chat_id"])
         config = generate_openclaw_config(self.tenant)
-        self.assertNotIn("telegram", config["channels"])
+        tg = config["channels"]["telegram"]
+        self.assertEqual(tg["dmPolicy"], "disabled")
+        self.assertNotIn("allowFrom", tg)
+
+    def test_network_auto_select_family_disabled(self):
+        """IPv6 autoSelectFamily disabled to prevent Azure Container Apps issues."""
+        config = generate_openclaw_config(self.tenant)
+        tg = config["channels"]["telegram"]
+        self.assertFalse(tg["network"]["autoSelectFamily"])
 
 
 @override_settings()
@@ -179,5 +188,5 @@ class ProvisioningTest(TestCase):
         mock_upload.assert_called_once()
         upload_args = mock_upload.call_args[0]
         self.assertEqual(upload_args[0], str(self.tenant.id))
-        # Config should contain gateway settings (channels.telegram removed)
+        # Config should contain gateway settings
         self.assertIn("gateway", upload_args[1])

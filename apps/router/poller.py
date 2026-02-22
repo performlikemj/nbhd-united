@@ -1,6 +1,6 @@
 """Central Telegram poller — one process polls getUpdates for the shared bot,
 routes each message to the correct tenant's OpenClaw container via the
-/v1/chat/completions endpoint, then sends the AI reply back to the user."""
+/telegram-webhook endpoint, then sends the AI reply back to the user."""
 
 from __future__ import annotations
 
@@ -263,13 +263,8 @@ class TelegramPoller:
         # Update last_message_at
         Tenant.objects.filter(id=tenant.id).update(last_message_at=timezone.now())
 
-        # Extract message text
-        message_text = self._extract_message_text(update)
-        if not message_text:
-            return
-
-        # Forward to container via /v1/chat/completions
-        self._forward_to_container(chat_id, tenant, message_text)
+        # Forward to container via /telegram-webhook
+        self._forward_to_container(chat_id, tenant, update)
 
     def _extract_message_text(self, update: dict) -> str | None:
         """Extract user message text from a Telegram update."""
@@ -317,32 +312,27 @@ class TelegramPoller:
 
         return None
 
-    def _forward_to_container(self, chat_id: int, tenant: Tenant, message_text: str) -> None:
-        """Send the message to the tenant's OpenClaw container and relay the response."""
+    def _forward_to_container(self, chat_id: int, tenant: Tenant, update: dict) -> None:
+        """Forward the raw Telegram update to the tenant's OpenClaw webhook and relay the response."""
         if not tenant.container_fqdn:
             self._send_message(chat_id, "Your assistant is being set up. Please try again in a minute!")
             return
 
-        url = f"https://{tenant.container_fqdn}/v1/chat/completions"
+        url = f"https://{tenant.container_fqdn}/telegram-webhook"
         user_tz = tenant.user.timezone or "UTC"
 
         try:
             resp = httpx.post(
                 url,
-                json={
-                    "model": "openclaw",
-                    "messages": [{"role": "user", "content": message_text}],
-                },
+                json=update,
                 headers={
-                    "Authorization": f"Bearer {self.webhook_secret}",
                     "X-Telegram-Bot-Api-Secret-Token": self.webhook_secret,
                     "X-User-Timezone": user_tz,
-                    "X-Telegram-Chat-Id": str(chat_id),
                 },
                 timeout=CHAT_COMPLETIONS_TIMEOUT,
             )
             resp.raise_for_status()
-            result = resp.json()
+            result = resp.json() if resp.content else None
         except httpx.TimeoutException:
             logger.warning("Timeout forwarding to %s for chat_id=%s", tenant.container_fqdn, chat_id)
             # Container likely received it and will respond async — don't send error
@@ -352,31 +342,17 @@ class TelegramPoller:
             self._send_message(chat_id, "Sorry, I'm having trouble connecting right now. Please try again shortly.")
             return
 
-        # Extract AI response
-        ai_text = self._extract_ai_response(result)
-        if ai_text:
-            self._send_message(chat_id, ai_text)
+        if not result:
+            return
+
+        # Execute the Telegram response (e.g. {"method": "sendMessage", "text": "..."})
+        self._execute_telegram_response(result)
 
         # Record usage
         self._record_usage(tenant, result)
 
-    def _extract_ai_response(self, result: dict) -> str | None:
-        """Extract the AI response text from a chat completions response."""
-        try:
-            choices = result.get("choices", [])
-            if choices:
-                return choices[0].get("message", {}).get("content")
-        except (IndexError, KeyError, TypeError):
-            pass
-
-        # Fallback: check if it's the old webhook format with a direct text response
-        if "text" in result:
-            return result["text"]
-
-        return None
-
     def _record_usage(self, tenant: Tenant, result: dict) -> None:
-        """Record token usage from the chat completions response."""
+        """Record token usage from the webhook response."""
         usage = result.get("usage", {})
         if not isinstance(usage, dict):
             return

@@ -296,20 +296,32 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             },
         },
 
-        # Telegram channel — REMOVED from container config.
+        # Telegram channel — DISABLED for inbound polling.
         # The central Django poller handles all inbound Telegram messages
-        # and forwards them to containers via /v1/chat/completions.
+        # and forwards them to containers via /telegram-webhook.
         #
-        # channels.telegram is intentionally absent so that OpenClaw does
-        # NOT start the Telegram provider (no polling, no webhooks).
-        # enabled=False was tried but OpenClaw still starts the provider.
+        # enabled=False starts the Telegram provider (webhook server on
+        # port 8787) without actively polling.  TELEGRAM_BOT_TOKEN is
+        # unset in entrypoint.sh so the provider cannot poll even if it
+        # tries.  The webhook server must be running for the poller's
+        # /telegram-webhook forwarding to work.
         #
-        # Outbound sends (cron announcements) go through the central
-        # poller's Telegram API, not through the container.
-        #
-        # Note: entrypoint.sh has code to inject webhookSecret into
-        # channels.telegram — harmless when the key doesn't exist.
-        "channels": {},
+        # Note: entrypoint.sh injects webhookSecret into config at runtime.
+        "channels": {
+            "telegram": {
+                "name": tenant.user.display_name,
+                "enabled": False,
+                **(
+                    {"dmPolicy": "allowlist", "allowFrom": [str(chat_id)]}
+                    if chat_id is not None
+                    else {"dmPolicy": "disabled"}
+                ),
+                "groupPolicy": "disabled",
+                "network": {
+                    "autoSelectFamily": False,
+                },
+            },
+        },
 
         # Gateway — local mode; bind to loopback so internal tool calls
         # (cron, etc.) auto-pair via localhost.  The OpenClaw proxy sidecar
