@@ -52,7 +52,9 @@ for file in USER.md TOOLS.md MEMORY.md HEARTBEAT.md; do
     fi
 done
 
-if [ -n "${OPENCLAW_CONFIG_JSON:-}" ]; then
+# Only write OPENCLAW_CONFIG_JSON if the config file doesn't already exist
+# (file share mount is the source of truth after first boot)
+if [ ! -f "$OPENCLAW_CONFIG_PATH" ] && [ -n "${OPENCLAW_CONFIG_JSON:-}" ]; then
     printf '%s\n' "$OPENCLAW_CONFIG_JSON" > "$OPENCLAW_CONFIG_PATH"
 fi
 
