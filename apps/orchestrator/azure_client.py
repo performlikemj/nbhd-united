@@ -512,21 +512,9 @@ def create_container_app(
             identity_id=identity_id,
         ),
         _build_container_secret(
-            "telegram-token",
-            plain_value=settings.TELEGRAM_BOT_TOKEN,
-            key_vault_secret_name=settings.AZURE_KV_SECRET_TELEGRAM_BOT_TOKEN,
-            identity_id=identity_id,
-        ),
-        _build_container_secret(
             "nbhd-internal-api-key",
             plain_value=settings.NBHD_INTERNAL_API_KEY,
             key_vault_secret_name=internal_api_key_kv_secret or settings.AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY,
-            identity_id=identity_id,
-        ),
-        _build_container_secret(
-            "telegram-webhook-secret",
-            plain_value=settings.TELEGRAM_WEBHOOK_SECRET,
-            key_vault_secret_name=settings.AZURE_KV_SECRET_TELEGRAM_WEBHOOK_SECRET,
             identity_id=identity_id,
         ),
         _build_container_secret(
@@ -574,10 +562,8 @@ def create_container_app(
                         "env": [
                             {"name": "ANTHROPIC_API_KEY", "secretRef": "anthropic-key"},
                             {"name": "OPENAI_API_KEY", "secretRef": "openai-key"},
-                            {"name": "TELEGRAM_BOT_TOKEN", "secretRef": "telegram-token"},
                             {"name": "NBHD_INTERNAL_API_KEY", "secretRef": "nbhd-internal-api-key"},
                             {"name": "OPENCLAW_GATEWAY_TOKEN", "secretRef": "nbhd-internal-api-key"},
-                            {"name": "OPENCLAW_WEBHOOK_SECRET", "secretRef": "telegram-webhook-secret"},
                             {"name": "BRAVE_API_KEY", "secretRef": "brave-key"},
                             {"name": "OPENROUTER_API_KEY", "secretRef": "openrouter-key"},
                             {"name": "NBHD_TENANT_ID", "value": str(tenant_id)},

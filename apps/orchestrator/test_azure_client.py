@@ -78,20 +78,12 @@ class AzureClientTest(SimpleTestCase):
             "https://kv-nbhd-prod.vault.azure.net/secrets/openai-api-key",
         )
         self.assertEqual(
-            secret_map["telegram-token"]["keyVaultUrl"],
-            "https://kv-nbhd-prod.vault.azure.net/secrets/telegram-bot-token",
-        )
-        self.assertEqual(
             secret_map["nbhd-internal-api-key"]["keyVaultUrl"],
             "https://kv-nbhd-prod.vault.azure.net/secrets/nbhd-internal-api-key",
         )
         self.assertEqual(
             secret_map["nbhd-internal-api-key"]["identity"],
             "/identities/tenant-123",
-        )
-        self.assertEqual(
-            secret_map["telegram-webhook-secret"]["keyVaultUrl"],
-            "https://kv-nbhd-prod.vault.azure.net/secrets/telegram-webhook-secret",
         )
 
         container = payload["properties"]["template"]["containers"][0]
@@ -106,7 +98,6 @@ class AzureClientTest(SimpleTestCase):
         self.assertEqual(env_map["OPENAI_API_KEY"]["secretRef"], "openai-key")
         self.assertEqual(env_map["NBHD_INTERNAL_API_KEY"]["secretRef"], "nbhd-internal-api-key")
         self.assertEqual(env_map["OPENCLAW_GATEWAY_TOKEN"]["secretRef"], "nbhd-internal-api-key")
-        self.assertEqual(env_map["OPENCLAW_WEBHOOK_SECRET"]["secretRef"], "telegram-webhook-secret")
         self.assertEqual(env_map["OPENROUTER_API_KEY"]["secretRef"], "openrouter-key")
 
         ingress = payload["properties"]["configuration"]["ingress"]
@@ -145,9 +136,7 @@ class AzureClientTest(SimpleTestCase):
         secret_map = {entry["name"]: entry for entry in secrets}
         self.assertEqual(secret_map["anthropic-key"]["value"], "anthropic-secret")
         self.assertEqual(secret_map["openai-key"]["value"], "openai-secret")
-        self.assertEqual(secret_map["telegram-token"]["value"], "telegram-secret")
         self.assertEqual(secret_map["nbhd-internal-api-key"]["value"], "internal-secret")
-        self.assertEqual(secret_map["telegram-webhook-secret"]["value"], "webhook-secret")
         container = payload["properties"]["template"]["containers"][0]
         env_map = {entry["name"]: entry for entry in container["env"]}
 
