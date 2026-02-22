@@ -94,6 +94,10 @@ else
     GATEWAY_ARGS=""
 fi
 
+# Unset TELEGRAM_BOT_TOKEN so OpenClaw doesn't auto-enable Telegram polling.
+# The central Django poller handles all inbound Telegram messages now.
+unset TELEGRAM_BOT_TOKEN
+
 # Start both processes in background
 # shellcheck disable=SC2086
 openclaw gateway --allow-unconfigured $GATEWAY_ARGS &
