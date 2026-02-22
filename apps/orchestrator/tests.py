@@ -30,11 +30,10 @@ class ConfigGeneratorTest(TestCase):
         # Auth is intentionally present — token from env var for Django→OC calls
         self.assertEqual(config["gateway"]["auth"]["mode"], "token")
 
-    def test_telegram_channel_disabled_for_central_poller(self):
-        """Telegram channel disabled — central Django poller handles inbound."""
+    def test_telegram_channel_absent_for_central_poller(self):
+        """No Telegram channel — central Django poller handles all inbound."""
         config = generate_openclaw_config(self.tenant)
-        tg = config["channels"]["telegram"]
-        self.assertFalse(tg["enabled"])
+        self.assertEqual(config["channels"], {})
 
     def test_starter_tier_model(self):
         self.tenant.model_tier = "starter"
