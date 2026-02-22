@@ -347,6 +347,13 @@ class TelegramPoller:
             logger.warning("Timeout forwarding to %s for chat_id=%s", tenant.container_fqdn, chat_id)
             # Container likely received it and will respond async — don't send error
             return
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "Error forwarding to %s: status=%s body=%s",
+                tenant.container_fqdn, e.response.status_code,
+                e.response.text[:500] if e.response else "no-body",
+            )
+            self._send_message(chat_id, "Sorry, I'm having trouble connecting right now. Please try again shortly.")
         except httpx.HTTPError as e:
             logger.error("Error forwarding to %s: %s", tenant.container_fqdn, e)
             self._send_message(chat_id, "Sorry, I'm having trouble connecting right now. Please try again shortly.")
