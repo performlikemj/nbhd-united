@@ -26,10 +26,22 @@ GUNICORN_PID=$!
 # Forward signals to both processes
 trap 'kill $POLLER_PID $GUNICORN_PID 2>/dev/null; wait' SIGTERM SIGINT
 
-# Wait for either to exit, then shut down the other
-wait -n "$POLLER_PID" "$GUNICORN_PID" 2>/dev/null
-EXIT_CODE=$?
-echo "[startup] child exited with code $EXIT_CODE, shutting down"
-kill "$POLLER_PID" "$GUNICORN_PID" 2>/dev/null || true
-wait
-exit "$EXIT_CODE"
+# If the poller dies, restart it; only exit if gunicorn dies
+while true; do
+  wait -n "$POLLER_PID" "$GUNICORN_PID" 2>/dev/null
+  EXIT_CODE=$?
+
+  # Check if gunicorn died — that's fatal
+  if ! kill -0 "$GUNICORN_PID" 2>/dev/null; then
+    echo "[startup] gunicorn exited ($EXIT_CODE), shutting down"
+    kill "$POLLER_PID" 2>/dev/null || true
+    wait
+    exit "$EXIT_CODE"
+  fi
+
+  # Poller died — restart it after a brief delay
+  echo "[startup] poller exited ($EXIT_CODE), restarting in 5s..."
+  sleep 5
+  python manage.py poll_telegram &
+  POLLER_PID=$!
+done
