@@ -315,6 +315,53 @@ class ProvisioningStatusViewTest(TestCase):
         self.assertTrue(response.data["ready"])
 
 
+class RetryProvisioningViewTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    @patch("apps.tenants.views.publish_task")
+    def test_retry_provisioning_queues_task(self, mock_publish):
+        tenant = create_tenant(display_name="Retry User", telegram_chat_id=606)
+        tenant.status = Tenant.Status.PENDING
+        tenant.save(update_fields=["status", "updated_at"])
+        self.client.force_authenticate(user=tenant.user)
+
+        response = self.client.post("/api/v1/tenants/retry-provisioning/")
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.data["tenant_status"], Tenant.Status.PROVISIONING)
+        self.assertFalse(response.data["ready"])
+        mock_publish.assert_called_once_with("provision_tenant", str(tenant.id))
+
+    @patch("apps.tenants.views.publish_task")
+    def test_retry_provisioning_returns_ready_for_active_tenant(self, mock_publish):
+        tenant = create_tenant(display_name="Ready User", telegram_chat_id=607)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.container_id = "oc-ready"
+        tenant.container_fqdn = "ready.internal"
+        tenant.save(update_fields=["status", "container_id", "container_fqdn", "updated_at"])
+        self.client.force_authenticate(user=tenant.user)
+
+        response = self.client.post("/api/v1/tenants/retry-provisioning/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ready"])
+        mock_publish.assert_not_called()
+
+    @patch("apps.tenants.views.publish_task", side_effect=RuntimeError("qstash down"))
+    def test_retry_provisioning_publish_fail_sets_pending(self, _mock_publish):
+        tenant = create_tenant(display_name="Retry Fail", telegram_chat_id=608)
+        tenant.status = Tenant.Status.PENDING
+        tenant.save(update_fields=["status", "updated_at"])
+        self.client.force_authenticate(user=tenant.user)
+
+        response = self.client.post("/api/v1/tenants/retry-provisioning/")
+
+        self.assertEqual(response.status_code, 503)
+        tenant.refresh_from_db()
+        self.assertEqual(tenant.status, Tenant.Status.PENDING)
+
+
 class RefreshConfigViewTest(TestCase):
     def setUp(self):
         self.client = APIClient()

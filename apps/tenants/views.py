@@ -152,6 +152,92 @@ class ProvisioningStatusView(APIView):
         })
 
 
+class RetryProvisioningView(APIView):
+    """Allow authenticated users to re-trigger tenant provisioning safely."""
+    permission_classes = [IsAuthenticated]
+    RETRY_COOLDOWN_SECONDS = 90
+
+    def post(self, request):
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
+
+        has_container_id = bool(tenant.container_id)
+        has_container_fqdn = bool(tenant.container_fqdn)
+        is_ready = bool(
+            tenant.status == Tenant.Status.ACTIVE
+            and has_container_id
+            and has_container_fqdn
+        )
+        if is_ready:
+            return Response(
+                {
+                    "detail": "Your assistant is already active.",
+                    "tenant_status": tenant.status,
+                    "ready": True,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        if tenant.status in {Tenant.Status.SUSPENDED, Tenant.Status.DEPROVISIONING, Tenant.Status.DELETED}:
+            return Response(
+                {
+                    "detail": "Provisioning retry is unavailable for this tenant state.",
+                    "tenant_status": tenant.status,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        elapsed = (timezone.now() - tenant.updated_at).total_seconds()
+        if tenant.status == Tenant.Status.PROVISIONING and elapsed < self.RETRY_COOLDOWN_SECONDS:
+            return Response(
+                {
+                    "detail": "Provisioning is already in progress. Please wait a moment before retrying.",
+                    "tenant_status": tenant.status,
+                    "retry_after_seconds": int(self.RETRY_COOLDOWN_SECONDS - elapsed),
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        tenant.status = Tenant.Status.PROVISIONING
+        tenant.save(update_fields=["status", "updated_at"])
+
+        try:
+            publish_task("provision_tenant", str(tenant.id))
+            logger.info(
+                "tenant_provisioning tenant_id=%s user_id=%s stage=user_retry_queued",
+                tenant.id,
+                request.user.id,
+            )
+        except Exception as exc:
+            tenant.status = Tenant.Status.PENDING
+            tenant.save(update_fields=["status", "updated_at"])
+            logger.exception(
+                "tenant_provisioning tenant_id=%s user_id=%s stage=user_retry_publish_failed error=%s",
+                tenant.id,
+                request.user.id,
+                exc,
+            )
+            return Response(
+                {
+                    "detail": "Could not queue provisioning retry right now. Please try again shortly.",
+                    "tenant_status": tenant.status,
+                    "ready": False,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        return Response(
+            {
+                "detail": "Provisioning retry queued. We will keep setting up your assistant in the background.",
+                "tenant_status": tenant.status,
+                "ready": False,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
 class PersonaListView(APIView):
     """List available agent personas."""
     permission_classes = [IsAuthenticated]

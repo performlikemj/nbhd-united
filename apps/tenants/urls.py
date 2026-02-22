@@ -7,6 +7,7 @@ from .views import (
     ProfileView,
     ProvisioningStatusView,
     RefreshConfigView,
+    RetryProvisioningView,
     TenantViewSet,
     UpdatePreferencesView,
 )
@@ -20,6 +21,7 @@ urlpatterns = [
     path("onboard/", OnboardTenantView.as_view(), name="tenant-onboard"),
     path("profile/", ProfileView.as_view(), name="user-profile"),
     path("provisioning-status/", ProvisioningStatusView.as_view(), name="tenant-provisioning-status"),
+    path("retry-provisioning/", RetryProvisioningView.as_view(), name="tenant-retry-provisioning"),
     path("personas/", PersonaListView.as_view(), name="persona-list"),
     path("preferences/", UpdatePreferencesView.as_view(), name="preferences"),
     path("refresh-config/", RefreshConfigView.as_view(), name="refresh-config"),

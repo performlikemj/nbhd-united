@@ -23,6 +23,7 @@ import {
   UsageRecord,
   UsageSummary,
   RefreshConfigStatus,
+  ProvisioningStatus,
   ProviderModel,
   WeeklyReview,
   Lesson,
@@ -212,6 +213,17 @@ export function fetchRefreshConfigStatus(): Promise<RefreshConfigStatus> {
 
 export function refreshConfig(): Promise<{ detail: string; last_refreshed: string }> {
   return apiFetch<{ detail: string; last_refreshed: string }>("/api/v1/tenants/refresh-config/", { method: "POST" });
+}
+
+export function fetchProvisioningStatus(): Promise<ProvisioningStatus> {
+  return apiFetch<ProvisioningStatus>("/api/v1/tenants/provisioning-status/");
+}
+
+export function retryProvisioning(): Promise<{ detail: string; tenant_status: string; ready: boolean; retry_after_seconds?: number }> {
+  return apiFetch<{ detail: string; tenant_status: string; ready: boolean; retry_after_seconds?: number }>(
+    "/api/v1/tenants/retry-provisioning/",
+    { method: "POST" },
+  );
 }
 
 // Telegram linking

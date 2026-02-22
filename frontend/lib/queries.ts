@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { RefreshConfigStatus } from "@/lib/types";
+import { ProvisioningStatus, RefreshConfigStatus } from "@/lib/types";
 import {
   appendToDocument,
   createAutomation,
@@ -29,6 +29,7 @@ import {
   fetchMe,
   fetchPersonas,
   fetchPreferences,
+  fetchProvisioningStatus,
   fetchRefreshConfigStatus,
   fetchSidebarTree,
   fetchTenant,
@@ -57,6 +58,7 @@ import {
   updateJournalEntry,
   updatePreferences,
   refreshConfig,
+  retryProvisioning,
   updateTemplate,
   updateWeeklyReview,
 } from "@/lib/api";
@@ -236,6 +238,27 @@ export function useRefreshConfigMutation() {
     mutationFn: refreshConfig,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["refresh-config-status"] });
+    },
+  });
+}
+
+export function useProvisioningStatusQuery(enabled = true) {
+  return useQuery<ProvisioningStatus>({
+    queryKey: ["provisioning-status"],
+    queryFn: fetchProvisioningStatus,
+    enabled,
+    refetchInterval: (query) => (query.state.data?.ready ? false : 5000),
+  });
+}
+
+export function useRetryProvisioningMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: retryProvisioning,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["provisioning-status"] });
+      void queryClient.invalidateQueries({ queryKey: ["me"] });
+      void queryClient.invalidateQueries({ queryKey: ["tenant"] });
     },
   });
 }

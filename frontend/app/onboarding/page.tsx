@@ -11,6 +11,8 @@ import {
   useMeQuery,
   useOnboardMutation,
   usePersonasQuery,
+  useProvisioningStatusQuery,
+  useRetryProvisioningMutation,
   useTelegramStatusQuery,
 } from "@/lib/queries";
 import type { TelegramLinkResponse } from "@/lib/api";
@@ -56,6 +58,12 @@ export default function OnboardingPage() {
   const hasTenant = Boolean(tenant);
   const runtimeReady = tenant?.status === "active";
   const isTelegramLinkedInProfile = Boolean(tenant?.user.telegram_chat_id);
+
+  const {
+    data: provisioningStatus,
+    isFetching: provisioningStatusFetching,
+  } = useProvisioningStatusQuery(hasTenant && !runtimeReady);
+  const retryProvisioningMutation = useRetryProvisioningMutation();
 
   const shouldPollTelegram = hasTenant;
   const { data: telegramStatus } = useTelegramStatusQuery(shouldPollTelegram);
@@ -304,6 +312,28 @@ export default function OnboardingPage() {
                       ? "Your runtime is being provisioned. This usually takes a minute..."
                       : "Finalizing your agent setup..."}
                   </p>
+                </div>
+                {provisioningStatus && (
+                  <p className="mt-2 text-xs text-ink-faint">
+                    Status: <span className="font-mono">{provisioningStatus.status}</span>
+                    {provisioningStatusFetching ? " · checking..." : ""}
+                  </p>
+                )}
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => retryProvisioningMutation.mutate()}
+                    disabled={retryProvisioningMutation.isPending}
+                    className="rounded-full border border-accent/30 bg-accent/10 px-4 py-2 text-sm font-medium text-accent transition hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {retryProvisioningMutation.isPending ? "Retrying..." : "Retry provisioning"}
+                  </button>
+                  {retryProvisioningMutation.isSuccess && (
+                    <span className="text-xs text-signal">Retry queued. We&apos;ll keep provisioning in the background.</span>
+                  )}
+                  {retryProvisioningMutation.isError && (
+                    <span className="text-xs text-rose-500">Could not queue retry right now. Please try again shortly.</span>
+                  )}
                 </div>
                 <p className="mt-3 rounded-panel border border-accent/20 bg-accent/5 px-3 py-2 text-sm text-ink-muted">
                   You&apos;re on a 7-day free trial. Subscribe anytime at Settings → Billing to keep your assistant after the trial.

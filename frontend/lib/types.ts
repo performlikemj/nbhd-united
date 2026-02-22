@@ -66,6 +66,20 @@ export interface RefreshConfigStatus {
   has_pending_update: boolean;
 }
 
+export interface ProvisioningStatus {
+  tenant_id: string;
+  user_id: string;
+  status: TenantStatus;
+  container_id: string;
+  container_fqdn: string;
+  has_container_id: boolean;
+  has_container_fqdn: boolean;
+  provisioned_at: string | null;
+  created_at: string;
+  updated_at: string;
+  ready: boolean;
+}
+
 export interface Integration {
   id: string;
   provider: "gmail" | "google-calendar" | "sautai";
