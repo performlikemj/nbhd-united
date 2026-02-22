@@ -129,13 +129,24 @@ class ConfigGeneratorTest(TestCase):
         self.assertIn("group:runtime", tools["allow"])
         self.assertEqual(tools["elevated"], {"enabled": False})
 
-    def test_polling_mode_no_webhook_fields(self):
-        """Polling mode: no webhookUrl/webhookHost/webhookSecret in config."""
+    def test_telegram_channel_disabled_for_central_poller(self):
+        """Telegram channel disabled — central Django poller handles inbound."""
         config = generate_openclaw_config(self.tenant)
         tg = config["channels"]["telegram"]
+        self.assertFalse(tg["enabled"])
+        # No webhook fields should be present
         self.assertNotIn("webhookUrl", tg)
         self.assertNotIn("webhookHost", tg)
         self.assertNotIn("webhookSecret", tg)
+        # streamMode removed (not needed when disabled)
+        self.assertNotIn("streamMode", tg)
+
+    def test_telegram_disabled_still_has_allow_from(self):
+        """allowFrom preserved even when channel disabled (defense in depth)."""
+        config = generate_openclaw_config(self.tenant)
+        tg = config["channels"]["telegram"]
+        self.assertFalse(tg["enabled"])
+        self.assertIn("999888777", tg["allowFrom"])
 
     def test_network_auto_select_family_disabled(self):
         """IPv6 autoSelectFamily disabled to prevent Azure Container Apps issues."""

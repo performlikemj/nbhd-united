@@ -296,22 +296,30 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             },
         },
 
-        # Telegram channel — locked to this user's chat_id
-        # Polling mode: OpenClaw connects outbound to api.telegram.org.
-        # Webhook mode is disabled due to an OpenClaw bug where the webhook
-        # startup generates an unhandled promise rejection on hosts with
-        # unreliable IPv6 (Azure Container Apps), causing crash loops.
+        # Telegram channel — DISABLED for inbound polling/webhooks.
+        # The central Django poller now handles all inbound Telegram messages
+        # and forwards them to containers via the Gateway API. Containers do
+        # NOT poll Telegram or set webhooks.
+        #
+        # The channel config is kept with enabled=False so that:
+        # 1. OpenClaw loads the Telegram provider (needed for outbound sends
+        #    via cron announcements, proactive messages, etc.)
+        # 2. The TELEGRAM_BOT_TOKEN env var is still injected for sends
+        # 3. allowFrom is preserved for security (defense in depth)
+        # 4. network.autoSelectFamily stays False (Azure IPv6 workaround)
+        #
+        # Note: entrypoint.sh injects webhookSecret into config at runtime —
+        # this is harmless when the channel is disabled.
         "channels": {
             "telegram": {
                 "name": tenant.user.display_name,
-                "enabled": True,
+                "enabled": False,
                 **(
                     {"dmPolicy": "allowlist", "allowFrom": [str(chat_id)]}
                     if chat_id is not None
                     else {"dmPolicy": "disabled"}
                 ),
                 "groupPolicy": "disabled",
-                "streamMode": "partial",
                 "network": {
                     "autoSelectFamily": False,
                 },
