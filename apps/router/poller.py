@@ -354,6 +354,7 @@ class TelegramPoller:
                 e.response.text[:500] if e.response else "no-body",
             )
             self._send_message(chat_id, "Sorry, I'm having trouble connecting right now. Please try again shortly.")
+            return
         except httpx.HTTPError as e:
             logger.error("Error forwarding to %s: %s", tenant.container_fqdn, e)
             self._send_message(chat_id, "Sorry, I'm having trouble connecting right now. Please try again shortly.")
