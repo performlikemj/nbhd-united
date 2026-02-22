@@ -130,24 +130,16 @@ class ConfigGeneratorTest(TestCase):
         self.assertIn("group:runtime", tools["allow"])
         self.assertEqual(tools["elevated"], {"enabled": False})
 
-    def test_chat_id_in_allow_from(self):
+    def test_channels_empty_no_telegram(self):
+        """No Telegram channel — central Django poller handles all Telegram."""
         config = generate_openclaw_config(self.tenant)
-        allow_from = config["channels"]["telegram"]["allowFrom"]
-        self.assertIn("999888777", allow_from)
+        self.assertEqual(config["channels"], {})
 
-    def test_no_chat_id_uses_disabled_dm_policy(self):
-        self.tenant.user.telegram_chat_id = None
-        self.tenant.user.save(update_fields=["telegram_chat_id"])
+    def test_chat_completions_endpoint_enabled(self):
+        """Gateway exposes /v1/chat/completions for central poller forwarding."""
         config = generate_openclaw_config(self.tenant)
-        tg = config["channels"]["telegram"]
-        self.assertEqual(tg["dmPolicy"], "disabled")
-        self.assertNotIn("allowFrom", tg)
-
-    def test_network_auto_select_family_disabled(self):
-        """IPv6 autoSelectFamily disabled to prevent Azure Container Apps issues."""
-        config = generate_openclaw_config(self.tenant)
-        tg = config["channels"]["telegram"]
-        self.assertFalse(tg["network"]["autoSelectFamily"])
+        endpoints = config["gateway"]["http"]["endpoints"]
+        self.assertTrue(endpoints["chatCompletions"]["enabled"])
 
 
 @override_settings()

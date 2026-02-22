@@ -296,32 +296,20 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             },
         },
 
-        # Telegram channel — provider starts with a dummy bot token so the
-        # webhook server runs on :8787, but cannot poll getUpdates (401).
-        # The central Django poller forwards raw Telegram updates here.
-        #
-        # Note: entrypoint.sh injects webhookSecret into config at runtime.
-        "channels": {
-            "telegram": {
-                "name": tenant.user.display_name,
-                "enabled": False,
-                **(
-                    {"dmPolicy": "allowlist", "allowFrom": [str(chat_id)]}
-                    if chat_id is not None
-                    else {"dmPolicy": "disabled"}
-                ),
-                "groupPolicy": "disabled",
-                "network": {
-                    "autoSelectFamily": False,
-                },
-            },
-        },
+        # Telegram channel — intentionally ABSENT.
+        # The central Django poller handles all inbound Telegram messages
+        # and forwards them to containers via /v1/chat/completions.
+        # No Telegram provider runs inside tenant containers.
+        "channels": {},
 
         # Gateway — local mode; bind to loopback so internal tool calls
         # (cron, etc.) auto-pair via localhost.  The OpenClaw proxy sidecar
         # (listening on 0.0.0.0:8080) handles external traffic forwarding.
         # Auth token read from NBHD_INTERNAL_API_KEY env var (per-tenant
         # Key Vault secret) so Django can call /tools/invoke for cron CRUD.
+        #
+        # The OpenAI-compatible /v1/chat/completions endpoint is enabled
+        # so the central Telegram poller can forward messages here.
         "gateway": {
             "port": 18789,
             "mode": "local",
@@ -329,6 +317,11 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "auth": {
                 "mode": "token",
                 "token": "${NBHD_INTERNAL_API_KEY}",
+            },
+            "http": {
+                "endpoints": {
+                    "chatCompletions": {"enabled": True},
+                },
             },
         },
 

@@ -138,24 +138,22 @@ class TelegramPollerDispatchTest(TestCase):
         tenant.user.timezone = "UTC"
         mock_resolve.return_value = tenant
 
-        # Mock the /telegram-webhook response
+        # Mock the /v1/chat/completions response
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
-        mock_resp.content = b'{"method": "sendMessage", "chat_id": 333, "text": "Hello from AI!"}'
         mock_resp.json.return_value = {
-            "method": "sendMessage",
-            "chat_id": 333,
-            "text": "Hello from AI!",
+            "choices": [{"message": {"content": "Hello from AI!"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20},
         }
         mock_http_post.return_value = mock_resp
 
         update = {"message": {"text": "what's up", "chat": {"id": 333}}}
         self.poller._handle_update(update)
 
-        # Verify /telegram-webhook was called
+        # Verify /v1/chat/completions was called
         http_calls = mock_http_post.call_args_list
-        webhook_call = [c for c in http_calls if "/telegram-webhook" in str(c)]
-        self.assertEqual(len(webhook_call), 1)
+        completions_call = [c for c in http_calls if "/v1/chat/completions" in str(c)]
+        self.assertEqual(len(completions_call), 1)
 
         # Verify AI response was sent back via Telegram
         send_calls = self.poller._http.post.call_args_list
@@ -219,14 +217,12 @@ class TelegramPollerForwardTest(TestCase):
         self.poller._http = MagicMock()
 
     @patch("apps.router.poller.httpx.post")
-    def test_forward_via_telegram_webhook(self, mock_post):
+    def test_forward_via_chat_completions(self, mock_post):
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
-        mock_resp.content = b'{"method": "sendMessage", "text": "response"}'
         mock_resp.json.return_value = {
-            "method": "sendMessage",
-            "text": "response",
-            "chat_id": 123,
+            "choices": [{"message": {"content": "AI response"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 10},
         }
         mock_post.return_value = mock_resp
 
@@ -234,13 +230,21 @@ class TelegramPollerForwardTest(TestCase):
         tenant.container_fqdn = "oc-test.internal"
         tenant.user.timezone = "UTC"
 
-        update = {"message": {"text": "hi there", "chat": {"id": 123}}}
-        self.poller._forward_to_container(123, tenant, update)
+        self.poller._forward_to_container(123, tenant, "hi there")
 
         mock_post.assert_called_once()
         url = mock_post.call_args[0][0]
-        self.assertIn("/telegram-webhook", url)
+        self.assertIn("/v1/chat/completions", url)
         self.assertIn("oc-test.internal", url)
+
+        # Verify chat completions payload
+        payload = mock_post.call_args[1]["json"]
+        self.assertEqual(payload["model"], "openclaw")
+        self.assertEqual(payload["messages"][0]["content"], "hi there")
+
+        # Verify AI response sent to user via Telegram
+        send_calls = self.poller._http.post.call_args_list
+        self.assertTrue(len(send_calls) > 0)
 
     @patch("apps.router.poller.httpx.post")
     def test_forward_timeout_handled_gracefully(self, mock_post):
@@ -251,9 +255,8 @@ class TelegramPollerForwardTest(TestCase):
         tenant.container_fqdn = "oc-test.internal"
         tenant.user.timezone = "UTC"
 
-        update = {"message": {"text": "hi", "chat": {"id": 123}}}
         # Should not raise
-        self.poller._forward_to_container(123, tenant, update)
+        self.poller._forward_to_container(123, tenant, "hi")
 
     @patch("apps.router.poller.httpx.post")
     def test_forward_error_sends_sorry_message(self, mock_post):
@@ -264,8 +267,7 @@ class TelegramPollerForwardTest(TestCase):
         tenant.container_fqdn = "oc-test.internal"
         tenant.user.timezone = "UTC"
 
-        update = {"message": {"text": "hi", "chat": {"id": 123}}}
-        self.poller._forward_to_container(123, tenant, update)
+        self.poller._forward_to_container(123, tenant, "hi")
 
         # Should send error message to user
         send_calls = self.poller._http.post.call_args_list

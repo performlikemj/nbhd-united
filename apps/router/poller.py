@@ -263,8 +263,13 @@ class TelegramPoller:
         # Update last_message_at
         Tenant.objects.filter(id=tenant.id).update(last_message_at=timezone.now())
 
-        # Forward to container via /telegram-webhook
-        self._forward_to_container(chat_id, tenant, update)
+        # Extract message text
+        message_text = self._extract_message_text(update)
+        if not message_text:
+            return
+
+        # Forward to container via /v1/chat/completions
+        self._forward_to_container(chat_id, tenant, message_text)
 
     def _extract_message_text(self, update: dict) -> str | None:
         """Extract user message text from a Telegram update."""
@@ -312,27 +317,31 @@ class TelegramPoller:
 
         return None
 
-    def _forward_to_container(self, chat_id: int, tenant: Tenant, update: dict) -> None:
-        """Forward the raw Telegram update to the tenant's OpenClaw webhook and relay the response."""
+    def _forward_to_container(self, chat_id: int, tenant: Tenant, message_text: str) -> None:
+        """Send the message to the tenant's OpenClaw container via /v1/chat/completions and relay the response."""
         if not tenant.container_fqdn:
             self._send_message(chat_id, "Your assistant is being set up. Please try again in a minute!")
             return
 
-        url = f"https://{tenant.container_fqdn}/telegram-webhook"
+        url = f"https://{tenant.container_fqdn}/v1/chat/completions"
         user_tz = tenant.user.timezone or "UTC"
 
         try:
             resp = httpx.post(
                 url,
-                json=update,
+                json={
+                    "model": "openclaw",
+                    "messages": [{"role": "user", "content": message_text}],
+                },
                 headers={
-                    "X-Telegram-Bot-Api-Secret-Token": self.webhook_secret,
+                    "Authorization": f"Bearer {self.webhook_secret}",
                     "X-User-Timezone": user_tz,
+                    "X-Telegram-Chat-Id": str(chat_id),
                 },
                 timeout=CHAT_COMPLETIONS_TIMEOUT,
             )
             resp.raise_for_status()
-            result = resp.json() if resp.content else None
+            result = resp.json()
         except httpx.TimeoutException:
             logger.warning("Timeout forwarding to %s for chat_id=%s", tenant.container_fqdn, chat_id)
             # Container likely received it and will respond async — don't send error
@@ -342,14 +351,23 @@ class TelegramPoller:
             self._send_message(chat_id, "Sorry, I'm having trouble connecting right now. Please try again shortly.")
             return
 
-        if not result:
-            return
-
-        # Execute the Telegram response (e.g. {"method": "sendMessage", "text": "..."})
-        self._execute_telegram_response(result)
+        # Extract AI response text from OpenAI-compatible response
+        ai_text = self._extract_ai_response(result)
+        if ai_text:
+            self._send_message(chat_id, ai_text)
 
         # Record usage
         self._record_usage(tenant, result)
+
+    def _extract_ai_response(self, result: dict) -> str | None:
+        """Extract the AI response text from a chat completions response."""
+        try:
+            choices = result.get("choices", [])
+            if choices:
+                return choices[0].get("message", {}).get("content")
+        except (IndexError, KeyError, TypeError):
+            pass
+        return None
 
     def _record_usage(self, tenant: Tenant, result: dict) -> None:
         """Record token usage from the webhook response."""

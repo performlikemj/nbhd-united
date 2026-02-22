@@ -56,18 +56,8 @@ if [ -n "${OPENCLAW_CONFIG_JSON:-}" ]; then
     printf '%s\n' "$OPENCLAW_CONFIG_JSON" > "$OPENCLAW_CONFIG_PATH"
 fi
 
-# Inject webhook secret into config (never stored in config JSON at rest)
-if [ -n "${OPENCLAW_WEBHOOK_SECRET:-}" ]; then
-    node -e "
-      const fs = require('fs');
-      const p = '$OPENCLAW_CONFIG_PATH';
-      const c = JSON.parse(fs.readFileSync(p, 'utf8'));
-      if (c.channels && c.channels.telegram) {
-        c.channels.telegram.webhookSecret = process.env.OPENCLAW_WEBHOOK_SECRET;
-      }
-      fs.writeFileSync(p, JSON.stringify(c, null, 2));
-    "
-fi
+# Note: No webhook secret injection needed — channels.telegram is absent.
+# The central Django poller authenticates via gateway token (Bearer auth).
 
 if [ ! -f "$OPENCLAW_CONFIG_PATH" ]; then
     echo "OPENCLAW_CONFIG_JSON is not set and config file is missing at $OPENCLAW_CONFIG_PATH" >&2
@@ -94,11 +84,10 @@ else
     GATEWAY_ARGS=""
 fi
 
-# Set TELEGRAM_BOT_TOKEN to a dummy value so the Telegram provider
-# initialises its webhook server on :8787, but cannot poll getUpdates
-# (Telegram rejects the invalid token with 401).
-# The central Django poller handles all inbound Telegram messages.
-export TELEGRAM_BOT_TOKEN="disabled"
+# Unset TELEGRAM_BOT_TOKEN so OpenClaw does NOT start a Telegram provider.
+# The central Django poller handles all inbound Telegram messages and
+# forwards them to this container via /v1/chat/completions.
+unset TELEGRAM_BOT_TOKEN
 
 # Start both processes in background
 # shellcheck disable=SC2086
