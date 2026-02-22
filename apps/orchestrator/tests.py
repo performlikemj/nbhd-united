@@ -179,4 +179,5 @@ class ProvisioningTest(TestCase):
         mock_upload.assert_called_once()
         upload_args = mock_upload.call_args[0]
         self.assertEqual(upload_args[0], str(self.tenant.id))
-        self.assertIn("111222333", upload_args[1])
+        # Config should contain gateway settings (channels.telegram removed)
+        self.assertIn("gateway", upload_args[1])
