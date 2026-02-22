@@ -5,7 +5,7 @@ echo "Running database migrations..."
 DATABASE_URL="${ADMIN_DATABASE_URL:-$DATABASE_URL}" python manage.py migrate --noinput
 
 echo "Disabling RLS on any new tables..."
-DATABASE_URL="${ADMIN_DATABASE_URL:-$DATABASE_URL}" python manage.py disable_rls
+DATABASE_URL="${ADMIN_DATABASE_URL:-$DATABASE_URL}" python manage.py disable_rls || true
 
 echo "Bumping pending config versions..."
 python manage.py bump_pending_configs
