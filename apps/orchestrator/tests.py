@@ -30,10 +30,9 @@ class ConfigGeneratorTest(TestCase):
         # Auth is intentionally present — token from env var for Django→OC calls
         self.assertEqual(config["gateway"]["auth"]["mode"], "token")
 
-    def test_chat_id_in_allow_from(self):
+    def test_channels_empty_for_central_poller(self):
         config = generate_openclaw_config(self.tenant)
-        allow_from = config["channels"]["telegram"]["allowFrom"]
-        self.assertIn("999888777", allow_from)
+        self.assertEqual(config["channels"], {})
 
     def test_starter_tier_model(self):
         self.tenant.model_tier = "starter"
@@ -129,38 +128,17 @@ class ConfigGeneratorTest(TestCase):
         self.assertIn("group:runtime", tools["allow"])
         self.assertEqual(tools["elevated"], {"enabled": False})
 
-    def test_telegram_channel_disabled_for_central_poller(self):
-        """Telegram channel disabled — central Django poller handles inbound."""
+    def test_telegram_channel_removed_for_central_poller(self):
+        """Telegram channel absent — central Django poller handles all Telegram."""
         config = generate_openclaw_config(self.tenant)
-        tg = config["channels"]["telegram"]
-        self.assertFalse(tg["enabled"])
-        # No webhook fields should be present
-        self.assertNotIn("webhookUrl", tg)
-        self.assertNotIn("webhookHost", tg)
-        self.assertNotIn("webhookSecret", tg)
-        # streamMode removed (not needed when disabled)
-        self.assertNotIn("streamMode", tg)
+        self.assertNotIn("telegram", config["channels"])
 
-    def test_telegram_disabled_still_has_allow_from(self):
-        """allowFrom preserved even when channel disabled (defense in depth)."""
-        config = generate_openclaw_config(self.tenant)
-        tg = config["channels"]["telegram"]
-        self.assertFalse(tg["enabled"])
-        self.assertIn("999888777", tg["allowFrom"])
-
-    def test_network_auto_select_family_disabled(self):
-        """IPv6 autoSelectFamily disabled to prevent Azure Container Apps issues."""
-        config = generate_openclaw_config(self.tenant)
-        tg = config["channels"]["telegram"]
-        self.assertFalse(tg["network"]["autoSelectFamily"])
-
-    def test_config_with_no_chat_id_uses_disabled_dm_policy(self):
+    def test_no_telegram_channel_regardless_of_chat_id(self):
+        """No telegram channel even when chat_id is missing."""
         self.tenant.user.telegram_chat_id = None
         self.tenant.user.save(update_fields=["telegram_chat_id"])
         config = generate_openclaw_config(self.tenant)
-        tg = config["channels"]["telegram"]
-        self.assertEqual(tg["dmPolicy"], "disabled")
-        self.assertNotIn("allowFrom", tg)
+        self.assertNotIn("telegram", config["channels"])
 
 
 @override_settings()

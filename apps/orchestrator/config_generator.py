@@ -296,35 +296,20 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             },
         },
 
-        # Telegram channel — DISABLED for inbound polling/webhooks.
-        # The central Django poller now handles all inbound Telegram messages
-        # and forwards them to containers via the Gateway API. Containers do
-        # NOT poll Telegram or set webhooks.
+        # Telegram channel — REMOVED from container config.
+        # The central Django poller handles all inbound Telegram messages
+        # and forwards them to containers via /v1/chat/completions.
         #
-        # The channel config is kept with enabled=False so that:
-        # 1. OpenClaw loads the Telegram provider (needed for outbound sends
-        #    via cron announcements, proactive messages, etc.)
-        # 2. The TELEGRAM_BOT_TOKEN env var is still injected for sends
-        # 3. allowFrom is preserved for security (defense in depth)
-        # 4. network.autoSelectFamily stays False (Azure IPv6 workaround)
+        # channels.telegram is intentionally absent so that OpenClaw does
+        # NOT start the Telegram provider (no polling, no webhooks).
+        # enabled=False was tried but OpenClaw still starts the provider.
         #
-        # Note: entrypoint.sh injects webhookSecret into config at runtime —
-        # this is harmless when the channel is disabled.
-        "channels": {
-            "telegram": {
-                "name": tenant.user.display_name,
-                "enabled": False,
-                **(
-                    {"dmPolicy": "allowlist", "allowFrom": [str(chat_id)]}
-                    if chat_id is not None
-                    else {"dmPolicy": "disabled"}
-                ),
-                "groupPolicy": "disabled",
-                "network": {
-                    "autoSelectFamily": False,
-                },
-            },
-        },
+        # Outbound sends (cron announcements) go through the central
+        # poller's Telegram API, not through the container.
+        #
+        # Note: entrypoint.sh has code to inject webhookSecret into
+        # channels.telegram — harmless when the key doesn't exist.
+        "channels": {},
 
         # Gateway — local mode; bind to loopback so internal tool calls
         # (cron, etc.) auto-pair via localhost.  The OpenClaw proxy sidecar
