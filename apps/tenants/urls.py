@@ -5,6 +5,7 @@ from .views import (
     OnboardTenantView,
     PersonaListView,
     ProfileView,
+    ProvisioningStatusView,
     RefreshConfigView,
     TenantViewSet,
     UpdatePreferencesView,
@@ -18,6 +19,7 @@ router.register("", TenantViewSet, basename="tenant")
 urlpatterns = [
     path("onboard/", OnboardTenantView.as_view(), name="tenant-onboard"),
     path("profile/", ProfileView.as_view(), name="user-profile"),
+    path("provisioning-status/", ProvisioningStatusView.as_view(), name="tenant-provisioning-status"),
     path("personas/", PersonaListView.as_view(), name="persona-list"),
     path("preferences/", UpdatePreferencesView.as_view(), name="preferences"),
     path("refresh-config/", RefreshConfigView.as_view(), name="refresh-config"),

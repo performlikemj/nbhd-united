@@ -1,6 +1,8 @@
 """Additional orchestrator service coverage."""
+from io import StringIO
 from unittest.mock import patch
 
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 from apps.cron.gateway_client import GatewayError
@@ -298,3 +300,39 @@ class SeedCronJobsTest(TestCase):
         self.assertEqual(result["errors"], 0)
         self.assertFalse(result.get("skipped", False))
         mock_invoke.assert_not_called()
+
+
+class RepairTenantProvisioningCommandTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Repair", telegram_chat_id=515190)
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.container_id = ""
+        self.tenant.container_fqdn = ""
+        self.tenant.save(update_fields=["status", "container_id", "container_fqdn", "updated_at"])
+
+    @patch("apps.orchestrator.services.provision_tenant")
+    def test_dry_run_selects_target_without_provision_call(self, mock_provision):
+        out = StringIO()
+        call_command("repair_tenant_provisioning", "--dry-run", stdout=out)
+
+        output = out.getvalue()
+        self.assertIn("evaluated=1", output)
+        self.assertIn("dry_run=True", output)
+        self.assertIn(f"tenant_id={self.tenant.id}", output)
+        mock_provision.assert_not_called()
+
+    @patch("apps.orchestrator.services.provision_tenant")
+    def test_limit_applies_and_invokes_provision(self, mock_provision):
+        out = StringIO()
+        call_command("repair_tenant_provisioning", "--limit", "1", stdout=out)
+        mock_provision.assert_called_once_with(str(self.tenant.id))
+
+
+class CronTaskMapWiringTest(TestCase):
+    def test_repair_task_is_wired(self):
+        from apps.cron.views import TASK_MAP
+
+        self.assertEqual(
+            TASK_MAP["repair_stale_tenant_provisioning"],
+            "apps.orchestrator.tasks.repair_stale_tenant_provisioning_task",
+        )

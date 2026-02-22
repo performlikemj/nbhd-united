@@ -288,6 +288,33 @@ class OnboardTenantViewTest(TestCase):
         self.assertIn("provisioning", response.data["detail"].lower())
 
 
+class ProvisioningStatusViewTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_requires_authentication(self):
+        response = self.client.get("/api/v1/tenants/provisioning-status/")
+        self.assertEqual(response.status_code, 401)
+
+    def test_returns_readiness_fields(self):
+        tenant = create_tenant(display_name="Provisioning Status", telegram_chat_id=605)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.container_id = "oc-ready"
+        tenant.container_fqdn = "oc-ready.internal.azurecontainerapps.io"
+        tenant.provisioned_at = timezone.now()
+        tenant.save(update_fields=["status", "container_id", "container_fqdn", "provisioned_at", "updated_at"])
+
+        self.client.force_authenticate(user=tenant.user)
+        response = self.client.get("/api/v1/tenants/provisioning-status/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], Tenant.Status.ACTIVE)
+        self.assertEqual(response.data["container_id"], "oc-ready")
+        self.assertTrue(response.data["has_container_id"])
+        self.assertTrue(response.data["has_container_fqdn"])
+        self.assertTrue(response.data["ready"])
+
+
 class RefreshConfigViewTest(TestCase):
     def setUp(self):
         self.client = APIClient()

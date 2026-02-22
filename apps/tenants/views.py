@@ -85,20 +85,28 @@ class OnboardTenantView(APIView):
             model_tier=Tenant.ModelTier.STARTER,
             status=Tenant.Status.PROVISIONING,
         )
+        logger.info(
+            "tenant_provisioning tenant_id=%s user_id=%s stage=onboarding_tenant_created error=",
+            tenant.id,
+            user.id,
+        )
         seed_default_templates_for_tenant(tenant=tenant)
 
         try:
             publish_task("provision_tenant", str(tenant.id))
-        except Exception:
+            logger.info(
+                "tenant_provisioning tenant_id=%s user_id=%s stage=publish_provision_task error=",
+                tenant.id,
+                user.id,
+            )
+        except Exception as exc:
             tenant.status = Tenant.Status.PENDING
             tenant.save(update_fields=["status", "updated_at"])
             logger.exception(
-                "tenant_provision_publish_failed",
-                extra={
-                    "tenant_id": str(tenant.id),
-                    "user_id": str(user.id),
-                    "email": user.email,
-                },
+                "tenant_provisioning tenant_id=%s user_id=%s stage=publish_provision_task_failed error=%s",
+                tenant.id,
+                user.id,
+                exc,
             )
             return Response(
                 {
@@ -108,16 +116,40 @@ class OnboardTenantView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        logger.info(
-            "tenant_provision_publish_scheduled",
-            extra={
-                "tenant_id": str(tenant.id),
-                "user_id": str(user.id),
-                "email": user.email,
-            },
+        return Response(TenantSerializer(tenant).data, status=status.HTTP_201_CREATED)
+
+
+class ProvisioningStatusView(APIView):
+    """Return tenant provisioning readiness for the authenticated user."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
+
+        has_container_id = bool(tenant.container_id)
+        has_container_fqdn = bool(tenant.container_fqdn)
+        ready = bool(
+            tenant.status == Tenant.Status.ACTIVE
+            and has_container_id
+            and has_container_fqdn
         )
 
-        return Response(TenantSerializer(tenant).data, status=status.HTTP_201_CREATED)
+        return Response({
+            "tenant_id": str(tenant.id),
+            "user_id": str(request.user.id),
+            "status": tenant.status,
+            "container_id": tenant.container_id,
+            "container_fqdn": tenant.container_fqdn,
+            "has_container_id": has_container_id,
+            "has_container_fqdn": has_container_fqdn,
+            "provisioned_at": tenant.provisioned_at,
+            "created_at": tenant.created_at,
+            "updated_at": tenant.updated_at,
+            "ready": ready,
+        })
 
 
 class PersonaListView(APIView):

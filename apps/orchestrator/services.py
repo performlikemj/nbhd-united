@@ -5,6 +5,7 @@ import logging
 import time
 
 from django.conf import settings
+from django.db import models
 from django.utils import timezone
 
 from apps.tenants.models import Tenant
@@ -30,14 +31,137 @@ from .personas import render_workspace_files
 logger = logging.getLogger(__name__)
 
 
+def _log_provisioning_event(*, tenant_id: str, user_id: str | None, stage: str, error: str = "") -> None:
+    logger.info(
+        "tenant_provisioning tenant_id=%s user_id=%s stage=%s error=%s",
+        tenant_id,
+        user_id or "",
+        stage,
+        error,
+    )
+
+
+def _stale_provisioning_tenants_queryset(*, tenant_id: str | None = None):
+    query = Tenant.objects.filter(
+        status__in=[Tenant.Status.PENDING, Tenant.Status.PROVISIONING, Tenant.Status.ACTIVE],
+    ).filter(
+        models.Q(container_id="") | models.Q(container_fqdn=""),
+    )
+    if tenant_id:
+        query = query.filter(id=tenant_id)
+    return query.select_related("user").order_by("created_at")
+
+
+def repair_stale_tenant_provisioning(
+    *,
+    tenant_id: str | None = None,
+    limit: int | None = None,
+    dry_run: bool = False,
+) -> dict:
+    query = _stale_provisioning_tenants_queryset(tenant_id=tenant_id)
+    if limit:
+        query = query[:limit]
+
+    tenants = list(query)
+    summary = {
+        "evaluated": len(tenants),
+        "repaired": 0,
+        "failed": 0,
+        "skipped": 0,
+        "dry_run": dry_run,
+        "results": [],
+    }
+
+    for tenant in tenants:
+        tenant_id_str = str(tenant.id)
+        user_id_str = str(tenant.user_id)
+        missing = []
+        if not tenant.container_id:
+            missing.append("container_id")
+        if not tenant.container_fqdn:
+            missing.append("container_fqdn")
+
+        if dry_run:
+            _log_provisioning_event(
+                tenant_id=tenant_id_str,
+                user_id=user_id_str,
+                stage="repair_dry_run",
+                error=",".join(missing),
+            )
+            summary["skipped"] += 1
+            summary["results"].append({
+                "tenant_id": tenant_id_str,
+                "user_id": user_id_str,
+                "status": tenant.status,
+                "result": "dry_run",
+                "missing": missing,
+            })
+            continue
+
+        try:
+            _log_provisioning_event(
+                tenant_id=tenant_id_str,
+                user_id=user_id_str,
+                stage="repair_start",
+            )
+            provision_tenant(tenant_id_str)
+            tenant.refresh_from_db()
+
+            ready = bool(tenant.container_id and tenant.container_fqdn and tenant.status == Tenant.Status.ACTIVE)
+            if ready:
+                summary["repaired"] += 1
+                outcome = "repaired"
+            else:
+                summary["failed"] += 1
+                outcome = "incomplete"
+
+            summary["results"].append({
+                "tenant_id": tenant_id_str,
+                "user_id": user_id_str,
+                "status": tenant.status,
+                "result": outcome,
+                "missing": [
+                    field
+                    for field, value in (("container_id", tenant.container_id), ("container_fqdn", tenant.container_fqdn))
+                    if not value
+                ],
+            })
+        except Exception as exc:
+            summary["failed"] += 1
+            _log_provisioning_event(
+                tenant_id=tenant_id_str,
+                user_id=user_id_str,
+                stage="repair_failed",
+                error=str(exc),
+            )
+            summary["results"].append({
+                "tenant_id": tenant_id_str,
+                "user_id": user_id_str,
+                "status": tenant.status,
+                "result": "failed",
+                "error": str(exc),
+                "missing": missing,
+            })
+
+    return summary
+
+
 def provision_tenant(tenant_id: str) -> None:
     """Full provisioning flow for a new tenant."""
     tenant = Tenant.objects.select_related("user").get(id=tenant_id)
+    user_id = str(tenant.user_id)
+    _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="provision_start")
     secret_backend = str(
         getattr(settings, "OPENCLAW_CONTAINER_SECRET_BACKEND", "keyvault") or "keyvault"
     ).strip().lower()
 
     if tenant.status not in (Tenant.Status.PENDING, Tenant.Status.PROVISIONING):
+        _log_provisioning_event(
+            tenant_id=str(tenant.id),
+            user_id=user_id,
+            stage="provision_skipped_unexpected_status",
+            error=tenant.status,
+        )
         logger.warning("Tenant %s in unexpected state %s for provisioning", tenant_id, tenant.status)
         return
 
@@ -46,17 +170,21 @@ def provision_tenant(tenant_id: str) -> None:
 
     try:
         # 1. Generate OpenClaw config
+        _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="generate_config")
         config = generate_openclaw_config(tenant)
         config_json = config_to_json(config)
 
         # 2. Create Managed Identity
+        _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="create_managed_identity")
         identity = create_managed_identity(str(tenant.id))
 
         # 2b. Grant identity Key Vault access for secret references (keyvault backend only)
         if secret_backend == "keyvault":
+            _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="assign_key_vault_role")
             assign_key_vault_role(identity["principal_id"])
 
         # 2b2. Grant identity ACR pull access for container image
+        _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="assign_acr_pull_role")
         assign_acr_pull_role(identity["principal_id"])
 
         # 2c. Generate per-tenant internal API key
@@ -64,6 +192,7 @@ def provision_tenant(tenant_id: str) -> None:
         key_hash = hash_internal_api_key(plaintext_key)
 
         # 2d. Store plaintext in Key Vault
+        _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="store_internal_key")
         kv_secret_name = store_tenant_internal_key_in_key_vault(
             str(tenant.id), plaintext_key,
         )
@@ -76,10 +205,13 @@ def provision_tenant(tenant_id: str) -> None:
         ])
 
         # 2f. Create Azure File Share and register with Container Environment
+        _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="create_file_share")
         create_tenant_file_share(str(tenant.id))
+        _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="register_environment_storage")
         register_environment_storage(str(tenant.id))
 
         # 2f2. Write config to file share so OpenClaw reads it on first boot
+        _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="upload_config")
         upload_config_to_file_share(str(tenant.id), config_json)
 
         # 2g. Render workspace templates based on persona
@@ -87,6 +219,7 @@ def provision_tenant(tenant_id: str) -> None:
         workspace_env = render_workspace_files(persona_key, tenant=tenant)
 
         # 3. Create Container App
+        _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="create_container_app")
         container_name = f"oc-{str(tenant.id)[:20]}"
         result = create_container_app(
             tenant_id=str(tenant.id),
@@ -110,6 +243,7 @@ def provision_tenant(tenant_id: str) -> None:
             "container_image_tag", "status", "provisioned_at", "updated_at",
         ])
 
+        _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="provision_success")
         logger.info("Provisioned tenant %s → container %s", tenant_id, result["name"])
 
         # 5. Seed default cron jobs to Gateway (delayed for container warm-up)
@@ -133,7 +267,13 @@ def provision_tenant(tenant_id: str) -> None:
                     exc_info=True,
                 )
 
-    except Exception:
+    except Exception as exc:
+        _log_provisioning_event(
+            tenant_id=str(tenant.id),
+            user_id=user_id,
+            stage="provision_failed",
+            error=str(exc),
+        )
         logger.exception("Failed to provision tenant %s", tenant_id)
         tenant.status = Tenant.Status.PENDING
         tenant.save(update_fields=["status", "updated_at"])
