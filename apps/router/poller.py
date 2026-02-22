@@ -37,6 +37,7 @@ class TelegramPoller:
     def __init__(self) -> None:
         self.bot_token: str = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
         self.webhook_secret: str = getattr(settings, "TELEGRAM_WEBHOOK_SECRET", "").strip()
+        self.gateway_token: str = getattr(settings, "NBHD_INTERNAL_API_KEY", "").strip()
         self.offset: int = 0
         self._running = False
         self._backoff = 1
@@ -334,7 +335,7 @@ class TelegramPoller:
                     "messages": [{"role": "user", "content": message_text}],
                 },
                 headers={
-                    "Authorization": f"Bearer {self.webhook_secret}",
+                    "Authorization": f"Bearer {self.gateway_token}",
                     "X-User-Timezone": user_tz,
                     "X-Telegram-Chat-Id": str(chat_id),
                 },
