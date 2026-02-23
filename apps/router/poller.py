@@ -4,6 +4,7 @@ routes each message to the correct tenant's OpenClaw container via the
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import signal
@@ -157,31 +158,70 @@ class TelegramPoller:
         except Exception:
             logger.exception("Failed to send message to chat_id=%s", chat_id)
 
+    @staticmethod
+    def _split_message(text: str, max_len: int = 4096) -> list[str]:
+        """Split a long message into chunks that fit Telegram's limit.
+
+        Splits on paragraph breaks first, then newlines, then hard cuts.
+        """
+        if len(text) <= max_len:
+            return [text]
+
+        chunks: list[str] = []
+        remaining = text
+
+        while remaining:
+            if len(remaining) <= max_len:
+                chunks.append(remaining)
+                break
+
+            # Try to split at paragraph break
+            cut = remaining.rfind("\n\n", 0, max_len)
+            if cut == -1:
+                # Try newline
+                cut = remaining.rfind("\n", 0, max_len)
+            if cut == -1:
+                # Try space
+                cut = remaining.rfind(" ", 0, max_len)
+            if cut == -1:
+                # Hard cut
+                cut = max_len
+
+            chunks.append(remaining[:cut].rstrip())
+            remaining = remaining[cut:].lstrip()
+
+        return [c for c in chunks if c]  # Drop empty chunks
+
     def _send_markdown(self, chat_id: int, text: str) -> None:
         """Send a message with Markdown formatting, falling back to plain text.
 
-        Tries Markdown parse_mode first (supports **bold**, _italic_, `code`).
-        If Telegram rejects it (malformed markdown), retries as plain text.
+        Handles long messages by splitting into chunks. Tries Markdown
+        parse_mode first; if Telegram rejects it, retries as plain text.
         """
         assert self._http is not None
-        # Try Markdown (legacy mode — more forgiving than MarkdownV2)
-        try:
-            resp = self._http.post(
-                f"{self._api_base}/sendMessage",
-                json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
-                timeout=10,
-            )
-            if resp.is_success:
-                return
-            # If Telegram rejected the markdown (400), fall back to plain text
-            if resp.status_code == 400:
-                logger.debug("Markdown rejected, falling back to plain text")
-                self._send_message(chat_id, text)
-                return
-            logger.warning("sendMessage(Markdown) failed (%s): %s", resp.status_code, resp.text[:200])
-        except Exception:
-            # Network error — try plain text
-            self._send_message(chat_id, text)
+        chunks = self._split_message(text)
+
+        for i, chunk in enumerate(chunks):
+            if i > 0:
+                time.sleep(0.3)  # Brief delay between chunks
+
+            try:
+                resp = self._http.post(
+                    f"{self._api_base}/sendMessage",
+                    json={"chat_id": chat_id, "text": chunk, "parse_mode": "Markdown"},
+                    timeout=10,
+                )
+                if resp.is_success:
+                    continue
+                # If Telegram rejected the markdown (400), fall back to plain text
+                if resp.status_code == 400:
+                    logger.debug("Markdown rejected for chunk %d, falling back to plain text", i)
+                    self._send_message(chat_id, chunk)
+                    continue
+                logger.warning("sendMessage(Markdown) failed (%s): %s", resp.status_code, resp.text[:200])
+            except Exception:
+                # Network error — try plain text
+                self._send_message(chat_id, chunk)
 
     def _send_typing(self, chat_id: int) -> None:
         """Send 'typing' chat action to Telegram."""
@@ -264,6 +304,55 @@ class TelegramPoller:
         time.sleep(delay)
         self._send_typing(chat_id)
         self._forward_to_container(chat_id, tenant, message_text)
+
+    def _download_photo(self, message: dict) -> str | None:
+        """Download the largest photo from a Telegram message and return as base64 data URL.
+
+        Returns None if download fails or photo is too large (>5MB).
+        """
+        photos = message.get("photo", [])
+        if not photos:
+            return None
+
+        # Telegram provides multiple sizes, last is largest
+        largest = photos[-1]
+        file_id = largest.get("file_id")
+        file_size = largest.get("file_size", 0)
+
+        if not file_id:
+            return None
+        if file_size > 5 * 1024 * 1024:  # 5MB limit
+            logger.warning("Photo too large (%d bytes), skipping", file_size)
+            return None
+
+        assert self._http is not None
+        try:
+            # Get file path
+            resp = self._http.post(
+                f"{self._api_base}/getFile",
+                json={"file_id": file_id},
+                timeout=10,
+            )
+            if not resp.is_success:
+                return None
+
+            file_path = resp.json().get("result", {}).get("file_path")
+            if not file_path:
+                return None
+
+            # Download
+            file_url = f"https://api.telegram.org/file/bot{self.bot_token}/{file_path}"
+            dl_resp = self._http.get(file_url, timeout=15)
+            if not dl_resp.is_success:
+                return None
+
+            b64 = base64.b64encode(dl_resp.content).decode()
+            ext = file_path.rsplit(".", 1)[-1] if "." in file_path else "jpg"
+            return f"data:image/{ext};base64,{b64}"
+
+        except Exception:
+            logger.exception("Failed to download photo")
+            return None
 
     def _answer_callback_query(self, callback_id: str, text: str) -> None:
         """Answer a Telegram callback query."""
@@ -462,8 +551,15 @@ class TelegramPoller:
                 ).start()
                 return
 
+        # Download photo if present (for vision content)
+        image_url = None
+        msg_data = update.get("message") or update.get("edited_message") or {}
+        if msg_data.get("photo"):
+            self._send_typing(chat_id)
+            image_url = self._download_photo(msg_data)
+
         # Forward to container via /v1/chat/completions
-        self._forward_to_container(chat_id, tenant, message_text)
+        self._forward_to_container(chat_id, tenant, message_text, image_url=image_url)
 
     def _extract_message_text(self, update: dict) -> str | None:
         """Extract user message text from a Telegram update."""
@@ -475,14 +571,9 @@ class TelegramPoller:
         if text:
             return text
 
-        # Photo with caption
-        caption = message.get("caption")
-        if caption:
-            return caption
-
-        # Photo without caption
+        # Photo — handled separately via _extract_photo_content()
         if message.get("photo"):
-            return "[User sent a photo]"
+            return message.get("caption") or "User sent a photo"
 
         # Voice/audio — transcribe via Whisper
         voice = message.get("voice") or message.get("audio")
@@ -508,8 +599,16 @@ class TelegramPoller:
             return "[User sent a video]"
 
         # Location
-        if message.get("location"):
-            return "[User shared a location]"
+        loc = message.get("location")
+        if loc:
+            lat = loc.get("latitude", 0)
+            lng = loc.get("longitude", 0)
+            venue = message.get("venue")
+            if venue:
+                name = venue.get("title", "")
+                addr = venue.get("address", "")
+                return f"📍 User shared a venue: {name} — {addr} ({lat}, {lng}) https://maps.google.com/maps?q={lat},{lng}"
+            return f"📍 User shared their location: {lat}, {lng} https://maps.google.com/maps?q={lat},{lng}"
 
         # Contact
         if message.get("contact"):
@@ -517,7 +616,10 @@ class TelegramPoller:
 
         return None
 
-    def _forward_to_container(self, chat_id: int, tenant: Tenant, message_text: str) -> None:
+    def _forward_to_container(
+        self, chat_id: int, tenant: Tenant, message_text: str,
+        image_url: str | None = None,
+    ) -> None:
         """Send the message to the tenant's OpenClaw container via /v1/chat/completions and relay the response."""
         if not tenant.container_fqdn:
             self._send_message(chat_id, "Your assistant is being set up. Please try again in a minute!")
@@ -525,6 +627,15 @@ class TelegramPoller:
 
         url = f"https://{tenant.container_fqdn}/v1/chat/completions"
         user_tz = tenant.user.timezone or "UTC"
+
+        # Build message content — plain text or vision (text + image)
+        if image_url:
+            content: Any = [
+                {"type": "image_url", "image_url": {"url": image_url}},
+                {"type": "text", "text": message_text},
+            ]
+        else:
+            content = message_text
 
         # Show typing indicator while waiting for AI response
         self._send_typing(chat_id)
@@ -542,7 +653,7 @@ class TelegramPoller:
                 url,
                 json={
                     "model": "openclaw",
-                    "messages": [{"role": "user", "content": message_text}],
+                    "messages": [{"role": "user", "content": content}],
                     "user": str(chat_id),
                 },
                 headers={
