@@ -169,6 +169,28 @@ async def forward_to_openclaw(
             return None
 
 
+def send_telegram_message(chat_id: int, text: str) -> bool:
+    """Send a Telegram message directly. Returns True on success."""
+    bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
+    if not bot_token:
+        logger.warning("Cannot send Telegram message: no bot token configured")
+        return False
+
+    try:
+        resp = httpx.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            logger.warning("sendMessage failed (%s): %s", resp.status_code, resp.text[:200])
+            return False
+        return True
+    except Exception:
+        logger.exception("Failed to send Telegram message to chat_id=%s", chat_id)
+        return False
+
+
 def send_onboarding_link(chat_id: int) -> dict:
     """Build a response telling an unregistered user to sign up."""
     frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
