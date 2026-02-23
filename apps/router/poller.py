@@ -224,6 +224,134 @@ class TelegramPoller:
                 # Network error — try plain text
                 self._send_message(chat_id, chunk)
 
+    def _send_photo(self, chat_id: int, photo_path: str, tenant: Tenant, caption: str = "") -> bool:
+        """Send a photo to Telegram from the tenant's workspace file share.
+
+        Returns True if sent successfully.
+        """
+        assert self._http is not None
+        try:
+            # Map container path back to file share path
+            # Container: /home/node/.openclaw/workspace/X → File share: workspace/X
+            share_path = photo_path
+            if "/workspace/" in share_path:
+                share_path = "workspace/" + share_path.split("/workspace/", 1)[1]
+
+            # Download from file share
+            from apps.orchestrator.azure_client import _is_mock
+            if _is_mock():
+                return False
+
+            account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
+            if not account_name:
+                return False
+
+            from azure.storage.fileshare import ShareFileClient
+            from apps.orchestrator.azure_client import get_storage_client
+
+            storage_client = get_storage_client()
+            keys = storage_client.storage_accounts.list_keys(
+                settings.AZURE_RESOURCE_GROUP, account_name,
+            )
+            account_key = keys.keys[0].value
+            share_name = f"ws-{str(tenant.id)[:20]}"
+
+            file_client = ShareFileClient(
+                account_url=f"https://{account_name}.file.core.windows.net",
+                share_name=share_name,
+                file_path=share_path,
+                credential=account_key,
+            )
+            data = file_client.download_file().readall()
+
+            # Send via Telegram sendPhoto
+            files = {"photo": ("image.jpg", data, "image/jpeg")}
+            form_data = {"chat_id": str(chat_id)}
+            if caption:
+                form_data["caption"] = caption[:1024]  # Telegram caption limit
+                form_data["parse_mode"] = "Markdown"
+
+            resp = self._http.post(
+                f"{self._api_base}/sendPhoto",
+                data=form_data,
+                files=files,
+                timeout=15,
+            )
+            if resp.is_success:
+                return True
+            logger.warning("sendPhoto failed (%s): %s", resp.status_code, resp.text[:200])
+            return False
+
+        except Exception:
+            logger.exception("Failed to send photo from %s", photo_path)
+            return False
+
+    def _send_rich_response(self, chat_id: int, tenant: Tenant, text: str) -> None:
+        """Send an AI response, extracting and sending any embedded images.
+
+        Detects image references like MEDIA:/path/to/image.jpg or
+        workspace file paths, sends them as Telegram photos, and sends
+        the remaining text as markdown.
+        """
+        import re
+
+        # Pattern: MEDIA:path or common image extensions in workspace paths
+        # OpenClaw uses MEDIA:./path or MEDIA:https://... convention
+        media_pattern = re.compile(
+            r'MEDIA:(\S+\.(?:jpg|jpeg|png|gif|webp))',
+            re.IGNORECASE,
+        )
+
+        # Also detect workspace image paths the agent might reference
+        workspace_pattern = re.compile(
+            r'(/home/node/\.openclaw/workspace/\S+\.(?:jpg|jpeg|png|gif|webp))',
+            re.IGNORECASE,
+        )
+
+        # Extract all image references
+        media_matches = media_pattern.findall(text)
+        workspace_matches = workspace_pattern.findall(text)
+
+        # Clean image references from text
+        clean_text = media_pattern.sub('', text)
+        clean_text = workspace_pattern.sub('', clean_text)
+        clean_text = clean_text.strip()
+
+        # Send images first
+        for path in media_matches + workspace_matches:
+            # Resolve relative paths
+            if path.startswith("./"):
+                path = f"/home/node/.openclaw/workspace/{path[2:]}"
+            if path.startswith("/home/node/"):
+                self._send_photo(chat_id, path, tenant)
+
+        # Parse inline buttons: [[button:Label|callback_data]]
+        button_pattern = re.compile(r'\[\[button:([^|]+)\|([^\]]+)\]\]')
+        buttons = button_pattern.findall(clean_text)
+        clean_text = button_pattern.sub('', clean_text).strip()
+
+        # Build reply_markup if buttons found
+        reply_markup = None
+        if buttons:
+            keyboard = [[{"text": label.strip(), "callback_data": f"agent:{data.strip()}"}] for label, data in buttons]
+            reply_markup = {"inline_keyboard": keyboard}
+
+        # Send remaining text
+        if clean_text:
+            if reply_markup:
+                # Send last chunk with buttons attached
+                chunks = self._split_message(clean_text)
+                for i, chunk in enumerate(chunks):
+                    if i > 0:
+                        time.sleep(0.3)
+                    if i == len(chunks) - 1:
+                        # Last chunk gets the buttons
+                        self._send_message(chat_id, chunk, parse_mode="Markdown", reply_markup=reply_markup)
+                    else:
+                        self._send_markdown(chat_id, chunk)
+            else:
+                self._send_markdown(chat_id, clean_text)
+
     def _send_typing(self, chat_id: int) -> None:
         """Send 'typing' chat action to Telegram."""
         assert self._http is not None
@@ -547,6 +675,19 @@ class TelegramPoller:
 
                 return
 
+            # Agent-generated button callbacks → forward to agent as a message
+            if callback_data.startswith("agent:"):
+                button_value = callback_data[6:]  # Strip "agent:" prefix
+                self._answer_callback_query(callback_id, "✓")
+                # Remove buttons from the original message
+                orig_msg_id = update["callback_query"].get("message", {}).get("message_id")
+                if orig_msg_id:
+                    self._edit_message_reply_markup(chat_id, orig_msg_id, None)
+                # Forward the button tap to the agent
+                self._send_typing(chat_id)
+                self._forward_to_container(chat_id, tenant, f'[User tapped button: "{button_value}"]')
+                return
+
         # Unknown user → onboarding
         if not tenant:
             response_data = send_onboarding_link(chat_id)
@@ -865,7 +1006,7 @@ class TelegramPoller:
         # Extract AI response text from OpenAI-compatible response
         ai_text = self._extract_ai_response(result)
         if ai_text:
-            self._send_markdown(chat_id, ai_text)
+            self._send_rich_response(chat_id, tenant, ai_text)
 
         # Record usage
         self._record_usage(tenant, result)
