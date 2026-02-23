@@ -24,10 +24,6 @@ class OrchestratorServiceTest(TestCase):
     )
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch("apps.orchestrator.services.assign_acr_pull_role")
-    @patch(
-        "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
-        return_value="tenant-xxx-internal-key",
-    )
     @patch("apps.orchestrator.services.seed_cron_jobs", return_value={"tenant_id": "seed", "jobs_total": 4, "created": 4, "errors": 0})
     @patch("apps.cron.views._schedule_qstash_task", create=True, return_value=None)
     @patch("apps.orchestrator.services.create_tenant_file_share")
@@ -45,7 +41,6 @@ class OrchestratorServiceTest(TestCase):
         _mock_create_file_share,
         _mock_schedule_qstash,
         _mock_seed_cron_jobs,
-        _mock_store_kv_key,
         _mock_assign_acr_role,
         _mock_assign_kv_role,
         _mock_create_identity,
@@ -61,12 +56,10 @@ class OrchestratorServiceTest(TestCase):
         self.assertEqual(self.tenant.managed_identity_id, "/identities/1")
         self.assertIsNotNone(self.tenant.provisioned_at)
         _mock_assign_kv_role.assert_called_once_with("principal-1")
-        self.assertEqual(len(self.tenant.internal_api_key_hash), 64)
-        self.assertIsNotNone(self.tenant.internal_api_key_set_at)
-        _mock_store_kv_key.assert_called_once()
         _mock_create_container.assert_called_once()
+        # Verify no per-tenant KV secret is passed (uses shared key)
         call_kwargs = _mock_create_container.call_args.kwargs
-        self.assertEqual(call_kwargs["internal_api_key_kv_secret"], "tenant-xxx-internal-key")
+        self.assertNotIn("internal_api_key_kv_secret", call_kwargs)
 
     @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="env")
     @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
@@ -77,10 +70,6 @@ class OrchestratorServiceTest(TestCase):
     )
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch("apps.orchestrator.services.assign_acr_pull_role")
-    @patch(
-        "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
-        return_value="tenant-xxx-internal-key",
-    )
     @patch("apps.orchestrator.services.seed_cron_jobs", return_value={"tenant_id": "seed", "jobs_total": 4, "created": 4, "errors": 0})
     @patch("apps.cron.views._schedule_qstash_task", create=True, return_value=None)
     @patch("apps.orchestrator.services.create_tenant_file_share")
@@ -98,7 +87,6 @@ class OrchestratorServiceTest(TestCase):
         _mock_create_file_share,
         _mock_schedule_qstash,
         _mock_seed_cron_jobs,
-        _mock_store_kv_key,
         _mock_assign_acr_role,
         _mock_assign_kv_role,
         _mock_create_identity,
@@ -113,10 +101,6 @@ class OrchestratorServiceTest(TestCase):
     @patch("apps.orchestrator.services.upload_config_to_file_share")
     @patch("apps.orchestrator.services.register_environment_storage")
     @patch("apps.orchestrator.services.create_tenant_file_share")
-    @patch(
-        "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
-        return_value="tenant-xxx-internal-key",
-    )
     @patch("apps.orchestrator.services.assign_acr_pull_role")
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch(
@@ -132,7 +116,6 @@ class OrchestratorServiceTest(TestCase):
         _mock_create_identity,
         _mock_assign_kv_role,
         _mock_assign_acr_role,
-        _mock_store_kv_key,
         _mock_create_file_share,
         _mock_register_storage,
         _mock_upload_config,

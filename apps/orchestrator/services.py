@@ -20,11 +20,9 @@ from .azure_client import (
     delete_managed_identity,
     delete_tenant_file_share,
     register_environment_storage,
-    store_tenant_internal_key_in_key_vault,
     upload_config_to_file_share,
 )
 from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
-from .key_utils import generate_internal_api_key, hash_internal_api_key
 from .config_generator import build_cron_seed_jobs, config_to_json, generate_openclaw_config
 from .personas import render_workspace_files
 
@@ -187,24 +185,7 @@ def provision_tenant(tenant_id: str) -> None:
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="assign_acr_pull_role")
         assign_acr_pull_role(identity["principal_id"])
 
-        # 2c. Generate per-tenant internal API key
-        plaintext_key = generate_internal_api_key()
-        key_hash = hash_internal_api_key(plaintext_key)
-
-        # 2d. Store plaintext in Key Vault
-        _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="store_internal_key")
-        kv_secret_name = store_tenant_internal_key_in_key_vault(
-            str(tenant.id), plaintext_key,
-        )
-
-        # 2e. Store hash in DB
-        tenant.internal_api_key_hash = key_hash
-        tenant.internal_api_key_set_at = timezone.now()
-        tenant.save(update_fields=[
-            "internal_api_key_hash", "internal_api_key_set_at", "updated_at",
-        ])
-
-        # 2f. Create Azure File Share and register with Container Environment
+        # 2c. Create Azure File Share and register with Container Environment
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="create_file_share")
         create_tenant_file_share(str(tenant.id))
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="register_environment_storage")
@@ -227,7 +208,6 @@ def provision_tenant(tenant_id: str) -> None:
             config_json=config_json,
             identity_id=identity["id"],
             identity_client_id=identity["client_id"],
-            internal_api_key_kv_secret=kv_secret_name,
             workspace_env=workspace_env,
         )
 
