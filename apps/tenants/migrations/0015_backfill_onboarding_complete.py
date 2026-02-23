@@ -1,7 +1,6 @@
-"""Backfill onboarding_complete=True for all existing active tenants.
+"""Backfill onboarding_complete=True for existing active tenants.
 
-Prevents existing users from being forced through the onboarding flow
-after the onboarding feature is deployed.
+Prevents existing users from being funneled through onboarding again.
 """
 from django.db import migrations
 
@@ -13,11 +12,11 @@ def backfill_onboarding(apps, schema_editor):
         onboarding_complete=False,
     ).update(onboarding_complete=True, onboarding_step=4)
     if updated:
-        print(f"\n  Backfilled onboarding_complete=True for {updated} existing tenant(s)")
+        print(f"\n  Backfilled onboarding_complete=True for {updated} active tenants")
 
 
 def reverse_backfill(apps, schema_editor):
-    pass  # No meaningful reverse — can't distinguish pre-existing from newly onboarded
+    pass  # No meaningful reverse
 
 
 class Migration(migrations.Migration):
