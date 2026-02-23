@@ -122,12 +122,12 @@ class ConfigGeneratorTest(TestCase):
         self.assertNotIn("group:automation", tools["deny"])
         self.assertNotIn("group:ui", tools["allow"])
 
-    def test_premium_tier_tools_enable_browser_and_exec(self):
+    def test_premium_tier_tools_enable_browser(self):
         self.tenant.model_tier = "premium"
         config = generate_openclaw_config(self.tenant)
         tools = config["tools"]
         self.assertIn("group:ui", tools["allow"])
-        self.assertIn("group:runtime", tools["allow"])
+        self.assertNotIn("group:runtime", tools["allow"])
         self.assertEqual(tools["elevated"], {"enabled": False})
 
     def test_channels_empty_no_telegram(self):

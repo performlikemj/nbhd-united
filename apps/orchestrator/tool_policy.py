@@ -42,7 +42,6 @@ STARTER_ALLOW: tuple[str, ...] = (
 # Premium tier adds browser automation and sandboxed exec capability.
 PREMIUM_ALLOW: tuple[str, ...] = STARTER_ALLOW + (
     "group:ui",
-    "group:runtime",
 )
 
 # Legacy aliases for backward compatibility in tests
