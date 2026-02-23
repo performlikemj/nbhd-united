@@ -62,6 +62,8 @@ TASK_MAP = {
     "update_tenant_config": "apps.orchestrator.tasks.update_tenant_config_task",
     "seed_cron_jobs": "apps.orchestrator.tasks.seed_cron_jobs_task",
     "repair_stale_tenant_provisioning": "apps.orchestrator.tasks.repair_stale_tenant_provisioning_task",
+    # Media cleanup (daily)
+    "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
 }
 
 
