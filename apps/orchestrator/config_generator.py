@@ -296,11 +296,16 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             },
         },
 
-        # Telegram channel — intentionally ABSENT.
-        # The central Django poller handles all inbound Telegram messages
-        # and forwards them to containers via /v1/chat/completions.
-        # No Telegram provider runs inside tenant containers.
-        "channels": {},
+        # Telegram channel — the central Django poller handles actual
+        # Telegram I/O, but we declare the channel here so the agent knows
+        # its surface capabilities (inline buttons, reactions, etc.).
+        # No bot token is set — the container never connects to Telegram directly.
+        "channels": {
+            "telegram": {
+                "enabled": True,
+                "capabilities": ["inlineButtons"],
+            },
+        },
 
         # Gateway — local mode; bind to loopback so internal tool calls
         # (cron, etc.) auto-pair via localhost.  The OpenClaw proxy sidecar

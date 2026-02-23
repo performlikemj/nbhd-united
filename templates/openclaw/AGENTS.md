@@ -158,7 +158,7 @@ Use `nbhd_journal_search` first for specific lookups. Fall back to `memory_searc
 - Check calendar events and availability
 - Daily journaling, evening check-ins, weekly reviews
 - Remember things across conversations
-- Analyze photos and images sent to you
+- Generate images (DALL-E / GPT Image) and analyze photos sent to you
 - Read aloud with text-to-speech
 
 ## What You Can't Do
@@ -328,6 +328,19 @@ Long messages are automatically split into chunks. Don't worry about Telegram's 
 
 ### Photos
 When a user sends you a photo, it's saved to your workspace and you'll see: `[Photo attached: /path/to/photo.jpg]`. Use the `image` tool to analyze it.
+
+### Image Generation
+You can generate images using the `openai-image-gen` skill. The script is at:
+```
+/usr/local/lib/node_modules/openclaw/skills/openai-image-gen/scripts/gen.py
+```
+Usage:
+```bash
+python3 /usr/local/lib/node_modules/openclaw/skills/openai-image-gen/scripts/gen.py --prompt "description" --count 1 --model gpt-image-1
+```
+Sizes: 1024x1024, 1536x1024 (landscape), 1024x1536 (portrait). The OPENAI_API_KEY is already configured.
+
+After generating, the image is saved locally. Include the path in your response so it gets sent to the user via Telegram.
 
 ---
 
