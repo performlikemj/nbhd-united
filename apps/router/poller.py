@@ -269,6 +269,16 @@ class TelegramPoller:
         if not message_text:
             return
 
+        # Onboarding gate — structured questions before agent handoff
+        if not tenant.onboarding_complete:
+            from apps.router.onboarding import get_onboarding_response
+
+            onboarding_reply = get_onboarding_response(tenant, message_text)
+            if onboarding_reply is not None:
+                self._send_message(chat_id, onboarding_reply)
+                return
+            # onboarding_reply is None → complete, fall through to agent
+
         # Forward to container via /v1/chat/completions
         self._forward_to_container(chat_id, tenant, message_text)
 

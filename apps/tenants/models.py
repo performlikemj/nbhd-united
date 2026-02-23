@@ -125,6 +125,16 @@ class Tenant(models.Model):
         help_text="When the per-tenant internal API key was last generated",
     )
 
+    # Onboarding
+    onboarding_complete = models.BooleanField(
+        default=False,
+        help_text="Whether Telegram onboarding has been completed",
+    )
+    onboarding_step = models.IntegerField(
+        default=0,
+        help_text="Current onboarding question index (0 = not started)",
+    )
+
     # Metadata
     last_message_at = models.DateTimeField(null=True, blank=True)
     config_version = models.IntegerField(
