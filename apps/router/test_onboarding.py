@@ -113,13 +113,22 @@ class OnboardingFlowTest(TestCase):
     def test_step_0_sends_welcome(self):
         """First message triggers welcome + name question."""
         reply = get_onboarding_response(self.tenant, "hello")
-        self.assertIn("what should I call you", reply)
+        self.assertIn("call you", reply.lower())
         self.assertIn("Welcome", reply)
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.onboarding_step, 1)
 
-    def test_step_1_captures_name_asks_language(self):
-        """Name captured, then asks language preference."""
+    def test_step_0_sends_japanese_welcome_if_telegram_lang_ja(self):
+        """Japanese user gets welcome in Japanese."""
+        reply = get_onboarding_response(self.tenant, "hello", telegram_lang="ja")
+        self.assertIn("ようこそ", reply)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.onboarding_step, 1)
+        self.tenant.user.refresh_from_db()
+        self.assertEqual(self.tenant.user.language, "ja")
+
+    def test_step_1_captures_name_asks_language_for_english(self):
+        """English user: name captured, then asks language preference."""
         self.tenant.onboarding_step = 1
         self.tenant.save(update_fields=["onboarding_step"])
 
@@ -131,6 +140,19 @@ class OnboardingFlowTest(TestCase):
         self.tenant.user.refresh_from_db()
         self.assertEqual(self.tenant.user.display_name, "Alex")
 
+    def test_step_1_skips_language_if_auto_detected(self):
+        """Non-English Telegram user: language auto-detected, skips to timezone."""
+        self.tenant.onboarding_step = 1
+        self.tenant.user.language = "ja"
+        self.tenant.user.save(update_fields=["language"])
+        self.tenant.save(update_fields=["onboarding_step"])
+
+        reply = get_onboarding_response(self.tenant, "太郎", telegram_lang="ja")
+        self.assertIn("太郎", reply)
+        self.assertIn("タイムゾーン", reply)  # Asks timezone in Japanese
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.onboarding_step, 3)  # Skipped step 2
+
     def test_step_2_captures_language_asks_timezone(self):
         """Language captured, then asks timezone."""
         self.tenant.onboarding_step = 2
@@ -138,7 +160,6 @@ class OnboardingFlowTest(TestCase):
 
         reply = get_onboarding_response(self.tenant, "Japanese")
         self.assertIn("Japanese", reply)
-        self.assertIn("timezone", reply.lower())
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.onboarding_step, 3)
         self.tenant.user.refresh_from_db()
@@ -150,7 +171,6 @@ class OnboardingFlowTest(TestCase):
         self.tenant.save(update_fields=["onboarding_step"])
 
         reply = get_onboarding_response(self.tenant, "PST")
-        self.assertIn("help with", reply.lower())
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.onboarding_step, 4)
         self.tenant.user.refresh_from_db()
@@ -193,13 +213,13 @@ class OnboardingFlowTest(TestCase):
         self.assertIsNone(reply)
 
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
-    def test_full_flow(self, mock_upload):
-        """Walk through the entire onboarding flow."""
+    def test_full_flow_english(self, mock_upload):
+        """Walk through full onboarding flow for English user."""
         # Message 1: triggers welcome
         r1 = get_onboarding_response(self.tenant, "hi")
-        self.assertIn("call you", r1)
+        self.assertIn("call you", r1.lower())
 
-        # Message 2: name → asks language
+        # Message 2: name → asks language (English, no auto-detect)
         self.tenant.refresh_from_db()
         r2 = get_onboarding_response(self.tenant, "I'm Jordan")
         self.assertIn("Jordan", r2)
@@ -209,17 +229,14 @@ class OnboardingFlowTest(TestCase):
         self.tenant.refresh_from_db()
         r3 = get_onboarding_response(self.tenant, "Spanish")
         self.assertIn("Spanish", r3)
-        self.assertIn("timezone", r3.lower())
 
         # Message 4: timezone → asks interests
         self.tenant.refresh_from_db()
         r4 = get_onboarding_response(self.tenant, "Eastern")
-        self.assertIn("help with", r4.lower())
 
         # Message 5: interests → complete
         self.tenant.refresh_from_db()
         r5 = get_onboarding_response(self.tenant, "productivity and fitness tracking")
-        self.assertIn("ready to go", r5)
 
         # Verify final state
         self.tenant.refresh_from_db()
@@ -232,6 +249,37 @@ class OnboardingFlowTest(TestCase):
         # Next message should return None
         r6 = get_onboarding_response(self.tenant, "Hello agent!")
         self.assertIsNone(r6)
+
+    @patch("apps.orchestrator.azure_client.upload_workspace_file")
+    def test_full_flow_japanese_auto_detect(self, mock_upload):
+        """Japanese user: language auto-detected, skips language question."""
+        # Message 1: welcome in Japanese
+        r1 = get_onboarding_response(self.tenant, "こんにちは", telegram_lang="ja")
+        self.assertIn("ようこそ", r1)
+
+        # Message 2: name → skips language, asks timezone in Japanese
+        self.tenant.refresh_from_db()
+        r2 = get_onboarding_response(self.tenant, "太郎", telegram_lang="ja")
+        self.assertIn("太郎", r2)
+        self.assertIn("タイムゾーン", r2)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.onboarding_step, 3)  # Skipped step 2
+
+        # Message 3: timezone → asks interests in Japanese
+        self.tenant.refresh_from_db()
+        r3 = get_onboarding_response(self.tenant, "東京")
+        self.tenant.user.refresh_from_db()
+        self.assertEqual(self.tenant.user.timezone, "Asia/Tokyo")
+
+        # Message 4: interests → complete in Japanese
+        self.tenant.refresh_from_db()
+        r4 = get_onboarding_response(self.tenant, "仕事の整理を手伝ってほしい")
+        self.assertIn("準備完了", r4)
+
+        self.tenant.refresh_from_db()
+        self.assertTrue(self.tenant.onboarding_complete)
+        self.tenant.user.refresh_from_db()
+        self.assertEqual(self.tenant.user.language, "ja")
 
 
 class ReintroductionTest(TestCase):

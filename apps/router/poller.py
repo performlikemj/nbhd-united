@@ -280,7 +280,10 @@ class TelegramPoller:
             tenant.save(update_fields=["onboarding_step", "updated_at"])
 
         if not tenant.onboarding_complete or tenant.onboarding_step == 0:
-            onboarding_reply = get_onboarding_response(tenant, message_text)
+            # Extract Telegram language_code for auto-detection
+            msg = update.get("message") or update.get("edited_message") or {}
+            tg_lang = (msg.get("from") or {}).get("language_code", "")
+            onboarding_reply = get_onboarding_response(tenant, message_text, telegram_lang=tg_lang)
             if onboarding_reply is not None:
                 self._send_message(chat_id, onboarding_reply)
                 return

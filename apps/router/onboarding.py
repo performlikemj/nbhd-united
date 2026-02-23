@@ -164,6 +164,19 @@ TIMEZONE_ALIASES: dict[str, str] = {
     "johannesburg": "Africa/Johannesburg",
     "kingston": "America/Jamaica",
     "jamaica": "America/Jamaica",
+    # Non-Latin city names
+    "東京": "Asia/Tokyo",
+    "大阪": "Asia/Tokyo",
+    "京都": "Asia/Tokyo",
+    "名古屋": "Asia/Tokyo",
+    "札幌": "Asia/Tokyo",
+    "福岡": "Asia/Tokyo",
+    "ソウル": "Asia/Seoul",
+    "北京": "Asia/Shanghai",
+    "上海": "Asia/Shanghai",
+    "台北": "Asia/Taipei",
+    "マニラ": "Asia/Manila",
+    "バンコク": "Asia/Bangkok",
 }
 
 UTC_OFFSET_RE = re.compile(
@@ -214,78 +227,181 @@ def parse_name(text: str) -> str:
 # Onboarding flow
 # ---------------------------------------------------------------------------
 
-# Step 0: send welcome (triggered by first message)
-# Step 1: user answered name → ask language
+# Step 0: send welcome (triggered by first message or provisioning)
+# Step 1: user answered name → auto-detect language or ask
 # Step 2: user answered language → ask timezone
 # Step 3: user answered timezone → ask interests
 # Step 4: user answered interests → complete
 
-WELCOME_MESSAGE = (
-    "Hey there! 👋 Welcome to Neighborhood United.\n\n"
-    "I'm your personal AI assistant. Before we get started, "
-    "I'd love to learn a little about you so I can be more helpful.\n\n"
-    "First — what should I call you?"
-)
+# Telegram language_code → our language code mapping
+TELEGRAM_LANG_MAP: dict[str, str] = {
+    "en": "en", "es": "es", "fr": "fr", "de": "de", "pt": "pt", "pt-br": "pt",
+    "ja": "ja", "zh-hans": "zh", "zh-hant": "zh", "ko": "ko", "it": "it",
+    "nl": "nl", "ru": "ru", "ar": "ar", "hi": "hi", "tr": "tr", "th": "th",
+    "vi": "vi", "pl": "pl", "id": "id", "ms": "ms", "tl": "tl", "sw": "sw",
+    "uk": "uk", "cs": "cs", "ro": "ro", "el": "el", "hu": "hu", "sv": "sv",
+    "da": "da", "fi": "fi", "nb": "nb", "no": "nb", "he": "he", "fa": "fa",
+}
 
-REINTRO_MESSAGE = (
-    "Hey! 👋 I realize I never properly introduced myself or got to know you.\n\n"
-    "I'm your personal AI assistant, and I'd love to set things up properly "
-    "so I can help you better.\n\n"
-    "Let's start — what should I call you?"
-)
+# Localized onboarding messages
+# Only need a few key languages — English is fallback
+MESSAGES: dict[str, dict[str, str]] = {
+    "en": {
+        "welcome": (
+            "Hey there! 👋 Welcome to Neighborhood United.\n\n"
+            "I'm your personal AI assistant. Before we get started, "
+            "I'd love to learn a little about you so I can be more helpful.\n\n"
+            "First — what should I call you?"
+        ),
+        "reintro": (
+            "Hey! 👋 I realize I never properly introduced myself or got to know you.\n\n"
+            "I'm your personal AI assistant, and I'd love to set things up properly "
+            "so I can help you better.\n\n"
+            "Let's start — what should I call you?"
+        ),
+        "lang_detected": "Nice to meet you, {name}! 🎉\n\nI noticed you're using {lang_name} — I'll communicate in {lang_name}! 🗣️\n\nWhat timezone are you in?\n(e.g. \"EST\", \"Pacific\", \"JST\", or a city like \"Tokyo\")",
+        "ask_language": "Nice to meet you, {name}! 🎉\n\nWhat language would you like me to talk to you in?\n(e.g. English, Spanish, Japanese, French...)",
+        "lang_confirmed": "Great, I'll communicate in {lang_name}! 🗣️\n\nWhat timezone are you in?\n(e.g. \"EST\", \"Pacific\", \"JST\", or a city like \"Tokyo\")",
+        "ask_interests": "Got it! Last question — what are you most hoping your assistant can help with?\n(work stuff, personal organization, creative projects, just someone to chat with... anything goes!)",
+        "complete": "Thanks, {name}! I've got everything I need. 🎉\n\nYour assistant is all set up and ready to go. From here on out, you're chatting directly with your personal AI.\n\nGo ahead — say hi, ask a question, or tell it what you need help with!",
+    },
+    "ja": {
+        "welcome": (
+            "こんにちは！👋 Neighborhood Unitedへようこそ。\n\n"
+            "私はあなた専用のAIアシスタントです。始める前に、"
+            "少しだけあなたのことを教えてください。\n\n"
+            "まず、何とお呼びすればいいですか？"
+        ),
+        "reintro": (
+            "こんにちは！👋 ちゃんとご挨拶できていませんでしたね。\n\n"
+            "私はあなた専用のAIアシスタントです。"
+            "もっとお役に立てるように、少し教えてください。\n\n"
+            "何とお呼びすればいいですか？"
+        ),
+        "lang_detected": "{name}さん、はじめまして！🎉\n\n日本語でお話ししますね！🗣️\n\nタイムゾーンはどちらですか？\n（例：「JST」「東京」「大阪」など）",
+        "ask_language": "{name}さん、はじめまして！🎉\n\n何語でお話ししましょうか？\n（例：日本語、English、Español...）",
+        "lang_confirmed": "{lang_name}でお話ししますね！🗣️\n\nタイムゾーンはどちらですか？\n（例：「JST」「東京」「大阪」など）",
+        "ask_interests": "ありがとうございます！最後に、アシスタントにどんなことを手伝ってほしいですか？\n（仕事、生活の整理、クリエイティブなこと、なんでもOKです！）",
+        "complete": "{name}さん、ありがとうございます！準備完了です🎉\n\nこれからは、あなた専用のAIと直接お話しできます。\n\n何でも聞いてくださいね！",
+    },
+    "es": {
+        "welcome": (
+            "¡Hola! 👋 Bienvenido a Neighborhood United.\n\n"
+            "Soy tu asistente personal de IA. Antes de empezar, "
+            "me gustaría conocerte un poco mejor.\n\n"
+            "Primero — ¿cómo te llamas?"
+        ),
+        "reintro": (
+            "¡Hola! 👋 Me doy cuenta de que nunca me presenté correctamente.\n\n"
+            "Soy tu asistente personal de IA, y me gustaría configurar todo "
+            "para ayudarte mejor.\n\n"
+            "¿Cómo te llamas?"
+        ),
+        "lang_detected": "¡Encantado de conocerte, {name}! 🎉\n\nVeo que usas {lang_name} — ¡hablaré en {lang_name}! 🗣️\n\n¿En qué zona horaria estás?\n(ej: \"EST\", \"Pacific\", o una ciudad como \"Madrid\")",
+        "ask_language": "¡Encantado de conocerte, {name}! 🎉\n\n¿En qué idioma te gustaría que hable?\n(ej: English, Español, Français...)",
+        "lang_confirmed": "¡Perfecto, hablaré en {lang_name}! 🗣️\n\n¿En qué zona horaria estás?\n(ej: \"EST\", \"Pacific\", o una ciudad como \"Madrid\")",
+        "ask_interests": "¡Entendido! Última pregunta — ¿en qué esperas que tu asistente te pueda ayudar?\n(trabajo, organización personal, proyectos creativos... ¡lo que sea!)",
+        "complete": "¡Gracias, {name}! Ya tengo todo lo que necesito. 🎉\n\nTu asistente está listo. A partir de ahora, hablas directamente con tu IA personal.\n\n¡Adelante, pregunta lo que quieras!",
+    },
+}
+
+
+def _msg(lang: str, key: str, **kwargs: str) -> str:
+    """Get a localized message, falling back to English."""
+    msgs = MESSAGES.get(lang, MESSAGES["en"])
+    template = msgs.get(key, MESSAGES["en"][key])
+    return template.format(**kwargs) if kwargs else template
+
+
+def _resolve_telegram_lang(tg_lang: str) -> str | None:
+    """Convert Telegram language_code to our language code, or None if English/unknown."""
+    if not tg_lang:
+        return None
+    code = tg_lang.lower().strip()
+    mapped = TELEGRAM_LANG_MAP.get(code)
+    if not mapped or mapped == "en":
+        return None  # Don't auto-detect English (it's the default)
+    return mapped
+
+
+def _lang_display_name(code: str) -> str:
+    """Get display name for a language code."""
+    for alias, (c, name) in LANGUAGE_ALIASES.items():
+        if c == code and len(alias) > 2:  # Skip short codes, prefer full names
+            return name
+    return code.upper()
+
+
+WELCOME_MESSAGE = MESSAGES["en"]["welcome"]
+REINTRO_MESSAGE = MESSAGES["en"]["reintro"]
 
 
 def get_onboarding_response(
-    tenant: Tenant, message_text: str
+    tenant: Tenant, message_text: str, *, telegram_lang: str = ""
 ) -> str | None:
     """Process an onboarding message and return the response.
+
+    Args:
+        tenant: The tenant being onboarded
+        message_text: The user's message
+        telegram_lang: Telegram's language_code from the message (e.g. "ja", "es")
 
     Returns:
         str: The next question or completion message
         None: Onboarding is complete, forward to agent normally
     """
     step = tenant.onboarding_step
+    lang = tenant.user.language or "en"
+
+    # Auto-detect language from Telegram on first interaction
+    detected_lang = _resolve_telegram_lang(telegram_lang)
+    if detected_lang and lang == "en" and step <= 1:
+        # Set language early so messages come in the right language
+        tenant.user.language = detected_lang
+        tenant.user.save(update_fields=["language"])
+        lang = detected_lang
+        logger.info("Onboarding [%s]: auto-detected language=%s from Telegram", tenant.id, detected_lang)
 
     # Step 0: First message → send welcome + first question
     if step == 0:
-        # Check if this is a re-introduction (backfilled user)
-        is_reintro = tenant.onboarding_complete  # was True from backfill
-        tenant.onboarding_complete = False  # reset for flow
+        is_reintro = tenant.onboarding_complete
+        tenant.onboarding_complete = False
         tenant.onboarding_step = 1
         tenant.save(update_fields=["onboarding_complete", "onboarding_step", "updated_at"])
-        return REINTRO_MESSAGE if is_reintro else WELCOME_MESSAGE
+        return _msg(lang, "reintro") if is_reintro else _msg(lang, "welcome")
 
     name = tenant.user.display_name or "Friend"
 
-    # Step 1: They answered the name question → ask language
+    # Step 1: They answered the name question
     if step == 1:
         name = parse_name(message_text)
         tenant.user.display_name = name
         tenant.user.save(update_fields=["display_name"])
         logger.info("Onboarding [%s]: name=%s", tenant.id, name)
 
-        tenant.onboarding_step = 2
-        tenant.save(update_fields=["onboarding_step", "updated_at"])
-        return (
-            f"Nice to meet you, {name}! 🎉\n\n"
-            f"What language would you like me to talk to you in?\n"
-            f"(e.g. English, Spanish, Japanese, French...)"
-        )
+        if detected_lang or (lang != "en"):
+            # Language was auto-detected from Telegram — skip language question
+            lang_name = _lang_display_name(lang)
+            tenant.onboarding_step = 3  # Skip step 2 (language), go to timezone
+            tenant.save(update_fields=["onboarding_step", "updated_at"])
+            return _msg(lang, "lang_detected", name=name, lang_name=lang_name)
+        else:
+            # English or unknown — ask language preference
+            tenant.onboarding_step = 2
+            tenant.save(update_fields=["onboarding_step", "updated_at"])
+            return _msg(lang, "ask_language", name=name)
 
     # Step 2: They answered the language question → ask timezone
     if step == 2:
         lang_code, lang_name = parse_language(message_text)
         tenant.user.language = lang_code
         tenant.user.save(update_fields=["language"])
+        lang = lang_code
         logger.info("Onboarding [%s]: language=%s (%s)", tenant.id, lang_code, lang_name)
 
         tenant.onboarding_step = 3
         tenant.save(update_fields=["onboarding_step", "updated_at"])
-        return (
-            f"Great, I'll communicate in {lang_name}! 🗣️\n\n"
-            f"What timezone are you in?\n"
-            f"(e.g. \"EST\", \"Pacific\", \"JST\", \"UTC+2\", or a city like \"Tokyo\" or \"New York\")"
-        )
+        return _msg(lang, "lang_confirmed", lang_name=lang_name)
 
     # Step 3: They answered the timezone question → ask interests
     if step == 3:
@@ -296,10 +412,7 @@ def get_onboarding_response(
 
         tenant.onboarding_step = 4
         tenant.save(update_fields=["onboarding_step", "updated_at"])
-        return (
-            "Got it! Last question from me — what are you most hoping your assistant can help with?\n"
-            "(work stuff, personal organization, creative projects, just someone to chat with... anything goes!)"
-        )
+        return _msg(lang, "ask_interests")
 
     # Step 4: They answered the interests question → complete
     if step == 4:
@@ -317,12 +430,7 @@ def get_onboarding_response(
         tenant.onboarding_step = 5
         tenant.save(update_fields=["onboarding_complete", "onboarding_step", "updated_at"])
 
-        return (
-            f"Thanks, {name}! I've got everything I need. 🎉\n\n"
-            f"Your assistant is all set up and ready to go. "
-            f"From here on out, you're chatting directly with your personal AI.\n\n"
-            f"Go ahead — say hi, ask a question, or tell it what you need help with!"
-        )
+        return _msg(lang, "complete", name=name)
 
     # Step 5+: Already complete
     return None
