@@ -33,7 +33,8 @@ class ConfigGeneratorTest(TestCase):
     def test_telegram_channel_absent_for_central_poller(self):
         """No Telegram channel — central Django poller handles all inbound."""
         config = generate_openclaw_config(self.tenant)
-        self.assertEqual(config["channels"], {})
+        self.assertIn("telegram", config["channels"])
+        self.assertIn("inlineButtons", config["channels"]["telegram"]["capabilities"])
 
     def test_starter_tier_model(self):
         self.tenant.model_tier = "starter"
@@ -132,7 +133,8 @@ class ConfigGeneratorTest(TestCase):
     def test_channels_empty_no_telegram(self):
         """No Telegram channel — central Django poller handles all Telegram."""
         config = generate_openclaw_config(self.tenant)
-        self.assertEqual(config["channels"], {})
+        self.assertIn("telegram", config["channels"])
+        self.assertIn("inlineButtons", config["channels"]["telegram"]["capabilities"])
 
     def test_chat_completions_endpoint_enabled(self):
         """Gateway exposes /v1/chat/completions for central poller forwarding."""
