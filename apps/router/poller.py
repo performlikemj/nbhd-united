@@ -5,8 +5,10 @@ routes each message to the correct tenant's OpenClaw container via the
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import time
+import threading
 from typing import Any
 
 import httpx
@@ -154,6 +156,79 @@ class TelegramPoller:
         except Exception:
             logger.exception("Failed to send message to chat_id=%s", chat_id)
 
+    def _send_typing(self, chat_id: int) -> None:
+        """Send 'typing' chat action to Telegram."""
+        assert self._http is not None
+        try:
+            self._http.post(
+                f"{self._api_base}/sendChatAction",
+                json={"chat_id": chat_id, "action": "typing"},
+                timeout=5,
+            )
+        except Exception:
+            pass  # Non-critical, don't log
+
+    def _transcribe_voice(self, file_id: str) -> str | None:
+        """Download a Telegram voice file and transcribe via OpenAI Whisper.
+
+        Returns transcribed text, or None on failure.
+        """
+        assert self._http is not None
+        openai_key = getattr(settings, "OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
+        if not openai_key:
+            logger.warning("Cannot transcribe voice: no OPENAI_API_KEY configured")
+            return None
+
+        try:
+            # 1. Get file path from Telegram
+            resp = self._http.post(
+                f"{self._api_base}/getFile",
+                json={"file_id": file_id},
+                timeout=10,
+            )
+            if not resp.is_success:
+                logger.warning("getFile failed: %s", resp.text[:200])
+                return None
+
+            file_path = resp.json().get("result", {}).get("file_path")
+            if not file_path:
+                logger.warning("getFile returned no file_path")
+                return None
+
+            # 2. Download the audio file
+            file_url = f"https://api.telegram.org/file/bot{self.bot_token}/{file_path}"
+            dl_resp = self._http.get(file_url, timeout=15)
+            if not dl_resp.is_success:
+                logger.warning("Failed to download voice file: %s", dl_resp.status_code)
+                return None
+
+            audio_data = dl_resp.content
+            # Determine extension from file_path
+            ext = file_path.rsplit(".", 1)[-1] if "." in file_path else "ogg"
+
+            # 3. Transcribe via OpenAI Whisper API
+            whisper_resp = self._http.post(
+                "https://api.openai.com/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {openai_key}"},
+                files={"file": (f"voice.{ext}", audio_data, f"audio/{ext}")},
+                data={"model": "whisper-1"},
+                timeout=30,
+            )
+            if not whisper_resp.is_success:
+                logger.warning("Whisper transcription failed: %s %s", whisper_resp.status_code, whisper_resp.text[:200])
+                return None
+
+            text = whisper_resp.json().get("text", "").strip()
+            if text:
+                logger.info("Transcribed voice message (%d bytes → %d chars)", len(audio_data), len(text))
+                return text
+
+            return None
+
+        except Exception:
+            logger.exception("Voice transcription error")
+            return None
+
     def _answer_callback_query(self, callback_id: str, text: str) -> None:
         """Answer a Telegram callback query."""
         assert self._http is not None
@@ -276,6 +351,11 @@ class TelegramPoller:
         # Update last_message_at
         Tenant.objects.filter(id=tenant.id).update(last_message_at=timezone.now())
 
+        # Send typing indicator for voice messages (transcription takes a few seconds)
+        msg_obj = update.get("message") or update.get("edited_message") or {}
+        if msg_obj.get("voice") or msg_obj.get("audio"):
+            self._send_typing(chat_id)
+
         # Extract message text
         message_text = self._extract_message_text(update)
         if not message_text:
@@ -322,9 +402,15 @@ class TelegramPoller:
         if message.get("photo"):
             return "[User sent a photo]"
 
-        # Voice/audio
-        if message.get("voice") or message.get("audio"):
-            return "[User sent a voice message]"
+        # Voice/audio — transcribe via Whisper
+        voice = message.get("voice") or message.get("audio")
+        if voice:
+            file_id = voice.get("file_id")
+            if file_id:
+                transcript = self._transcribe_voice(file_id)
+                if transcript:
+                    return f"🎤 Voice message: \"{transcript}\""
+            return "[User sent a voice message — couldn't transcribe, please try sending as text]"
 
         # Document
         if message.get("document"):
@@ -358,6 +444,17 @@ class TelegramPoller:
         url = f"https://{tenant.container_fqdn}/v1/chat/completions"
         user_tz = tenant.user.timezone or "UTC"
 
+        # Show typing indicator while waiting for AI response
+        self._send_typing(chat_id)
+        typing_stop = threading.Event()
+
+        def _keep_typing():
+            while not typing_stop.wait(5.0):
+                self._send_typing(chat_id)
+
+        typing_thread = threading.Thread(target=_keep_typing, daemon=True)
+        typing_thread.start()
+
         try:
             resp = httpx.post(
                 url,
@@ -377,7 +474,6 @@ class TelegramPoller:
             result = resp.json()
         except httpx.TimeoutException:
             logger.warning("Timeout forwarding to %s for chat_id=%s", tenant.container_fqdn, chat_id)
-            # Container likely received it and will respond async — don't send error
             return
         except httpx.HTTPStatusError as e:
             logger.error("FWD_FAIL %s HTTP %s", tenant.container_fqdn, e.response.status_code)
@@ -388,6 +484,8 @@ class TelegramPoller:
             logger.error("Error forwarding to %s: %s", tenant.container_fqdn, e)
             self._send_message(chat_id, "Sorry, I'm having trouble connecting right now. Please try again shortly.")
             return
+        finally:
+            typing_stop.set()
 
         # Extract AI response text from OpenAI-compatible response
         ai_text = self._extract_ai_response(result)

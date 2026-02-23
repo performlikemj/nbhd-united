@@ -5,6 +5,7 @@ import json as _json
 from django.test import TestCase, override_settings
 
 from apps.tenants.models import Tenant
+from apps.router.poller import TelegramPoller
 
 
 @override_settings(
@@ -320,9 +321,18 @@ class TelegramPollerExtractTextTest(TestCase):
         update = {"message": {"photo": [{}]}}
         self.assertIn("photo", self.poller._extract_message_text(update))
 
-    def test_voice_message(self):
+    @patch.object(TelegramPoller, "_transcribe_voice", return_value="hello")
+    def test_voice_message_transcribed(self, _mock):
         update = {"message": {"voice": {"file_id": "abc"}}}
-        self.assertIn("voice", self.poller._extract_message_text(update))
+        result = self.poller._extract_message_text(update)
+        self.assertIn("hello", result)
+        self.assertIn("🎤", result)
+
+    @patch.object(TelegramPoller, "_transcribe_voice", return_value=None)
+    def test_voice_message_fallback(self, _mock):
+        update = {"message": {"voice": {"file_id": "abc"}}}
+        result = self.poller._extract_message_text(update)
+        self.assertIn("couldn't transcribe", result)
 
     def test_sticker(self):
         update = {"message": {"sticker": {"emoji": "😀"}}}
