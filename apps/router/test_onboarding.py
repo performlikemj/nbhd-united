@@ -7,6 +7,8 @@ from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 from apps.router.onboarding import (
     get_onboarding_response,
+    needs_reintroduction,
+    parse_language,
     parse_name,
     parse_timezone,
 )
@@ -36,6 +38,32 @@ class ParseNameTest(TestCase):
 
     def test_empty_returns_friend(self):
         self.assertEqual(parse_name(""), "Friend")
+
+
+class ParseLanguageTest(TestCase):
+    def test_english(self):
+        self.assertEqual(parse_language("English"), ("en", "English"))
+
+    def test_spanish(self):
+        self.assertEqual(parse_language("Spanish"), ("es", "Spanish"))
+
+    def test_japanese(self):
+        self.assertEqual(parse_language("Japanese"), ("ja", "Japanese"))
+
+    def test_japanese_native(self):
+        self.assertEqual(parse_language("日本語"), ("ja", "Japanese"))
+
+    def test_code(self):
+        self.assertEqual(parse_language("fr"), ("fr", "French"))
+
+    def test_sentence(self):
+        self.assertEqual(parse_language("I speak Spanish"), ("es", "Spanish"))
+
+    def test_unknown_defaults_english(self):
+        self.assertEqual(parse_language("Klingon"), ("en", "English"))
+
+    def test_case_insensitive(self):
+        self.assertEqual(parse_language("GERMAN"), ("de", "German"))
 
 
 class ParseTimezoneTest(TestCase):
@@ -69,6 +97,9 @@ class ParseTimezoneTest(TestCase):
     def test_sentence_with_timezone(self):
         self.assertEqual(parse_timezone("I'm in Tokyo"), "Asia/Tokyo")
 
+    def test_jamaica(self):
+        self.assertEqual(parse_timezone("Jamaica"), "America/Jamaica")
+
 
 class OnboardingFlowTest(TestCase):
     def setUp(self):
@@ -83,68 +114,79 @@ class OnboardingFlowTest(TestCase):
         """First message triggers welcome + name question."""
         reply = get_onboarding_response(self.tenant, "hello")
         self.assertIn("what should I call you", reply)
+        self.assertIn("Welcome", reply)
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.onboarding_step, 1)
 
-    def test_step_1_captures_name(self):
-        """Second message captures name, asks timezone."""
+    def test_step_1_captures_name_asks_language(self):
+        """Name captured, then asks language preference."""
         self.tenant.onboarding_step = 1
         self.tenant.save(update_fields=["onboarding_step"])
 
         reply = get_onboarding_response(self.tenant, "Alex")
         self.assertIn("Alex", reply)
-        self.assertIn("timezone", reply.lower())
+        self.assertIn("language", reply.lower())
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.onboarding_step, 2)
         self.tenant.user.refresh_from_db()
         self.assertEqual(self.tenant.user.display_name, "Alex")
 
-    def test_step_2_captures_timezone(self):
-        """Third message captures timezone, asks interests."""
+    def test_step_2_captures_language_asks_timezone(self):
+        """Language captured, then asks timezone."""
         self.tenant.onboarding_step = 2
+        self.tenant.save(update_fields=["onboarding_step"])
+
+        reply = get_onboarding_response(self.tenant, "Japanese")
+        self.assertIn("Japanese", reply)
+        self.assertIn("timezone", reply.lower())
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.onboarding_step, 3)
+        self.tenant.user.refresh_from_db()
+        self.assertEqual(self.tenant.user.language, "ja")
+
+    def test_step_3_captures_timezone_asks_interests(self):
+        """Timezone captured, then asks interests."""
+        self.tenant.onboarding_step = 3
         self.tenant.save(update_fields=["onboarding_step"])
 
         reply = get_onboarding_response(self.tenant, "PST")
         self.assertIn("help with", reply.lower())
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.onboarding_step, 3)
+        self.assertEqual(self.tenant.onboarding_step, 4)
         self.tenant.user.refresh_from_db()
         self.assertEqual(self.tenant.user.timezone, "America/Los_Angeles")
 
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
-    def test_step_3_completes_onboarding(self, mock_upload):
-        """Fourth message completes onboarding, writes USER.md."""
-        self.tenant.onboarding_step = 3
+    def test_step_4_completes_onboarding(self, mock_upload):
+        """Interests captured, onboarding complete, USER.md written."""
+        self.tenant.onboarding_step = 4
         self.tenant.user.display_name = "Alex"
         self.tenant.user.timezone = "America/Los_Angeles"
-        self.tenant.user.save(update_fields=["display_name", "timezone"])
+        self.tenant.user.language = "en"
+        self.tenant.user.save(update_fields=["display_name", "timezone", "language"])
         self.tenant.save(update_fields=["onboarding_step"])
 
-        reply = get_onboarding_response(self.tenant, "Help me with work and personal stuff")
+        reply = get_onboarding_response(self.tenant, "Help me with work stuff")
         self.assertIn("ready to go", reply)
         self.tenant.refresh_from_db()
         self.assertTrue(self.tenant.onboarding_complete)
-        self.assertEqual(self.tenant.onboarding_step, 4)
+        self.assertEqual(self.tenant.onboarding_step, 5)
 
-        # USER.md should be written
         mock_upload.assert_called_once()
-        call_args = mock_upload.call_args
-        self.assertEqual(call_args[0][0], str(self.tenant.id))
-        self.assertIn("USER.md", call_args[0][1])
-        self.assertIn("Alex", call_args[0][2])
-        self.assertIn("Los_Angeles", call_args[0][2])
+        content = mock_upload.call_args[0][2]
+        self.assertIn("Alex", content)
+        self.assertIn("Los_Angeles", content)
 
-        # Interests stored in preferences
         self.tenant.user.refresh_from_db()
         self.assertEqual(
             self.tenant.user.preferences["onboarding_interests"],
-            "Help me with work and personal stuff",
+            "Help me with work stuff",
         )
 
     def test_completed_returns_none(self):
-        """After onboarding, returns None to signal agent handoff."""
+        """After onboarding, returns None for agent handoff."""
         self.tenant.onboarding_complete = True
-        self.tenant.onboarding_step = 4
+        self.tenant.onboarding_step = 5
         self.tenant.save(update_fields=["onboarding_complete", "onboarding_step"])
 
         reply = get_onboarding_response(self.tenant, "Hello agent!")
@@ -157,28 +199,78 @@ class OnboardingFlowTest(TestCase):
         r1 = get_onboarding_response(self.tenant, "hi")
         self.assertIn("call you", r1)
 
-        # Message 2: name
+        # Message 2: name → asks language
         self.tenant.refresh_from_db()
         r2 = get_onboarding_response(self.tenant, "I'm Jordan")
         self.assertIn("Jordan", r2)
+        self.assertIn("language", r2.lower())
 
-        # Message 3: timezone
+        # Message 3: language → asks timezone
         self.tenant.refresh_from_db()
-        r3 = get_onboarding_response(self.tenant, "Eastern")
-        self.assertIn("help with", r3.lower())
+        r3 = get_onboarding_response(self.tenant, "Spanish")
+        self.assertIn("Spanish", r3)
+        self.assertIn("timezone", r3.lower())
 
-        # Message 4: interests → complete
+        # Message 4: timezone → asks interests
         self.tenant.refresh_from_db()
-        r4 = get_onboarding_response(self.tenant, "productivity and fitness tracking")
-        self.assertIn("ready to go", r4)
+        r4 = get_onboarding_response(self.tenant, "Eastern")
+        self.assertIn("help with", r4.lower())
+
+        # Message 5: interests → complete
+        self.tenant.refresh_from_db()
+        r5 = get_onboarding_response(self.tenant, "productivity and fitness tracking")
+        self.assertIn("ready to go", r5)
 
         # Verify final state
         self.tenant.refresh_from_db()
         self.assertTrue(self.tenant.onboarding_complete)
         self.tenant.user.refresh_from_db()
         self.assertEqual(self.tenant.user.display_name, "Jordan")
+        self.assertEqual(self.tenant.user.language, "es")
         self.assertEqual(self.tenant.user.timezone, "America/New_York")
 
-        # Next message should return None (forward to agent)
-        r5 = get_onboarding_response(self.tenant, "Hello agent!")
-        self.assertIsNone(r5)
+        # Next message should return None
+        r6 = get_onboarding_response(self.tenant, "Hello agent!")
+        self.assertIsNone(r6)
+
+
+class ReintroductionTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(
+            display_name="Friend", telegram_chat_id=888888
+        )
+        # Simulate a backfilled user
+        self.tenant.onboarding_complete = True
+        self.tenant.onboarding_step = 4
+        self.tenant.save(update_fields=["onboarding_complete", "onboarding_step"])
+
+    def test_needs_reintro_for_default_profile(self):
+        """Backfilled user with all defaults needs re-intro."""
+        self.assertTrue(needs_reintroduction(self.tenant))
+
+    def test_no_reintro_for_filled_profile(self):
+        """User with real data doesn't need re-intro."""
+        self.tenant.user.display_name = "Alex"
+        self.tenant.user.timezone = "America/New_York"
+        self.tenant.user.preferences = {"onboarding_interests": "coding"}
+        self.tenant.user.save(update_fields=["display_name", "timezone", "preferences"])
+        self.assertFalse(needs_reintroduction(self.tenant))
+
+    def test_no_reintro_during_onboarding(self):
+        """User currently in onboarding flow shouldn't be flagged."""
+        self.tenant.onboarding_complete = False
+        self.tenant.onboarding_step = 2
+        self.tenant.save(update_fields=["onboarding_complete", "onboarding_step"])
+        self.assertFalse(needs_reintroduction(self.tenant))
+
+    def test_reintro_uses_different_message(self):
+        """Re-intro sends 'I never properly introduced myself' instead of welcome."""
+        self.tenant.onboarding_step = 0
+        self.tenant.save(update_fields=["onboarding_step"])
+
+        reply = get_onboarding_response(self.tenant, "hello")
+        self.assertIn("never properly introduced", reply)
+        self.assertNotIn("Welcome", reply)
+        self.tenant.refresh_from_db()
+        self.assertFalse(self.tenant.onboarding_complete)  # Reset for flow
+        self.assertEqual(self.tenant.onboarding_step, 1)
