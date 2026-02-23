@@ -514,24 +514,25 @@ class TelegramPoller:
                 if callback_data == "container_update:yes":
                     self._update_in_progress.add(chat_id)
                     self._answer_callback_query(callback_id, "✅ Updating now...")
+                    self._send_message(chat_id, "✅ Updating now! I'll be back in about 15 seconds...")
 
-                    reply_text = handle_update_callback(tenant, callback_data)
-                    if reply_text:
-                        self._send_message(chat_id, reply_text)
-
-                    # Forward pending message after restart
+                    # Do the actual update + forward in background (Azure call takes 20-30s)
                     pending_text = self._pending_messages.pop(chat_id, None)
-                    if pending_text:
-                        def _update_then_forward():
-                            try:
-                                time.sleep(15)
+
+                    def _do_update():
+                        try:
+                            from apps.router.container_updates import update_container
+                            success = update_container(tenant)
+                            if not success:
+                                self._send_message(chat_id, "Sorry, the update failed. Your assistant is still available on the current version.")
+                            if pending_text:
+                                time.sleep(5)  # Brief pause after update
                                 self._send_typing(chat_id)
                                 self._forward_to_container(chat_id, tenant, pending_text)
-                            finally:
-                                self._update_in_progress.discard(chat_id)
-                        threading.Thread(target=_update_then_forward, daemon=True).start()
-                    else:
-                        self._update_in_progress.discard(chat_id)
+                        finally:
+                            self._update_in_progress.discard(chat_id)
+
+                    threading.Thread(target=_do_update, daemon=True).start()
 
                 elif callback_data == "container_update:no":
                     self._answer_callback_query(callback_id, "👍")
