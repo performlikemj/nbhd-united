@@ -20,8 +20,14 @@ logger = logging.getLogger(__name__)
 # for a silent update.
 SILENT_UPDATE_IDLE_THRESHOLD = timedelta(hours=2)
 
+# Cooldown after a failed update attempt or user declining
+UPDATE_COOLDOWN = timedelta(hours=1)
+
 # ACR image path template
 ACR_IMAGE_TEMPLATE = "nbhdunited.azurecr.io/nbhd-openclaw:{tag}"
+
+# In-memory cooldown tracker: tenant_id → datetime when cooldown expires
+_update_cooldowns: dict[int, Any] = {}
 
 
 def get_latest_image_tag() -> str:
@@ -119,6 +125,21 @@ def build_update_prompt(lang: str = "en") -> dict[str, Any]:
     }
 
 
+def _is_on_cooldown(tenant: Tenant) -> bool:
+    """Check if this tenant is on update cooldown."""
+    expires = _update_cooldowns.get(tenant.id)
+    if expires and timezone.now() < expires:
+        return True
+    # Expired — clean up
+    _update_cooldowns.pop(tenant.id, None)
+    return False
+
+
+def _set_cooldown(tenant: Tenant) -> None:
+    """Set update cooldown for this tenant."""
+    _update_cooldowns[tenant.id] = timezone.now() + UPDATE_COOLDOWN
+
+
 def check_and_maybe_update(tenant: Tenant) -> dict[str, Any] | None:
     """Main entry point: check if update needed and decide action.
 
@@ -130,13 +151,18 @@ def check_and_maybe_update(tenant: Tenant) -> dict[str, Any] | None:
     if not is_container_outdated(tenant):
         return None
 
+    if _is_on_cooldown(tenant):
+        return None  # Don't spam — wait for cooldown to expire
+
     if is_idle_enough_for_silent_update(tenant):
         success = update_container(tenant)
         if success:
             return {"action": "silent_update"}
-        return None  # Failed — don't bother user
+        _set_cooldown(tenant)  # Failed — back off
+        return None
 
-    # User was recently active — ask them
+    # User was recently active — ask them (and set cooldown so we don't re-ask on next message)
+    _set_cooldown(tenant)
     lang = getattr(tenant.user, "language", "en") or "en"
     prompt = build_update_prompt(lang)
     return {
@@ -163,9 +189,11 @@ def handle_update_callback(tenant: Tenant, callback_data: str) -> str | None:
             lang_key = lang[:2].lower() if lang in msgs else "en"
             return msgs.get(lang_key, msgs["en"])
         else:
+            _set_cooldown(tenant)
             return "Sorry, the update failed. I'll try again later."
 
     elif callback_data == "container_update:no":
+        _set_cooldown(tenant)
         lang = getattr(tenant.user, "language", "en") or "en"
         msgs = {
             "en": "👍 No problem! I'll ask again later.",
