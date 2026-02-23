@@ -343,6 +343,7 @@ class TelegramPoller:
                 json={
                     "model": "openclaw",
                     "messages": [{"role": "user", "content": message_text}],
+                    "user": str(chat_id),
                 },
                 headers={
                     "Authorization": f"Bearer {self.gateway_token}",
