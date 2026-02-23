@@ -46,6 +46,7 @@ class TelegramPoller:
         self._backoff = 1
         self._http: httpx.Client | None = None
         self._pending_messages: dict[int, str] = {}  # chat_id → message awaiting container update
+        self._update_in_progress: set[int] = set()  # chat_ids currently being updated
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -407,6 +408,23 @@ class TelegramPoller:
         except Exception:
             logger.exception("Failed to answer callback query %s", callback_id)
 
+    def _edit_message_reply_markup(self, chat_id: int, message_id: int, reply_markup: dict | None) -> None:
+        """Edit a message's inline keyboard (or remove it)."""
+        assert self._http is not None
+        payload: dict[str, Any] = {"chat_id": chat_id, "message_id": message_id}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        else:
+            payload["reply_markup"] = {"inline_keyboard": []}
+        try:
+            self._http.post(
+                f"{self._api_base}/editMessageReplyMarkup",
+                json=payload,
+                timeout=5,
+            )
+        except Exception:
+            pass  # Non-critical
+
     def _execute_telegram_response(self, response_data: dict) -> None:
         """Execute a Telegram API method from a response dict (same format as webhook returns)."""
         method = response_data.get("method")
@@ -481,25 +499,51 @@ class TelegramPoller:
 
             # Container update callbacks
             if callback_data.startswith("container_update:"):
+                # Debounce: check if already processing
+                if chat_id in self._update_in_progress:
+                    self._answer_callback_query(callback_id, "⏳ Already updating...")
+                    return
+                
                 from apps.router.container_updates import handle_update_callback
-                reply_text = handle_update_callback(tenant, callback_data)
-                if reply_text:
-                    self._answer_callback_query(callback_id, "✓")
-                    self._send_message(chat_id, reply_text)
 
-                # If they said yes and we have a pending message, forward after restart
-                if callback_data == "container_update:yes" and chat_id in self._pending_messages:
-                    pending_text = self._pending_messages.pop(chat_id)
-                    threading.Thread(
-                        target=self._delayed_forward,
-                        args=(chat_id, tenant, pending_text, 15),
-                        daemon=True,
-                    ).start()
-                elif callback_data == "container_update:no" and chat_id in self._pending_messages:
-                    # They said later — forward the message to current (old) container
-                    pending_text = self._pending_messages.pop(chat_id)
-                    self._send_typing(chat_id)
-                    self._forward_to_container(chat_id, tenant, pending_text)
+                # Edit the original message to remove buttons (prevents re-tapping)
+                orig_msg_id = update["callback_query"].get("message", {}).get("message_id")
+                if orig_msg_id:
+                    self._edit_message_reply_markup(chat_id, orig_msg_id, None)
+
+                if callback_data == "container_update:yes":
+                    self._update_in_progress.add(chat_id)
+                    self._answer_callback_query(callback_id, "✅ Updating now...")
+
+                    reply_text = handle_update_callback(tenant, callback_data)
+                    if reply_text:
+                        self._send_message(chat_id, reply_text)
+
+                    # Forward pending message after restart
+                    pending_text = self._pending_messages.pop(chat_id, None)
+                    if pending_text:
+                        def _update_then_forward():
+                            try:
+                                time.sleep(15)
+                                self._send_typing(chat_id)
+                                self._forward_to_container(chat_id, tenant, pending_text)
+                            finally:
+                                self._update_in_progress.discard(chat_id)
+                        threading.Thread(target=_update_then_forward, daemon=True).start()
+                    else:
+                        self._update_in_progress.discard(chat_id)
+
+                elif callback_data == "container_update:no":
+                    self._answer_callback_query(callback_id, "👍")
+                    reply_text = handle_update_callback(tenant, callback_data)
+                    if reply_text:
+                        self._send_message(chat_id, reply_text)
+                    # Forward pending message to current container
+                    pending_text = self._pending_messages.pop(chat_id, None)
+                    if pending_text:
+                        self._send_typing(chat_id)
+                        self._forward_to_container(chat_id, tenant, pending_text)
+
                 return
 
         # Unknown user → onboarding
