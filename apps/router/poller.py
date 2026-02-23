@@ -157,6 +157,32 @@ class TelegramPoller:
         except Exception:
             logger.exception("Failed to send message to chat_id=%s", chat_id)
 
+    def _send_markdown(self, chat_id: int, text: str) -> None:
+        """Send a message with Markdown formatting, falling back to plain text.
+
+        Tries Markdown parse_mode first (supports **bold**, _italic_, `code`).
+        If Telegram rejects it (malformed markdown), retries as plain text.
+        """
+        assert self._http is not None
+        # Try Markdown (legacy mode — more forgiving than MarkdownV2)
+        try:
+            resp = self._http.post(
+                f"{self._api_base}/sendMessage",
+                json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+                timeout=10,
+            )
+            if resp.is_success:
+                return
+            # If Telegram rejected the markdown (400), fall back to plain text
+            if resp.status_code == 400:
+                logger.debug("Markdown rejected, falling back to plain text")
+                self._send_message(chat_id, text)
+                return
+            logger.warning("sendMessage(Markdown) failed (%s): %s", resp.status_code, resp.text[:200])
+        except Exception:
+            # Network error — try plain text
+            self._send_message(chat_id, text)
+
     def _send_typing(self, chat_id: int) -> None:
         """Send 'typing' chat action to Telegram."""
         assert self._http is not None
@@ -546,7 +572,7 @@ class TelegramPoller:
         # Extract AI response text from OpenAI-compatible response
         ai_text = self._extract_ai_response(result)
         if ai_text:
-            self._send_message(chat_id, ai_text)
+            self._send_markdown(chat_id, ai_text)
 
         # Record usage
         self._record_usage(tenant, result)
