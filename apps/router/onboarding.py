@@ -259,9 +259,10 @@ MESSAGES: dict[str, dict[str, str]] = {
             "so I can help you better.\n\n"
             "Let's start — what should I call you?"
         ),
-        "lang_detected": "Nice to meet you, {name}! 🎉\n\nI noticed you're using {lang_name} — I'll communicate in {lang_name}! 🗣️\n\nWhat timezone are you in?\n(e.g. \"EST\", \"Pacific\", \"JST\", or a city like \"Tokyo\")",
+        "lang_detected": "Nice to meet you, {name}! 🎉\n\nI noticed you're using {lang_name} — I'll communicate in {lang_name}! 🗣️\n\nWhat country do you live in?",
         "ask_language": "Nice to meet you, {name}! 🎉\n\nWhat language would you like me to talk to you in?\n(e.g. English, Spanish, Japanese, French...)",
-        "lang_confirmed": "Great, I'll communicate in {lang_name}! 🗣️\n\nWhat timezone are you in?\n(e.g. \"EST\", \"Pacific\", \"JST\", or a city like \"Tokyo\")",
+        "lang_confirmed": "Great, I'll communicate in {lang_name}! 🗣️\n\nWhat country do you live in?",
+        "ask_zone": "That country has multiple timezones. Which area are you in?",
         "ask_interests": "Got it! Last question — what are you most hoping your assistant can help with?\n(work stuff, personal organization, creative projects, just someone to chat with... anything goes!)",
         "complete": "Thanks, {name}! I've got everything I need. 🎉\n\nYour assistant is all set up and ready to go. From here on out, you're chatting directly with your personal AI.\n\nGo ahead — say hi, ask a question, or tell it what you need help with!",
     },
@@ -278,9 +279,10 @@ MESSAGES: dict[str, dict[str, str]] = {
             "もっとお役に立てるように、少し教えてください。\n\n"
             "何とお呼びすればいいですか？"
         ),
-        "lang_detected": "{name}さん、はじめまして！🎉\n\n日本語でお話ししますね！🗣️\n\nタイムゾーンはどちらですか？\n（例：「JST」「東京」「大阪」など）",
+        "lang_detected": "{name}さん、はじめまして！🎉\n\n日本語でお話ししますね！🗣️\n\nどちらの国にお住まいですか？",
         "ask_language": "{name}さん、はじめまして！🎉\n\n何語でお話ししましょうか？\n（例：日本語、English、Español...）",
-        "lang_confirmed": "{lang_name}でお話ししますね！🗣️\n\nタイムゾーンはどちらですか？\n（例：「JST」「東京」「大阪」など）",
+        "lang_confirmed": "{lang_name}でお話ししますね！🗣️\n\nどちらの国にお住まいですか？",
+        "ask_zone": "その国には複数のタイムゾーンがあります。どの地域ですか？",
         "ask_interests": "ありがとうございます！最後に、アシスタントにどんなことを手伝ってほしいですか？\n（仕事、生活の整理、クリエイティブなこと、なんでもOKです！）",
         "complete": "{name}さん、ありがとうございます！準備完了です🎉\n\nこれからは、あなた専用のAIと直接お話しできます。\n\n何でも聞いてくださいね！",
     },
@@ -297,9 +299,10 @@ MESSAGES: dict[str, dict[str, str]] = {
             "para ayudarte mejor.\n\n"
             "¿Cómo te llamas?"
         ),
-        "lang_detected": "¡Encantado de conocerte, {name}! 🎉\n\nVeo que usas {lang_name} — ¡hablaré en {lang_name}! 🗣️\n\n¿En qué zona horaria estás?\n(ej: \"EST\", \"Pacific\", o una ciudad como \"Madrid\")",
+        "lang_detected": "¡Encantado de conocerte, {name}! 🎉\n\nVeo que usas {lang_name} — ¡hablaré en {lang_name}! 🗣️\n\n¿En qué país vives?",
         "ask_language": "¡Encantado de conocerte, {name}! 🎉\n\n¿En qué idioma te gustaría que hable?\n(ej: English, Español, Français...)",
-        "lang_confirmed": "¡Perfecto, hablaré en {lang_name}! 🗣️\n\n¿En qué zona horaria estás?\n(ej: \"EST\", \"Pacific\", o una ciudad como \"Madrid\")",
+        "lang_confirmed": "¡Perfecto, hablaré en {lang_name}! 🗣️\n\n¿En qué país vives?",
+        "ask_zone": "Ese país tiene varias zonas horarias. ¿En qué área estás?",
         "ask_interests": "¡Entendido! Última pregunta — ¿en qué esperas que tu asistente te pueda ayudar?\n(trabajo, organización personal, proyectos creativos... ¡lo que sea!)",
         "complete": "¡Gracias, {name}! Ya tengo todo lo que necesito. 🎉\n\nTu asistente está listo. A partir de ahora, hablas directamente con tu IA personal.\n\n¡Adelante, pregunta lo que quieras!",
     },
@@ -336,9 +339,23 @@ WELCOME_MESSAGE = MESSAGES["en"]["welcome"]
 REINTRO_MESSAGE = MESSAGES["en"]["reintro"]
 
 
+class OnboardingReply:
+    """Structured onboarding reply with optional inline keyboard."""
+
+    def __init__(self, text: str, keyboard: list[list[dict[str, str]]] | None = None):
+        self.text = text
+        self.keyboard = keyboard
+
+    def to_telegram_kwargs(self) -> dict:
+        """Return kwargs for Telegram sendMessage."""
+        if self.keyboard:
+            return {"reply_markup": {"inline_keyboard": self.keyboard}}
+        return {}
+
+
 def get_onboarding_response(
     tenant: Tenant, message_text: str, *, telegram_lang: str = ""
-) -> str | None:
+) -> OnboardingReply | None:
     """Process an onboarding message and return the response.
 
     Args:
@@ -347,7 +364,7 @@ def get_onboarding_response(
         telegram_lang: Telegram's language_code from the message (e.g. "ja", "es")
 
     Returns:
-        str: The next question or completion message
+        OnboardingReply: The next question with optional inline keyboard
         None: Onboarding is complete, forward to agent normally
     """
     step = tenant.onboarding_step
@@ -368,7 +385,7 @@ def get_onboarding_response(
         tenant.onboarding_complete = False
         tenant.onboarding_step = 1
         tenant.save(update_fields=["onboarding_complete", "onboarding_step", "updated_at"])
-        return _msg(lang, "reintro") if is_reintro else _msg(lang, "welcome")
+        return OnboardingReply(_msg(lang, "reintro") if is_reintro else _msg(lang, "welcome"))
 
     name = tenant.user.display_name or "Friend"
 
@@ -379,20 +396,27 @@ def get_onboarding_response(
         tenant.user.save(update_fields=["display_name"])
         logger.info("Onboarding [%s]: name=%s", tenant.id, name)
 
+        from .timezone_data import build_country_keyboard
+
         if detected_lang or (lang != "en"):
-            # Language was auto-detected from Telegram — skip language question
+            # Language auto-detected — skip language question, show country buttons
             lang_name = _lang_display_name(lang)
-            tenant.onboarding_step = 3  # Skip step 2 (language), go to timezone
+            tenant.onboarding_step = 3
             tenant.save(update_fields=["onboarding_step", "updated_at"])
-            return _msg(lang, "lang_detected", name=name, lang_name=lang_name)
+            return OnboardingReply(
+                _msg(lang, "lang_detected", name=name, lang_name=lang_name),
+                keyboard=build_country_keyboard(lang),
+            )
         else:
             # English or unknown — ask language preference
             tenant.onboarding_step = 2
             tenant.save(update_fields=["onboarding_step", "updated_at"])
-            return _msg(lang, "ask_language", name=name)
+            return OnboardingReply(_msg(lang, "ask_language", name=name))
 
-    # Step 2: They answered the language question → ask timezone
+    # Step 2: They answered the language question → show country buttons
     if step == 2:
+        from .timezone_data import build_country_keyboard
+
         lang_code, lang_name = parse_language(message_text)
         tenant.user.language = lang_code
         tenant.user.save(update_fields=["language"])
@@ -401,18 +425,24 @@ def get_onboarding_response(
 
         tenant.onboarding_step = 3
         tenant.save(update_fields=["onboarding_step", "updated_at"])
-        return _msg(lang, "lang_confirmed", lang_name=lang_name)
+        return OnboardingReply(
+            _msg(lang, "lang_confirmed", lang_name=lang_name),
+            keyboard=build_country_keyboard(lang),
+        )
 
-    # Step 3: They answered the timezone question → ask interests
+    # Step 3: They typed a country (text fallback if buttons don't work)
     if step == 3:
+        return _handle_country_input(tenant, message_text, lang)
+
+    # Step 35: They typed a timezone zone (multi-tz country text fallback)
+    if step == 35:
         tz = parse_timezone(message_text)
         tenant.user.timezone = tz
         tenant.user.save(update_fields=["timezone"])
-        logger.info("Onboarding [%s]: timezone=%s (from: %s)", tenant.id, tz, message_text.strip())
-
+        logger.info("Onboarding [%s]: timezone=%s (zone text: %s)", tenant.id, tz, message_text.strip())
         tenant.onboarding_step = 4
         tenant.save(update_fields=["onboarding_step", "updated_at"])
-        return _msg(lang, "ask_interests")
+        return OnboardingReply(_msg(lang, "ask_interests"))
 
     # Step 4: They answered the interests question → complete
     if step == 4:
@@ -421,6 +451,7 @@ def get_onboarding_response(
 
         prefs = tenant.user.preferences or {}
         prefs["onboarding_interests"] = interests
+        prefs.pop("_onboarding_country", None)  # Clean up temp data
         tenant.user.preferences = prefs
         tenant.user.save(update_fields=["preferences"])
 
@@ -430,9 +461,88 @@ def get_onboarding_response(
         tenant.onboarding_step = 5
         tenant.save(update_fields=["onboarding_complete", "onboarding_step", "updated_at"])
 
-        return _msg(lang, "complete", name=name)
+        return OnboardingReply(_msg(lang, "complete", name=name))
 
     # Step 5+: Already complete
+    return None
+
+
+def _handle_country_input(
+    tenant: Tenant, country_text: str, lang: str
+) -> OnboardingReply:
+    """Handle country selection (from text input or callback data)."""
+    from .timezone_data import resolve_country_timezone, build_zone_keyboard
+
+    result = resolve_country_timezone(country_text)
+
+    if isinstance(result, str):
+        # Single timezone country — done
+        tenant.user.timezone = result
+        tenant.user.save(update_fields=["timezone"])
+        logger.info("Onboarding [%s]: timezone=%s (country: %s)", tenant.id, result, country_text)
+        tenant.onboarding_step = 4
+        tenant.save(update_fields=["onboarding_step", "updated_at"])
+        return OnboardingReply(_msg(lang, "ask_interests"))
+
+    if isinstance(result, dict):
+        # Multi-timezone country — show zone buttons
+        prefs = tenant.user.preferences or {}
+        prefs["_onboarding_country"] = country_text.strip()
+        tenant.user.preferences = prefs
+        tenant.user.save(update_fields=["preferences"])
+        tenant.onboarding_step = 35
+        tenant.save(update_fields=["onboarding_step", "updated_at"])
+        return OnboardingReply(
+            _msg(lang, "ask_zone"),
+            keyboard=build_zone_keyboard(country_text),
+        )
+
+    # Couldn't match — try old timezone parser as last resort
+    tz = parse_timezone(country_text)
+    tenant.user.timezone = tz
+    tenant.user.save(update_fields=["timezone"])
+    logger.info("Onboarding [%s]: timezone=%s (fallback: %s)", tenant.id, tz, country_text)
+    tenant.onboarding_step = 4
+    tenant.save(update_fields=["onboarding_step", "updated_at"])
+    return OnboardingReply(_msg(lang, "ask_interests"))
+
+
+def handle_onboarding_callback(
+    tenant: Tenant, callback_data: str
+) -> OnboardingReply | None:
+    """Handle inline button callback during onboarding.
+
+    Args:
+        tenant: The tenant
+        callback_data: e.g. "tz_country:Japan" or "tz_zone:Asia/Tokyo"
+
+    Returns:
+        OnboardingReply if handled, None if not an onboarding callback
+    """
+    lang = tenant.user.language or "en"
+
+    if callback_data.startswith("tz_country:"):
+        country = callback_data.split(":", 1)[1]
+
+        if country == "OTHER":
+            # User tapped "Other" — ask them to type it
+            other_msg = {
+                "ja": "国名を入力してください：",
+                "es": "Escribe el nombre de tu país:",
+            }.get(lang, "Please type your country name:")
+            return OnboardingReply(other_msg)
+
+        return _handle_country_input(tenant, country, lang)
+
+    if callback_data.startswith("tz_zone:"):
+        tz = callback_data.split(":", 1)[1]
+        tenant.user.timezone = tz
+        tenant.user.save(update_fields=["timezone"])
+        logger.info("Onboarding [%s]: timezone=%s (from button)", tenant.id, tz)
+        tenant.onboarding_step = 4
+        tenant.save(update_fields=["onboarding_step", "updated_at"])
+        return OnboardingReply(_msg(lang, "ask_interests"))
+
     return None
 
 

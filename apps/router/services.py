@@ -6,6 +6,7 @@ import random
 from collections import deque
 import logging
 from time import monotonic
+from typing import Any
 
 import httpx
 from django.conf import settings
@@ -169,8 +170,11 @@ async def forward_to_openclaw(
             return None
 
 
-def send_telegram_message(chat_id: int, text: str) -> bool:
-    """Send a Telegram message directly. Returns True on success."""
+def send_telegram_message(chat_id: int, text: str, **kwargs: Any) -> bool:
+    """Send a Telegram message directly. Returns True on success.
+
+    Supports extra Telegram API params via kwargs (e.g. reply_markup).
+    """
     bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
     if not bot_token:
         logger.warning("Cannot send Telegram message: no bot token configured")
@@ -179,7 +183,7 @@ def send_telegram_message(chat_id: int, text: str) -> bool:
     try:
         resp = httpx.post(
             f"https://api.telegram.org/bot{bot_token}/sendMessage",
-            json={"chat_id": chat_id, "text": text},
+            json={"chat_id": chat_id, "text": text, **kwargs},
             timeout=10,
         )
         if resp.status_code != 200:

@@ -219,9 +219,21 @@ class TelegramPoller:
 
         tenant = resolve_tenant_by_chat_id(chat_id)
 
-        # Handle lesson approval callbacks
+        # Handle callback queries (button presses)
         if "callback_query" in update and tenant is not None:
             callback_data = update["callback_query"].get("data", "")
+            callback_id = update["callback_query"].get("id", "")
+
+            # Onboarding callbacks (tz_country:, tz_zone:)
+            if callback_data.startswith("tz_"):
+                from apps.router.onboarding import handle_onboarding_callback
+                reply = handle_onboarding_callback(tenant, callback_data)
+                if reply is not None:
+                    self._answer_callback_query(callback_id, "✓")
+                    self._send_message(chat_id, reply.text, **reply.to_telegram_kwargs())
+                return
+
+            # Lesson approval callbacks
             if callback_data.startswith("lesson:"):
                 self._handle_lesson_callback(update, tenant)
                 return
@@ -285,7 +297,7 @@ class TelegramPoller:
             tg_lang = (msg.get("from") or {}).get("language_code", "")
             onboarding_reply = get_onboarding_response(tenant, message_text, telegram_lang=tg_lang)
             if onboarding_reply is not None:
-                self._send_message(chat_id, onboarding_reply)
+                self._send_message(chat_id, onboarding_reply.text, **onboarding_reply.to_telegram_kwargs())
                 return
 
         # Forward to container via /v1/chat/completions
