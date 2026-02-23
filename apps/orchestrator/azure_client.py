@@ -378,6 +378,55 @@ def upload_workspace_file(tenant_id: str, file_path: str, content: str) -> None:
     logger.info("Uploaded %s to file share %s", file_path, share_name)
 
 
+def upload_workspace_file_binary(tenant_id: str, file_path: str, data: bytes) -> None:
+    """Upload a binary file to the tenant's Azure File Share.
+
+    file_path is relative to the workspace root, e.g. 'workspace/media/inbound/photo.jpg'.
+    Creates intermediate directories if needed.
+    """
+    share_name = f"ws-{str(tenant_id)[:20]}"
+
+    if _is_mock():
+        logger.info("[MOCK] Uploaded binary %s to file share %s", file_path, share_name)
+        return
+
+    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
+    if not account_name:
+        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
+
+    from azure.storage.fileshare import ShareFileClient, ShareDirectoryClient
+
+    storage_client = get_storage_client()
+    keys = storage_client.storage_accounts.list_keys(
+        settings.AZURE_RESOURCE_GROUP, account_name,
+    )
+    account_key = keys.keys[0].value
+
+    # Ensure parent directories exist
+    parts = file_path.split("/")
+    for i in range(1, len(parts)):
+        dir_path = "/".join(parts[:i])
+        dir_client = ShareDirectoryClient(
+            account_url=f"https://{account_name}.file.core.windows.net",
+            share_name=share_name,
+            directory_path=dir_path,
+            credential=account_key,
+        )
+        try:
+            dir_client.create_directory()
+        except Exception:
+            pass  # Already exists
+
+    file_client = ShareFileClient(
+        account_url=f"https://{account_name}.file.core.windows.net",
+        share_name=share_name,
+        file_path=file_path,
+        credential=account_key,
+    )
+    file_client.upload_file(data, length=len(data))
+    logger.info("Uploaded binary %s (%d bytes) to file share %s", file_path, len(data), share_name)
+
+
 def register_environment_storage(tenant_id: str) -> None:
     """Register a tenant's file share with the Container Apps Environment."""
     if _is_mock():

@@ -354,6 +354,47 @@ class TelegramPoller:
             logger.exception("Failed to download photo")
             return None
 
+    def _upload_photo_to_workspace(self, tenant: Tenant, message: dict) -> str | None:
+        """Download photo from Telegram and upload to tenant's workspace.
+
+        Returns the workspace-relative file path, or None on failure.
+        """
+        photo_data_url = self._download_photo(message)
+        if not photo_data_url:
+            return None
+
+        try:
+            # Extract binary from data URL
+            # Format: data:image/jpg;base64,<data>
+            header, b64data = photo_data_url.split(",", 1)
+            ext = "jpg"
+            if "png" in header:
+                ext = "png"
+            elif "gif" in header:
+                ext = "gif"
+            elif "webp" in header:
+                ext = "webp"
+
+            photo_bytes = base64.b64decode(b64data)
+
+            # Generate unique filename
+            import hashlib
+            name_hash = hashlib.sha256(photo_bytes[:1024]).hexdigest()[:8]
+            filename = f"photo_{name_hash}.{ext}"
+            workspace_path = f"workspace/media/inbound/{filename}"
+            local_path = f"/home/node/.openclaw/workspace/media/inbound/{filename}"
+
+            # Upload to tenant's file share
+            from apps.orchestrator.azure_client import upload_workspace_file_binary
+            tenant_id = str(tenant.id)
+            upload_workspace_file_binary(tenant_id, workspace_path, photo_bytes)
+            logger.info("Uploaded photo to %s for tenant %s", workspace_path, tenant_id[:8])
+            return local_path
+
+        except Exception:
+            logger.exception("Failed to upload photo to workspace")
+            return None
+
     def _answer_callback_query(self, callback_id: str, text: str) -> None:
         """Answer a Telegram callback query."""
         assert self._http is not None
@@ -551,15 +592,19 @@ class TelegramPoller:
                 ).start()
                 return
 
-        # Download photo if present (for vision content)
-        image_url = None
+        # Upload photo to tenant workspace if present
+        image_path = None
         msg_data = update.get("message") or update.get("edited_message") or {}
         if msg_data.get("photo"):
             self._send_typing(chat_id)
-            image_url = self._download_photo(msg_data)
+            image_path = self._upload_photo_to_workspace(tenant, msg_data)
 
         # Forward to container via /v1/chat/completions
-        self._forward_to_container(chat_id, tenant, message_text, image_url=image_url)
+        if image_path:
+            # Tell agent where the image is so it can use the image tool
+            message_text = f"[Photo attached: {image_path}]\n{message_text}"
+
+        self._forward_to_container(chat_id, tenant, message_text)
 
     def _extract_message_text(self, update: dict) -> str | None:
         """Extract user message text from a Telegram update."""
@@ -616,10 +661,7 @@ class TelegramPoller:
 
         return None
 
-    def _forward_to_container(
-        self, chat_id: int, tenant: Tenant, message_text: str,
-        image_url: str | None = None,
-    ) -> None:
+    def _forward_to_container(self, chat_id: int, tenant: Tenant, message_text: str) -> None:
         """Send the message to the tenant's OpenClaw container via /v1/chat/completions and relay the response."""
         if not tenant.container_fqdn:
             self._send_message(chat_id, "Your assistant is being set up. Please try again in a minute!")
@@ -627,15 +669,6 @@ class TelegramPoller:
 
         url = f"https://{tenant.container_fqdn}/v1/chat/completions"
         user_tz = tenant.user.timezone or "UTC"
-
-        # Build message content — plain text or vision (text + image)
-        if image_url:
-            content: Any = [
-                {"type": "image_url", "image_url": {"url": image_url}},
-                {"type": "text", "text": message_text},
-            ]
-        else:
-            content = message_text
 
         # Show typing indicator while waiting for AI response
         self._send_typing(chat_id)
@@ -653,7 +686,7 @@ class TelegramPoller:
                 url,
                 json={
                     "model": "openclaw",
-                    "messages": [{"role": "user", "content": content}],
+                    "messages": [{"role": "user", "content": message_text}],
                     "user": str(chat_id),
                 },
                 headers={
