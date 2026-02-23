@@ -677,6 +677,8 @@ def update_container_image(container_name: str, image: str) -> None:
 
     This triggers a new revision, effectively restarting the container.
     """
+    import hashlib
+
     if _is_mock():
         logger.info("[MOCK] Updated image to %s on %s", image, container_name)
         return
@@ -691,10 +693,17 @@ def update_container_image(container_name: str, image: str) -> None:
             container.image = image
             break
 
+    # Generate a unique revision suffix from the image tag to avoid
+    # "revision with suffix already exists" errors.
+    # Azure limits suffix to 64 chars and requires lowercase alphanumeric + hyphens.
+    tag = image.rsplit(":", 1)[-1] if ":" in image else "latest"
+    suffix = hashlib.sha256(tag.encode()).hexdigest()[:10]
+    app.template.revision_suffix = f"img-{suffix}"
+
     client.container_apps.begin_create_or_update(
         settings.AZURE_RESOURCE_GROUP, container_name, app,
     ).result()
-    logger.info("Updated image to %s on %s", image, container_name)
+    logger.info("Updated image to %s on %s (revision suffix: img-%s)", image, container_name, suffix)
 
 
 def delete_container_app(container_name: str) -> None:
