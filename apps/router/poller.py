@@ -650,19 +650,56 @@ class TelegramPoller:
 
         self._forward_to_container(chat_id, tenant, message_text)
 
+    def _extract_reply_context(self, message: dict) -> str:
+        """Extract reply-to context if user is replying to a bot message.
+
+        Returns a prefix string like '[Replying to: "truncated text"]\n\n' or empty string.
+        """
+        reply = message.get("reply_to_message")
+        if not reply:
+            return ""
+
+        # Only include context for replies to bot messages
+        reply_from = reply.get("from", {})
+        if not reply_from.get("is_bot"):
+            return ""
+
+        reply_text = reply.get("text") or reply.get("caption") or ""
+        if not reply_text:
+            return ""
+
+        # Truncate long quotes
+        if len(reply_text) > 200:
+            reply_text = reply_text[:200] + "…"
+
+        return f'[Replying to: "{reply_text}"]\n\n'
+
     def _extract_message_text(self, update: dict) -> str | None:
         """Extract user message text from a Telegram update."""
         message = update.get("message") or update.get("edited_message")
         if not message:
             return None
 
+        reply_prefix = self._extract_reply_context(message)
+
+        # Forwarded message — prepend source info
+        if message.get("forward_from") or message.get("forward_from_chat"):
+            fwd_name = ""
+            if message.get("forward_from"):
+                fwd_name = message["forward_from"].get("first_name", "someone")
+            elif message.get("forward_from_chat"):
+                fwd_name = message["forward_from_chat"].get("title", "a chat")
+            fwd_text = message.get("text") or message.get("caption") or ""
+            return f"{reply_prefix}[Forwarded from {fwd_name}]\n{fwd_text}"
+
         text = message.get("text")
         if text:
-            return text
+            return f"{reply_prefix}{text}"
 
-        # Photo — handled separately via _extract_photo_content()
+        # Photo — handled separately via _upload_photo_to_workspace
         if message.get("photo"):
-            return message.get("caption") or "User sent a photo"
+            caption = message.get("caption") or "User sent a photo"
+            return f"{reply_prefix}{caption}"
 
         # Voice/audio — transcribe via Whisper
         voice = message.get("voice") or message.get("audio")
@@ -671,21 +708,30 @@ class TelegramPoller:
             if file_id:
                 transcript = self._transcribe_voice(file_id)
                 if transcript:
-                    return f"🎤 Voice message: \"{transcript}\""
-            return "[User sent a voice message — couldn't transcribe, please try sending as text]"
+                    return f'{reply_prefix}🎤 Voice message: "{transcript}"'
+            return f"{reply_prefix}[Voice message — couldn't transcribe, please try sending as text]"
 
-        # Document
-        if message.get("document"):
-            return "[User sent a document]"
+        # Document — download and extract text for supported types
+        doc = message.get("document")
+        if doc:
+            return f"{reply_prefix}{self._extract_document_text(doc)}"
 
         # Sticker
         if message.get("sticker"):
             emoji = message["sticker"].get("emoji", "")
-            return f"[User sent a sticker {emoji}]"
+            return f"{reply_prefix}[User sent a sticker {emoji}]"
 
-        # Video
-        if message.get("video") or message.get("video_note"):
-            return "[User sent a video]"
+        # Video — include metadata
+        video = message.get("video") or message.get("video_note")
+        if video:
+            duration = video.get("duration", 0)
+            file_size = video.get("file_size", 0)
+            size_mb = f"{file_size / (1024 * 1024):.1f}" if file_size else "?"
+            caption = message.get("caption") or ""
+            meta = f"[User sent a video ({duration}s, {size_mb} MB)]"
+            if caption:
+                meta += f"\nCaption: {caption}"
+            return f"{reply_prefix}{meta}"
 
         # Location
         loc = message.get("location")
@@ -696,14 +742,72 @@ class TelegramPoller:
             if venue:
                 name = venue.get("title", "")
                 addr = venue.get("address", "")
-                return f"📍 User shared a venue: {name} — {addr} ({lat}, {lng}) https://maps.google.com/maps?q={lat},{lng}"
-            return f"📍 User shared their location: {lat}, {lng} https://maps.google.com/maps?q={lat},{lng}"
+                return f"{reply_prefix}📍 User shared a venue: {name} — {addr} ({lat}, {lng}) https://maps.google.com/maps?q={lat},{lng}"
+            return f"{reply_prefix}📍 User shared their location: {lat}, {lng} https://maps.google.com/maps?q={lat},{lng}"
 
         # Contact
-        if message.get("contact"):
-            return "[User shared a contact]"
+        contact = message.get("contact")
+        if contact:
+            name = f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip()
+            phone = contact.get("phone_number", "")
+            return f"{reply_prefix}📇 User shared a contact: {name} ({phone})"
 
         return None
+
+    def _extract_document_text(self, doc: dict) -> str:
+        """Extract document info. Downloads text-based files for content extraction."""
+        file_name = doc.get("file_name", "unknown")
+        mime_type = doc.get("mime_type", "")
+        file_size = doc.get("file_size", 0)
+        file_id = doc.get("file_id")
+
+        # Size limit: 10MB
+        if file_size > 10 * 1024 * 1024:
+            return f"[User sent a document: {file_name} ({file_size / (1024*1024):.1f} MB) — too large to process]"
+
+        # Text-based files we can read
+        text_extensions = {".txt", ".md", ".csv", ".json", ".xml", ".html", ".py", ".js", ".ts", ".yaml", ".yml", ".toml", ".log"}
+        text_mimes = {"text/", "application/json", "application/xml", "application/yaml"}
+
+        ext = ""
+        if "." in file_name:
+            ext = "." + file_name.rsplit(".", 1)[-1].lower()
+
+        is_text = ext in text_extensions or any(mime_type.startswith(m) for m in text_mimes)
+
+        if not is_text or not file_id:
+            return f"[User sent a document: {file_name} ({mime_type})]"
+
+        # Download and read content
+        assert self._http is not None
+        try:
+            resp = self._http.post(
+                f"{self._api_base}/getFile",
+                json={"file_id": file_id},
+                timeout=10,
+            )
+            if not resp.is_success:
+                return f"[User sent a document: {file_name} — download failed]"
+
+            file_path = resp.json().get("result", {}).get("file_path")
+            if not file_path:
+                return f"[User sent a document: {file_name} — download failed]"
+
+            file_url = f"https://api.telegram.org/file/bot{self.bot_token}/{file_path}"
+            dl_resp = self._http.get(file_url, timeout=15)
+            if not dl_resp.is_success:
+                return f"[User sent a document: {file_name} — download failed]"
+
+            content = dl_resp.content.decode("utf-8", errors="replace")
+            # Truncate very long files
+            if len(content) > 10000:
+                content = content[:10000] + "\n\n[... truncated, file continues ...]"
+
+            return f"📄 Document: {file_name}\n```\n{content}\n```"
+
+        except Exception:
+            logger.exception("Failed to download document %s", file_name)
+            return f"[User sent a document: {file_name} — download failed]"
 
     def _forward_to_container(self, chat_id: int, tenant: Tenant, message_text: str) -> None:
         """Send the message to the tenant's OpenClaw container via /v1/chat/completions and relay the response."""
