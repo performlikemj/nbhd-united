@@ -44,6 +44,7 @@ class TelegramPoller:
         self._running = False
         self._backoff = 1
         self._http: httpx.Client | None = None
+        self._pending_messages: dict[int, str] = {}  # chat_id → message awaiting container update
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -229,6 +230,15 @@ class TelegramPoller:
             logger.exception("Voice transcription error")
             return None
 
+    def _delayed_forward(self, chat_id: int, tenant: Tenant, message_text: str, delay: int = 15) -> None:
+        """Wait for container restart, then forward the pending message.
+
+        Runs in a background thread to avoid blocking the poller loop.
+        """
+        time.sleep(delay)
+        self._send_typing(chat_id)
+        self._forward_to_container(chat_id, tenant, message_text)
+
     def _answer_callback_query(self, callback_id: str, text: str) -> None:
         """Answer a Telegram callback query."""
         assert self._http is not None
@@ -313,6 +323,29 @@ class TelegramPoller:
                 self._handle_lesson_callback(update, tenant)
                 return
 
+            # Container update callbacks
+            if callback_data.startswith("container_update:"):
+                from apps.router.container_updates import handle_update_callback
+                reply_text = handle_update_callback(tenant, callback_data)
+                if reply_text:
+                    self._answer_callback_query(callback_id, "✓")
+                    self._send_message(chat_id, reply_text)
+
+                # If they said yes and we have a pending message, forward after restart
+                if callback_data == "container_update:yes" and chat_id in self._pending_messages:
+                    pending_text = self._pending_messages.pop(chat_id)
+                    threading.Thread(
+                        target=self._delayed_forward,
+                        args=(chat_id, tenant, pending_text, 15),
+                        daemon=True,
+                    ).start()
+                elif callback_data == "container_update:no" and chat_id in self._pending_messages:
+                    # They said later — forward the message to current (old) container
+                    pending_text = self._pending_messages.pop(chat_id)
+                    self._send_typing(chat_id)
+                    self._forward_to_container(chat_id, tenant, pending_text)
+                return
+
         # Unknown user → onboarding
         if not tenant:
             response_data = send_onboarding_link(chat_id)
@@ -378,6 +411,29 @@ class TelegramPoller:
             onboarding_reply = get_onboarding_response(tenant, message_text, telegram_lang=tg_lang)
             if onboarding_reply is not None:
                 self._send_message(chat_id, onboarding_reply.text, **onboarding_reply.to_telegram_kwargs())
+                return
+
+        # Check for container updates before forwarding
+        from apps.router.container_updates import check_and_maybe_update
+        update_action = check_and_maybe_update(tenant)
+        if update_action:
+            if update_action["action"] == "ask_user":
+                # Store the pending message so we can forward it after update
+                self._pending_messages[chat_id] = message_text
+                self._send_message(
+                    chat_id,
+                    update_action["text"],
+                    reply_markup=update_action["reply_markup"],
+                )
+                return
+            # "silent_update" — container is restarting, delay then forward in background
+            if update_action["action"] == "silent_update":
+                self._send_typing(chat_id)
+                threading.Thread(
+                    target=self._delayed_forward,
+                    args=(chat_id, tenant, message_text, 15),
+                    daemon=True,
+                ).start()
                 return
 
         # Forward to container via /v1/chat/completions
