@@ -25,7 +25,7 @@ class ToolPolicyTest(TestCase):
         allowed = get_allowed_tools("premium")
         self.assertEqual(allowed, list(PREMIUM_ALLOW))
         self.assertIn("group:ui", allowed)
-        self.assertIn("group:runtime", allowed)
+        self.assertNotIn("group:runtime", allowed)
 
     def test_byok_gets_premium_tools(self):
         self.assertEqual(get_allowed_tools("byok"), list(PREMIUM_ALLOW))
