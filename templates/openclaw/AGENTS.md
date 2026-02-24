@@ -222,7 +222,7 @@ Use `nbhd_journal_search` first for specific lookups. Fall back to `memory_searc
 | `web_fetch` | Fetch and extract content from a URL |
 | `memory_search` / `memory_get` | Search and read workspace memory files |
 | `read` / `write` / `edit` | Read and write workspace files |
-| `message` | Send proactive messages (cron jobs only). **Do NOT use in normal conversation** — just reply directly. |
+| `nbhd_send_to_user` | Send a message to the user via Telegram (for cron jobs and proactive outreach). **Do NOT use in normal conversation** — just reply directly. |
 | `tts` | Text-to-speech (read aloud) |
 | `image` | Analyze images with vision model |
 

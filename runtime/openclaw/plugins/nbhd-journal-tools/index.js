@@ -715,4 +715,34 @@ export default function register(api) {
     },
     { optional: true },
   );
+
+  // ── Send message to user (for cron jobs / proactive messages) ──────
+  api.registerTool({
+    name: "nbhd_send_to_user",
+    description:
+      "Send a message to the user via Telegram. Use this in cron sessions " +
+      "or whenever you need to proactively reach out. Do NOT use during " +
+      "normal conversation — just reply directly instead.",
+    parameters: {
+      type: "object",
+      required: ["message"],
+      properties: {
+        message: {
+          type: "string",
+          description: "The message text to send. Supports Markdown formatting.",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const input = asObject(params);
+      const message = asTrimmedString(input.message);
+      if (!message) throw new Error("message is required");
+      const payload = await callRuntime(api, {
+        path: tenantPath(api, "/send-to-user/"),
+        method: "POST",
+        body: { message },
+      });
+      return renderPayload(payload);
+    },
+  });
 }

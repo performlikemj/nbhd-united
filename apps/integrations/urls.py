@@ -23,6 +23,7 @@ from .runtime_views import (
 )
 from .views import ComposioCallbackView, IntegrationViewSet, OAuthAuthorizeView, OAuthCallbackView
 from apps.platform_logs.views import PlatformIssueReportView as _PlatformIssueReportView
+from apps.router.cron_delivery import CronDeliveryView as _CronDeliveryView
 
 router = DefaultRouter()
 router.register("", IntegrationViewSet, basename="integration")
@@ -132,6 +133,12 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/platform-issue/report/",
         _PlatformIssueReportView.as_view(),
         name="runtime-platform-issue-report",
+    ),
+    # Cron delivery — tenant agents send messages to users via Django
+    path(
+        "runtime/<uuid:tenant_id>/send-to-user/",
+        _CronDeliveryView.as_view(),
+        name="runtime-send-to-user",
     ),
     path("", include(router.urls)),
 ]

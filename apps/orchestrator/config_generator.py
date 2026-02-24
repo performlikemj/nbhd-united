@@ -43,8 +43,8 @@ _MORNING_BRIEFING_PROMPT = (
     "- Based on calendar, carry-over tasks, and what makes sense for the day\n\n"
     "### Quick Wins\n"
     "- Small things that can be knocked out easily\n\n"
-    "Finally, send a friendly morning summary via Telegram highlighting the key things. "
-    "Keep the Telegram message concise (the detail lives in the journal). "
+    "Finally, send a friendly morning summary to the user using `nbhd_send_to_user`. "
+    "Keep it concise (the detail lives in the journal). "
     "Mention the weather, top priority, and anything time-sensitive.\n\n"
     "When writing daily note sections, include the local target date if supported by your tool call. "
     "Use YYYY-MM-DD in the user's timezone context when passing `date` explicitly (avoid UTC drift).\n\n"
@@ -53,7 +53,7 @@ _MORNING_BRIEFING_PROMPT = (
 )
 
 _EVENING_CHECKIN_PROMPT = (
-    "It's evening check-in time. Send the user a friendly message asking about their day.\n\n"
+    "It's evening check-in time. Send the user a friendly message (via `nbhd_send_to_user`) asking about their day.\n\n"
     "Prompt them with:\n"
     "- What went well today?\n"
     "- Anything on their mind they want to capture?\n"
@@ -94,8 +94,8 @@ _WEEK_AHEAD_REVIEW_PROMPT = (
     "   Example: 'I see you're in Bali this week — want me to skip the local "
     "event search or look up things to do there instead?'\n"
     "6. Log decisions in `memory/week-ahead/` with a brief note\n\n"
-    "Be helpful, not noisy. If nothing conflicts, just send a quick "
-    "'All good for this week, no changes needed.'"
+    "Be helpful, not noisy. Send your summary to the user via `nbhd_send_to_user`. "
+    "If nothing conflicts, just send a quick 'All good for this week, no changes needed.'"
 )
 
 _BACKGROUND_TASKS_PROMPT = (
@@ -151,7 +151,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
                 "kind": "agentTurn",
                 "message": _MORNING_BRIEFING_PROMPT,
             },
-            "delivery": {"mode": "announce", "channel": "telegram"},
+            "delivery": {"mode": "none"},
             "enabled": True,
         },
         {
@@ -162,7 +162,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
                 "kind": "agentTurn",
                 "message": _EVENING_CHECKIN_PROMPT,
             },
-            "delivery": {"mode": "announce", "channel": "telegram"},
+            "delivery": {"mode": "none"},
             "enabled": True,
         },
         {
@@ -173,7 +173,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
                 "kind": "agentTurn",
                 "message": _WEEK_AHEAD_REVIEW_PROMPT,
             },
-            "delivery": {"mode": "announce", "channel": "telegram"},
+            "delivery": {"mode": "none"},
             "enabled": True,
         },
         {
