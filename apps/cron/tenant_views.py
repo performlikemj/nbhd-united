@@ -47,6 +47,8 @@ class CronJobListCreateView(APIView):
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         return Response(result.get("details", result))
 
+    MAX_CRON_JOBS = 10
+
     def post(self, request):
         tenant = _get_tenant_for_user(request.user)
 
@@ -55,6 +57,36 @@ class CronJobListCreateView(APIView):
             return Response(
                 {"detail": "Job name is required."},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Enforce job cap — check existing job count before creating
+        try:
+            _require_active_tenant(tenant)
+            list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+        except GatewayError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        existing_jobs = []
+        if isinstance(list_result, dict):
+            existing_jobs = list_result.get("jobs", [])
+        elif isinstance(list_result, list):
+            existing_jobs = list_result
+
+        if len(existing_jobs) >= self.MAX_CRON_JOBS:
+            return Response(
+                {"detail": f"Maximum of {self.MAX_CRON_JOBS} scheduled tasks reached. "
+                           "Please delete an existing task before adding a new one."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # Check for duplicate names
+        existing_names = {j.get("name", "").lower() for j in existing_jobs if isinstance(j, dict)}
+        new_name = data["name"].strip().lower()
+        if new_name in existing_names:
+            return Response(
+                {"detail": f"A scheduled task named '{data['name'].strip()}' already exists. "
+                           "Please use a different name or edit the existing task."},
+                status=status.HTTP_409_CONFLICT,
             )
 
         delivery = data.get("delivery", {})
@@ -68,7 +100,6 @@ class CronJobListCreateView(APIView):
                 data = {**data, "delivery": {**delivery, "to": str(chat_id)}}
 
         try:
-            _require_active_tenant(tenant)
             result = invoke_gateway_tool(tenant, "cron.add", {"job": data})
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
