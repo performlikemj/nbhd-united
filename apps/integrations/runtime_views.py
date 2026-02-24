@@ -1404,3 +1404,114 @@ class RuntimeDocumentAppendView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+class RuntimeProfileUpdateView(APIView):
+    """PATCH /api/v1/integrations/runtime/<tenant_id>/profile/
+
+    Allows the agent to update user profile fields (timezone, display_name, language).
+    All changes require prior user confirmation in conversation.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    ALLOWED_FIELDS = {"timezone", "display_name", "language"}
+
+    def patch(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        user = tenant.user
+        if user is None:
+            return Response(
+                {"error": "no_user", "detail": "Tenant has no associated user."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        data = request.data
+        updated_fields = []
+
+        # Validate timezone if provided
+        if "timezone" in data:
+            tz_value = (data["timezone"] or "").strip()
+            if tz_value:
+                try:
+                    from zoneinfo import ZoneInfo
+                    ZoneInfo(tz_value)  # validate
+                except (KeyError, Exception):
+                    return Response(
+                        {"error": "invalid_timezone", "detail": f"Unknown timezone: {tz_value!r}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                user.timezone = tz_value
+                updated_fields.append("timezone")
+
+        if "display_name" in data:
+            name = (data["display_name"] or "").strip()
+            if name and len(name) <= 100:
+                user.display_name = name
+                updated_fields.append("display_name")
+
+        if "language" in data:
+            lang = (data["language"] or "").strip()
+            if lang and len(lang) <= 10:
+                user.language = lang
+                updated_fields.append("language")
+
+        if not updated_fields:
+            return Response(
+                {"error": "no_changes", "detail": "No valid fields to update."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user.save(update_fields=updated_fields)
+
+        # If timezone changed, sync cron jobs
+        if "timezone" in updated_fields:
+            try:
+                from apps.cron.gateway_client import invoke_gateway_tool
+                new_tz = user.timezone
+                list_result = invoke_gateway_tool(
+                    tenant, "cron.list", {"includeDisabled": True}
+                )
+                jobs = []
+                if isinstance(list_result, dict):
+                    jobs = list_result.get("jobs", [])
+                elif isinstance(list_result, list):
+                    jobs = list_result
+                synced = 0
+                for job in jobs:
+                    job_id = job.get("jobId") or job.get("name")
+                    schedule = job.get("schedule", {})
+                    if schedule.get("tz") != new_tz:
+                        invoke_gateway_tool(
+                            tenant, "cron.update",
+                            {"jobId": job_id, "patch": {"schedule": {**schedule, "tz": new_tz}}}
+                        )
+                        synced += 1
+                logger.info("Synced %d cron job(s) to tz=%s for tenant %s", synced, new_tz, tenant.id)
+            except Exception:
+                logger.exception("Failed to sync cron timezones for tenant %s", tenant.id)
+
+        # Trigger config refresh so the agent picks up the new userTimezone
+        if "timezone" in updated_fields:
+            try:
+                tenant.bump_pending_config()
+                from apps.orchestrator.services import update_tenant_config
+                update_tenant_config(str(tenant.id))
+            except Exception:
+                logger.exception("Failed to refresh config after profile update for tenant %s", tenant.id)
+
+        return Response({
+            "tenant_id": str(tenant.id),
+            "updated": updated_fields,
+            "timezone": user.timezone,
+            "display_name": getattr(user, "display_name", ""),
+            "language": getattr(user, "language", ""),
+        })

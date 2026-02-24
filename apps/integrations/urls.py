@@ -20,6 +20,7 @@ from .runtime_views import (
     RuntimeUserMemoryView,
     RuntimeWeeklyReviewsView,
     RuntimeUsageReportView,
+    RuntimeProfileUpdateView,
 )
 from .views import ComposioCallbackView, IntegrationViewSet, OAuthAuthorizeView, OAuthCallbackView
 from apps.platform_logs.views import PlatformIssueReportView as _PlatformIssueReportView
@@ -133,6 +134,12 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/platform-issue/report/",
         _PlatformIssueReportView.as_view(),
         name="runtime-platform-issue-report",
+    ),
+    # Agent-initiated profile updates (timezone, display_name, language)
+    path(
+        "runtime/<uuid:tenant_id>/profile/",
+        RuntimeProfileUpdateView.as_view(),
+        name="runtime-profile-update",
     ),
     # Cron delivery — tenant agents send messages to users via Django
     path(

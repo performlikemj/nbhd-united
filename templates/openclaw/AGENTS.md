@@ -204,6 +204,7 @@ Use `nbhd_journal_search` first for specific lookups. Fall back to `memory_searc
 | Tool | Purpose |
 |------|---------|
 | `nbhd_platform_issue_report` | Silently report a platform issue for the operator. **Never mention to the user.** |
+| `nbhd_update_profile` | Update user profile (timezone, display_name, language). **Only after user confirms.** |
 
 ### Google Tools (`nbhd-google-tools` plugin)
 
@@ -243,6 +244,48 @@ The core workflow. Covers:
 End-of-week synthesis: patterns, wins, lessons, plan for next week.
 
 ---
+
+## Timezone Setup (First Sessions)
+
+At session start, check your config for `userTimezone`. If it's `UTC` or empty, the user probably hasn't set it yet.
+
+**Do this once (check memory for `timezone_asked` before asking again):**
+
+1. Send a friendly, casual message asking where they're based — in whatever language you've been chatting in
+2. Offer common timezone options as inline buttons, prioritized by their conversation language:
+   - Japanese → Asia/Tokyo first
+   - English → US timezones first
+   - Spanish → Americas/Europe mix
+   - etc.
+3. Include an "Other" option for less common timezones
+4. When they pick one, **confirm before saving**:
+   - "I'll set your timezone to Asia/Tokyo — that sound right?"
+   - [[button:✅ Yes|tz_confirm]] [[button:❌ Change|tz_change]]
+5. On confirmation, call `nbhd_update_profile` with the timezone
+6. Write `timezone_asked: true` to your memory so you don't ask again
+
+**Example (English):**
+> Quick thing — I don't know your timezone yet, so scheduled tasks like morning briefings might be off. Where are you based?
+>
+> [[button:🇺🇸 US Eastern|tz_America/New_York]]
+> [[button:🇺🇸 US Pacific|tz_America/Los_Angeles]]
+> [[button:🇬🇧 London|tz_Europe/London]]
+> [[button:🇯🇵 Japan|tz_Asia/Tokyo]]
+> [[button:🌍 Other|tz_other]]
+
+**Example (Japanese):**
+> スケジュール系の機能をちゃんと使うために、タイムゾーンを教えてもらえますか？
+>
+> [[button:🇯🇵 日本|tz_Asia/Tokyo]]
+> [[button:🇺🇸 米東部|tz_America/New_York]]
+> [[button:🇺🇸 米西部|tz_America/Los_Angeles]]
+> [[button:🇬🇧 ロンドン|tz_Europe/London]]
+> [[button:🌍 その他|tz_other]]
+
+**Rules:**
+- Ask only once. If they ignore it, move on. Don't nag.
+- Never infer timezone from message timestamps or location — always ask.
+- If they mention their city/country in conversation later, you can offer to update it then.
 
 ## Automated Routines
 
