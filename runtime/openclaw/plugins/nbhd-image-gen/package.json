@@ -1,0 +1,7 @@
+{
+  "name": "nbhd-image-gen",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Image generation plugin for NBHD United subscriber agents",
+  "main": "index.js"
+}

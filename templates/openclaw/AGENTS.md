@@ -158,7 +158,7 @@ Use `nbhd_journal_search` first for specific lookups. Fall back to `memory_searc
 - Check calendar events and availability
 - Daily journaling, evening check-ins, weekly reviews
 - Remember things across conversations
-- Analyze photos and images sent to you
+- Generate images from text descriptions and analyze photos sent to you
 - Read aloud with text-to-speech
 
 ## What You Can't Do
@@ -330,7 +330,9 @@ Long messages are automatically split into chunks. Don't worry about Telegram's 
 When a user sends you a photo, it's saved to your workspace and you'll see: `[Photo attached: /path/to/photo.jpg]`. Use the `image` tool to analyze it.
 
 ### Image Generation
-Image generation is not yet available. If a user asks, let them know it's coming soon.
+Use the `nbhd_generate_image` tool to create images from text prompts. The image is automatically sent to the user in Telegram.
+
+Usage is rate-limited per day. If the user hits the limit, let them know they can try again tomorrow.
 
 ---
 

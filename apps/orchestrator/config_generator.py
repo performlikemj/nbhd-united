@@ -230,6 +230,10 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             ).strip(),
             str(getattr(settings, "OPENCLAW_USAGE_REPORTER_PLUGIN_PATH", "") or "").strip(),
         ),
+        (
+            str(getattr(settings, "OPENCLAW_IMAGE_GEN_PLUGIN_ID", "") or "").strip(),
+            str(getattr(settings, "OPENCLAW_IMAGE_GEN_PLUGIN_PATH", "") or "").strip(),
+        ),
     ]
     _active_plugins = [(pid, ppath) for pid, ppath in _plugin_defs if pid]
 
@@ -382,10 +386,15 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             pass  # Fall back to default tier model
 
     if _active_plugins:
+        image_gen_id = str(getattr(settings, "OPENCLAW_IMAGE_GEN_PLUGIN_ID", "") or "").strip()
         plugin_config: dict[str, Any] = {
             "allow": [pid for pid, _ in _active_plugins],
             "entries": {
-                pid: {"enabled": True}
+                pid: (
+                    {"enabled": True, "config": {"tier": tier}}
+                    if pid == image_gen_id
+                    else {"enabled": True}
+                )
                 for pid, _ in _active_plugins
             },
         }

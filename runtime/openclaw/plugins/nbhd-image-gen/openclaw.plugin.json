@@ -1,0 +1,16 @@
+{
+  "id": "nbhd-image-gen",
+  "name": "NBHD Image Generation",
+  "description": "Generate images via OpenAI Images API with per-tier rate limiting.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "tier": {
+        "type": "string",
+        "description": "Subscriber tier (starter, premium, byok). Controls rate limits.",
+        "default": "starter"
+      }
+    }
+  }
+}

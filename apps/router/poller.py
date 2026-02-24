@@ -265,7 +265,9 @@ class TelegramPoller:
             data = file_client.download_file().readall()
 
             # Send via Telegram sendPhoto
-            files = {"photo": ("image.jpg", data, "image/jpeg")}
+            ext = share_path.rsplit(".", 1)[-1].lower() if "." in share_path else "jpg"
+            mime = {"png": "image/png", "gif": "image/gif", "webp": "image/webp"}.get(ext, "image/jpeg")
+            files = {"photo": (f"image.{ext}", data, mime)}
             form_data = {"chat_id": str(chat_id)}
             if caption:
                 form_data["caption"] = caption[:1024]  # Telegram caption limit
