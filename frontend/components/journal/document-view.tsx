@@ -177,7 +177,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
         <div className="flex flex-1 items-center justify-center">
           <div className="text-center">
             <p className="text-lg text-ink-faint">No note yet</p>
-            <p className="mt-1 text-sm text-ink-faint/60">Your assistant will create it when there's something to share.</p>
+            <p className="mt-1 text-sm text-ink-faint/60">Your assistant will create it when there is something to share.</p>
           </div>
         </div>
       </div>

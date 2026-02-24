@@ -873,20 +873,39 @@ class DocumentAPITest(TestCase):
         # Daily notes ordered by slug desc
         self.assertEqual(resp.data[0]["slug"], "2026-02-16")
 
-    def test_get_or_create_document(self):
+    def test_get_nonexistent_document_returns_404(self):
+        """GET for a non-existent non-singleton document returns 404 (no auto-create)."""
         resp = self.client.get("/api/v1/journal/documents/daily/2026-02-16/")
-        self.assertEqual(resp.status_code, 200)
-        self.assertIn("markdown", resp.data)
-        # Should have applied default template
-        self.assertIn("2026-02-16", resp.data["markdown"])
-        self.assertIn("Morning Report", resp.data["markdown"])
-        # Document should now exist
-        self.assertTrue(Document.objects.filter(
+        self.assertEqual(resp.status_code, 404)
+        self.assertFalse(Document.objects.filter(
             tenant=self.tenant, kind="daily", slug="2026-02-16",
         ).exists())
 
+    def test_get_existing_document(self):
+        """GET for an existing document returns 200."""
+        Document.objects.create(
+            tenant=self.tenant, kind="daily", slug="2026-02-16",
+            title="Feb 16", markdown="# 2026-02-16\n\n## Morning Report\n",
+        )
+        resp = self.client.get("/api/v1/journal/documents/daily/2026-02-16/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("markdown", resp.data)
+        self.assertIn("2026-02-16", resp.data["markdown"])
+        self.assertIn("Morning Report", resp.data["markdown"])
+
+    def test_get_singleton_auto_creates(self):
+        """GET for singleton kinds (tasks, ideas, memory) still auto-creates."""
+        resp = self.client.get("/api/v1/journal/documents/tasks/tasks/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(Document.objects.filter(
+            tenant=self.tenant, kind="tasks", slug="tasks",
+        ).exists())
+
     def test_patch_document(self):
-        self.client.get("/api/v1/journal/documents/daily/2026-02-16/")
+        Document.objects.create(
+            tenant=self.tenant, kind="daily", slug="2026-02-16",
+            title="Feb 16", markdown="# Original",
+        )
         resp = self.client.patch(
             "/api/v1/journal/documents/daily/2026-02-16/",
             {"markdown": "# Updated content"},
@@ -896,7 +915,10 @@ class DocumentAPITest(TestCase):
         self.assertEqual(resp.data["markdown"], "# Updated content")
 
     def test_append_to_document(self):
-        self.client.get("/api/v1/journal/documents/daily/2026-02-16/")
+        Document.objects.create(
+            tenant=self.tenant, kind="daily", slug="2026-02-16",
+            title="Feb 16", markdown="# 2026-02-16",
+        )
         resp = self.client.post(
             "/api/v1/journal/documents/daily/2026-02-16/append/",
             {"content": "Appended entry"},
@@ -928,7 +950,10 @@ class DocumentAPITest(TestCase):
         self.assertIn(resp.status_code, [401, 403])
 
     def test_delete_document(self):
-        self.client.get("/api/v1/journal/documents/daily/2026-02-16/")
+        Document.objects.create(
+            tenant=self.tenant, kind="daily", slug="2026-02-16",
+            title="Feb 16", markdown="# 2026-02-16",
+        )
         resp = self.client.delete("/api/v1/journal/documents/daily/2026-02-16/")
         self.assertEqual(resp.status_code, 204)
         self.assertFalse(Document.objects.filter(
