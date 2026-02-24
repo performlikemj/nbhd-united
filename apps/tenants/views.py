@@ -387,6 +387,37 @@ class ProfileView(APIView):
                                 "Failed to refresh config after tz update for tenant %s",
                                 tenant.id,
                             )
+                        # Sync timezone on all existing cron jobs
+                        try:
+                            from apps.cron.gateway_client import invoke_gateway_tool, GatewayError
+                            new_tz = request.user.timezone
+                            list_result = invoke_gateway_tool(
+                                tenant, "cron.list", {"includeDisabled": True}
+                            )
+                            jobs = []
+                            if isinstance(list_result, dict):
+                                jobs = list_result.get("jobs", [])
+                            elif isinstance(list_result, list):
+                                jobs = list_result
+                            for job in jobs:
+                                job_id = job.get("jobId") or job.get("name")
+                                schedule = job.get("schedule", {})
+                                if schedule.get("tz") != new_tz:
+                                    invoke_gateway_tool(
+                                        tenant, "cron.update",
+                                        {"jobId": job_id, "patch": {
+                                            "schedule": {**schedule, "tz": new_tz}
+                                        }}
+                                    )
+                            logger.info(
+                                "Synced %d cron job timezone(s) to %s for tenant %s",
+                                len(jobs), new_tz, tenant.id,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Failed to sync cron timezones for tenant %s",
+                                tenant.id,
+                            )
             except Tenant.DoesNotExist:
                 pass
 

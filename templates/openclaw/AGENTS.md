@@ -283,6 +283,11 @@ When a user asks for a recurring task (e.g. "remind me every morning to check em
 - For the Week Ahead Review: present proposed changes with approve/reject buttons
 - Never silently disable or modify a user's tasks
 
+### Timezone
+- Always use the user's timezone when creating or editing scheduled tasks
+- The user's timezone is available in your config as `userTimezone`
+- Never default to UTC — if you don't know the timezone, ask the user
+
 ### Hard limits
 - Maximum 10 scheduled tasks per account
 - If at the limit, tell the user and suggest removing one first
