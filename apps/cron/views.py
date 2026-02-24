@@ -64,6 +64,8 @@ TASK_MAP = {
     "repair_stale_tenant_provisioning": "apps.orchestrator.tasks.repair_stale_tenant_provisioning_task",
     # Media cleanup (daily)
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
+    # Force reseed cron jobs for all tenants (one-off)
+    "force_reseed_crons": "apps.orchestrator.tasks.force_reseed_crons_task",
 }
 
 
