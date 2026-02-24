@@ -41,19 +41,54 @@ class CronJobListCreateTest(TestCase):
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_create_cron_job(self, mock_invoke):
-        mock_invoke.return_value = {"name": "New Job", "enabled": True}
+        # First call: cron.list (cap check), second call: cron.add
+        mock_invoke.side_effect = [
+            {"jobs": []},  # cron.list returns empty
+            {"name": "New Job", "enabled": True},  # cron.add result
+        ]
         resp = self.client.post(
             "/api/v1/cron-jobs/",
             {"name": "New Job", "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"}},
             format="json",
         )
         self.assertEqual(resp.status_code, 201)
-        mock_invoke.assert_called_once()
-        call_args = mock_invoke.call_args
-        self.assertEqual(call_args[0][1], "cron.add")
-        self.assertEqual(call_args[0][2], {
+        self.assertEqual(mock_invoke.call_count, 2)
+        # First call: cap check
+        self.assertEqual(mock_invoke.call_args_list[0][0][1], "cron.list")
+        # Second call: actual create
+        self.assertEqual(mock_invoke.call_args_list[1][0][1], "cron.add")
+        self.assertEqual(mock_invoke.call_args_list[1][0][2], {
             "job": {"name": "New Job", "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"}},
         })
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_create_cron_job_rejected_at_cap(self, mock_invoke):
+        """Creating a job when at the cap returns 409."""
+        mock_invoke.return_value = {
+            "jobs": [{"name": f"Job {i}"} for i in range(10)],
+        }
+        resp = self.client.post(
+            "/api/v1/cron-jobs/",
+            {"name": "One More", "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"}},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 409)
+        # Only cron.list should have been called (no cron.add)
+        mock_invoke.assert_called_once()
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_create_cron_job_duplicate_name_rejected(self, mock_invoke):
+        """Creating a job with a duplicate name returns 409."""
+        mock_invoke.return_value = {
+            "jobs": [{"name": "Morning Briefing"}],
+        }
+        resp = self.client.post(
+            "/api/v1/cron-jobs/",
+            {"name": "Morning Briefing", "schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "UTC"}},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 409)
+        mock_invoke.assert_called_once()
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_create_requires_name(self, mock_invoke):
