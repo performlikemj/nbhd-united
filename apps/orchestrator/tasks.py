@@ -45,12 +45,16 @@ def force_reseed_crons_task() -> dict:
 
     logger = logging.getLogger(__name__)
 
+    # Only touch system-managed cron jobs (by name).
+    # User-created crons (reminders, custom schedules) are left untouched.
+    SYSTEM_JOB_NAMES = {"Morning Briefing", "Evening Check-in", "Week Ahead Review", "Background Tasks"}
+
     tenants = Tenant.objects.filter(
         status=Tenant.Status.ACTIVE,
         container_id__gt="",
     ).select_related("user")
 
-    total_created = 0
+    total_updated = 0
     total_errors = 0
 
     for tenant in tenants:
@@ -65,16 +69,20 @@ def force_reseed_crons_task() -> dict:
             result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
             existing = result.get("jobs", []) if isinstance(result, dict) else result if isinstance(result, list) else []
 
-            # Delete all
+            # Delete only system-managed jobs
+            deleted = 0
             for job in existing:
+                if job.get("name") not in SYSTEM_JOB_NAMES:
+                    continue  # User-created job — don't touch
                 job_id = job.get("id") or job.get("jobId")
                 if job_id:
                     try:
                         invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
+                        deleted += 1
                     except GatewayError:
                         pass
 
-            # Create new
+            # Re-create system jobs with updated config
             created = 0
             for job in build_cron_seed_jobs(tenant):
                 try:
@@ -84,11 +92,11 @@ def force_reseed_crons_task() -> dict:
                     logger.error("force_reseed: add %s for %s failed: %s", job.get("name"), tid, e)
                     total_errors += 1
 
-            total_created += created
-            logger.info("force_reseed: tenant %s — %d deleted, %d created", tid, len(existing), created)
+            total_updated += created
+            logger.info("force_reseed: tenant %s — %d system jobs deleted, %d created (user jobs preserved)", tid, deleted, created)
 
         except GatewayError as e:
             logger.error("force_reseed: tenant %s failed: %s", tid, e)
             total_errors += 1
 
-    return {"tenants": tenants.count(), "created": total_created, "errors": total_errors}
+    return {"tenants": tenants.count(), "updated": total_updated, "errors": total_errors}

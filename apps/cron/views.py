@@ -313,6 +313,9 @@ def force_reseed_crons(request):
     from apps.orchestrator.config_generator import build_cron_seed_jobs
     from apps.cron.gateway_client import invoke_gateway_tool, GatewayError
 
+    # Only touch system-managed jobs — preserve user-created crons
+    SYSTEM_JOB_NAMES = {"Morning Briefing", "Evening Check-in", "Week Ahead Review", "Background Tasks"}
+
     tenants = Tenant.objects.filter(
         status=Tenant.Status.ACTIVE,
         container_id__gt="",
@@ -321,7 +324,7 @@ def force_reseed_crons(request):
     results = []
     for tenant in tenants:
         tid = str(tenant.id)[:8]
-        entry = {"tenant": tid, "deleted": 0, "created": 0, "errors": []}
+        entry = {"tenant": tid, "deleted": 0, "created": 0, "user_jobs_preserved": 0, "errors": []}
 
         if not tenant.container_fqdn:
             entry["errors"].append("no FQDN")
@@ -337,8 +340,11 @@ def force_reseed_crons(request):
             results.append(entry)
             continue
 
-        # Delete all
+        # Delete only system-managed jobs
         for job in existing:
+            if job.get("name") not in SYSTEM_JOB_NAMES:
+                entry["user_jobs_preserved"] += 1
+                continue
             job_id = job.get("id") or job.get("jobId")
             if not job_id:
                 continue
@@ -348,7 +354,7 @@ def force_reseed_crons(request):
             except GatewayError as e:
                 entry["errors"].append(f"delete {job_id}: {str(e)[:80]}")
 
-        # Create new
+        # Create new system jobs
         for job in build_cron_seed_jobs(tenant):
             try:
                 invoke_gateway_tool(tenant, "cron.add", {"job": job})
