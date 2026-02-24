@@ -73,7 +73,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
 
   // Static items that always show (even if no documents exist yet)
   const staticItems: Array<{ kind: string; slug: string; label: string; icon: string }> = [
-    { kind: "daily", slug: new Date().toISOString().slice(0, 10), label: "Today", icon: "📅" },
+    { kind: "daily", slug: (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; })(), label: "Today", icon: "📅" },
     { kind: "tasks", slug: "tasks", label: "Tasks", icon: "📋" },
     { kind: "goal", slug: "goals", label: "Goals", icon: "🎯" },
     { kind: "ideas", slug: "ideas", label: "Ideas", icon: "💡" },

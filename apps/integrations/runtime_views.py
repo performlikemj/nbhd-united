@@ -1,6 +1,7 @@
 """Internal runtime capability endpoints."""
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from uuid import UUID
@@ -1079,6 +1080,14 @@ class RuntimeDocumentView(APIView):
         if not slug:
             # For singleton docs, use kind as slug
             slug = kind
+
+        # Validate daily slugs must be valid dates
+        if kind == "daily":
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", slug):
+                return Response(
+                    {"error": "invalid_request", "detail": f"Daily note slug must be a date (YYYY-MM-DD), got: {slug!r}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         doc, _created = Document.objects.get_or_create(
             tenant=tenant,

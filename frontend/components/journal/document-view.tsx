@@ -62,16 +62,11 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
   useEffect(() => {
     if (kind !== "daily") return;
 
+    // Only prefetch previous day (not next — that would create future documents)
     const prevSlug = shiftDate(effectiveSlug, -1);
-    const nextSlug = shiftDate(effectiveSlug, 1);
-
     void queryClient.prefetchQuery({
       queryKey: ["document", kind, prevSlug],
       queryFn: () => fetchDocument(kind, prevSlug),
-    });
-    void queryClient.prefetchQuery({
-      queryKey: ["document", kind, nextSlug],
-      queryFn: () => fetchDocument(kind, nextSlug),
     });
   }, [effectiveSlug, kind, queryClient]);
 
@@ -157,6 +152,34 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
         <p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
           Could not load document.
         </p>
+      </div>
+    );
+  }
+
+  // Document doesn't exist yet (404 → null)
+  if (!doc) {
+    return (
+      <div className="flex h-full flex-col">
+        {/* Header with date nav */}
+        {kind === "daily" && (
+          <div className="flex items-center justify-between border-b border-border px-4 py-2 lg:px-6 lg:py-3">
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => handleDateNav(-1)} className="rounded p-1 text-ink-faint hover:bg-surface-hover hover:text-ink" title="Previous day">
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+              </button>
+              <h1 className="text-lg font-semibold text-ink">{formatDate(slug)}</h1>
+              <button type="button" onClick={() => handleDateNav(1)} className="rounded p-1 text-ink-faint hover:bg-surface-hover hover:text-ink" title="Next day">
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+              </button>
+            </div>
+          </div>
+        )}
+        <div className="flex flex-1 items-center justify-center">
+          <div className="text-center">
+            <p className="text-lg text-ink-faint">No note yet</p>
+            <p className="mt-1 text-sm text-ink-faint/60">Your assistant will create it when there's something to share.</p>
+          </div>
+        </div>
       </div>
     );
   }

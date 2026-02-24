@@ -6,7 +6,7 @@ from collections import defaultdict
 
 from django.http import Http404
 from django.utils import timezone
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -39,8 +39,28 @@ def _get_tenant(user) -> Tenant:
         raise Http404("Tenant not found.") from exc
 
 
+import re
+
+_VALID_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-]*$")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _validate_slug(kind: str, slug: str) -> None:
+    """Raise ValidationError if the slug is invalid for the given kind."""
+    if not slug or not _VALID_SLUG_RE.match(slug):
+        raise serializers.ValidationError(f"Invalid slug: {slug!r}")
+    if kind == "daily" and not _DATE_RE.match(slug):
+        raise serializers.ValidationError(f"Daily note slug must be a date (YYYY-MM-DD), got: {slug!r}")
+    if kind == "daily":
+        try:
+            datetime.date.fromisoformat(slug)
+        except ValueError:
+            raise serializers.ValidationError(f"Invalid date: {slug!r}")
+
+
 def _get_or_create_document(tenant: Tenant, kind: str, slug: str) -> Document:
     """Get or create a document, applying default template for new docs."""
+    _validate_slug(kind, slug)
     doc, created = Document.objects.get_or_create(
         tenant=tenant,
         kind=kind,
@@ -176,7 +196,19 @@ class DocumentDetailView(APIView):
 
     def get(self, request, kind: str, slug: str):
         tenant = _get_tenant(request.user)
-        doc = _get_or_create_document(tenant, kind, slug)
+        _validate_slug(kind, slug)
+        # Singletons (tasks, ideas, memory) auto-create on GET for convenience
+        singleton_kinds = {"tasks", "ideas", "memory"}
+        if kind in singleton_kinds:
+            doc = _get_or_create_document(tenant, kind, slug)
+        else:
+            try:
+                doc = Document.objects.get(tenant=tenant, kind=kind, slug=slug)
+            except Document.DoesNotExist:
+                return Response(
+                    {"error": "not_found", "detail": "Document not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
         return Response(DocumentSerializer(doc).data)
 
     def patch(self, request, kind: str, slug: str):

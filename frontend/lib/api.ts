@@ -106,7 +106,9 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const message = await response.text();
-    throw new Error(message || `Request failed: ${response.status}`);
+    const err = new Error(message || `Request failed: ${response.status}`);
+    (err as Error & { status: number }).status = response.status;
+    throw err;
   }
 
   if (response.status === 204) {
@@ -503,8 +505,13 @@ export function fetchConstellation(): Promise<ConstellationData> {
 
 // ── Journal v2 Documents ──────────────────────────────────────────────
 
-export function fetchDocument(kind: string, slug: string): Promise<DocumentResponse> {
-  return apiFetch<DocumentResponse>(`/api/v1/journal/documents/${kind}/${slug}/`);
+export function fetchDocument(kind: string, slug: string): Promise<DocumentResponse | null> {
+  return apiFetch<DocumentResponse>(`/api/v1/journal/documents/${kind}/${slug}/`).catch((err) => {
+    if (err && typeof err === "object" && "status" in err && (err as { status: number }).status === 404) {
+      return null;
+    }
+    throw err;
+  });
 }
 
 export function fetchDocuments(kind?: string): Promise<DocumentListItem[]> {
