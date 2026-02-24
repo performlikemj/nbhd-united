@@ -708,10 +708,12 @@ def restart_container_app(container_name: str) -> None:
         container_name,
     )
 
+    import hashlib
     import time
 
     template = app.template
-    template.revision_suffix = f"restart-{int(time.time())}"
+    # Use a short, deterministic restart suffix so revision DNS labels stay < 64 chars.
+    template.revision_suffix = f"r{hashlib.sha256(f'{int(time.time())}'.encode()).hexdigest()[:6]}"
 
     client.container_apps.begin_create_or_update(
         settings.AZURE_RESOURCE_GROUP,
