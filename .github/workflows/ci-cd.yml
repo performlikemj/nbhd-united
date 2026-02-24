@@ -176,6 +176,13 @@ jobs:
 
       - name: Deploy Django to Container Apps
         run: |
+          # Ensure single-revision mode (only one active revision at a time).
+          # Prevents multiple Telegram pollers competing for getUpdates (409 Conflict).
+          az containerapp revision set-mode \
+            --name ${{ env.DJANGO_APP }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --mode single
+
           az containerapp update \
             --name ${{ env.DJANGO_APP }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
