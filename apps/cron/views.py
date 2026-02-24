@@ -298,6 +298,76 @@ def apply_pending_configs(request):
 
 @csrf_exempt
 @require_POST
+def force_reseed_crons(request):
+    """Force delete-and-recreate cron jobs for all active tenants.
+
+    URL: /api/cron/force-reseed-crons/
+    Use when cron job definitions have changed and need to be pushed to all containers.
+    """
+    if not verify_qstash_signature(request):
+        logger.warning("Unauthorized force-reseed-crons attempt")
+        return JsonResponse({"error": "Invalid signature"}, status=401)
+
+    from apps.orchestrator.config_generator import build_cron_seed_jobs
+    from apps.cron.gateway_client import invoke_gateway_tool, GatewayError
+
+    tenants = Tenant.objects.filter(
+        status=Tenant.Status.ACTIVE,
+        container_id__gt="",
+    ).select_related("user")
+
+    results = []
+    for tenant in tenants:
+        tid = str(tenant.id)[:8]
+        entry = {"tenant": tid, "deleted": 0, "created": 0, "errors": []}
+
+        if not tenant.container_fqdn:
+            entry["errors"].append("no FQDN")
+            results.append(entry)
+            continue
+
+        # List existing jobs
+        try:
+            result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+            existing = result.get("jobs", []) if isinstance(result, dict) else result if isinstance(result, list) else []
+        except GatewayError as e:
+            entry["errors"].append(f"list: {str(e)[:100]}")
+            results.append(entry)
+            continue
+
+        # Delete all
+        for job in existing:
+            job_id = job.get("id") or job.get("jobId")
+            if not job_id:
+                continue
+            try:
+                invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
+                entry["deleted"] += 1
+            except GatewayError as e:
+                entry["errors"].append(f"delete {job_id}: {str(e)[:80]}")
+
+        # Create new
+        for job in build_cron_seed_jobs(tenant):
+            try:
+                invoke_gateway_tool(tenant, "cron.add", {"job": job})
+                entry["created"] += 1
+            except GatewayError as e:
+                entry["errors"].append(f"add {job.get('name', '?')}: {str(e)[:80]}")
+
+        results.append(entry)
+
+    total_created = sum(r["created"] for r in results)
+    total_errors = sum(len(r["errors"]) for r in results)
+    return JsonResponse({
+        "tenants": len(results),
+        "total_created": total_created,
+        "total_errors": total_errors,
+        "details": results,
+    })
+
+
+@csrf_exempt
+@require_POST
 def restart_tenant_container(request):
     """Restart a tenant's OpenClaw container. QStash-verified."""
     if not verify_qstash_signature(request):
