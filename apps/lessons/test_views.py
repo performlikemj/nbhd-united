@@ -132,3 +132,75 @@ class LessonViewSetTests(TestCase):
 
         self.assertEqual(len(payload), 1)
         self.assertEqual(payload[0]["id"], pending.id)
+
+    def test_patch_approve_sets_status_and_approved_at(self):
+        """PATCH /api/v1/lessons/{id}/approve/ is the web-UI approval path."""
+        lesson = self._create_lesson(tenant=self.tenant, text="PATCH approve me", status="pending")
+
+        response = self.client.patch(
+            f"/api/v1/lessons/{lesson.id}/approve/",
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        lesson.refresh_from_db()
+        self.assertEqual(lesson.status, "approved")
+        self.assertIsNotNone(lesson.approved_at)
+
+        body = response.json()
+        self.assertEqual(body["status"], "approved")
+        self.assertIsNotNone(body["approved_at"])
+
+    def test_patch_dismiss_sets_status_and_clears_approved_at(self):
+        """PATCH /api/v1/lessons/{id}/dismiss/ is the web-UI dismissal path."""
+        lesson = self._create_lesson(tenant=self.tenant, text="PATCH dismiss me", status="pending")
+
+        response = self.client.patch(
+            f"/api/v1/lessons/{lesson.id}/dismiss/",
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        lesson.refresh_from_db()
+        self.assertEqual(lesson.status, "dismissed")
+        self.assertIsNone(lesson.approved_at)
+
+        body = response.json()
+        self.assertEqual(body["status"], "dismissed")
+
+    def test_patch_approve_tenant_isolation(self):
+        """A user cannot approve another tenant's lesson via PATCH."""
+        other_lesson = self._create_lesson(tenant=self.other_tenant, text="Not yours", status="pending")
+
+        response = self.client.patch(
+            f"/api/v1/lessons/{other_lesson.id}/approve/",
+            format="json",
+        )
+        self.assertEqual(response.status_code, 404)
+
+        other_lesson.refresh_from_db()
+        self.assertEqual(other_lesson.status, "pending")
+
+    def test_patch_dismiss_tenant_isolation(self):
+        """A user cannot dismiss another tenant's lesson via PATCH."""
+        other_lesson = self._create_lesson(tenant=self.other_tenant, text="Not yours", status="pending")
+
+        response = self.client.patch(
+            f"/api/v1/lessons/{other_lesson.id}/dismiss/",
+            format="json",
+        )
+        self.assertEqual(response.status_code, 404)
+
+        other_lesson.refresh_from_db()
+        self.assertEqual(other_lesson.status, "pending")
+
+    def test_approve_requires_authentication(self):
+        """Unauthenticated requests to approve/dismiss are rejected."""
+        lesson = self._create_lesson(tenant=self.tenant, status="pending")
+        unauth_client = APIClient()
+
+        resp_approve = unauth_client.patch(f"/api/v1/lessons/{lesson.id}/approve/")
+        self.assertEqual(resp_approve.status_code, 401)
+
+        resp_dismiss = unauth_client.patch(f"/api/v1/lessons/{lesson.id}/dismiss/")
+        self.assertEqual(resp_dismiss.status_code, 401)

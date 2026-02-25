@@ -102,6 +102,41 @@ When lessons are generated:
 
 If no lessons are pending, skip.
 
+## Lesson Creation — How It Works
+
+### When to create a lesson
+Create a lesson whenever the user says things like:
+- "save that as a lesson"
+- "remember this"
+- "note that down"
+- "add that to my constellation"
+- Any clear request to capture an insight for later
+
+**Always use `nbhd_lesson_suggest` (the lesson runtime API) — never just write the insight to the daily note.**  
+The daily note is a log of your conversation. The constellation is a structured learning system. They are not interchangeable.
+
+### What to do after creating a lesson
+After calling `nbhd_lesson_suggest` successfully, reply to the user **in the same conversation** with:
+
+> "Saved! Head to [/constellation/pending](/constellation/pending) to approve it and add it to your constellation."
+
+Or a natural variation: "Noted — you can approve it at [constellation/pending](/constellation/pending) when you're ready."
+
+This is the **only reliable approval path**. Do not depend on a separate Telegram notification being sent — that may not always work. Always tell the user in-session where to approve.
+
+### What NOT to do
+- ❌ Do not silently write the lesson to the daily note instead of calling the API
+- ❌ Do not assume the user will see a separate Telegram approval message — always include the pending link in your reply
+- ❌ Do not ask the user to "check their Telegram" for an approval button — the web UI at `/constellation/pending` always works
+- ❌ Do not mark a lesson as approved yourself — only the user can approve lessons
+
+### Lesson API reference
+| Action | Tool |
+|--------|------|
+| Create (suggest) a lesson | `nbhd_lesson_suggest` |
+| List pending lessons | `nbhd_lessons_pending` |
+| Search approved lessons | `nbhd_lesson_search` |
+
 
 ## Memory — How You Remember
 
