@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Sidebar } from "@/components/journal/sidebar";
 import { DocumentView } from "@/components/journal/document-view";
 
@@ -14,6 +14,40 @@ export default function JournalPage() {
   const [activeSlug, setActiveSlug] = useState(todayISO());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+  // Draggable sidebar FAB — persists Y position in localStorage
+  const SIDEBAR_FAB_KEY = "sidebar-fab-y";
+  const [fabY, setFabY] = useState<number | null>(null);
+  const fabDrag = useRef<{ startTouchY: number; startBtnY: number; moved: boolean } | null>(null);
+
+  useEffect(() => {
+    const saved = localStorage.getItem(SIDEBAR_FAB_KEY);
+    // Default: higher than footer (window.innerHeight - 120px)
+    setFabY(saved ? parseInt(saved, 10) : window.innerHeight - 120);
+  }, []);
+
+  const handleFabTouchStart = useCallback((e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    fabDrag.current = { startTouchY: touch.clientY, startBtnY: fabY ?? window.innerHeight - 120, moved: false };
+  }, [fabY]);
+
+  const handleFabTouchMove = useCallback((e: React.TouchEvent) => {
+    if (!fabDrag.current) return;
+    const delta = e.touches[0].clientY - fabDrag.current.startTouchY;
+    if (Math.abs(delta) > 4) {
+      fabDrag.current.moved = true;
+      e.preventDefault();
+    }
+    const newY = Math.max(16, Math.min(window.innerHeight - 72, fabDrag.current.startBtnY + delta));
+    setFabY(newY);
+  }, []);
+
+  const handleFabTouchEnd = useCallback(() => {
+    const wasDrag = fabDrag.current?.moved ?? false;
+    if (fabY !== null) localStorage.setItem(SIDEBAR_FAB_KEY, String(fabY));
+    fabDrag.current = null;
+    return wasDrag;
+  }, [fabY]);
 
   // Parse hash on mount for deep linking: #daily/2026-02-16
   useEffect(() => {
@@ -39,21 +73,36 @@ export default function JournalPage() {
 
   return (
     <div className="flex h-full">
-      {/* Mobile sidebar toggle */}
-      <button
-        type="button"
-        onClick={() => setMobileSidebarOpen(!mobileSidebarOpen)}
-        className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-4 z-50 rounded-full bg-accent p-3 text-white shadow-lg lg:hidden"
-        aria-label="Toggle sidebar"
-      >
-        <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          {mobileSidebarOpen ? (
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          ) : (
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-          )}
-        </svg>
-      </button>
+      {/* Mobile sidebar toggle — draggable along Y, clears footer */}
+      {fabY !== null && (
+        <button
+          type="button"
+          onTouchStart={handleFabTouchStart}
+          onTouchMove={handleFabTouchMove}
+          onTouchEnd={(e) => {
+            const wasDrag = handleFabTouchEnd();
+            if (!wasDrag) {
+              e.preventDefault();
+              setMobileSidebarOpen(!mobileSidebarOpen);
+            }
+          }}
+          onClick={() => {
+            // Desktop fallback (no touch)
+            if (!fabDrag.current) setMobileSidebarOpen(!mobileSidebarOpen);
+          }}
+          style={{ top: `${fabY}px` }}
+          className="fixed left-4 z-50 touch-none select-none rounded-full bg-accent p-3 text-white shadow-lg lg:hidden"
+          aria-label="Toggle sidebar — drag to reposition"
+        >
+          <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            {mobileSidebarOpen ? (
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            ) : (
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+            )}
+          </svg>
+        </button>
+      )}
 
       {/* Sidebar - desktop */}
       <div className="hidden lg:block">
