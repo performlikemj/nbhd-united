@@ -229,6 +229,11 @@ class DocumentDetailView(APIView):
         return Response(DocumentSerializer(doc).data)
 
     def delete(self, request, kind: str, slug: str):
+        if kind == "daily":
+            return Response(
+                {"error": "forbidden", "detail": "Daily notes cannot be deleted."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         tenant = _get_tenant(request.user)
         try:
             doc = Document.objects.get(tenant=tenant, kind=kind, slug=slug)
