@@ -17,6 +17,7 @@ from .serializers import (
     LessonCreateSerializer,
     LessonSerializer,
 )
+from .services import process_approved_lesson, search_lessons
 
 
 class LessonViewSet(viewsets.ModelViewSet):
@@ -51,7 +52,7 @@ class LessonViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer: LessonCreateSerializer):
         serializer.save(tenant=self.request.user.tenant)
 
-    @action(detail=True, methods=["post"], url_path="approve")
+    @action(detail=True, methods=["post", "patch"], url_path="approve")
     def approve(self, request, pk=None):
         serializer = LessonApprovalSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -89,7 +90,7 @@ class LessonViewSet(viewsets.ModelViewSet):
 
         return Response(LessonSerializer(lesson).data)
 
-    @action(detail=True, methods=["post"], url_path="dismiss")
+    @action(detail=True, methods=["post", "patch"], url_path="dismiss")
     def dismiss(self, request, pk=None):
         serializer = LessonApprovalSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

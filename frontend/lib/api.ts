@@ -488,13 +488,13 @@ export function fetchPendingLessons(): Promise<Lesson[]> {
 
 export function approveLesson(id: number): Promise<Lesson> {
   return apiFetch<Lesson>(`/api/v1/lessons/${id}/approve/`, {
-    method: "POST",
+    method: "PATCH",
   });
 }
 
 export function dismissLesson(id: number): Promise<Lesson> {
   return apiFetch<Lesson>(`/api/v1/lessons/${id}/dismiss/`, {
-    method: "POST",
+    method: "PATCH",
   });
 }
 
