@@ -1,0 +1,1748 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NBHD United — Design System v1: Foundations</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=IBM+Plex+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════
+   NBHD UNITED — DESIGN SYSTEM v1: FOUNDATIONS
+   A living document of visual language
+   ═══════════════════════════════════════════════════ */
+
+:root {
+  /* Core palette */
+  --ink: #12232c;
+  --ink-muted: rgba(18, 35, 44, 0.65);
+  --ink-faint: rgba(18, 35, 44, 0.40);
+  --mist: #f6f4ee;
+  --bg: #f8f6ef;
+  --surface: #ffffff;
+  --surface-elevated: #ffffff;
+  --surface-hover: rgba(18, 35, 44, 0.05);
+  --card: rgba(252, 252, 248, 0.95);
+  --accent: #2563eb;
+  --accent-hover: rgba(37, 99, 235, 0.85);
+  --signal: #5fbaaf;
+  --signal-faint: rgba(95, 186, 175, 0.12);
+  --border: rgba(18, 35, 44, 0.10);
+  --border-strong: rgba(18, 35, 44, 0.20);
+  --overlay: rgba(0, 0, 0, 0.30);
+  --shadow-panel: 0 20px 55px rgba(18, 31, 38, 0.14);
+  --bg-gradient: radial-gradient(circle at 20% 20%, rgba(255,194,153,0.42), transparent 40%),
+    radial-gradient(circle at 85% 15%, rgba(112,194,184,0.45), transparent 32%),
+    linear-gradient(180deg, #f8f6ef 0%, #eef4f4 48%, #f9f9f6 100%);
+  --grid-opacity: 0.7;
+
+  /* Status tones */
+  --rose-bg: #fef2f2; --rose-border: #fecaca; --rose-text: #881337;
+  --amber-bg: #fffbeb; --amber-border: rgba(217, 119, 6, 0.20); --amber-text: #78350f;
+  --emerald-bg: #ecfdf5; --emerald-text: #065f46;
+  --status-emerald-bg: #ecfdf5; --status-emerald-text: #065f46;
+  --status-rose-bg: #fff1f2; --status-rose-text: #881337;
+  --status-amber-bg: #fffbeb; --status-amber-text: #78350f;
+  --status-sky-bg: #f0f9ff; --status-sky-text: #075985;
+  --status-slate-bg: #f1f5f9; --status-slate-text: #334155;
+  --status-indigo-bg: #eef2ff; --status-indigo-text: #3730a3;
+  --status-violet-bg: #f5f3ff; --status-violet-text: #5b21b6;
+  --status-orange-bg: #fff7ed; --status-orange-text: #9a3412;
+
+  /* Typography */
+  --font-display: "DM Serif Display", "Georgia", serif;
+  --font-body: "Plus Jakarta Sans", "Avenir Next", "Trebuchet MS", "Verdana", sans-serif;
+  --font-mono: "IBM Plex Mono", "Consolas", "Menlo", monospace;
+
+  /* Spacing base */
+  --space-unit: 4px;
+
+  /* Transitions */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration: 420ms;
+
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --ink: #e2e8f0;
+  --ink-muted: rgba(226, 232, 240, 0.65);
+  --ink-faint: rgba(226, 232, 240, 0.35);
+  --mist: #0f1419;
+  --bg: #0b0f13;
+  --surface: #161b22;
+  --surface-elevated: #1e252e;
+  --surface-hover: rgba(226, 232, 240, 0.06);
+  --card: rgba(22, 27, 34, 0.95);
+  --accent: #3b82f6;
+  --accent-hover: rgba(59, 130, 246, 0.85);
+  --signal: #5fbaaf;
+  --signal-faint: rgba(95, 186, 175, 0.15);
+  --border: rgba(226, 232, 240, 0.10);
+  --border-strong: rgba(226, 232, 240, 0.20);
+  --overlay: rgba(0, 0, 0, 0.60);
+  --shadow-panel: 0 20px 55px rgba(0, 0, 0, 0.35);
+  --bg-gradient: radial-gradient(circle at 20% 20%, rgba(255,194,153,0.08), transparent 40%),
+    radial-gradient(circle at 85% 15%, rgba(112,194,184,0.10), transparent 32%),
+    linear-gradient(180deg, #0b0f13 0%, #0d1218 48%, #0b0f13 100%);
+  --grid-opacity: 0.15;
+
+  --rose-bg: rgba(136, 19, 55, 0.15); --rose-border: rgba(244, 63, 94, 0.25); --rose-text: #fda4af;
+  --amber-bg: rgba(120, 53, 15, 0.15); --amber-border: rgba(245, 158, 11, 0.25); --amber-text: #fcd34d;
+  --emerald-bg: rgba(6, 95, 70, 0.15); --emerald-text: #6ee7b7;
+  --status-emerald-bg: rgba(6, 95, 70, 0.2); --status-emerald-text: #6ee7b7;
+  --status-rose-bg: rgba(136, 19, 55, 0.2); --status-rose-text: #fda4af;
+  --status-amber-bg: rgba(120, 53, 15, 0.2); --status-amber-text: #fcd34d;
+  --status-sky-bg: rgba(7, 89, 133, 0.2); --status-sky-text: #7dd3fc;
+  --status-slate-bg: rgba(51, 65, 85, 0.2); --status-slate-text: #cbd5e1;
+  --status-indigo-bg: rgba(55, 48, 163, 0.2); --status-indigo-text: #a5b4fc;
+  --status-violet-bg: rgba(91, 33, 182, 0.2); --status-violet-text: #c4b5fd;
+  --status-orange-bg: rgba(154, 52, 18, 0.2); --status-orange-text: #fdba74;
+
+  color-scheme: dark;
+}
+
+/* ── Reset & Base ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background: var(--bg);
+  background-image: var(--bg-gradient);
+  background-attachment: fixed;
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.6;
+  min-height: 100vh;
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* Subtle dot grid overlay */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: radial-gradient(circle, var(--ink-faint) 0.5px, transparent 0.5px);
+  background-size: 24px 24px;
+  opacity: var(--grid-opacity);
+  pointer-events: none;
+  z-index: 0;
+  mix-blend-mode: multiply;
+}
+
+[data-theme="dark"] body::before {
+  mix-blend-mode: normal;
+  opacity: 0.04;
+}
+
+/* ── Reveal Animation ── */
+@keyframes reveal {
+  0% { opacity: 0; transform: translateY(20px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideInLeft {
+  from { opacity: 0; transform: translateX(-30px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+.reveal {
+  animation: reveal var(--duration) var(--ease-out) both;
+}
+
+/* ── Navigation ── */
+.nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(20px) saturate(1.5);
+  -webkit-backdrop-filter: blur(20px) saturate(1.5);
+  background: rgba(255, 255, 255, 0.85);
+}
+
+[data-theme="dark"] .nav {
+  background: rgba(22, 27, 34, 0.85);
+}
+
+.nav-inner {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 40px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.nav-logo {
+  width: 32px;
+  height: 32px;
+  background: var(--ink);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--bg);
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 400;
+}
+
+.nav-title {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.nav-subtitle {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+}
+
+.nav-link {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-muted);
+  text-decoration: none;
+  padding: 6px 14px;
+  border-radius: 8px;
+  transition: all 200ms ease;
+  cursor: pointer;
+}
+
+.nav-link:hover {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+
+.nav-link.active {
+  color: var(--accent);
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.theme-toggle {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  transition: all 200ms ease;
+  flex-shrink: 0;
+}
+
+.theme-toggle:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  transform: rotate(15deg);
+}
+
+/* ── Layout ── */
+.page {
+  position: relative;
+  z-index: 1;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 104px 40px 80px;
+}
+
+/* ── Hero ── */
+.hero {
+  padding: 80px 0 60px;
+  position: relative;
+}
+
+.hero-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--signal);
+  margin-bottom: 20px;
+  animation: reveal var(--duration) var(--ease-out) 100ms both;
+}
+
+.hero h1 {
+  font-family: var(--font-display);
+  font-size: 72px;
+  font-weight: 400;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+  max-width: 700px;
+  animation: reveal var(--duration) var(--ease-out) 200ms both;
+}
+
+.hero h1 em {
+  font-style: italic;
+  color: var(--accent);
+}
+
+.hero-desc {
+  font-size: 17px;
+  line-height: 1.7;
+  color: var(--ink-muted);
+  max-width: 520px;
+  margin-top: 24px;
+  animation: reveal var(--duration) var(--ease-out) 350ms both;
+}
+
+.hero-meta {
+  display: flex;
+  gap: 32px;
+  margin-top: 40px;
+  padding-top: 32px;
+  border-top: 1px solid var(--border);
+  animation: reveal var(--duration) var(--ease-out) 500ms both;
+}
+
+.hero-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hero-meta-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.hero-meta-value {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+/* ── Section ── */
+.section {
+  margin-top: 80px;
+  padding-top: 48px;
+  border-top: 1px solid var(--border);
+}
+
+.section-header {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 40px;
+}
+
+.section-number {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-faint);
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+
+.section-title {
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.section-desc {
+  color: var(--ink-muted);
+  font-size: 14px;
+  margin-top: -24px;
+  margin-bottom: 40px;
+  max-width: 560px;
+}
+
+/* ── Color Palette ── */
+.color-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 16px;
+}
+
+.color-swatch {
+  border-radius: 1.25rem;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  transition: transform 300ms var(--ease-out), box-shadow 300ms var(--ease-out);
+}
+
+.color-swatch:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-panel);
+}
+
+.swatch-preview {
+  height: 100px;
+  position: relative;
+}
+
+.swatch-preview::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 16px;
+  right: 16px;
+  height: 1px;
+  background: rgba(255,255,255,0.2);
+}
+
+.swatch-info {
+  padding: 14px 16px;
+}
+
+.swatch-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--ink);
+  margin-bottom: 2px;
+}
+
+.swatch-value {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+/* Status color strip */
+.status-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.status-chip {
+  padding: 12px 16px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* ── Typography Scale ── */
+.type-scale {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.type-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  align-items: baseline;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--border);
+  gap: 24px;
+}
+
+.type-row:last-child {
+  border-bottom: none;
+}
+
+.type-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.type-sample-display {
+  font-family: var(--font-display);
+  color: var(--ink);
+}
+
+.type-sample-body {
+  font-family: var(--font-body);
+  color: var(--ink);
+}
+
+.type-sample-mono {
+  font-family: var(--font-mono);
+  color: var(--ink);
+}
+
+/* ── Spacing ── */
+.spacing-scale {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.spacing-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.spacing-bar {
+  height: 28px;
+  background: var(--signal-faint);
+  border: 1px solid var(--signal);
+  border-radius: 6px;
+  transition: all 300ms var(--ease-out);
+  position: relative;
+}
+
+.spacing-bar:hover {
+  background: var(--signal);
+  opacity: 0.8;
+}
+
+.spacing-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  min-width: 60px;
+  text-align: right;
+}
+
+.spacing-px {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-muted);
+  min-width: 40px;
+}
+
+/* ── Buttons ── */
+.button-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.button-group-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  width: 100%;
+  margin-bottom: 4px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-family: var(--font-body);
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: all 200ms ease;
+  text-decoration: none;
+  white-space: nowrap;
+  position: relative;
+  overflow: hidden;
+}
+
+.btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.15), transparent);
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+.btn:hover::after { opacity: 1; }
+
+/* Sizes */
+.btn-sm { font-size: 12px; padding: 7px 14px; border-radius: 8px; }
+.btn-md { font-size: 13px; padding: 10px 20px; border-radius: 10px; }
+.btn-lg { font-size: 15px; padding: 14px 28px; border-radius: 12px; }
+
+/* Variants */
+.btn-primary {
+  background: var(--accent);
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3), inset 0 1px 0 rgba(255,255,255,0.15);
+}
+.btn-primary:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 6px 20px rgba(37, 99, 235, 0.35), inset 0 1px 0 rgba(255,255,255,0.15);
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+.btn-secondary:hover {
+  background: var(--surface-hover);
+  border-color: var(--ink-faint);
+  transform: translateY(-1px);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--ink-muted);
+}
+.btn-ghost:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+.btn-danger {
+  background: var(--rose-bg);
+  color: var(--rose-text);
+  border: 1px solid var(--rose-border);
+}
+.btn-danger:hover {
+  background: var(--rose-text);
+  color: #ffffff;
+  border-color: var(--rose-text);
+  transform: translateY(-1px);
+}
+
+.btn-signal {
+  background: var(--signal);
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(95, 186, 175, 0.3);
+}
+.btn-signal:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(95, 186, 175, 0.35);
+}
+
+/* ── Cards ── */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+}
+
+.card {
+  border-radius: 1.25rem;
+  padding: 28px;
+  transition: all 300ms var(--ease-out);
+}
+
+.card-basic {
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.card-elevated {
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-panel);
+  border: 1px solid var(--border);
+}
+
+.card-interactive {
+  background: var(--card);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.card-interactive:hover {
+  transform: translateY(-6px);
+  box-shadow: var(--shadow-panel);
+  border-color: var(--accent);
+}
+
+.card-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 12px;
+}
+
+.card-title {
+  font-family: var(--font-display);
+  font-size: 22px;
+  color: var(--ink);
+  margin-bottom: 8px;
+}
+
+.card-body {
+  font-size: 13px;
+  color: var(--ink-muted);
+  line-height: 1.6;
+}
+
+.card-footer {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.card-tag {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--signal);
+}
+
+.card-arrow {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--surface-hover);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: var(--ink-muted);
+  transition: all 200ms ease;
+}
+
+.card-interactive:hover .card-arrow {
+  background: var(--accent);
+  color: #fff;
+  transform: translateX(2px);
+}
+
+/* ── Form Elements ── */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 24px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.form-hint {
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.input {
+  font-family: var(--font-body);
+  font-size: 14px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--ink);
+  outline: none;
+  transition: all 200ms ease;
+  width: 100%;
+}
+
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.input::placeholder {
+  color: var(--ink-faint);
+}
+
+select.input {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' fill='none' stroke='%2312232c' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px;
+}
+
+[data-theme="dark"] select.input {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' fill='none' stroke='%23e2e8f0' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+textarea.input {
+  resize: vertical;
+  min-height: 80px;
+}
+
+/* Checkbox */
+.checkbox-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.checkbox {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 2px solid var(--border-strong);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 200ms ease;
+  flex-shrink: 0;
+}
+
+.checkbox.checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.checkbox.checked::after {
+  content: '✓';
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.checkbox-label {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+/* Toggle */
+.toggle-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.toggle {
+  width: 44px;
+  height: 24px;
+  border-radius: 12px;
+  background: var(--border-strong);
+  position: relative;
+  cursor: pointer;
+  transition: background 200ms ease;
+  flex-shrink: 0;
+}
+
+.toggle.active {
+  background: var(--signal);
+}
+
+.toggle-knob {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  transition: transform 200ms var(--ease-out);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+
+.toggle.active .toggle-knob {
+  transform: translateX(20px);
+}
+
+.toggle-label {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+/* ── Badges ── */
+.badge-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 100px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+/* ── Full Nav Demo ── */
+.nav-demo {
+  border-radius: 1.25rem;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.nav-demo-bar {
+  padding: 0 24px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+}
+
+.nav-demo-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nav-demo-icon {
+  width: 28px;
+  height: 28px;
+  background: var(--ink);
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--bg);
+  font-family: var(--font-display);
+  font-size: 15px;
+}
+
+.nav-demo-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.nav-demo-links {
+  display: flex;
+  gap: 4px;
+  list-style: none;
+}
+
+.nav-demo-link {
+  font-size: 13px;
+  color: var(--ink-muted);
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.nav-demo-link:hover {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+
+.nav-demo-link.active {
+  color: var(--accent);
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.nav-demo-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.nav-demo-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--signal), var(--accent));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.nav-demo-content {
+  padding: 32px 24px;
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-faint);
+  font-size: 13px;
+  font-family: var(--font-mono);
+}
+
+/* ── Footer ── */
+.page-footer {
+  margin-top: 100px;
+  padding: 40px 0;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.footer-text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.footer-links {
+  display: flex;
+  gap: 20px;
+}
+
+.footer-link {
+  font-size: 12px;
+  color: var(--ink-muted);
+  text-decoration: none;
+  transition: color 200ms ease;
+}
+
+.footer-link:hover {
+  color: var(--accent);
+}
+
+/* ── Decorative ── */
+.divider-ornament {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 48px 0;
+  color: var(--ink-faint);
+}
+
+.divider-ornament::before,
+.divider-ornament::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.divider-ornament span {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+/* Scroll animation observer */
+.observe {
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity 600ms var(--ease-out), transform 600ms var(--ease-out);
+}
+
+.observe.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+</style>
+</head>
+<body>
+
+<!-- ════════════════ NAVIGATION ════════════════ -->
+<nav class="nav">
+  <div class="nav-inner">
+    <div class="nav-brand">
+      <div class="nav-logo">N</div>
+      <div>
+        <div class="nav-title">NBHD United</div>
+        <div class="nav-subtitle">Design System v1</div>
+      </div>
+    </div>
+    <ul class="nav-links">
+      <li><a class="nav-link active" href="#colors">Colors</a></li>
+      <li><a class="nav-link" href="#typography">Type</a></li>
+      <li><a class="nav-link" href="#spacing">Spacing</a></li>
+      <li><a class="nav-link" href="#buttons">Buttons</a></li>
+      <li><a class="nav-link" href="#cards">Cards</a></li>
+      <li><a class="nav-link" href="#forms">Forms</a></li>
+      <li><a class="nav-link" href="#badges">Badges</a></li>
+      <li><a class="nav-link" href="#navigation">Nav</a></li>
+    </ul>
+    <button class="theme-toggle" onclick="toggleTheme()" id="themeBtn" title="Toggle theme">
+      ☀
+    </button>
+  </div>
+</nav>
+
+<!-- ════════════════ PAGE ════════════════ -->
+<main class="page">
+
+  <!-- ──── HERO ──── -->
+  <section class="hero">
+    <div class="hero-eyebrow">Design System — Foundations</div>
+    <h1>The visual <em>language</em> of NBHD United</h1>
+    <p class="hero-desc">
+      A living reference for every color, type scale, spacing unit, and component
+      that shapes the NBHD United experience. Built for consistency, crafted for beauty.
+    </p>
+    <div class="hero-meta">
+      <div class="hero-meta-item">
+        <span class="hero-meta-label">Version</span>
+        <span class="hero-meta-value">1.0.0</span>
+      </div>
+      <div class="hero-meta-item">
+        <span class="hero-meta-label">Last Updated</span>
+        <span class="hero-meta-value">Feb 2026</span>
+      </div>
+      <div class="hero-meta-item">
+        <span class="hero-meta-label">Tokens</span>
+        <span class="hero-meta-value">42 variables</span>
+      </div>
+      <div class="hero-meta-item">
+        <span class="hero-meta-label">Components</span>
+        <span class="hero-meta-value">8 primitives</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ──── COLORS ──── -->
+  <section class="section observe" id="colors">
+    <div class="section-header">
+      <span class="section-number">01</span>
+      <h2 class="section-title">Color Palette</h2>
+    </div>
+    <p class="section-desc">
+      A warm, grounded palette anchored by deep ink and soft cream. Accent blue for action,
+      signal teal for confirmation, and eight status tones for semantic meaning.
+    </p>
+
+    <div class="color-grid">
+      <div class="color-swatch">
+        <div class="swatch-preview" style="background:#12232c"></div>
+        <div class="swatch-info">
+          <div class="swatch-name">Ink</div>
+          <div class="swatch-value">#12232c</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="swatch-preview" style="background:rgba(18,35,44,0.65)"></div>
+        <div class="swatch-info">
+          <div class="swatch-name">Ink Muted</div>
+          <div class="swatch-value">rgba(18,35,44,0.65)</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="swatch-preview" style="background:rgba(18,35,44,0.40)"></div>
+        <div class="swatch-info">
+          <div class="swatch-name">Ink Faint</div>
+          <div class="swatch-value">rgba(18,35,44,0.40)</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="swatch-preview" style="background:#f8f6ef; border: 1px solid rgba(18,35,44,0.10)"></div>
+        <div class="swatch-info">
+          <div class="swatch-name">Background</div>
+          <div class="swatch-value">#f8f6ef</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="swatch-preview" style="background:#f6f4ee; border: 1px solid rgba(18,35,44,0.10)"></div>
+        <div class="swatch-info">
+          <div class="swatch-name">Mist</div>
+          <div class="swatch-value">#f6f4ee</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="swatch-preview" style="background:#ffffff; border: 1px solid rgba(18,35,44,0.10)"></div>
+        <div class="swatch-info">
+          <div class="swatch-name">Surface</div>
+          <div class="swatch-value">#ffffff</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="swatch-preview" style="background:#2563eb"></div>
+        <div class="swatch-info">
+          <div class="swatch-name">Accent</div>
+          <div class="swatch-value">#2563eb</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="swatch-preview" style="background:#5fbaaf"></div>
+        <div class="swatch-info">
+          <div class="swatch-name">Signal</div>
+          <div class="swatch-value">#5fbaaf</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="divider-ornament"><span>Status Tones</span></div>
+
+    <div class="status-strip">
+      <div class="status-chip" style="background:var(--status-emerald-bg)">
+        <div class="status-dot" style="background:var(--status-emerald-text)"></div>
+        <span class="status-label" style="color:var(--status-emerald-text)">Emerald</span>
+      </div>
+      <div class="status-chip" style="background:var(--status-rose-bg)">
+        <div class="status-dot" style="background:var(--status-rose-text)"></div>
+        <span class="status-label" style="color:var(--status-rose-text)">Rose</span>
+      </div>
+      <div class="status-chip" style="background:var(--status-amber-bg)">
+        <div class="status-dot" style="background:var(--status-amber-text)"></div>
+        <span class="status-label" style="color:var(--status-amber-text)">Amber</span>
+      </div>
+      <div class="status-chip" style="background:var(--status-sky-bg)">
+        <div class="status-dot" style="background:var(--status-sky-text)"></div>
+        <span class="status-label" style="color:var(--status-sky-text)">Sky</span>
+      </div>
+      <div class="status-chip" style="background:var(--status-slate-bg)">
+        <div class="status-dot" style="background:var(--status-slate-text)"></div>
+        <span class="status-label" style="color:var(--status-slate-text)">Slate</span>
+      </div>
+      <div class="status-chip" style="background:var(--status-indigo-bg)">
+        <div class="status-dot" style="background:var(--status-indigo-text)"></div>
+        <span class="status-label" style="color:var(--status-indigo-text)">Indigo</span>
+      </div>
+      <div class="status-chip" style="background:var(--status-violet-bg)">
+        <div class="status-dot" style="background:var(--status-violet-text)"></div>
+        <span class="status-label" style="color:var(--status-violet-text)">Violet</span>
+      </div>
+      <div class="status-chip" style="background:var(--status-orange-bg)">
+        <div class="status-dot" style="background:var(--status-orange-text)"></div>
+        <span class="status-label" style="color:var(--status-orange-text)">Orange</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ──── TYPOGRAPHY ──── -->
+  <section class="section observe" id="typography">
+    <div class="section-header">
+      <span class="section-number">02</span>
+      <h2 class="section-title">Typography</h2>
+    </div>
+    <p class="section-desc">
+      Three typeface families — DM Serif Display for editorial headlines, Plus Jakarta Sans
+      for readable body copy, and IBM Plex Mono for data and code.
+    </p>
+
+    <div class="type-scale">
+      <div class="type-row">
+        <div class="type-meta">
+          <span>Display / H1</span>
+          <span>72px</span>
+        </div>
+        <div class="type-sample-display" style="font-size:72px;line-height:1.05;letter-spacing:-0.03em">
+          Foundations
+        </div>
+      </div>
+      <div class="type-row">
+        <div class="type-meta">
+          <span>Display / H2</span>
+          <span>48px</span>
+        </div>
+        <div class="type-sample-display" style="font-size:48px;line-height:1.1;letter-spacing:-0.02em">
+          Design System
+        </div>
+      </div>
+      <div class="type-row">
+        <div class="type-meta">
+          <span>Display / H3</span>
+          <span>36px</span>
+        </div>
+        <div class="type-sample-display" style="font-size:36px;line-height:1.15;letter-spacing:-0.02em">
+          Component Library
+        </div>
+      </div>
+      <div class="type-row">
+        <div class="type-meta">
+          <span>Heading / H4</span>
+          <span>24px</span>
+        </div>
+        <div class="type-sample-body" style="font-size:24px;font-weight:600;line-height:1.3;letter-spacing:-0.01em">
+          Section Heading
+        </div>
+      </div>
+      <div class="type-row">
+        <div class="type-meta">
+          <span>Heading / H5</span>
+          <span>18px</span>
+        </div>
+        <div class="type-sample-body" style="font-size:18px;font-weight:600;line-height:1.4">
+          Subsection Title
+        </div>
+      </div>
+      <div class="type-row">
+        <div class="type-meta">
+          <span>Heading / H6</span>
+          <span>14px</span>
+        </div>
+        <div class="type-sample-body" style="font-size:14px;font-weight:700;line-height:1.4;letter-spacing:0.02em;text-transform:uppercase">
+          Label Heading
+        </div>
+      </div>
+      <div class="type-row">
+        <div class="type-meta">
+          <span>Body</span>
+          <span>15px</span>
+        </div>
+        <div class="type-sample-body" style="font-size:15px;line-height:1.6;max-width:540px">
+          The quick brown fox jumps over the lazy dog. Every design decision reflects intention —
+          from the warmth of our cream background to the authority of our deep ink.
+        </div>
+      </div>
+      <div class="type-row">
+        <div class="type-meta">
+          <span>Small</span>
+          <span>12px</span>
+        </div>
+        <div class="type-sample-body" style="font-size:12px;line-height:1.5;color:var(--ink-muted)">
+          Supplementary text for captions, timestamps, and metadata. Legible at small sizes.
+        </div>
+      </div>
+      <div class="type-row">
+        <div class="type-meta">
+          <span>Mono</span>
+          <span>13px</span>
+        </div>
+        <div class="type-sample-mono" style="font-size:13px;line-height:1.6">
+          const design = { tokens: 42, components: 8, version: "1.0.0" };
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ──── SPACING ──── -->
+  <section class="section observe" id="spacing">
+    <div class="section-header">
+      <span class="section-number">03</span>
+      <h2 class="section-title">Spacing Scale</h2>
+    </div>
+    <p class="section-desc">
+      A 4px base unit creates a harmonious rhythm. Every margin, padding, and gap
+      is a multiple of this fundamental unit.
+    </p>
+
+    <div class="spacing-scale">
+      <div class="spacing-row">
+        <span class="spacing-label">1 unit</span>
+        <div class="spacing-bar" style="width:4px"></div>
+        <span class="spacing-px">4px</span>
+      </div>
+      <div class="spacing-row">
+        <span class="spacing-label">2 units</span>
+        <div class="spacing-bar" style="width:8px"></div>
+        <span class="spacing-px">8px</span>
+      </div>
+      <div class="spacing-row">
+        <span class="spacing-label">3 units</span>
+        <div class="spacing-bar" style="width:12px"></div>
+        <span class="spacing-px">12px</span>
+      </div>
+      <div class="spacing-row">
+        <span class="spacing-label">4 units</span>
+        <div class="spacing-bar" style="width:16px"></div>
+        <span class="spacing-px">16px</span>
+      </div>
+      <div class="spacing-row">
+        <span class="spacing-label">6 units</span>
+        <div class="spacing-bar" style="width:24px"></div>
+        <span class="spacing-px">24px</span>
+      </div>
+      <div class="spacing-row">
+        <span class="spacing-label">8 units</span>
+        <div class="spacing-bar" style="width:32px"></div>
+        <span class="spacing-px">32px</span>
+      </div>
+      <div class="spacing-row">
+        <span class="spacing-label">10 units</span>
+        <div class="spacing-bar" style="width:40px"></div>
+        <span class="spacing-px">40px</span>
+      </div>
+      <div class="spacing-row">
+        <span class="spacing-label">12 units</span>
+        <div class="spacing-bar" style="width:48px"></div>
+        <span class="spacing-px">48px</span>
+      </div>
+      <div class="spacing-row">
+        <span class="spacing-label">16 units</span>
+        <div class="spacing-bar" style="width:64px"></div>
+        <span class="spacing-px">64px</span>
+      </div>
+      <div class="spacing-row">
+        <span class="spacing-label">20 units</span>
+        <div class="spacing-bar" style="width:80px"></div>
+        <span class="spacing-px">80px</span>
+      </div>
+      <div class="spacing-row">
+        <span class="spacing-label">24 units</span>
+        <div class="spacing-bar" style="width:96px"></div>
+        <span class="spacing-px">96px</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ──── BUTTONS ──── -->
+  <section class="section observe" id="buttons">
+    <div class="section-header">
+      <span class="section-number">04</span>
+      <h2 class="section-title">Buttons</h2>
+    </div>
+    <p class="section-desc">
+      Five variants for different semantic contexts. Three sizes for hierarchy.
+      All with subtle depth via shadows and micro-interactions on hover.
+    </p>
+
+    <div class="button-group">
+      <div class="button-group-label">Variants — Medium</div>
+      <button class="btn btn-md btn-primary">Primary Action</button>
+      <button class="btn btn-md btn-secondary">Secondary</button>
+      <button class="btn btn-md btn-ghost">Ghost</button>
+      <button class="btn btn-md btn-danger">Danger</button>
+      <button class="btn btn-md btn-signal">Signal</button>
+    </div>
+
+    <div class="button-group">
+      <div class="button-group-label">Sizes — Primary</div>
+      <button class="btn btn-sm btn-primary">Small</button>
+      <button class="btn btn-md btn-primary">Medium</button>
+      <button class="btn btn-lg btn-primary">Large</button>
+    </div>
+
+    <div class="button-group">
+      <div class="button-group-label">With Icons</div>
+      <button class="btn btn-md btn-primary">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+        Create New
+      </button>
+      <button class="btn btn-md btn-secondary">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 8h12M10 4l4 4-4 4"/></svg>
+        Continue
+      </button>
+      <button class="btn btn-md btn-danger">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        Remove
+      </button>
+    </div>
+  </section>
+
+  <!-- ──── CARDS ──── -->
+  <section class="section observe" id="cards">
+    <div class="section-header">
+      <span class="section-number">05</span>
+      <h2 class="section-title">Cards</h2>
+    </div>
+    <p class="section-desc">
+      Three elevation levels create visual hierarchy. Basic for content, elevated for
+      emphasis, interactive for clickable destinations.
+    </p>
+
+    <div class="card-grid">
+      <div class="card card-basic">
+        <div class="card-eyebrow">Basic</div>
+        <div class="card-title">Flat Surface</div>
+        <div class="card-body">
+          A quiet container for secondary content. Bordered, no shadow.
+          Sits flush with the page surface.
+        </div>
+        <div class="card-footer">
+          <span class="card-tag">elevation: 0</span>
+        </div>
+      </div>
+
+      <div class="card card-elevated">
+        <div class="card-eyebrow">Elevated</div>
+        <div class="card-title">Lifted Surface</div>
+        <div class="card-body">
+          Prominent container for primary content. Shadow creates depth and
+          draws the eye to important information.
+        </div>
+        <div class="card-footer">
+          <span class="card-tag">elevation: 1</span>
+        </div>
+      </div>
+
+      <div class="card card-interactive">
+        <div class="card-eyebrow">Interactive</div>
+        <div class="card-title">Actionable Surface</div>
+        <div class="card-body">
+          Hover to see the lift effect. Border color shift signals
+          clickability. Destination-oriented.
+        </div>
+        <div class="card-footer">
+          <span class="card-tag">elevation: hover</span>
+          <div class="card-arrow">&rarr;</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ──── FORMS ──── -->
+  <section class="section observe" id="forms">
+    <div class="section-header">
+      <span class="section-number">06</span>
+      <h2 class="section-title">Form Elements</h2>
+    </div>
+    <p class="section-desc">
+      Clean, focused inputs with generous padding and clear focus states.
+      Every field communicates its state through border color and shadow.
+    </p>
+
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Full Name</label>
+        <input type="text" class="input" placeholder="Enter your name">
+        <span class="form-hint">As it appears on your account</span>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Email Address</label>
+        <input type="email" class="input" placeholder="you@example.com">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Subscription Plan</label>
+        <select class="input">
+          <option>Starter — $5/mo</option>
+          <option>Pro — $15/mo</option>
+          <option>Enterprise — $25/mo</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Bio</label>
+        <textarea class="input" placeholder="Tell us about yourself..."></textarea>
+      </div>
+
+      <div class="form-group" style="justify-content:center">
+        <div class="checkbox-group" onclick="this.querySelector('.checkbox').classList.toggle('checked')">
+          <div class="checkbox checked"></div>
+          <span class="checkbox-label">I agree to the terms of service</span>
+        </div>
+        <div class="checkbox-group" onclick="this.querySelector('.checkbox').classList.toggle('checked')" style="margin-top:12px">
+          <div class="checkbox"></div>
+          <span class="checkbox-label">Send me product updates</span>
+        </div>
+      </div>
+
+      <div class="form-group" style="justify-content:center">
+        <div class="toggle-group" onclick="this.querySelector('.toggle').classList.toggle('active')">
+          <div class="toggle active"><div class="toggle-knob"></div></div>
+          <span class="toggle-label">Enable notifications</span>
+        </div>
+        <div class="toggle-group" onclick="this.querySelector('.toggle').classList.toggle('active')" style="margin-top:12px">
+          <div class="toggle"><div class="toggle-knob"></div></div>
+          <span class="toggle-label">Dark mode preference</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ──── BADGES ──── -->
+  <section class="section observe" id="badges">
+    <div class="section-header">
+      <span class="section-number">07</span>
+      <h2 class="section-title">Badges &amp; Pills</h2>
+    </div>
+    <p class="section-desc">
+      Eight semantic status colors, each with a background-text pair tuned for
+      readability. Pill-shaped for inline use, with optional dot indicators.
+    </p>
+
+    <div class="badge-grid">
+      <span class="badge" style="background:var(--status-emerald-bg);color:var(--status-emerald-text)">
+        <span class="badge-dot" style="background:var(--status-emerald-text)"></span>
+        Active
+      </span>
+      <span class="badge" style="background:var(--status-rose-bg);color:var(--status-rose-text)">
+        <span class="badge-dot" style="background:var(--status-rose-text)"></span>
+        Error
+      </span>
+      <span class="badge" style="background:var(--status-amber-bg);color:var(--status-amber-text)">
+        <span class="badge-dot" style="background:var(--status-amber-text)"></span>
+        Warning
+      </span>
+      <span class="badge" style="background:var(--status-sky-bg);color:var(--status-sky-text)">
+        <span class="badge-dot" style="background:var(--status-sky-text)"></span>
+        Info
+      </span>
+      <span class="badge" style="background:var(--status-slate-bg);color:var(--status-slate-text)">
+        <span class="badge-dot" style="background:var(--status-slate-text)"></span>
+        Neutral
+      </span>
+      <span class="badge" style="background:var(--status-indigo-bg);color:var(--status-indigo-text)">
+        <span class="badge-dot" style="background:var(--status-indigo-text)"></span>
+        Feature
+      </span>
+      <span class="badge" style="background:var(--status-violet-bg);color:var(--status-violet-text)">
+        <span class="badge-dot" style="background:var(--status-violet-text)"></span>
+        Premium
+      </span>
+      <span class="badge" style="background:var(--status-orange-bg);color:var(--status-orange-text)">
+        <span class="badge-dot" style="background:var(--status-orange-text)"></span>
+        Pending
+      </span>
+    </div>
+
+    <div class="divider-ornament"><span>Without Dots</span></div>
+
+    <div class="badge-grid">
+      <span class="badge" style="background:var(--status-emerald-bg);color:var(--status-emerald-text)">Deployed</span>
+      <span class="badge" style="background:var(--status-rose-bg);color:var(--status-rose-text)">Failed</span>
+      <span class="badge" style="background:var(--status-amber-bg);color:var(--status-amber-text)">Building</span>
+      <span class="badge" style="background:var(--status-sky-bg);color:var(--status-sky-text)">v1.0.0</span>
+      <span class="badge" style="background:var(--status-slate-bg);color:var(--status-slate-text)">Draft</span>
+      <span class="badge" style="background:var(--status-indigo-bg);color:var(--status-indigo-text)">Beta</span>
+      <span class="badge" style="background:var(--status-violet-bg);color:var(--status-violet-text)">New</span>
+      <span class="badge" style="background:var(--status-orange-bg);color:var(--status-orange-text)">Review</span>
+    </div>
+  </section>
+
+  <!-- ──── NAVIGATION ──── -->
+  <section class="section observe" id="navigation">
+    <div class="section-header">
+      <span class="section-number">08</span>
+      <h2 class="section-title">Navigation</h2>
+    </div>
+    <p class="section-desc">
+      A frosted-glass navigation bar with brand mark, inline links,
+      and user avatar. Sticks to the top with backdrop blur.
+    </p>
+
+    <div class="nav-demo">
+      <div class="nav-demo-bar">
+        <div class="nav-demo-logo">
+          <div class="nav-demo-icon">N</div>
+          <span class="nav-demo-name">NBHD United</span>
+        </div>
+        <ul class="nav-demo-links">
+          <li class="nav-demo-link active">Dashboard</li>
+          <li class="nav-demo-link">Journal</li>
+          <li class="nav-demo-link">Constellation</li>
+          <li class="nav-demo-link">Billing</li>
+          <li class="nav-demo-link">Settings</li>
+        </ul>
+        <div class="nav-demo-actions">
+          <button class="btn btn-sm btn-primary">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+            New
+          </button>
+          <div class="nav-demo-avatar">MJ</div>
+        </div>
+      </div>
+      <div class="nav-demo-content">
+        &lt;page-content /&gt;
+      </div>
+    </div>
+  </section>
+
+  <!-- ──── FOOTER ──── -->
+  <footer class="page-footer">
+    <div class="footer-text">NBHD United Design System v1.0 — Foundations</div>
+    <div class="footer-links">
+      <a class="footer-link" href="#colors">Colors</a>
+      <a class="footer-link" href="#typography">Type</a>
+      <a class="footer-link" href="#buttons">Buttons</a>
+      <a class="footer-link" href="#cards">Cards</a>
+    </div>
+  </footer>
+
+</main>
+
+<script>
+/* ── Theme Toggle ── */
+function toggleTheme() {
+  const html = document.documentElement;
+  const current = html.getAttribute('data-theme');
+  const next = current === 'dark' ? null : 'dark';
+  if (next) {
+    html.setAttribute('data-theme', 'dark');
+  } else {
+    html.removeAttribute('data-theme');
+  }
+  document.getElementById('themeBtn').textContent = next === 'dark' ? '☾' : '☀';
+}
+
+/* ── Scroll Reveal (Intersection Observer) ── */
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('visible');
+      observer.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+
+document.querySelectorAll('.observe').forEach(el => observer.observe(el));
+
+/* ── Active nav link on scroll ── */
+const sections = document.querySelectorAll('.section[id]');
+const navLinks = document.querySelectorAll('.nav-link[href^="#"]');
+
+function updateActiveNav() {
+  let current = '';
+  sections.forEach(section => {
+    const rect = section.getBoundingClientRect();
+    if (rect.top <= 150) current = section.id;
+  });
+  navLinks.forEach(link => {
+    link.classList.toggle('active', link.getAttribute('href') === '#' + current);
+  });
+}
+
+window.addEventListener('scroll', updateActiveNav, { passive: true });
+updateActiveNav();
+</script>
+
+</body>
+</html>
