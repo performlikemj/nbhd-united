@@ -297,40 +297,42 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
           )}
         </div>
 
-        {/* Edit/Save buttons */}
-        <div className="flex items-center gap-2">
-          {editing ? (
-            <>
+        {/* Edit/Save buttons — hidden on mobile when not editing (pencil FAB handles edit) */}
+        {(isMobile !== true || editing) && (
+          <div className="flex items-center gap-2">
+            {editing ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={updateMutation.isPending}
+                  className="rounded-full bg-accent px-3 py-1.5 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55 min-h-[36px]"
+                >
+                  {updateMutation.isPending ? "..." : "Save"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong min-h-[36px]"
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
               <button
                 type="button"
-                onClick={handleSave}
-                disabled={updateMutation.isPending}
-                className="rounded-full bg-accent px-3 py-1.5 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55 min-h-[36px]"
+                onClick={handleEdit}
+                className="rounded-full border border-border-strong px-3 py-1.5 text-sm text-ink-faint hover:border-border-strong hover:text-ink min-h-[36px]"
               >
-                {updateMutation.isPending ? "..." : "Save"}
+                Edit
               </button>
-              <button
-                type="button"
-                onClick={handleCancel}
-                className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong min-h-[36px]"
-              >
-                Cancel
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              onClick={handleEdit}
-              className="rounded-full border border-border-strong px-3 py-1.5 text-sm text-ink-faint hover:border-border-strong hover:text-ink min-h-[36px]"
-            >
-              Edit
-            </button>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Content — desktop edit inline, or view mode */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-x-hidden overflow-y-auto">
         {editing && isMobile !== true ? (
           <div className="p-4 lg:p-6">
             <MarkdownEditor
