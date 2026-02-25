@@ -13,6 +13,7 @@ import {
   createWeeklyReview,
   deleteAutomation,
   deleteCronJob,
+  deleteDocument,
   deleteTemplate,
   deleteJournalEntry,
   deleteWeeklyReview,
@@ -527,6 +528,18 @@ export function useCreateDocumentMutation() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["sidebar-tree"] });
+    },
+  });
+}
+
+export function useDeleteDocumentMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ kind, slug }: { kind: string; slug: string }) => deleteDocument(kind, slug),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["sidebar-tree"] });
+      queryClient.removeQueries({ queryKey: ["document", variables.kind, variables.slug] });
     },
   });
 }
