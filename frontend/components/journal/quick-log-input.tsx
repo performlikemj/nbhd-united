@@ -24,6 +24,7 @@ export function QuickLogInput({ onSubmit, isPending }: QuickLogInputProps) {
         placeholder="Quick log entry..."
         value={content}
         onChange={(e) => setContent(e.target.value)}
+        aria-label="Quick log entry"
         className="min-h-[44px] flex-1 rounded-panel border border-border bg-surface px-3 py-2 text-sm"
       />
       <button

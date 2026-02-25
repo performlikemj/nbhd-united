@@ -167,8 +167,8 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
         <button
           type="button"
           onClick={onToggle}
-          className="rounded p-2 text-ink-faint hover:bg-surface-hover hover:text-ink"
-          title="Expand sidebar"
+          className="rounded p-2 text-ink-faint hover:bg-surface-hover hover:text-ink min-h-[44px] min-w-[44px] flex items-center justify-center"
+          aria-label="Expand sidebar"
         >
           <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -203,7 +203,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
   ];
 
   return (
-    <div className="flex h-full w-64 flex-col border-r border-border bg-surface/50">
+    <nav aria-label="Journal sidebar" className="flex h-full w-64 flex-col border-r border-border bg-surface/50">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <h2 className="text-sm font-semibold text-ink-muted">Journal</h2>
@@ -211,8 +211,8 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
           <button
             type="button"
             onClick={onToggle}
-            className="rounded p-1 text-ink-faint hover:bg-surface-hover hover:text-ink"
-            title="Collapse sidebar"
+            className="rounded p-1 text-ink-faint hover:bg-surface-hover hover:text-ink min-h-[44px] min-w-[44px] flex items-center justify-center"
+            aria-label="Collapse sidebar"
           >
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -230,7 +230,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
             onMouseEnter={() => prefetchDocument(item.kind, item.slug)}
             onClick={() => onNavigate(item.kind, item.slug)}
             className={clsx(
-              "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-sm transition",
+              "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-sm transition min-h-[44px]",
               activeKind === item.kind && activeSlug === item.slug
                 ? "bg-border font-medium text-ink"
                 : "text-ink-muted hover:bg-surface-hover hover:text-ink",
@@ -439,6 +439,6 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
           }}
         />
       )}
-    </div>
+    </nav>
   );
 }

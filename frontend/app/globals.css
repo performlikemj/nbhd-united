@@ -4,29 +4,30 @@
 
 :root {
   --ink: #12232c;
-  --ink-muted: rgba(18, 35, 44, 0.65);
-  --ink-faint: rgba(18, 35, 44, 0.40);
+  --ink-muted: rgba(18, 35, 44, 0.72);
+  --ink-faint: rgba(18, 35, 44, 0.48);
   --mist: #f6f4ee;
   --bg: #f8f6ef;
   --surface: #ffffff;
   --surface-elevated: #ffffff;
   --surface-hover: rgba(18, 35, 44, 0.05);
   --card: rgba(252, 252, 248, 0.95);
-  --accent: #2563eb;
-  --accent-hover: rgba(37, 99, 235, 0.85);
+  --accent: #1d4ed8;
+  --accent-hover: #1e40af;
   --signal: #5fbaaf;
+  --signal-text: #0f766e;
   --signal-faint: rgba(95, 186, 175, 0.12);
-  --border: rgba(18, 35, 44, 0.10);
-  --border-strong: rgba(18, 35, 44, 0.20);
-  --rose-bg: #fef2f2;
+  --border: rgba(18, 35, 44, 0.12);
+  --border-strong: rgba(18, 35, 44, 0.25);
+  --rose-bg: #fff1f2;
   --rose-border: #fecaca;
-  --rose-text: #881337;
+  --rose-text: #9f1239;
   --amber-bg: #fffbeb;
-  --amber-border: rgba(217, 119, 6, 0.20);
-  --amber-text: #78350f;
+  --amber-border: rgba(146, 64, 14, 0.20);
+  --amber-text: #92400e;
   --emerald-bg: #ecfdf5;
   --emerald-text: #065f46;
-  --overlay: rgba(0, 0, 0, 0.30);
+  --overlay: rgba(18, 35, 44, 0.55);
   --shadow-panel: 0 20px 55px rgba(18, 31, 38, 0.14);
   --bg-gradient: radial-gradient(circle at 20% 20%, rgba(255,194,153,0.42), transparent 40%),
     radial-gradient(circle at 85% 15%, rgba(112,194,184,0.45), transparent 32%),
@@ -36,13 +37,25 @@
   --font-mono: "IBM Plex Mono", "Consolas", "Menlo", monospace;
   color-scheme: light;
 
+  /* Focus ring */
+  --focus-ring: 0 0 0 3px rgba(29, 78, 216, 0.12), 0 0 0 2px #1d4ed8;
+  --focus-ring-offset: 0 0 0 2px var(--surface), 0 0 0 4px #1d4ed8;
+
+  /* Fluid spacing */
+  --space-xs: clamp(0.25rem, 0.5vw, 0.5rem);
+  --space-sm: clamp(0.5rem, 1vw, 0.75rem);
+  --space-md: clamp(0.75rem, 1.5vw + 0.25rem, 1.5rem);
+  --space-lg: clamp(1.25rem, 2.5vw + 0.25rem, 2.5rem);
+  --space-xl: clamp(2rem, 4vw + 0.5rem, 5rem);
+  --page-pad: clamp(1rem, 4vw, 2.5rem);
+
   /* Status tones */
   --status-emerald-bg: #ecfdf5;
   --status-emerald-text: #065f46;
   --status-rose-bg: #fff1f2;
-  --status-rose-text: #881337;
+  --status-rose-text: #9f1239;
   --status-amber-bg: #fffbeb;
-  --status-amber-text: #78350f;
+  --status-amber-text: #92400e;
   --status-sky-bg: #f0f9ff;
   --status-sky-text: #075985;
   --status-slate-bg: #f1f5f9;
@@ -57,29 +70,30 @@
 
 [data-theme="dark"] {
   --ink: #e2e8f0;
-  --ink-muted: rgba(226, 232, 240, 0.65);
-  --ink-faint: rgba(226, 232, 240, 0.35);
+  --ink-muted: rgba(226, 232, 240, 0.72);
+  --ink-faint: rgba(226, 232, 240, 0.42);
   --mist: #0f1419;
   --bg: #0b0f13;
   --surface: #161b22;
   --surface-elevated: #1e252e;
   --surface-hover: rgba(226, 232, 240, 0.06);
   --card: rgba(22, 27, 34, 0.95);
-  --accent: #3b82f6;
-  --accent-hover: rgba(59, 130, 246, 0.85);
+  --accent: #60a5fa;
+  --accent-hover: #93bbfd;
   --signal: #5fbaaf;
+  --signal-text: #5eead4;
   --signal-faint: rgba(95, 186, 175, 0.15);
-  --border: rgba(226, 232, 240, 0.10);
-  --border-strong: rgba(226, 232, 240, 0.20);
-  --rose-bg: rgba(136, 19, 55, 0.15);
+  --border: rgba(226, 232, 240, 0.12);
+  --border-strong: rgba(226, 232, 240, 0.25);
+  --rose-bg: rgba(159, 18, 57, 0.15);
   --rose-border: rgba(244, 63, 94, 0.25);
   --rose-text: #fda4af;
-  --amber-bg: rgba(120, 53, 15, 0.15);
+  --amber-bg: rgba(146, 64, 14, 0.15);
   --amber-border: rgba(245, 158, 11, 0.25);
   --amber-text: #fcd34d;
   --emerald-bg: rgba(6, 95, 70, 0.15);
   --emerald-text: #6ee7b7;
-  --overlay: rgba(0, 0, 0, 0.60);
+  --overlay: rgba(0, 0, 0, 0.70);
   --shadow-panel: 0 20px 55px rgba(0, 0, 0, 0.35);
   --bg-gradient: radial-gradient(circle at 20% 20%, rgba(255,194,153,0.08), transparent 40%),
     radial-gradient(circle at 85% 15%, rgba(112,194,184,0.10), transparent 32%),
@@ -87,12 +101,16 @@
   --grid-opacity: 0.15;
   color-scheme: dark;
 
+  /* Focus ring - dark */
+  --focus-ring: 0 0 0 3px rgba(96, 165, 250, 0.15), 0 0 0 2px #60a5fa;
+  --focus-ring-offset: 0 0 0 2px var(--surface), 0 0 0 4px #60a5fa;
+
   /* Status tones - dark */
   --status-emerald-bg: rgba(6, 95, 70, 0.2);
   --status-emerald-text: #6ee7b7;
-  --status-rose-bg: rgba(136, 19, 55, 0.2);
+  --status-rose-bg: rgba(159, 18, 57, 0.2);
   --status-rose-text: #fda4af;
-  --status-amber-bg: rgba(120, 53, 15, 0.2);
+  --status-amber-bg: rgba(146, 64, 14, 0.2);
   --status-amber-text: #fcd34d;
   --status-sky-bg: rgba(7, 89, 133, 0.2);
   --status-sky-text: #7dd3fc;
@@ -130,4 +148,74 @@ body {
 a {
   color: inherit;
   text-decoration: none;
+}
+
+/* ── Focus Styles ── */
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* ── Skip Link ── */
+
+.skip-link {
+  position: fixed;
+  top: -100%;
+  left: 1rem;
+  z-index: 9999;
+  background: var(--accent);
+  color: #ffffff;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0 0 0.75rem 0.75rem;
+  font-weight: 600;
+  font-size: 0.875rem;
+  text-decoration: none;
+  transition: top 200ms ease;
+}
+
+.skip-link:focus {
+  top: 0;
+  outline: none;
+}
+
+/* ── Reduced Motion ── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── High Contrast ── */
+
+@media (forced-colors: active) {
+  :root {
+    --accent: LinkText;
+    --ink: CanvasText;
+    --bg: Canvas;
+    --surface: Canvas;
+    --border: CanvasText;
+  }
+}
+
+/* ── Print ── */
+
+@media print {
+  body {
+    background: #fff !important;
+    color: #000 !important;
+    font-size: 12pt;
+  }
+
+  nav,
+  .skip-link,
+  footer {
+    display: none !important;
+  }
 }

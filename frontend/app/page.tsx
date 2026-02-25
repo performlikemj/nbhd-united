@@ -89,13 +89,13 @@ export default function LandingPage() {
         <div className="mt-8 flex gap-4">
           <Link
             href="/signup"
-            className="rounded-full bg-accent px-6 py-3 text-sm font-medium text-white transition hover:bg-accent/85"
+            className="rounded-full bg-accent px-6 py-3 text-sm font-medium text-white transition hover:bg-accent/85 min-h-[44px] inline-flex items-center"
           >
             Start free trial
           </Link>
           <Link
             href="/login"
-            className="rounded-full border border-border-strong px-6 py-3 text-sm font-medium text-ink transition hover:border-border-strong hover:bg-surface-hover"
+            className="rounded-full border border-border-strong px-6 py-3 text-sm font-medium text-ink transition hover:border-border-strong hover:bg-surface-hover min-h-[44px] inline-flex items-center"
           >
             Sign in
           </Link>
@@ -138,7 +138,7 @@ export default function LandingPage() {
         ].map((f) => (
           <div
             key={f.title}
-            className="rounded-panel border border-border bg-surface-elevated p-5"
+            className="rounded-panel border border-border bg-surface-elevated p-5 transition hover:shadow-panel hover:-translate-y-1"
           >
             <span className="text-2xl">{f.icon}</span>
             <h3 className="mt-2 font-semibold text-ink">{f.title}</h3>
@@ -182,7 +182,7 @@ export default function LandingPage() {
                 ))}
               </ul>
               {"comingSoon" in plan && plan.comingSoon ? (
-                <span className="mt-6 block rounded-full border border-border-strong px-4 py-2.5 text-center text-sm font-medium text-ink-muted cursor-default opacity-60">
+                <span className="mt-6 block rounded-full border border-border-strong px-4 py-2.5 text-center text-sm font-medium text-ink-muted cursor-default opacity-60 min-h-[44px] leading-[44px]">
                   {plan.comingSoonLabel || "Coming soon"}
                 </span>
               ) : (

@@ -26,9 +26,8 @@ function ThemeToggle() {
     <button
       type="button"
       onClick={toggleTheme}
-      className="rounded-full border border-border p-2 text-sm transition hover:border-border-strong"
-      aria-label="Toggle theme"
-      title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      className="flex h-11 w-11 items-center justify-center rounded-full border border-border text-sm transition hover:border-border-strong"
+      aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
     >
       {theme === "dark" ? "☀️" : "🌙"}
     </button>
@@ -63,7 +62,9 @@ function UserMenu({ onLogout }: { onLogout: () => void }) {
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 rounded-full border border-border px-3 py-1.5 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink"
+        className="flex h-11 items-center gap-2 rounded-full border border-border px-3 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink"
+        aria-label="User menu"
+        aria-expanded={open}
       >
         <span className="flex h-6 w-6 items-center justify-center rounded-full bg-surface-hover font-mono text-[10px] font-medium text-ink-faint">
           {initials}
@@ -134,8 +135,14 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [checked, setChecked] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const isPublicPage = publicPages.includes(pathname) || pathname.startsWith("/legal/");
+
+  // Close mobile menu on route change
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [pathname]);
 
   useEffect(() => {
     if (!isPublicPage && !isLoggedIn()) {
@@ -164,6 +171,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     return (
       <div className="relative flex min-h-screen flex-col overflow-x-hidden">
         <BackgroundLayers />
+        <a href="#main-content" className="skip-link">Skip to main content</a>
         <header className="border-b border-border bg-surface/75 backdrop-blur">
           <div className="mx-auto flex w-full max-w-6xl items-center px-4 py-3 sm:px-6">
             <Link href="/" className="font-mono text-xs uppercase tracking-[0.24em] text-ink-faint transition hover:text-ink">
@@ -171,7 +179,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </Link>
           </div>
         </header>
-        <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">{children}</main>
+        <main id="main-content" className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">{children}</main>
         <SiteFooter />
       </div>
     );
@@ -180,48 +188,92 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="relative flex min-h-screen flex-col overflow-x-hidden">
       <BackgroundLayers />
+      <a href="#main-content" className="skip-link">Skip to main content</a>
 
       <header className="sticky top-0 z-30 border-b border-border bg-surface/75 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-6xl min-w-0 flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-6">
+        <div className="mx-auto flex w-full max-w-6xl min-w-0 items-center justify-between gap-3 px-4 py-3 sm:px-6">
           <div className="min-w-0">
             <Link href="/" className="font-mono text-xs uppercase tracking-[0.24em] text-ink-faint transition hover:text-ink">Neighborhood United</Link>
             <h1 className="text-sm font-semibold text-ink sm:text-lg">
               <span className="hidden sm:inline">Subscriber Control Console</span>
-              <span className="sm:hidden">Subscriber</span>
+              <span className="sm:hidden">Console</span>
             </h1>
           </div>
-          <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
-            <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto pb-1 sm:overflow-visible sm:pb-0">
-              <div className="shrink-0">
-                <TrialBadge />
-              </div>
-              <nav className="flex min-w-0 flex-1 items-center gap-1 rounded-full border border-border bg-surface p-1 sm:flex-initial">
-                {navItems.map((item) => {
-                  const active = pathname.startsWith(item.href);
-                  return (
-                    <Link
-                      key={item.href}
-                      href={item.href}
-                      className={clsx(
-                        "shrink-0 rounded-full px-3 py-1.5 text-sm transition",
-                        active
-                          ? "bg-accent text-white"
-                          : "text-ink-muted hover:bg-surface-hover hover:text-ink",
-                      )}
-                    >
-                      {item.label}
-                    </Link>
-                  );
-                })}
-              </nav>
+          <div className="flex items-center gap-2">
+            <div className="shrink-0">
+              <TrialBadge />
             </div>
+            {/* Desktop nav */}
+            <nav className="hidden items-center gap-1 rounded-full border border-border bg-surface p-1 md:flex" role="navigation" aria-label="Main navigation">
+              {navItems.map((item) => {
+                const active = pathname.startsWith(item.href);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    aria-current={active ? "page" : undefined}
+                    className={clsx(
+                      "shrink-0 rounded-full px-3 py-1.5 text-sm transition",
+                      active
+                        ? "bg-accent text-white"
+                        : "text-ink-muted hover:bg-surface-hover hover:text-ink",
+                    )}
+                  >
+                    {item.label}
+                  </Link>
+                );
+              })}
+            </nav>
             <ThemeToggle />
             <UserMenu onLogout={handleLogout} />
+            {/* Hamburger — mobile only */}
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              className="flex h-11 w-11 flex-col items-center justify-center gap-[5px] rounded-full border border-border md:hidden"
+              aria-label={mobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
+              aria-expanded={mobileMenuOpen}
+              aria-controls="mobile-nav-menu"
+            >
+              <span className={clsx("block h-0.5 w-5 rounded-full bg-ink transition-transform", mobileMenuOpen && "translate-y-[7px] rotate-45")} />
+              <span className={clsx("block h-0.5 w-5 rounded-full bg-ink transition-opacity", mobileMenuOpen && "opacity-0")} />
+              <span className={clsx("block h-0.5 w-5 rounded-full bg-ink transition-transform", mobileMenuOpen && "-translate-y-[7px] -rotate-45")} />
+            </button>
           </div>
+        </div>
+
+        {/* Mobile nav menu */}
+        <div
+          id="mobile-nav-menu"
+          className={clsx(
+            "overflow-hidden border-t border-border bg-surface transition-[max-height] duration-200 ease-out md:hidden",
+            mobileMenuOpen ? "max-h-60" : "max-h-0 border-t-transparent",
+          )}
+        >
+          <nav className="flex flex-col gap-1 px-4 py-3" role="navigation" aria-label="Mobile navigation">
+            {navItems.map((item) => {
+              const active = pathname.startsWith(item.href);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  aria-current={active ? "page" : undefined}
+                  className={clsx(
+                    "flex min-h-[44px] items-center rounded-lg px-3 text-sm font-medium transition",
+                    active
+                      ? "bg-accent/10 text-accent"
+                      : "text-ink-muted hover:bg-surface-hover hover:text-ink",
+                  )}
+                >
+                  {item.label}
+                </Link>
+              );
+            })}
+          </nav>
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">{children}</main>
+      <main id="main-content" className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">{children}</main>
       <SiteFooter />
     </div>
   );

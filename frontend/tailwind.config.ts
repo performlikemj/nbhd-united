@@ -9,6 +9,14 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      spacing: {
+        "fluid-xs": "var(--space-xs)",
+        "fluid-sm": "var(--space-sm)",
+        "fluid-md": "var(--space-md)",
+        "fluid-lg": "var(--space-lg)",
+        "fluid-xl": "var(--space-xl)",
+        "page": "var(--page-pad)",
+      },
       colors: {
         ink: "var(--ink)",
         "ink-muted": "var(--ink-muted)",
@@ -22,6 +30,7 @@ const config: Config = {
         accent: "var(--accent)",
         "accent-hover": "var(--accent-hover)",
         signal: "var(--signal)",
+        "signal-text": "var(--signal-text)",
         "signal-faint": "var(--signal-faint)",
         border: "var(--border)",
         "border-strong": "var(--border-strong)",

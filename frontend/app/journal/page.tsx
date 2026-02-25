@@ -93,6 +93,8 @@ export default function JournalPage() {
           style={{ top: `${fabY}px` }}
           className="fixed left-4 z-50 touch-none select-none rounded-full bg-accent p-3 text-white shadow-lg lg:hidden"
           aria-label="Toggle sidebar — drag to reposition"
+          aria-expanded={mobileSidebarOpen}
+          aria-controls="journal-mobile-sidebar"
         >
           <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             {mobileSidebarOpen ? (
@@ -117,12 +119,14 @@ export default function JournalPage() {
 
       {/* Sidebar - mobile overlay */}
       <div
+        id="journal-mobile-sidebar"
         className={`fixed inset-0 z-40 lg:hidden transition-opacity duration-200 ${
           mobileSidebarOpen ? "opacity-100" : "pointer-events-none opacity-0"
         }`}
       >
         <div
           className="absolute inset-0 bg-overlay"
+          aria-hidden="true"
           onClick={() => setMobileSidebarOpen(false)}
         />
         <div

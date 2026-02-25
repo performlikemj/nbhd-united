@@ -309,7 +309,8 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
               <button
                 type="button"
                 onClick={() => handleDateNav(-1)}
-                className="rounded-full border border-border-strong px-2 py-1 text-sm hover:border-border-strong min-h-[36px] min-w-[36px] flex items-center justify-center"
+                aria-label="Previous day"
+                className="rounded-full border border-border-strong px-2 py-1 text-sm hover:border-border-strong min-h-[44px] min-w-[44px] flex items-center justify-center"
               >
                 ←
               </button>
@@ -333,7 +334,8 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
                 type="button"
                 onClick={() => handleDateNav(1)}
                 disabled={effectiveSlug >= todayISO()}
-                className="rounded-full border border-border-strong px-2 py-1 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-40 min-h-[36px] min-w-[36px] flex items-center justify-center"
+                aria-label="Next day"
+                className="rounded-full border border-border-strong px-2 py-1 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-40 min-h-[44px] min-w-[44px] flex items-center justify-center"
               >
                 →
               </button>
@@ -343,7 +345,8 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
                   onClick={() => {
                     onNavigate?.("daily", todayISO());
                   }}
-                  className="rounded-full border border-border-strong px-2.5 py-1 text-xs sm:text-sm sm:px-3 hover:border-border-strong min-h-[36px]"
+                  aria-label="Go to today"
+                  className="rounded-full border border-border-strong px-2.5 py-1 text-xs sm:text-sm sm:px-3 hover:border-border-strong min-h-[44px]"
                 >
                   Today
                 </button>
@@ -366,14 +369,14 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
                   type="button"
                   onClick={handleSave}
                   disabled={updateMutation.isPending}
-                  className="rounded-full bg-accent px-3 py-1.5 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55 min-h-[36px]"
+                  className="rounded-full bg-accent px-3 py-1.5 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55 min-h-[44px]"
                 >
                   {updateMutation.isPending ? "..." : "Save"}
                 </button>
                 <button
                   type="button"
                   onClick={handleCancel}
-                  className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong min-h-[36px]"
+                  className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong min-h-[44px]"
                 >
                   Cancel
                 </button>
@@ -382,7 +385,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
               <button
                 type="button"
                 onClick={handleEdit}
-                className="rounded-full border border-border-strong px-3 py-1.5 text-sm text-ink-faint hover:border-border-strong hover:text-ink min-h-[36px]"
+                className="rounded-full border border-border-strong px-3 py-1.5 text-sm text-ink-faint hover:border-border-strong hover:text-ink min-h-[44px]"
               >
                 Edit
               </button>
