@@ -1,6 +1,7 @@
 "use client";
 
 import { type MouseEvent, useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownEditor } from "@/components/journal/markdown-editor";
 import { MarkdownHelpSheet } from "@/components/journal/markdown-help-sheet";
@@ -207,11 +208,11 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
     );
   }
 
-  // Mobile full-screen editing — early return, no outer wrapper or header underneath
+  // Mobile full-screen editing — portal to document.body so it escapes the app
+  // shell's stacking context entirely (nav bar z-index can't block it)
   if (editing && isMobile === true) {
-    return (
-      // overflow-hidden on outer is critical — prevents touch scroll leaking to body
-      <div className="fixed inset-0 z-[100] flex flex-col overflow-hidden bg-[var(--color-surface)]">
+    return createPortal(
+      <div className="fixed inset-0 z-[9999] flex flex-col overflow-hidden bg-[var(--color-surface)]">
         {/* Top bar — shrink-0 so it never squishes */}
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-2">
           <span className="min-w-0 truncate text-sm font-semibold text-ink">
@@ -254,7 +255,8 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
           />
         </div>
         <MarkdownHelpSheet open={helpOpen} onClose={() => setHelpOpen(false)} />
-      </div>
+      </div>,
+      document.body,
     );
   }
 
