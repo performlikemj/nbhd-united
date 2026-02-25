@@ -41,7 +41,9 @@ def _get_tenant(user) -> Tenant:
 
 import re
 
-_VALID_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-]*$")
+# Allow uppercase (ISO week format uses W, e.g. 2026-W09) and forward
+# slashes (compound path slugs like week-ahead/2026-W09 via <path:slug>)
+_VALID_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9\-/]*$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 

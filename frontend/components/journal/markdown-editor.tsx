@@ -110,7 +110,7 @@ export function MarkdownEditor({
       }),
     ],
     content: value,
-    autofocus: autoFocus ? "end" : false,
+    autofocus: autoFocus ? "start" : false,
     editorProps: {
       attributes: {
         class:
