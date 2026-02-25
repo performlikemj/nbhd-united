@@ -949,15 +949,29 @@ class DocumentAPITest(TestCase):
         resp = client.get("/api/v1/journal/documents/")
         self.assertIn(resp.status_code, [401, 403])
 
-    def test_delete_document(self):
+    def test_delete_daily_document_forbidden(self):
+        """Daily notes cannot be deleted — protected by design."""
         Document.objects.create(
             tenant=self.tenant, kind="daily", slug="2026-02-16",
             title="Feb 16", markdown="# 2026-02-16",
         )
         resp = self.client.delete("/api/v1/journal/documents/daily/2026-02-16/")
+        self.assertEqual(resp.status_code, 403)
+        # Document should still exist
+        self.assertTrue(Document.objects.filter(
+            tenant=self.tenant, kind="daily", slug="2026-02-16",
+        ).exists())
+
+    def test_delete_document(self):
+        """Non-daily documents can be deleted."""
+        Document.objects.create(
+            tenant=self.tenant, kind="note", slug="my-note",
+            title="My Note", markdown="# My Note",
+        )
+        resp = self.client.delete("/api/v1/journal/documents/note/my-note/")
         self.assertEqual(resp.status_code, 204)
         self.assertFalse(Document.objects.filter(
-            tenant=self.tenant, kind="daily", slug="2026-02-16",
+            tenant=self.tenant, kind="note", slug="my-note",
         ).exists())
 
     def test_today_endpoint(self):
