@@ -75,21 +75,21 @@ export default function LandingPage() {
     <div className="flex min-h-screen flex-col">
       {/* Hero */}
       <header className="flex flex-col items-center px-6 pt-20 pb-16 text-center">
-        <p className="font-mono text-xs uppercase tracking-[0.24em] text-ink-muted">
+        <p className="animate-reveal-1 font-mono text-xs uppercase tracking-[0.24em] text-ink-muted">
           Neighborhood United
         </p>
-        <h1 className="mt-4 max-w-2xl text-4xl font-bold leading-tight text-ink sm:text-5xl">
+        <h1 className="animate-reveal-2 font-display mt-4 max-w-2xl text-[clamp(2.25rem,5vw+0.5rem,3.5rem)] font-normal leading-tight text-ink">
           Your AI-powered personal&nbsp;assistant
         </h1>
-        <p className="mt-4 max-w-xl text-lg text-ink-muted">
+        <p className="animate-reveal-3 mt-4 max-w-xl text-lg text-ink-muted">
           A private AI assistant delivered through Telegram. Journal your
           thoughts, schedule tasks, get briefings, and stay organized — all
           through natural conversation.
         </p>
-        <div className="mt-8 flex gap-4">
+        <div className="animate-reveal-4 mt-8 flex gap-4">
           <Link
             href="/signup"
-            className="rounded-full bg-accent px-6 py-3 text-sm font-medium text-white transition hover:bg-accent/85 min-h-[44px] inline-flex items-center"
+            className="btn-shine rounded-full bg-accent px-6 py-3 text-sm font-medium text-white transition hover:bg-accent/85 min-h-[44px] inline-flex items-center"
           >
             Start free trial
           </Link>
@@ -138,18 +138,19 @@ export default function LandingPage() {
         ].map((f) => (
           <div
             key={f.title}
-            className="rounded-panel border border-border bg-surface-elevated p-5 transition hover:shadow-panel hover:-translate-y-1"
+            className="group rounded-panel border border-border bg-card p-5 transition hover:shadow-panel hover:-translate-y-1"
           >
             <span className="text-2xl">{f.icon}</span>
             <h3 className="mt-2 font-semibold text-ink">{f.title}</h3>
             <p className="mt-1 text-sm text-ink-muted">{f.desc}</p>
+            <span className="mt-3 inline-block text-sm text-ink-faint transition-transform group-hover:translate-x-1" aria-hidden="true">→</span>
           </div>
         ))}
       </section>
 
       {/* Pricing */}
       <section className="mx-auto w-full max-w-4xl px-6 py-12">
-        <h2 className="mb-8 text-center text-2xl font-bold text-ink">Plans</h2>
+        <h2 className="font-display mb-8 text-center text-[clamp(1.5rem,3vw+0.25rem,2.25rem)] font-normal text-ink">Plans</h2>
         <div className="grid gap-6 sm:grid-cols-3">
           {plans.map((plan) => (
             <div

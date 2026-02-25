@@ -61,6 +61,11 @@ const config: Config = {
         "status-orange": "var(--status-orange-bg)",
         "status-orange-text": "var(--status-orange-text)",
       },
+      fontFamily: {
+        body: ["var(--font-body)", "sans-serif"],
+        display: ["var(--font-display)", "serif"],
+        mono: ["var(--font-mono)", "monospace"],
+      },
       boxShadow: {
         panel: "var(--shadow-panel)",
       },
@@ -79,6 +84,10 @@ const config: Config = {
       },
       animation: {
         reveal: "reveal 420ms ease-out both",
+        "reveal-1": "reveal 420ms ease-out 100ms both",
+        "reveal-2": "reveal 420ms ease-out 200ms both",
+        "reveal-3": "reveal 420ms ease-out 350ms both",
+        "reveal-4": "reveal 420ms ease-out 500ms both",
         pulseGrid: "pulseGrid 7s ease-in-out infinite",
       },
     },

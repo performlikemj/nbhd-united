@@ -405,7 +405,7 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-4">
-      <SectionCard title="Account" subtitle="Your profile and authentication details">
+      <SectionCard title="Account" subtitle="Your profile and authentication details" delay={0}>
         {me ? (
           <dl className="grid min-w-0 gap-3 text-sm sm:grid-cols-2">
             {/* Display Name */}
@@ -629,7 +629,7 @@ export default function SettingsPage() {
         </div>
       ) : null}
 
-      <SectionCard title="Agent Persona" subtitle="Your assistant's personality and communication style">
+      <SectionCard title="Agent Persona" subtitle="Your assistant's personality and communication style" delay={100}>
         {!editingPersona ? (
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -683,6 +683,7 @@ export default function SettingsPage() {
       <SectionCard
         title="Agent Configuration"
         subtitle="Configuration updates are applied automatically when your assistant is idle"
+        delay={200}
       >
         <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
           <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">

@@ -120,11 +120,11 @@ function BackgroundLayers() {
   return (
     <>
       <div
-        className="pointer-events-none absolute inset-0 -z-10"
+        className="pointer-events-none fixed inset-0 -z-10"
         style={{ background: "var(--bg-gradient)" }}
       />
       <div
-        className="pointer-events-none absolute inset-0 -z-10 bg-[linear-gradient(rgba(18,31,38,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(18,31,38,0.05)_1px,transparent_1px)] bg-[size:32px_32px]"
+        className="pointer-events-none fixed inset-0 -z-10 bg-[linear-gradient(rgba(18,31,38,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(18,31,38,0.05)_1px,transparent_1px)] bg-[size:32px_32px]"
         style={{ opacity: "var(--grid-opacity)" }}
       />
     </>
@@ -172,7 +172,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="relative flex min-h-screen flex-col overflow-x-hidden">
         <BackgroundLayers />
         <a href="#main-content" className="skip-link">Skip to main content</a>
-        <header className="border-b border-border bg-surface/75 backdrop-blur">
+        <header className="border-b border-border bg-surface/75 backdrop-blur-xl backdrop-saturate-150">
           <div className="mx-auto flex w-full max-w-6xl items-center px-4 py-3 sm:px-6">
             <Link href="/" className="font-mono text-xs uppercase tracking-[0.24em] text-ink-faint transition hover:text-ink">
               Neighborhood United
@@ -190,7 +190,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <BackgroundLayers />
       <a href="#main-content" className="skip-link">Skip to main content</a>
 
-      <header className="sticky top-0 z-30 border-b border-border bg-surface/75 backdrop-blur">
+      <header className="sticky top-0 z-30 border-b border-border bg-surface/75 backdrop-blur-xl backdrop-saturate-150">
         <div className="mx-auto flex w-full max-w-6xl min-w-0 items-center justify-between gap-3 px-4 py-3 sm:px-6">
           <div className="min-w-0">
             <Link href="/" className="font-mono text-xs uppercase tracking-[0.24em] text-ink-faint transition hover:text-ink">Neighborhood United</Link>

@@ -41,7 +41,7 @@ export default function SignupPage() {
     <div className="flex min-h-[60vh] items-center justify-center">
       <div className="w-full max-w-md rounded-panel border border-border bg-surface/90 p-8 shadow-panel animate-reveal">
         <p className="font-mono text-xs uppercase tracking-[0.24em] text-ink-muted">Neighborhood United</p>
-        <h2 className="mt-2 text-2xl font-semibold text-ink">Create account</h2>
+        <h2 className="mt-2 font-display text-2xl text-ink">Create account</h2>
         <p className="mt-1 text-sm text-ink-muted">Sign up to get started with your private AI assistant.</p>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
@@ -98,7 +98,7 @@ export default function SignupPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-full bg-accent px-4 py-2.5 text-sm font-medium text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-55"
+            className="btn-shine w-full rounded-full bg-accent px-4 py-2.5 text-sm font-medium text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-55"
           >
             {loading ? "Creating account..." : "Create account"}
           </button>

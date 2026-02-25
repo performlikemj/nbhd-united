@@ -356,7 +356,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
 
           {/* Title for non-daily docs */}
           {kind !== "daily" && (
-            <h1 className="truncate text-base font-semibold text-ink sm:text-lg">{doc?.title}</h1>
+            <h1 className="truncate font-display text-base text-ink sm:text-lg">{doc?.title}</h1>
           )}
         </div>
 
