@@ -548,6 +548,10 @@ export function createDocument(data: { kind: string; slug: string; title: string
   });
 }
 
+export function deleteDocument(kind: string, slug: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/journal/documents/${kind}/${slug}/`, { method: "DELETE" });
+}
+
 export function getLLMConfig(): Promise<LLMConfig> {
   return apiFetch<LLMConfig>("/api/v1/settings/llm-config/");
 }
@@ -612,5 +616,18 @@ export function toggleCronJob(nameOrId: string, enabled: boolean): Promise<CronJ
   return apiFetch<CronJob>(`/api/v1/cron-jobs/${encodeURIComponent(nameOrId)}/toggle/`, {
     method: "POST",
     body: JSON.stringify({ enabled }),
+  });
+}
+
+export interface BulkDeleteResult {
+  deleted: number;
+  errors: number;
+  results: Array<{ id: string; deleted: boolean; error?: string }>;
+}
+
+export function bulkDeleteCronJobs(ids: string[]): Promise<BulkDeleteResult> {
+  return apiFetch<BulkDeleteResult>("/api/v1/cron-jobs/bulk-delete/", {
+    method: "POST",
+    body: JSON.stringify({ ids }),
   });
 }

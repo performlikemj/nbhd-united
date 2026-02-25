@@ -1,14 +1,16 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import ScheduleBuilder, { cronToHuman } from "@/components/schedule-builder";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
+import { Toast, useToast } from "@/components/toast";
 import TimezoneSelector from "@/components/timezone-selector";
 import { CronJob } from "@/lib/types";
 import {
+  useBulkDeleteCronJobsMutation,
   useCronJobsQuery,
   useCreateCronJobMutation,
   useDeleteCronJobMutation,
@@ -146,6 +148,8 @@ type ActionFeedback = {
 
 const SAVE_CLEAR_DELAY_MS = 2000;
 const ERROR_CLEAR_DELAY_MS = 4000;
+/** ms before inline single-delete confirmation auto-cancels */
+const SINGLE_DELETE_TIMEOUT_MS = 3000;
 
 function getSaveButtonClass(status: SaveButtonStatus): string {
   const base =
@@ -166,16 +170,25 @@ function getSaveButtonClass(status: SaveButtonStatus): string {
 /*  Page component                                                     */
 /* ------------------------------------------------------------------ */
 
+type BulkBarState = "idle" | "confirming";
+
 export default function SettingsCronJobsPage() {
   const { data: me } = useMeQuery();
   const { data: cronJobs, isLoading, error } = useCronJobsQuery();
   const createMutation = useCreateCronJobMutation();
   const deleteMutation = useDeleteCronJobMutation();
+  const bulkDeleteMutation = useBulkDeleteCronJobsMutation();
   const toggleMutation = useToggleCronJobMutation();
   const updateMutation = useUpdateCronJobMutation();
 
+  /* ── Create form ── */
   const [showCreate, setShowCreate] = useState(false);
   const [createForm, setCreateForm] = useState<CreateFormState>(() => defaultCreateForm(me?.timezone));
+  const [showCapabilities, setShowCapabilities] = useState(false);
+  const [createFeedback, setCreateFeedback] = useState<ActionFeedback>({ status: "idle", text: "" });
+  const createTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /* ── Edit form ── */
   const [editingName, setEditingName] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<EditFormState>({
     expr: "",
@@ -184,44 +197,39 @@ export default function SettingsCronJobsPage() {
     deliveryMode: "announce",
     deliveryChannel: "",
   });
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [showCapabilities, setShowCapabilities] = useState(false);
-  const [createFeedback, setCreateFeedback] = useState<ActionFeedback>({ status: "idle", text: "" });
   const [editFeedback, setEditFeedback] = useState<ActionFeedback>({ status: "idle", text: "" });
-  const [deleteFeedback, setDeleteFeedback] = useState<ActionFeedback>({ status: "idle", text: "" });
-  const createTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const deleteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const clearCreateTimer = () => {
-    if (createTimeoutRef.current) {
-      clearTimeout(createTimeoutRef.current);
-      createTimeoutRef.current = null;
-    }
-  };
+  /* ── Single delete — inline per-row state ── */
+  // Map of jobIdentifier → "confirming" | null
+  const [singleDeleteConfirm, setSingleDeleteConfirm] = useState<Record<string, boolean>>({});
+  const [singleDeleteError, setSingleDeleteError] = useState<Record<string, string>>({});
+  const [singleDeletePending, setSingleDeletePending] = useState<Record<string, boolean>>({});
+  // Auto-cancel timers per job
+  const singleDeleteTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
-  const clearEditTimer = () => {
-    if (editTimeoutRef.current) {
-      clearTimeout(editTimeoutRef.current);
-      editTimeoutRef.current = null;
-    }
-  };
+  /* ── Multi-select ── */
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkBarState, setBulkBarState] = useState<BulkBarState>("idle");
+  const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
 
-  const clearDeleteTimer = () => {
-    if (deleteTimeoutRef.current) {
-      clearTimeout(deleteTimeoutRef.current);
-      deleteTimeoutRef.current = null;
-    }
-  };
+  /* ── Toast ── */
+  const [toast, showToast] = useToast();
 
+  /* ── Cleanup timers on unmount ── */
   useEffect(() => {
     return () => {
-      clearCreateTimer();
-      clearEditTimer();
-      clearDeleteTimer();
+      // These refs hold timeout IDs (not DOM nodes) so .current is stable at cleanup time
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      if (createTimeoutRef.current) clearTimeout(createTimeoutRef.current);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      if (editTimeoutRef.current) clearTimeout(editTimeoutRef.current);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      Object.values(singleDeleteTimers.current).forEach(clearTimeout);
     };
   }, []);
 
+  /* ── Feedback helpers ── */
   const setSuccess = (
     setState: (state: ActionFeedback) => void,
     timeoutRef: { current: ReturnType<typeof setTimeout> | null },
@@ -243,6 +251,7 @@ export default function SettingsCronJobsPage() {
     }, ERROR_CLEAR_DELAY_MS);
   };
 
+  /* ── Template ── */
   const handleApplyTemplate = (template: TaskTemplate) => {
     setCreateForm((prev) => ({
       ...prev,
@@ -252,9 +261,10 @@ export default function SettingsCronJobsPage() {
     }));
   };
 
+  /* ── Create ── */
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    clearCreateTimer();
+    if (createTimeoutRef.current) clearTimeout(createTimeoutRef.current);
     setCreateFeedback({ status: "saving", text: "" });
 
     try {
@@ -274,13 +284,14 @@ export default function SettingsCronJobsPage() {
       setShowCreate(false);
       setSuccess(setCreateFeedback, createTimeoutRef);
     } catch (err) {
-      clearCreateTimer();
+      if (createTimeoutRef.current) clearTimeout(createTimeoutRef.current);
       setError(setCreateFeedback, createTimeoutRef, getErrorMessage(err));
     }
   };
 
+  /* ── Edit ── */
   const handleStartEdit = (job: CronJob) => {
-    clearEditTimer();
+    if (editTimeoutRef.current) clearTimeout(editTimeoutRef.current);
     setEditFeedback({ status: "idle", text: "" });
     setEditingName(job.jobId ?? job.name);
     setEditForm(toEditForm(job));
@@ -289,7 +300,7 @@ export default function SettingsCronJobsPage() {
   const handleUpdate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!editingName) return;
-    clearEditTimer();
+    if (editTimeoutRef.current) clearTimeout(editTimeoutRef.current);
     setEditFeedback({ status: "saving", text: "" });
 
     try {
@@ -307,27 +318,131 @@ export default function SettingsCronJobsPage() {
       setEditingName(null);
       setSuccess(setEditFeedback, editTimeoutRef);
     } catch (err) {
-      clearEditTimer();
+      if (editTimeoutRef.current) clearTimeout(editTimeoutRef.current);
       setError(setEditFeedback, editTimeoutRef, getErrorMessage(err));
     }
   };
 
-  const handleDelete = async (nameOrId: string) => {
-    clearDeleteTimer();
-    setDeleteFeedback({ status: "saving", text: "" });
+  /* ── Single delete — inline UX ── */
+  const startSingleDeleteConfirm = useCallback((jobId: string) => {
+    // Clear any existing timer for this job
+    if (singleDeleteTimers.current[jobId]) {
+      clearTimeout(singleDeleteTimers.current[jobId]);
+    }
+    setSingleDeleteConfirm((prev) => ({ ...prev, [jobId]: true }));
+    setSingleDeleteError((prev) => ({ ...prev, [jobId]: "" }));
+
+    // Auto-cancel after 3s
+    singleDeleteTimers.current[jobId] = setTimeout(() => {
+      setSingleDeleteConfirm((prev) => ({ ...prev, [jobId]: false }));
+    }, SINGLE_DELETE_TIMEOUT_MS);
+  }, []);
+
+  const cancelSingleDelete = useCallback((jobId: string) => {
+    if (singleDeleteTimers.current[jobId]) {
+      clearTimeout(singleDeleteTimers.current[jobId]);
+      delete singleDeleteTimers.current[jobId];
+    }
+    setSingleDeleteConfirm((prev) => ({ ...prev, [jobId]: false }));
+    setSingleDeleteError((prev) => ({ ...prev, [jobId]: "" }));
+  }, []);
+
+  const confirmSingleDelete = useCallback(async (jobId: string) => {
+    if (singleDeleteTimers.current[jobId]) {
+      clearTimeout(singleDeleteTimers.current[jobId]);
+      delete singleDeleteTimers.current[jobId];
+    }
+    setSingleDeletePending((prev) => ({ ...prev, [jobId]: true }));
 
     try {
-      await deleteMutation.mutateAsync({ name: nameOrId });
-      setConfirmDelete(null);
-      setSuccess(setDeleteFeedback, deleteTimeoutRef);
+      await deleteMutation.mutateAsync({ name: jobId });
+      // Remove from selection if selected
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(jobId);
+        return next;
+      });
+      setSingleDeleteConfirm((prev) => ({ ...prev, [jobId]: false }));
     } catch (err) {
-      clearDeleteTimer();
-      setError(setDeleteFeedback, deleteTimeoutRef, getErrorMessage(err));
+      setSingleDeleteError((prev) => ({ ...prev, [jobId]: getErrorMessage(err) }));
+      // Auto-clear error after 4s and reset confirm state
+      singleDeleteTimers.current[jobId] = setTimeout(() => {
+        setSingleDeleteConfirm((prev) => ({ ...prev, [jobId]: false }));
+        setSingleDeleteError((prev) => ({ ...prev, [jobId]: "" }));
+      }, ERROR_CLEAR_DELAY_MS);
+    } finally {
+      setSingleDeletePending((prev) => ({ ...prev, [jobId]: false }));
+    }
+  }, [deleteMutation]);
+
+  /* ── Multi-select helpers ── */
+  const selectableJobs = cronJobs ?? [];
+
+  const allSelected =
+    selectableJobs.length > 0 && selectableJobs.every((j) => selectedIds.has(j.jobId ?? j.name));
+  const someSelected = selectedIds.size > 0;
+
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(selectableJobs.map((j) => j.jobId ?? j.name)));
     }
   };
 
+  const toggleSelectOne = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  /* ── Bulk delete ── */
+  const handleBulkDeleteClick = () => {
+    setBulkBarState("confirming");
+    setBulkDeleteError(null);
+  };
+
+  const handleBulkDeleteCancel = () => {
+    setBulkBarState("idle");
+    setBulkDeleteError(null);
+  };
+
+  const handleBulkDeleteConfirm = async () => {
+    const ids = Array.from(selectedIds);
+    setBulkDeleteError(null);
+
+    try {
+      const result = await bulkDeleteMutation.mutateAsync(ids);
+      const deletedCount = result.deleted;
+      setSelectedIds(new Set());
+      setBulkBarState("idle");
+      showToast(`${deletedCount} task${deletedCount === 1 ? "" : "s"} deleted`, "success");
+    } catch (err) {
+      setBulkDeleteError(getErrorMessage(err));
+      setBulkBarState("idle");
+    }
+  };
+
+  /* ---------------------------------------------------------------- */
+
   return (
     <div className="space-y-4">
+      {/* Toast notification */}
+      {toast && (
+        <Toast
+          key={toast.id}
+          message={toast.message}
+          type={toast.type}
+          onDismiss={() => {/* state auto-managed by hook */}}
+        />
+      )}
+
       <SectionCard
         title="Scheduled Tasks"
         subtitle="Set up recurring tasks for your AI assistant — morning briefings, news digests, reminders, and more"
@@ -336,7 +451,7 @@ export default function SettingsCronJobsPage() {
           <button
             type="button"
             onClick={() => {
-              clearCreateTimer();
+              if (createTimeoutRef.current) clearTimeout(createTimeoutRef.current);
               setCreateFeedback({ status: "idle", text: "" });
               setCreateForm(defaultCreateForm(me?.timezone));
               setShowCreate(true);
@@ -462,7 +577,7 @@ export default function SettingsCronJobsPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    clearCreateTimer();
+                    if (createTimeoutRef.current) clearTimeout(createTimeoutRef.current);
                     setCreateFeedback({ status: "idle", text: "" });
                     setShowCreate(false);
                   }}
@@ -490,176 +605,278 @@ export default function SettingsCronJobsPage() {
         </SectionCard>
       ) : cronJobs && cronJobs.length > 0 ? (
         <SectionCard title="Your Tasks" subtitle="Toggle, edit, or remove scheduled tasks">
+          {/* ── Bulk action bar ── */}
+          <div
+            className={[
+              "overflow-hidden transition-all duration-300",
+              someSelected ? "max-h-24 mb-3" : "max-h-0",
+            ].join(" ")}
+            aria-live="polite"
+          >
+            <div className="flex flex-wrap items-center gap-3 rounded-panel border border-border bg-surface-hover px-4 py-3">
+              {bulkBarState === "idle" ? (
+                <>
+                  <span className="text-sm font-medium text-ink">
+                    {selectedIds.size} task{selectedIds.size === 1 ? "" : "s"} selected
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleBulkDeleteClick}
+                    disabled={bulkDeleteMutation.isPending}
+                    className="rounded-full border border-rose-border bg-rose-bg px-3 py-1.5 text-sm text-rose-text hover:bg-rose-bg/80 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Delete selected
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedIds(new Set());
+                      setBulkBarState("idle");
+                    }}
+                    className="rounded-full border border-border-strong px-3 py-1.5 text-sm text-ink-muted hover:text-ink"
+                  >
+                    Clear
+                  </button>
+                  {bulkDeleteError && (
+                    <p className="text-xs text-rose-500">{bulkDeleteError}</p>
+                  )}
+                </>
+              ) : (
+                <>
+                  <span className="text-sm font-medium text-rose-600">
+                    Delete {selectedIds.size} task{selectedIds.size === 1 ? "" : "s"}? This cannot be undone.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleBulkDeleteConfirm}
+                    disabled={bulkDeleteMutation.isPending}
+                    className="rounded-full border border-rose-500 bg-rose-500 px-3 py-1.5 text-sm text-white hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {bulkDeleteMutation.isPending ? "Deleting…" : "Confirm"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleBulkDeleteCancel}
+                    disabled={bulkDeleteMutation.isPending}
+                    className="rounded-full border border-border-strong px-3 py-1.5 text-sm text-ink-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* ── Select all header row ── */}
+          {selectableJobs.length > 1 && (
+            <div className="mb-2 flex items-center gap-3 px-1">
+              {/* 44px touch target wrapper */}
+              <div className="flex h-11 w-11 items-center justify-center">
+                <input
+                  type="checkbox"
+                  aria-label="Select all tasks"
+                  checked={allSelected}
+                  onChange={toggleSelectAll}
+                  className="h-4 w-4 cursor-pointer accent-accent"
+                />
+              </div>
+              <span className="text-xs text-ink-faint">
+                {allSelected ? "Deselect all" : "Select all"}
+              </span>
+            </div>
+          )}
+
           <div className="space-y-3">
             {cronJobs.map((job) => {
               const jobIdentifier = job.jobId ?? job.name;
+              const isSelected = selectedIds.has(jobIdentifier);
+              const isConfirmingDelete = !!singleDeleteConfirm[jobIdentifier];
+              const isSingleDeletePending = !!singleDeletePending[jobIdentifier];
+              const singleError = singleDeleteError[jobIdentifier] ?? "";
+
               return (
-              <article
-                key={job.name}
-                className="rounded-panel border border-border bg-surface-elevated p-4"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <p className="text-base font-medium break-words">{job.name}</p>
-                    <p className="text-sm text-ink-muted break-words">
-                      {cronToHuman(job.schedule?.expr ?? "", job.schedule?.tz ?? "UTC")}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <StatusPill status={job.enabled ? "active" : "paused"} />
-                    {job.delivery?.mode !== "none" && job.delivery?.channel ? (
-                      <span className="rounded-full bg-surface-hover px-2.5 py-0.5 text-xs text-ink-muted">
-                        {job.delivery.channel}
-                      </span>
-                    ) : null}
-                  </div>
-                </div>
-
-                <p className="mt-2 text-sm text-ink-muted line-clamp-2">
-                  {(job.payload?.message ?? "").slice(0, 200)}
-                </p>
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      toggleMutation.mutate({ name: jobIdentifier, enabled: !job.enabled })
-                    }
-                    disabled={toggleMutation.isPending}
-                    className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
-                  >
-                    {job.enabled ? "Disable" : "Enable"}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleStartEdit(job)}
-                    className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong"
-                  >
-                    Edit
-                  </button>
-
-                  {confirmDelete === jobIdentifier ? (
-                    <div className="flex flex-col gap-1.5">
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(jobIdentifier)}
-                          disabled={deleteMutation.isPending}
-                          className={getSaveButtonClass(deleteFeedback.status)}
-                        >
-                          {deleteMutation.isPending
-                            ? "Deleting..."
-                            : deleteFeedback.status === "success"
-                              ? "✓ Deleted"
-                              : "Confirm delete"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            clearDeleteTimer();
-                            setDeleteFeedback({ status: "idle", text: "" });
-                            setConfirmDelete(null);
-                          }}
-                          className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                      {deleteFeedback.status === "error" && confirmDelete === jobIdentifier ? (
-                        <p className="text-xs text-rose-500">{deleteFeedback.text}</p>
-                      ) : null}
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        clearDeleteTimer();
-                        setDeleteFeedback({ status: "idle", text: "" });
-                        setConfirmDelete(jobIdentifier);
-                      }}
-                      className="rounded-full border border-rose-border px-3 py-1.5 text-sm text-rose-text hover:border-rose-border"
-                    >
-                      Delete
-                    </button>
-                  )}
-                </div>
-
-                {editingName === jobIdentifier ? (
-                  <form
-                    className="mt-4 grid gap-3 rounded-panel border border-border p-3 md:grid-cols-2"
-                    onSubmit={handleUpdate}
-                  >
-                    <TimezoneSelector
-                      value={editForm.tz}
-                      onChange={(tz) => setEditForm((prev) => ({ ...prev, tz }))}
-                      defaultTimezone={me?.timezone}
-                    />
-
-                    <ScheduleBuilder
-                      expr={editForm.expr}
-                      onChange={(expr) => setEditForm((prev) => ({ ...prev, expr }))}
-                    />
-
-                    <label className="text-sm text-ink-muted">
-                      Delivery
-                      <select
-                        className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
-                        value={editForm.deliveryMode}
-                        onChange={(e) =>
-                          setEditForm((prev) => ({
-                            ...prev,
-                            deliveryMode: e.target.value,
-                          }))
-                        }
-                      >
-                        <option value="announce">Announce (send message)</option>
-                        <option value="none">Silent (no message)</option>
-                      </select>
-                    </label>
-
-                    <label className="text-sm text-ink-muted md:col-span-2">
-                      What should your agent do?
-                      <textarea
-                        className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
-                        rows={3}
-                        value={editForm.message}
-                        onChange={(e) => setEditForm((prev) => ({ ...prev, message: e.target.value }))}
+                <article
+                  key={job.name}
+                  className={[
+                    "rounded-panel border p-4 transition-colors duration-150",
+                    isConfirmingDelete
+                      ? "border-rose-border bg-rose-bg/30"
+                      : isSelected
+                        ? "border-border bg-surface-hover"
+                        : "border-border bg-surface-elevated",
+                  ].join(" ")}
+                >
+                  <div className="flex flex-wrap items-start gap-2">
+                    {/* Checkbox — 44px touch target */}
+                    <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${job.name}`}
+                        checked={isSelected}
+                        onChange={() => toggleSelectOne(jobIdentifier)}
+                        className="h-4 w-4 cursor-pointer accent-accent"
                       />
-                    </label>
+                    </div>
 
-                    <div className="flex flex-col gap-2 md:col-span-2">
-                      <div className="flex gap-2">
-                        <button
-                          type="submit"
-                          disabled={updateMutation.isPending}
-                          className={getSaveButtonClass(editFeedback.status)}
-                        >
-                          {updateMutation.isPending
-                            ? "Saving..."
-                            : editFeedback.status === "success"
-                              ? "✓ Saved"
-                              : "Save"}
-                        </button>
+                    {/* Job info */}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-base font-medium break-words">{job.name}</p>
+                          <p className="text-sm text-ink-muted break-words">
+                            {cronToHuman(job.schedule?.expr ?? "", job.schedule?.tz ?? "UTC")}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <StatusPill status={job.enabled ? "active" : "paused"} />
+                          {job.delivery?.mode !== "none" && job.delivery?.channel ? (
+                            <span className="rounded-full bg-surface-hover px-2.5 py-0.5 text-xs text-ink-muted">
+                              {job.delivery.channel}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <p className="mt-2 text-sm text-ink-muted line-clamp-2">
+                        {(job.payload?.message ?? "").slice(0, 200)}
+                      </p>
+
+                      {/* Action buttons */}
+                      <div className="mt-3 flex flex-wrap gap-2">
                         <button
                           type="button"
-                          onClick={() => {
-                            clearEditTimer();
-                            setEditFeedback({ status: "idle", text: "" });
-                            setEditingName(null);
-                          }}
+                          onClick={() =>
+                            toggleMutation.mutate({ name: jobIdentifier, enabled: !job.enabled })
+                          }
+                          disabled={toggleMutation.isPending}
+                          className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
+                        >
+                          {job.enabled ? "Disable" : "Enable"}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleStartEdit(job)}
                           className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong"
                         >
-                          Cancel
+                          Edit
                         </button>
+
+                        {/* Single delete — inline confirm */}
+                        {isConfirmingDelete ? (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm text-rose-600 font-medium">Delete?</span>
+                            <button
+                              type="button"
+                              onClick={() => void confirmSingleDelete(jobIdentifier)}
+                              disabled={isSingleDeletePending}
+                              aria-label="Confirm delete"
+                              className="flex h-8 w-8 items-center justify-center rounded-full border border-rose-500 bg-rose-500 text-white hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {isSingleDeletePending ? "…" : "✓"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => cancelSingleDelete(jobIdentifier)}
+                              disabled={isSingleDeletePending}
+                              aria-label="Cancel delete"
+                              className="flex h-8 w-8 items-center justify-center rounded-full border border-border-strong text-sm text-ink-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              ✕
+                            </button>
+                            {singleError && (
+                              <p className="w-full text-xs text-rose-500">{singleError}</p>
+                            )}
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => startSingleDeleteConfirm(jobIdentifier)}
+                            className="rounded-full border border-rose-border px-3 py-1.5 text-sm text-rose-text hover:border-rose-border"
+                          >
+                            Delete
+                          </button>
+                        )}
                       </div>
-                      {editFeedback.status === "error" ? (
-                        <p className="text-xs text-rose-500">{editFeedback.text}</p>
+
+                      {/* Edit form */}
+                      {editingName === jobIdentifier ? (
+                        <form
+                          className="mt-4 grid gap-3 rounded-panel border border-border p-3 md:grid-cols-2"
+                          onSubmit={handleUpdate}
+                        >
+                          <TimezoneSelector
+                            value={editForm.tz}
+                            onChange={(tz) => setEditForm((prev) => ({ ...prev, tz }))}
+                            defaultTimezone={me?.timezone}
+                          />
+
+                          <ScheduleBuilder
+                            expr={editForm.expr}
+                            onChange={(expr) => setEditForm((prev) => ({ ...prev, expr }))}
+                          />
+
+                          <label className="text-sm text-ink-muted">
+                            Delivery
+                            <select
+                              className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
+                              value={editForm.deliveryMode}
+                              onChange={(e) =>
+                                setEditForm((prev) => ({
+                                  ...prev,
+                                  deliveryMode: e.target.value,
+                                }))
+                              }
+                            >
+                              <option value="announce">Announce (send message)</option>
+                              <option value="none">Silent (no message)</option>
+                            </select>
+                          </label>
+
+                          <label className="text-sm text-ink-muted md:col-span-2">
+                            What should your agent do?
+                            <textarea
+                              className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
+                              rows={3}
+                              value={editForm.message}
+                              onChange={(e) => setEditForm((prev) => ({ ...prev, message: e.target.value }))}
+                            />
+                          </label>
+
+                          <div className="flex flex-col gap-2 md:col-span-2">
+                            <div className="flex gap-2">
+                              <button
+                                type="submit"
+                                disabled={updateMutation.isPending}
+                                className={getSaveButtonClass(editFeedback.status)}
+                              >
+                                {updateMutation.isPending
+                                  ? "Saving..."
+                                  : editFeedback.status === "success"
+                                    ? "✓ Saved"
+                                    : "Save"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (editTimeoutRef.current) clearTimeout(editTimeoutRef.current);
+                                  setEditFeedback({ status: "idle", text: "" });
+                                  setEditingName(null);
+                                }}
+                                className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                            {editFeedback.status === "error" ? (
+                              <p className="text-xs text-rose-500">{editFeedback.text}</p>
+                            ) : null}
+                          </div>
+                        </form>
                       ) : null}
                     </div>
-                  </form>
-                ) : null}
-              </article>
+                  </div>
+                </article>
               );
             })}
           </div>

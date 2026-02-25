@@ -166,3 +166,72 @@ class CronJobToggleView(APIView):
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         return Response(result.get("details", result))
+
+
+class CronJobBulkDeleteView(APIView):
+    """Bulk-delete multiple cron jobs atomically.
+
+    Accepts: POST {"ids": ["name-or-id-1", "name-or-id-2", ...]}
+    Returns 200 with per-job results, or 400 if the payload is invalid.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        tenant = _get_tenant_for_user(request.user)
+
+        ids = request.data.get("ids")
+        if not ids or not isinstance(ids, list):
+            return Response(
+                {"detail": "'ids' must be a non-empty list of job names/IDs."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        unique_ids: list[str] = []
+        for job_id in ids:
+            if isinstance(job_id, str) and job_id not in seen:
+                seen.add(job_id)
+                unique_ids.append(job_id)
+
+        if not unique_ids:
+            return Response(
+                {"detail": "No valid job IDs provided."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            _require_active_tenant(tenant)
+        except GatewayError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        results: list[dict] = []
+        errors: list[dict] = []
+
+        for job_id in unique_ids:
+            try:
+                invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
+                results.append({"id": job_id, "deleted": True})
+                logger.info("cron.bulk_delete: deleted job_id=%s tenant=%s", job_id, tenant.id)
+            except GatewayError as exc:
+                errors.append({"id": job_id, "deleted": False, "error": str(exc)})
+                logger.warning(
+                    "cron.bulk_delete: failed to delete job_id=%s tenant=%s error=%s",
+                    job_id, tenant.id, exc,
+                )
+
+        response_status = status.HTTP_200_OK
+        if errors and not results:
+            response_status = status.HTTP_502_BAD_GATEWAY
+        elif errors:
+            response_status = status.HTTP_207_MULTI_STATUS
+
+        return Response(
+            {
+                "deleted": len(results),
+                "errors": len(errors),
+                "results": results + errors,
+            },
+            status=response_status,
+        )
