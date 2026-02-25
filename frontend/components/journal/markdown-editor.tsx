@@ -20,6 +20,8 @@ interface MarkdownEditorProps {
   autoFocus?: boolean;
   minRows?: number;
   className?: string;
+  /** localStorage key used to save/restore cursor position across open/close */
+  cursorKey?: string;
 }
 
 // ── Inline SVG Icons (16×16) ─────────────────────────────────────────────────
@@ -97,6 +99,7 @@ export function MarkdownEditor({
   onHelpToggle: _onHelpToggle,
   autoFocus,
   className,
+  cursorKey,
 }: MarkdownEditorProps) {
   const editor = useEditor({
     extensions: [
@@ -110,7 +113,28 @@ export function MarkdownEditor({
       }),
     ],
     content: value,
-    autofocus: autoFocus ? "end" : false,
+    // Don't use autofocus here — cursor restore is handled in onCreate
+    autofocus: false,
+    onCreate({ editor: ed }) {
+      if (!autoFocus) return;
+      // Restore last cursor position if available, otherwise go to start
+      const saved = cursorKey ? localStorage.getItem(cursorKey) : null;
+      if (saved) {
+        const pos = parseInt(saved, 10);
+        // Clamp to doc size in case content has changed since last visit
+        const clamped = Math.max(0, Math.min(pos, ed.state.doc.content.size - 1));
+        ed.commands.setTextSelection(clamped);
+      } else {
+        ed.commands.setTextSelection(0);
+      }
+      ed.commands.focus();
+    },
+    onBlur({ editor: ed }) {
+      // Save cursor position whenever the editor loses focus
+      if (cursorKey) {
+        localStorage.setItem(cursorKey, String(ed.state.selection.from));
+      }
+    },
     editorProps: {
       attributes: {
         class:

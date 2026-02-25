@@ -1,6 +1,6 @@
 "use client";
 
-import { type MouseEvent, useCallback, useEffect, useState } from "react";
+import { type MouseEvent, type TouchEvent as ReactTouchEvent, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownEditor } from "@/components/journal/markdown-editor";
@@ -55,6 +55,35 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
   const [helpOpen, setHelpOpen] = useState(false);
   // null = not yet measured (avoids SSR/hydration mismatch)
   const [isMobile, setIsMobile] = useState<boolean | null>(null);
+
+  // Draggable pencil FAB — Y position stored in localStorage
+  const FAB_KEY = "pencil-fab-y";
+  const [fabY, setFabY] = useState<number | null>(null);
+  const fabDrag = useRef<{ startTouchY: number; startBtnY: number } | null>(null);
+
+  useEffect(() => {
+    const saved = localStorage.getItem(FAB_KEY);
+    setFabY(saved ? parseInt(saved, 10) : window.innerHeight - 80 - 28);
+  }, []);
+
+  const handleFabTouchStart = useCallback((e: ReactTouchEvent) => {
+    const touch = e.touches[0];
+    fabDrag.current = { startTouchY: touch.clientY, startBtnY: fabY ?? window.innerHeight - 108 };
+  }, [fabY]);
+
+  const handleFabTouchMove = useCallback((e: ReactTouchEvent) => {
+    if (!fabDrag.current) return;
+    e.preventDefault();
+    const delta = e.touches[0].clientY - fabDrag.current.startTouchY;
+    const newY = Math.max(16, Math.min(window.innerHeight - 72, fabDrag.current.startBtnY + delta));
+    setFabY(newY);
+  }, []);
+
+  const handleFabTouchEnd = useCallback(() => {
+    if (fabY !== null) localStorage.setItem(FAB_KEY, String(fabY));
+    fabDrag.current = null;
+  }, [fabY]);
+
   const queryClient = useQueryClient();
 
   // Detect mobile viewport — runs client-side only
@@ -251,6 +280,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
             onSave={handleSave}
             onHelpToggle={() => setHelpOpen(true)}
             autoFocus
+            cursorKey={`doc-cursor-${kind}-${effectiveSlug}`}
             className="rounded-none border-0"
           />
         </div>
@@ -363,6 +393,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
               onSave={handleSave}
               onHelpToggle={() => setHelpOpen(true)}
               autoFocus
+              cursorKey={`doc-cursor-${kind}-${effectiveSlug}`}
               minRows={Math.max(20, (draft.split("\n").length + 5))}
             />
           </div>
@@ -391,13 +422,17 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
         )}
       </div>
 
-      {/* Mobile floating edit button — only when not editing */}
-      {isMobile === true && !editing && (
+      {/* Mobile floating edit button — draggable along Y axis */}
+      {isMobile === true && !editing && fabY !== null && (
         <button
           type="button"
           onClick={handleEdit}
-          aria-label="Edit note"
-          className="fixed bottom-20 right-4 z-40 rounded-full bg-accent text-white p-3 shadow-lg"
+          onTouchStart={handleFabTouchStart}
+          onTouchMove={handleFabTouchMove}
+          onTouchEnd={handleFabTouchEnd}
+          aria-label="Edit note — drag to reposition"
+          className="fixed right-4 z-40 rounded-full bg-accent text-white p-3 shadow-lg touch-none select-none"
+          style={{ top: `${fabY}px` }}
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
