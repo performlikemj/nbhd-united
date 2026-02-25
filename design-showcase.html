@@ -1,0 +1,1362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>NBHD United — Design System v3: Responsive</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=IBM+Plex+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════
+   NBHD UNITED — DESIGN SYSTEM v3: RESPONSIVE
+   Fluid. Adaptive. Every viewport, every device.
+   ═══════════════════════════════════════════════════ */
+
+:root {
+  --ink: #12232c;
+  --ink-muted: rgba(18, 35, 44, 0.72);
+  --ink-faint: rgba(18, 35, 44, 0.48);
+  --mist: #f6f4ee;
+  --bg: #f8f6ef;
+  --surface: #ffffff;
+  --surface-elevated: #ffffff;
+  --surface-hover: rgba(18, 35, 44, 0.05);
+  --card: rgba(252, 252, 248, 0.95);
+  --accent: #1d4ed8;
+  --accent-hover: #1e40af;
+  --accent-subtle: rgba(29, 78, 216, 0.1);
+  --signal: #0f766e;
+  --signal-bg: #0f766e;
+  --signal-faint: rgba(15, 118, 110, 0.1);
+  --border: rgba(18, 35, 44, 0.12);
+  --border-strong: rgba(18, 35, 44, 0.25);
+  --overlay: rgba(18, 35, 44, 0.55);
+  --shadow-panel: 0 20px 55px rgba(18, 31, 38, 0.14);
+  --bg-gradient: radial-gradient(circle at 20% 20%, rgba(255,194,153,0.30), transparent 40%),
+    radial-gradient(circle at 85% 15%, rgba(15,118,110,0.18), transparent 32%),
+    linear-gradient(180deg, #f8f6ef 0%, #eef4f4 48%, #f9f9f6 100%);
+  --focus-ring-offset: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
+  --error-red: #dc2626;
+
+  --status-emerald-bg: #ecfdf5; --status-emerald-text: #065f46;
+  --status-rose-bg: #fff1f2; --status-rose-text: #9f1239;
+  --status-amber-bg: #fffbeb; --status-amber-text: #92400e;
+  --status-sky-bg: #f0f9ff; --status-sky-text: #075985;
+  --status-slate-bg: #f1f5f9; --status-slate-text: #334155;
+  --status-indigo-bg: #eef2ff; --status-indigo-text: #3730a3;
+  --status-violet-bg: #f5f3ff; --status-violet-text: #5b21b6;
+  --status-orange-bg: #fff7ed; --status-orange-text: #9a3412;
+
+  --rose-bg: #fff1f2; --rose-border: #fecaca; --rose-text: #9f1239;
+
+  --font-display: "DM Serif Display", "Georgia", serif;
+  --font-body: "Plus Jakarta Sans", "Avenir Next", "Trebuchet MS", sans-serif;
+  --font-mono: "IBM Plex Mono", "Consolas", "Menlo", monospace;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration: 420ms;
+
+  /* ── Fluid spacing ── */
+  --space-xs: clamp(0.25rem, 0.5vw, 0.5rem);
+  --space-sm: clamp(0.5rem, 1vw, 0.75rem);
+  --space-md: clamp(0.75rem, 1.5vw + 0.25rem, 1.5rem);
+  --space-lg: clamp(1.25rem, 2.5vw + 0.25rem, 2.5rem);
+  --space-xl: clamp(2rem, 4vw + 0.5rem, 5rem);
+  --space-2xl: clamp(3rem, 6vw + 1rem, 8rem);
+
+  /* ── Fluid page padding ── */
+  --page-pad: clamp(1rem, 4vw, 2.5rem);
+
+  /* ── Safe area ── */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --ink: #e2e8f0;
+  --ink-muted: rgba(226, 232, 240, 0.72);
+  --ink-faint: rgba(226, 232, 240, 0.42);
+  --mist: #0f1419;
+  --bg: #0b0f13;
+  --surface: #161b22;
+  --surface-elevated: #1e252e;
+  --surface-hover: rgba(226, 232, 240, 0.06);
+  --card: rgba(22, 27, 34, 0.95);
+  --accent: #60a5fa;
+  --accent-hover: #93bbfd;
+  --accent-subtle: rgba(96, 165, 250, 0.15);
+  --signal: #5eead4;
+  --signal-bg: #0d9488;
+  --signal-faint: rgba(94, 234, 212, 0.12);
+  --border: rgba(226, 232, 240, 0.12);
+  --border-strong: rgba(226, 232, 240, 0.25);
+  --overlay: rgba(0, 0, 0, 0.70);
+  --shadow-panel: 0 20px 55px rgba(0, 0, 0, 0.40);
+  --bg-gradient: radial-gradient(circle at 20% 20%, rgba(255,194,153,0.06), transparent 40%),
+    radial-gradient(circle at 85% 15%, rgba(94,234,212,0.06), transparent 32%),
+    linear-gradient(180deg, #0b0f13 0%, #0d1218 48%, #0b0f13 100%);
+  --focus-ring-offset: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
+  --error-red: #f87171;
+
+  --status-emerald-bg: rgba(6,95,70,0.2); --status-emerald-text: #6ee7b7;
+  --status-rose-bg: rgba(159,18,57,0.2); --status-rose-text: #fda4af;
+  --status-amber-bg: rgba(146,64,14,0.2); --status-amber-text: #fcd34d;
+  --status-sky-bg: rgba(7,89,133,0.2); --status-sky-text: #7dd3fc;
+  --status-slate-bg: rgba(51,65,85,0.2); --status-slate-text: #cbd5e1;
+  --status-indigo-bg: rgba(55,48,163,0.2); --status-indigo-text: #a5b4fc;
+  --status-violet-bg: rgba(91,33,182,0.2); --status-violet-text: #c4b5fd;
+  --status-orange-bg: rgba(154,52,18,0.2); --status-orange-text: #fdba74;
+  --rose-bg: rgba(159,18,57,0.15); --rose-border: rgba(244,63,94,0.25); --rose-text: #fda4af;
+  color-scheme: dark;
+}
+
+/* ── Reduced Motion ── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .observe { opacity: 1; transform: none; }
+}
+
+/* ── High Contrast ── */
+@media (forced-colors: active) {
+  :root { --accent: LinkText; --ink: CanvasText; --bg: Canvas; --surface: Canvas; --border: CanvasText; }
+  .responsive-tag, .a11y-tag { border: 1px solid CanvasText !important; }
+  .btn { border: 2px solid ButtonText !important; }
+}
+
+/* ── Print ── */
+@media print {
+  body { background: #fff !important; color: #000 !important; font-size: 12pt; }
+  .nav, .toolbar, .skip-link, .breakpoint-badge, .hamburger, .mobile-menu { display: none !important; }
+  .page { padding: 0; max-width: 100%; }
+  .section { break-inside: avoid; page-break-inside: avoid; border-top: 1pt solid #ccc; }
+  .card-grid { grid-template-columns: repeat(2, 1fr) !important; }
+  .observe { opacity: 1; transform: none; }
+  a[href]::after { content: " (" attr(href) ")"; font-size: 9pt; color: #666; }
+}
+
+/* ── Reset ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; -webkit-font-smoothing: antialiased; }
+
+body {
+  background: var(--bg);
+  background-image: var(--bg-gradient);
+  background-attachment: fixed;
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 1rem;
+  line-height: 1.6;
+  min-height: 100vh;
+  padding-top: var(--safe-top);
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+}
+
+/* ── Skip Link ── */
+.skip-link {
+  position: fixed; top: -100%; left: 1rem; z-index: 9999;
+  background: var(--accent); color: #fff;
+  padding: 0.75rem 1.5rem; border-radius: 0 0 0.75rem 0.75rem;
+  font-weight: 600; font-size: 0.875rem; text-decoration: none;
+  transition: top 200ms ease;
+}
+.skip-link:focus { top: 0; outline: none; }
+
+/* ── Focus ── */
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+button:focus-visible, .btn:focus-visible { box-shadow: var(--focus-ring-offset); outline: none; }
+input:focus-visible, select:focus-visible, textarea:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle); outline: none; }
+
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.aria-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+
+/* ═══════════════════════
+   BREAKPOINT INDICATOR
+   ═══════════════════════ */
+.breakpoint-badge {
+  position: fixed;
+  bottom: var(--space-md);
+  right: var(--space-md);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  background: var(--ink);
+  color: var(--bg);
+  border-radius: 2rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+  padding-bottom: calc(0.5rem + var(--safe-bottom));
+}
+
+.bp-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #ef4444;
+  transition: background 300ms ease;
+}
+
+@media (min-width: 640px) { .bp-dot { background: #f59e0b; } }
+@media (min-width: 768px) { .bp-dot { background: #3b82f6; } }
+@media (min-width: 1024px) { .bp-dot { background: #10b981; } }
+@media (min-width: 1280px) { .bp-dot { background: #8b5cf6; } }
+
+/* ═══════════════════════
+   RESPONSIVE TOOLBAR
+   ═══════════════════════ */
+.toolbar {
+  position: fixed;
+  top: 4rem;
+  left: 0;
+  right: 0;
+  z-index: 90;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 var(--page-pad);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 2.75rem;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+}
+
+.toolbar-label {
+  color: var(--ink-faint);
+  margin-right: 0.5rem;
+  display: none;
+}
+
+@media (min-width: 640px) {
+  .toolbar-label { display: inline; }
+}
+
+.toolbar-btn {
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 200ms ease;
+  letter-spacing: 0.03em;
+  min-height: 2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.toolbar-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+.toolbar-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.toolbar-width {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  color: var(--ink-faint);
+  margin-left: auto;
+  min-width: 4rem;
+  text-align: right;
+}
+
+@media (max-width: 639px) {
+  .toolbar { height: 2.5rem; gap: 0.25rem; }
+  .toolbar-btn { padding: 0.25rem 0.5rem; font-size: 0.5625rem; }
+}
+
+/* ═══════════════════════
+   NAVIGATION — RESPONSIVE
+   ═══════════════════════ */
+.nav {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(20px) saturate(1.5);
+  -webkit-backdrop-filter: blur(20px) saturate(1.5);
+  background: rgba(255,255,255,0.88);
+  padding-top: var(--safe-top);
+}
+[data-theme="dark"] .nav { background: rgba(22,27,34,0.88); }
+
+.nav-inner {
+  max-width: 80rem; margin: 0 auto;
+  padding: 0 var(--page-pad);
+  height: 4rem;
+  display: flex; align-items: center; justify-content: space-between;
+}
+
+.nav-brand { display: flex; align-items: center; gap: 0.75rem; text-decoration: none; color: var(--ink); }
+.nav-logo { width: 2rem; height: 2rem; background: var(--ink); border-radius: 0.5rem; display: flex; align-items: center; justify-content: center; color: var(--bg); font-family: var(--font-display); font-size: 1.125rem; }
+.nav-title { font-weight: 600; font-size: 0.875rem; }
+.nav-subtitle { font-family: var(--font-mono); font-size: 0.6875rem; color: var(--ink-faint); }
+
+/* Desktop nav links */
+.nav-links { display: flex; align-items: center; gap: 0.25rem; list-style: none; }
+.nav-link { font-size: 0.8125rem; font-weight: 500; color: var(--ink-muted); text-decoration: none; padding: 0.375rem 0.875rem; border-radius: 0.5rem; transition: all 200ms ease; }
+.nav-link:hover { color: var(--ink); background: var(--surface-hover); }
+.nav-link[aria-current="true"] { color: var(--accent); background: var(--accent-subtle); }
+
+.nav-actions { display: flex; gap: 0.5rem; align-items: center; }
+
+.theme-toggle {
+  width: 2.5rem; height: 2.5rem; min-width: 44px; min-height: 44px;
+  border-radius: 0.625rem; border: 1px solid var(--border); background: var(--surface);
+  color: var(--ink); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.125rem; transition: all 200ms ease;
+}
+.theme-toggle:hover { background: var(--surface-hover); }
+
+/* Hamburger */
+.hamburger {
+  display: none;
+  width: 44px; height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 0.625rem;
+  background: var(--surface);
+  cursor: pointer;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0;
+}
+
+.hamburger-line {
+  width: 20px; height: 2px;
+  background: var(--ink);
+  border-radius: 1px;
+  transition: all 300ms var(--ease-out);
+  display: block;
+}
+
+.hamburger[aria-expanded="true"] .hamburger-line:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+.hamburger[aria-expanded="true"] .hamburger-line:nth-child(2) { opacity: 0; }
+.hamburger[aria-expanded="true"] .hamburger-line:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+/* Mobile menu */
+.mobile-menu {
+  display: none;
+  position: fixed;
+  top: calc(4rem + var(--safe-top));
+  left: 0; right: 0; bottom: 0;
+  background: var(--surface);
+  z-index: 99;
+  padding: var(--page-pad);
+  padding-bottom: var(--safe-bottom);
+  overflow-y: auto;
+  transform: translateX(100%);
+  transition: transform 350ms var(--ease-out);
+}
+
+.mobile-menu.open { transform: translateX(0); }
+
+.mobile-menu-links {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.mobile-menu-link {
+  display: flex; align-items: center;
+  font-size: 1rem; font-weight: 500;
+  color: var(--ink-muted); text-decoration: none;
+  padding: 0.875rem 1rem; border-radius: 0.75rem;
+  transition: all 200ms ease;
+  min-height: 44px;
+}
+.mobile-menu-link:hover, .mobile-menu-link:focus { color: var(--ink); background: var(--surface-hover); }
+.mobile-menu-link[aria-current="true"] { color: var(--accent); background: var(--accent-subtle); }
+
+@media (max-width: 767px) {
+  .nav-links { display: none; }
+  .hamburger { display: flex; }
+  .mobile-menu { display: block; }
+}
+
+/* ═══════════════════════
+   PAGE LAYOUT
+   ═══════════════════════ */
+.page {
+  max-width: 80rem; margin: 0 auto;
+  padding: calc(6.75rem + var(--safe-top)) var(--page-pad) var(--space-xl);
+  padding-top: calc(6.75rem + 2.75rem);
+  position: relative; z-index: 1;
+}
+
+/* ── Hero ── */
+.hero { padding: var(--space-xl) 0 var(--space-lg); }
+
+.hero-eyebrow {
+  font-family: var(--font-mono);
+  font-size: clamp(0.625rem, 1vw, 0.6875rem);
+  font-weight: 500; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--signal);
+  margin-bottom: var(--space-md);
+}
+
+.hero h1 {
+  font-family: var(--font-display);
+  font-size: clamp(2.25rem, 5vw + 0.5rem, 4.5rem);
+  font-weight: 400;
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+  max-width: 44rem;
+}
+
+.hero h1 em { font-style: italic; color: var(--accent); }
+
+.hero-desc {
+  font-size: clamp(0.9375rem, 1.5vw, 1.0625rem);
+  line-height: 1.7; color: var(--ink-muted);
+  max-width: 33rem; margin-top: var(--space-md);
+}
+
+.hero-meta {
+  display: flex; flex-wrap: wrap;
+  gap: var(--space-md);
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border);
+}
+
+.hero-meta-item { display: flex; flex-direction: column; gap: 0.25rem; }
+.hero-meta-label { font-family: var(--font-mono); font-size: 0.625rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); }
+.hero-meta-value { font-weight: 600; font-size: 0.875rem; }
+
+.kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 1.5rem; height: 1.375rem; padding: 0 0.375rem; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 0.25rem; font-family: var(--font-mono); font-size: 0.625rem; font-weight: 600; color: var(--ink-muted); box-shadow: 0 1px 0 var(--border-strong); }
+
+/* ── Sections ── */
+.section { margin-top: var(--space-xl); padding-top: var(--space-lg); border-top: 1px solid var(--border); }
+.section-header { display: flex; align-items: baseline; gap: 1rem; margin-bottom: var(--space-lg); }
+.section-number { font-family: var(--font-mono); font-size: 0.75rem; color: var(--ink-faint); }
+.section-title { font-family: var(--font-display); font-size: clamp(1.5rem, 3vw, 2.25rem); font-weight: 400; letter-spacing: -0.02em; }
+.section-desc { color: var(--ink-muted); font-size: 0.875rem; margin-top: calc(-1 * var(--space-md)); margin-bottom: var(--space-lg); max-width: 35rem; }
+
+/* ── Responsive Annotation ── */
+.responsive-tag {
+  display: inline-flex; align-items: center; gap: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  background: var(--accent);
+  color: #ffffff;
+  font-family: var(--font-mono);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border-radius: 0.375rem;
+  text-transform: uppercase;
+}
+
+.responsive-annotation {
+  position: relative;
+  border: 2px dashed var(--accent);
+  border-radius: 1rem;
+  padding: 0.125rem;
+}
+
+.responsive-tag-float { position: absolute; top: -0.75rem; right: 1rem; z-index: 2; }
+
+.code-note {
+  background: var(--accent-subtle);
+  border: 1px solid rgba(29, 78, 216, 0.15);
+  border-radius: 0.75rem;
+  padding: 0.875rem 1rem;
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+  line-height: 1.5;
+  margin-top: 1rem;
+}
+
+.code-note code {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  background: var(--surface-hover);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  color: var(--accent);
+}
+
+.a11y-tag {
+  display: inline-flex; align-items: center; gap: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  background: var(--signal-bg);
+  color: #ffffff;
+  font-family: var(--font-mono);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border-radius: 0.375rem;
+  text-transform: uppercase;
+}
+
+/* ── CSS Code Block ── */
+.css-demo {
+  background: var(--ink);
+  color: #a5f3fc;
+  font-family: var(--font-mono);
+  font-size: clamp(0.6875rem, 1.2vw, 0.8125rem);
+  line-height: 1.7;
+  padding: var(--space-md);
+  border-radius: 0.75rem;
+  overflow-x: auto;
+  margin-top: var(--space-sm);
+  -webkit-overflow-scrolling: touch;
+}
+
+[data-theme="dark"] .css-demo { background: #1a1a2e; }
+
+.css-prop { color: #93c5fd; }
+.css-val { color: #86efac; }
+.css-comment { color: rgba(165, 243, 252, 0.4); }
+
+/* ═══════════════════════
+   FLUID TYPOGRAPHY DEMO
+   ═══════════════════════ */
+.type-scale { display: flex; flex-direction: column; }
+.type-row {
+  display: grid;
+  grid-template-columns: clamp(5rem, 12vw, 8rem) 1fr;
+  align-items: baseline;
+  padding: var(--space-md) 0;
+  border-bottom: 1px solid var(--border);
+  gap: var(--space-md);
+}
+.type-row:last-child { border-bottom: none; }
+.type-meta { font-family: var(--font-mono); font-size: 0.6875rem; color: var(--ink-faint); display: flex; flex-direction: column; gap: 0.125rem; }
+
+@media (max-width: 639px) {
+  .type-row { grid-template-columns: 1fr; gap: 0.25rem; }
+}
+
+/* ═══════════════════════
+   CARD GRID — RESPONSIVE
+   ═══════════════════════ */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-md);
+}
+
+@media (max-width: 1023px) { .card-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 639px) { .card-grid { grid-template-columns: 1fr; } }
+
+.card { border-radius: 1.25rem; padding: var(--space-lg); transition: all 300ms var(--ease-out); }
+.card-basic { background: var(--surface); border: 1px solid var(--border); }
+.card-elevated { background: var(--surface-elevated); box-shadow: var(--shadow-panel); border: 1px solid var(--border); }
+.card-interactive { background: var(--card); border: 1px solid var(--border); cursor: pointer; text-decoration: none; color: inherit; display: block; }
+.card-interactive:hover { transform: translateY(-4px); box-shadow: var(--shadow-panel); border-color: var(--accent); }
+.card-eyebrow { font-family: var(--font-mono); font-size: 0.625rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 0.75rem; }
+.card-title { font-family: var(--font-display); font-size: clamp(1.125rem, 2vw, 1.375rem); margin-bottom: 0.5rem; }
+.card-body { font-size: 0.8125rem; color: var(--ink-muted); line-height: 1.6; }
+.card-footer { margin-top: var(--space-md); padding-top: var(--space-sm); border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+.card-tag { font-family: var(--font-mono); font-size: 0.6875rem; color: var(--signal); }
+.card-arrow { width: 2.75rem; height: 2.75rem; border-radius: 50%; background: var(--surface-hover); display: flex; align-items: center; justify-content: center; font-size: 0.875rem; color: var(--ink-muted); transition: all 200ms ease; }
+.card-interactive:hover .card-arrow { background: var(--accent); color: #fff; }
+
+/* ── Container Query Cards ── */
+.cq-container { container-type: inline-size; container-name: card-container; }
+
+@container card-container (max-width: 300px) {
+  .cq-card { padding: 1rem; }
+  .cq-card .card-title { font-size: 1rem; }
+}
+
+@container card-container (min-width: 301px) and (max-width: 500px) {
+  .cq-card { padding: 1.25rem; }
+}
+
+@container card-container (min-width: 501px) {
+  .cq-card { padding: 1.75rem; }
+  .cq-card .cq-extra { display: block; }
+}
+
+.cq-extra { display: none; font-size: 0.75rem; color: var(--ink-faint); margin-top: 0.75rem; font-family: var(--font-mono); }
+
+/* ═══════════════════════
+   BUTTONS — TOUCH TARGETS
+   ═══════════════════════ */
+.button-group { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: var(--space-md); }
+.button-group-label { font-family: var(--font-mono); font-size: 0.6875rem; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.08em; width: 100%; margin-bottom: 0.25rem; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+  font-family: var(--font-body); font-weight: 600;
+  border: none; cursor: pointer; transition: all 200ms ease;
+  text-decoration: none; white-space: nowrap;
+  min-height: 44px; min-width: 44px;
+}
+
+.btn-sm { font-size: 0.75rem; padding: 0.5rem 0.875rem; border-radius: 0.5rem; }
+.btn-md { font-size: 0.8125rem; padding: 0.625rem 1.25rem; border-radius: 0.625rem; }
+.btn-lg { font-size: 0.9375rem; padding: 0.875rem 1.75rem; border-radius: 0.75rem; }
+
+.btn-primary { background: var(--accent); color: #fff; box-shadow: 0 2px 8px rgba(29,78,216,0.3); }
+.btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); }
+.btn-secondary { background: var(--surface); color: var(--ink); border: 1px solid var(--border-strong); }
+.btn-secondary:hover { background: var(--surface-hover); transform: translateY(-1px); }
+.btn-ghost { background: transparent; color: var(--ink-muted); }
+.btn-ghost:hover { background: var(--surface-hover); color: var(--ink); }
+.btn-danger { background: var(--rose-bg); color: var(--rose-text); border: 1px solid var(--rose-border); }
+.btn-danger:hover { background: var(--rose-text); color: #fff; border-color: var(--rose-text); }
+.btn-signal { background: var(--signal-bg); color: #fff; }
+.btn-signal:hover { opacity: 0.9; transform: translateY(-1px); }
+
+/* ═══════════════════════
+   FORMS — RESPONSIVE
+   ═══════════════════════ */
+.form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-md); }
+@media (max-width: 639px) { .form-grid { grid-template-columns: 1fr; } }
+
+.form-group { display: flex; flex-direction: column; gap: 0.375rem; }
+.form-label { font-size: 0.8125rem; font-weight: 600; }
+.form-hint { font-size: 0.6875rem; color: var(--ink-faint); }
+.form-error { font-size: 0.75rem; color: var(--error-red); font-weight: 500; display: flex; align-items: center; gap: 0.375rem; }
+
+.input {
+  font-family: var(--font-body); font-size: 1rem;
+  padding: 0.75rem 0.875rem;
+  border-radius: 0.625rem;
+  border: 1px solid var(--border-strong);
+  background: var(--surface); color: var(--ink);
+  transition: all 200ms ease; width: 100%;
+  min-height: 44px;
+}
+.input::placeholder { color: var(--ink-faint); }
+.input[aria-invalid="true"] { border-color: var(--error-red); box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
+
+select.input {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' fill='none' stroke='%2312232c' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 0.75rem center; padding-right: 2.25rem;
+}
+[data-theme="dark"] select.input { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' fill='none' stroke='%23e2e8f0' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E"); }
+textarea.input { resize: vertical; min-height: 5rem; }
+
+/* Checkbox + Toggle */
+.checkbox-wrapper { display: flex; align-items: center; gap: 0.625rem; cursor: pointer; min-height: 44px; }
+.checkbox-input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.checkbox-visual { width: 1.25rem; height: 1.25rem; border-radius: 0.375rem; border: 2px solid var(--border-strong); background: var(--surface); display: flex; align-items: center; justify-content: center; transition: all 200ms ease; flex-shrink: 0; }
+.checkbox-input:checked + .checkbox-visual { background: var(--accent); border-color: var(--accent); }
+.checkbox-input:checked + .checkbox-visual::after { content: '✓'; color: #fff; font-size: 0.75rem; font-weight: 700; }
+.checkbox-input:focus-visible + .checkbox-visual { box-shadow: var(--focus-ring-offset); }
+.checkbox-text { font-size: 0.8125rem; }
+
+.toggle-wrapper { display: flex; align-items: center; gap: 0.75rem; cursor: pointer; min-height: 44px; }
+.toggle-input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.toggle-track { width: 2.75rem; height: 1.5rem; border-radius: 0.75rem; background: var(--border-strong); position: relative; transition: background 200ms ease; flex-shrink: 0; }
+.toggle-input:checked + .toggle-track { background: var(--signal-bg); }
+.toggle-thumb { width: 1.125rem; height: 1.125rem; border-radius: 50%; background: #fff; position: absolute; top: 0.1875rem; left: 0.1875rem; transition: transform 200ms var(--ease-out); box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
+.toggle-input:checked + .toggle-track .toggle-thumb { transform: translateX(1.25rem); }
+.toggle-input:focus-visible + .toggle-track { box-shadow: var(--focus-ring-offset); }
+.toggle-text { font-size: 0.8125rem; }
+
+/* ═══════════════════════
+   BADGES — RESPONSIVE
+   ═══════════════════════ */
+.badge-grid { display: flex; flex-wrap: wrap; gap: 0.625rem; }
+.badge { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.375rem 0.75rem; border-radius: 6.25rem; font-size: 0.75rem; font-weight: 600; white-space: nowrap; min-height: 2rem; }
+.badge-dot { width: 0.375rem; height: 0.375rem; border-radius: 50%; }
+
+/* ═══════════════════════
+   SPACING DEMO
+   ═══════════════════════ */
+.spacing-demo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: var(--space-md);
+}
+
+.spacing-demo-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  padding: var(--space-md);
+  text-align: center;
+}
+
+.spacing-demo-bar {
+  height: 2rem;
+  background: var(--signal-faint);
+  border: 1px solid var(--signal);
+  border-radius: 0.375rem;
+  margin-bottom: 0.75rem;
+  transition: all 300ms var(--ease-out);
+}
+
+.spacing-demo-bar:hover { background: var(--signal-bg); opacity: 0.6; }
+
+.spacing-demo-name {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+.spacing-demo-value {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  color: var(--ink-faint);
+  margin-top: 0.125rem;
+}
+
+/* ═══════════════════════
+   NAV DEMO
+   ═══════════════════════ */
+.nav-demo { border-radius: 1.25rem; overflow: hidden; border: 1px solid var(--border); background: var(--surface); }
+.nav-demo-bar { padding: 0 var(--space-md); height: 3.5rem; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); }
+.nav-demo-logo { display: flex; align-items: center; gap: 0.625rem; text-decoration: none; color: var(--ink); }
+.nav-demo-icon { width: 1.75rem; height: 1.75rem; background: var(--ink); border-radius: 0.4375rem; display: flex; align-items: center; justify-content: center; color: var(--bg); font-family: var(--font-display); font-size: 0.9375rem; }
+.nav-demo-name { font-weight: 600; font-size: 0.875rem; }
+.nav-demo-links { display: flex; gap: 0.25rem; list-style: none; }
+.nav-demo-link { font-size: 0.8125rem; color: var(--ink-muted); padding: 0.375rem 0.75rem; border-radius: 0.5rem; cursor: pointer; transition: all 150ms ease; text-decoration: none; }
+.nav-demo-link:hover { color: var(--ink); background: var(--surface-hover); }
+.nav-demo-link[aria-current="page"] { color: var(--accent); background: var(--accent-subtle); }
+.nav-demo-content { padding: var(--space-lg) var(--space-md); min-height: 5rem; display: flex; align-items: center; justify-content: center; color: var(--ink-faint); font-size: 0.8125rem; font-family: var(--font-mono); }
+
+@media (max-width: 639px) {
+  .nav-demo-links { display: none; }
+}
+
+/* ── Divider ── */
+.divider-ornament { display: flex; align-items: center; gap: 0.75rem; margin: var(--space-lg) 0; color: var(--ink-faint); }
+.divider-ornament::before, .divider-ornament::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.divider-ornament span { font-family: var(--font-mono); font-size: 0.625rem; letter-spacing: 0.15em; text-transform: uppercase; }
+
+/* ── Footer ── */
+.page-footer {
+  margin-top: var(--space-2xl); padding: var(--space-lg) 0; border-top: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: var(--space-md);
+  padding-bottom: calc(var(--space-lg) + var(--safe-bottom));
+}
+.footer-text { font-family: var(--font-mono); font-size: 0.6875rem; color: var(--ink-faint); }
+.footer-links { display: flex; gap: 1.25rem; flex-wrap: wrap; }
+.footer-link { font-size: 0.75rem; color: var(--ink-muted); text-decoration: none; transition: color 200ms ease; }
+.footer-link:hover { color: var(--accent); }
+
+/* ── Scroll Reveal ── */
+.observe { opacity: 0; transform: translateY(1.25rem); transition: opacity 600ms var(--ease-out), transform 600ms var(--ease-out); }
+.observe.visible { opacity: 1; transform: translateY(0); }
+</style>
+</head>
+<body>
+
+<a href="#main-content" class="skip-link">Skip to main content</a>
+<div id="liveRegion" class="aria-live" aria-live="polite" aria-atomic="true"></div>
+
+<!-- ═══ NAV ═══ -->
+<nav class="nav" role="navigation" aria-label="Design system sections">
+  <div class="nav-inner">
+    <a href="#" class="nav-brand" aria-label="NBHD United Design System v3 — Home">
+      <div class="nav-logo" aria-hidden="true">N</div>
+      <div>
+        <div class="nav-title">NBHD United</div>
+        <div class="nav-subtitle">v3 Responsive</div>
+      </div>
+    </a>
+    <ul class="nav-links" role="list">
+      <li><a class="nav-link" href="#fluid-type" aria-current="true">Type</a></li>
+      <li><a class="nav-link" href="#spacing">Spacing</a></li>
+      <li><a class="nav-link" href="#buttons">Buttons</a></li>
+      <li><a class="nav-link" href="#cards">Cards</a></li>
+      <li><a class="nav-link" href="#forms">Forms</a></li>
+      <li><a class="nav-link" href="#nav-section">Nav</a></li>
+    </ul>
+    <div class="nav-actions">
+      <button class="theme-toggle" onclick="toggleTheme()" id="themeBtn" aria-label="Switch to dark theme">
+        <span aria-hidden="true">☀</span>
+      </button>
+      <button class="hamburger" id="hamburgerBtn" aria-label="Open navigation menu" aria-expanded="false" aria-controls="mobileMenu">
+        <span class="hamburger-line"></span>
+        <span class="hamburger-line"></span>
+        <span class="hamburger-line"></span>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<!-- ═══ MOBILE MENU ═══ -->
+<div class="mobile-menu" id="mobileMenu" role="navigation" aria-label="Mobile navigation">
+  <ul class="mobile-menu-links" role="list">
+    <li><a class="mobile-menu-link" href="#fluid-type" aria-current="true">Fluid Typography</a></li>
+    <li><a class="mobile-menu-link" href="#spacing">Spacing Scale</a></li>
+    <li><a class="mobile-menu-link" href="#buttons">Buttons</a></li>
+    <li><a class="mobile-menu-link" href="#cards">Cards &amp; Containers</a></li>
+    <li><a class="mobile-menu-link" href="#forms">Form Elements</a></li>
+    <li><a class="mobile-menu-link" href="#badges">Badges</a></li>
+    <li><a class="mobile-menu-link" href="#nav-section">Navigation Demo</a></li>
+  </ul>
+</div>
+
+<!-- ═══ RESPONSIVE TOOLBAR ═══ -->
+<div class="toolbar" role="toolbar" aria-label="Viewport preview">
+  <span class="toolbar-label">Preview:</span>
+  <button class="toolbar-btn" data-width="375" type="button" aria-label="Preview at 375px mobile width">
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="4" y="1" width="8" height="14" rx="1.5"/><line x1="6.5" y1="12.5" x2="9.5" y2="12.5"/></svg>
+    375
+  </button>
+  <button class="toolbar-btn" data-width="768" type="button" aria-label="Preview at 768px tablet width">
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2" width="12" height="12" rx="1.5"/><line x1="6" y1="12" x2="10" y2="12"/></svg>
+    768
+  </button>
+  <button class="toolbar-btn active" data-width="0" type="button" aria-label="Preview at full desktop width">
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="1" y="2" width="14" height="10" rx="1.5"/><line x1="5" y1="14" x2="11" y2="14"/><line x1="8" y1="12" x2="8" y2="14"/></svg>
+    Full
+  </button>
+  <span class="toolbar-width" id="widthDisplay" aria-live="polite"></span>
+</div>
+
+<!-- ═══ MAIN ═══ -->
+<main class="page" id="main-content" role="main">
+
+  <header class="hero" role="banner">
+    <p class="hero-eyebrow" aria-hidden="true">Design System — Responsive</p>
+    <h1>Every screen, <em>every</em> pixel, considered</h1>
+    <p class="hero-desc">
+      Fluid typography with <code>clamp()</code>. Container queries for component intelligence.
+      Touch-friendly targets. Mobile-first breakpoints. This is v3.
+    </p>
+    <div class="hero-meta" role="list" aria-label="Version details">
+      <div class="hero-meta-item" role="listitem">
+        <span class="hero-meta-label">Version</span>
+        <span class="hero-meta-value">3.0.0</span>
+      </div>
+      <div class="hero-meta-item" role="listitem">
+        <span class="hero-meta-label">Approach</span>
+        <span class="hero-meta-value">Mobile-First</span>
+      </div>
+      <div class="hero-meta-item" role="listitem">
+        <span class="hero-meta-label">Min Touch</span>
+        <span class="hero-meta-value">44 &times; 44px</span>
+      </div>
+      <div class="hero-meta-item" role="listitem">
+        <span class="hero-meta-label">Shortcuts</span>
+        <span class="hero-meta-value"><kbd class="kbd">T</kbd> theme <kbd class="kbd">M</kbd> menu</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ══════════ 01: FLUID TYPOGRAPHY ══════════ -->
+  <section class="section observe" id="fluid-type" aria-labelledby="type-title">
+    <div class="section-header">
+      <span class="section-number" aria-hidden="true">01</span>
+      <h2 class="section-title" id="type-title">Fluid Typography</h2>
+    </div>
+    <p class="section-desc">
+      No breakpoints needed — type scales smoothly between minimum and maximum sizes
+      using CSS <code>clamp()</code>. Resize the browser to see it flow.
+    </p>
+
+    <div class="responsive-annotation" style="padding:var(--space-md)">
+      <span class="responsive-tag responsive-tag-float">clamp() fluid</span>
+      <div class="type-scale" role="list" aria-label="Fluid type scale">
+        <div class="type-row" role="listitem">
+          <div class="type-meta"><span>H1</span><span>clamp(2.25rem, 5vw + 0.5rem, 4.5rem)</span></div>
+          <div style="font-family:var(--font-display);font-size:clamp(2.25rem, 5vw + 0.5rem, 4.5rem);line-height:1.08;letter-spacing:-0.03em">Foundations</div>
+        </div>
+        <div class="type-row" role="listitem">
+          <div class="type-meta"><span>H2</span><span>clamp(1.5rem, 3vw, 2.25rem)</span></div>
+          <div style="font-family:var(--font-display);font-size:clamp(1.5rem, 3vw, 2.25rem);line-height:1.15">Section Title</div>
+        </div>
+        <div class="type-row" role="listitem">
+          <div class="type-meta"><span>H3</span><span>clamp(1.125rem, 2vw, 1.375rem)</span></div>
+          <div style="font-family:var(--font-display);font-size:clamp(1.125rem, 2vw, 1.375rem);line-height:1.2">Card Heading</div>
+        </div>
+        <div class="type-row" role="listitem">
+          <div class="type-meta"><span>Body</span><span>1rem (fixed)</span></div>
+          <div style="font-family:var(--font-body);font-size:1rem;line-height:1.6;max-width:34rem">Body text stays at 1rem — readability is already optimal at this size across all viewports. Only headings and display text need fluid scaling.</div>
+        </div>
+        <div class="type-row" role="listitem">
+          <div class="type-meta"><span>Mono</span><span>clamp(0.6875rem, 1.2vw, 0.8125rem)</span></div>
+          <div style="font-family:var(--font-mono);font-size:clamp(0.6875rem, 1.2vw, 0.8125rem);line-height:1.6">const fluid = clamp(min, preferred, max);</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="css-demo">
+      <span class="css-comment">/* Fluid type — no breakpoints needed */</span><br>
+      <span class="css-prop">font-size</span>: <span class="css-val">clamp(2.25rem, 5vw + 0.5rem, 4.5rem)</span>;<br>
+      <br>
+      <span class="css-comment">/* How it works: */</span><br>
+      <span class="css-comment">/*   min:  2.25rem (36px) — phone floor    */</span><br>
+      <span class="css-comment">/*   pref: 5vw + 0.5rem   — scales with vw */</span><br>
+      <span class="css-comment">/*   max:  4.5rem (72px)  — desktop ceiling */</span>
+    </div>
+  </section>
+
+  <!-- ══════════ 02: FLUID SPACING ══════════ -->
+  <section class="section observe" id="spacing" aria-labelledby="spacing-title">
+    <div class="section-header">
+      <span class="section-number" aria-hidden="true">02</span>
+      <h2 class="section-title" id="spacing-title">Fluid Spacing</h2>
+    </div>
+    <p class="section-desc">
+      Spacing tokens also use <code>clamp()</code> — tighter on mobile, generous on desktop.
+      No jarring jumps at breakpoints.
+    </p>
+
+    <div class="spacing-demo-grid" role="list" aria-label="Fluid spacing tokens">
+      <div class="spacing-demo-item" role="listitem">
+        <div class="spacing-demo-bar" style="width:var(--space-xs)"></div>
+        <div class="spacing-demo-name">--space-xs</div>
+        <div class="spacing-demo-value">clamp(0.25rem, 0.5vw, 0.5rem)</div>
+      </div>
+      <div class="spacing-demo-item" role="listitem">
+        <div class="spacing-demo-bar" style="width:var(--space-sm)"></div>
+        <div class="spacing-demo-name">--space-sm</div>
+        <div class="spacing-demo-value">clamp(0.5rem, 1vw, 0.75rem)</div>
+      </div>
+      <div class="spacing-demo-item" role="listitem">
+        <div class="spacing-demo-bar" style="width:var(--space-md)"></div>
+        <div class="spacing-demo-name">--space-md</div>
+        <div class="spacing-demo-value">clamp(0.75rem, 1.5vw + 0.25rem, 1.5rem)</div>
+      </div>
+      <div class="spacing-demo-item" role="listitem">
+        <div class="spacing-demo-bar" style="width:var(--space-lg)"></div>
+        <div class="spacing-demo-name">--space-lg</div>
+        <div class="spacing-demo-value">clamp(1.25rem, 2.5vw + 0.25rem, 2.5rem)</div>
+      </div>
+      <div class="spacing-demo-item" role="listitem">
+        <div class="spacing-demo-bar" style="width:var(--space-xl)"></div>
+        <div class="spacing-demo-name">--space-xl</div>
+        <div class="spacing-demo-value">clamp(2rem, 4vw + 0.5rem, 5rem)</div>
+      </div>
+      <div class="spacing-demo-item" role="listitem">
+        <div class="spacing-demo-bar" style="width:var(--space-2xl)"></div>
+        <div class="spacing-demo-name">--space-2xl</div>
+        <div class="spacing-demo-value">clamp(3rem, 6vw + 1rem, 8rem)</div>
+      </div>
+    </div>
+
+    <div class="css-demo" style="margin-top:var(--space-md)">
+      <span class="css-comment">/* Page padding adapts fluidly */</span><br>
+      <span class="css-prop">--page-pad</span>: <span class="css-val">clamp(1rem, 4vw, 2.5rem)</span>;<br>
+      <br>
+      <span class="css-comment">/* Sections breathe with the viewport */</span><br>
+      <span class="css-prop">margin-top</span>: <span class="css-val">var(--space-xl)</span>;<br>
+      <span class="css-prop">padding-top</span>: <span class="css-val">var(--space-lg)</span>;
+    </div>
+  </section>
+
+  <!-- ══════════ 03: BUTTONS ══════════ -->
+  <section class="section observe" id="buttons" aria-labelledby="buttons-title">
+    <div class="section-header">
+      <span class="section-number" aria-hidden="true">03</span>
+      <h2 class="section-title" id="buttons-title">Touch Targets</h2>
+    </div>
+    <p class="section-desc">
+      All interactive elements have a minimum 44&times;44px touch target, meeting
+      WCAG 2.5.5 (AAA) and Apple HIG guidelines.
+    </p>
+
+    <div class="responsive-annotation" style="padding:var(--space-md)">
+      <span class="responsive-tag responsive-tag-float">min 44&times;44px</span>
+      <div class="button-group">
+        <div class="button-group-label" id="v-label">Variants</div>
+        <div role="group" aria-labelledby="v-label" style="display:flex;flex-wrap:wrap;gap:0.75rem">
+          <button class="btn btn-md btn-primary" type="button">Primary</button>
+          <button class="btn btn-md btn-secondary" type="button">Secondary</button>
+          <button class="btn btn-md btn-ghost" type="button">Ghost</button>
+          <button class="btn btn-md btn-danger" type="button">Danger</button>
+          <button class="btn btn-md btn-signal" type="button">Signal</button>
+        </div>
+      </div>
+      <div class="button-group">
+        <div class="button-group-label" id="s-label">Sizes (all &ge; 44px tall)</div>
+        <div role="group" aria-labelledby="s-label" style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:center">
+          <button class="btn btn-sm btn-primary" type="button">Small</button>
+          <button class="btn btn-md btn-primary" type="button">Medium</button>
+          <button class="btn btn-lg btn-primary" type="button">Large</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="css-demo" style="margin-top:var(--space-md)">
+      <span class="css-comment">/* Every button meets touch target minimums */</span><br>
+      <span class="css-prop">.btn</span> {<br>
+      &nbsp;&nbsp;<span class="css-prop">min-height</span>: <span class="css-val">44px</span>;<br>
+      &nbsp;&nbsp;<span class="css-prop">min-width</span>: <span class="css-val">44px</span>;<br>
+      }<br>
+      <br>
+      <span class="css-comment">/* Checkboxes and toggles use label wrapping */</span><br>
+      <span class="css-comment">/* for full-row tap targets on mobile       */</span>
+    </div>
+  </section>
+
+  <!-- ══════════ 04: CARDS + CONTAINER QUERIES ══════════ -->
+  <section class="section observe" id="cards" aria-labelledby="cards-title">
+    <div class="section-header">
+      <span class="section-number" aria-hidden="true">04</span>
+      <h2 class="section-title" id="cards-title">Cards &amp; Containers</h2>
+    </div>
+    <p class="section-desc">
+      The grid adapts from 3 → 2 → 1 columns with media queries.
+      Individual cards use <strong>container queries</strong> to adapt to their own width.
+    </p>
+
+    <div class="responsive-annotation" style="padding:var(--space-md)">
+      <span class="responsive-tag responsive-tag-float">3 → 2 → 1 columns</span>
+
+      <div class="card-grid">
+        <div class="cq-container">
+          <div class="card card-basic cq-card" role="region" aria-label="Basic card">
+            <div class="card-eyebrow">Basic</div>
+            <h3 class="card-title">Flat Surface</h3>
+            <p class="card-body">Static card that adapts its padding via container query.</p>
+            <p class="cq-extra">This text only appears when the container is wide enough (>500px).</p>
+            <div class="card-footer"><span class="card-tag">@container</span></div>
+          </div>
+        </div>
+
+        <div class="cq-container">
+          <div class="card card-elevated cq-card" role="region" aria-label="Elevated card">
+            <div class="card-eyebrow">Elevated</div>
+            <h3 class="card-title">Lifted Surface</h3>
+            <p class="card-body">Container-query-aware padding adjusts based on available inline space.</p>
+            <p class="cq-extra">Extra detail visible at wider container sizes.</p>
+            <div class="card-footer"><span class="card-tag">container-type: inline-size</span></div>
+          </div>
+        </div>
+
+        <div class="cq-container">
+          <a href="#" class="card card-interactive cq-card" aria-label="Interactive card — click to navigate">
+            <div class="card-eyebrow">Interactive</div>
+            <h3 class="card-title">Actionable</h3>
+            <p class="card-body">Full <code>&lt;a&gt;</code> element — focusable, keyboard-navigable.</p>
+            <p class="cq-extra">Container queries make this component-aware, not viewport-aware.</p>
+            <div class="card-footer">
+              <span class="card-tag">min-height: 44px</span>
+              <div class="card-arrow" aria-hidden="true">&rarr;</div>
+            </div>
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <div class="css-demo" style="margin-top:var(--space-md)">
+      <span class="css-comment">/* Grid responds to viewport */</span><br>
+      <span class="css-prop">.card-grid</span> { <span class="css-prop">grid-template-columns</span>: <span class="css-val">repeat(3, 1fr)</span>; }<br>
+      <span class="css-prop">@media</span> (<span class="css-val">max-width: 1023px</span>) { ... <span class="css-val">repeat(2, 1fr)</span> }<br>
+      <span class="css-prop">@media</span> (<span class="css-val">max-width: 639px</span>)  { ... <span class="css-val">1fr</span> }<br>
+      <br>
+      <span class="css-comment">/* Cards respond to their container */</span><br>
+      <span class="css-prop">.cq-container</span> { <span class="css-prop">container-type</span>: <span class="css-val">inline-size</span>; }<br>
+      <span class="css-prop">@container</span> (<span class="css-val">max-width: 300px</span>) { ... }<br>
+      <span class="css-prop">@container</span> (<span class="css-val">min-width: 501px</span>) { .cq-extra { <span class="css-val">display: block</span> } }
+    </div>
+  </section>
+
+  <!-- ══════════ 05: FORMS ══════════ -->
+  <section class="section observe" id="forms" aria-labelledby="forms-title">
+    <div class="section-header">
+      <span class="section-number" aria-hidden="true">05</span>
+      <h2 class="section-title" id="forms-title">Responsive Forms</h2>
+    </div>
+    <p class="section-desc">
+      2-column grid on desktop, single column on mobile. Inputs use <code>font-size: 1rem</code>
+      to prevent iOS zoom. All tap targets &ge; 44px.
+    </p>
+
+    <div class="responsive-annotation" style="padding:var(--space-md)">
+      <span class="responsive-tag responsive-tag-float">2 → 1 columns</span>
+
+      <form class="form-grid" onsubmit="return false" novalidate>
+        <div class="form-group">
+          <label class="form-label" for="r-name">Full Name</label>
+          <input type="text" id="r-name" class="input" placeholder="Enter your name" aria-describedby="r-name-hint" autocomplete="name">
+          <span class="form-hint" id="r-name-hint">As it appears on your account</span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="r-email">Email</label>
+          <input type="email" id="r-email" class="input" placeholder="you@example.com" aria-invalid="true" aria-describedby="r-email-err" autocomplete="email" value="not-valid">
+          <span class="form-error" id="r-email-err" role="alert">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="8" y1="4.5" x2="8" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="8" cy="11.5" r="0.75"/></svg>
+            Invalid email address
+          </span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="r-plan">Plan</label>
+          <select id="r-plan" class="input">
+            <option>Starter — $5/mo</option>
+            <option>Pro — $15/mo</option>
+            <option>Enterprise — $25/mo</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="r-bio">Bio</label>
+          <textarea id="r-bio" class="input" placeholder="About you..."></textarea>
+        </div>
+
+        <fieldset style="border:none;padding:0;display:flex;flex-direction:column;gap:0.5rem">
+          <legend class="form-label" style="margin-bottom:0.25rem">Preferences</legend>
+          <label class="checkbox-wrapper">
+            <input type="checkbox" class="checkbox-input" checked>
+            <span class="checkbox-visual" aria-hidden="true"></span>
+            <span class="checkbox-text">Agree to terms</span>
+          </label>
+          <label class="checkbox-wrapper">
+            <input type="checkbox" class="checkbox-input">
+            <span class="checkbox-visual" aria-hidden="true"></span>
+            <span class="checkbox-text">Product updates</span>
+          </label>
+        </fieldset>
+
+        <fieldset style="border:none;padding:0;display:flex;flex-direction:column;gap:0.5rem">
+          <legend class="form-label" style="margin-bottom:0.25rem">Settings</legend>
+          <label class="toggle-wrapper">
+            <input type="checkbox" class="toggle-input" checked role="switch" aria-checked="true">
+            <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+            <span class="toggle-text">Notifications</span>
+          </label>
+          <label class="toggle-wrapper">
+            <input type="checkbox" class="toggle-input" role="switch" aria-checked="false">
+            <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+            <span class="toggle-text">Auto-save</span>
+          </label>
+        </fieldset>
+      </form>
+    </div>
+
+    <div class="css-demo" style="margin-top:var(--space-md)">
+      <span class="css-comment">/* Responsive form grid */</span><br>
+      <span class="css-prop">.form-grid</span> { <span class="css-prop">grid-template-columns</span>: <span class="css-val">repeat(2, 1fr)</span>; }<br>
+      <span class="css-prop">@media</span> (<span class="css-val">max-width: 639px</span>) { <span class="css-val">1fr</span> }<br>
+      <br>
+      <span class="css-comment">/* Prevent iOS zoom on focus (needs ≥ 16px) */</span><br>
+      <span class="css-prop">.input</span> { <span class="css-prop">font-size</span>: <span class="css-val">1rem</span>; }<br>
+      <br>
+      <span class="css-comment">/* Full-width tap targets for labels */</span><br>
+      <span class="css-prop">.checkbox-wrapper, .toggle-wrapper</span> { <span class="css-prop">min-height</span>: <span class="css-val">44px</span>; }
+    </div>
+  </section>
+
+  <!-- ══════════ 06: BADGES ══════════ -->
+  <section class="section observe" id="badges" aria-labelledby="badges-title">
+    <div class="section-header">
+      <span class="section-number" aria-hidden="true">06</span>
+      <h2 class="section-title" id="badges-title">Responsive Badges</h2>
+    </div>
+    <p class="section-desc">Flex-wrap ensures badges flow naturally on narrow screens.</p>
+
+    <div class="badge-grid" role="list" aria-label="Status badges">
+      <span class="badge" style="background:var(--status-emerald-bg);color:var(--status-emerald-text)" role="listitem"><span class="badge-dot" style="background:var(--status-emerald-text)" aria-hidden="true"></span>Active</span>
+      <span class="badge" style="background:var(--status-rose-bg);color:var(--status-rose-text)" role="listitem"><span class="badge-dot" style="background:var(--status-rose-text)" aria-hidden="true"></span>Error</span>
+      <span class="badge" style="background:var(--status-amber-bg);color:var(--status-amber-text)" role="listitem"><span class="badge-dot" style="background:var(--status-amber-text)" aria-hidden="true"></span>Warning</span>
+      <span class="badge" style="background:var(--status-sky-bg);color:var(--status-sky-text)" role="listitem"><span class="badge-dot" style="background:var(--status-sky-text)" aria-hidden="true"></span>Info</span>
+      <span class="badge" style="background:var(--status-slate-bg);color:var(--status-slate-text)" role="listitem"><span class="badge-dot" style="background:var(--status-slate-text)" aria-hidden="true"></span>Neutral</span>
+      <span class="badge" style="background:var(--status-indigo-bg);color:var(--status-indigo-text)" role="listitem"><span class="badge-dot" style="background:var(--status-indigo-text)" aria-hidden="true"></span>Feature</span>
+      <span class="badge" style="background:var(--status-violet-bg);color:var(--status-violet-text)" role="listitem"><span class="badge-dot" style="background:var(--status-violet-text)" aria-hidden="true"></span>Premium</span>
+      <span class="badge" style="background:var(--status-orange-bg);color:var(--status-orange-text)" role="listitem"><span class="badge-dot" style="background:var(--status-orange-text)" aria-hidden="true"></span>Pending</span>
+    </div>
+  </section>
+
+  <!-- ══════════ 07: NAV DEMO ══════════ -->
+  <section class="section observe" id="nav-section" aria-labelledby="nav-demo-title">
+    <div class="section-header">
+      <span class="section-number" aria-hidden="true">07</span>
+      <h2 class="section-title" id="nav-demo-title">Responsive Nav</h2>
+    </div>
+    <p class="section-desc">
+      Desktop shows inline links. Below 640px, they collapse into a hamburger menu
+      with slide-out panel and focus trapping.
+    </p>
+
+    <div class="responsive-annotation" style="padding:0.125rem">
+      <span class="responsive-tag responsive-tag-float">hamburger &lt; 768px</span>
+      <nav class="nav-demo" aria-label="App navigation demo">
+        <div class="nav-demo-bar">
+          <a href="#" class="nav-demo-logo" aria-label="Home">
+            <div class="nav-demo-icon" aria-hidden="true">N</div>
+            <span class="nav-demo-name">NBHD</span>
+          </a>
+          <ul class="nav-demo-links" role="list">
+            <li><a class="nav-demo-link" href="#" aria-current="page">Dashboard</a></li>
+            <li><a class="nav-demo-link" href="#">Journal</a></li>
+            <li><a class="nav-demo-link" href="#">Settings</a></li>
+          </ul>
+          <div style="display:flex;gap:0.5rem;align-items:center">
+            <button class="btn btn-sm btn-primary" type="button" aria-label="Create new">New</button>
+            <div class="nav-demo-avatar" role="img" aria-label="User avatar" style="width:2rem;height:2rem;border-radius:50%;background:linear-gradient(135deg,var(--signal-bg),var(--accent));display:flex;align-items:center;justify-content:center;color:#fff;font-size:0.75rem;font-weight:600">MJ</div>
+          </div>
+        </div>
+        <div class="nav-demo-content">&lt;page-content /&gt;</div>
+      </nav>
+    </div>
+
+    <div class="css-demo" style="margin-top:var(--space-md)">
+      <span class="css-comment">/* Mobile: hide links, show hamburger */</span><br>
+      <span class="css-prop">@media</span> (<span class="css-val">max-width: 767px</span>) {<br>
+      &nbsp;&nbsp;<span class="css-prop">.nav-links</span> { <span class="css-val">display: none</span>; }<br>
+      &nbsp;&nbsp;<span class="css-prop">.hamburger</span> { <span class="css-val">display: flex</span>; }<br>
+      &nbsp;&nbsp;<span class="css-prop">.mobile-menu</span> { <span class="css-val">display: block</span>; }<br>
+      }<br>
+      <br>
+      <span class="css-comment">/* Slide-out with transform for 60fps */</span><br>
+      <span class="css-prop">.mobile-menu</span> { <span class="css-prop">transform</span>: <span class="css-val">translateX(100%)</span>; }<br>
+      <span class="css-prop">.mobile-menu.open</span> { <span class="css-prop">transform</span>: <span class="css-val">translateX(0)</span>; }
+    </div>
+  </section>
+
+  <!-- ── FOOTER ── -->
+  <footer class="page-footer" role="contentinfo">
+    <div class="footer-text">NBHD United Design System v3.0 — Responsive</div>
+    <nav aria-label="Footer links">
+      <div class="footer-links">
+        <a class="footer-link" href="#fluid-type">Type</a>
+        <a class="footer-link" href="#spacing">Spacing</a>
+        <a class="footer-link" href="#cards">Cards</a>
+        <a class="footer-link" href="#forms">Forms</a>
+      </div>
+    </nav>
+  </footer>
+</main>
+
+<!-- ═══ BREAKPOINT BADGE ═══ -->
+<div class="breakpoint-badge" aria-live="polite" aria-label="Current breakpoint">
+  <span class="bp-dot" aria-hidden="true"></span>
+  <span id="bpLabel">xl</span>
+</div>
+
+<script>
+/* ═══ THEME ═══ */
+function toggleTheme() {
+  const html = document.documentElement;
+  const isDark = html.getAttribute('data-theme') === 'dark';
+  const btn = document.getElementById('themeBtn');
+  const live = document.getElementById('liveRegion');
+  if (isDark) {
+    html.removeAttribute('data-theme');
+    btn.innerHTML = '<span aria-hidden="true">☀</span>';
+    btn.setAttribute('aria-label', 'Switch to dark theme');
+    live.textContent = 'Light theme activated';
+  } else {
+    html.setAttribute('data-theme', 'dark');
+    btn.innerHTML = '<span aria-hidden="true">☾</span>';
+    btn.setAttribute('aria-label', 'Switch to light theme');
+    live.textContent = 'Dark theme activated';
+  }
+}
+
+/* ═══ HAMBURGER ═══ */
+const hamburger = document.getElementById('hamburgerBtn');
+const mobileMenu = document.getElementById('mobileMenu');
+
+function toggleMenu() {
+  const isOpen = mobileMenu.classList.contains('open');
+  mobileMenu.classList.toggle('open');
+  hamburger.setAttribute('aria-expanded', !isOpen);
+  hamburger.setAttribute('aria-label', isOpen ? 'Open navigation menu' : 'Close navigation menu');
+  document.getElementById('liveRegion').textContent = isOpen ? 'Menu closed' : 'Menu opened';
+  if (!isOpen) mobileMenu.querySelector('a').focus();
+}
+
+hamburger.addEventListener('click', toggleMenu);
+
+mobileMenu.querySelectorAll('a').forEach(link => {
+  link.addEventListener('click', () => {
+    if (mobileMenu.classList.contains('open')) toggleMenu();
+  });
+});
+
+/* ═══ KEYBOARD SHORTCUTS ═══ */
+document.addEventListener('keydown', (e) => {
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+  if (e.key === 't' && !e.ctrlKey && !e.metaKey) toggleTheme();
+  if (e.key === 'm' && !e.ctrlKey && !e.metaKey && window.innerWidth < 768) toggleMenu();
+  if (e.key === 'Escape' && mobileMenu.classList.contains('open')) { toggleMenu(); hamburger.focus(); }
+});
+
+/* ═══ TOGGLE SWITCH ═══ */
+document.querySelectorAll('.toggle-input[role="switch"]').forEach(input => {
+  input.addEventListener('change', function() {
+    this.setAttribute('aria-checked', this.checked ? 'true' : 'false');
+  });
+});
+
+/* ═══ BREAKPOINT INDICATOR ═══ */
+function updateBreakpoint() {
+  const w = window.innerWidth;
+  const label = document.getElementById('bpLabel');
+  const display = document.getElementById('widthDisplay');
+  if (w < 640) label.textContent = 'xs (<640)';
+  else if (w < 768) label.textContent = 'sm (640+)';
+  else if (w < 1024) label.textContent = 'md (768+)';
+  else if (w < 1280) label.textContent = 'lg (1024+)';
+  else label.textContent = 'xl (1280+)';
+  if (display) display.textContent = w + 'px';
+}
+updateBreakpoint();
+window.addEventListener('resize', updateBreakpoint, { passive: true });
+
+/* ═══ TOOLBAR — VIEWPORT PREVIEW ═══ */
+document.querySelectorAll('.toolbar-btn').forEach(btn => {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.toolbar-btn').forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+    const w = parseInt(this.dataset.width);
+    const main = document.getElementById('main-content');
+
+    if (w === 0) {
+      main.style.maxWidth = '';
+      main.style.transition = 'max-width 500ms cubic-bezier(0.16, 1, 0.3, 1)';
+    } else {
+      main.style.transition = 'max-width 500ms cubic-bezier(0.16, 1, 0.3, 1)';
+      main.style.maxWidth = w + 'px';
+    }
+    document.getElementById('liveRegion').textContent = w === 0 ? 'Full width preview' : w + 'px width preview';
+  });
+});
+
+/* ═══ SCROLL REVEAL ═══ */
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) { entry.target.classList.add('visible'); observer.unobserve(entry.target); }
+  });
+}, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+document.querySelectorAll('.observe').forEach(el => observer.observe(el));
+
+/* ═══ NAV SCROLL HIGHLIGHT ═══ */
+const sections = document.querySelectorAll('.section[id]');
+const navLinks = document.querySelectorAll('.nav-link[href^="#"]');
+const mobileLinks = document.querySelectorAll('.mobile-menu-link[href^="#"]');
+
+function updateActiveNav() {
+  let current = '';
+  sections.forEach(s => { if (s.getBoundingClientRect().top <= 150) current = s.id; });
+  navLinks.forEach(l => l.setAttribute('aria-current', l.getAttribute('href') === '#' + current ? 'true' : 'false'));
+  mobileLinks.forEach(l => l.setAttribute('aria-current', l.getAttribute('href') === '#' + current ? 'true' : 'false'));
+}
+window.addEventListener('scroll', updateActiveNav, { passive: true });
+updateActiveNav();
+</script>
+</body>
+</html>
