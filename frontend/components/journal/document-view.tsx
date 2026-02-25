@@ -95,14 +95,22 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
     return () => mq.removeEventListener("change", handler);
   }, []);
 
-  // Lock body scroll when mobile overlay is open — prevents touch events
-  // from scrolling the page underneath the fixed overlay (iOS Safari issue)
+  // Lock body scroll + hide app shell header when mobile overlay is open.
+  // iOS Safari's backdrop-filter creates a compositing layer that paints
+  // above even z-[9999] portals — hiding the header is the only reliable fix.
   useEffect(() => {
     if (editing && isMobile === true) {
-      const prev = document.body.style.overflow;
+      const prevOverflow = document.body.style.overflow;
       document.body.style.overflow = "hidden";
+
+      // Hide the sticky app shell header so it can't bleed above the portal
+      const appHeader = document.querySelector<HTMLElement>("header.sticky, header[class*='sticky']");
+      const prevVisibility = appHeader ? appHeader.style.visibility : null;
+      if (appHeader) appHeader.style.visibility = "hidden";
+
       return () => {
-        document.body.style.overflow = prev;
+        document.body.style.overflow = prevOverflow;
+        if (appHeader && prevVisibility !== null) appHeader.style.visibility = prevVisibility;
       };
     }
   }, [editing, isMobile]);
