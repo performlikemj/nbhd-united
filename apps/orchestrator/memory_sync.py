@@ -75,7 +75,7 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
         raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
 
     from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
-    from azure.storage.fileshare import ShareDirectoryClient, ShareFileClient
+    from azure.storage.fileshare import ShareClient, ShareDirectoryClient, ShareFileClient
 
     from apps.orchestrator.azure_client import get_storage_client
 
@@ -86,6 +86,24 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
     )
     account_key = keys.keys[0].value
     account_url = f"https://{account_name}.file.core.windows.net"
+
+    # Verify the file share exists before attempting any writes.
+    # Tenants provisioned before the memory-sync feature was added won't have
+    # a share yet — soft-fail so QStash doesn't retry endlessly.
+    share_client = ShareClient(
+        account_url=account_url,
+        share_name=share_name,
+        credential=account_key,
+    )
+    try:
+        share_client.get_share_properties()
+    except ResourceNotFoundError:
+        logger.warning(
+            "upload_memory_files_to_share: share %s does not exist for tenant %s — skipping",
+            share_name,
+            tenant_id,
+        )
+        return 0
 
     written = 0
     created_dirs: set[str] = set()
@@ -106,6 +124,11 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
                     dir_client.create_directory()
                 except ResourceExistsError:
                     pass  # Directory already exists
+                except ResourceNotFoundError:
+                    logger.warning(
+                        "memory_sync: share or parent dir not found creating %s/%s",
+                        share_name, dir_path, exc_info=True,
+                    )
                 except Exception:
                     logger.warning(
                         "memory_sync: failed to create directory %s/%s",
@@ -137,8 +160,14 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
                 share_name, rel_path, exc_info=True,
             )
 
-        file_client.upload_file(encoded, overwrite=True)
-        written += 1
+        try:
+            file_client.upload_file(encoded, overwrite=True)
+            written += 1
+        except ResourceNotFoundError:
+            logger.warning(
+                "memory_sync: parent directory missing for %s/%s — skipping file",
+                share_name, rel_path,
+            )
 
     logger.info(
         "upload_memory_files_to_share: tenant=%s written=%d total=%d",
