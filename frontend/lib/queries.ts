@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ProvisioningStatus, RefreshConfigStatus } from "@/lib/types";
 import {
   appendToDocument,
+  bulkDeleteCronJobs,
   createAutomation,
   createCronJob,
   createDocument,
@@ -13,6 +14,7 @@ import {
   createWeeklyReview,
   deleteAutomation,
   deleteCronJob,
+  deleteDocument,
   deleteTemplate,
   deleteJournalEntry,
   deleteWeeklyReview,
@@ -531,6 +533,19 @@ export function useCreateDocumentMutation() {
   });
 }
 
+export function useDeleteDocumentMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ kind, slug }: { kind: string; slug: string }) => deleteDocument(kind, slug),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["sidebar-tree"] });
+      // Remove cached document entry directly
+      queryClient.removeQueries({ queryKey: ["document", variables.kind, variables.slug] });
+    },
+  });
+}
+
 export function useLLMConfigQuery() {
   return useQuery({
     queryKey: ["llm-config"],
@@ -595,6 +610,16 @@ export function useToggleCronJobMutation() {
   return useMutation({
     mutationFn: ({ name, jobId, enabled }: { name: string; jobId?: string; enabled: boolean }) =>
       toggleCronJob(jobId ?? name, enabled),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
+    },
+  });
+}
+
+export function useBulkDeleteCronJobsMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) => bulkDeleteCronJobs(ids),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
     },
