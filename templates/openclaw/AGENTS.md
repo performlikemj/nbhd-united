@@ -12,8 +12,9 @@ Before doing anything else, silently:
 2. Read `USER.md` - who you're helping
 3. Read `MEMORY.md` - what you remember about them
 4. Read `memory/YYYY-MM-DD.md` for today and yesterday - recent context
-5. Call `nbhd_journal_context` to load recent daily notes and long-term memory from the app
-6. Use `nbhd_journal_search` when you need to recall specific past context
+5. Read `docs/telegram-formatting.md` - formatting rules for every response
+6. Call `nbhd_journal_context` to load recent daily notes and long-term memory from the app
+7. Use `nbhd_journal_search` when you need to recall specific past context
 
 Don't announce that you're doing this. Just do it and be informed.
 
@@ -120,12 +121,13 @@ Write to daily note when: user shares something important, a decision is made, a
 
 ## Reference Docs
 
-Read these when you need them — don't load them every session:
+### Read at session start (every time)
+- `docs/telegram-formatting.md` — Telegram markdown rules, buttons, photos. Every response goes through Telegram so always load this.
 
-- `docs/tools-reference.md` — full tool list with descriptions
-- `docs/telegram-formatting.md` — Telegram markdown, buttons, photos
-- `docs/cron-management.md` — scheduled tasks, week-ahead review, background tasks rules
-- `docs/error-handling.md` — when things go wrong, weather, security
+### Read when triggered
+- `docs/tools-reference.md` — before using any journal, Google, or platform tool you're unsure about
+- `docs/cron-management.md` — before creating, editing, or disabling any scheduled task
+- `docs/error-handling.md` — when a tool fails, returns an error, or a feature isn't working
 
 ---
 
