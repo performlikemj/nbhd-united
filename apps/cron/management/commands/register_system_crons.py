@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 # System crons: (name, cron_expr, path)
 # cron_expr is UTC
 SYSTEM_CRONS = [
-    # Every 15 min — push workspace files + update idle container images
-    ("apply-pending-configs", "*/15 * * * *", "/api/cron/apply-pending-configs/"),
+    # Every 60 min — push workspace files + update idle container images
+    ("apply-pending-configs", "0 * * * *", "/api/cron/apply-pending-configs/"),
     # Daily at midnight UTC — reset per-day usage counters
     ("reset-daily-counters", "0 0 * * *", "/api/cron/trigger/reset_daily_counters/"),
     # Monthly on 1st at 00:05 UTC — reset monthly usage counters
