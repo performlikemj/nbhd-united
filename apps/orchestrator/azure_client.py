@@ -367,6 +367,23 @@ def upload_workspace_file(tenant_id: str, file_path: str, content: str) -> None:
     )
     account_key = keys.keys[0].value
 
+    from azure.storage.fileshare import ShareDirectoryClient
+
+    # Ensure parent directories exist (e.g. workspace/docs/)
+    parts = file_path.split("/")
+    for i in range(1, len(parts)):
+        dir_path = "/".join(parts[:i])
+        dir_client = ShareDirectoryClient(
+            account_url=f"https://{account_name}.file.core.windows.net",
+            share_name=share_name,
+            directory_path=dir_path,
+            credential=account_key,
+        )
+        try:
+            dir_client.create_directory()
+        except Exception:
+            pass  # Already exists
+
     file_client = ShareFileClient(
         account_url=f"https://{account_name}.file.core.windows.net",
         share_name=share_name,

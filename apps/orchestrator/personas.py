@@ -353,6 +353,31 @@ def render_templates_md(tenant) -> str:
     return "\n".join(lines)
 
 
+def _load_doc_template(filename: str) -> str | None:
+    """Load a static doc template from templates/openclaw/docs/."""
+    doc_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "templates",
+        "openclaw",
+        "docs",
+        filename,
+    )
+    try:
+        with open(doc_path, "r") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return None
+
+
+# Static docs shipped to every tenant workspace under docs/
+_WORKSPACE_DOCS = {
+    "NBHD_DOC_TOOLS_REFERENCE": "tools-reference.md",
+    "NBHD_DOC_TELEGRAM_FORMATTING": "telegram-formatting.md",
+    "NBHD_DOC_CRON_MANAGEMENT": "cron-management.md",
+    "NBHD_DOC_ERROR_HANDLING": "error-handling.md",
+}
+
+
 def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     """Render all persona-aware workspace files.
 
@@ -360,6 +385,7 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     - NBHD_AGENTS_MD
     - NBHD_SOUL_MD
     - NBHD_IDENTITY_MD
+    - NBHD_DOC_* (reference docs written to workspace/docs/)
     - NBHD_SKILL_TEMPLATES_MD (when tenant is provided)
     """
     result = {
@@ -367,6 +393,11 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         "NBHD_SOUL_MD": render_soul_md(persona_key),
         "NBHD_IDENTITY_MD": render_identity_md(persona_key),
     }
+    # Load static reference docs
+    for key, filename in _WORKSPACE_DOCS.items():
+        content = _load_doc_template(filename)
+        if content:
+            result[key] = content
     if tenant is not None:
         result["NBHD_SKILL_TEMPLATES_MD"] = render_templates_md(tenant)
     return result

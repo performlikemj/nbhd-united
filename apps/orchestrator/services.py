@@ -304,6 +304,11 @@ def update_tenant_config(tenant_id: str) -> None:
             "NBHD_AGENTS_MD": "workspace/AGENTS.md",
             "NBHD_SOUL_MD": "workspace/SOUL.md",
             "NBHD_IDENTITY_MD": "workspace/IDENTITY.md",
+            # Reference docs — written to workspace/docs/ and read on-demand
+            "NBHD_DOC_TOOLS_REFERENCE": "workspace/docs/tools-reference.md",
+            "NBHD_DOC_TELEGRAM_FORMATTING": "workspace/docs/telegram-formatting.md",
+            "NBHD_DOC_CRON_MANAGEMENT": "workspace/docs/cron-management.md",
+            "NBHD_DOC_ERROR_HANDLING": "workspace/docs/error-handling.md",
         }
         for env_key, file_path in file_map.items():
             content = workspace_files.get(env_key, "")
