@@ -201,6 +201,18 @@ jobs:
             "$DJANGO_URL/api/cron/bump-all-pending-configs/" \
             || echo "Warning: bump-all-pending-configs failed (non-fatal)"
 
+      - name: Register system QStash cron schedules
+        run: |
+          # Ensure apply-pending-configs and other system crons are
+          # scheduled in QStash. Idempotent — skips existing schedules.
+          DJANGO_URL="https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io"
+          curl -sf -X POST \
+            -H "X-Deploy-Secret: ${{ secrets.DEPLOY_SECRET }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"base_url\": \"$DJANGO_URL\"}" \
+            "$DJANGO_URL/api/cron/register-system-crons/" \
+            || echo "Warning: register-system-crons failed (non-fatal)"
+
   # ==========================================================================
   # Deploy Frontend to Azure Static Web App (push to main only)
   # ==========================================================================

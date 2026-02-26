@@ -11,4 +11,5 @@ urlpatterns = [
     path("restart-tenant-container/", views.restart_tenant_container, name="cron-restart-tenant-container"),
     path("expire-trials/", views.expire_trials, name="cron-expire-trials"),
     path("bump-all-pending-configs/", views.bump_all_pending_configs, name="cron-bump-all-pending-configs"),
+    path("register-system-crons/", views.register_system_crons, name="cron-register-system-crons"),
 ]

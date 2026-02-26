@@ -464,3 +464,76 @@ def bump_all_pending_configs(request):
 
     logger.info("bump_all_pending_configs: marked %d tenant(s) for config update", count)
     return JsonResponse({"queued": count})
+
+
+@csrf_exempt
+def register_system_crons(request):
+    """Register system QStash cron schedules from CI after deploy.
+
+    Idempotent — existing schedules are left alone.
+    Auth: X-Deploy-Secret header must match DEPLOY_SECRET setting.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    if not deploy_secret:
+        logger.error("DEPLOY_SECRET not configured")
+        return JsonResponse({"error": "Not configured"}, status=503)
+
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not provided or provided != deploy_secret:
+        logger.warning("Unauthorized register_system_crons attempt")
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    import json as _json
+    try:
+        body = _json.loads(request.body) if request.body else {}
+    except Exception:
+        body = {}
+
+    base_url = body.get("base_url", "").rstrip("/")
+    if not base_url:
+        base_url = getattr(settings, "DJANGO_BASE_URL", "").rstrip("/")
+    if not base_url:
+        return JsonResponse({"error": "base_url required"}, status=400)
+
+    from apps.cron.management.commands.register_system_crons import SYSTEM_CRONS
+
+    qstash_token = getattr(settings, "QSTASH_TOKEN", "")
+    if not qstash_token:
+        return JsonResponse({"error": "QSTASH_TOKEN not configured"}, status=503)
+
+    import httpx
+
+    headers = {
+        "Authorization": f"Bearer {qstash_token}",
+        "Content-Type": "application/json",
+    }
+
+    resp = httpx.get("https://qstash.upstash.io/v2/schedules", headers=headers)
+    resp.raise_for_status()
+    existing_destinations = {s["destination"] for s in resp.json()}
+
+    registered = []
+    skipped = []
+    failed = []
+
+    for name, cron_expr, path in SYSTEM_CRONS:
+        destination = f"{base_url}{path}"
+        if destination in existing_destinations:
+            skipped.append(name)
+            continue
+        create_resp = httpx.post(
+            "https://qstash.upstash.io/v2/schedules",
+            headers=headers,
+            json={"destination": destination, "cron": cron_expr, "headers": {}},
+        )
+        if create_resp.status_code in (200, 201):
+            registered.append(name)
+            logger.info("Registered QStash cron: %s → %s", name, cron_expr)
+        else:
+            failed.append(name)
+            logger.error("Failed to register QStash cron %s: %s %s", name, create_resp.status_code, create_resp.text)
+
+    return JsonResponse({"registered": registered, "skipped": skipped, "failed": failed})
