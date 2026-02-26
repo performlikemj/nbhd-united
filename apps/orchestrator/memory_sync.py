@@ -161,7 +161,7 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
             )
 
         try:
-            file_client.upload_file(encoded, overwrite=True)
+            file_client.upload_file(encoded, length=len(encoded))
             written += 1
         except ResourceNotFoundError:
             logger.warning(
