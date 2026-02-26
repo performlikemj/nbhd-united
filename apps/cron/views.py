@@ -431,3 +431,36 @@ def expire_trials(request):
         updated += 1
 
     return JsonResponse({"updated": updated})
+
+
+@csrf_exempt
+def bump_all_pending_configs(request):
+    """Mark all active tenants as needing a config update.
+
+    Called by CI after deploy to ensure new workspace files propagate
+    to all tenant file shares on their next idle cycle.
+
+    Auth: X-Deploy-Secret header must match DEPLOY_SECRET setting.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    if not deploy_secret:
+        logger.error("DEPLOY_SECRET not configured — bump_all_pending_configs rejected")
+        return JsonResponse({"error": "Not configured"}, status=503)
+
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not provided or provided != deploy_secret:
+        logger.warning("Unauthorized bump_all_pending_configs attempt")
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    from django.db.models import F as DbF
+
+    count = Tenant.objects.filter(
+        status=Tenant.Status.ACTIVE,
+        container_id__gt="",
+    ).update(pending_config_version=DbF("config_version") + 1)
+
+    logger.info("bump_all_pending_configs: marked %d tenant(s) for config update", count)
+    return JsonResponse({"queued": count})
