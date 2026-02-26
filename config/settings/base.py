@@ -145,6 +145,9 @@ QSTASH_CURRENT_SIGNING_KEY = env("QSTASH_CURRENT_SIGNING_KEY", default="")
 QSTASH_NEXT_SIGNING_KEY = env("QSTASH_NEXT_SIGNING_KEY", default="")
 QSTASH_TOKEN = env("QSTASH_TOKEN", default="")
 
+# Deploy hook auth used by CI to trigger protected endpoints
+DEPLOY_SECRET = env("DEPLOY_SECRET", default="")
+
 # Upstash Redis (general cache / rate limiting)
 UPSTASH_REDIS_URL = env("UPSTASH_REDIS_URL", default="")
 
