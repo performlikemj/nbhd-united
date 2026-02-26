@@ -189,6 +189,20 @@ jobs:
             --image ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }} \
             --set-env-vars OPENCLAW_IMAGE_TAG=${{ github.sha }}
 
+      - name: Wait for Django to be healthy
+        run: |
+          DJANGO_URL="https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io"
+          echo "Waiting for Django to come up..."
+          for i in $(seq 1 24); do
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "$DJANGO_URL/health/" 2>/dev/null || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Django is up (attempt $i)"
+              break
+            fi
+            echo "Attempt $i: status=$STATUS, retrying in 10s..."
+            sleep 10
+          done
+
       - name: Bump pending config version for all tenants
         run: |
           # Mark all active tenants as needing a config update.
