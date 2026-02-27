@@ -8,6 +8,7 @@ import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
 import {
+  useDeleteAccountMutation,
   useMeQuery,
   usePersonasQuery,
   usePreferencesQuery,
@@ -724,6 +725,99 @@ export default function SettingsPage() {
           <p className="mt-3 text-sm text-ink-muted">✓ Your assistant is up to date</p>
         )}
       </SectionCard>
+
+      <DangerZone />
     </div>
+  );
+}
+
+// ── Danger Zone ───────────────────────────────────────────────────────────────
+
+function DangerZone() {
+  const [open, setOpen] = useState(false);
+  const [input, setInput] = useState("");
+  const [error, setError] = useState("");
+  const deleteAccount = useDeleteAccountMutation();
+
+  const confirmed = input === "DELETE";
+
+  const handleDelete = async () => {
+    if (!confirmed) return;
+    setError("");
+    try {
+      await deleteAccount.mutateAsync();
+      // Account deleted — redirect to sign-in
+      window.location.assign("/signin?deleted=1");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Deletion failed. Please try again or contact support.");
+    }
+  };
+
+  return (
+    <section className="rounded-panel border border-rose-border bg-surface p-5">
+      <h2 className="text-base font-semibold text-rose-text">Danger Zone</h2>
+      <p className="mt-1 text-sm text-ink-muted">
+        Permanently delete your account and all associated data. This cannot be undone.
+      </p>
+
+      {!open ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="mt-4 rounded-full border border-rose-border px-4 py-2 text-sm font-medium text-rose-text transition hover:bg-rose-bg"
+        >
+          Delete my account
+        </button>
+      ) : (
+        <div className="mt-4 space-y-4 rounded-panel border border-rose-border bg-rose-bg p-4">
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-rose-text">This will immediately:</p>
+            <ul className="ml-4 list-disc space-y-0.5 text-sm text-ink-muted">
+              <li>Cancel your subscription (access continues until end of billing period)</li>
+              <li>Shut down and delete your AI assistant container</li>
+              <li>Delete all journal entries, memory, and documents</li>
+              <li>Remove your account permanently — no recovery possible</li>
+            </ul>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-rose-text">
+              Type <span className="font-mono font-bold">DELETE</span> to confirm
+            </label>
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => { setInput(e.target.value); setError(""); }}
+              placeholder="DELETE"
+              className="mt-1.5 w-full rounded-panel border border-rose-border bg-surface px-3 py-2 text-sm font-mono text-ink placeholder:text-ink-faint focus:border-rose-text focus:outline-none focus:ring-1 focus:ring-rose-border"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+
+          {error && (
+            <p className="text-sm text-rose-text">{error}</p>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={handleDelete}
+              disabled={!confirmed || deleteAccount.isPending}
+              className="rounded-full bg-rose-text px-4 py-2 text-sm font-medium text-white transition hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {deleteAccount.isPending ? "Deleting…" : "Delete my account forever"}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setOpen(false); setInput(""); setError(""); }}
+              className="rounded-full border border-border px-4 py-2 text-sm transition hover:border-border-strong"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }

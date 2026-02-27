@@ -63,6 +63,7 @@ import {
   retryProvisioning,
   updateTemplate,
   updateWeeklyReview,
+  deleteAccount,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -623,5 +624,11 @@ export function useBulkDeleteCronJobsMutation() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
     },
+  });
+}
+
+export function useDeleteAccountMutation() {
+  return useMutation({
+    mutationFn: () => deleteAccount(),
   });
 }
