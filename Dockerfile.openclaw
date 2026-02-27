@@ -21,6 +21,7 @@ COPY runtime/openclaw/plugins/nbhd-google-tools /opt/nbhd/plugins/nbhd-google-to
 COPY runtime/openclaw/plugins/nbhd-journal-tools /opt/nbhd/plugins/nbhd-journal-tools
 COPY runtime/openclaw/plugins/nbhd-usage-reporter /opt/nbhd/plugins/nbhd-usage-reporter
 COPY runtime/openclaw/plugins/nbhd-image-gen /opt/nbhd/plugins/nbhd-image-gen
+COPY runtime/openclaw/plugins/nbhd-reddit-tools /opt/nbhd/plugins/nbhd-reddit-tools
 COPY agent-skills /opt/nbhd/agent-skills
 COPY templates/openclaw /opt/nbhd/templates/openclaw
 COPY runtime/openclaw/proxy.js /opt/nbhd/proxy.js

@@ -486,3 +486,117 @@ class RuntimeMemorySyncViewTest(TestCase):
         payload = response.json()
         self.assertEqual(payload["count"], 1)
         self.assertEqual(payload["lessons"][0]["text"], "Pending one")
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="shared-key")
+class RedditViewTests(TestCase):
+    """Tests for Reddit runtime integration endpoints."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Reddit Test", telegram_chat_id=737373)
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": "shared-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    @patch("apps.integrations.runtime_views.initiate_composio_connection")
+    def test_connect_returns_redirect_url(self, mock_initiate):
+        mock_initiate.return_value = ("https://reddit.com/oauth/authorize?state=abc", "req-id-123")
+
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/reddit/connect/",
+            data={"callback_url": "https://app.example.com/callback"},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["redirect_url"], "https://reddit.com/oauth/authorize?state=abc")
+        self.assertEqual(body["connection_request_id"], "req-id-123")
+        mock_initiate.assert_called_once_with(self.tenant, "reddit", "https://app.example.com/callback")
+
+    def test_status_returns_connected_false_when_no_integration(self):
+        response = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/reddit/status/",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["connected"])
+        self.assertEqual(body["provider_email"], "")
+
+    def test_status_returns_connected_true_when_active_integration_exists(self):
+        from .models import Integration
+
+        Integration.objects.create(
+            tenant=self.tenant,
+            provider="reddit",
+            status=Integration.Status.ACTIVE,
+            provider_email="user@reddit.com",
+        )
+
+        response = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/reddit/status/",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["connected"])
+        self.assertEqual(body["provider_email"], "user@reddit.com")
+
+    @patch("apps.integrations.runtime_views.disconnect_integration")
+    def test_disconnect_calls_service_and_returns_disconnected(self, mock_disconnect):
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/reddit/disconnect/",
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["disconnected"])
+        mock_disconnect.assert_called_once_with(self.tenant, "reddit")
+
+    @patch("apps.integrations.runtime_views.execute_reddit_tool")
+    def test_tool_view_maps_action_to_composio_slug(self, mock_execute):
+        mock_execute.return_value = {"posts": [], "count": 0}
+
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/reddit/tool/",
+            data={"action": "digest", "subreddit": "python", "limit": 5},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_execute.assert_called_once_with(
+            self.tenant,
+            "digest",
+            {"subreddit": "python", "limit": 5},
+        )
+
+    def test_tool_view_rejects_unknown_action(self):
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/reddit/tool/",
+            data={"action": "nonexistent_action"},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "invalid_action")
+
+    def test_connect_requires_callback_url(self):
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/reddit/connect/",
+            data={},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "invalid_request")

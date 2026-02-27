@@ -17,6 +17,7 @@ class Integration(models.Model):
         GMAIL = "gmail", "Gmail"
         GOOGLE_CALENDAR = "google-calendar", "Google Calendar"
         SAUTAI = "sautai", "Sautai"
+        REDDIT = "reddit", "Reddit"
 
     class Status(models.TextChoices):
         ACTIVE = "active", "Active"

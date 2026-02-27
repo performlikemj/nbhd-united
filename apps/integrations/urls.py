@@ -2,6 +2,11 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .runtime_views import (
+    RedditConnectView,
+    RedditCompleteView,
+    RedditDisconnectView,
+    RedditStatusView,
+    RedditToolView,
     RuntimeCalendarEventsView,
     RuntimeCalendarFreeBusyView,
     RuntimeDailyNoteAppendView,
@@ -146,6 +151,32 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/send-to-user/",
         _CronDeliveryView.as_view(),
         name="runtime-send-to-user",
+    ),
+    # Reddit runtime endpoints
+    path(
+        "runtime/<uuid:tenant_id>/reddit/connect/",
+        RedditConnectView.as_view(),
+        name="runtime-reddit-connect",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/reddit/complete/",
+        RedditCompleteView.as_view(),
+        name="runtime-reddit-complete",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/reddit/status/",
+        RedditStatusView.as_view(),
+        name="runtime-reddit-status",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/reddit/disconnect/",
+        RedditDisconnectView.as_view(),
+        name="runtime-reddit-disconnect",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/reddit/tool/",
+        RedditToolView.as_view(),
+        name="runtime-reddit-tool",
     ),
     path("", include(router.urls)),
 ]

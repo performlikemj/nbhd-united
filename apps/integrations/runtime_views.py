@@ -41,6 +41,7 @@ from .google_api import (
 )
 from apps.billing.services import record_usage
 from .internal_auth import InternalAuthError, validate_internal_runtime_request
+from .models import Integration
 from .services import (
     IntegrationInactiveError,
     IntegrationNotConnectedError,
@@ -48,7 +49,11 @@ from .services import (
     IntegrationRefreshError,
     IntegrationScopeError,
     IntegrationTokenDataError,
+    complete_composio_connection,
+    disconnect_integration,
+    execute_reddit_tool,
     get_valid_provider_access_token,
+    initiate_composio_connection,
 )
 
 
@@ -1515,3 +1520,194 @@ class RuntimeProfileUpdateView(APIView):
             "display_name": getattr(user, "display_name", ""),
             "language": getattr(user, "language", ""),
         })
+
+
+# ---------------------------------------------------------------------------
+# Reddit runtime endpoints
+# ---------------------------------------------------------------------------
+
+
+class RedditConnectView(APIView):
+    """POST — initiate Composio Reddit OAuth connection."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        callback_url = str(request.data.get("callback_url", "")).strip()
+        if not callback_url:
+            return Response(
+                {"error": "invalid_request", "detail": "callback_url is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            redirect_url, connection_request_id = initiate_composio_connection(
+                tenant, "reddit", callback_url
+            )
+        except IntegrationProviderConfigError as exc:
+            return _integration_error_response(exc)
+        except Exception as exc:
+            logger.exception("Reddit connect failed for tenant %s", tenant_id)
+            return Response(
+                {"error": "connect_failed", "detail": str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {
+                "redirect_url": redirect_url,
+                "connection_request_id": connection_request_id,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class RedditCompleteView(APIView):
+    """POST — complete Composio Reddit OAuth connection."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        connection_request_id = str(request.data.get("connection_request_id", "")).strip()
+        if not connection_request_id:
+            return Response(
+                {"error": "invalid_request", "detail": "connection_request_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            integration = complete_composio_connection(tenant, "reddit", connection_request_id)
+        except (IntegrationProviderConfigError, IntegrationInactiveError) as exc:
+            return _integration_error_response(exc)
+        except Exception as exc:
+            logger.exception("Reddit complete failed for tenant %s", tenant_id)
+            return Response(
+                {"error": "complete_failed", "detail": str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {
+                "connected": True,
+                "provider_email": integration.provider_email,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class RedditStatusView(APIView):
+    """GET — check Reddit integration status for a tenant."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        integration = Integration.objects.filter(
+            tenant=tenant,
+            provider="reddit",
+            status=Integration.Status.ACTIVE,
+        ).first()
+
+        connected = integration is not None
+        provider_email = integration.provider_email if integration else ""
+
+        return Response(
+            {"connected": connected, "provider_email": provider_email},
+            status=status.HTTP_200_OK,
+        )
+
+
+class RedditDisconnectView(APIView):
+    """POST — disconnect Reddit integration for a tenant."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        try:
+            disconnect_integration(tenant, "reddit")
+        except Exception as exc:
+            logger.exception("Reddit disconnect failed for tenant %s", tenant_id)
+            return Response(
+                {"error": "disconnect_failed", "detail": str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response({"disconnected": True}, status=status.HTTP_200_OK)
+
+
+class RedditToolView(APIView):
+    """POST — execute a Reddit tool action via Composio."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        action = str(request.data.get("action", "")).strip()
+        if not action:
+            return Response(
+                {"error": "invalid_request", "detail": "action is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        params = {k: v for k, v in request.data.items() if k != "action"}
+
+        try:
+            result = execute_reddit_tool(tenant, action, params)
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_action", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except IntegrationProviderConfigError as exc:
+            return _integration_error_response(exc)
+        except Exception as exc:
+            logger.exception("Reddit tool execution failed for tenant %s action=%s", tenant_id, action)
+            return Response(
+                {"error": "tool_execution_failed", "detail": str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(result, status=status.HTTP_200_OK)

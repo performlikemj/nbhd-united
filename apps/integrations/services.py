@@ -23,7 +23,7 @@ ON_DEMAND_REFRESH_LEEWAY_SECONDS = 120
 # Composio managed-auth helpers
 # ---------------------------------------------------------------------------
 
-COMPOSIO_MANAGED_PROVIDERS: set[str] = {"gmail", "google-calendar"}
+COMPOSIO_MANAGED_PROVIDERS: set[str] = {"gmail", "google-calendar", "reddit"}
 
 _composio_client = None
 
@@ -67,6 +67,7 @@ def _get_composio_auth_config_id(provider: str) -> str:
     mapping = {
         "gmail": getattr(settings, "COMPOSIO_GMAIL_AUTH_CONFIG_ID", ""),
         "google-calendar": getattr(settings, "COMPOSIO_GCAL_AUTH_CONFIG_ID", ""),
+        "reddit": getattr(settings, "COMPOSIO_REDDIT_AUTH_CONFIG_ID", ""),
     }
     config_id = mapping.get(provider, "")
     if not config_id:
@@ -607,6 +608,34 @@ def get_valid_provider_access_token(
         provider=provider,
         tenant_id=str(tenant.id),
     )
+
+
+_REDDIT_ACTION_MAP: dict[str, str] = {
+    "digest": "REDDIT_GET_SUBREDDIT_POSTS",
+    "search": "REDDIT_SEARCH_REDDIT_POSTS",
+    "my_activity": "REDDIT_GET_USER_COMMENTS",
+    "post": "REDDIT_CREATE_REDDIT_POST",
+    "reply": "REDDIT_CREATE_REDDIT_COMMENT",
+    "edit": "REDDIT_EDIT_REDDIT_COMMENT_OR_POST",
+    "delete_post": "REDDIT_DELETE_REDDIT_POST",
+    "delete_comment": "REDDIT_DELETE_REDDIT_COMMENT",
+}
+
+
+def execute_reddit_tool(tenant: Tenant, action: str, params: dict) -> dict:
+    """Execute a Reddit action via Composio tools.
+
+    Returns the result dict from Composio.
+    """
+    tool_slug = _REDDIT_ACTION_MAP.get(action)
+    if not tool_slug:
+        raise ValueError(f"Unknown Reddit action: {action!r}. Valid actions: {sorted(_REDDIT_ACTION_MAP)}")
+
+    client = _get_composio_client()
+    user_id = f"tenant-{tenant.id}"
+
+    result = client.tools.execute(tool_name=tool_slug, user_id=user_id, params=params)
+    return result if isinstance(result, dict) else {"result": result}
 
 
 def connect_integration(

@@ -235,6 +235,19 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             str(getattr(settings, "OPENCLAW_IMAGE_GEN_PLUGIN_PATH", "") or "").strip(),
         ),
     ]
+    # Reddit plugin — conditionally loaded only when tenant has an active Reddit connection
+    from apps.integrations.models import Integration as _Integration
+    _reddit_connected = _Integration.objects.filter(
+        tenant=tenant,
+        provider="reddit",
+        status=_Integration.Status.ACTIVE,
+    ).exists()
+    if _reddit_connected:
+        _plugin_defs.append((
+            str(getattr(settings, "OPENCLAW_REDDIT_PLUGIN_ID", "nbhd-reddit-tools") or "").strip(),
+            str(getattr(settings, "OPENCLAW_REDDIT_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-reddit-tools") or "").strip(),
+        ))
+
     _active_plugins = [(pid, ppath) for pid, ppath in _plugin_defs if pid]
 
     api_base = str(getattr(settings, "API_BASE_URL", "") or "").strip().rstrip("/")

@@ -50,6 +50,23 @@
 | `nbhd_calendar_list_events` | List upcoming calendar events |
 | `nbhd_calendar_get_freebusy` | Check busy/free windows |
 
+## Reddit Tools (`nbhd-reddit-tools` plugin — only loaded when Reddit is connected)
+
+| Tool | Purpose |
+|------|---------|
+| `nbhd_reddit_connect` | Connect user's Reddit account via OAuth |
+| `nbhd_reddit_status` | Check if Reddit is connected |
+| `nbhd_reddit_digest` | Get top posts from monitored subreddits |
+| `nbhd_reddit_my_activity` | Check replies to user's posts/comments |
+| `nbhd_reddit_post` | Submit a post — **always get explicit approval first** |
+| `nbhd_reddit_reply` | Reply to a post/comment — **always get explicit approval first** |
+
+Rules:
+- NEVER post or reply without showing a draft and getting explicit "yes, post it" from the user
+- Surface digest once per day unless user asks for more
+- Save monitored subreddits to memory after setup: `{"reddit": {"monitored_subreddits": [...]}}`
+- If user asks about Reddit but it's not connected: offer to connect via `nbhd_reddit_connect`
+
 ## Built-in Tools (OpenClaw)
 
 | Tool | Purpose |
