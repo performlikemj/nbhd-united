@@ -3,7 +3,8 @@
 import { type MouseEvent, type TouchEvent as ReactTouchEvent, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
-import { MarkdownEditor } from "@/components/journal/markdown-editor";
+import { MarkdownEditor, EditorToolbar } from "@/components/journal/markdown-editor";
+import { type Editor } from "@tiptap/react";
 import { MarkdownHelpSheet } from "@/components/journal/markdown-help-sheet";
 import { QuickLogInput } from "@/components/journal/quick-log-input";
 import { useQueryClient } from "@tanstack/react-query";
@@ -59,6 +60,8 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
   // Draggable pencil FAB — Y position stored in localStorage
   const FAB_KEY = "pencil-fab-y";
   const [fabY, setFabY] = useState<number | null>(null);
+  const mobileEditorRef = useRef<Editor | null>(null);
+  const [mobileEditor, setMobileEditor] = useState<Editor | null>(null);
   const fabDrag = useRef<{ startTouchY: number; startBtnY: number } | null>(null);
 
   useEffect(() => {
@@ -156,6 +159,8 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
 
   const handleCancel = () => {
     setEditing(false);
+    setMobileEditor(null);
+    mobileEditorRef.current = null;
   };
 
   const handleQuickLog = async (content: string) => {
@@ -274,12 +279,13 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
           </div>
         </div>
         {/* Editor scroll area — 'scroll' (not 'auto') + overscroll-contain for iOS */}
+        {/* Scrollable editor area — toolbar lives BELOW this on mobile */}
         <div
           className="flex-1 overscroll-y-contain"
           style={{
             overflowY: "scroll",
             WebkitOverflowScrolling: "touch",
-            paddingBottom: "calc(env(safe-area-inset-bottom) + 5rem)",
+            paddingBottom: "env(safe-area-inset-bottom)",
           }}
         >
           <MarkdownEditor
@@ -290,8 +296,19 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
             autoFocus
             cursorKey={`doc-cursor-${kind}-${effectiveSlug}`}
             className="rounded-none border-0"
+            hideToolbar
+            onEditorReady={(ed) => { mobileEditorRef.current = ed; setMobileEditor(ed); }}
           />
         </div>
+
+        {/* Toolbar pinned above keyboard — outside scroll area so it never scrolls away */}
+        <div
+          className="shrink-0 border-t border-border bg-surface"
+          style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+        >
+          <EditorToolbar editor={mobileEditor} className="border-0" />
+        </div>
+
         <MarkdownHelpSheet open={helpOpen} onClose={() => setHelpOpen(false)} />
       </div>,
       document.body,

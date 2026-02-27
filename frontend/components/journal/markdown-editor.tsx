@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { useEditor, EditorContent } from "@tiptap/react";
+import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { TaskList } from "@tiptap/extension-list";
 import { TaskItem } from "@tiptap/extension-list";
@@ -22,6 +22,10 @@ interface MarkdownEditorProps {
   className?: string;
   /** localStorage key used to save/restore cursor position across open/close */
   cursorKey?: string;
+  /** Suppress the built-in toolbar — use <EditorToolbar> separately (e.g. pinned above keyboard on mobile) */
+  hideToolbar?: boolean;
+  /** Called with the Tiptap editor instance once ready — use to wire up an external <EditorToolbar> */
+  onEditorReady?: (editor: Editor) => void;
 }
 
 // ── Inline SVG Icons (16×16) ─────────────────────────────────────────────────
@@ -57,7 +61,7 @@ const CheckboxIcon = () => (
   </svg>
 );
 
-// ── Toolbar button ────────────────────────────────────────────────────────────
+// ── Toolbar ───────────────────────────────────────────────────────────────────
 
 interface ToolbarButtonProps {
   onClick: () => void;
@@ -88,6 +92,36 @@ function ToolbarButton({ onClick, title, active, children }: ToolbarButtonProps)
   );
 }
 
+// ── EditorToolbar (exported — use standalone when hideToolbar=true) ──────────
+
+interface EditorToolbarProps {
+  editor: Editor | null;
+  /** Extra classes — e.g. border-t for bottom placement */
+  className?: string;
+}
+
+export function EditorToolbar({ editor, className }: EditorToolbarProps) {
+  return (
+    <div className={clsx("flex items-center gap-0.5 px-2 py-1.5 bg-surface-hover overflow-x-auto flex-nowrap", className)}>
+      <ToolbarButton onClick={() => editor?.chain().focus().toggleBold().run()} title="Bold (⌘B)" active={editor?.isActive("bold")}>
+        <BoldIcon />
+      </ToolbarButton>
+      <ToolbarButton onClick={() => editor?.chain().focus().toggleItalic().run()} title="Italic (⌘I)" active={editor?.isActive("italic")}>
+        <ItalicIcon />
+      </ToolbarButton>
+      <ToolbarButton onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()} title="Heading 2" active={editor?.isActive("heading", { level: 2 })}>
+        <HeadingIcon />
+      </ToolbarButton>
+      <ToolbarButton onClick={() => editor?.chain().focus().toggleBulletList().run()} title="Bullet list" active={editor?.isActive("bulletList")}>
+        <ListIcon />
+      </ToolbarButton>
+      <ToolbarButton onClick={() => editor?.chain().focus().toggleTaskList().run()} title="Task list" active={editor?.isActive("taskList")}>
+        <CheckboxIcon />
+      </ToolbarButton>
+    </div>
+  );
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export function MarkdownEditor({
@@ -100,6 +134,8 @@ export function MarkdownEditor({
   autoFocus,
   className,
   cursorKey,
+  hideToolbar,
+  onEditorReady,
 }: MarkdownEditorProps) {
   const editor = useEditor({
     extensions: [
@@ -116,6 +152,7 @@ export function MarkdownEditor({
     // Don't use autofocus here — cursor restore is handled in onCreate
     autofocus: false,
     onCreate({ editor: ed }) {
+      onEditorReady?.(ed);
       if (!autoFocus) return;
       // Restore last cursor position if available, otherwise go to start
       const saved = cursorKey ? localStorage.getItem(cursorKey) : null;
@@ -199,48 +236,10 @@ export function MarkdownEditor({
       `}</style>
 
       <div className={clsx("rounded-lg border border-border overflow-hidden", className)}>
-        {/* Toolbar */}
-        <div className="flex items-center gap-0.5 px-2 py-1.5 border-b border-border bg-surface-hover overflow-x-auto flex-nowrap">
-          <ToolbarButton
-            onClick={() => editor?.chain().focus().toggleBold().run()}
-            title="Bold (⌘B)"
-            active={editor?.isActive("bold")}
-          >
-            <BoldIcon />
-          </ToolbarButton>
-
-          <ToolbarButton
-            onClick={() => editor?.chain().focus().toggleItalic().run()}
-            title="Italic (⌘I)"
-            active={editor?.isActive("italic")}
-          >
-            <ItalicIcon />
-          </ToolbarButton>
-
-          <ToolbarButton
-            onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}
-            title="Heading 2"
-            active={editor?.isActive("heading", { level: 2 })}
-          >
-            <HeadingIcon />
-          </ToolbarButton>
-
-          <ToolbarButton
-            onClick={() => editor?.chain().focus().toggleBulletList().run()}
-            title="Bullet list"
-            active={editor?.isActive("bulletList")}
-          >
-            <ListIcon />
-          </ToolbarButton>
-
-          <ToolbarButton
-            onClick={() => editor?.chain().focus().toggleTaskList().run()}
-            title="Task list"
-            active={editor?.isActive("taskList")}
-          >
-            <CheckboxIcon />
-          </ToolbarButton>
-        </div>
+        {/* Toolbar — top position (default, desktop) */}
+        {!hideToolbar && (
+          <EditorToolbar editor={editor} className="border-b border-border" />
+        )}
 
         {/* Tiptap editor content */}
         <EditorContent editor={editor} className="overflow-y-auto" />
