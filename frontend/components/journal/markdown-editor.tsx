@@ -61,6 +61,18 @@ const CheckboxIcon = () => (
   </svg>
 );
 
+const IndentIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+    <path d="M2 3h12v1.5H2V3Zm4 3.5h8V8H6V6.5Zm0 3.5h8v1.5H6V10ZM2 13h12v1.5H2V13ZM2 6l3 2.5L2 11V6Z" />
+  </svg>
+);
+
+const OutdentIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+    <path d="M2 3h12v1.5H2V3Zm4 3.5h8V8H6V6.5Zm0 3.5h8v1.5H6V10ZM2 13h12v1.5H2V13ZM5 6l-3 2.5L5 11V6Z" />
+  </svg>
+);
+
 // ── Toolbar ───────────────────────────────────────────────────────────────────
 
 interface ToolbarButtonProps {
@@ -117,6 +129,25 @@ export function EditorToolbar({ editor, className }: EditorToolbarProps) {
       </ToolbarButton>
       <ToolbarButton onClick={() => editor?.chain().focus().toggleTaskList().run()} title="Task list" active={editor?.isActive("taskList")}>
         <CheckboxIcon />
+      </ToolbarButton>
+
+      {/* Separator */}
+      <div className="mx-1 h-5 w-px bg-border shrink-0" />
+
+      {/* Indent / Outdent — always visible so mobile users know they exist; dim when not in a list */}
+      <ToolbarButton
+        onClick={() => editor?.chain().focus().sinkListItem("listItem").run()}
+        title="Indent list item (Tab)"
+        active={false}
+      >
+        <IndentIcon />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor?.chain().focus().liftListItem("listItem").run()}
+        title="Outdent list item (Shift+Tab)"
+        active={false}
+      >
+        <OutdentIcon />
       </ToolbarButton>
     </div>
   );
@@ -177,11 +208,22 @@ export function MarkdownEditor({
         class:
           "tiptap-content outline-none min-h-[50vh] w-full px-4 py-3 text-sm leading-relaxed text-ink bg-surface",
       },
-      handleKeyDown(_, event) {
+      handleKeyDown(view, event) {
         if ((event.metaKey || event.ctrlKey) && event.key === "s") {
           event.preventDefault();
           onSave?.();
           return true;
+        }
+        // Tab → indent list item; Shift+Tab → outdent
+        if (event.key === "Tab") {
+          event.preventDefault();
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const tiptap = (view as any).editor as Editor | undefined;
+          if (event.shiftKey) {
+            return tiptap?.chain().focus().liftListItem("listItem").run() ?? false;
+          } else {
+            return tiptap?.chain().focus().sinkListItem("listItem").run() ?? false;
+          }
         }
         return false;
       },
@@ -217,6 +259,10 @@ export function MarkdownEditor({
         .tiptap-content ul { list-style-type: disc; padding-left: 1.25rem; margin-top: 0.25rem; margin-bottom: 0.25rem; }
         .tiptap-content ol { list-style-type: decimal; padding-left: 1.25rem; margin-top: 0.25rem; margin-bottom: 0.25rem; }
         .tiptap-content li { margin-top: 0.125rem; margin-bottom: 0.125rem; }
+        .tiptap-content ul ul { list-style-type: circle; padding-left: 1.25rem; }
+        .tiptap-content ul ul ul { list-style-type: square; padding-left: 1.25rem; }
+        .tiptap-content ol ol { list-style-type: lower-alpha; padding-left: 1.25rem; }
+        .tiptap-content ol ol ol { list-style-type: lower-roman; padding-left: 1.25rem; }
         .tiptap-content ul[data-type="taskList"] { list-style: none; padding-left: 0.25rem; }
         .tiptap-content ul[data-type="taskList"] li { display: flex; align-items: flex-start; gap: 0.5rem; }
         .tiptap-content ul[data-type="taskList"] li > label { margin-top: 0.125rem; }
