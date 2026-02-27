@@ -2,6 +2,7 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    CancelDeletionView,
     DeleteAccountView,
     OnboardTenantView,
     PersonaListView,
@@ -32,5 +33,6 @@ urlpatterns = [
     path("settings/llm-config/", LLMConfigView.as_view(), name="llm-config"),
     path("settings/llm-config/models/", FetchModelsView.as_view(), name="llm-config-models"),
     path("delete-account/", DeleteAccountView.as_view(), name="delete-account"),
+    path("cancel-deletion/", CancelDeletionView.as_view(), name="cancel-deletion"),
     path("", include(router.urls)),
 ]

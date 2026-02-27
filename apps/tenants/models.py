@@ -87,6 +87,17 @@ class Tenant(models.Model):
     stripe_customer_id = models.CharField(max_length=255, blank=True, default="")
     stripe_subscription_id = models.CharField(max_length=255, blank=True, default="")
 
+    # Scheduled deletion
+    pending_deletion = models.BooleanField(
+        default=False,
+        help_text="Account is queued for deletion. Kept alive until deletion_scheduled_at.",
+    )
+    deletion_scheduled_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the account will be hard-deleted (end of paid period, or immediate if no subscription).",
+    )
+
     # Free trial
     trial_started_at = models.DateTimeField(
         null=True,
