@@ -278,14 +278,25 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
             </button>
           </div>
         </div>
-        {/* Editor scroll area — 'scroll' (not 'auto') + overscroll-contain for iOS */}
-        {/* Scrollable editor area — toolbar lives BELOW this on mobile */}
+        {/* Toolbar — sits between title bar and editor, always visible.
+             Moving it to the TOP means the keyboard can never cover it.
+             iOS Safari does not resize fixed containers when the keyboard
+             opens, so a bottom-pinned toolbar slides underneath the keyboard.
+             Top placement requires zero JS to track keyboard height and
+             matches how Notion, Bear, iA Writer, etc. handle mobile editing. */}
+        <div className="shrink-0 border-b border-border bg-surface-hover">
+          <EditorToolbar editor={mobileEditor} className="border-0" />
+        </div>
+
+        {/* Scrollable editor area — 'scroll' (not 'auto') + overscroll-contain for iOS.
+             Extra paddingBottom gives breathing room so the cursor is never
+             hidden behind the keyboard when near the bottom of a long note. */}
         <div
           className="flex-1 overscroll-y-contain"
           style={{
             overflowY: "scroll",
             WebkitOverflowScrolling: "touch",
-            paddingBottom: "env(safe-area-inset-bottom)",
+            paddingBottom: "calc(env(safe-area-inset-bottom) + 120px)",
           }}
         >
           <MarkdownEditor
@@ -299,14 +310,6 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
             hideToolbar
             onEditorReady={(ed) => { mobileEditorRef.current = ed; setMobileEditor(ed); }}
           />
-        </div>
-
-        {/* Toolbar pinned above keyboard — outside scroll area so it never scrolls away */}
-        <div
-          className="shrink-0 border-t border-border bg-surface"
-          style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
-        >
-          <EditorToolbar editor={mobileEditor} className="border-0" />
         </div>
 
         <MarkdownHelpSheet open={helpOpen} onClose={() => setHelpOpen(false)} />
