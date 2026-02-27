@@ -16,9 +16,14 @@ import {
 } from "@/lib/queries";
 import type { TelegramLinkResponse } from "@/lib/api";
 
-const providers = [
+const providers: { key: string; label: string; description?: string }[] = [
   { key: "gmail", label: "Gmail" },
   { key: "google-calendar", label: "Google Calendar" },
+  {
+    key: "reddit",
+    label: "Reddit",
+    description: "Browse your feeds and subreddits without the doom-scroll.",
+  },
   // { key: "sautai", label: "Sautai — Coming Soon" },
 ];
 
@@ -116,13 +121,16 @@ function IntegrationsContent() {
   const connectedProvider = searchParams.get("connected");
   const oauthError = searchParams.get("error");
 
+  const [connectError, setConnectError] = useState<string | null>(null);
+
   const handleConnect = async (provider: string) => {
     setConnectingProvider(provider);
+    setConnectError(null);
     try {
       const result = await authorize.mutateAsync(provider);
       window.location.assign(result.url);
-    } catch {
-      // Error shown via mutation state
+    } catch (err) {
+      setConnectError(err instanceof Error ? err.message : "Could not start connection. Please try again.");
     } finally {
       setConnectingProvider(null);
     }
@@ -157,6 +165,12 @@ function IntegrationsContent() {
 
       <TelegramCard />
 
+      {connectError && (
+        <p className="mb-4 rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
+          {connectError}
+        </p>
+      )}
+
       <div className="mt-4 grid gap-3 md:grid-cols-2">
         {providers.map((provider) => {
           const integration = data?.find((item) => item.provider === provider.key);
@@ -172,7 +186,7 @@ function IntegrationsContent() {
               <p className="mt-2 text-sm text-ink-muted">
                 {connected
                   ? integration?.provider_email || "Connected"
-                  : "Not connected yet."}
+                  : provider.description ?? "Not connected yet."}
               </p>
 
               <div className="mt-4 flex gap-2">
