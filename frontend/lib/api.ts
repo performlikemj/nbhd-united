@@ -633,9 +633,21 @@ export function bulkDeleteCronJobs(ids: string[]): Promise<BulkDeleteResult> {
 }
 
 
-export function deleteAccount(): Promise<{ detail: string }> {
-  return apiFetch<{ detail: string }>("/api/v1/tenants/delete-account/", {
+export interface DeleteAccountResponse {
+  scheduled: boolean;
+  deletion_scheduled_at?: string | null;
+  detail: string;
+}
+
+export function deleteAccount(): Promise<DeleteAccountResponse> {
+  return apiFetch<DeleteAccountResponse>("/api/v1/tenants/delete-account/", {
     method: "POST",
     body: JSON.stringify({ confirm: "DELETE" }),
+  });
+}
+
+export function cancelAccountDeletion(): Promise<{ detail: string }> {
+  return apiFetch<{ detail: string }>("/api/v1/tenants/cancel-deletion/", {
+    method: "POST",
   });
 }

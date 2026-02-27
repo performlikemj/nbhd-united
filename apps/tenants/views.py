@@ -424,16 +424,40 @@ class ProfileView(APIView):
         return Response(serializer.data)
 
 
+def _do_hard_delete(user) -> None:
+    """Deprovision tenant and hard-delete the user. Called immediately (no
+    subscription) or from the Stripe webhook when the subscription ends."""
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    tenant = getattr(user, "tenant", None)
+    if tenant and tenant.status not in ("deleted", "deprovisioning"):
+        try:
+            from apps.orchestrator.services import deprovision_tenant
+            deprovision_tenant(str(tenant.id))
+            _log.info("Deprovisioned tenant %s for user %s", tenant.id, user.id)
+        except Exception:
+            _log.warning(
+                "Could not deprovision tenant %s during deletion — continuing",
+                tenant.id,
+                exc_info=True,
+            )
+
+    user_id, user_email = user.id, user.email
+    user.delete()
+    _log.info("Hard-deleted account: user_id=%s email=%s", user_id, user_email)
+
+
 class DeleteAccountView(APIView):
-    """Permanently delete the authenticated user's account.
+    """Schedule permanent deletion of the authenticated user's account.
 
-    Steps (in order):
-    1. Cancel Stripe subscription at period end (they keep access until then).
-    2. Deprovision OpenClaw tenant (container, file share, managed identity).
-    3. Anonymize / hard-delete the Django user.
+    Behaviour:
+    - Active Stripe subscription → cancel at period end; account stays alive
+      and fully functional until then; ``customer.subscription.deleted`` webhook
+      triggers the actual hard-delete.
+    - No active subscription → hard-delete immediately.
 
-    Requires a confirmation token in the request body:
-        { "confirm": "DELETE" }
+    Requires { "confirm": "DELETE" } in the request body.
     """
 
     permission_classes = [IsAuthenticated]
@@ -441,16 +465,108 @@ class DeleteAccountView(APIView):
     def post(self, request):
         if request.data.get("confirm") != "DELETE":
             return Response(
-                {"detail": "Send {\"confirm\": \"DELETE\"} to confirm account deletion."},
+                {"detail": 'Send {"confirm": "DELETE"} to confirm.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         user = request.user
+        tenant = getattr(user, "tenant", None)
 
-        # 1. Cancel Stripe subscription (at period end so they keep access)
-        try:
-            tenant = getattr(user, "tenant", None)
-            if tenant and tenant.stripe_subscription_id:
+        # Already scheduled — idempotent
+        if tenant and tenant.pending_deletion:
+            return Response(
+                {
+                    "scheduled": True,
+                    "deletion_scheduled_at": tenant.deletion_scheduled_at,
+                    "detail": "Deletion already scheduled.",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        has_active_sub = bool(tenant and tenant.stripe_subscription_id)
+
+        if has_active_sub:
+            # ── Has subscription: cancel at period end, schedule deletion ──────
+            period_end = None
+            try:
+                import stripe
+                from django.conf import settings as dj_settings
+
+                stripe.api_key = (
+                    dj_settings.STRIPE_LIVE_SECRET_KEY
+                    if getattr(dj_settings, "STRIPE_LIVE_MODE", False)
+                    else dj_settings.STRIPE_TEST_SECRET_KEY
+                )
+                sub = stripe.Subscription.modify(
+                    tenant.stripe_subscription_id,
+                    cancel_at_period_end=True,
+                )
+                import datetime
+                period_end = datetime.datetime.fromtimestamp(
+                    sub["current_period_end"], tz=datetime.timezone.utc
+                )
+                logger.info(
+                    "Subscription %s set to cancel at period end %s for user %s",
+                    tenant.stripe_subscription_id,
+                    period_end,
+                    user.id,
+                )
+            except Exception:
+                logger.warning(
+                    "Could not cancel Stripe subscription for user %s — scheduling deletion anyway",
+                    user.id,
+                    exc_info=True,
+                )
+
+            tenant.pending_deletion = True
+            tenant.deletion_scheduled_at = period_end
+            tenant.save(update_fields=["pending_deletion", "deletion_scheduled_at", "updated_at"])
+
+            return Response(
+                {
+                    "scheduled": True,
+                    "deletion_scheduled_at": period_end,
+                    "detail": (
+                        "Your account is scheduled for deletion at the end of your billing period. "
+                        "You have full access until then."
+                    ),
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        else:
+            # ── No subscription: hard-delete immediately ──────────────────────
+            user_id = user.id
+            try:
+                _do_hard_delete(user)
+            except Exception:
+                logger.exception("Hard-delete failed for user %s", user_id)
+                return Response(
+                    {"detail": "Deletion failed. Please contact support."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            return Response({"scheduled": False, "detail": "Account deleted."}, status=status.HTTP_200_OK)
+
+
+class CancelDeletionView(APIView):
+    """Cancel a scheduled account deletion (only possible while subscription is active)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        tenant = getattr(user, "tenant", None)
+
+        if not tenant or not tenant.pending_deletion:
+            return Response(
+                {"detail": "No scheduled deletion found."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Re-activate Stripe subscription (remove cancel_at_period_end)
+        if tenant.stripe_subscription_id:
+            try:
                 import stripe
                 from django.conf import settings as dj_settings
 
@@ -461,46 +577,22 @@ class DeleteAccountView(APIView):
                 )
                 stripe.Subscription.modify(
                     tenant.stripe_subscription_id,
-                    cancel_at_period_end=True,
+                    cancel_at_period_end=False,
                 )
                 logger.info(
-                    "Stripe subscription %s set to cancel at period end for user %s",
+                    "Reactivated subscription %s for user %s",
                     tenant.stripe_subscription_id,
                     user.id,
                 )
-        except Exception:
-            # Non-fatal — Stripe may already be cancelled or key missing.
-            logger.warning(
-                "Could not cancel Stripe subscription for user %s during account deletion",
-                user.id,
-                exc_info=True,
-            )
+            except Exception:
+                logger.warning(
+                    "Could not reactivate Stripe subscription for user %s",
+                    user.id,
+                    exc_info=True,
+                )
 
-        # 2. Deprovision OpenClaw container (non-fatal if it fails)
-        try:
-            tenant = getattr(user, "tenant", None)
-            if tenant and tenant.status not in ("deleted", "deprovisioning"):
-                from apps.orchestrator.services import deprovision_tenant
-                deprovision_tenant(str(tenant.id))
-                logger.info("Deprovisioned tenant %s for user %s", tenant.id, user.id)
-        except Exception:
-            logger.warning(
-                "Could not deprovision tenant for user %s during account deletion",
-                user.id,
-                exc_info=True,
-            )
+        tenant.pending_deletion = False
+        tenant.deletion_scheduled_at = None
+        tenant.save(update_fields=["pending_deletion", "deletion_scheduled_at", "updated_at"])
 
-        # 3. Hard-delete user (cascades to Tenant, integrations, journal docs, etc.)
-        user_id = user.id
-        user_email = user.email
-        try:
-            user.delete()
-            logger.info("Account deleted: user_id=%s email=%s", user_id, user_email)
-        except Exception:
-            logger.exception("Failed to delete user %s during account deletion", user_id)
-            return Response(
-                {"detail": "Account deletion failed. Please contact support."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-        return Response({"detail": "Account deleted."}, status=status.HTTP_200_OK)
+        return Response({"detail": "Deletion cancelled. Your account is active."}, status=status.HTTP_200_OK)

@@ -8,6 +8,7 @@ import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
 import {
+  useCancelDeletionMutation,
   useDeleteAccountMutation,
   useMeQuery,
   usePersonasQuery,
@@ -733,11 +734,23 @@ export default function SettingsPage() {
 
 // ── Danger Zone ───────────────────────────────────────────────────────────────
 
+function formatDate(d: Date) {
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+}
+
 function DangerZone() {
+  const { data: me } = useMeQuery();
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
   const deleteAccount = useDeleteAccountMutation();
+  const cancelDeletion = useCancelDeletionMutation();
+
+  const pendingDeletion = me?.tenant?.pending_deletion ?? false;
+  const scheduledAt = me?.tenant?.deletion_scheduled_at
+    ? new Date(me.tenant.deletion_scheduled_at)
+    : null;
+  const hasActiveSub = me?.tenant?.has_active_subscription ?? false;
 
   const confirmed = input === "DELETE";
 
@@ -745,19 +758,69 @@ function DangerZone() {
     if (!confirmed) return;
     setError("");
     try {
-      await deleteAccount.mutateAsync();
-      // Account deleted — redirect to sign-in
-      window.location.assign("/signin?deleted=1");
+      const result = await deleteAccount.mutateAsync();
+      if (result.scheduled) {
+        setOpen(false);
+        setInput("");
+        // UI re-renders from invalidated "me" query showing scheduled state
+      } else {
+        window.location.assign("/signin?deleted=1");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Deletion failed. Please try again or contact support.");
     }
   };
 
+  const handleCancelDeletion = async () => {
+    setError("");
+    try {
+      await cancelDeletion.mutateAsync();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not cancel deletion. Please try again.");
+    }
+  };
+
+  // ── Already scheduled ─────────────────────────────────────────────────────
+  if (pendingDeletion) {
+    return (
+      <section className="rounded-panel border border-rose-border bg-surface p-5">
+        <h2 className="text-base font-semibold text-rose-text">Danger Zone</h2>
+        <div className="mt-3 rounded-panel border border-rose-border bg-rose-bg p-4 space-y-3">
+          <p className="text-sm font-medium text-rose-text">
+            Your account is scheduled for deletion.
+          </p>
+          <p className="text-sm text-ink-muted">
+            {scheduledAt ? (
+              <>
+                Your subscription runs until{" "}
+                <strong className="text-ink">{formatDate(scheduledAt)}</strong>.
+                You have full access until then — on that date your assistant,
+                journal, and all data will be permanently deleted.
+              </>
+            ) : (
+              "Your account will be deleted at the end of your current billing period. You have full access until then."
+            )}
+          </p>
+          {error && <p className="text-sm text-rose-text">{error}</p>}
+          <button
+            type="button"
+            onClick={handleCancelDeletion}
+            disabled={cancelDeletion.isPending}
+            className="rounded-full border border-border-strong px-4 py-2 text-sm font-medium text-ink transition hover:border-border-strong disabled:opacity-50"
+          >
+            {cancelDeletion.isPending ? "Cancelling…" : "Cancel — keep my account"}
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  // ── Normal state ──────────────────────────────────────────────────────────
   return (
     <section className="rounded-panel border border-rose-border bg-surface p-5">
       <h2 className="text-base font-semibold text-rose-text">Danger Zone</h2>
       <p className="mt-1 text-sm text-ink-muted">
-        Permanently delete your account and all associated data. This cannot be undone.
+        Permanently delete your account and all associated data.
       </p>
 
       {!open ? (
@@ -770,13 +833,25 @@ function DangerZone() {
         </button>
       ) : (
         <div className="mt-4 space-y-4 rounded-panel border border-rose-border bg-rose-bg p-4">
-          <div className="space-y-1">
-            <p className="text-sm font-medium text-rose-text">This will immediately:</p>
+          {/* Access period notice — shown prominently before they commit */}
+          {hasActiveSub && (
+            <div className="rounded-panel border border-rose-border/60 bg-surface px-3.5 py-2.5 text-sm text-ink-muted">
+              You&apos;ll keep full access until the end of your current billing period.
+              The exact deletion date will be confirmed after you submit.
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <p className="text-sm font-medium text-rose-text">What gets deleted:</p>
             <ul className="ml-4 list-disc space-y-0.5 text-sm text-ink-muted">
-              <li>Cancel your subscription (access continues until end of billing period)</li>
-              <li>Shut down and delete your AI assistant container</li>
-              <li>Delete all journal entries, memory, and documents</li>
-              <li>Remove your account permanently — no recovery possible</li>
+              {hasActiveSub ? (
+                <li>Subscription cancelled — deletion scheduled for end of billing period</li>
+              ) : (
+                <li>Account deleted immediately</li>
+              )}
+              <li>Your AI assistant and all its memory</li>
+              <li>All journal entries, documents, and goals</li>
+              <li>No recovery possible after deletion</li>
             </ul>
           </div>
 
@@ -795,9 +870,7 @@ function DangerZone() {
             />
           </div>
 
-          {error && (
-            <p className="text-sm text-rose-text">{error}</p>
-          )}
+          {error && <p className="text-sm text-rose-text">{error}</p>}
 
           <div className="flex flex-wrap gap-2">
             <button
@@ -806,14 +879,18 @@ function DangerZone() {
               disabled={!confirmed || deleteAccount.isPending}
               className="rounded-full bg-rose-text px-4 py-2 text-sm font-medium text-white transition hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {deleteAccount.isPending ? "Deleting…" : "Delete my account forever"}
+              {deleteAccount.isPending
+                ? "Processing…"
+                : hasActiveSub
+                  ? "Schedule deletion"
+                  : "Delete my account"}
             </button>
             <button
               type="button"
               onClick={() => { setOpen(false); setInput(""); setError(""); }}
               className="rounded-full border border-border px-4 py-2 text-sm transition hover:border-border-strong"
             >
-              Cancel
+              Never mind
             </button>
           </div>
         </div>

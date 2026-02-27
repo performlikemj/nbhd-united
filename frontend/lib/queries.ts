@@ -64,6 +64,7 @@ import {
   updateTemplate,
   updateWeeklyReview,
   deleteAccount,
+  cancelAccountDeletion,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -628,7 +629,21 @@ export function useBulkDeleteCronJobsMutation() {
 }
 
 export function useDeleteAccountMutation() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => deleteAccount(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["me"] });
+    },
+  });
+}
+
+export function useCancelDeletionMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => cancelAccountDeletion(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["me"] });
+    },
   });
 }

@@ -175,7 +175,12 @@ def handle_checkout_completed(session_data: dict) -> None:
 
 
 def handle_subscription_deleted(subscription_data: dict) -> None:
-    """Handle customer.subscription.deleted webhook."""
+    """Handle customer.subscription.deleted webhook.
+
+    If the tenant was marked pending_deletion (user requested account deletion),
+    finalize the hard-delete now that their paid period has ended.
+    Otherwise treat it as a normal subscription cancellation (deprovision only).
+    """
     from apps.cron.publish import publish_task
 
     tenant = _find_tenant_for_stripe_event(subscription_data)
@@ -187,6 +192,23 @@ def handle_subscription_deleted(subscription_data: dict) -> None:
         logger.info("Tenant %s already deprovisioning/deleted", tenant.id)
         return
 
+    if tenant.pending_deletion:
+        # User requested account deletion — paid period is now over, finalize it.
+        logger.info(
+            "Finalizing scheduled account deletion for tenant %s (subscription ended)",
+            tenant.id,
+        )
+        try:
+            from apps.tenants.views import _do_hard_delete
+            user = tenant.user
+            _do_hard_delete(user)
+        except Exception:
+            logger.exception(
+                "Hard-delete failed for tenant %s after subscription ended", tenant.id
+            )
+        return
+
+    # Normal cancellation — deprovision container but keep user record.
     tenant.status = Tenant.Status.DEPROVISIONING
     tenant.save(update_fields=["status", "updated_at"])
 

@@ -56,6 +56,8 @@ export interface Tenant {
   last_message_at: string | null;
   provisioned_at: string | null;
   created_at: string;
+  pending_deletion: boolean;
+  deletion_scheduled_at: string | null;
 }
 
 export interface RefreshConfigStatus {
