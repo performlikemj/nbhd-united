@@ -14,6 +14,12 @@ from apps.tenants.models import Tenant
 
 _MORNING_BRIEFING_PROMPT = (
     "Good morning! Create today's morning briefing (based on the user's local timezone).\n\n"
+    "⚠️ NEWS DATE RULE: Before including any news item, check its publication date. "
+    "Only include articles published in the last 24 hours. "
+    "Never say 'yesterday' or 'today' about a story unless you've confirmed the date. "
+    "Instead, always include the actual date: 'Man United sacked their manager (Jan 12)' — "
+    "not 'Man United sacked their manager yesterday.' "
+    "Stale news presented as current is worse than no news.\n\n"
     "Gather context:\n"
     "1. Get weather using: curl -s 'wttr.in/{city}?format=%c+%t+%h+%w' for current conditions, "
     "or curl -s 'wttr.in/{city}?format=3' for a quick summary. "
@@ -21,7 +27,8 @@ _MORNING_BRIEFING_PROMPT = (
     "2. Check their calendar for today's events and upcoming 48hrs\n"
     "3. Check for important unread emails or messages\n"
     "4. Load recent journal context — what happened yesterday, any carry-over tasks?\n"
-    "5. Check news/topics the user follows (if configured)\n\n"
+    "5. Check news/topics the user follows (if configured) — use freshness filters (past 24h) "
+    "and always verify publication dates before including\n\n"
     "Then fill in today's daily note sections:\n\n"
     "**morning-report section:**\n"
     "### Overnight Summary\n"
