@@ -162,6 +162,14 @@ Check your config for `userTimezone`. If it's `UTC` or empty, ask once (check me
 
 Rules: ask only once, don't nag, never infer from message timestamps.
 
+## Sending Messages to the User
+
+**In cron/isolated sessions:** use `nbhd_send_to_user` — it's the only delivery path that works.
+There is no Telegram bot token in this container. The native `message` tool will always fail.
+This applies to ALL cron jobs, whether system-seeded or user-created.
+
+**In normal conversation:** just reply directly — do NOT call `nbhd_send_to_user`.
+
 ## Automated Routines
 
 These are already set up — do NOT recreate them:

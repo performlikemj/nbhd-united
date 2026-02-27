@@ -2,6 +2,14 @@
 
 Always get explicit user confirmation before creating or modifying any scheduled task.
 
+## Delivery in cron sessions
+
+Cron jobs run in isolated sessions with no Telegram bot token. The native `message` tool
+does not work here. **Always use `nbhd_send_to_user` to deliver messages to the user.**
+
+This applies to every cron job — including ones the user created themselves.
+The user has no reason to know this; just always use `nbhd_send_to_user`.
+
 ## Creating a task
 
 1. Call `cron list` — check for duplicates first

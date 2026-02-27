@@ -30,10 +30,16 @@ DENIED_TOOLS: tuple[str, ...] = (
 # Subscribers should not interact with raw workspace files.
 # All persistence goes through NBHD journal tools (group:plugins)
 # which write to the Django database — visible on the journal UI.
+#
+# NOTE: group:messaging is intentionally EXCLUDED.
+# Tenant containers have no Telegram bot token — direct channel delivery
+# always fails.  All outbound messages (cron jobs, proactive sends) MUST
+# go through the plugin tool nbhd_send_to_user, which proxies via the
+# central Django bot.  Blocking group:messaging here forces the agent to
+# use that path regardless of how the cron job was created.
 STARTER_ALLOW: tuple[str, ...] = (
     "group:web",
     "group:plugins",
-    "group:messaging",
     "tts",
     "image",
     "cron",
