@@ -644,9 +644,9 @@ class TelegramPoller:
                 if callback_data == "container_update:yes":
                     self._update_in_progress.add(chat_id)
                     self._answer_callback_query(callback_id, "✅ Updating now...")
-                    self._send_message(chat_id, "✅ Updating now! I'll be back in about 15 seconds...")
+                    self._send_message(chat_id, "✅ Updating now! I'll be back in about a minute...")
 
-                    # Do the actual update + forward in background (Azure call takes 20-30s)
+                    # Do the actual update + forward in background (Azure takes 45-90s)
                     pending_text = self._pending_messages.pop(chat_id, None)
 
                     def _do_update():
@@ -655,10 +655,19 @@ class TelegramPoller:
                             success = update_container(tenant)
                             if not success:
                                 self._send_message(chat_id, "Sorry, the update failed. Your assistant is still available on the current version.")
+                                return
                             if pending_text:
-                                time.sleep(5)  # Brief pause after update
-                                self._send_typing(chat_id)
-                                self._forward_to_container(chat_id, tenant, pending_text)
+                                # Wait for container gateway to be healthy before forwarding
+                                if self._wait_for_container_ready(tenant, timeout=120):
+                                    # Prepend context note so agent isn't cold
+                                    context_msg = (
+                                        f"[System: just updated. User's message from before the update:]\n{pending_text}"
+                                    )
+                                    self._send_typing(chat_id)
+                                    self._forward_to_container(chat_id, tenant, context_msg)
+                                else:
+                                    # Container didn't come up in time — tell user, let them resend
+                                    self._send_message(chat_id, "✅ Update complete! You can send your message again.")
                         finally:
                             self._update_in_progress.discard(chat_id)
 
@@ -952,6 +961,28 @@ class TelegramPoller:
         except Exception:
             logger.exception("Failed to download document %s", file_name)
             return f"[User sent a document: {file_name} — download failed]"
+
+    def _wait_for_container_ready(self, tenant: Tenant, timeout: int = 120) -> bool:
+        """Poll the container's health endpoint until it's up or timeout expires.
+
+        Returns True if the container came up within the timeout, False otherwise.
+        """
+        import time as _time
+        deadline = _time.time() + timeout
+        fqdn = tenant.container_fqdn
+        if not fqdn:
+            return False
+        url = f"https://{fqdn}/health"
+        internal_key = getattr(settings, "NBHD_INTERNAL_API_KEY", "")
+        while _time.time() < deadline:
+            try:
+                resp = httpx.get(url, headers={"X-NBHD-Internal-Key": internal_key}, timeout=5)
+                if resp.status_code < 500:
+                    return True
+            except Exception:
+                pass
+            _time.sleep(5)
+        return False
 
     def _forward_to_container(self, chat_id: int, tenant: Tenant, message_text: str) -> None:
         """Send the message to the tenant's OpenClaw container via /v1/chat/completions and relay the response."""

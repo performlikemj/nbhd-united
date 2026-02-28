@@ -93,9 +93,9 @@ def build_update_prompt(lang: str = "en") -> dict[str, Any]:
     Returns dict with 'text' and 'reply_markup' for Telegram.
     """
     messages = {
-        "en": "🔄 There's an update available with new features! Quick restart takes about 15 seconds. OK to update now?",
-        "ja": "🔄 新しい機能のアップデートがあります！再起動は約15秒です。今すぐ更新してもよろしいですか？",
-        "es": "🔄 ¡Hay una actualización disponible con nuevas funciones! El reinicio toma unos 15 segundos. ¿Actualizar ahora?",
+        "en": "🔄 There's an update available with new features! Restart takes about a minute. OK to update now?",
+        "ja": "🔄 新しい機能のアップデートがあります！再起動は約1分かかります。今すぐ更新してもよろしいですか？",
+        "es": "🔄 ¡Hay una actualización disponible con nuevas funciones! El reinicio tarda aproximadamente un minuto. ¿Actualizar ahora?",
     }
 
     buttons = {
