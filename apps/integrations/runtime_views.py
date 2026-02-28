@@ -1,7 +1,10 @@
 """Internal runtime capability endpoints."""
 from __future__ import annotations
 
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 from datetime import date, timedelta, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from uuid import UUID

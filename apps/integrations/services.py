@@ -627,14 +627,27 @@ def execute_reddit_tool(tenant: Tenant, action: str, params: dict) -> dict:
 
     Returns the result dict from Composio.
     """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
     tool_slug = _REDDIT_ACTION_MAP.get(action)
     if not tool_slug:
         raise ValueError(f"Unknown Reddit action: {action!r}. Valid actions: {sorted(_REDDIT_ACTION_MAP)}")
 
-    client = _get_composio_client()
-    user_id = f"tenant-{tenant.id}"
+    from apps.integrations.models import Integration as _Integration
+    integration = _Integration.objects.filter(
+        tenant=tenant,
+        provider="reddit",
+        status=_Integration.Status.ACTIVE,
+    ).first()
+    if not integration or not integration.composio_connected_account_id:
+        raise ValueError("Reddit integration not found or not fully connected for this tenant.")
 
-    result = client.tools.execute(tool_name=tool_slug, user_id=user_id, params=params)
+    client = _get_composio_client()
+    connected_account_id = integration.composio_connected_account_id
+
+    _log.info("Executing Reddit tool %s for tenant %s", tool_slug, tenant.id)
+    result = client.tools.execute(tool_slug, connected_account_id=connected_account_id, arguments=params)
     return result if isinstance(result, dict) else {"result": result}
 
 
