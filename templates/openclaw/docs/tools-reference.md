@@ -52,6 +52,8 @@
 
 ## Reddit Tools (`nbhd-reddit-tools` plugin — only loaded when Reddit is connected)
 
+> **Session start check:** Run `nbhd_reddit_status` silently if `nbhd_reddit_digest` or any reddit tool appears in your available tools list. If connected, tell the user Reddit is ready and ask what subreddits to monitor if none are saved in memory yet.
+
 | Tool | Purpose |
 |------|---------|
 | `nbhd_reddit_connect` | Connect user's Reddit account via OAuth |
