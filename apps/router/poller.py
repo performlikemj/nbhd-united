@@ -984,6 +984,27 @@ class TelegramPoller:
             _time.sleep(5)
         return False
 
+    def _handle_container_restart(self, chat_id: int, tenant: Tenant, message_text: str) -> None:
+        """Handle a container that's restarting — notify user and retry the message once it's back up."""
+        if chat_id in self._update_in_progress:
+            # Already handling a restart for this user — don't double-notify
+            return
+        self._update_in_progress.add(chat_id)
+        self._send_message(chat_id, "⏳ I'm restarting right now — I'll send your message through once I'm back up (about a minute).")
+
+        def _retry():
+            try:
+                if self._wait_for_container_ready(tenant, timeout=120):
+                    context_msg = f"[System: assistant was restarting when this arrived. User's message:]\n{message_text}"
+                    self._send_typing(chat_id)
+                    self._forward_to_container(chat_id, tenant, context_msg)
+                else:
+                    self._send_message(chat_id, "I'm back! Sorry about that — could you resend your last message?")
+            finally:
+                self._update_in_progress.discard(chat_id)
+
+        threading.Thread(target=_retry, daemon=True).start()
+
     def _forward_to_container(self, chat_id: int, tenant: Tenant, message_text: str) -> None:
         """Send the message to the tenant's OpenClaw container via /v1/chat/completions and relay the response."""
         if not tenant.container_fqdn:
@@ -1025,13 +1046,18 @@ class TelegramPoller:
             logger.warning("Timeout forwarding to %s for chat_id=%s", tenant.container_fqdn, chat_id)
             return
         except httpx.HTTPStatusError as e:
-            logger.error("FWD_FAIL %s HTTP %s", tenant.container_fqdn, e.response.status_code)
+            status_code = e.response.status_code if e.response else 0
+            logger.error("FWD_FAIL %s HTTP %s", tenant.container_fqdn, status_code)
             logger.error("FWD_BODY %s", (e.response.text[:300] if e.response else "none"))
-            self._send_message(chat_id, "Sorry, I'm having trouble connecting right now. Please try again shortly.")
+            if status_code in (502, 503, 0):
+                # Container restarting — buffer and retry
+                self._handle_container_restart(chat_id, tenant, message_text)
+            else:
+                self._send_message(chat_id, "Something went wrong on my end. Please try again.")
             return
         except httpx.HTTPError as e:
             logger.error("Error forwarding to %s: %s", tenant.container_fqdn, e)
-            self._send_message(chat_id, "Sorry, I'm having trouble connecting right now. Please try again shortly.")
+            self._handle_container_restart(chat_id, tenant, message_text)
             return
         finally:
             typing_stop.set()
