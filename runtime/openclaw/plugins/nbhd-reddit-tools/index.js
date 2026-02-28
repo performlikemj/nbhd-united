@@ -70,18 +70,41 @@ function getRuntimeConfig(api) {
   return { apiBaseUrl, tenantId, internalKey, requestTimeoutMs };
 }
 
-function renderPayload(payload) {
+function renderText(text) {
   return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify(payload, null, 2),
-      },
-    ],
-    details: {
-      json: payload,
-    },
+    content: [{ type: "text", text: String(text) }],
   };
+}
+
+function renderPayload(payload) {
+  return renderText(JSON.stringify(payload, null, 2));
+}
+
+async function callIntegrationsApi(api, path, options = {}) {
+  const runtime = getRuntimeConfig(api);
+  const url = `${runtime.apiBaseUrl}${path}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), runtime.requestTimeoutMs);
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "Content-Type": "application/json",
+        "X-NBHD-Internal-Key": runtime.internalKey,
+        "X-NBHD-Tenant-Id": runtime.tenantId,
+      },
+      signal: controller.signal,
+      ...options,
+    });
+    const raw = await response.text();
+    let payload = {};
+    try { payload = JSON.parse(raw); } catch { payload = { raw }; }
+    return { ok: response.ok, status: response.status, data: payload };
+  } catch (error) {
+    if (error && error.name === "AbortError") throw new Error(`Request timed out`);
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function callRedditTool(api, { action, params = {} }) {
@@ -167,8 +190,19 @@ export default function register(api) {
       properties: {},
     },
     async execute(_id, _params) {
-      const payload = await callRedditTool(api, { action: "status" });
-      return renderPayload(payload);
+      const runtime = getRuntimeConfig(api);
+      const { ok, data } = await callIntegrationsApi(api,
+        `/api/v1/integrations/runtime/${encodeURIComponent(runtime.tenantId)}/reddit/status/`
+      );
+      if (!ok) {
+        return renderText("Reddit is not connected. Use nbhd_reddit_connect to link your account.");
+      }
+      const connected = data.connected === true;
+      const username = asTrimmedString(data.username || data.provider_email || "");
+      if (connected) {
+        return renderText(`Reddit is connected${username ? ` as ${username}` : ""}.`);
+      }
+      return renderText("Reddit is not connected. Use nbhd_reddit_connect to link your account.");
     },
   });
 
@@ -213,15 +247,15 @@ export default function register(api) {
       }
 
       // Fetch each subreddit separately — REDDIT_GET_R_TOP takes one subreddit at a time
-      const results = [];
+      const parts = [];
       for (const subreddit of subreddits) {
         const payload = await callRedditTool(api, {
           action: "digest",
           params: { subreddit, sort, limit },
         });
-        results.push(`**r/${subreddit}**\n${renderPayload(payload)}`);
+        parts.push(`**r/${subreddit}**\n${JSON.stringify(payload, null, 2)}`);
       }
-      return results.join("\n\n");
+      return renderText(parts.join("\n\n"));
     },
   });
 
