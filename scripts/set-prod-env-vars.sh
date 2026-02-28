@@ -19,6 +19,7 @@ echo "=== Composio Configuration ==="
 echo -n "COMPOSIO_API_KEY: "; read -rs COMPOSIO_API_KEY; echo
 echo -n "COMPOSIO_GMAIL_AUTH_CONFIG_ID (ac_...): "; read -r COMPOSIO_GMAIL_AUTH_CONFIG_ID
 echo -n "COMPOSIO_GCAL_AUTH_CONFIG_ID (ac_...): "; read -r COMPOSIO_GCAL_AUTH_CONFIG_ID
+echo -n "COMPOSIO_REDDIT_AUTH_CONFIG_ID (ac_...): "; read -r COMPOSIO_REDDIT_AUTH_CONFIG_ID
 
 echo ""
 echo "Setting env vars on nbhd-django-westus2..."
@@ -35,6 +36,7 @@ az containerapp update \
     STRIPE_PRICE_PLUS="$STRIPE_PRICE_PLUS" \
     COMPOSIO_API_KEY="$COMPOSIO_API_KEY" \
     COMPOSIO_GMAIL_AUTH_CONFIG_ID="$COMPOSIO_GMAIL_AUTH_CONFIG_ID" \
-    COMPOSIO_GCAL_AUTH_CONFIG_ID="$COMPOSIO_GCAL_AUTH_CONFIG_ID"
+    COMPOSIO_GCAL_AUTH_CONFIG_ID="$COMPOSIO_GCAL_AUTH_CONFIG_ID" \
+    COMPOSIO_REDDIT_AUTH_CONFIG_ID="$COMPOSIO_REDDIT_AUTH_CONFIG_ID"
 
 echo "Done. Container will restart with new config."
