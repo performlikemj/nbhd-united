@@ -66,6 +66,9 @@ export interface RefreshConfigStatus {
   cooldown_seconds: number;
   status: string;
   has_pending_update: boolean;
+  container_image_tag: string | null;
+  latest_image_tag: string | null;
+  image_outdated: boolean;
 }
 
 export interface ProvisioningStatus {

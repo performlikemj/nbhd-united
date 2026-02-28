@@ -233,6 +233,13 @@ export function useRefreshConfigStatusQuery() {
   return useQuery<RefreshConfigStatus>({
     queryKey: ["refresh-config-status"],
     queryFn: fetchRefreshConfigStatus,
+    // Poll every 15s when an update is pending so the UI reflects when it's applied.
+    // Fall back to every 60s otherwise (catches cron-triggered pending bumps).
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return 15_000;
+      return data.has_pending_update ? 15_000 : 60_000;
+    },
   });
 }
 

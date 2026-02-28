@@ -696,9 +696,19 @@ export default function SettingsPage() {
               ? `Last updated: ${timeAgo(refreshConfigStatus.last_refreshed)}`
               : "Last updated: never"}
           </p>
+          {refreshConfigStatus?.container_image_tag && (
+            <p className="mt-1 font-mono text-[11px] text-ink-faint">
+              running {refreshConfigStatus.container_image_tag.slice(0, 7)}
+              {refreshConfigStatus.image_outdated && refreshConfigStatus.latest_image_tag && (
+                <span className="ml-2 text-amber-text">
+                  → {refreshConfigStatus.latest_image_tag.slice(0, 7)} available
+                </span>
+              )}
+            </p>
+          )}
         </div>
 
-        {hasPendingConfigUpdate ? (
+        {(hasPendingConfigUpdate || refreshConfigStatus?.image_outdated) ? (
           <>
             <div className="mt-3 rounded-panel border border-amber-border/80 bg-amber-bg px-3.5 py-2.5 text-sm text-amber-text">
               🔄 An update is available and will be applied automatically when your assistant is idle.
@@ -725,6 +735,7 @@ export default function SettingsPage() {
         ) : (
           <p className="mt-3 text-sm text-ink-muted">✓ Your assistant is up to date</p>
         )}
+
       </SectionCard>
 
       <DangerZone />

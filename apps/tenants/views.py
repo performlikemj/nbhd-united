@@ -261,12 +261,21 @@ class RefreshConfigView(APIView):
         except Tenant.DoesNotExist:
             return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
 
+        from django.conf import settings as django_settings
+        latest_tag = getattr(django_settings, "OPENCLAW_IMAGE_TAG", None)
+        running_tag = tenant.container_image_tag or None
+        image_outdated = bool(
+            latest_tag and running_tag and latest_tag != "latest" and latest_tag != running_tag
+        )
         return Response({
             "can_refresh": self._can_refresh(tenant),
             "last_refreshed": tenant.config_refreshed_at,
             "cooldown_seconds": self.COOLDOWN_SECONDS,
             "status": tenant.status,
             "has_pending_update": tenant.pending_config_version > tenant.config_version,
+            "container_image_tag": running_tag,
+            "latest_image_tag": latest_tag,
+            "image_outdated": image_outdated,
         })
 
     def post(self, request):
