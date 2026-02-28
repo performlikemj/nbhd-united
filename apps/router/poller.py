@@ -1044,6 +1044,10 @@ class TelegramPoller:
             result = resp.json()
         except httpx.TimeoutException:
             logger.warning("Timeout forwarding to %s for chat_id=%s", tenant.container_fqdn, chat_id)
+            self._send_message(
+                chat_id,
+                "⏱️ That took longer than expected — I may have lost your message. Could you send it again?",
+            )
             return
         except httpx.HTTPStatusError as e:
             status_code = e.response.status_code if e.response else 0

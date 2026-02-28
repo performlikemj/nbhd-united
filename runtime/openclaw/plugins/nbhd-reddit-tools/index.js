@@ -223,7 +223,12 @@ export default function register(api) {
         sort: {
           type: "string",
           enum: ["hot", "new", "top", "rising"],
-          description: "Sort order. Defaults to hot.",
+          description: "Sort order. Defaults to hot. Use 'new' for latest posts.",
+        },
+        time_filter: {
+          type: "string",
+          enum: ["hour", "day", "week", "month", "year", "all"],
+          description: "Time filter for 'top' sort. Defaults to 'day' (today's top posts). Use 'hour' for very recent.",
         },
         limit: {
           type: "number",
@@ -240,10 +245,13 @@ export default function register(api) {
       const sortRaw = asTrimmedString(input.sort);
       const validSorts = ["hot", "new", "top", "rising"];
       const sort = validSorts.includes(sortRaw) ? sortRaw : "hot";
+      const validTimeFilters = ["hour", "day", "week", "month", "year", "all"];
+      const timeFilterRaw = asTrimmedString(input.time_filter);
+      const timeFilter = validTimeFilters.includes(timeFilterRaw) ? timeFilterRaw : "day";
       const limit = parseInteger(input.limit, { defaultValue: 5, min: 1, max: 20 });
 
       if (subreddits.length === 0) {
-        return "Which subreddit(s) would you like me to check? (e.g. r/soccer, r/machinelearning)";
+        return renderText("Which subreddit(s) would you like me to check? (e.g. r/soccer, r/worldnews)");
       }
 
       // Fetch each subreddit separately — REDDIT_GET_R_TOP takes one subreddit at a time
@@ -251,7 +259,7 @@ export default function register(api) {
       for (const subreddit of subreddits) {
         const payload = await callRedditTool(api, {
           action: "digest",
-          params: { subreddit, sort, limit },
+          params: { subreddit, sort, limit, t: timeFilter },
         });
         parts.push(`**r/${subreddit}**\n${JSON.stringify(payload, null, 2)}`);
       }
