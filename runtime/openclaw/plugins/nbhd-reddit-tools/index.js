@@ -86,7 +86,7 @@ function renderPayload(payload) {
 
 async function callRedditTool(api, { action, params = {} }) {
   const runtime = getRuntimeConfig(api);
-  const url = `${runtime.apiBaseUrl}/runtime/${encodeURIComponent(runtime.tenantId)}/reddit/tool/`;
+  const url = `${runtime.apiBaseUrl}/api/v1/integrations/runtime/${encodeURIComponent(runtime.tenantId)}/reddit/tool/`;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), runtime.requestTimeoutMs);
