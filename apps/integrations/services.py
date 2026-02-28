@@ -611,14 +611,17 @@ def get_valid_provider_access_token(
 
 
 _REDDIT_ACTION_MAP: dict[str, str] = {
-    "digest": "REDDIT_GET_SUBREDDIT_POSTS",
-    "search": "REDDIT_SEARCH_REDDIT_POSTS",
-    "my_activity": "REDDIT_GET_USER_COMMENTS",
+    "digest": "REDDIT_GET_R_TOP",              # top posts (can pass subreddit)
+    "search": "REDDIT_SEARCH_ACROSS_SUBREDDITS",
+    "my_activity": "REDDIT_GET_REDDIT_USER_ABOUT",  # user profile/activity
+    "comments": "REDDIT_RETRIEVE_POST_COMMENTS",
     "post": "REDDIT_CREATE_REDDIT_POST",
-    "reply": "REDDIT_CREATE_REDDIT_COMMENT",
+    "reply": "REDDIT_POST_REDDIT_COMMENT",
     "edit": "REDDIT_EDIT_REDDIT_COMMENT_OR_POST",
     "delete_post": "REDDIT_DELETE_REDDIT_POST",
     "delete_comment": "REDDIT_DELETE_REDDIT_COMMENT",
+    "new": "REDDIT_GET_NEW",                   # new posts in subreddit
+    "controversial": "REDDIT_GET_CONTROVERSIAL",
 }
 
 
