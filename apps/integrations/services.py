@@ -44,14 +44,7 @@ def _get_composio_client():
         api_key = settings.COMPOSIO_API_KEY
         if not api_key:
             raise IntegrationProviderConfigError("COMPOSIO_API_KEY not configured")
-        _composio_client = Composio(
-            api_key=api_key,
-            toolkit_versions={
-                "reddit": "latest",
-                "gmail": "latest",
-                "googlecalendar": "latest",
-            },
-        )
+        _composio_client = Composio(api_key=api_key)
 
         # Ensure credential masking is disabled so connected_accounts.get()
         # returns real access tokens instead of "ya29..."-style placeholders.
@@ -658,8 +651,19 @@ def execute_reddit_tool(tenant: Tenant, action: str, params: dict) -> dict:
     connected_account_id = integration.composio_connected_account_id
 
     _log.info("Executing Reddit tool %s for tenant %s", tool_slug, tenant.id)
-    result = client.tools.execute(tool_slug, connected_account_id=connected_account_id, arguments=params)
-    return result if isinstance(result, dict) else {"result": result}
+    result = client.tools.execute(
+        tool_slug,
+        params,
+        connected_account_id=connected_account_id,
+        # SDK blocks 'latest' unless this is set; safe for direct server-side calls
+        # (Composio uses this same flag internally for all provider-controlled execution)
+        dangerously_skip_version_check=True,
+    )
+    if not result.get("successful"):
+        error_msg = result.get("error") or "Reddit tool returned an error"
+        _log.error("Reddit tool %s failed for tenant %s: %s", tool_slug, tenant.id, error_msg)
+        raise RuntimeError(error_msg)
+    return result.get("data", result)
 
 
 def connect_integration(
