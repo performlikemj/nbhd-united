@@ -1704,6 +1704,13 @@ class RedditToolView(APIView):
                 {"error": "invalid_action", "detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except RuntimeError as exc:
+            # Tool executed but Composio returned unsuccessful — surface as 400
+            # so the agent gets a readable error it can relay to the user
+            return Response(
+                {"error": "tool_error", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except IntegrationProviderConfigError as exc:
             return _integration_error_response(exc)
         except Exception as exc:

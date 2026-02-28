@@ -671,6 +671,9 @@ def execute_reddit_tool(tenant: Tenant, action: str, params: dict) -> dict:
     if not result.get("successful"):
         error_msg = result.get("error") or "Reddit tool returned an error"
         _log.error("Reddit tool %s failed for tenant %s: %s", tool_slug, tenant.id, error_msg)
+        # Make missing-param errors readable for the agent
+        if "fields are missing" in error_msg or "required" in error_msg.lower():
+            raise RuntimeError(f"Missing required parameter for this Reddit action: {error_msg}")
         raise RuntimeError(error_msg)
     return result.get("data", result)
 
