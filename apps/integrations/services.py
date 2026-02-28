@@ -651,11 +651,13 @@ def execute_reddit_tool(tenant: Tenant, action: str, params: dict) -> dict:
     connected_account_id = integration.composio_connected_account_id
 
     _log.info("Executing Reddit tool %s for tenant %s", tool_slug, tenant.id)
+    user_id = f"tenant-{tenant.id}"
     try:
         result = client.tools.execute(
             tool_slug,
             params,
             connected_account_id=connected_account_id,
+            user_id=user_id,
             dangerously_skip_version_check=True,
         )
     except Exception as exc:
