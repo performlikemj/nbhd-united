@@ -175,7 +175,7 @@ export default function register(api) {
   registerTool(api, {
     name: "nbhd_reddit_digest",
     description:
-      "Get top posts from the user's monitored subreddits. Returns titles, scores, and comment counts.",
+      "Get top posts from one or more subreddits. If the user's request is ambiguous or no subreddit is specified, ask which subreddit(s) they want before calling this tool.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -184,7 +184,7 @@ export default function register(api) {
           type: "array",
           items: { type: "string" },
           maxItems: 10,
-          description: "List of subreddit names (without r/ prefix). Defaults to user's monitored subreddits.",
+          description: "List of subreddit names to fetch (without r/ prefix). Required — ask the user if not specified.",
         },
         sort: {
           type: "string",
@@ -198,6 +198,7 @@ export default function register(api) {
           description: "Number of posts to return per subreddit (1-20). Defaults to 5.",
         },
       },
+      required: ["subreddits"],
     },
     async execute(_id, params) {
       const input = asObject(params);
@@ -207,15 +208,20 @@ export default function register(api) {
       const sort = validSorts.includes(sortRaw) ? sortRaw : "hot";
       const limit = parseInteger(input.limit, { defaultValue: 5, min: 1, max: 20 });
 
-      const payload = await callRedditTool(api, {
-        action: "digest",
-        params: {
-          subreddits: subreddits.length > 0 ? subreddits : undefined,
-          sort,
-          limit,
-        },
-      });
-      return renderPayload(payload);
+      if (subreddits.length === 0) {
+        return "Which subreddit(s) would you like me to check? (e.g. r/soccer, r/machinelearning)";
+      }
+
+      // Fetch each subreddit separately — REDDIT_GET_R_TOP takes one subreddit at a time
+      const results = [];
+      for (const subreddit of subreddits) {
+        const payload = await callRedditTool(api, {
+          action: "digest",
+          params: { subreddit, sort, limit },
+        });
+        results.push(`**r/${subreddit}**\n${renderPayload(payload)}`);
+      }
+      return results.join("\n\n");
     },
   });
 
