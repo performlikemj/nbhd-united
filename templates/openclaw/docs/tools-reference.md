@@ -58,13 +58,17 @@
 |------|---------|
 | `nbhd_reddit_connect` | Connect user's Reddit account via OAuth |
 | `nbhd_reddit_status` | Check if Reddit is connected |
-| `nbhd_reddit_digest` | Get top posts from a subreddit (action: "digest") |
-| `nbhd_reddit_search` | Search across subreddits (action: "search") |
-| `nbhd_reddit_new` | Get new posts in a subreddit (action: "new") |
-| `nbhd_reddit_comments` | Get comments on a post (action: "comments") |
-| `nbhd_reddit_my_activity` | Get user profile/about info (action: "my_activity") |
-| `nbhd_reddit_post` | Submit a post — **always get explicit approval first** (action: "post") |
-| `nbhd_reddit_reply` | Reply to a post/comment — **always get explicit approval first** (action: "reply") |
+| Tool | Required params | Description |
+|------|----------------|-------------|
+| `nbhd_reddit_digest` | `subreddit` (no r/ prefix) | Top posts from a subreddit — **ask user which subreddit if not saved** |
+| `nbhd_reddit_search` | `search_query` | Search across all of Reddit |
+| `nbhd_reddit_new` | `subreddit` | Newest posts in a subreddit |
+| `nbhd_reddit_comments` | `article` (post ID) | Comments on a specific post |
+| `nbhd_reddit_my_activity` | none | User profile/about info |
+| `nbhd_reddit_post` | `subreddit`, `title` | Submit a post — **always get explicit approval first** |
+| `nbhd_reddit_reply` | `thing_id`, `text` | Reply to post/comment — **always get explicit approval first** |
+
+> **Always confirm params before calling.** If `subreddit` is not in memory, ask the user before making the call.
 
 Rules:
 - NEVER post or reply without showing a draft and getting explicit "yes, post it" from the user
