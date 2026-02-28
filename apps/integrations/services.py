@@ -44,7 +44,14 @@ def _get_composio_client():
         api_key = settings.COMPOSIO_API_KEY
         if not api_key:
             raise IntegrationProviderConfigError("COMPOSIO_API_KEY not configured")
-        _composio_client = Composio(api_key=api_key)
+        _composio_client = Composio(
+            api_key=api_key,
+            toolkit_versions={
+                "reddit": "latest",
+                "gmail": "latest",
+                "googlecalendar": "latest",
+            },
+        )
 
         # Ensure credential masking is disabled so connected_accounts.get()
         # returns real access tokens instead of "ya29..."-style placeholders.
@@ -610,28 +617,6 @@ def get_valid_provider_access_token(
     )
 
 
-_toolkit_version_cache: dict[str, str] = {}
-
-def _get_toolkit_version(toolkit_slug: str) -> str | None:
-    """Fetch and cache the current version string for a Composio toolkit."""
-    if toolkit_slug in _toolkit_version_cache:
-        return _toolkit_version_cache[toolkit_slug]
-    try:
-        import httpx as _httpx
-        client = _get_composio_client()
-        api_key = client.api_key
-        resp = _httpx.get(
-            f"https://backend.composio.dev/api/v3/toolkits/{toolkit_slug}",
-            headers={"x-api-key": api_key},
-            timeout=5,
-        )
-        version = resp.json().get("meta", {}).get("version")
-        if version:
-            _toolkit_version_cache[toolkit_slug] = version
-        return version
-    except Exception:
-        return None
-
 
 _REDDIT_ACTION_MAP: dict[str, str] = {
     "digest": "REDDIT_GET_R_TOP",              # top posts (can pass subreddit)
@@ -673,14 +658,7 @@ def execute_reddit_tool(tenant: Tenant, action: str, params: dict) -> dict:
     connected_account_id = integration.composio_connected_account_id
 
     _log.info("Executing Reddit tool %s for tenant %s", tool_slug, tenant.id)
-    version = _get_toolkit_version("reddit")
-    execute_kwargs: dict[str, Any] = {
-        "connected_account_id": connected_account_id,
-        "arguments": params,
-    }
-    if version:
-        execute_kwargs["version"] = version
-    result = client.tools.execute(tool_slug, **execute_kwargs)
+    result = client.tools.execute(tool_slug, connected_account_id=connected_account_id, arguments=params)
     return result if isinstance(result, dict) else {"result": result}
 
 
