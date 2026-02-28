@@ -651,14 +651,21 @@ def execute_reddit_tool(tenant: Tenant, action: str, params: dict) -> dict:
     connected_account_id = integration.composio_connected_account_id
 
     _log.info("Executing Reddit tool %s for tenant %s", tool_slug, tenant.id)
-    result = client.tools.execute(
-        tool_slug,
-        params,
-        connected_account_id=connected_account_id,
-        # SDK blocks 'latest' unless this is set; safe for direct server-side calls
-        # (Composio uses this same flag internally for all provider-controlled execution)
-        dangerously_skip_version_check=True,
-    )
+    try:
+        result = client.tools.execute(
+            tool_slug,
+            params,
+            connected_account_id=connected_account_id,
+            dangerously_skip_version_check=True,
+        )
+    except Exception as exc:
+        err_str = str(exc)
+        if "400" in err_str or "404" in err_str or "not found" in err_str.lower():
+            _log.warning("Reddit connected account invalid for tenant %s: %s", tenant.id, exc)
+            raise ValueError(
+                "Reddit connection is no longer valid. Please reconnect in Settings → Integrations."
+            ) from exc
+        raise
     if not result.get("successful"):
         error_msg = result.get("error") or "Reddit tool returned an error"
         _log.error("Reddit tool %s failed for tenant %s: %s", tool_slug, tenant.id, error_msg)
@@ -706,32 +713,37 @@ def connect_integration(
 
 
 def disconnect_integration(tenant: Tenant, provider: str) -> None:
-    """Disconnect an integration — delete tokens and mark revoked."""
+    """Disconnect an integration — delete tokens and remove the record entirely."""
     integration = Integration.objects.filter(tenant=tenant, provider=provider).first()
+    if not integration:
+        return
 
-    if integration and integration.composio_connected_account_id:
-        # Composio-managed: revoke the connected account
+    if integration.composio_connected_account_id:
+        # Composio-managed: revoke the connected account on Composio side
         try:
             client = _get_composio_client()
-            client.connected_accounts.delete(
-                integration.composio_connected_account_id,
-            )
+            client.connected_accounts.delete(integration.composio_connected_account_id)
         except Exception:
             logger.warning(
-                "Failed to delete Composio account %s for tenant %s",
+                "Failed to delete Composio account %s for tenant %s — proceeding with local cleanup",
                 integration.composio_connected_account_id,
                 tenant.id,
             )
     else:
-        # Key Vault path
-        delete_tokens_from_key_vault(tenant, provider)
+        # Key Vault path — best-effort token deletion
+        try:
+            delete_tokens_from_key_vault(tenant, provider)
+        except Exception:
+            logger.warning(
+                "Failed to delete Key Vault secret for provider=%s tenant=%s — proceeding",
+                provider,
+                tenant.id,
+            )
 
-    Integration.objects.filter(tenant=tenant, provider=provider).update(
-        status=Integration.Status.REVOKED,
-        composio_connected_account_id="",
-    )
-
-    logger.info("Disconnected %s for tenant %s", provider, tenant.id)
+    # Hard-delete the record so the UI shows a clean "Connect" state
+    # (marking revoked leaves zombie records that confuse the UI and execute flow)
+    integration.delete()
+    logger.info("Disconnected and deleted integration %s for tenant %s", provider, tenant.id)
 
 
 def refresh_integration_tokens(

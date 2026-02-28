@@ -16,6 +16,30 @@ import {
 } from "@/lib/queries";
 import type { TelegramLinkResponse } from "@/lib/api";
 
+// Service icon URLs (official favicons / brand marks)
+const SERVICE_ICONS: Record<string, string> = {
+  telegram: "https://telegram.org/favicon.ico",
+  gmail: "https://ssl.gstatic.com/ui/v1/icons/mail/rfr/gmail.ico",
+  "google-calendar": "https://calendar.google.com/googlecalendar/images/favicon_v2014_1.ico",
+  reddit: "https://www.redditstatic.com/desktop2x/img/favicon/favicon-32x32.png",
+};
+
+function ServiceIcon({ provider, size = 20 }: { provider: string; size?: number }) {
+  const src = SERVICE_ICONS[provider];
+  if (!src) return null;
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt=""
+      width={size}
+      height={size}
+      className="rounded-sm object-contain"
+      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+    />
+  );
+}
+
 const providers: { key: string; label: string; description?: string }[] = [
   { key: "gmail", label: "Gmail" },
   { key: "google-calendar", label: "Google Calendar" },
@@ -24,12 +48,12 @@ const providers: { key: string; label: string; description?: string }[] = [
     label: "Reddit",
     description: "Browse your feeds and subreddits without the doom-scroll.",
   },
-  // { key: "sautai", label: "Sautai — Coming Soon" },
 ];
 
 function TelegramCard() {
   const [linkData, setLinkData] = useState<TelegramLinkResponse | null>(null);
-  const { data: status } = useTelegramStatusQuery(!!linkData);
+  // Always fetch status — not just after generating a link
+  const { data: status } = useTelegramStatusQuery(true);
   const generateLink = useGenerateTelegramLinkMutation();
   const unlinkMutation = useUnlinkTelegramMutation();
 
@@ -47,7 +71,10 @@ function TelegramCard() {
   return (
     <article className="rounded-panel border border-border bg-surface-elevated p-4">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-base font-medium">Telegram</h3>
+        <div className="flex items-center gap-2">
+          <ServiceIcon provider="telegram" />
+          <h3 className="text-base font-medium">Telegram</h3>
+        </div>
         <StatusPill status={linked ? "active" : "pending"} />
       </div>
 
@@ -117,11 +144,10 @@ function IntegrationsContent() {
   const disconnect = useDisconnectIntegrationMutation();
   const authorize = useOAuthAuthorizeMutation();
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
+  const [connectError, setConnectError] = useState<string | null>(null);
 
   const connectedProvider = searchParams.get("connected");
   const oauthError = searchParams.get("error");
-
-  const [connectError, setConnectError] = useState<string | null>(null);
 
   const handleConnect = async (provider: string) => {
     setConnectingProvider(provider);
@@ -157,16 +183,16 @@ function IntegrationsContent() {
         </p>
       )}
 
-      {error ? (
+      {error && (
         <p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
-          Could not fetch integrations. Confirm authentication/session wiring.
+          Could not fetch integrations. Please refresh and try again.
         </p>
-      ) : null}
+      )}
 
       <TelegramCard />
 
       {connectError && (
-        <p className="mb-4 rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
+        <p className="mt-3 rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
           {connectError}
         </p>
       )}
@@ -174,42 +200,64 @@ function IntegrationsContent() {
       <div className="mt-4 grid gap-3 md:grid-cols-2">
         {providers.map((provider) => {
           const integration = data?.find((item) => item.provider === provider.key);
-          const connected = Boolean(integration);
+          const isActive = integration?.status === "active";
+          const isRevoked = integration?.status === "revoked" || integration?.status === "error";
+          const isConnected = Boolean(integration);
+
+          // Description: reflect actual status, not just record presence
+          const description = isActive
+            ? (integration?.provider_email || "Connected")
+            : isRevoked
+            ? "Reconnection required"
+            : (provider.description ?? "Not connected yet.");
+
+          // Badge: revoked shows as error, no integration = pending
+          const badgeStatus = isActive
+            ? "active"
+            : isRevoked
+            ? "error"
+            : isConnected
+            ? (integration?.status ?? "pending")
+            : "pending";
 
           return (
             <article key={provider.key} className="rounded-panel border border-border bg-surface-elevated p-4">
               <div className="flex items-center justify-between gap-2">
-                <h3 className="text-base font-medium">{provider.label}</h3>
-                <StatusPill status={integration?.status ?? "pending"} />
+                <div className="flex items-center gap-2">
+                  <ServiceIcon provider={provider.key} />
+                  <h3 className="text-base font-medium">{provider.label}</h3>
+                </div>
+                <StatusPill status={badgeStatus} />
               </div>
 
-              <p className="mt-2 text-sm text-ink-muted">
-                {connected
-                  ? integration?.provider_email || "Connected"
-                  : provider.description ?? "Not connected yet."}
-              </p>
+              <p className="mt-2 text-sm text-ink-muted">{description}</p>
 
               <div className="mt-4 flex gap-2">
-                <button
-                  className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
-                  type="button"
-                  disabled={connected || connectingProvider !== null}
-                  onClick={() => handleConnect(provider.key)}
-                >
-                  {connectingProvider === provider.key ? "Redirecting..." : "Connect"}
-                </button>
-                <button
-                  className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
-                  type="button"
-                  disabled={!integration || disconnect.isPending}
-                  onClick={() => {
-                    if (integration) {
-                      disconnect.mutate(integration.id);
-                    }
-                  }}
-                >
-                  Disconnect
-                </button>
+                {/* Show Reconnect for revoked/error, Connect for not connected */}
+                {(!isActive) && (
+                  <button
+                    className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
+                    type="button"
+                    disabled={connectingProvider !== null}
+                    onClick={() => handleConnect(provider.key)}
+                  >
+                    {connectingProvider === provider.key
+                      ? "Redirecting..."
+                      : isRevoked
+                      ? "Reconnect"
+                      : "Connect"}
+                  </button>
+                )}
+                {isConnected && (
+                  <button
+                    className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
+                    type="button"
+                    disabled={disconnect.isPending}
+                    onClick={() => disconnect.mutate(integration!.id)}
+                  >
+                    {disconnect.isPending ? "Disconnecting..." : "Disconnect"}
+                  </button>
+                )}
               </div>
             </article>
           );

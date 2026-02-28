@@ -68,17 +68,18 @@ class IntegrationServiceTest(TestCase):
         self.assertEqual(integration.provider_email, "kept@example.com")
 
     @patch("apps.integrations.services.delete_tokens_from_key_vault")
-    def test_disconnect_integration_marks_revoked(self, mock_delete_tokens):
+    def test_disconnect_integration_deletes_record(self, mock_delete_tokens):
         integration = Integration.objects.create(
             tenant=self.tenant,
             provider="gmail",
             status=Integration.Status.ACTIVE,
         )
+        integration_id = integration.id
 
         disconnect_integration(self.tenant, "gmail")
 
-        integration.refresh_from_db()
-        self.assertEqual(integration.status, Integration.Status.REVOKED)
+        # Record should be hard-deleted (not just marked revoked)
+        self.assertFalse(Integration.objects.filter(id=integration_id).exists())
         mock_delete_tokens.assert_called_once_with(self.tenant, "gmail")
 
     def test_connect_unknown_provider_raises(self):
