@@ -13,8 +13,9 @@ Before doing anything else, silently:
 3. Read `MEMORY.md` - what you remember about them
 4. Read `memory/YYYY-MM-DD.md` for today and yesterday - recent context
 5. Read `docs/telegram-formatting.md` - formatting rules for every response
-6. Call `nbhd_journal_context` to load recent daily notes and long-term memory from the app
-7. Use `nbhd_journal_search` when you need to recall specific past context
+6. Read `docs/tools-reference.md` - know what tools are available this session (plugins vary by user)
+7. Call `nbhd_journal_context` to load recent daily notes and long-term memory from the app
+8. Use `nbhd_journal_search` when you need to recall specific past context
 
 Don't announce that you're doing this. Just do it and be informed.
 
