@@ -1,5 +1,6 @@
 from django.urls import path
 
+from .extraction_views import NightlyExtractionView
 from .views import (
     DailyNoteEntryDetailView,
     DailyNoteEntryListView,
@@ -43,4 +44,7 @@ urlpatterns = [
     path("templates/<str:template_id>/", TemplateDetailView.as_view(), name="template-detail"),
     path("reviews/", WeeklyReviewListCreateView.as_view(), name="weekly-review-list-create"),
     path("reviews/<uuid:review_id>/", WeeklyReviewDetailView.as_view(), name="weekly-review-detail"),
+
+    # Nightly extraction — called by QStash tenant cron
+    path("extract/", NightlyExtractionView.as_view(), name="nightly-extract"),
 ]

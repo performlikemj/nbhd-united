@@ -627,6 +627,11 @@ class TelegramPoller:
                 self._handle_lesson_callback(update, tenant)
                 return
 
+            # Proactive extraction callbacks (goals/tasks/lessons from nightly job)
+            if callback_data.startswith("extract:"):
+                self._handle_extraction_callback(update, tenant)
+                return
+
             # Container update callbacks
             if callback_data.startswith("container_update:"):
                 # Debounce: check if already processing
@@ -1122,6 +1127,22 @@ class TelegramPoller:
             f" New messages are blocked until the next monthly reset."
             f"{plus_message} Open Billing to upgrade/manage at {frontend_url}/billing.",
         )
+
+    def _handle_extraction_callback(self, update: dict, tenant: Tenant) -> None:
+        """Handle PendingExtraction approve/dismiss callbacks."""
+        from .extraction_callbacks import handle_extraction_callback
+
+        try:
+            import json as _json
+            json_response = handle_extraction_callback(update, tenant)
+            response_data = _json.loads(json_response.content)
+            if response_data:
+                self._execute_telegram_response(response_data)
+        except Exception:
+            logger.exception("Error handling extraction callback")
+            callback_id = update["callback_query"].get("id")
+            if callback_id:
+                self._answer_callback_query(callback_id, "Something went wrong")
 
     def _handle_lesson_callback(self, update: dict, tenant: Tenant) -> None:
         """Handle lesson approval callback queries via the existing handler.

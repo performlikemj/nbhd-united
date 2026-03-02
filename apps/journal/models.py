@@ -171,3 +171,48 @@ class Document(models.Model):
 
     def __str__(self) -> str:
         return f"{self.tenant_id}:{self.kind}:{self.slug}"
+
+
+class PendingExtraction(models.Model):
+    """A goal, task, or lesson extracted from a daily note, awaiting user approval.
+
+    Created by the nightly extraction job. Delivered to the user via Telegram
+    inline buttons. Auto-expires after 7 days if not actioned.
+    """
+
+    class Kind(models.TextChoices):
+        LESSON = "lesson", "Lesson"
+        GOAL = "goal", "Goal"
+        TASK = "task", "Task"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        APPROVED = "approved", "Approved"
+        DISMISSED = "dismissed", "Dismissed"
+        EXPIRED = "expired", "Expired"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="pending_extractions")
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    text = models.TextField()
+    tags = models.JSONField(default=list)
+    confidence = models.CharField(max_length=8, default="medium")  # high | medium
+    source_date = models.DateField(null=True, blank=True)          # date of daily note extracted from
+    expires_at = models.DateTimeField()
+    telegram_message_id = models.CharField(max_length=64, blank=True)
+
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "journal_pending_extractions"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "status"]),
+            models.Index(fields=["tenant", "kind", "status"]),
+            models.Index(fields=["expires_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}:{self.kind}:{str(self.id)[:8]}"

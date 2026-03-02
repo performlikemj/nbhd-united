@@ -198,6 +198,20 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "delivery": {"mode": "none"},
             "enabled": True,
         },
+        {
+            "name": "Nightly Extraction",
+            # 30 minutes after Evening Check-in so the check-in has time to
+            # write to the daily note before extraction reads it.
+            "schedule": {"kind": "cron", "expr": "30 21 * * *", "tz": user_tz},
+            "sessionTarget": "none",
+            "payload": {
+                "kind": "webhook",
+                "url": "/api/v1/journal/extract/",
+                "body": {"tenant_id": str(tenant.id)},
+            },
+            "delivery": {"mode": "none"},
+            "enabled": True,
+        },
     ]
 
 

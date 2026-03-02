@@ -314,7 +314,7 @@ def force_reseed_crons(request):
     from apps.cron.gateway_client import invoke_gateway_tool, GatewayError
 
     # Only touch system-managed jobs — preserve user-created crons
-    SYSTEM_JOB_NAMES = {"Morning Briefing", "Evening Check-in", "Week Ahead Review", "Background Tasks"}
+    SYSTEM_JOB_NAMES = {"Morning Briefing", "Evening Check-in", "Week Ahead Review", "Background Tasks", "Nightly Extraction"}
 
     tenants = Tenant.objects.filter(
         status=Tenant.Status.ACTIVE,
@@ -565,7 +565,7 @@ def resync_cron_timezones(request):
     from apps.orchestrator.config_generator import build_cron_seed_jobs
     from apps.cron.gateway_client import invoke_gateway_tool, GatewayError
 
-    SYSTEM_JOB_NAMES = {"Morning Briefing", "Evening Check-in", "Week Ahead Review", "Background Tasks"}
+    SYSTEM_JOB_NAMES = {"Morning Briefing", "Evening Check-in", "Week Ahead Review", "Background Tasks", "Nightly Extraction"}
 
     # All tenants with a running container, not just ACTIVE — trial/pending
     # tenants still have containers with potentially wrong UTC crons.
