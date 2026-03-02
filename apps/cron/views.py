@@ -567,9 +567,12 @@ def resync_cron_timezones(request):
 
     SYSTEM_JOB_NAMES = {"Morning Briefing", "Evening Check-in", "Week Ahead Review", "Background Tasks"}
 
+    # All tenants with a running container, not just ACTIVE — trial/pending
+    # tenants still have containers with potentially wrong UTC crons.
     tenants = Tenant.objects.filter(
-        status=Tenant.Status.ACTIVE,
         container_id__gt="",
+    ).exclude(
+        status=Tenant.Status.DEPROVISIONING,
     ).select_related("user")
 
     results = []
