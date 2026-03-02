@@ -10,6 +10,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('journal', '0007_pending_extraction'),
+        ('lessons', '0001_initial'),  # VectorExtension() creates pgvector extension
         ('tenants', '0016_add_pending_deletion_fields'),
     ]
 
