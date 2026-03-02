@@ -31,7 +31,7 @@ class TenantServiceTest(TestCase):
         self.assertIn("# Tasks", tasks.markdown)
         self.assertIn("## What to work on", tasks.markdown)
         self.assertIn("# Goals", goals.markdown)
-        self.assertIn("Short-term goals", goals.markdown)
+        self.assertIn("## Active", goals.markdown)
         self.assertIn("# Ideas", ideas.markdown)
         self.assertIn("# Memory", memory.markdown)
         self.assertIn("long-term memory", memory.markdown.lower())
