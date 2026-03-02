@@ -60,9 +60,9 @@ class Migration(migrations.Migration):
                 "db_table": "journal_pending_extractions",
                 "ordering": ["-created_at"],
                 "indexes": [
-                    models.Index(fields=["tenant", "status"], name="jpe_tenant_status_idx"),
-                    models.Index(fields=["tenant", "kind", "status"], name="jpe_tenant_kind_status_idx"),
-                    models.Index(fields=["expires_at"], name="jpe_expires_at_idx"),
+                    models.Index(fields=["tenant", "status"], name="journal_pen_tenant__a1d532_idx"),
+                    models.Index(fields=["tenant", "kind", "status"], name="journal_pen_tenant__44d381_idx"),
+                    models.Index(fields=["expires_at"], name="journal_pen_expires_396cb6_idx"),
                 ],
             },
         ),
