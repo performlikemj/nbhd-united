@@ -209,9 +209,9 @@ class PendingExtraction(models.Model):
         db_table = "journal_pending_extractions"
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["tenant", "status"]),
-            models.Index(fields=["tenant", "kind", "status"]),
-            models.Index(fields=["expires_at"]),
+            models.Index(fields=["tenant", "status"], name="journal_pen_tenant__a1d532_idx"),
+            models.Index(fields=["tenant", "kind", "status"], name="journal_pen_tenant__44d381_idx"),
+            models.Index(fields=["expires_at"], name="journal_pen_expires_396cb6_idx"),
         ]
 
     def __str__(self) -> str:
