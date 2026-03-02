@@ -299,4 +299,13 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
         "extraction: tenant=%s lessons=%d goals=%d tasks=%d",
         str(tenant.id)[:8], counts["lessons"], counts["goals"], counts["tasks"],
     )
+
+    # Embed today's daily note for contextual recall (best-effort)
+    try:
+        from apps.journal.embedding import embed_daily_note
+        chunks_created = embed_daily_note(tenant, today)
+        logger.info("extraction: embedded %d chunks for tenant %s", chunks_created, str(tenant.id)[:8])
+    except Exception:
+        logger.exception("extraction: embedding failed for tenant %s (non-fatal)", str(tenant.id)[:8])
+
     return {**counts, "skipped": None}

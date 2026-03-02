@@ -806,7 +806,103 @@ class TelegramPoller:
             # Tell agent where the image is so it can use the image tool
             message_text = f"[Photo attached: {image_path}]\n{message_text}"
 
+        # Contextual recall: inject goals/tasks + relevant history on session start
+        if self._is_new_session(tenant):
+            message_text = self._build_session_context(tenant, message_text)
+
         self._forward_to_container(chat_id, tenant, message_text)
+
+    # ── Contextual recall ──────────────────────────────────────────────────
+
+    SESSION_GAP_SECONDS = 30 * 60  # 30 minutes
+
+    def _is_new_session(self, tenant: Tenant) -> bool:
+        """Return True if enough time has passed since the tenant's last message."""
+        try:
+            if not tenant.last_message_at:
+                return True  # First ever message
+            elapsed = (timezone.now() - tenant.last_message_at).total_seconds()
+            return elapsed > self.SESSION_GAP_SECONDS
+        except (TypeError, AttributeError):
+            return False
+
+    def _build_session_context(self, tenant: Tenant, message_text: str) -> str:
+        """Prepend goals, tasks, and relevant history to the message.
+
+        Called on the first message after a 30-min gap. Best-effort — if anything
+        fails (embedding API down, no docs), returns the original message unchanged.
+        """
+        try:
+            return self._build_session_context_inner(tenant, message_text)
+        except Exception:
+            logger.exception("contextual_recall: failed for tenant %s", str(tenant.id)[:8])
+            return message_text
+
+    def _build_session_context_inner(self, tenant: Tenant, message_text: str) -> str:
+        from apps.journal.models import Document, DocumentChunk
+        from apps.lessons.models import Lesson
+
+        context_parts: list[str] = []
+
+        # Step 1: Always inject goals + tasks
+        goals_doc = Document.objects.filter(
+            tenant=tenant, kind=Document.Kind.GOAL, slug="goals"
+        ).first()
+        if goals_doc and goals_doc.markdown.strip():
+            context_parts.append(f"## Your active goals\n{goals_doc.markdown[:1500]}")
+
+        tasks_doc = Document.objects.filter(
+            tenant=tenant, kind=Document.Kind.TASKS, slug="tasks"
+        ).first()
+        if tasks_doc and tasks_doc.markdown.strip():
+            context_parts.append(f"## Your current tasks\n{tasks_doc.markdown[:1500]}")
+
+        # Step 2: Search relevant history (best-effort — skip if embedding fails)
+        history_parts: list[str] = []
+        try:
+            from apps.lessons.services import generate_embedding
+            from pgvector.django import CosineDistance
+
+            query_embedding = generate_embedding(message_text[:500])
+
+            # Search daily note chunks
+            chunks = (
+                DocumentChunk.objects
+                .filter(tenant=tenant)
+                .annotate(distance=CosineDistance("embedding", query_embedding))
+                .order_by("distance")[:5]
+            )
+            for c in chunks:
+                similarity = 1.0 - float(c.distance)
+                if similarity > 0.65:
+                    history_parts.append(c.text)
+                if len(history_parts) >= 2:
+                    break
+
+            # Search lessons
+            lessons = (
+                Lesson.objects
+                .filter(tenant=tenant, status="approved", embedding__isnull=False)
+                .annotate(distance=CosineDistance("embedding", query_embedding))
+                .order_by("distance")[:3]
+            )
+            for lsn in lessons:
+                similarity = 1.0 - float(lsn.distance)
+                if similarity > 0.65 and len(history_parts) < 3:
+                    history_parts.append(f"💡 {lsn.text}")
+
+        except Exception:
+            logger.warning("contextual_recall: embedding search failed for tenant %s", str(tenant.id)[:8], exc_info=True)
+
+        if history_parts:
+            context_parts.append("## Relevant history\n" + "\n---\n".join(history_parts))
+
+        if not context_parts:
+            return message_text
+
+        prefix = "[Context for this conversation:]\n\n" + "\n\n".join(context_parts)
+        prefix += "\n\n[Now respond to the user's message:]\n\n"
+        return prefix + message_text
 
     def _extract_reply_context(self, message: dict) -> str:
         """Extract reply-to context if user is replying to a bot message.

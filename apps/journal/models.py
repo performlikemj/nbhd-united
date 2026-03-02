@@ -4,6 +4,7 @@ from __future__ import annotations
 import uuid
 
 from django.db import models
+from pgvector.django import VectorField
 
 from apps.tenants.models import Tenant
 
@@ -216,3 +217,30 @@ class PendingExtraction(models.Model):
 
     def __str__(self) -> str:
         return f"{self.tenant_id}:{self.kind}:{str(self.id)[:8]}"
+
+
+class DocumentChunk(models.Model):
+    """A chunked, embedded portion of a Document for vector search.
+
+    Daily notes are split into ~500-token sections and embedded nightly
+    so the poller can do contextual recall at session start.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="doc_chunks")
+    document = models.ForeignKey("journal.Document", on_delete=models.CASCADE, related_name="chunks")
+    chunk_index = models.IntegerField()
+    text = models.TextField()
+    embedding = VectorField(dimensions=1536)
+    source_date = models.DateField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "journal_document_chunks"
+        unique_together = ["document", "chunk_index"]
+        indexes = [
+            models.Index(fields=["tenant", "source_date"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}:{self.document_id}:chunk{self.chunk_index}"
