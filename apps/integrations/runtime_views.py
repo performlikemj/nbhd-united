@@ -1480,11 +1480,20 @@ class RuntimeProfileUpdateView(APIView):
 
         user.save(update_fields=updated_fields)
 
-        # If timezone changed, sync cron jobs
+        # If timezone changed, re-seed system crons with the correct timezone.
+        # Patching schedule.tz in-place via cron.update is unreliable — delete
+        # each system cron and recreate it using the canonical seed definitions
+        # (which now carry the user's real timezone).
         if "timezone" in updated_fields:
             try:
                 from apps.cron.gateway_client import invoke_gateway_tool
+                from apps.orchestrator.config_generator import build_cron_seed_jobs
+
                 new_tz = user.timezone
+                seed_jobs = build_cron_seed_jobs(tenant)
+                seed_names = {j["name"] for j in seed_jobs}
+
+                # List existing jobs and delete any that match a system cron name
                 list_result = invoke_gateway_tool(
                     tenant, "cron.list", {"includeDisabled": True}
                 )
@@ -1493,19 +1502,41 @@ class RuntimeProfileUpdateView(APIView):
                     jobs = list_result.get("jobs", [])
                 elif isinstance(list_result, list):
                     jobs = list_result
-                synced = 0
+
+                deleted = 0
                 for job in jobs:
-                    job_id = job.get("jobId") or job.get("name")
-                    schedule = job.get("schedule", {})
-                    if schedule.get("tz") != new_tz:
-                        invoke_gateway_tool(
-                            tenant, "cron.update",
-                            {"jobId": job_id, "patch": {"schedule": {**schedule, "tz": new_tz}}}
+                    job_name = job.get("name", "")
+                    if job_name in seed_names:
+                        job_id = job.get("jobId") or job_name
+                        try:
+                            invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
+                            deleted += 1
+                        except Exception:
+                            logger.warning(
+                                "Failed to remove cron job %s during tz resync for tenant %s",
+                                job_id, tenant.id, exc_info=True,
+                            )
+
+                # Recreate system crons with correct timezone
+                created = 0
+                for job in seed_jobs:
+                    try:
+                        invoke_gateway_tool(tenant, "cron.add", {"job": job})
+                        created += 1
+                    except Exception:
+                        logger.warning(
+                            "Failed to recreate cron job %s during tz resync for tenant %s",
+                            job["name"], tenant.id, exc_info=True,
                         )
-                        synced += 1
-                logger.info("Synced %d cron job(s) to tz=%s for tenant %s", synced, new_tz, tenant.id)
+
+                logger.info(
+                    "Timezone resync for tenant %s (tz=%s): deleted=%d recreated=%d",
+                    tenant.id, new_tz, deleted, created,
+                )
             except Exception:
-                logger.exception("Failed to sync cron timezones for tenant %s", tenant.id)
+                logger.exception(
+                    "Failed to resync cron timezones for tenant %s", tenant.id, exc_info=True
+                )
 
         # Trigger config refresh so the agent picks up the new userTimezone
         if "timezone" in updated_fields:

@@ -147,6 +147,10 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     provisioned through the Gateway ``POST /api/cron/jobs`` endpoint.
     Called by ``seed_cron_jobs()`` in ``services.py``.
     """
+    # Use the user's real timezone if set; fall back to UTC only as a last
+    # resort.  The agent will ask the user for their timezone on first
+    # interaction (see AGENTS.md) and the sync in runtime_views will
+    # delete+recreate these jobs with the correct tz at that point.
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
 
     return [
