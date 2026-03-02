@@ -537,3 +537,75 @@ def register_system_crons(request):
             logger.error("Failed to register QStash cron %s: %s %s", name, create_resp.status_code, create_resp.text)
 
     return JsonResponse({"registered": registered, "skipped": skipped, "failed": failed})
+
+
+@csrf_exempt
+def resync_cron_timezones(request):
+    """Delete and recreate system crons for all active tenants using each
+    tenant's configured timezone.
+
+    Fixes tenants whose system crons were seeded in UTC before they set
+    their timezone.
+
+    Auth: X-Deploy-Secret header must match DEPLOY_SECRET setting.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    if not deploy_secret:
+        logger.error("DEPLOY_SECRET not configured — resync_cron_timezones rejected")
+        return JsonResponse({"error": "Not configured"}, status=503)
+
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not provided or provided != deploy_secret:
+        logger.warning("Unauthorized resync_cron_timezones attempt")
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    from apps.orchestrator.config_generator import build_cron_seed_jobs
+    from apps.cron.gateway_client import invoke_gateway_tool, GatewayError
+
+    SYSTEM_JOB_NAMES = {"Morning Briefing", "Evening Check-in", "Week Ahead Review", "Background Tasks"}
+
+    tenants = Tenant.objects.filter(
+        status=Tenant.Status.ACTIVE,
+        container_id__gt="",
+    ).select_related("user")
+
+    results = []
+    for tenant in tenants:
+        tid = str(tenant.id)
+        user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
+        if not tenant.container_fqdn:
+            results.append({"tenant": tid[:8], "status": "skipped", "reason": "no fqdn"})
+            continue
+        try:
+            list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+            existing = list_result.get("jobs", []) if isinstance(list_result, dict) else (list_result if isinstance(list_result, list) else [])
+
+            deleted = 0
+            for job in existing:
+                if job.get("name") not in SYSTEM_JOB_NAMES:
+                    continue
+                job_id = job.get("jobId") or job.get("id") or job.get("name")
+                try:
+                    invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
+                    deleted += 1
+                except GatewayError:
+                    pass
+
+            created = 0
+            for job in build_cron_seed_jobs(tenant):
+                try:
+                    invoke_gateway_tool(tenant, "cron.add", {"job": job})
+                    created += 1
+                except GatewayError as e:
+                    logger.error("resync_cron_timezones: add %s for %s failed: %s", job.get("name"), tid[:8], e)
+
+            logger.info("resync_cron_timezones: tenant %s tz=%s deleted=%d created=%d", tid[:8], user_tz, deleted, created)
+            results.append({"tenant": tid[:8], "tz": user_tz, "deleted": deleted, "created": created})
+        except GatewayError as e:
+            logger.error("resync_cron_timezones: tenant %s failed: %s", tid[:8], e)
+            results.append({"tenant": tid[:8], "status": "error", "error": str(e)})
+
+    return JsonResponse({"results": results, "total": len(results)})
