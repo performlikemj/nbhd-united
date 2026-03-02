@@ -101,32 +101,39 @@ _EVENING_CHECKIN_PROMPT = (
 )
 
 _WEEK_AHEAD_REVIEW_PROMPT = (
-    "It's Monday morning. Run the Week Ahead Review.\n\n"
+    "It's Monday morning. Run the Week Ahead Review. This is a cron (isolated) session — "
+    "you cannot have a back-and-forth conversation. You must do everything in ONE turn.\n\n"
+    "Steps:\n"
     "1. Load journal context (`nbhd_journal_context`) and recent memory files\n"
     "2. Check the calendar for the upcoming 7 days (`nbhd_calendar_list_events`)\n"
-    "3. List all active cron jobs (`cron list`)\n"
-    "4. For each cron job, check: does this make sense given the user's week?\n"
+    "3. Load the user's goals (`nbhd_document_get` with kind='goal', slug='goals')\n"
+    "4. List all active cron jobs (`cron list`)\n"
+    "5. For each cron job, check: does this make sense given the user's week?\n"
     "   - If the user is traveling, skip or redirect location-based crons\n"
     "   - If the user has a packed schedule, consider adjusting timing\n"
     "   - If everything looks fine, note 'no changes needed'\n"
-    "5. Before making any changes, tell the user what you found and ask.\n"
-    "   Example: 'I see you're in Bali this week — want me to skip the local "
-    "event search or look up things to do there instead?'\n"
-    "6. Log decisions in `memory/week-ahead/` with a brief note\n\n"
-    "Be helpful, not noisy. Send your summary to the user via `nbhd_send_to_user`. "
-    "If nothing conflicts, just send a quick 'All good for this week, no changes needed.'"
+    "6. Log decisions in `memory/week-ahead/` with a brief note\n"
+    "7. Send the user exactly ONE message via `nbhd_send_to_user`:\n"
+    "   - Calendar highlights for the week (2-3 lines)\n"
+    "   - Active goals status (1-2 lines)\n"
+    "   - Any cron adjustments needed (or 'all good, no changes')\n"
+    "   - If nothing conflicts, keep it short: 'All good for this week.'\n\n"
+    "**IMPORTANT: Send exactly ONE message. Do not send multiple messages.**\n"
 )
 
 _BACKGROUND_TASKS_PROMPT = (
-    "Background maintenance run. Perform these tasks silently:\n\n"
+    "Background maintenance run. This is a cron (isolated) session — "
+    "you cannot have a back-and-forth conversation. You must do everything in ONE turn.\n\n"
+    "Steps:\n"
     "1. Load recent journal context\n"
     "2. Review long-term memory and recent daily notes\n"
     "3. Curate long-term memory if there are new patterns, preferences, or insights\n"
     "4. Check recent daily notes for any unaddressed user requests or tasks\n"
     "5. If you find pending items, append a reminder to tomorrow's daily note\n"
-    "6. Check the lessons constellation — if there are new approved lessons, the clusters and positions may need refreshing. The system handles this automatically.\n\n"
-    "Do NOT message the user. This is a silent background run.\n"
-    "Log a brief summary of what you did to tomorrow's daily note."
+    "6. Check the lessons constellation — if there are new approved lessons, the clusters "
+    "and positions may need refreshing. The system handles this automatically.\n\n"
+    "**Do NOT message the user. Do NOT call nbhd_send_to_user. This is a silent background run.**\n"
+    "Log a brief summary of what you did to tomorrow's daily note.\n"
 )
 
 # Model mapping by tier
