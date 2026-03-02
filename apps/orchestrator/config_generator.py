@@ -13,14 +13,15 @@ from apps.orchestrator.tool_policy import generate_tool_config
 from apps.tenants.models import Tenant
 
 _MORNING_BRIEFING_PROMPT = (
-    "Good morning! Create today's morning briefing (based on the user's local timezone).\n\n"
+    "Good morning! Create today's morning briefing. This is a cron (isolated) session — "
+    "you cannot have a back-and-forth conversation. You must do everything in ONE turn.\n\n"
     "⚠️ NEWS DATE RULE: Before including any news item, check its publication date. "
     "Only include articles published in the last 24 hours. "
     "Never say 'yesterday' or 'today' about a story unless you've confirmed the date. "
     "Instead, always include the actual date: 'Man United sacked their manager (Jan 12)' — "
     "not 'Man United sacked their manager yesterday.' "
     "Stale news presented as current is worse than no news.\n\n"
-    "Gather context:\n"
+    "Steps:\n"
     "1. Get weather using: curl -s 'wttr.in/{city}?format=%c+%t+%h+%w' for current conditions, "
     "or curl -s 'wttr.in/{city}?format=3' for a quick summary. "
     "For a detailed forecast: curl -s 'wttr.in/{city}?format=v2'. Replace {city} with the user's location.\n"
@@ -30,7 +31,7 @@ _MORNING_BRIEFING_PROMPT = (
     "5. Load the user's goals (`nbhd_document_get` with kind='goal', slug='goals') for active goals context.\n"
     "6. Check news/topics the user follows (if configured) — use freshness filters (past 24h) "
     "and always verify publication dates before including\n\n"
-    "Then fill in today's daily note sections:\n\n"
+    "7. Fill in today's daily note sections:\n\n"
     "**morning-report section:**\n"
     "### Overnight Summary\n"
     "- What happened since last check-in (completed tasks, messages, events)\n\n"
@@ -54,13 +55,16 @@ _MORNING_BRIEFING_PROMPT = (
     "- Based on goals, calendar, carry-over tasks, and what makes sense for the day\n\n"
     "### Quick Wins\n"
     "- Small things that can be knocked out easily\n\n"
-    "Finally, send a friendly morning summary to the user using `nbhd_send_to_user`. "
-    "Keep it concise (the detail lives in the journal). "
-    "Mention the weather, top priority, and anything time-sensitive.\n\n"
+    "8. Send the user exactly ONE message via `nbhd_send_to_user`. Keep it concise:\n"
+    "- Weather + what to wear (1 line)\n"
+    "- Top priority for the day (1 line)\n"
+    "- Anything time-sensitive (1-2 lines)\n"
+    "- Full details are in the journal\n\n"
     "When writing daily note sections, include the local target date if supported by your tool call. "
     "Use YYYY-MM-DD in the user's timezone context when passing `date` explicitly (avoid UTC drift).\n\n"
     "Note: These are default sections. The user may customize or remove them — "
-    "only fill in sections that exist in their template."
+    "only fill in sections that exist in their template.\n\n"
+    "**IMPORTANT: Send exactly ONE message. Do not send multiple messages.**\n"
 )
 
 _EVENING_CHECKIN_PROMPT = (
