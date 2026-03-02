@@ -172,7 +172,7 @@ STARTER_DOCUMENT_TEMPLATES = [
         "kind": "goal",
         "slug": "goals",
         "title": "Goals",
-        "markdown": """# Goals\n\n## Short-term goals\n- What can you finish soon?\n- Small win for this week:\n\n## Long-term goals\n- What would you be proud of in a few months?\n\nKeep these simple and update when your focus changes.\n""",
+        "markdown": "# Goals\n\n## Active\n\n(No goals yet — your agent will suggest them as you chat.)\n\n## Completed\n",
     },
     {
         "kind": "ideas",
