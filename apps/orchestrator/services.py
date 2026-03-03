@@ -480,10 +480,13 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
 
 
 def update_system_cron_prompts(tenant: Tenant | str) -> dict:
-    """Update prompts on existing system cron jobs to match current config_generator.
+    """Update system cron jobs to match current config_generator.
 
-    Matches jobs by name and patches their payload message. Leaves user-created
-    jobs untouched. Skips jobs that don't exist (tenant may have deleted them).
+    Only patches jobs where:
+    - The prompt hasn't been customized by the user (matches a known default)
+    - OR the schedule timezone is wrong (doesn't match user's current tz)
+
+    Leaves user-customized prompts untouched. Skips jobs the user deleted.
     """
     if isinstance(tenant, str):
         tenant = Tenant.objects.select_related("user").get(id=tenant)
@@ -496,7 +499,7 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
         list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
     except GatewayError:
         logger.exception("update_system_cron_prompts: failed to list jobs for %s", tenant_id)
-        return {"tenant_id": tenant_id, "updated": 0, "errors": 1}
+        return {"tenant_id": tenant_id, "updated": 0, "skipped": 0, "errors": 1}
 
     existing_jobs = []
     if isinstance(list_result, dict):
@@ -504,23 +507,75 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
     elif isinstance(list_result, list):
         existing_jobs = list_result
 
-    # Build name → id map from existing jobs
-    existing_by_name: dict[str, str] = {}
+    # Build name → job map from existing jobs
+    existing_by_name: dict[str, dict] = {}
     for job in existing_jobs:
         name = job.get("name", "")
-        job_id = job.get("id", "")
-        if name and job_id:
-            existing_by_name[name] = job_id
+        if name:
+            existing_by_name[name] = job
+
+    # Known old default prompt prefixes — if an existing prompt starts with
+    # one of these, the user hasn't customized it and we can safely update.
+    # Add new entries here when changing default prompts.
+    _KNOWN_DEFAULT_PREFIXES = [
+        "Good morning! Create today's morning briefing",
+        "Good morning! Create today's morning briefing. This is a cron",
+        "It's evening check-in time.",
+        "It's Monday morning. Run the Week Ahead Review",
+        "Background maintenance run.",
+    ]
+
+    def _is_default_prompt(existing_message: str) -> bool:
+        """Return True if the existing prompt matches a known default (old or current)."""
+        msg = existing_message.strip()
+        return any(msg.startswith(prefix) for prefix in _KNOWN_DEFAULT_PREFIXES)
+
+    user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
 
     updated = 0
+    skipped = 0
     errors = 0
     for desired in desired_jobs:
         name = desired.get("name", "")
         if name not in existing_by_name:
             continue  # Job doesn't exist (deleted by user or not seeded)
 
-        job_id = existing_by_name[name]
-        patch = {"payload": desired.get("payload", {})}
+        existing = existing_by_name[name]
+        job_id = existing.get("id", "")
+        if not job_id:
+            continue
+
+        # Check what needs updating
+        patch: dict = {}
+
+        # Check prompt: only update if it matches a known default
+        existing_payload = existing.get("payload", {})
+        existing_message = existing_payload.get("message", "")
+        desired_payload = desired.get("payload", {})
+        desired_message = desired_payload.get("message", "")
+
+        if existing_message != desired_message:
+            if _is_default_prompt(existing_message):
+                patch["payload"] = desired_payload
+            else:
+                logger.info(
+                    "update_system_cron_prompts: skipping '%s' for tenant %s (user-customized)",
+                    name, tenant_id,
+                )
+                skipped += 1
+
+        # Check timezone: always fix if wrong
+        existing_schedule = existing.get("schedule", {})
+        existing_tz = existing_schedule.get("tz", "UTC")
+        if existing_tz != user_tz:
+            patch["schedule"] = desired.get("schedule", {})
+            logger.info(
+                "update_system_cron_prompts: fixing tz '%s' -> '%s' for '%s' tenant %s",
+                existing_tz, user_tz, name, tenant_id,
+            )
+
+        if not patch:
+            continue  # Nothing to update
 
         try:
             invoke_gateway_tool(tenant, "cron.update", {"jobId": job_id, "patch": patch})
@@ -530,7 +585,7 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
             logger.exception("update_system_cron_prompts: failed to update '%s' for %s", name, tenant_id)
             errors += 1
 
-    return {"tenant_id": tenant_id, "updated": updated, "errors": errors}
+    return {"tenant_id": tenant_id, "updated": updated, "skipped": skipped, "errors": errors}
 
 
 def check_tenant_health(tenant_id: str) -> dict:
