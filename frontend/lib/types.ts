@@ -87,7 +87,7 @@ export interface ProvisioningStatus {
 
 export interface Integration {
   id: string;
-  provider: "gmail" | "google-calendar" | "sautai";
+  provider: "gmail" | "google-calendar" | "reddit" | "sautai";
   status: "active" | "expired" | "revoked" | "error";
   provider_email: string;
   scopes: string[];

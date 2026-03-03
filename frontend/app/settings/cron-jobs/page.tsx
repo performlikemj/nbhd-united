@@ -1,7 +1,8 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { CapabilityChips, insertChipTag } from "@/components/capability-chips";
 import ScheduleBuilder, { cronToHuman } from "@/components/schedule-builder";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
@@ -14,6 +15,7 @@ import {
   useCronJobsQuery,
   useCreateCronJobMutation,
   useDeleteCronJobMutation,
+  useIntegrationsQuery,
   useMeQuery,
   useToggleCronJobMutation,
   useUpdateCronJobMutation,
@@ -175,11 +177,21 @@ type BulkBarState = "idle" | "confirming";
 export default function SettingsCronJobsPage() {
   const { data: me } = useMeQuery();
   const { data: cronJobs, isLoading, error } = useCronJobsQuery();
+  const { data: integrations } = useIntegrationsQuery();
   const createMutation = useCreateCronJobMutation();
   const deleteMutation = useDeleteCronJobMutation();
   const bulkDeleteMutation = useBulkDeleteCronJobsMutation();
   const toggleMutation = useToggleCronJobMutation();
   const updateMutation = useUpdateCronJobMutation();
+
+  /* ── Connected providers (for capability chips) ── */
+  const connectedProviders = useMemo(() => {
+    const set = new Set<string>();
+    integrations?.forEach((i) => {
+      if (i.status === "active") set.add(i.provider);
+    });
+    return set;
+  }, [integrations]);
 
   /* ── Create form ── */
   const [showCreate, setShowCreate] = useState(false);
@@ -187,6 +199,7 @@ export default function SettingsCronJobsPage() {
   const [showCapabilities, setShowCapabilities] = useState(false);
   const [createFeedback, setCreateFeedback] = useState<ActionFeedback>({ status: "idle", text: "" });
   const createTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const createTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   /* ── Edit form ── */
   const [editingName, setEditingName] = useState<string | null>(null);
@@ -199,6 +212,7 @@ export default function SettingsCronJobsPage() {
   });
   const [editFeedback, setEditFeedback] = useState<ActionFeedback>({ status: "idle", text: "" });
   const editTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   /* ── Single delete — inline per-row state ── */
   // Map of jobIdentifier → "confirming" | null
@@ -522,14 +536,32 @@ export default function SettingsCronJobsPage() {
               <label className="text-sm text-ink-muted md:col-span-2">
                 What should your agent do?
                 <textarea
+                  ref={createTextareaRef}
                   className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                   rows={3}
-                  placeholder="Describe the task in plain language — e.g. 'Check my calendar and weather, then send me a morning summary'"
+                  placeholder="Describe the task in plain language — e.g. 'I want [Gmail] to check for important emails and [Weather] to give me a forecast'"
                   value={createForm.message}
                   onChange={(e) => setCreateForm((prev) => ({ ...prev, message: e.target.value }))}
                   required
                 />
               </label>
+
+              {/* Capability chips — insert tags at cursor */}
+              <div className="md:col-span-2">
+                <CapabilityChips
+                  message={createForm.message}
+                  textareaRef={createTextareaRef}
+                  onInsertTag={(tag) =>
+                    insertChipTag(
+                      createTextareaRef.current,
+                      tag,
+                      createForm.message,
+                      (msg) => setCreateForm((prev) => ({ ...prev, message: msg })),
+                    )
+                  }
+                  connectedProviders={connectedProviders}
+                />
+              </div>
 
               {/* Capabilities reference */}
               <div className="md:col-span-2">
@@ -538,7 +570,7 @@ export default function SettingsCronJobsPage() {
                   onClick={() => setShowCapabilities(!showCapabilities)}
                   className="text-xs text-accent hover:underline"
                 >
-                  {showCapabilities ? "Hide" : "Show"} what your agent can do ↗
+                  {showCapabilities ? "Hide" : "Show"} all capabilities ↗
                 </button>
                 {showCapabilities && (
                   <div className="mt-2 rounded-panel border border-border bg-surface-hover p-3">
@@ -836,12 +868,30 @@ export default function SettingsCronJobsPage() {
                           <label className="text-sm text-ink-muted md:col-span-2">
                             What should your agent do?
                             <textarea
+                              ref={editTextareaRef}
                               className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                               rows={3}
                               value={editForm.message}
                               onChange={(e) => setEditForm((prev) => ({ ...prev, message: e.target.value }))}
                             />
                           </label>
+
+                          {/* Capability chips — insert tags at cursor */}
+                          <div className="md:col-span-2">
+                            <CapabilityChips
+                              message={editForm.message}
+                              textareaRef={editTextareaRef}
+                              onInsertTag={(tag) =>
+                                insertChipTag(
+                                  editTextareaRef.current,
+                                  tag,
+                                  editForm.message,
+                                  (msg) => setEditForm((prev) => ({ ...prev, message: msg })),
+                                )
+                              }
+                              connectedProviders={connectedProviders}
+                            />
+                          </div>
 
                           <div className="flex flex-col gap-2 md:col-span-2">
                             <div className="flex gap-2">
