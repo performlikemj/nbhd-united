@@ -283,7 +283,7 @@ STRIPE_PRICE_IDS = {
 # Empty means no paid plans are offered.
 ENABLED_STRIPE_TIERS = env.list(
     "ENABLED_STRIPE_TIERS",
-    default=[],
+    default=["starter", "premium", "byok"],
 )
 
 # Frontend URL (for redirects)

@@ -18,27 +18,24 @@ type PlanCard = {
 const plans: PlanCard[] = [
   {
     name: "Starter",
-    price: "$0",
+    price: "$12",
     model: "Kimi K2.5",
-    comingSoon: true,
-    comingSoonLabel: "Free week",
     features: [
       "Private AI assistant via Telegram",
       "Journaling & daily notes",
       "Scheduled tasks & reminders",
-      "7-day free trial",
+      "50 messages/day",
     ],
   },
   {
     name: "Premium",
     price: "$25",
     model: "Claude Sonnet / Opus",
-    comingSoon: true,
-    comingSoonLabel: "in 1 week",
+    highlight: true,
     features: [
       "Everything in Starter",
       "Advanced reasoning models",
-      "Higher usage limits",
+      "200 messages/day",
       "Priority support",
     ],
   },
@@ -46,13 +43,11 @@ const plans: PlanCard[] = [
     name: "Bring Your Own Key",
     price: "$8",
     model: "Your API key",
-    comingSoon: true,
-    comingSoonLabel: "in 1 week",
     features: [
       "Everything in Starter",
       "Use your own AI provider key",
       "Full model flexibility",
-      "Pay only for what you use",
+      "200 messages/day",
     ],
   },
 ];

@@ -9,12 +9,12 @@ import { StatusPill } from "@/components/status-pill";
 import { useCheckoutMutation, useStripePortalMutation, useTenantQuery } from "@/lib/queries";
 
 const PLAN_OPTIONS = [
-  { id: "starter", name: "Starter", price: "Free", description: "7-day free trial", available: false },
-  { id: "premium", name: "Premium", price: "$25/mo", description: "Claude Sonnet & Opus (coming in 1 week)", available: false },
-  { id: "byok", name: "BYOK", price: "$8/mo", description: "Bring Your Own Key (coming in 1 week)", available: false },
+  { id: "starter", name: "Starter", price: "$12/mo", description: "Kimi K2.5 — 50 messages/day", available: true },
+  { id: "premium", name: "Premium", price: "$25/mo", description: "Claude Sonnet & Opus — 200 messages/day", available: true },
+  { id: "byok", name: "BYOK", price: "$8/mo", description: "Bring Your Own Key — 200 messages/day", available: true },
 ] as const;
 
-const HAS_BILLABLE_PLANS = false;
+const HAS_BILLABLE_PLANS = true;
 
 const TIERS: Record<"starter" | "premium" | "byok", { label: string }> = {
   starter: { label: "Starter" },
@@ -131,11 +131,7 @@ export default function SettingsBillingPage() {
               </div>
             )}
 
-            {!HAS_BILLABLE_PLANS && (
-              <div className="rounded-panel border border-dashed border-accent/30 bg-accent/5 p-5 text-sm text-ink">
-                Billing is paused while we finalize launch prep. You&apos;re in the free week.
-              </div>
-            )}
+
 
             {HAS_BILLABLE_PLANS && (
               <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
@@ -192,7 +188,7 @@ export default function SettingsBillingPage() {
                 <Link href="/legal/refund" className="underline hover:text-ink-muted">Refund Policy</Link>.
                 </>
               ) : (
-                <>Enjoy your free trial and check back in 1 week for paid plans and invoice upgrades.</>
+                <>Enjoy your free trial — subscribe anytime to keep your assistant after 7 days.</>
               )}
             </p>
 
@@ -216,7 +212,7 @@ export default function SettingsBillingPage() {
             </div>
             <h3 className="mt-4 text-lg font-semibold text-ink">No subscription yet</h3>
             <p className="mt-2 max-w-sm text-sm text-ink-muted">
-              You&apos;ll get a 7-day free setup trial — paid plans return in 1 week.
+              Complete onboarding to start your 7-day free trial, then choose a plan.
             </p>
             <div className="mt-6">
               <Link
@@ -234,7 +230,7 @@ export default function SettingsBillingPage() {
                 <Link href="/legal/refund" className="underline hover:text-ink-muted">Refund Policy</Link>.
                 </>
               ) : (
-                <>Enjoy your free trial and check back in 1 week for paid plans and invoice upgrades.</>
+                <>Enjoy your free trial — subscribe anytime to keep your assistant after 7 days.</>
               )}
             </p>
             {checkoutError && (
