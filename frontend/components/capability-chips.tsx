@@ -100,7 +100,7 @@ interface CapabilityChipsProps {
 
 export function CapabilityChips({
   message,
-  textareaRef,
+  textareaRef: _textareaRef,
   onInsertTag,
   connectedProviders,
 }: CapabilityChipsProps) {
