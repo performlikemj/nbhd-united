@@ -128,6 +128,47 @@ class OrchestratorServiceTest(TestCase):
         self.assertEqual(self.tenant.status, Tenant.Status.PENDING)
         _mock_assign_kv_role.assert_called_once_with("principal-2")
 
+    @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="keyvault")
+    @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
+    @patch("apps.orchestrator.services.config_to_json", return_value="{}")
+    @patch(
+        "apps.orchestrator.services.create_managed_identity",
+        return_value={"id": "/identities/3", "client_id": "client-3", "principal_id": "principal-3"},
+    )
+    @patch("apps.orchestrator.services.assign_key_vault_role")
+    @patch("apps.orchestrator.services.assign_acr_pull_role")
+    @patch("apps.orchestrator.services.seed_cron_jobs", side_effect=RuntimeError("gateway down"))
+    @patch("apps.cron.views._schedule_qstash_task", create=True, side_effect=RuntimeError("qstash unavailable"))
+    @patch("apps.orchestrator.services.create_tenant_file_share")
+    @patch("apps.orchestrator.services.register_environment_storage")
+    @patch("apps.orchestrator.services.upload_config_to_file_share")
+    @patch(
+        "apps.orchestrator.services.create_container_app",
+        return_value={"name": "oc-tenant", "fqdn": "oc-tenant.internal.azurecontainerapps.io"},
+    )
+    def test_post_provision_failure_preserves_active_status(
+        self,
+        _mock_create_container,
+        _mock_upload_config,
+        _mock_register_storage,
+        _mock_create_file_share,
+        _mock_schedule_qstash,
+        _mock_seed_cron_jobs,
+        _mock_assign_acr_role,
+        _mock_assign_kv_role,
+        _mock_create_identity,
+        _mock_config_json,
+        _mock_generate_config,
+    ):
+        """Post-provision failures (welcome msg, cron seeding) must not reset to PENDING."""
+        provision_tenant(str(self.tenant.id))
+        self.tenant.refresh_from_db()
+
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+        self.assertEqual(self.tenant.container_id, "oc-tenant")
+        self.assertEqual(self.tenant.container_fqdn, "oc-tenant.internal.azurecontainerapps.io")
+        self.assertIsNotNone(self.tenant.provisioned_at)
+
     @patch("apps.orchestrator.services.create_container_app")
     def test_provision_skips_if_tenant_not_provisionable(self, mock_create_container):
         self.tenant.status = Tenant.Status.DELETED

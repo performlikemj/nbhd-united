@@ -226,41 +226,6 @@ def provision_tenant(tenant_id: str) -> None:
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="provision_success")
         logger.info("Provisioned tenant %s → container %s", tenant_id, result["name"])
 
-        # 4b. Send proactive welcome message via Telegram
-        chat_id = tenant.user.telegram_chat_id
-        if chat_id:
-            try:
-                from apps.router.onboarding import WELCOME_MESSAGE
-                from apps.router.services import send_telegram_message
-
-                send_telegram_message(chat_id, WELCOME_MESSAGE)
-                tenant.onboarding_step = 1  # Advance past step 0 (welcome sent)
-                tenant.save(update_fields=["onboarding_step", "updated_at"])
-                logger.info("Sent welcome message to chat_id=%s for tenant %s", chat_id, tenant_id)
-            except Exception:
-                logger.warning("Could not send welcome message for tenant %s", tenant_id, exc_info=True)
-
-        # 5. Seed default cron jobs to Gateway (delayed for container warm-up)
-        try:
-            from apps.cron.views import _schedule_qstash_task
-
-            _schedule_qstash_task("seed_cron_jobs", str(tenant.id), delay_seconds=60)
-        except Exception:
-            # TODO: schedule with delay
-            logger.warning(
-                "Could not schedule cron job seeding for tenant %s",
-                tenant_id,
-                exc_info=True,
-            )
-            try:
-                seed_cron_jobs(tenant)
-            except Exception:
-                logger.warning(
-                    "Could not seed cron jobs directly for tenant %s",
-                    tenant_id,
-                    exc_info=True,
-                )
-
     except Exception as exc:
         _log_provisioning_event(
             tenant_id=str(tenant.id),
@@ -272,6 +237,45 @@ def provision_tenant(tenant_id: str) -> None:
         tenant.status = Tenant.Status.PENDING
         tenant.save(update_fields=["status", "updated_at"])
         raise
+
+    # --- Post-provision steps (non-critical) ---
+    # These run OUTSIDE the main try/except so failures here do NOT reset
+    # the tenant to PENDING. The container metadata is already persisted.
+
+    # 4b. Send proactive welcome message via Telegram
+    chat_id = tenant.user.telegram_chat_id
+    if chat_id:
+        try:
+            from apps.router.onboarding import WELCOME_MESSAGE
+            from apps.router.services import send_telegram_message
+
+            send_telegram_message(chat_id, WELCOME_MESSAGE)
+            tenant.onboarding_step = 1  # Advance past step 0 (welcome sent)
+            tenant.save(update_fields=["onboarding_step", "updated_at"])
+            logger.info("Sent welcome message to chat_id=%s for tenant %s", chat_id, tenant_id)
+        except Exception:
+            logger.warning("Could not send welcome message for tenant %s", tenant_id, exc_info=True)
+
+    # 5. Seed default cron jobs to Gateway (delayed for container warm-up)
+    try:
+        from apps.cron.views import _schedule_qstash_task
+
+        _schedule_qstash_task("seed_cron_jobs", str(tenant.id), delay_seconds=60)
+    except Exception:
+        # TODO: schedule with delay
+        logger.warning(
+            "Could not schedule cron job seeding for tenant %s",
+            tenant_id,
+            exc_info=True,
+        )
+        try:
+            seed_cron_jobs(tenant)
+        except Exception:
+            logger.warning(
+                "Could not seed cron jobs directly for tenant %s",
+                tenant_id,
+                exc_info=True,
+            )
 
 
 def update_tenant_config(tenant_id: str) -> None:

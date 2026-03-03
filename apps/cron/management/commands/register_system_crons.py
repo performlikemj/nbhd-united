@@ -30,6 +30,8 @@ SYSTEM_CRONS = [
     ("cleanup-inbound-media", "0 5 * * *", "/api/cron/trigger/cleanup_inbound_media/"),
     # Daily at 02:00 UTC — expire trials that have ended
     ("expire-trials", "0 2 * * *", "/api/cron/expire-trials/"),
+    # Every 30 min — repair tenants stuck without container metadata
+    ("repair-stale-provisioning", "*/30 * * * *", "/api/cron/trigger/repair_stale_tenant_provisioning/"),
 ]
 
 
