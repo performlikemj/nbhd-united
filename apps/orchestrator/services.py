@@ -416,8 +416,13 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
         raise RuntimeError(f"Failed to list cron jobs for tenant {tenant_id}")
 
     existing_jobs = []
-    if isinstance(list_result, dict) and isinstance(list_result.get("jobs", []), list):
-        existing_jobs = list_result.get("jobs", [])
+    # Gateway wraps cron.list result in {"details": {"jobs": [...]}} — unwrap it.
+    if isinstance(list_result, dict):
+        inner = list_result.get("details", list_result)
+        if isinstance(inner, dict) and isinstance(inner.get("jobs", []), list):
+            existing_jobs = inner.get("jobs", [])
+        elif isinstance(list_result.get("jobs", []), list):
+            existing_jobs = list_result.get("jobs", [])
     elif isinstance(list_result, list):
         existing_jobs = list_result
 
@@ -506,8 +511,13 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
         return {"tenant_id": tenant_id, "updated": 0, "skipped": 0, "errors": 1}
 
     existing_jobs = []
+    # Gateway wraps cron.list result in {"details": {"jobs": [...]}} — unwrap it.
     if isinstance(list_result, dict):
-        existing_jobs = list_result.get("jobs", [])
+        inner = list_result.get("details", list_result)
+        if isinstance(inner, dict):
+            existing_jobs = inner.get("jobs", [])
+        else:
+            existing_jobs = list_result.get("jobs", [])
     elif isinstance(list_result, list):
         existing_jobs = list_result
 
