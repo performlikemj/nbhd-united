@@ -15,7 +15,7 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='tenant',
             name='model_tier',
-            field=models.CharField(choices=[('starter', 'Starter (Kimi K2.5)'), ('premium', 'Premium (Sonnet/Opus)'), ('byok', 'Bring Your Own Key')], default='starter', max_length=20),
+            field=models.CharField(choices=[('starter', 'Starter (MiniMax M2.5)'), ('premium', 'Premium (Sonnet/Opus)'), ('byok', 'Bring Your Own Key')], default='starter', max_length=20),
         ),
         migrations.CreateModel(
             name='UserLLMConfig',

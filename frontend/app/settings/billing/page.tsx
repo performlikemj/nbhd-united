@@ -9,7 +9,7 @@ import { StatusPill } from "@/components/status-pill";
 import { useCheckoutMutation, useStripePortalMutation, useTenantQuery } from "@/lib/queries";
 
 const PLAN_OPTIONS = [
-  { id: "starter", name: "Starter", price: "$12/mo", description: "Kimi K2.5 — 50 messages/day", available: true },
+  { id: "starter", name: "Starter", price: "$12/mo", description: "MiniMax M2.5 — 50 messages/day", available: true },
   { id: "premium", name: "Premium", price: "$25/mo", description: "Claude Sonnet & Opus — 200 messages/day", available: true },
   { id: "byok", name: "BYOK", price: "$8/mo", description: "Bring Your Own Key — 200 messages/day", available: true },
 ] as const;

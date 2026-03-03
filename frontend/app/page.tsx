@@ -19,7 +19,7 @@ const plans: PlanCard[] = [
   {
     name: "Starter",
     price: "$12",
-    model: "Kimi K2.5",
+    model: "MiniMax M2.5",
     features: [
       "Private AI assistant via Telegram",
       "Journaling & daily notes",

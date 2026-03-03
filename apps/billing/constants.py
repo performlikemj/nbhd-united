@@ -35,10 +35,10 @@ MODEL_RATES: dict[str, dict[str, float]] = {
         "output": 5.0,
         "display_name": "Claude Haiku 4.5",
     },
-    "openrouter/moonshotai/kimi-k2.5": {
-        "input": 0.5,
-        "output": 2.0,
-        "display_name": "Kimi K2.5",
+    "openrouter/minimax/minimax-m2.5": {
+        "input": 0.3,
+        "output": 1.2,
+        "display_name": "MiniMax M2.5",
     },
 }
 

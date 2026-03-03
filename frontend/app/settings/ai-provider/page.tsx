@@ -18,7 +18,7 @@ const PROVIDERS = [
 ] as const;
 
 const TIER_MODEL_INFO: Record<string, string> = {
-  starter: "Kimi K2.5 — 50 messages/day",
+  starter: "MiniMax M2.5 — 50 messages/day",
   premium: "Claude Sonnet 4.5 + Opus access — 200 messages/day",
   basic: "Claude Sonnet — included with your plan",
   plus: "Claude Opus — included with your plan",

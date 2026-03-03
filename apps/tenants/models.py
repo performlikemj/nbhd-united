@@ -46,7 +46,7 @@ class Tenant(models.Model):
         DELETED = "deleted", "Deleted"
 
     class ModelTier(models.TextChoices):
-        STARTER = "starter", "Starter (Kimi K2.5)"
+        STARTER = "starter", "Starter (MiniMax M2.5)"
         PREMIUM = "premium", "Premium (Sonnet/Opus)"
         BYOK = "byok", "Bring Your Own Key"
 

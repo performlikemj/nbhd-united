@@ -39,7 +39,7 @@ class ConfigGeneratorTest(TestCase):
     def test_starter_tier_model(self):
         self.tenant.model_tier = "starter"
         config = generate_openclaw_config(self.tenant)
-        self.assertIn("kimi", config["agents"]["defaults"]["model"]["primary"].lower())
+        self.assertIn("minimax", config["agents"]["defaults"]["model"]["primary"].lower())
 
     def test_starter_tier_uses_openrouter(self):
         self.tenant.model_tier = "starter"
