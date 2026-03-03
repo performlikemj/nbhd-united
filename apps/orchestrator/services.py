@@ -317,6 +317,14 @@ def update_tenant_config(tenant_id: str) -> None:
     except Exception:
         logger.exception("Failed to upload workspace files for tenant %s", tenant_id)
 
+    # Update system cron job prompts to match current config_generator
+    try:
+        result = update_system_cron_prompts(tenant)
+        if result["updated"]:
+            logger.info("Updated %d cron prompts for tenant %s", result["updated"], tenant_id)
+    except Exception:
+        logger.exception("Failed to update cron prompts for tenant %s (non-fatal)", tenant_id)
+
     logger.info("Updated OpenClaw config for tenant %s", tenant_id)
 
 
@@ -469,6 +477,60 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
         "created": created,
         "errors": errors,
     }
+
+
+def update_system_cron_prompts(tenant: Tenant | str) -> dict:
+    """Update prompts on existing system cron jobs to match current config_generator.
+
+    Matches jobs by name and patches their payload message. Leaves user-created
+    jobs untouched. Skips jobs that don't exist (tenant may have deleted them).
+    """
+    if isinstance(tenant, str):
+        tenant = Tenant.objects.select_related("user").get(id=tenant)
+
+    tenant_id = str(tenant.id)
+    desired_jobs = build_cron_seed_jobs(tenant)
+
+    # Get existing jobs
+    try:
+        list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+    except GatewayError:
+        logger.exception("update_system_cron_prompts: failed to list jobs for %s", tenant_id)
+        return {"tenant_id": tenant_id, "updated": 0, "errors": 1}
+
+    existing_jobs = []
+    if isinstance(list_result, dict):
+        existing_jobs = list_result.get("jobs", [])
+    elif isinstance(list_result, list):
+        existing_jobs = list_result
+
+    # Build name → id map from existing jobs
+    existing_by_name: dict[str, str] = {}
+    for job in existing_jobs:
+        name = job.get("name", "")
+        job_id = job.get("id", "")
+        if name and job_id:
+            existing_by_name[name] = job_id
+
+    updated = 0
+    errors = 0
+    for desired in desired_jobs:
+        name = desired.get("name", "")
+        if name not in existing_by_name:
+            continue  # Job doesn't exist (deleted by user or not seeded)
+
+        job_id = existing_by_name[name]
+        patch = {"payload": desired.get("payload", {})}
+
+        try:
+            invoke_gateway_tool(tenant, "cron.update", {"jobId": job_id, "patch": patch})
+            updated += 1
+            logger.info("update_system_cron_prompts: updated '%s' for tenant %s", name, tenant_id)
+        except GatewayError:
+            logger.exception("update_system_cron_prompts: failed to update '%s' for %s", name, tenant_id)
+            errors += 1
+
+    return {"tenant_id": tenant_id, "updated": updated, "errors": errors}
 
 
 def check_tenant_health(tenant_id: str) -> dict:
