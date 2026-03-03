@@ -787,11 +787,11 @@ def scale_container_app(container_name: str, *, min_replicas: int, max_replicas:
     client = get_container_client()
     app = client.container_apps.get(settings.AZURE_RESOURCE_GROUP, container_name)
 
-    # Patch the scale settings
-    template = app.get("properties", {}).get("template", {})
-    scale = template.setdefault("scale", {})
-    scale["minReplicas"] = min_replicas
-    scale["maxReplicas"] = max_replicas
+    # SDK returns a model object — patch scale on template directly
+    if not app.template.scale:
+        app.template.scale = {}
+    app.template.scale["min_replicas"] = min_replicas
+    app.template.scale["max_replicas"] = max_replicas
 
     client.container_apps.begin_create_or_update(
         settings.AZURE_RESOURCE_GROUP, container_name, app,
