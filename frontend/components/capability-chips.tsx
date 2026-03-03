@@ -98,10 +98,8 @@ interface CapabilityChipsProps {
   connectedProviders: Set<string>;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function CapabilityChips({
   message,
-  textareaRef,
   onInsertTag,
   connectedProviders,
 }: CapabilityChipsProps) {
