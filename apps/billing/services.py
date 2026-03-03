@@ -156,9 +156,11 @@ def handle_checkout_completed(session_data: dict) -> None:
     if tenant.status == Tenant.Status.SUSPENDED:
         tenant.status = Tenant.Status.ACTIVE
         should_provision = False
+        should_wake = True  # Wake hibernated container
     else:
         tenant.status = Tenant.Status.PROVISIONING
         should_provision = True
+        should_wake = False
 
     tenant.save(update_fields=[
         "stripe_customer_id", "stripe_subscription_id",
@@ -168,6 +170,14 @@ def handle_checkout_completed(session_data: dict) -> None:
     if was_provisioning and same_subscription:
         logger.info("Tenant %s already provisioning for current subscription", tenant.id)
         return
+
+    if should_wake and tenant.container_id:
+        try:
+            from apps.orchestrator.azure_client import scale_container_app
+            scale_container_app(tenant.container_id, min_replicas=1, max_replicas=1)
+            logger.info("Woke container %s for reactivated tenant %s", tenant.container_id, tenant.id)
+        except Exception:
+            logger.exception("Failed to wake container %s for tenant %s — may need re-provisioning", tenant.container_id, tenant.id)
 
     if should_provision:
         publish_task("provision_tenant", str(tenant.id))
@@ -217,7 +227,12 @@ def handle_subscription_deleted(subscription_data: dict) -> None:
 
 
 def handle_invoice_payment_failed(invoice_data: dict) -> None:
-    """Handle invoice.payment_failed webhook by suspending tenant access."""
+    """Handle invoice.payment_failed webhook by suspending tenant access.
+
+    Scales the container to zero replicas to stop burning Azure resources
+    while keeping the container available for fast reactivation if the
+    user pays later.
+    """
     tenant = _find_tenant_for_stripe_event(invoice_data)
     if not tenant:
         logger.error("No tenant found for invoice.payment_failed payload")
@@ -230,3 +245,12 @@ def handle_invoice_payment_failed(invoice_data: dict) -> None:
     tenant.status = Tenant.Status.SUSPENDED
     tenant.save(update_fields=["status", "updated_at"])
     logger.warning("Suspended tenant %s after failed invoice", tenant.id)
+
+    # Hibernate the container (scale to zero) to stop resource costs
+    if tenant.container_id:
+        try:
+            from apps.orchestrator.azure_client import scale_container_app
+            scale_container_app(tenant.container_id, min_replicas=0, max_replicas=0)
+            logger.info("Hibernated container %s for suspended tenant %s", tenant.container_id, tenant.id)
+        except Exception:
+            logger.exception("Failed to hibernate container %s for tenant %s", tenant.container_id, tenant.id)

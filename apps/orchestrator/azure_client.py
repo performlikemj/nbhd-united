@@ -774,6 +774,31 @@ def update_container_image(container_name: str, image: str) -> None:
     logger.info("Updated image to %s on %s (revision suffix: u%s)", image, container_name, suffix)
 
 
+def scale_container_app(container_name: str, *, min_replicas: int, max_replicas: int) -> None:
+    """Scale an Azure Container App's replica count.
+
+    Use min=0, max=0 to hibernate a container (costs nothing).
+    Use min=1, max=1 to wake it back up.
+    """
+    if _is_mock():
+        logger.info("[MOCK] Scaled %s to min=%d max=%d", container_name, min_replicas, max_replicas)
+        return
+
+    client = get_container_client()
+    app = client.container_apps.get(settings.AZURE_RESOURCE_GROUP, container_name)
+
+    # Patch the scale settings
+    template = app.get("properties", {}).get("template", {})
+    scale = template.setdefault("scale", {})
+    scale["minReplicas"] = min_replicas
+    scale["maxReplicas"] = max_replicas
+
+    client.container_apps.begin_create_or_update(
+        settings.AZURE_RESOURCE_GROUP, container_name, app,
+    ).result()
+    logger.info("Scaled %s to min=%d max=%d", container_name, min_replicas, max_replicas)
+
+
 def delete_container_app(container_name: str) -> None:
     """Delete an Azure Container App."""
     if _is_mock():
@@ -787,3 +812,4 @@ def delete_container_app(container_name: str) -> None:
         ).result()
     except Exception:
         logger.exception("Failed to delete container %s", container_name)
+        raise
