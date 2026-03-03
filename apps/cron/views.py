@@ -525,9 +525,8 @@ def register_system_crons(request):
             skipped.append(name)
             continue
         create_resp = httpx.post(
-            "https://qstash.upstash.io/v2/schedules",
-            headers=headers,
-            json={"destination": destination, "cron": cron_expr, "headers": {}},
+            f"https://qstash.upstash.io/v2/schedules/{destination}",
+            headers={**headers, "Upstash-Cron": cron_expr},
         )
         if create_resp.status_code in (200, 201):
             registered.append(name)

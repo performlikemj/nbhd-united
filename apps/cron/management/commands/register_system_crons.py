@@ -92,15 +92,9 @@ class Command(BaseCommand):
                 self.stdout.write(f"  [dry-run] would register: {name} → {cron_expr} → {destination}")
                 continue
 
-            payload = {
-                "destination": destination,
-                "cron": cron_expr,
-                "headers": {},
-            }
             create_resp = httpx.post(
-                "https://qstash.upstash.io/v2/schedules",
-                headers=headers,
-                json=payload,
+                f"https://qstash.upstash.io/v2/schedules/{destination}",
+                headers={**headers, "Upstash-Cron": cron_expr},
             )
             if create_resp.status_code in (200, 201):
                 self.stdout.write(self.style.SUCCESS(f"  registered: {name} → {cron_expr}"))
