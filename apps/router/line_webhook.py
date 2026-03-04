@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 LINE_API_BASE = "https://api.line.me/v2/bot"
 CHAT_COMPLETIONS_TIMEOUT = 120.0  # generous timeout for AI response
+LOADING_SECONDS = 20  # loading animation duration (auto-clears on response)
 
 
 def _get_channel_secret() -> str:
@@ -58,6 +59,67 @@ def _verify_signature(body: bytes, signature: str) -> bool:
     )
     expected = base64.b64encode(mac.digest()).decode("utf-8")
     return hmac.compare_digest(signature, expected)
+
+
+def _show_loading(line_user_id: str) -> None:
+    """Show typing/loading animation in LINE chat. Fire-and-forget."""
+    access_token = _get_access_token()
+    if not access_token:
+        return
+    try:
+        httpx.post(
+            f"{LINE_API_BASE}/chat/loading/start",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            json={"chatId": line_user_id, "loadingSeconds": LOADING_SECONDS},
+            timeout=3,
+        )
+    except Exception:
+        pass  # non-critical — don't log noise
+
+
+def _send_line_reply(reply_token: str, messages: list[dict]) -> bool:
+    """Send messages via LINE Reply Message API (free, unlimited).
+
+    Returns True on success, False if token expired or other failure.
+    """
+    access_token = _get_access_token()
+    if not access_token or not reply_token:
+        return False
+    try:
+        resp = httpx.post(
+            f"{LINE_API_BASE}/message/reply",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            json={"replyToken": reply_token, "messages": messages},
+            timeout=10,
+        )
+        if resp.is_success:
+            return True
+        # 400 with "Invalid reply token" = expired
+        logger.debug("LINE reply failed (%s): %s", resp.status_code, resp.text[:200])
+        return False
+    except Exception:
+        logger.debug("LINE reply exception", exc_info=True)
+        return False
+
+
+def _send_line_messages(
+    line_user_id: str,
+    messages: list[dict],
+    reply_token: str | None = None,
+) -> bool:
+    """Send messages, preferring Reply API (free) with Push fallback.
+
+    Tries reply_token first. If it fails (expired/missing), falls back to Push.
+    """
+    if reply_token and _send_line_reply(reply_token, messages):
+        return True
+    return _send_line_push(line_user_id, messages)
 
 
 def _send_line_push(line_user_id: str, messages: list[dict]) -> bool:
@@ -279,6 +341,7 @@ class LineWebhookView(View):
         """Handle incoming text message."""
         message = event.get("message", {})
         msg_type = message.get("type", "")
+        reply_token = event.get("replyToken")
 
         if msg_type != "text":
             line_user_id = event.get("source", {}).get("userId", "")
@@ -350,11 +413,14 @@ class LineWebhookView(View):
             )
             return
 
+        # Show loading animation while LLM processes
+        _show_loading(line_user_id)
+
         # Update last_message_at
         Tenant.objects.filter(id=tenant.id).update(last_message_at=timezone.now())
 
-        # Forward to container
-        self._forward_to_container(line_user_id, tenant, text)
+        # Forward to container (pass reply_token for free Reply API)
+        self._forward_to_container(line_user_id, tenant, text, reply_token=reply_token)
 
     def _process_link(self, line_user_id: str, event: dict, token: str) -> None:
         """Process account linking via link token."""
@@ -390,9 +456,24 @@ class LineWebhookView(View):
         return None
 
     def _forward_to_container(
-        self, line_user_id: str, tenant: Tenant, message_text: str
+        self,
+        line_user_id: str,
+        tenant: Tenant,
+        message_text: str,
+        reply_token: str | None = None,
     ) -> None:
-        """Forward message to tenant's OpenClaw container and relay response via LINE."""
+        """Forward message to tenant's OpenClaw container and relay response via LINE.
+
+        Uses Flex Messages for structured content, quick replies for buttons,
+        and Reply API (free) with Push fallback.
+        """
+        from apps.router.line_flex import (
+            attach_quick_reply,
+            build_flex_bubble,
+            extract_quick_reply_buttons,
+            should_use_flex,
+        )
+
         if not tenant.container_fqdn:
             _send_line_text(
                 line_user_id,
@@ -459,14 +540,41 @@ class LineWebhookView(View):
         # Extract AI response
         ai_text = self._extract_ai_response(result)
         if ai_text:
-            # Strip markdown for LINE (plain text only in Phase 1)
-            clean_text = _strip_markdown(ai_text)
-            # Remove image/button markers (not supported in LINE Phase 1)
-            clean_text = re.sub(r'MEDIA:\S+', '', clean_text)
-            clean_text = re.sub(r'\[\[button:[^\]]+\]\]', '', clean_text)
-            clean_text = clean_text.strip()
-            if clean_text:
-                _send_line_text(line_user_id, clean_text)
+            # Remove MEDIA markers (images not supported yet)
+            clean_text = re.sub(r"MEDIA:\S+", "", ai_text).strip()
+
+            # Extract quick reply buttons before stripping markdown
+            clean_text, quick_reply_items = extract_quick_reply_buttons(clean_text)
+
+            # Decide: Flex or plain text
+            messages: list[dict] = []
+            try:
+                if should_use_flex(clean_text):
+                    flex_msg = build_flex_bubble(clean_text)
+                    messages = [flex_msg]
+                else:
+                    # Plain text with markdown stripped
+                    plain = _strip_markdown(clean_text)
+                    plain = re.sub(r"\n{3,}", "\n\n", plain).strip()
+                    if plain:
+                        chunks = _split_message(plain, max_len=5000)
+                        messages = [{"type": "text", "text": c} for c in chunks[:5]]
+            except Exception:
+                # Flex construction failed — fall back to plain text
+                logger.debug("Flex build failed, falling back to plain text", exc_info=True)
+                plain = _strip_markdown(clean_text)
+                plain = re.sub(r"\n{3,}", "\n\n", plain).strip()
+                if plain:
+                    chunks = _split_message(plain, max_len=5000)
+                    messages = [{"type": "text", "text": c} for c in chunks[:5]]
+
+            # Attach quick replies to the last message
+            if messages and quick_reply_items:
+                messages[-1] = attach_quick_reply(messages[-1], quick_reply_items)
+
+            # Send via Reply API (free) with Push fallback
+            if messages:
+                _send_line_messages(line_user_id, messages, reply_token=reply_token)
 
         # Record usage
         self._record_usage(tenant, result)
