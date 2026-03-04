@@ -180,7 +180,14 @@ function LineCard() {
 
           {linkData && (
             <div className="mt-3 space-y-3">
-              <p className="text-sm text-ink-muted">Scan the QR code with LINE, or tap the link:</p>
+              <div className="rounded-panel border border-[#06C755]/20 bg-[#06C755]/5 p-3">
+                <p className="text-sm font-medium text-ink">How to connect:</p>
+                <ol className="mt-1.5 list-inside list-decimal space-y-1 text-sm text-ink-muted">
+                  <li>Tap <strong>&quot;Open in LINE&quot;</strong> below (or scan the QR code)</li>
+                  <li>LINE will open with a message ready to send</li>
+                  <li>Tap <strong>Send</strong> — that&apos;s it!</li>
+                </ol>
+              </div>
               <div className="flex items-start gap-4">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
@@ -188,14 +195,17 @@ function LineCard() {
                   alt="LINE QR Code"
                   className="h-32 w-32 rounded-panel border border-border"
                 />
-                <a
-                  href={linkData.deep_link}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-block rounded-full bg-[#06C755] px-4 py-2 text-sm text-white transition hover:bg-[#05b04d]"
-                >
-                  Open in LINE
-                </a>
+                <div className="flex flex-col gap-2">
+                  <a
+                    href={linkData.deep_link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-block rounded-full bg-[#06C755] px-4 py-2 text-center text-sm text-white transition hover:bg-[#05b04d]"
+                  >
+                    Open in LINE
+                  </a>
+                  <p className="text-xs text-ink-muted">Link expires in 15 minutes</p>
+                </div>
               </div>
             </div>
           )}
