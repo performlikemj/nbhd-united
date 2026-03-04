@@ -33,6 +33,27 @@ def repair_stale_tenant_provisioning_task(limit: int = 50) -> dict:
     return repair_stale_tenant_provisioning(limit=limit, dry_run=False)
 
 
+def hibernate_suspended_task() -> dict:
+    """Scale all suspended tenant containers to zero replicas."""
+    from apps.orchestrator.azure_client import scale_container_app
+    from apps.tenants.models import Tenant
+
+    tenants = Tenant.objects.filter(
+        status=Tenant.Status.SUSPENDED,
+    ).exclude(container_id="")
+
+    hibernated = 0
+    failed = 0
+    for tenant in tenants:
+        try:
+            scale_container_app(tenant.container_id, min_replicas=0, max_replicas=0)
+            hibernated += 1
+        except Exception as e:
+            failed += 1
+
+    return {"hibernated": hibernated, "failed": failed, "total": tenants.count()}
+
+
 def force_reseed_crons_task() -> dict:
     """Delete and recreate cron jobs for all active tenants.
 
