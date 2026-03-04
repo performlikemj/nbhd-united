@@ -185,24 +185,10 @@ NBHD_INTERNAL_API_KEY_FALLBACK_ENABLED = env.bool(
     "NBHD_INTERNAL_API_KEY_FALLBACK_ENABLED", default=True
 )
 
-# LINE Messaging API
-LINE_CHANNEL_ACCESS_TOKEN = env("LINE_CHANNEL_ACCESS_TOKEN", default="")
-LINE_CHANNEL_SECRET = env("LINE_CHANNEL_SECRET", default="")
-# Basic ID of the LINE bot (e.g. @Cxxxxxx or @your-bot-name) — used for deep links
-LINE_BOT_BASIC_ID = env("LINE_BOT_BASIC_ID", default="@nbhd-united")
-AZURE_KV_SECRET_LINE_CHANNEL_ACCESS_TOKEN = env(
-    "AZURE_KV_SECRET_LINE_CHANNEL_ACCESS_TOKEN",
-    default="line-channel-access-token",
-)
-AZURE_KV_SECRET_LINE_CHANNEL_SECRET = env(
-    "AZURE_KV_SECRET_LINE_CHANNEL_SECRET",
-    default="line-channel-secret",
-)
-
 # LINE Messaging API (shared bot)
-LINE_CHANNEL_ACCESS_TOKEN = env("LINE_CHANNEL_ACCESS_TOKEN", default="")
 LINE_CHANNEL_SECRET = env("LINE_CHANNEL_SECRET", default="")
-LINE_BOT_ID = env("LINE_BOT_ID", default="")  # e.g. "@nbhd-united"
+LINE_CHANNEL_ACCESS_TOKEN = env("LINE_CHANNEL_ACCESS_TOKEN", default="")
+LINE_BOT_ID = env("LINE_BOT_ID", default="")
 
 # Anthropic API (shared key for all OpenClaw instances)
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
@@ -262,13 +248,17 @@ AZURE_KV_SECRET_TELEGRAM_WEBHOOK_SECRET = env(
     "AZURE_KV_SECRET_TELEGRAM_WEBHOOK_SECRET",
     default="telegram-webhook-secret",
 )
+AZURE_KV_SECRET_LINE_CHANNEL_SECRET = env(
+    "AZURE_KV_SECRET_LINE_CHANNEL_SECRET",
+    default="line-channel-secret",
+)
 AZURE_KV_SECRET_LINE_CHANNEL_ACCESS_TOKEN = env(
     "AZURE_KV_SECRET_LINE_CHANNEL_ACCESS_TOKEN",
     default="line-channel-access-token",
 )
-AZURE_KV_SECRET_LINE_CHANNEL_SECRET = env(
-    "AZURE_KV_SECRET_LINE_CHANNEL_SECRET",
-    default="line-channel-secret",
+AZURE_KV_SECRET_LINE_BOT_ID = env(
+    "AZURE_KV_SECRET_LINE_BOT_ID",
+    default="line-bot-id",
 )
 AZURE_KV_SECRET_BRAVE_API_KEY = env(
     "AZURE_KV_SECRET_BRAVE_API_KEY",
