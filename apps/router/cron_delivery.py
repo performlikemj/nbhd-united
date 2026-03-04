@@ -1,7 +1,7 @@
 """Endpoint for tenant agents to send messages to users via Django poller.
 
 Used by cron jobs and proactive agent actions. Routes messages through
-the central Telegram bot instead of requiring a bot token in each container.
+the central Telegram bot or LINE Push API, depending on user preference.
 """
 from __future__ import annotations
 
@@ -53,10 +53,13 @@ class SendToUserSerializer(serializers.Serializer):
 
 
 class CronDeliveryView(APIView):
-    """Send a message to the tenant's user via Telegram.
+    """Send a message to the tenant's user via Telegram or LINE.
 
     Auth: X-NBHD-Internal-Key + X-NBHD-Tenant-Id headers.
     Called by tenant OpenClaw containers (cron jobs, proactive messages).
+
+    Routes to the user's preferred channel (or whichever is linked).
+    Existing Telegram-only users are unaffected.
     """
 
     authentication_classes = []
@@ -81,10 +84,14 @@ class CronDeliveryView(APIView):
         if tenant is None:
             return Response({"error": "tenant_not_found"}, status=http_status.HTTP_404_NOT_FOUND)
 
-        chat_id = getattr(tenant.user, "telegram_chat_id", None)
-        if not chat_id:
+        # Determine channel
+        channel = self._resolve_channel(tenant.user)
+        if channel is None:
             return Response(
-                {"error": "no_telegram_chat", "detail": "User has not linked Telegram."},
+                {
+                    "error": "no_channel_linked",
+                    "detail": "User has not linked Telegram or LINE.",
+                },
                 status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
@@ -96,7 +103,7 @@ class CronDeliveryView(APIView):
                 status=http_status.HTTP_429_TOO_MANY_REQUESTS,
             )
 
-        # Validate
+        # Validate payload
         serializer = SendToUserSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=http_status.HTTP_400_BAD_REQUEST)
@@ -104,7 +111,55 @@ class CronDeliveryView(APIView):
         message_text = serializer.validated_data["message"]
         parse_mode = serializer.validated_data.get("parse_mode", "Markdown")
 
-        # Send via Telegram Bot API
+        # Route to appropriate channel
+        if channel == "line":
+            return self._send_via_line(
+                tenant_id=tid,
+                line_user_id=tenant.user.line_user_id,
+                message_text=message_text,
+            )
+        else:
+            return self._send_via_telegram(
+                tenant_id=tid,
+                chat_id=tenant.user.telegram_chat_id,
+                message_text=message_text,
+                parse_mode=parse_mode,
+            )
+
+    def _resolve_channel(self, user) -> str | None:
+        """Determine which channel to use for outbound messages.
+
+        Respects the user's preferred_channel when that channel is linked.
+        Falls back to whichever channel is available.
+        Returns None if no channel is linked.
+        """
+        preferred = getattr(user, "preferred_channel", "telegram")
+        line_user_id = getattr(user, "line_user_id", None)
+        telegram_chat_id = getattr(user, "telegram_chat_id", None)
+
+        # Honour preference if that channel is linked
+        if preferred == "line" and line_user_id:
+            return "line"
+        if preferred == "telegram" and telegram_chat_id:
+            return "telegram"
+
+        # Fallback: whichever is linked
+        if line_user_id:
+            return "line"
+        if telegram_chat_id:
+            return "telegram"
+
+        return None
+
+    def _send_via_telegram(
+        self,
+        *,
+        tenant_id: str,
+        chat_id: int,
+        message_text: str,
+        parse_mode: str,
+    ) -> Response:
+        """Send via Telegram Bot API."""
         bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "")
         if not bot_token:
             logger.error("TELEGRAM_BOT_TOKEN not configured for cron delivery")
@@ -117,19 +172,17 @@ class CronDeliveryView(APIView):
         sent_count = 0
 
         try:
-            # Split long messages (Telegram 4096 char limit)
             chunks = _split_message(message_text)
 
             with httpx.Client(timeout=10) as http:
                 for chunk in chunks:
-                    payload = {"chat_id": chat_id, "text": chunk}
+                    payload: dict = {"chat_id": chat_id, "text": chunk}
                     if parse_mode and parse_mode != "plain":
                         payload["parse_mode"] = parse_mode
 
                     resp = http.post(f"{api_base}/sendMessage", json=payload)
 
                     if resp.status_code == 400 and parse_mode == "Markdown":
-                        # Markdown rejected — retry as plain text
                         payload.pop("parse_mode", None)
                         resp = http.post(f"{api_base}/sendMessage", json=payload)
 
@@ -146,19 +199,88 @@ class CronDeliveryView(APIView):
                     sent_count += 1
 
         except httpx.HTTPError as exc:
-            logger.exception("Cron delivery HTTP error for tenant %s", tenant_id)
+            logger.exception("Cron delivery Telegram HTTP error for tenant %s", tenant_id)
             return Response(
                 {"error": "telegram_send_failed", "detail": str(exc)[:200]},
                 status=http_status.HTTP_502_BAD_GATEWAY,
             )
 
-        _record_send(tid)
-        logger.info("Cron delivery: tenant=%s chat_id=%s chunks=%d", tenant_id, chat_id, sent_count)
-
-        return Response(
-            {"status": "sent", "chunks": sent_count},
-            status=http_status.HTTP_200_OK,
+        _record_send(tenant_id)
+        logger.info(
+            "Cron delivery (telegram): tenant=%s chat_id=%s chunks=%d",
+            tenant_id, chat_id, sent_count,
         )
+        return Response({"status": "sent", "channel": "telegram", "chunks": sent_count})
+
+    def _send_via_line(
+        self,
+        *,
+        tenant_id: str,
+        line_user_id: str,
+        message_text: str,
+    ) -> Response:
+        """Send via LINE Push Message API."""
+        access_token = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", "")
+        if not access_token:
+            logger.error("LINE_CHANNEL_ACCESS_TOKEN not configured for cron delivery")
+            return Response(
+                {"error": "line_not_configured"},
+                status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        # Strip markdown — LINE doesn't support it
+        import re
+        clean_text = re.sub(r"\*{1,3}(.+?)\*{1,3}", r"\1", message_text)
+        clean_text = re.sub(r"_{1,3}(.+?)_{1,3}", r"\1", clean_text)
+        clean_text = re.sub(r"`+(.+?)`+", r"\1", clean_text, flags=re.DOTALL)
+        clean_text = re.sub(r"```.*?```", "", clean_text, flags=re.DOTALL)
+        clean_text = re.sub(r"^#{1,6}\s+", "", clean_text, flags=re.MULTILINE)
+        clean_text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 \2", clean_text)
+        clean_text = re.sub(r"\[\[button:[^\]]+\]\]", "", clean_text)
+        clean_text = re.sub(r"\n{3,}", "\n\n", clean_text).strip()
+
+        # Split into chunks (LINE 5000-char limit)
+        chunks = _split_message(clean_text, max_len=5000)
+        sent_count = 0
+
+        try:
+            # LINE allows max 5 messages per push call
+            batch_size = 5
+            with httpx.Client(timeout=10) as http:
+                for i in range(0, len(chunks), batch_size):
+                    batch = [{"type": "text", "text": c} for c in chunks[i : i + batch_size]]
+                    resp = http.post(
+                        "https://api.line.me/v2/bot/message/push",
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": "application/json",
+                        },
+                        json={"to": line_user_id, "messages": batch},
+                    )
+                    if not resp.is_success:
+                        logger.warning(
+                            "Cron delivery LINE push failed (%s): %s",
+                            resp.status_code, resp.text[:200],
+                        )
+                        return Response(
+                            {"error": "line_send_failed", "detail": resp.text[:200]},
+                            status=http_status.HTTP_502_BAD_GATEWAY,
+                        )
+                    sent_count += len(batch)
+
+        except httpx.HTTPError as exc:
+            logger.exception("Cron delivery LINE HTTP error for tenant %s", tenant_id)
+            return Response(
+                {"error": "line_send_failed", "detail": str(exc)[:200]},
+                status=http_status.HTTP_502_BAD_GATEWAY,
+            )
+
+        _record_send(tenant_id)
+        logger.info(
+            "Cron delivery (line): tenant=%s line_user=%s chunks=%d",
+            tenant_id, line_user_id[:8] if line_user_id else "?", sent_count,
+        )
+        return Response({"status": "sent", "channel": "line", "chunks": sent_count})
 
 
 def _split_message(text: str, max_len: int = 4096) -> list[str]:

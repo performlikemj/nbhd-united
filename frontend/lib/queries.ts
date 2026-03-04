@@ -37,6 +37,10 @@ import {
   fetchTenant,
   fetchTemplates,
   fetchTelegramStatus,
+  fetchLineStatus,
+  generateLineLink,
+  unlinkLine,
+  setPreferredChannel,
   fetchUsageHistory,
   fetchUsageSummary,
   fetchTransparency,
@@ -197,6 +201,45 @@ export function useUnlinkTelegramMutation() {
     mutationFn: unlinkTelegram,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["telegram-status"] });
+      void queryClient.invalidateQueries({ queryKey: ["me"] });
+    },
+  });
+}
+
+// LINE
+export function useLineStatusQuery(enabled = true) {
+  return useQuery({
+    queryKey: ["line-status"],
+    queryFn: fetchLineStatus,
+    enabled,
+    refetchInterval: enabled
+      ? (query) => (query.state.status === "error" ? false : 3000)
+      : false,
+  });
+}
+
+export function useGenerateLineLinkMutation() {
+  return useMutation({
+    mutationFn: generateLineLink,
+  });
+}
+
+export function useUnlinkLineMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: unlinkLine,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["line-status"] });
+      void queryClient.invalidateQueries({ queryKey: ["me"] });
+    },
+  });
+}
+
+export function useSetPreferredChannelMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (channel: "telegram" | "line") => setPreferredChannel(channel),
+    onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["me"] });
     },
   });

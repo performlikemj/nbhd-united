@@ -24,8 +24,12 @@ class UserSerializer(serializers.ModelSerializer):
         fields = (
             "id", "username", "email", "display_name", "language",
             "timezone", "telegram_chat_id", "telegram_username",
+            "line_user_id", "line_display_name", "preferred_channel",
         )
-        read_only_fields = ("id", "username", "email", "telegram_chat_id", "telegram_username")
+        read_only_fields = (
+            "id", "username", "email", "telegram_chat_id", "telegram_username",
+            "line_user_id", "line_display_name",
+        )
 
     def validate_timezone(self, value):
         return _validate_timezone(value)
