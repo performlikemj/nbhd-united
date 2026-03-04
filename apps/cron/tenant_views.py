@@ -18,6 +18,13 @@ from .gateway_client import GatewayError, invoke_gateway_tool
 
 logger = logging.getLogger(__name__)
 
+# System cron jobs that should be hidden from the user's Scheduled Tasks page.
+# These are infrastructure tasks — the user gains nothing from seeing them.
+HIDDEN_SYSTEM_CRONS = frozenset({
+    "Background Tasks",
+    "Nightly Extraction",
+})
+
 
 def _get_tenant_for_user(user) -> Tenant:
     try:
@@ -45,7 +52,18 @@ class CronJobListCreateView(APIView):
             result = invoke_gateway_tool(tenant, "cron.list", {})
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
-        return Response(result.get("details", result))
+
+        # Filter out hidden system crons from user-facing list
+        data = result.get("details", result)
+        if isinstance(data, dict) and "jobs" in data:
+            data = {
+                **data,
+                "jobs": [
+                    j for j in data["jobs"]
+                    if j.get("name") not in HIDDEN_SYSTEM_CRONS
+                ],
+            }
+        return Response(data)
 
     MAX_CRON_JOBS = 10
 
@@ -110,6 +128,11 @@ class CronJobDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, job_name: str):
+        if job_name in HIDDEN_SYSTEM_CRONS:
+            return Response(
+                {"detail": "System tasks cannot be modified."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         tenant = _get_tenant_for_user(request.user)
         patch_data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
         delivery = patch_data.get("delivery")
@@ -134,6 +157,11 @@ class CronJobDetailView(APIView):
         return Response(result.get("details", result))
 
     def delete(self, request, job_name: str):
+        if job_name in HIDDEN_SYSTEM_CRONS:
+            return Response(
+                {"detail": "System tasks cannot be deleted."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         tenant = _get_tenant_for_user(request.user)
         try:
             _require_active_tenant(tenant)
@@ -147,6 +175,11 @@ class CronJobToggleView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, job_name: str):
+        if job_name in HIDDEN_SYSTEM_CRONS:
+            return Response(
+                {"detail": "System tasks cannot be modified."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         tenant = _get_tenant_for_user(request.user)
 
         enabled = request.data.get("enabled")
@@ -194,6 +227,14 @@ class CronJobBulkDeleteView(APIView):
             if isinstance(job_id, str) and job_id not in seen:
                 seen.add(job_id)
                 unique_ids.append(job_id)
+
+        # Block deletion of hidden system crons
+        blocked = [jid for jid in unique_ids if jid in HIDDEN_SYSTEM_CRONS]
+        if blocked:
+            return Response(
+                {"detail": f"System tasks cannot be deleted: {', '.join(blocked)}"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         if not unique_ids:
             return Response(
