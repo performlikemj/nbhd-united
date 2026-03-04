@@ -24,7 +24,7 @@ class OrchestratorServiceTest(TestCase):
     )
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch("apps.orchestrator.services.assign_acr_pull_role")
-    @patch("apps.orchestrator.services.seed_cron_jobs", return_value={"tenant_id": "seed", "jobs_total": 5, "created": 5, "errors": 0})
+    @patch("apps.orchestrator.services.seed_cron_jobs", return_value={"tenant_id": "seed", "jobs_total": 6, "created": 6, "errors": 0})
     @patch("apps.cron.views._schedule_qstash_task", create=True, return_value=None)
     @patch("apps.orchestrator.services.create_tenant_file_share")
     @patch("apps.orchestrator.services.register_environment_storage")
@@ -70,7 +70,7 @@ class OrchestratorServiceTest(TestCase):
     )
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch("apps.orchestrator.services.assign_acr_pull_role")
-    @patch("apps.orchestrator.services.seed_cron_jobs", return_value={"tenant_id": "seed", "jobs_total": 5, "created": 5, "errors": 0})
+    @patch("apps.orchestrator.services.seed_cron_jobs", return_value={"tenant_id": "seed", "jobs_total": 6, "created": 6, "errors": 0})
     @patch("apps.cron.views._schedule_qstash_task", create=True, return_value=None)
     @patch("apps.orchestrator.services.create_tenant_file_share")
     @patch("apps.orchestrator.services.register_environment_storage")
@@ -234,19 +234,17 @@ class SeedCronJobsTest(TestCase):
             {"name": "Week Ahead Review", "enabled": True},
             {"name": "Background Tasks", "enabled": True},
             {"name": "Nightly Extraction", "enabled": True},
+            {"name": "Heartbeat Check-in", "enabled": True},
         ]
 
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 5)
+        self.assertEqual(result["created"], 6)
         self.assertEqual(result["errors"], 0)
-        self.assertEqual(mock_invoke.call_count, 6)
+        self.assertEqual(mock_invoke.call_count, 7)
         self.assertEqual(mock_invoke.call_args_list[0].args[1], "cron.list")
-        self.assertEqual(mock_invoke.call_args_list[1].args[1], "cron.add")
-        self.assertEqual(mock_invoke.call_args_list[2].args[1], "cron.add")
-        self.assertEqual(mock_invoke.call_args_list[3].args[1], "cron.add")
-        self.assertEqual(mock_invoke.call_args_list[4].args[1], "cron.add")
-        self.assertEqual(mock_invoke.call_args_list[5].args[1], "cron.add")
+        for i in range(1, 7):
+            self.assertEqual(mock_invoke.call_args_list[i].args[1], "cron.add")
         mock_sleep.assert_not_called()
 
     @patch("apps.orchestrator.services.invoke_gateway_tool")
@@ -280,13 +278,14 @@ class SeedCronJobsTest(TestCase):
             {"name": "Week Ahead Review", "enabled": True},
             {"name": "Background Tasks", "enabled": True},
             {"name": "Nightly Extraction", "enabled": True},
+            {"name": "Heartbeat Check-in", "enabled": True},
         ]
 
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 4)
+        self.assertEqual(result["created"], 5)
         self.assertEqual(result["errors"], 1)
-        self.assertEqual(mock_invoke.call_count, 6)
+        self.assertEqual(mock_invoke.call_count, 7)
         mock_sleep.assert_not_called()
 
     @patch("time.sleep")
@@ -304,13 +303,14 @@ class SeedCronJobsTest(TestCase):
             {"name": "Week Ahead Review", "enabled": True},
             {"name": "Background Tasks", "enabled": True},
             {"name": "Nightly Extraction", "enabled": True},
+            {"name": "Heartbeat Check-in", "enabled": True},
         ]
 
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 5)
+        self.assertEqual(result["created"], 6)
         self.assertEqual(result["errors"], 0)
-        self.assertEqual(mock_invoke.call_count, 7)
+        self.assertEqual(mock_invoke.call_count, 8)
         mock_sleep.assert_called_once_with(5)
 
     @patch("time.sleep")
@@ -324,7 +324,7 @@ class SeedCronJobsTest(TestCase):
     ):
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 5)
+        self.assertEqual(result["created"], 6)
         self.assertEqual(result["errors"], 0)
         self.assertFalse(result.get("skipped", False))
         mock_invoke.assert_not_called()
