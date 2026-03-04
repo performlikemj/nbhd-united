@@ -628,6 +628,11 @@ class LineWebhookView(View):
             # Extract quick reply buttons before stripping markdown
             clean_text, quick_reply_items = extract_quick_reply_buttons(clean_text)
 
+            # Pre-process: convert tables and strip code blocks BEFORE Flex decision
+            # (both Flex and plain text paths need these gone)
+            clean_text = _convert_tables(clean_text)
+            clean_text = re.sub(r"```[^\n]*\n(.*?)```", r"\1", clean_text, flags=re.DOTALL)
+
             # Decide: Flex or plain text
             messages: list[dict] = []
             try:
