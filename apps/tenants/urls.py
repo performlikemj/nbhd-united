@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     CancelDeletionView,
     DeleteAccountView,
+    HeartbeatConfigView,
     OnboardTenantView,
     PersonaListView,
     ProfileView,
@@ -32,6 +33,7 @@ urlpatterns = [
     path("telegram/status/", telegram_status, name="telegram-status"),
     path("settings/llm-config/", LLMConfigView.as_view(), name="llm-config"),
     path("settings/llm-config/models/", FetchModelsView.as_view(), name="llm-config-models"),
+    path("heartbeat/", HeartbeatConfigView.as_view(), name="heartbeat-config"),
     path("delete-account/", DeleteAccountView.as_view(), name="delete-account"),
     path("cancel-deletion/", CancelDeletionView.as_view(), name="cancel-deletion"),
     path("", include(router.urls)),

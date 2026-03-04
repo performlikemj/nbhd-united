@@ -11,7 +11,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import Tenant
-from .serializers import TenantRegistrationSerializer, TenantSerializer, UserSerializer
+from .serializers import HeartbeatConfigSerializer, TenantRegistrationSerializer, TenantSerializer, UserSerializer
 from apps.cron.publish import publish_task
 from apps.journal.services import seed_default_templates_for_tenant
 
@@ -330,6 +330,72 @@ class RefreshConfigView(APIView):
             return True
         elapsed = (timezone.now() - tenant.config_refreshed_at).total_seconds()
         return elapsed >= self.COOLDOWN_SECONDS
+
+
+class HeartbeatConfigView(APIView):
+    """Get/update heartbeat window settings."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response(
+                {"detail": "No tenant found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response({
+            "enabled": tenant.heartbeat_enabled,
+            "start_hour": tenant.heartbeat_start_hour,
+            "window_hours": tenant.heartbeat_window_hours,
+        })
+
+    def patch(self, request):
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response(
+                {"detail": "No tenant found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = HeartbeatConfigSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        update_fields = []
+        if "enabled" in data:
+            tenant.heartbeat_enabled = data["enabled"]
+            update_fields.append("heartbeat_enabled")
+        if "start_hour" in data:
+            tenant.heartbeat_start_hour = data["start_hour"]
+            update_fields.append("heartbeat_start_hour")
+        if "window_hours" in data:
+            tenant.heartbeat_window_hours = data["window_hours"]
+            update_fields.append("heartbeat_window_hours")
+
+        if update_fields:
+            tenant.full_clean()
+            update_fields.append("updated_at")
+            tenant.save(update_fields=update_fields)
+
+            # Trigger config regeneration so cron schedule updates
+            if tenant.status == Tenant.Status.ACTIVE:
+                tenant.bump_pending_config()
+                try:
+                    from apps.orchestrator.services import update_tenant_config
+                    update_tenant_config(str(tenant.id))
+                except Exception:
+                    logger.exception(
+                        "Failed to push heartbeat config for tenant %s (will apply on next cycle)",
+                        tenant.id,
+                    )
+
+        return Response({
+            "enabled": tenant.heartbeat_enabled,
+            "start_hour": tenant.heartbeat_start_hour,
+            "window_hours": tenant.heartbeat_window_hours,
+        })
 
 
 class UpdatePreferencesView(APIView):

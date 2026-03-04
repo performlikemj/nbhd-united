@@ -121,6 +121,21 @@ _WEEK_AHEAD_REVIEW_PROMPT = (
     "**IMPORTANT: Send exactly ONE message. Do not send multiple messages.**\n"
 )
 
+_HEARTBEAT_CHECKIN_PROMPT = (
+    "You received a scheduled check-in. This is a cron (isolated) session — "
+    "you cannot have a back-and-forth conversation. You must do everything in ONE turn.\n\n"
+    "Your human expects you to be attentive right now. Check the following (in order of priority):\n"
+    "1. Memory files — anything you noted to follow up on?\n"
+    "2. Calendar — any events in the next 2-3 hours? (`nbhd_calendar_list_events`)\n"
+    "3. Recent journal context — anything unfinished from last conversation? (`nbhd_journal_context`)\n"
+    "4. Pending lessons — any waiting for approval? (`nbhd_lessons_pending`)\n\n"
+    "If something needs attention, send the user exactly ONE message via `nbhd_send_to_user`. "
+    "Keep it brief and genuinely useful — a quick heads-up, not a status report.\n\n"
+    "If nothing needs attention, reply: HEARTBEAT_OK\n\n"
+    "**IMPORTANT: Do NOT message unless you have something genuinely useful to say. "
+    "Do NOT send multiple messages. Quality over quantity.**\n"
+)
+
 _BACKGROUND_TASKS_PROMPT = (
     "Background maintenance run. This is a cron (isolated) session — "
     "you cannot have a back-and-forth conversation. You must do everything in ONE turn.\n\n"
@@ -156,6 +171,46 @@ TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
 
 WHISPER_DEFAULT_MODEL = {"provider": "openai", "model": "gpt-4o-mini-transcribe"}
 
+# Heartbeat model — always cheap, regardless of tenant tier
+HEARTBEAT_MODEL = "openrouter/minimax/minimax-m2.5"
+
+
+def _heartbeat_cron_expr(start_hour: int, window_hours: int) -> str:
+    """Compute cron hour expression for a heartbeat window.
+
+    Handles midnight wrapping (e.g. start=22, window=6 → '0,1,2,3,22,23').
+    """
+    hours = [(start_hour + i) % 24 for i in range(window_hours)]
+    return f"0 {','.join(str(h) for h in sorted(hours))} * * *"
+
+
+def _build_heartbeat_cron(tenant: Tenant) -> dict | None:
+    """Build heartbeat cron job definition for a tenant.
+
+    Returns None if heartbeat is disabled.
+    """
+    if not tenant.heartbeat_enabled:
+        return None
+
+    user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
+    cron_expr = _heartbeat_cron_expr(
+        tenant.heartbeat_start_hour,
+        tenant.heartbeat_window_hours,
+    )
+
+    return {
+        "name": "Heartbeat Check-in",
+        "schedule": {"kind": "cron", "expr": cron_expr, "tz": user_tz},
+        "sessionTarget": "isolated",
+        "model": HEARTBEAT_MODEL,
+        "payload": {
+            "kind": "agentTurn",
+            "message": _HEARTBEAT_CHECKIN_PROMPT,
+        },
+        "delivery": {"mode": "none"},
+        "enabled": True,
+    }
+
 
 
 def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
@@ -172,7 +227,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     # delete+recreate these jobs with the correct tz at that point.
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
 
-    return [
+    jobs = [
         {
             "name": "Morning Briefing",
             "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": user_tz},
@@ -232,6 +287,13 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "enabled": True,
         },
     ]
+
+    # Heartbeat cron — hourly during user's chosen window, cheap model
+    heartbeat_job = _build_heartbeat_cron(tenant)
+    if heartbeat_job is not None:
+        jobs.append(heartbeat_job)
+
+    return jobs
 
 
 

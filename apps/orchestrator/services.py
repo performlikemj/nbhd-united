@@ -537,6 +537,7 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
         "It's evening check-in time.",
         "It's Monday morning. Run the Week Ahead Review",
         "Background maintenance run.",
+        "You received a scheduled check-in.",
     ]
 
     def _is_default_prompt(existing_message: str) -> bool:
