@@ -306,10 +306,10 @@ class RegisterEnvironmentStorageTest(SimpleTestCase):
     NBHD_INTERNAL_API_KEY="internal-secret",
     API_BASE_URL="https://nbhd-django.example.com",
 )
-class PerTenantSecretTest(SimpleTestCase):
+class SharedInternalKeyTest(SimpleTestCase):
     @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
     @patch("apps.orchestrator.azure_client.get_container_client")
-    def test_per_tenant_kv_secret_overrides_shared(
+    def test_container_uses_shared_kv_secret(
         self, mock_get_container_client, _mock_is_mock,
     ):
         mock_client = MagicMock()
@@ -330,15 +330,15 @@ class PerTenantSecretTest(SimpleTestCase):
             config_json='{"a":1}',
             identity_id="/identities/tenant-123",
             identity_client_id="client-123",
-            internal_api_key_kv_secret="tenant-tenant-123-internal-key",
         )
 
         payload = mock_client.container_apps.begin_create_or_update.call_args.args[2]
         secrets = payload["properties"]["configuration"]["secrets"]
         secret_map = {entry["name"]: entry for entry in secrets}
+        # All containers use the shared internal API key from Key Vault
         self.assertEqual(
             secret_map["nbhd-internal-api-key"]["keyVaultUrl"],
-            "https://kv-nbhd-prod.vault.azure.net/secrets/tenant-tenant-123-internal-key",
+            "https://kv-nbhd-prod.vault.azure.net/secrets/nbhd-internal-api-key",
         )
 
 

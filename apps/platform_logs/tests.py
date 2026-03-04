@@ -1,9 +1,7 @@
-"""Tests for platform issue logging API."""
+"""Platform issue report tests."""
 from __future__ import annotations
 
-import hashlib
 import uuid
-from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -12,10 +10,12 @@ from rest_framework.test import APIClient
 from apps.tenants.models import Tenant, User
 from .models import PlatformIssueLog
 
+# Shared internal key used across all tests (mirrors production architecture)
+_TEST_INTERNAL_KEY = "test-internal-key"
 
-def _make_tenant(*, internal_key: str = "test-internal-key") -> tuple[Tenant, str]:
-    """Create a tenant with a hashed internal API key. Returns (tenant, raw_key)."""
-    key_hash = hashlib.sha256(internal_key.encode("utf-8")).hexdigest()
+
+def _make_tenant() -> Tenant:
+    """Create a tenant for testing."""
     uid = uuid.uuid4().hex[:8]
     user = User.objects.create_user(
         username=f"test-{uid}",
@@ -25,28 +25,28 @@ def _make_tenant(*, internal_key: str = "test-internal-key") -> tuple[Tenant, st
     tenant = Tenant.objects.create(
         id=uuid.uuid4(),
         user=user,
-        internal_api_key_hash=key_hash,
     )
-    return tenant, internal_key
+    return tenant
 
 
 def _report_url(tenant_id: uuid.UUID) -> str:
     return reverse("runtime-platform-issue-report", kwargs={"tenant_id": tenant_id})
 
 
-def _auth_headers(tenant: Tenant, key: str) -> dict:
+def _auth_headers(tenant: Tenant) -> dict:
     return {
-        "HTTP_X_NBHD_INTERNAL_KEY": key,
+        "HTTP_X_NBHD_INTERNAL_KEY": _TEST_INTERNAL_KEY,
         "HTTP_X_NBHD_TENANT_ID": str(tenant.id),
     }
 
 
+@override_settings(NBHD_INTERNAL_API_KEY=_TEST_INTERNAL_KEY)
 class PlatformIssueReportTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.tenant, self.key = _make_tenant()
+        self.tenant = _make_tenant()
         self.url = _report_url(self.tenant.id)
-        self.headers = _auth_headers(self.tenant, self.key)
+        self.headers = _auth_headers(self.tenant)
         self.valid_payload = {
             "category": "tool_error",
             "severity": "medium",
