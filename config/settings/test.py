@@ -1,14 +1,14 @@
-"""Test settings — SQLite-compatible, excludes pgvector apps."""
+"""Test settings — SQLite-compatible by stubbing out pgvector migrations."""
 from .base import *  # noqa: F401,F403
 
 DEBUG = True
 ALLOWED_HOSTS = ["*"]
 CORS_ALLOW_ALL_ORIGINS = True
 
-# Remove pgvector-dependent apps so SQLite tests work
-INSTALLED_APPS = [app for app in INSTALLED_APPS if app not in ("apps.lessons", "apps.journal")]  # noqa: F405
-
-# Silence noisy migrations
+# Stub out pgvector-dependent app migrations so SQLite can run tests.
+# The app models are still loaded (to keep FK references working), but their
+# tables use Django's in-memory schema instead of the pgvector migrations.
 MIGRATION_MODULES = {
-    # Keep all standard migrations except the pgvector ones
+    "lessons": "apps.lessons.test_migrations",
+    "journal": "apps.journal.test_migrations",
 }
