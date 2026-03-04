@@ -108,52 +108,54 @@ export function CapabilityChips({
       <p className="text-xs font-medium text-ink-muted">Add to prompt</p>
 
       {CHIP_GROUPS.map((group) => (
-        <div key={group.label} className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-ink-faint w-20 shrink-0">{group.label}</span>
-          {group.chips.map((chip) => {
-            const isActive = message.includes(`[${chip.tag}]`);
-            const isDisconnected = chip.requiresConnection && !connectedProviders.has(chip.provider!);
+        <div key={group.label} className="space-y-1.5 sm:space-y-0 sm:flex sm:flex-wrap sm:items-center sm:gap-2">
+          <span className="text-xs text-ink-faint block sm:w-20 sm:shrink-0">{group.label}</span>
+          <div className="flex flex-wrap gap-2">
+            {group.chips.map((chip) => {
+              const isActive = message.includes(`[${chip.tag}]`);
+              const isDisconnected = chip.requiresConnection && !connectedProviders.has(chip.provider!);
 
-            return (
-              <button
-                key={chip.id}
-                type="button"
-                disabled={isDisconnected}
-                onClick={() => !isDisconnected && onInsertTag(chip.tag)}
-                className={[
-                  "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition",
-                  isDisconnected
-                    ? "border-border text-ink-faint opacity-50 cursor-not-allowed"
-                    : isActive
-                      ? "border-accent bg-accent/10 text-accent"
-                      : "border-border text-ink-muted hover:border-border-strong hover:text-ink",
-                ].join(" ")}
-                title={isDisconnected ? `Connect ${chip.tag} in Settings → Integrations` : chip.tag}
-              >
-                {chip.iconUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={chip.iconUrl}
-                    alt=""
-                    className="h-4 w-4 rounded-sm object-contain"
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                  />
-                ) : (
-                  <span className="text-sm leading-none">{chip.icon}</span>
-                )}
-                {chip.tag}
-                {isDisconnected && (
-                  <a
-                    href="/settings/integrations"
-                    className="text-xs text-accent hover:underline"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    connect
-                  </a>
-                )}
-              </button>
-            );
-          })}
+              return (
+                <button
+                  key={chip.id}
+                  type="button"
+                  disabled={isDisconnected}
+                  onClick={() => !isDisconnected && onInsertTag(chip.tag)}
+                  className={[
+                    "inline-flex items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm transition min-h-[44px]",
+                    isDisconnected
+                      ? "border-border text-ink-faint opacity-50 cursor-not-allowed"
+                      : isActive
+                        ? "border-accent bg-accent/10 text-accent"
+                        : "border-border text-ink-muted hover:border-border-strong hover:text-ink",
+                  ].join(" ")}
+                  title={isDisconnected ? `Connect ${chip.tag} in Settings → Integrations` : chip.tag}
+                >
+                  {chip.iconUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={chip.iconUrl}
+                      alt=""
+                      className="h-4 w-4 rounded-sm object-contain"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                    />
+                  ) : (
+                    <span className="text-sm leading-none">{chip.icon}</span>
+                  )}
+                  {chip.tag}
+                  {isDisconnected && (
+                    <a
+                      href="/settings/integrations"
+                      className="text-xs text-accent hover:underline"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      connect
+                    </a>
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
       ))}
     </div>

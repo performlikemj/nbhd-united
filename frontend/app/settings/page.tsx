@@ -409,7 +409,7 @@ export default function SettingsPage() {
     <div className="space-y-4">
       <SectionCard title="Account" subtitle="Your profile and authentication details" delay={0}>
         {me ? (
-          <dl className="grid min-w-0 gap-3 text-sm sm:grid-cols-2">
+          <dl className="grid min-w-0 gap-4 text-sm sm:grid-cols-2 sm:gap-3">
             {/* Display Name */}
             <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
               <div className="mb-2 flex items-start justify-between gap-2">
@@ -421,7 +421,7 @@ export default function SettingsPage() {
                       setDisplayName(me.display_name || "");
                       setEditingDisplayName(true);
                     }}
-                    className="rounded-full border border-border px-4 py-1.5 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink"
+                    className="rounded-full border border-border px-4 py-1.5 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink min-h-[44px]"
                   >
                     Edit
                   </button>
@@ -442,14 +442,14 @@ export default function SettingsPage() {
                       type="button"
                       onClick={handleDisplayNameSave}
                       disabled={savingField === "display_name"}
-                      className="rounded-full bg-accent px-5 py-2 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55"
+                      className="rounded-full bg-accent px-5 py-2 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55 min-h-[44px]"
                     >
                       {savingField === "display_name" ? "Saving..." : "Save"}
                     </button>
                     <button
                       type="button"
                       onClick={() => setEditingDisplayName(false)}
-                      className="rounded-full border border-border px-4 py-1.5 text-sm transition hover:border-border-strong"
+                      className="rounded-full border border-border px-4 py-1.5 text-sm transition hover:border-border-strong min-h-[44px]"
                     >
                       Cancel
                     </button>
@@ -481,7 +481,7 @@ export default function SettingsPage() {
                       setLanguage(me.language || "en");
                       setEditingLanguage(true);
                     }}
-                    className="rounded-full border border-border px-4 py-1.5 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink"
+                    className="rounded-full border border-border px-4 py-1.5 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink min-h-[44px]"
                   >
                     Edit
                   </button>
@@ -510,14 +510,14 @@ export default function SettingsPage() {
                       type="button"
                       onClick={handleLanguageSave}
                       disabled={savingField === "language"}
-                      className="rounded-full bg-accent px-5 py-2 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55"
+                      className="rounded-full bg-accent px-5 py-2 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55 min-h-[44px]"
                     >
                       {savingField === "language" ? "Saving..." : "Save"}
                     </button>
                     <button
                       type="button"
                       onClick={() => setEditingLanguage(false)}
-                      className="rounded-full border border-border px-4 py-1.5 text-sm transition hover:border-border-strong"
+                      className="rounded-full border border-border px-4 py-1.5 text-sm transition hover:border-border-strong min-h-[44px]"
                     >
                       Cancel
                     </button>
@@ -537,7 +537,7 @@ export default function SettingsPage() {
                       setTimezone(me.timezone || "UTC");
                       setEditingTimezone(true);
                     }}
-                    className="rounded-full border border-border px-4 py-1.5 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink"
+                    className="rounded-full border border-border px-4 py-1.5 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink min-h-[44px]"
                   >
                     Edit
                   </button>
@@ -570,14 +570,14 @@ export default function SettingsPage() {
                       type="button"
                       onClick={handleTimezoneSave}
                       disabled={savingField === "timezone"}
-                      className="rounded-full bg-accent px-5 py-2 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55"
+                      className="rounded-full bg-accent px-5 py-2 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55 min-h-[44px]"
                     >
                       {savingField === "timezone" ? "Saving..." : "Save"}
                     </button>
                     <button
                       type="button"
                       onClick={() => setEditingTimezone(false)}
-                      className="rounded-full border border-border px-4 py-1.5 text-sm transition hover:border-border-strong"
+                      className="rounded-full border border-border px-4 py-1.5 text-sm transition hover:border-border-strong min-h-[44px]"
                     >
                       Cancel
                     </button>

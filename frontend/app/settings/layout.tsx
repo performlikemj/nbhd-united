@@ -70,7 +70,7 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         </p>
       </div>
 
-      <nav className="flex flex-wrap items-center gap-1 border-b border-border pb-3">
+      <nav className="flex items-center gap-1 overflow-x-auto border-b border-border pb-3 scrollbar-none -mx-4 px-4 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0">
         {settingsTabs.map((tab) => {
           const active = pathname === tab.href;
           return (
@@ -78,7 +78,7 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
               key={tab.href}
               href={tab.href}
               className={clsx(
-                "rounded-full px-3 py-1.5 text-sm transition",
+                "shrink-0 rounded-full px-3 py-1.5 text-sm transition min-h-[44px] flex items-center",
                 active
                   ? "bg-accent text-white"
                   : "text-ink-muted hover:bg-surface-hover hover:text-ink",

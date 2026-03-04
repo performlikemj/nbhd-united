@@ -208,6 +208,16 @@ a {
   outline: none;
 }
 
+/* ── Scrollbar Hiding (horizontal scroll containers) ── */
+
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
 /* ── Reduced Motion ── */
 
 @media (prefers-reduced-motion: reduce) {

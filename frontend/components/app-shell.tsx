@@ -191,7 +191,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <a href="#main-content" className="skip-link">Skip to main content</a>
 
       <header className="sticky top-0 z-30 border-b border-border bg-surface/75 backdrop-blur-xl backdrop-saturate-150">
-        <div className="mx-auto flex w-full max-w-6xl min-w-0 items-center justify-between gap-3 px-4 py-3 sm:px-6">
+        <div className="mx-auto flex w-full max-w-6xl min-w-0 items-center justify-between gap-2 px-4 py-2.5 sm:gap-3 sm:px-6 sm:py-3">
           <div className="min-w-0">
             <Link href="/" className="font-mono text-xs uppercase tracking-[0.24em] text-ink-faint transition hover:text-ink">Neighborhood United</Link>
             <h1 className="text-sm font-semibold text-ink sm:text-lg">
@@ -200,7 +200,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </h1>
           </div>
           <div className="flex items-center gap-2">
-            <div className="shrink-0">
+            <div className="hidden shrink-0 sm:block">
               <TrialBadge />
             </div>
             {/* Desktop nav */}
@@ -269,6 +269,9 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </Link>
               );
             })}
+            <div className="px-3 py-2 sm:hidden">
+              <TrialBadge />
+            </div>
           </nav>
         </div>
       </header>

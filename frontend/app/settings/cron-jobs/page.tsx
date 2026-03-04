@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { CapabilityChips, insertChipTag } from "@/components/capability-chips";
 import ScheduleBuilder, { cronToHuman } from "@/components/schedule-builder";
@@ -169,6 +170,15 @@ function getSaveButtonClass(status: SaveButtonStatus): string {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+function autoResizeTextarea(el: HTMLTextAreaElement) {
+  el.style.height = "auto";
+  el.style.height = `${Math.max(el.scrollHeight, 120)}px`;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Page component                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -229,6 +239,38 @@ export default function SettingsCronJobsPage() {
 
   /* ── Toast ── */
   const [toast, showToast] = useToast();
+
+  /* ── Mobile detection ── */
+  const [isMobile, setIsMobile] = useState<boolean | null>(null);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    setIsMobile(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  // Lock body scroll + hide header when mobile edit overlay is open
+  useEffect(() => {
+    if (editingName && isMobile === true) {
+      const prevOverflow = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      const appHeader = document.querySelector<HTMLElement>("header.sticky, header[class*='sticky']");
+      const prevVisibility = appHeader ? appHeader.style.visibility : null;
+      if (appHeader) appHeader.style.visibility = "hidden";
+      return () => {
+        document.body.style.overflow = prevOverflow;
+        if (appHeader && prevVisibility !== null) appHeader.style.visibility = prevVisibility;
+      };
+    }
+  }, [editingName, isMobile]);
+
+  /* ── Auto-resize create textarea when template fills it ── */
+  useEffect(() => {
+    if (createTextareaRef.current && createForm.message) {
+      autoResizeTextarea(createTextareaRef.current);
+    }
+  }, [createForm.message]);
 
   /* ── Cleanup timers on unmount ── */
   useEffect(() => {
@@ -479,13 +521,13 @@ export default function SettingsCronJobsPage() {
             {/* Quick-start templates */}
             <div>
               <p className="mb-2 text-sm font-medium text-ink-muted">Quick start — pick a template</p>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none sm:flex-wrap sm:overflow-visible sm:pb-0">
                 {TASK_TEMPLATES.map((tpl) => (
                   <button
                     key={tpl.name}
                     type="button"
                     onClick={() => handleApplyTemplate(tpl)}
-                    className={`rounded-full border px-3 py-1.5 text-sm transition ${
+                    className={`shrink-0 rounded-full border px-4 py-2.5 text-sm transition min-h-[44px] ${
                       createForm.name === tpl.name
                         ? "border-accent bg-accent/10 text-accent"
                         : "border-border text-ink-muted hover:border-border-strong hover:text-ink"
@@ -498,7 +540,7 @@ export default function SettingsCronJobsPage() {
             </div>
 
             {/* Create form */}
-            <form className="grid gap-3 md:grid-cols-2" onSubmit={handleCreate}>
+            <form className="grid gap-4 sm:gap-3 md:grid-cols-2" onSubmit={handleCreate}>
               <label className="text-sm text-ink-muted">
                 Name
                 <input
@@ -537,11 +579,13 @@ export default function SettingsCronJobsPage() {
                 What should your agent do?
                 <textarea
                   ref={createTextareaRef}
-                  className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
-                  rows={3}
+                  className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2.5 text-sm"
+                  rows={4}
+                  style={{ minHeight: "120px", maxHeight: "50vh", resize: "vertical" }}
                   placeholder="Describe the task in plain language — e.g. 'I want [Gmail] to check for important emails and [Weather] to give me a forecast'"
                   value={createForm.message}
                   onChange={(e) => setCreateForm((prev) => ({ ...prev, message: e.target.value }))}
+                  onInput={(e) => autoResizeTextarea(e.currentTarget)}
                   required
                 />
               </label>
@@ -591,11 +635,11 @@ export default function SettingsCronJobsPage() {
                 )}
               </div>
 
-              <div className="flex flex-col gap-2 md:col-span-2">
+              <div className="flex flex-col gap-3 md:col-span-2">
                 <button
                   type="submit"
                   disabled={createMutation.isPending}
-                  className={getSaveButtonClass(createFeedback.status)}
+                  className={`${getSaveButtonClass(createFeedback.status)} w-full sm:w-auto min-h-[48px]`}
                 >
                   {createMutation.isPending
                     ? "Creating..."
@@ -613,7 +657,7 @@ export default function SettingsCronJobsPage() {
                     setCreateFeedback({ status: "idle", text: "" });
                     setShowCreate(false);
                   }}
-                  className="rounded-full border border-border-strong px-4 py-2 text-sm hover:border-border-strong"
+                  className="w-full rounded-full border border-border-strong px-4 py-2 text-sm hover:border-border-strong sm:w-auto min-h-[48px]"
                 >
                   Cancel
                 </button>
@@ -645,7 +689,7 @@ export default function SettingsCronJobsPage() {
             ].join(" ")}
             aria-live="polite"
           >
-            <div className="flex flex-wrap items-center gap-3 rounded-panel border border-border bg-surface-hover px-4 py-3">
+            <div className="flex flex-col gap-2 rounded-panel border border-border bg-surface-hover px-4 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
               {bulkBarState === "idle" ? (
                 <>
                   <span className="text-sm font-medium text-ink">
@@ -774,14 +818,14 @@ export default function SettingsCronJobsPage() {
                       </p>
 
                       {/* Action buttons */}
-                      <div className="mt-3 flex flex-wrap gap-2">
+                      <div className="mt-3 flex flex-wrap gap-2.5">
                         <button
                           type="button"
                           onClick={() =>
                             toggleMutation.mutate({ name: jobIdentifier, enabled: !job.enabled })
                           }
                           disabled={toggleMutation.isPending}
-                          className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
+                          className="rounded-full border border-border-strong px-3.5 py-2 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45 min-h-[44px]"
                         >
                           {job.enabled ? "Disable" : "Enable"}
                         </button>
@@ -789,7 +833,7 @@ export default function SettingsCronJobsPage() {
                         <button
                           type="button"
                           onClick={() => handleStartEdit(job)}
-                          className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong"
+                          className="rounded-full border border-border-strong px-3.5 py-2 text-sm hover:border-border-strong min-h-[44px]"
                         >
                           Edit
                         </button>
@@ -803,7 +847,7 @@ export default function SettingsCronJobsPage() {
                               onClick={() => void confirmSingleDelete(jobIdentifier)}
                               disabled={isSingleDeletePending}
                               aria-label="Confirm delete"
-                              className="flex h-8 w-8 items-center justify-center rounded-full border border-rose-500 bg-rose-500 text-white hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
+                              className="flex h-11 w-11 items-center justify-center rounded-full border border-rose-500 bg-rose-500 text-white hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               {isSingleDeletePending ? "…" : "✓"}
                             </button>
@@ -812,7 +856,7 @@ export default function SettingsCronJobsPage() {
                               onClick={() => cancelSingleDelete(jobIdentifier)}
                               disabled={isSingleDeletePending}
                               aria-label="Cancel delete"
-                              className="flex h-8 w-8 items-center justify-center rounded-full border border-border-strong text-sm text-ink-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                              className="flex h-11 w-11 items-center justify-center rounded-full border border-border-strong text-sm text-ink-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               ✕
                             </button>
@@ -824,17 +868,109 @@ export default function SettingsCronJobsPage() {
                           <button
                             type="button"
                             onClick={() => startSingleDeleteConfirm(jobIdentifier)}
-                            className="rounded-full border border-rose-border px-3 py-1.5 text-sm text-rose-text hover:border-rose-border"
+                            className="rounded-full border border-rose-border px-3.5 py-2 text-sm text-rose-text hover:border-rose-border min-h-[44px]"
                           >
                             Delete
                           </button>
                         )}
                       </div>
 
-                      {/* Edit form */}
-                      {editingName === jobIdentifier ? (
+                      {/* Edit form — full-screen overlay on mobile, inline on desktop */}
+                      {editingName === jobIdentifier && isMobile === true
+                        ? createPortal(
+                            <div className="fixed inset-0 z-[9999] flex flex-col overflow-hidden bg-[var(--bg)]">
+                              <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border bg-surface/75 backdrop-blur-xl px-4 py-3">
+                                <span className="min-w-0 truncate text-sm font-semibold text-ink">Edit Task</span>
+                                <div className="flex shrink-0 items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.preventDefault(); void handleUpdate(e as unknown as FormEvent<HTMLFormElement>); }}
+                                    disabled={updateMutation.isPending}
+                                    className="min-h-[44px] rounded-full bg-accent px-4 py-2 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55"
+                                  >
+                                    {updateMutation.isPending ? "..." : "Save"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (editTimeoutRef.current) clearTimeout(editTimeoutRef.current);
+                                      setEditFeedback({ status: "idle", text: "" });
+                                      setEditingName(null);
+                                    }}
+                                    className="min-h-[44px] rounded-full border border-border-strong px-4 py-2 text-sm hover:border-border-strong"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                              <div
+                                className="flex-1 overscroll-y-contain"
+                                style={{ overflowY: "scroll", WebkitOverflowScrolling: "touch", paddingBottom: "calc(env(safe-area-inset-bottom) + 80px)" }}
+                              >
+                                <div className="grid gap-4 p-4">
+                                  <TimezoneSelector
+                                    value={editForm.tz}
+                                    onChange={(tz) => setEditForm((prev) => ({ ...prev, tz }))}
+                                    defaultTimezone={me?.timezone}
+                                  />
+
+                                  <ScheduleBuilder
+                                    expr={editForm.expr}
+                                    onChange={(expr) => setEditForm((prev) => ({ ...prev, expr }))}
+                                  />
+
+                                  <label className="text-sm text-ink-muted">
+                                    Delivery
+                                    <select
+                                      className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2.5 text-sm min-h-[44px]"
+                                      value={editForm.deliveryMode}
+                                      onChange={(e) =>
+                                        setEditForm((prev) => ({ ...prev, deliveryMode: e.target.value }))
+                                      }
+                                    >
+                                      <option value="announce">Announce (send message)</option>
+                                      <option value="none">Silent (no message)</option>
+                                    </select>
+                                  </label>
+
+                                  <label className="text-sm text-ink-muted">
+                                    What should your agent do?
+                                    <textarea
+                                      ref={editTextareaRef}
+                                      className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2.5 text-sm"
+                                      rows={6}
+                                      style={{ minHeight: "150px", maxHeight: "50vh", resize: "vertical" }}
+                                      value={editForm.message}
+                                      onChange={(e) => setEditForm((prev) => ({ ...prev, message: e.target.value }))}
+                                      onInput={(e) => autoResizeTextarea(e.currentTarget)}
+                                    />
+                                  </label>
+
+                                  <CapabilityChips
+                                    message={editForm.message}
+                                    textareaRef={editTextareaRef}
+                                    onInsertTag={(tag) =>
+                                      insertChipTag(
+                                        editTextareaRef.current,
+                                        tag,
+                                        editForm.message,
+                                        (msg) => setEditForm((prev) => ({ ...prev, message: msg })),
+                                      )
+                                    }
+                                    connectedProviders={connectedProviders}
+                                  />
+
+                                  {editFeedback.status === "error" ? (
+                                    <p className="text-xs text-rose-500">{editFeedback.text}</p>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </div>,
+                            document.body,
+                          )
+                        : editingName === jobIdentifier ? (
                         <form
-                          className="mt-4 grid gap-3 rounded-panel border border-border p-3 md:grid-cols-2"
+                          className="mt-4 grid gap-4 rounded-panel border border-border p-3 sm:gap-3 md:grid-cols-2"
                           onSubmit={handleUpdate}
                         >
                           <TimezoneSelector
@@ -851,7 +987,7 @@ export default function SettingsCronJobsPage() {
                           <label className="text-sm text-ink-muted">
                             Delivery
                             <select
-                              className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
+                              className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2.5 text-sm min-h-[44px]"
                               value={editForm.deliveryMode}
                               onChange={(e) =>
                                 setEditForm((prev) => ({
@@ -869,10 +1005,12 @@ export default function SettingsCronJobsPage() {
                             What should your agent do?
                             <textarea
                               ref={editTextareaRef}
-                              className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
-                              rows={3}
+                              className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2.5 text-sm"
+                              rows={4}
+                              style={{ minHeight: "120px", maxHeight: "50vh", resize: "vertical" }}
                               value={editForm.message}
                               onChange={(e) => setEditForm((prev) => ({ ...prev, message: e.target.value }))}
+                              onInput={(e) => autoResizeTextarea(e.currentTarget)}
                             />
                           </label>
 
@@ -893,12 +1031,12 @@ export default function SettingsCronJobsPage() {
                             />
                           </div>
 
-                          <div className="flex flex-col gap-2 md:col-span-2">
+                          <div className="flex flex-col gap-3 md:col-span-2">
                             <div className="flex gap-2">
                               <button
                                 type="submit"
                                 disabled={updateMutation.isPending}
-                                className={getSaveButtonClass(editFeedback.status)}
+                                className={`${getSaveButtonClass(editFeedback.status)} min-h-[44px]`}
                               >
                                 {updateMutation.isPending
                                   ? "Saving..."
@@ -913,7 +1051,7 @@ export default function SettingsCronJobsPage() {
                                   setEditFeedback({ status: "idle", text: "" });
                                   setEditingName(null);
                                 }}
-                                className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong"
+                                className="rounded-full border border-border-strong px-3.5 py-2 text-sm hover:border-border-strong min-h-[44px]"
                               >
                                 Cancel
                               </button>
