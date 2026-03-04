@@ -551,10 +551,14 @@ def create_container_app(
     config_json: str,
     identity_id: str,
     identity_client_id: str,
-    internal_api_key_kv_secret: str = "",
     workspace_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Create an Azure Container App for an OpenClaw instance.
+
+    All containers share a single internal API key from Key Vault
+    (AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY). Per-tenant keys were removed
+    2026-02-22 — unnecessary given network isolation (containers are
+    internal-only).
 
     Returns dict with 'name' and 'fqdn'.
     """
@@ -580,7 +584,7 @@ def create_container_app(
         _build_container_secret(
             "nbhd-internal-api-key",
             plain_value=settings.NBHD_INTERNAL_API_KEY,
-            key_vault_secret_name=internal_api_key_kv_secret or settings.AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY,
+            key_vault_secret_name=settings.AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY,
             identity_id=identity_id,
         ),
         _build_container_secret(

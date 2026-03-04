@@ -128,15 +128,13 @@ class Tenant(models.Model):
         help_text="Per-user monthly token budget",
     )
 
-    # Per-tenant internal API key
-    internal_api_key_hash = models.CharField(
-        max_length=64, blank=True, default="",
-        help_text="SHA-256 hex digest of this tenant's internal API key",
-    )
-    internal_api_key_set_at = models.DateTimeField(
-        null=True, blank=True,
-        help_text="When the per-tenant internal API key was last generated",
-    )
+    # NOTE: Per-tenant internal API keys were removed (2026-02-22).
+    # All containers share a single key via Azure Key Vault. This is safe
+    # because tenant containers are internal-only (external: false) — not
+    # reachable from the public internet. The per-tenant scheme caused mass
+    # auth failures and added unnecessary complexity.
+    # Fields `internal_api_key_hash` and `internal_api_key_set_at` were
+    # dropped in migration 0018.
 
     # Onboarding
     onboarding_complete = models.BooleanField(

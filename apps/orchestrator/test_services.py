@@ -57,7 +57,7 @@ class OrchestratorServiceTest(TestCase):
         self.assertIsNotNone(self.tenant.provisioned_at)
         _mock_assign_kv_role.assert_called_once_with("principal-1")
         _mock_create_container.assert_called_once()
-        # Verify no per-tenant KV secret is passed (uses shared key)
+        # All containers use the shared internal API key from Key Vault
         call_kwargs = _mock_create_container.call_args.kwargs
         self.assertNotIn("internal_api_key_kv_secret", call_kwargs)
 

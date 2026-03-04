@@ -355,12 +355,9 @@ def deprovision_tenant(tenant_id: str) -> None:
         tenant.container_id = ""
         tenant.container_fqdn = ""
         tenant.managed_identity_id = ""
-        tenant.internal_api_key_hash = ""
-        tenant.internal_api_key_set_at = None
         tenant.save(update_fields=[
             "status", "container_id", "container_fqdn",
-            "managed_identity_id", "internal_api_key_hash",
-            "internal_api_key_set_at", "updated_at",
+            "managed_identity_id", "updated_at",
         ])
 
         logger.info("Deprovisioned tenant %s", tenant_id)

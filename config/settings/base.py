@@ -180,10 +180,11 @@ TELEGRAM_BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", default="")
 TELEGRAM_BOT_USERNAME = env("TELEGRAM_BOT_USERNAME", default="NbhdUnitedBot")
 TELEGRAM_WEBHOOK_SECRET = env("TELEGRAM_WEBHOOK_SECRET", default="")
 ROUTER_RATE_LIMIT_PER_MINUTE = env.int("ROUTER_RATE_LIMIT_PER_MINUTE", default=30)
+# Shared internal API key for runtime auth between Django and tenant containers.
+# All containers use the same key (stored in Azure Key Vault). This is safe
+# because tenant containers are internal-only (external: false) — not reachable
+# from the public internet.
 NBHD_INTERNAL_API_KEY = env("NBHD_INTERNAL_API_KEY", default="")
-NBHD_INTERNAL_API_KEY_FALLBACK_ENABLED = env.bool(
-    "NBHD_INTERNAL_API_KEY_FALLBACK_ENABLED", default=True
-)
 
 # Anthropic API (shared key for all OpenClaw instances)
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")

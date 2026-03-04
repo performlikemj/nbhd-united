@@ -1,11 +1,23 @@
-"""Internal runtime-to-control-plane auth helpers."""
+"""Internal runtime-to-control-plane auth helpers.
+
+Architecture (2026-02-22):
+    All tenant OpenClaw containers share a single internal API key stored in
+    Azure Key Vault (`nbhd-internal-api-key`). This is safe because tenant
+    containers are deployed with `external: False` — they are only reachable
+    from within the Azure Container Apps environment, not from the public
+    internet. The only path to runtime endpoints is:
+
+        Public internet → Django (external) → tenant container (internal)
+
+    A previous per-tenant key scheme was removed because it caused mass auth
+    failures during provisioning and added complexity without meaningful
+    security benefit given the network isolation.
+"""
 from __future__ import annotations
 
-import hashlib
 import secrets
 
 from django.conf import settings
-from django.core.exceptions import ValidationError
 
 
 class InternalAuthError(PermissionError):
@@ -17,9 +29,10 @@ def validate_internal_runtime_request(
     provided_tenant_id: str,
     expected_tenant_id: str | None = None,
 ) -> str:
-    """Validate internal auth (per-tenant key preferred, shared key fallback).
+    """Validate that a runtime request carries the correct shared internal key.
 
     Returns the tenant id from headers when valid.
+    Raises InternalAuthError on any failure.
     """
     if not provided_key:
         raise InternalAuthError("Missing internal auth key")
@@ -31,27 +44,7 @@ def validate_internal_runtime_request(
     if expected_tenant_id is not None and tenant_id != expected_tenant_id:
         raise InternalAuthError("Tenant scope mismatch")
 
-    # --- Per-tenant key check ---
-    from apps.tenants.models import Tenant
-
-    try:
-        stored_hash = (
-            Tenant.objects.filter(id=tenant_id)
-            .values_list("internal_api_key_hash", flat=True)
-            .first()
-        )
-    except (ValueError, ValidationError):
-        stored_hash = None
-
-    if stored_hash:
-        provided_hash = hashlib.sha256(provided_key.encode("utf-8")).hexdigest()
-        if secrets.compare_digest(provided_hash, stored_hash):
-            return tenant_id
-
-    # --- Shared key fallback ---
-    if not getattr(settings, "NBHD_INTERNAL_API_KEY_FALLBACK_ENABLED", True):
-        raise InternalAuthError("Invalid internal auth key")
-
+    # Validate against the shared internal API key
     configured_key = getattr(settings, "NBHD_INTERNAL_API_KEY", "")
     if not configured_key:
         raise InternalAuthError("NBHD_INTERNAL_API_KEY is not configured")
