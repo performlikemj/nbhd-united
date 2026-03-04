@@ -257,6 +257,41 @@ export function unlinkTelegram(): Promise<{ success: boolean }> {
   });
 }
 
+// LINE linking
+export interface LineLinkResponse {
+  deep_link: string;
+  qr_code: string;  // base64 data URL
+  expires_at: string;
+}
+
+export interface LineStatus {
+  linked: boolean;
+  line_display_name?: string;
+}
+
+export function generateLineLink(): Promise<LineLinkResponse> {
+  return apiFetch<LineLinkResponse>("/api/v1/tenants/line/generate-link/", {
+    method: "POST",
+  });
+}
+
+export function fetchLineStatus(): Promise<LineStatus> {
+  return apiFetch<LineStatus>("/api/v1/tenants/line/status/");
+}
+
+export function unlinkLine(): Promise<{ success: boolean }> {
+  return apiFetch<{ success: boolean }>("/api/v1/tenants/line/unlink/", {
+    method: "POST",
+  });
+}
+
+export function setPreferredChannel(channel: "telegram" | "line"): Promise<{ preferred_channel: string; message: string }> {
+  return apiFetch<{ preferred_channel: string; message: string }>("/api/v1/tenants/line/preferred-channel/", {
+    method: "PATCH",
+    body: JSON.stringify({ preferred_channel: channel }),
+  });
+}
+
 // Integrations
 type IntegrationResponse = Integration[] | { results?: Integration[] };
 

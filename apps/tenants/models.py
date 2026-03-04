@@ -4,12 +4,13 @@ import uuid
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
-# Import so Django discovers the model for migrations
+# Import so Django discovers the models for migrations
 from .telegram_models import TelegramLinkToken  # noqa: F401
+from .line_models import LineLinkToken  # noqa: F401
 
 
 class User(AbstractUser):
-    """Custom user model with Telegram binding."""
+    """Custom user model with Telegram and LINE binding."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     telegram_chat_id = models.BigIntegerField(unique=True, null=True, blank=True)
@@ -23,6 +24,27 @@ class User(AbstractUser):
         help_text="IANA timezone string, e.g. 'America/New_York'",
     )
     preferences = models.JSONField(default=dict, blank=True)
+
+    # LINE channel fields
+    line_user_id = models.CharField(
+        max_length=64,
+        unique=True,
+        null=True,
+        blank=True,
+        help_text="LINE user ID (per-bot, not global)",
+    )
+    line_display_name = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Display name from LINE profile",
+    )
+    preferred_channel = models.CharField(
+        max_length=16,
+        choices=[("telegram", "Telegram"), ("line", "LINE")],
+        default="telegram",
+        help_text="Primary channel for proactive messages (cron, alerts).",
+    )
 
     class Meta:
         db_table = "users"

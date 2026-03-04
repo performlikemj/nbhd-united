@@ -104,6 +104,9 @@ export interface AuthUser {
   timezone: string;
   telegram_chat_id: number | null;
   telegram_username: string;
+  line_user_id: string | null;
+  line_display_name: string;
+  preferred_channel: "telegram" | "line";
   tenant: Tenant | null;
 }
 

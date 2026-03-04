@@ -14,6 +14,7 @@ from .views import (
     UpdatePreferencesView,
 )
 from .telegram_views import telegram_generate_link, telegram_status, telegram_unlink
+from .line_views import line_generate_link, line_status, line_unlink, line_set_preferred_channel
 from .llm_config_views import FetchModelsView, LLMConfigView
 
 router = DefaultRouter()
@@ -30,6 +31,10 @@ urlpatterns = [
     path("telegram/generate-link/", telegram_generate_link, name="telegram-generate-link"),
     path("telegram/unlink/", telegram_unlink, name="telegram-unlink"),
     path("telegram/status/", telegram_status, name="telegram-status"),
+    path("line/generate-link/", line_generate_link, name="line-generate-link"),
+    path("line/unlink/", line_unlink, name="line-unlink"),
+    path("line/status/", line_status, name="line-status"),
+    path("line/preferred-channel/", line_set_preferred_channel, name="line-preferred-channel"),
     path("settings/llm-config/", LLMConfigView.as_view(), name="llm-config"),
     path("settings/llm-config/models/", FetchModelsView.as_view(), name="llm-config-models"),
     path("delete-account/", DeleteAccountView.as_view(), name="delete-account"),

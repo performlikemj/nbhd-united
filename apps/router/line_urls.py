@@ -1,12 +1,7 @@
 from django.urls import path
 
-from .views import telegram_webhook
 from .line_webhook import LineWebhookView
 
 urlpatterns = [
-    path("webhook/", telegram_webhook, name="telegram-webhook"),
-]
-
-line_urlpatterns = [
     path("webhook/", LineWebhookView.as_view(), name="line-webhook"),
 ]
