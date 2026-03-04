@@ -175,6 +175,68 @@ class CronJobToggleTest(TestCase):
         mock_invoke.assert_not_called()
 
 
+class HiddenSystemCronsTest(TestCase):
+    def setUp(self):
+        self.user, self.tenant = _create_user_and_tenant()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_list_hides_system_crons(self, mock_invoke):
+        mock_invoke.return_value = {
+            "jobs": [
+                {"name": "Morning Briefing", "enabled": True},
+                {"name": "Evening Check-in", "enabled": True},
+                {"name": "Background Tasks", "enabled": True},
+                {"name": "Nightly Extraction", "enabled": True},
+                {"name": "Heartbeat Check-in", "enabled": True},
+                {"name": "Week Ahead Review", "enabled": True},
+            ],
+        }
+        resp = self.client.get("/api/v1/cron-jobs/")
+        self.assertEqual(resp.status_code, 200)
+        names = [j["name"] for j in resp.json()["jobs"]]
+        self.assertNotIn("Background Tasks", names)
+        self.assertNotIn("Nightly Extraction", names)
+        # User-visible system crons should still appear
+        self.assertIn("Morning Briefing", names)
+        self.assertIn("Heartbeat Check-in", names)
+        self.assertEqual(len(names), 4)
+
+    def test_delete_blocked_for_system_crons(self):
+        resp = self.client.delete("/api/v1/cron-jobs/Background Tasks/")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_delete_blocked_for_nightly_extraction(self):
+        resp = self.client.delete("/api/v1/cron-jobs/Nightly Extraction/")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_patch_blocked_for_system_crons(self):
+        resp = self.client.patch(
+            "/api/v1/cron-jobs/Background Tasks/",
+            {"enabled": False},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_toggle_blocked_for_system_crons(self):
+        resp = self.client.post(
+            "/api/v1/cron-jobs/Nightly Extraction/toggle/",
+            {"enabled": False},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_bulk_delete_blocked_for_system_crons(self):
+        resp = self.client.post(
+            "/api/v1/cron-jobs/bulk-delete/",
+            {"ids": ["Background Tasks", "Morning Briefing"]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("Background Tasks", resp.json()["detail"])
+
+
 class InactiveTenantTest(TestCase):
     def setUp(self):
         self.user, self.tenant = _create_user_and_tenant(active=False)
