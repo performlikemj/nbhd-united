@@ -34,8 +34,8 @@ def repair_stale_tenant_provisioning_task(limit: int = 50) -> dict:
 
 
 def hibernate_suspended_task() -> dict:
-    """Scale all suspended tenant containers to zero replicas."""
-    from apps.orchestrator.azure_client import scale_container_app
+    """Hibernate all suspended tenant containers (deactivate revisions)."""
+    from apps.orchestrator.azure_client import hibernate_container_app
     from apps.tenants.models import Tenant
 
     tenants = Tenant.objects.filter(
@@ -46,7 +46,7 @@ def hibernate_suspended_task() -> dict:
     failed = 0
     for tenant in tenants:
         try:
-            scale_container_app(tenant.container_id, min_replicas=0, max_replicas=0)
+            hibernate_container_app(tenant.container_id)
             hibernated += 1
         except Exception as e:
             failed += 1

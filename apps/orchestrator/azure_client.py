@@ -779,28 +779,78 @@ def update_container_image(container_name: str, image: str) -> None:
 
 
 def scale_container_app(container_name: str, *, min_replicas: int, max_replicas: int) -> None:
-    """Scale an Azure Container App's replica count.
+    """Scale an Azure Container App by activating/deactivating revisions.
 
-    Use min=0, max=0 to hibernate a container (costs nothing).
-    Use min=1, max=1 to wake it back up.
+    Azure Consumption plan doesn't support minReplicas=0 via scale config,
+    so we use revision deactivation to hibernate (stop all replicas, zero cost)
+    and revision activation to wake up.
+
+    Use min=0, max=0 to hibernate (deactivate all active revisions).
+    Use min=1, max=1 to wake (activate the latest revision).
     """
     if _is_mock():
         logger.info("[MOCK] Scaled %s to min=%d max=%d", container_name, min_replicas, max_replicas)
         return
 
     client = get_container_client()
-    app = client.container_apps.get(settings.AZURE_RESOURCE_GROUP, container_name)
+    rg = settings.AZURE_RESOURCE_GROUP
 
-    # SDK returns a model object — patch scale on template directly
-    if not app.template.scale:
-        app.template.scale = {}
-    app.template.scale["min_replicas"] = min_replicas
-    app.template.scale["max_replicas"] = max_replicas
+    if min_replicas == 0 and max_replicas == 0:
+        # Hibernate: deactivate all active revisions
+        hibernate_container_app(container_name)
+    else:
+        # Wake: activate the latest revision
+        wake_container_app(container_name)
 
-    client.container_apps.begin_create_or_update(
-        settings.AZURE_RESOURCE_GROUP, container_name, app,
-    ).result()
-    logger.info("Scaled %s to min=%d max=%d", container_name, min_replicas, max_replicas)
+
+def hibernate_container_app(container_name: str) -> None:
+    """Hibernate a container by deactivating all active revisions.
+
+    The container app and its config/data are preserved.
+    Zero replicas run = zero compute cost.
+    """
+    if _is_mock():
+        logger.info("[MOCK] Hibernated %s", container_name)
+        return
+
+    client = get_container_client()
+    rg = settings.AZURE_RESOURCE_GROUP
+
+    revisions = list(client.container_apps_revisions.list_revisions(rg, container_name))
+    active_revs = [r for r in revisions if r.active]
+
+    for rev in active_revs:
+        client.container_apps_revisions.deactivate_revision(rg, container_name, rev.name)
+
+    logger.info("Hibernated %s — deactivated %d revision(s)", container_name, len(active_revs))
+
+
+def wake_container_app(container_name: str) -> None:
+    """Wake a hibernated container by activating the latest revision.
+
+    Finds the most recently created revision and activates it.
+    Container starts within ~30 seconds.
+    """
+    if _is_mock():
+        logger.info("[MOCK] Woke %s", container_name)
+        return
+
+    client = get_container_client()
+    rg = settings.AZURE_RESOURCE_GROUP
+
+    revisions = list(client.container_apps_revisions.list_revisions(rg, container_name))
+    if not revisions:
+        raise RuntimeError(f"No revisions found for {container_name}")
+
+    # Find the latest revision
+    latest = max(revisions, key=lambda r: r.created_time)
+
+    if latest.active:
+        logger.info("Wake %s — latest revision %s already active", container_name, latest.name)
+        return
+
+    client.container_apps_revisions.activate_revision(rg, container_name, latest.name)
+    logger.info("Woke %s — activated revision %s", container_name, latest.name)
 
 
 def delete_container_app(container_name: str) -> None:

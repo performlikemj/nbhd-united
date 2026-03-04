@@ -8,18 +8,18 @@ Usage: python manage.py hibernate_suspended [--dry-run]
 """
 from django.core.management.base import BaseCommand
 
-from apps.orchestrator.azure_client import scale_container_app
+from apps.orchestrator.azure_client import hibernate_container_app
 from apps.tenants.models import Tenant
 
 
 class Command(BaseCommand):
-    help = "Scale suspended tenant containers to zero replicas"
+    help = "Hibernate suspended tenant containers (deactivate revisions)"
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--dry-run",
             action="store_true",
-            help="List targets without scaling",
+            help="List targets without hibernating",
         )
 
     def handle(self, *args, **options):
@@ -38,7 +38,7 @@ class Command(BaseCommand):
                 self.stdout.write(f"  [dry-run] would hibernate: {tenant.container_id} ({tenant.user.email})")
                 continue
             try:
-                scale_container_app(tenant.container_id, min_replicas=0, max_replicas=0)
+                hibernate_container_app(tenant.container_id)
                 hibernated += 1
                 self.stdout.write(self.style.SUCCESS(
                     f"  ✅ {tenant.container_id} ({tenant.user.email})"
