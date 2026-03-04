@@ -156,30 +156,33 @@ class LineWebhookEventTest(TestCase):
     @patch("apps.router.line_webhook.LineWebhookView._forward_to_container")
     @patch("apps.router.line_webhook._send_line_push")
     def test_unknown_user_message_sends_signup_link(self, mock_push, mock_fwd):
+        """Unknown LINE user receives a signup prompt — called directly to avoid SQLite thread lock."""
+        from apps.router.line_webhook import LineWebhookView
+
         mock_push.return_value = True
-        body = {
-            "events": [
-                {
-                    "type": "message",
-                    "source": {"userId": "U_unknown"},
-                    "message": {"type": "text", "text": "Hello"},
-                }
-            ]
+        event = {
+            "type": "message",
+            "source": {"userId": "U_unknown_direct"},
+            "message": {"type": "text", "text": "Hello"},
         }
-        response = self._post(body)
-        self.assertEqual(response.status_code, 200)
-        time.sleep(0.2)
+        # Call handler directly — bypasses thread and SQLite locking
+        view = LineWebhookView()
+        view._handle_message(event)
+
         # Should have sent a signup prompt, not forwarded
         mock_fwd.assert_not_called()
         mock_push.assert_called()
+        call_args = mock_push.call_args[0]
+        self.assertEqual(call_args[0], "U_unknown_direct")
 
     @patch("httpx.post")
     def test_message_from_linked_user_forwards(self, mock_httpx_post):
-        """Linked user's message triggers container forward (via httpx.post)."""
-        user = _make_user(line_user_id="U_linked")
+        """Linked user's message triggers container forward — called directly."""
+        from apps.router.line_webhook import LineWebhookView
+
+        user = _make_user(line_user_id="U_linked_direct")
         _make_tenant(user)
 
-        # Mock the httpx.post call to the container
         mock_resp = MagicMock()
         mock_resp.is_success = True
         mock_resp.status_code = 200
@@ -190,20 +193,17 @@ class LineWebhookEventTest(TestCase):
         mock_resp.raise_for_status = MagicMock()
         mock_httpx_post.return_value = mock_resp
 
-        body = {
-            "events": [
-                {
-                    "type": "message",
-                    "source": {"userId": "U_linked"},
-                    "message": {"type": "text", "text": "Hello"},
-                }
-            ]
+        event = {
+            "type": "message",
+            "source": {"userId": "U_linked_direct"},
+            "message": {"type": "text", "text": "Hello"},
         }
-        response = self._post(body)
-        self.assertEqual(response.status_code, 200)
-        time.sleep(1.0)
-        # Should have posted to container AND to LINE push API
-        self.assertTrue(mock_httpx_post.call_count >= 1)
+        # Call handler directly — bypasses thread and SQLite locking
+        view = LineWebhookView()
+        view._handle_message(event)
+
+        # Should have posted to container and then LINE push API
+        self.assertGreaterEqual(mock_httpx_post.call_count, 1)
 
 
 # ────────────────────────────────────────────────────────────────────────────

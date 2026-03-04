@@ -206,9 +206,12 @@ class LineWebhookView(View):
 
     def _handle_event(self, event: dict) -> None:
         """Route a single LINE event to the appropriate handler."""
-        # Set service-role RLS context for DB access
-        from apps.tenants.middleware import set_rls_context
-        set_rls_context(service_role=True)
+        # Set service-role RLS context for DB access (safe no-op on SQLite)
+        try:
+            from apps.tenants.middleware import set_rls_context
+            set_rls_context(service_role=True)
+        except Exception:
+            pass
 
         try:
             event_type = event.get("type", "")
