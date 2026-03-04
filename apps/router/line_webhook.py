@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 LINE_API_BASE = "https://api.line.me/v2/bot"
 CHAT_COMPLETIONS_TIMEOUT = 120.0  # generous timeout for AI response
-LOADING_SECONDS = 20  # loading animation duration (auto-clears on response)
+LOADING_SECONDS = 60  # loading animation max (auto-clears on response)
 
 
 def _get_channel_secret() -> str:
@@ -201,7 +201,12 @@ def _strip_markdown(text: str) -> str:
     """Strip common markdown formatting for LINE (which doesn't support it).
 
     Converts bold/italic markers to plain text, keeps links as URLs.
+    Converts markdown tables to readable plain text.
     """
+    # Convert markdown tables to readable format
+    text = _convert_tables(text)
+    # Remove code blocks (``` ... ```)
+    text = re.sub(r'```[^\n]*\n(.*?)```', r'\1', text, flags=re.DOTALL)
     # Remove bold markers
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
     text = re.sub(r'__(.+?)__', r'\1', text)
@@ -212,7 +217,84 @@ def _strip_markdown(text: str) -> str:
     text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1: \2', text)
     # Remove inline code markers
     text = re.sub(r'`(.+?)`', r'\1', text)
+    # Remove heading markers
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
     return text
+
+
+def _convert_tables(text: str) -> str:
+    """Convert markdown tables to readable plain text for LINE.
+
+    | Exercise | Sets | Rest |      →   Exercise: Pull-Ups
+    |----------|------|------|           Sets: 4 × 6-10
+    | Pull-Ups | 4×6-10 | 90s |        Rest: 90s
+    """
+    lines = text.split("\n")
+    result: list[str] = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Detect table: line starts and ends with | and has multiple |
+        if line.startswith("|") and line.endswith("|") and line.count("|") >= 3:
+            # Collect all table lines
+            table_lines: list[str] = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                table_lines.append(lines[i].strip())
+                i += 1
+
+            # Parse header + data rows
+            parsed = _parse_table(table_lines)
+            if parsed:
+                result.append(parsed)
+            else:
+                result.extend(table_lines)
+        else:
+            result.append(lines[i])
+            i += 1
+
+    return "\n".join(result)
+
+
+def _parse_table(table_lines: list[str]) -> str | None:
+    """Parse markdown table lines into readable text."""
+    if len(table_lines) < 2:
+        return None
+
+    def split_row(line: str) -> list[str]:
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        return [c for c in cells if c]
+
+    headers = split_row(table_lines[0])
+    if not headers:
+        return None
+
+    # Skip separator rows (|---|---|)
+    data_rows = []
+    for row_line in table_lines[1:]:
+        cells = split_row(row_line)
+        # Skip separator rows
+        if cells and all(re.match(r'^[-:]+$', c) for c in cells):
+            continue
+        if cells:
+            data_rows.append(cells)
+
+    if not data_rows:
+        return None
+
+    # Format: each data row as "header: value" pairs
+    output_parts: list[str] = []
+    for row in data_rows:
+        pairs = []
+        for j, cell in enumerate(row):
+            if j < len(headers):
+                pairs.append(f"{headers[j]}: {cell}")
+            else:
+                pairs.append(cell)
+        output_parts.append("\n".join(pairs))
+
+    return "\n\n".join(output_parts)
 
 
 def _resolve_tenant_by_line_user_id(line_user_id: str) -> Tenant | None:

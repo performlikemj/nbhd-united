@@ -630,3 +630,81 @@ class FlexEdgeCaseTest(TestCase):
         content = "• Bullet one\n• Bullet two\n• Bullet three"
         items = _parse_list_items(content)
         self.assertEqual(len(items), 3)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Table Conversion Tests
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class MarkdownTableConversionTest(TestCase):
+    """Test markdown table → readable text conversion."""
+
+    def test_basic_table(self):
+        from apps.router.line_webhook import _strip_markdown
+        text = (
+            "| Exercise | Sets × Reps | Rest |\n"
+            "|----------|-------------|------|\n"
+            "| Pull-Ups | 4 × 6-10 | 90 sec |\n"
+            "| Incline Press | 3 × 8-10 | 90 sec |"
+        )
+        result = _strip_markdown(text)
+        self.assertNotIn("|", result)
+        self.assertIn("Exercise: Pull-Ups", result)
+        self.assertIn("Sets × Reps: 4 × 6-10", result)
+        self.assertIn("Rest: 90 sec", result)
+
+    def test_table_with_surrounding_text(self):
+        from apps.router.line_webhook import _strip_markdown
+        text = (
+            "Here's your workout:\n\n"
+            "| Exercise | Sets |\n"
+            "|----------|------|\n"
+            "| Squats | 4×8 |\n\n"
+            "Have a great session!"
+        )
+        result = _strip_markdown(text)
+        self.assertIn("Here's your workout", result)
+        self.assertIn("Exercise: Squats", result)
+        self.assertIn("great session", result)
+
+    def test_no_table_unchanged(self):
+        from apps.router.line_webhook import _strip_markdown
+        text = "Just regular text with a | pipe character"
+        result = _strip_markdown(text)
+        self.assertIn("pipe character", result)
+
+    def test_multiple_data_rows(self):
+        from apps.router.line_webhook import _strip_markdown
+        text = (
+            "| Name | Score |\n"
+            "|------|-------|\n"
+            "| Alice | 95 |\n"
+            "| Bob | 87 |\n"
+            "| Charlie | 92 |"
+        )
+        result = _strip_markdown(text)
+        self.assertIn("Name: Alice", result)
+        self.assertIn("Name: Bob", result)
+        self.assertIn("Score: 92", result)
+
+    def test_table_separator_stripped(self):
+        from apps.router.line_webhook import _strip_markdown
+        text = (
+            "| A | B |\n"
+            "|---|---|\n"
+            "| 1 | 2 |"
+        )
+        result = _strip_markdown(text)
+        self.assertNotIn("---", result)
+
+    def test_japanese_table(self):
+        from apps.router.line_webhook import _strip_markdown
+        text = (
+            "| 種目 | セット | 休憩 |\n"
+            "|------|--------|------|\n"
+            "| スクワット | 4×8 | 90秒 |"
+        )
+        result = _strip_markdown(text)
+        self.assertIn("種目: スクワット", result)
+        self.assertIn("セット: 4×8", result)

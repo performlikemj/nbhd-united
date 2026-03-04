@@ -228,14 +228,10 @@ class CronDeliveryView(APIView):
                 status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        # Strip markdown — LINE doesn't support it
+        # Use shared markdown stripping (handles tables, code blocks, etc.)
+        from apps.router.line_webhook import _strip_markdown
+        clean_text = _strip_markdown(message_text)
         import re
-        clean_text = re.sub(r"\*{1,3}(.+?)\*{1,3}", r"\1", message_text)
-        clean_text = re.sub(r"_{1,3}(.+?)_{1,3}", r"\1", clean_text)
-        clean_text = re.sub(r"`+(.+?)`+", r"\1", clean_text, flags=re.DOTALL)
-        clean_text = re.sub(r"```.*?```", "", clean_text, flags=re.DOTALL)
-        clean_text = re.sub(r"^#{1,6}\s+", "", clean_text, flags=re.MULTILINE)
-        clean_text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 \2", clean_text)
         clean_text = re.sub(r"\[\[button:[^\]]+\]\]", "", clean_text)
         clean_text = re.sub(r"\n{3,}", "\n\n", clean_text).strip()
 
