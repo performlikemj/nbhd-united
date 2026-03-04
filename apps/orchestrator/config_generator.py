@@ -419,12 +419,16 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             },
         },
 
-        # Telegram channel — the central Django poller handles actual
-        # Telegram I/O, but we declare the channel here so the agent knows
-        # its surface capabilities (inline buttons, reactions, etc.).
-        # No bot token is set — the container never connects to Telegram directly.
+        # Messaging channels — the central Django router handles actual
+        # Telegram/LINE I/O, but we declare the channels here so the agent
+        # knows its surface capabilities (inline buttons, etc.).
+        # No bot tokens are set — the container never connects directly.
         "channels": {
             "telegram": {
+                "enabled": True,
+                "capabilities": ["inlineButtons"],
+            },
+            "line": {
                 "enabled": True,
                 "capabilities": ["inlineButtons"],
             },

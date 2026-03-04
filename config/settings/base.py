@@ -186,6 +186,11 @@ ROUTER_RATE_LIMIT_PER_MINUTE = env.int("ROUTER_RATE_LIMIT_PER_MINUTE", default=3
 # from the public internet.
 NBHD_INTERNAL_API_KEY = env("NBHD_INTERNAL_API_KEY", default="")
 
+# LINE Messaging API (shared bot)
+LINE_CHANNEL_ACCESS_TOKEN = env("LINE_CHANNEL_ACCESS_TOKEN", default="")
+LINE_CHANNEL_SECRET = env("LINE_CHANNEL_SECRET", default="")
+LINE_BOT_ID = env("LINE_BOT_ID", default="")  # e.g. "@nbhd-united"
+
 # Anthropic API (shared key for all OpenClaw instances)
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
@@ -243,6 +248,14 @@ AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY = env(
 AZURE_KV_SECRET_TELEGRAM_WEBHOOK_SECRET = env(
     "AZURE_KV_SECRET_TELEGRAM_WEBHOOK_SECRET",
     default="telegram-webhook-secret",
+)
+AZURE_KV_SECRET_LINE_CHANNEL_ACCESS_TOKEN = env(
+    "AZURE_KV_SECRET_LINE_CHANNEL_ACCESS_TOKEN",
+    default="line-channel-access-token",
+)
+AZURE_KV_SECRET_LINE_CHANNEL_SECRET = env(
+    "AZURE_KV_SECRET_LINE_CHANNEL_SECRET",
+    default="line-channel-secret",
 )
 AZURE_KV_SECRET_BRAVE_API_KEY = env(
     "AZURE_KV_SECRET_BRAVE_API_KEY",

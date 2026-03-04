@@ -19,6 +19,7 @@ urlpatterns = [
         name="runtime-usage-report-internal",
     ),
     path("api/v1/telegram/", include("apps.router.urls")),
+    path("api/v1/line/", include("apps.router.line_urls")),
     path("api/v1/cron-jobs/", include("apps.cron.tenant_urls")),
     path("api/cron/", include("apps.cron.urls")),
     path("api/v1/cron/", include("apps.cron.urls")),

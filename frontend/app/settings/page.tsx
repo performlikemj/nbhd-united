@@ -17,6 +17,7 @@ import {
   useRefreshConfigStatusQuery,
   useUpdateProfileMutation,
   useUpdatePreferencesMutation,
+  useSetPreferredChannelMutation,
 } from "@/lib/queries";
 
 type LanguageOption = {
@@ -394,6 +395,8 @@ export default function SettingsPage() {
     }
   };
 
+  const setPreferredChannel = useSetPreferredChannelMutation();
+
   const isSaving = savingField !== null || updatePrefs.isPending;
   const isRefreshingConfig = refreshConfigMutation.isPending;
 
@@ -607,6 +610,66 @@ export default function SettingsPage() {
                 )}
               </dd>
             </div>
+
+            {/* LINE */}
+            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
+              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">LINE</dt>
+              <dd className="mt-1">
+                {me.line_user_id ? (
+                  <span className="break-words text-base text-ink">
+                    {me.line_display_name || "Connected"}
+                  </span>
+                ) : (
+                  <div className="space-y-2">
+                    <StatusPill status="pending" />
+                    <Link
+                      href="/settings/integrations"
+                      className="inline-flex rounded-full border border-border-strong px-3 py-1.5 text-xs text-ink hover:border-border transition"
+                    >
+                      Connect LINE
+                    </Link>
+                  </div>
+                )}
+              </dd>
+            </div>
+
+            {/* Preferred Channel */}
+            {(me.telegram_chat_id || me.line_user_id) && (me.telegram_chat_id && me.line_user_id) ? (
+              <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
+                <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Preferred Channel</dt>
+                <dd className="mt-2">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPreferredChannel.mutate("telegram")}
+                      disabled={setPreferredChannel.isPending}
+                      className={`rounded-full px-4 py-1.5 text-sm transition ${
+                        me.preferred_channel === "telegram"
+                          ? "bg-accent text-white"
+                          : "border border-border text-ink-muted hover:border-border-strong"
+                      }`}
+                    >
+                      Telegram
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPreferredChannel.mutate("line")}
+                      disabled={setPreferredChannel.isPending}
+                      className={`rounded-full px-4 py-1.5 text-sm transition ${
+                        me.preferred_channel === "line"
+                          ? "bg-[#06C755] text-white"
+                          : "border border-border text-ink-muted hover:border-border-strong"
+                      }`}
+                    >
+                      LINE
+                    </button>
+                  </div>
+                  <p className="mt-1 text-xs text-ink-faint">
+                    Used for scheduled messages and notifications
+                  </p>
+                </dd>
+              </div>
+            ) : null}
 
             {/* Tenant */}
             <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">

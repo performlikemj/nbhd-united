@@ -9,12 +9,15 @@ import { StatusPill } from "@/components/status-pill";
 import {
   useDisconnectIntegrationMutation,
   useGenerateTelegramLinkMutation,
+  useGenerateLineLinkMutation,
   useIntegrationsQuery,
+  useLineStatusQuery,
   useOAuthAuthorizeMutation,
   useTelegramStatusQuery,
+  useUnlinkLineMutation,
   useUnlinkTelegramMutation,
 } from "@/lib/queries";
-import type { TelegramLinkResponse } from "@/lib/api";
+import type { TelegramLinkResponse, LineLinkResponse } from "@/lib/api";
 import { ServiceIcon } from "@/components/service-icon";
 
 const providers: { key: string; label: string; description?: string }[] = [
@@ -115,6 +118,93 @@ function TelegramCard() {
   );
 }
 
+function LineCard() {
+  const [linkData, setLinkData] = useState<LineLinkResponse | null>(null);
+  const { data: status } = useLineStatusQuery(true);
+  const generateLink = useGenerateLineLinkMutation();
+  const unlinkMutation = useUnlinkLineMutation();
+
+  const linked = status?.linked ?? false;
+
+  const handleConnect = async () => {
+    try {
+      const data = await generateLink.mutateAsync();
+      setLinkData(data);
+    } catch {
+      // handled by mutation
+    }
+  };
+
+  return (
+    <article className="rounded-panel border border-border bg-surface-elevated p-4">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <ServiceIcon provider="line" />
+          <h3 className="text-base font-medium">LINE</h3>
+        </div>
+        <StatusPill status={linked ? "active" : "pending"} />
+      </div>
+
+      {linked ? (
+        <>
+          <p className="mt-2 text-sm text-ink-muted">
+            {status?.line_display_name ? `Connected as ${status.line_display_name}` : "Connected"}
+          </p>
+          <div className="mt-4">
+            <button
+              className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
+              type="button"
+              disabled={unlinkMutation.isPending}
+              onClick={() => unlinkMutation.mutate()}
+            >
+              {unlinkMutation.isPending ? "Unlinking..." : "Unlink"}
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="mt-2 text-sm text-ink-muted">Not connected yet.</p>
+
+          {!linkData && (
+            <div className="mt-4">
+              <button
+                className="rounded-full border border-[#06C755] px-3 py-1.5 text-sm text-[#06C755] hover:bg-[#06C755]/10 disabled:cursor-not-allowed disabled:opacity-45"
+                type="button"
+                disabled={generateLink.isPending}
+                onClick={handleConnect}
+              >
+                {generateLink.isPending ? "Generating..." : "Connect LINE"}
+              </button>
+            </div>
+          )}
+
+          {linkData && (
+            <div className="mt-3 space-y-3">
+              <p className="text-sm text-ink-muted">Scan the QR code with LINE, or tap the link:</p>
+              <div className="flex items-start gap-4">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={linkData.qr_code}
+                  alt="LINE QR Code"
+                  className="h-32 w-32 rounded-panel border border-border"
+                />
+                <a
+                  href={linkData.deep_link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-block rounded-full bg-[#06C755] px-4 py-2 text-sm text-white transition hover:bg-[#05b04d]"
+                >
+                  Open in LINE
+                </a>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </article>
+  );
+}
+
 function IntegrationsContent() {
   const searchParams = useSearchParams();
   const { data, isLoading, error } = useIntegrationsQuery();
@@ -167,6 +257,7 @@ function IntegrationsContent() {
       )}
 
       <TelegramCard />
+      <LineCard />
 
       {connectError && (
         <p className="mt-3 rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
