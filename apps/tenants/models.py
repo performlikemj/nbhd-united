@@ -2,6 +2,8 @@
 import uuid
 
 from django.contrib.auth.models import AbstractUser
+from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
 # Import so Django discovers the model for migrations
@@ -146,6 +148,22 @@ class Tenant(models.Model):
         help_text="Current onboarding question index (0 = not started)",
     )
 
+    # Heartbeat window ("On the Clock")
+    heartbeat_enabled = models.BooleanField(
+        default=True,
+        help_text="Whether the hourly heartbeat check-in is active",
+    )
+    heartbeat_start_hour = models.IntegerField(
+        default=8,
+        validators=[MinValueValidator(0), MaxValueValidator(23)],
+        help_text="Start hour of the heartbeat window (0-23, in user's timezone)",
+    )
+    heartbeat_window_hours = models.IntegerField(
+        default=6,
+        validators=[MinValueValidator(1), MaxValueValidator(6)],
+        help_text="Duration of the heartbeat window in hours (1-6)",
+    )
+
     # Metadata
     last_message_at = models.DateTimeField(null=True, blank=True)
     config_version = models.IntegerField(
@@ -166,6 +184,13 @@ class Tenant(models.Model):
 
     def __str__(self) -> str:
         return f"{self.user.display_name} ({self.status})"
+
+    def clean(self):
+        super().clean()
+        if self.heartbeat_window_hours is not None and self.heartbeat_window_hours > 6:
+            raise ValidationError(
+                {"heartbeat_window_hours": "Heartbeat window cannot exceed 6 hours."}
+            )
 
     @property
     def is_active(self) -> bool:

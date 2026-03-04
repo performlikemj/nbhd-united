@@ -81,6 +81,24 @@ class TenantRegistrationSerializer(serializers.Serializer):
         return value
 
 
+class HeartbeatConfigSerializer(serializers.Serializer):
+    """Serializer for heartbeat window settings."""
+    enabled = serializers.BooleanField(required=False)
+    start_hour = serializers.IntegerField(
+        required=False, min_value=0, max_value=23
+    )
+    window_hours = serializers.IntegerField(
+        required=False, min_value=1, max_value=6,
+    )
+
+    def validate_window_hours(self, value):
+        if value > 6:
+            raise serializers.ValidationError(
+                "Heartbeat window cannot exceed 6 hours."
+            )
+        return value
+
+
 class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
     username_field = "email"
 
