@@ -576,11 +576,11 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             ]
             skills_section = config.setdefault("skills", {})
             skills_section["load"] = skills_section.get("load", {})
-            load_paths = skills_section["load"].setdefault("paths", [])
+            extra_dirs = skills_section["load"].setdefault("extraDirs", [])
             for skill_name in gws_skill_names:
                 skill_path = f"/opt/nbhd/skills/{skill_name}"
-                if skill_path not in load_paths:
-                    load_paths.append(skill_path)
+                if skill_path not in extra_dirs:
+                    extra_dirs.append(skill_path)
     except Exception:
         pass  # Don't break config generation if integration check fails
 

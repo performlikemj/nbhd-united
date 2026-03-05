@@ -216,10 +216,10 @@ class GWSConfigGeneratorTest(TestCase):
 
         # Check skills loaded
         skills = config.get("skills", {})
-        load_paths = skills.get("load", {}).get("paths", [])
-        self.assertIn("/opt/nbhd/skills/gws-gmail", load_paths)
-        self.assertIn("/opt/nbhd/skills/gws-calendar", load_paths)
-        self.assertIn("/opt/nbhd/skills/gws-shared", load_paths)
+        extra_dirs = skills.get("load", {}).get("extraDirs", [])
+        self.assertIn("/opt/nbhd/skills/gws-gmail", extra_dirs)
+        self.assertIn("/opt/nbhd/skills/gws-calendar", extra_dirs)
+        self.assertIn("/opt/nbhd/skills/gws-shared", extra_dirs)
 
     def test_config_no_gws_without_connection(self):
         from apps.orchestrator.config_generator import generate_openclaw_config as generate_config
