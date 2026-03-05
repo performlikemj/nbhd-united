@@ -533,6 +533,37 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             allow.append("group:plugins")
             config["tools"]["allow"] = allow
 
+    # Google Workspace (gws CLI) — enable skills when user has connected Google
+    try:
+        from apps.integrations.models import Integration
+
+        has_google = Integration.objects.filter(
+            tenant=tenant,
+            provider="gmail",
+            status=Integration.Status.ACTIVE,
+        ).exists()
+
+        if has_google:
+            # Set env var pointing to gws credentials on the file share
+            config.setdefault("env", {})["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = (
+                "/workspace/gws-credentials.json"
+            )
+            # Add gws skills — load from container's /opt/nbhd/skills/
+            gws_skill_names = [
+                "gws-shared", "gws-gmail", "gws-gmail-send", "gws-gmail-triage",
+                "gws-calendar", "gws-calendar-agenda", "gws-calendar-insert",
+                "gws-drive", "gws-tasks",
+            ]
+            skills_section = config.setdefault("skills", {})
+            skills_section["load"] = skills_section.get("load", {})
+            load_paths = skills_section["load"].setdefault("paths", [])
+            for skill_name in gws_skill_names:
+                skill_path = f"/opt/nbhd/skills/{skill_name}"
+                if skill_path not in load_paths:
+                    load_paths.append(skill_path)
+    except Exception:
+        pass  # Don't break config generation if integration check fails
+
     return config
 
 

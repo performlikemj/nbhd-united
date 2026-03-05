@@ -294,7 +294,10 @@ OAUTH_PROVIDERS: dict[str, dict[str, Any]] = {
         "scopes": [
             "openid",
             "email",
-            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/calendar",
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/tasks",
         ],
         "provider_group": "google",
     },
@@ -678,6 +681,104 @@ def execute_reddit_tool(tenant: Tenant, action: str, params: dict) -> dict:
     return result.get("data", result)
 
 
+def _write_gws_credentials_to_file_share(
+    tenant: Tenant,
+    tokens: dict[str, Any],
+) -> None:
+    """Write gws CLI-compatible credentials JSON to the tenant's file share.
+
+    The gws CLI reads this via GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE env var.
+    Format: authorized_user credentials with client_id, client_secret, refresh_token.
+    """
+    refresh_token = tokens.get("refresh_token")
+    if not refresh_token:
+        logger.warning("No refresh_token in tokens — cannot write gws credentials")
+        return
+
+    # Build gws-compatible authorized_user credentials
+    client_id = str(getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", ""))
+    client_secret = str(getattr(settings, "GOOGLE_OAUTH_CLIENT_SECRET", ""))
+
+    gws_creds = {
+        "type": "authorized_user",
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+    }
+
+    share_name = f"ws-{str(tenant.id)[:20]}"
+    creds_json = json.dumps(gws_creds)
+
+    if os.environ.get("AZURE_MOCK", "false").lower() == "true":
+        logger.info("[MOCK] Wrote gws credentials to file share %s", share_name)
+        return
+
+    account_name = str(
+        getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or ""
+    ).strip()
+    if not account_name:
+        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
+
+    from azure.storage.fileshare import ShareFileClient
+
+    from apps.orchestrator.azure_client import get_storage_client
+
+    storage_client = get_storage_client()
+    keys = storage_client.storage_accounts.list_keys(
+        settings.AZURE_RESOURCE_GROUP,
+        account_name,
+    )
+    account_key = keys.keys[0].value
+
+    file_client = ShareFileClient(
+        account_url=f"https://{account_name}.file.core.windows.net",
+        share_name=share_name,
+        file_path="gws-credentials.json",
+        credential=account_key,
+    )
+
+    file_client.upload_file(creds_json.encode(), overwrite=True)
+    logger.info("Wrote gws credentials to file share %s/gws-credentials.json", share_name)
+
+
+def _delete_gws_credentials_from_file_share(tenant: Tenant) -> None:
+    """Delete gws credentials from tenant's file share on disconnect."""
+    share_name = f"ws-{str(tenant.id)[:20]}"
+
+    if os.environ.get("AZURE_MOCK", "false").lower() == "true":
+        logger.info("[MOCK] Deleted gws credentials from file share %s", share_name)
+        return
+
+    account_name = str(
+        getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or ""
+    ).strip()
+    if not account_name:
+        return
+
+    try:
+        from azure.storage.fileshare import ShareFileClient
+
+        from apps.orchestrator.azure_client import get_storage_client
+
+        storage_client = get_storage_client()
+        keys = storage_client.storage_accounts.list_keys(
+            settings.AZURE_RESOURCE_GROUP,
+            account_name,
+        )
+        account_key = keys.keys[0].value
+
+        file_client = ShareFileClient(
+            account_url=f"https://{account_name}.file.core.windows.net",
+            share_name=share_name,
+            file_path="gws-credentials.json",
+            credential=account_key,
+        )
+        file_client.delete_file()
+        logger.info("Deleted gws credentials from file share %s", share_name)
+    except Exception:
+        logger.debug("gws credentials file not found or delete failed for %s", share_name)
+
+
 def connect_integration(
     tenant: Tenant,
     provider: str,
@@ -714,6 +815,18 @@ def connect_integration(
         provider,
         tenant.id,
     )
+
+    # For Google providers: write gws-compatible credentials to file share
+    if provider_config.get("provider_group") == "google":
+        try:
+            _write_gws_credentials_to_file_share(tenant, tokens)
+        except Exception:
+            logger.warning(
+                "Failed to write gws credentials to file share for tenant %s",
+                tenant.id,
+                exc_info=True,
+            )
+
     return integration
 
 
@@ -744,6 +857,14 @@ def disconnect_integration(tenant: Tenant, provider: str) -> None:
                 provider,
                 tenant.id,
             )
+
+    # Clean up gws credentials from file share for Google providers
+    provider_config = OAUTH_PROVIDERS.get(provider, {})
+    if provider_config.get("provider_group") == "google":
+        try:
+            _delete_gws_credentials_from_file_share(tenant)
+        except Exception:
+            logger.debug("gws credentials cleanup failed for tenant %s", tenant.id)
 
     # Hard-delete the record so the UI shows a clean "Connect" state
     # (marking revoked leaves zombie records that confuse the UI and execute flow)
