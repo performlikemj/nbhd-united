@@ -3,7 +3,8 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { CapabilityChips, insertChipTag } from "@/components/capability-chips";
+import { CapabilityChips } from "@/components/capability-chips";
+import { PromptEditor, type PromptEditorHandle } from "@/components/prompt-editor";
 import ScheduleBuilder, { cronToHuman } from "@/components/schedule-builder";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
@@ -170,15 +171,6 @@ function getSaveButtonClass(status: SaveButtonStatus): string {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Helpers                                                            */
-/* ------------------------------------------------------------------ */
-
-function autoResizeTextarea(el: HTMLTextAreaElement) {
-  el.style.height = "auto";
-  el.style.height = `${Math.max(el.scrollHeight, 120)}px`;
-}
-
-/* ------------------------------------------------------------------ */
 /*  Page component                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -209,7 +201,7 @@ export default function SettingsCronJobsPage() {
   const [showCapabilities, setShowCapabilities] = useState(false);
   const [createFeedback, setCreateFeedback] = useState<ActionFeedback>({ status: "idle", text: "" });
   const createTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const createTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const createEditorRef = useRef<PromptEditorHandle>(null);
 
   /* ── Edit form ── */
   const [editingName, setEditingName] = useState<string | null>(null);
@@ -222,7 +214,7 @@ export default function SettingsCronJobsPage() {
   });
   const [editFeedback, setEditFeedback] = useState<ActionFeedback>({ status: "idle", text: "" });
   const editTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const editEditorRef = useRef<PromptEditorHandle>(null);
 
   /* ── Single delete — inline per-row state ── */
   // Map of jobIdentifier → "confirming" | null
@@ -264,13 +256,6 @@ export default function SettingsCronJobsPage() {
       };
     }
   }, [editingName, isMobile]);
-
-  /* ── Auto-resize create textarea when template fills it ── */
-  useEffect(() => {
-    if (createTextareaRef.current && createForm.message) {
-      autoResizeTextarea(createTextareaRef.current);
-    }
-  }, [createForm.message]);
 
   /* ── Cleanup timers on unmount ── */
   useEffect(() => {
@@ -575,34 +560,27 @@ export default function SettingsCronJobsPage() {
                 </select>
               </label>
 
-              <label className="text-sm text-ink-muted md:col-span-2">
-                What should your agent do?
-                <textarea
-                  ref={createTextareaRef}
-                  className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2.5 text-sm"
-                  rows={4}
-                  style={{ minHeight: "120px", maxHeight: "50vh", resize: "vertical" }}
-                  placeholder="Describe the task in plain language — e.g. 'I want [Gmail] to check for important emails and [Weather] to give me a forecast'"
+              <div className="text-sm text-ink-muted md:col-span-2">
+                <span
+                  className="block mb-1 cursor-pointer"
+                  onClick={() => createEditorRef.current?.focus()}
+                >
+                  What should your agent do?
+                </span>
+                <PromptEditor
+                  ref={createEditorRef}
                   value={createForm.message}
-                  onChange={(e) => setCreateForm((prev) => ({ ...prev, message: e.target.value }))}
-                  onInput={(e) => autoResizeTextarea(e.currentTarget)}
-                  required
+                  onChange={(msg) => setCreateForm((prev) => ({ ...prev, message: msg }))}
+                  placeholder="Describe the task in plain language — e.g. 'I want [Google] to check for important emails and [Weather] to give me a forecast'"
                 />
-              </label>
+              </div>
 
               {/* Capability chips — insert tags at cursor */}
               <div className="md:col-span-2">
                 <CapabilityChips
                   message={createForm.message}
-                  textareaRef={createTextareaRef}
-                  onInsertTag={(tag) =>
-                    insertChipTag(
-                      createTextareaRef.current,
-                      tag,
-                      createForm.message,
-                      (msg) => setCreateForm((prev) => ({ ...prev, message: msg })),
-                    )
-                  }
+                  editorRef={createEditorRef}
+                  onInsertTag={(tag) => createEditorRef.current?.insertChip(tag)}
                   connectedProviders={connectedProviders}
                 />
               </div>
@@ -933,30 +911,25 @@ export default function SettingsCronJobsPage() {
                                     </select>
                                   </label>
 
-                                  <label className="text-sm text-ink-muted">
-                                    What should your agent do?
-                                    <textarea
-                                      ref={editTextareaRef}
-                                      className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2.5 text-sm"
-                                      rows={6}
-                                      style={{ minHeight: "150px", maxHeight: "50vh", resize: "vertical" }}
+                                  <div className="text-sm text-ink-muted">
+                                    <span
+                                      className="block mb-1 cursor-pointer"
+                                      onClick={() => editEditorRef.current?.focus()}
+                                    >
+                                      What should your agent do?
+                                    </span>
+                                    <PromptEditor
+                                      ref={editEditorRef}
                                       value={editForm.message}
-                                      onChange={(e) => setEditForm((prev) => ({ ...prev, message: e.target.value }))}
-                                      onInput={(e) => autoResizeTextarea(e.currentTarget)}
+                                      onChange={(msg) => setEditForm((prev) => ({ ...prev, message: msg }))}
+                                      minHeight="150px"
                                     />
-                                  </label>
+                                  </div>
 
                                   <CapabilityChips
                                     message={editForm.message}
-                                    textareaRef={editTextareaRef}
-                                    onInsertTag={(tag) =>
-                                      insertChipTag(
-                                        editTextareaRef.current,
-                                        tag,
-                                        editForm.message,
-                                        (msg) => setEditForm((prev) => ({ ...prev, message: msg })),
-                                      )
-                                    }
+                                    editorRef={editEditorRef}
+                                    onInsertTag={(tag) => editEditorRef.current?.insertChip(tag)}
                                     connectedProviders={connectedProviders}
                                   />
 
@@ -1001,32 +974,26 @@ export default function SettingsCronJobsPage() {
                             </select>
                           </label>
 
-                          <label className="text-sm text-ink-muted md:col-span-2">
-                            What should your agent do?
-                            <textarea
-                              ref={editTextareaRef}
-                              className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2.5 text-sm"
-                              rows={4}
-                              style={{ minHeight: "120px", maxHeight: "50vh", resize: "vertical" }}
+                          <div className="text-sm text-ink-muted md:col-span-2">
+                            <span
+                              className="block mb-1 cursor-pointer"
+                              onClick={() => editEditorRef.current?.focus()}
+                            >
+                              What should your agent do?
+                            </span>
+                            <PromptEditor
+                              ref={editEditorRef}
                               value={editForm.message}
-                              onChange={(e) => setEditForm((prev) => ({ ...prev, message: e.target.value }))}
-                              onInput={(e) => autoResizeTextarea(e.currentTarget)}
+                              onChange={(msg) => setEditForm((prev) => ({ ...prev, message: msg }))}
                             />
-                          </label>
+                          </div>
 
                           {/* Capability chips — insert tags at cursor */}
                           <div className="md:col-span-2">
                             <CapabilityChips
                               message={editForm.message}
-                              textareaRef={editTextareaRef}
-                              onInsertTag={(tag) =>
-                                insertChipTag(
-                                  editTextareaRef.current,
-                                  tag,
-                                  editForm.message,
-                                  (msg) => setEditForm((prev) => ({ ...prev, message: msg })),
-                                )
-                              }
+                              editorRef={editEditorRef}
+                              onInsertTag={(tag) => editEditorRef.current?.insertChip(tag)}
                               connectedProviders={connectedProviders}
                             />
                           </div>

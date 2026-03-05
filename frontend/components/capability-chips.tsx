@@ -2,6 +2,7 @@
 
 import { RefObject } from "react";
 import { SERVICE_ICONS } from "@/components/service-icon";
+import type { PromptEditorHandle } from "@/components/prompt-editor";
 
 /* ------------------------------------------------------------------ */
 /*  Chip data                                                          */
@@ -18,8 +19,7 @@ export interface CapabilityChip {
 }
 
 const INTEGRATION_CHIPS: CapabilityChip[] = [
-  { id: "gmail", icon: "📧", iconUrl: SERVICE_ICONS["gmail"], tag: "Gmail", group: "integration", requiresConnection: true, provider: "gmail" },
-  { id: "google-calendar", icon: "📅", iconUrl: SERVICE_ICONS["google-calendar"], tag: "Google Calendar", group: "integration", requiresConnection: true, provider: "google-calendar" },
+  { id: "google", icon: "🔗", iconUrl: SERVICE_ICONS["google"], tag: "Google", group: "integration", requiresConnection: true, provider: "google" },
   { id: "reddit", icon: "🔴", iconUrl: SERVICE_ICONS["reddit"], tag: "Reddit", group: "integration", requiresConnection: true, provider: "reddit" },
 ];
 
@@ -43,57 +43,12 @@ const CHIP_GROUPS: { label: string; chips: CapabilityChip[] }[] = [
 ];
 
 /* ------------------------------------------------------------------ */
-/*  Insert / toggle utility                                            */
-/* ------------------------------------------------------------------ */
-
-export function insertChipTag(
-  textarea: HTMLTextAreaElement | null,
-  tag: string,
-  message: string,
-  setMessage: (msg: string) => void,
-) {
-  const tagStr = `[${tag}]`;
-
-  // If tag already exists, remove it (toggle off)
-  if (message.includes(tagStr)) {
-    setMessage(message.replaceAll(tagStr, "").replace(/ {2,}/g, " ").trim());
-    return;
-  }
-
-  // If no textarea ref (shouldn't happen), just append
-  if (!textarea) {
-    const separator = message.trim() ? " " : "";
-    setMessage(message.trim() + separator + tagStr);
-    return;
-  }
-
-  // Insert at cursor position
-  const start = textarea.selectionStart;
-  const end = textarea.selectionEnd;
-  const before = message.slice(0, start);
-  const after = message.slice(end);
-  const needsSpaceBefore = before.length > 0 && !before.endsWith(" ") && !before.endsWith("\n");
-  const needsSpaceAfter = after.length > 0 && !after.startsWith(" ") && !after.startsWith("\n");
-  const inserted = (needsSpaceBefore ? " " : "") + tagStr + (needsSpaceAfter ? " " : "");
-  const newMessage = before + inserted + after;
-
-  setMessage(newMessage);
-
-  // Restore cursor after the inserted tag
-  requestAnimationFrame(() => {
-    const newPos = start + inserted.length;
-    textarea.focus();
-    textarea.setSelectionRange(newPos, newPos);
-  });
-}
-
-/* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
 interface CapabilityChipsProps {
   message: string;
-  textareaRef: RefObject<HTMLTextAreaElement | null>;
+  editorRef: RefObject<PromptEditorHandle | null>;
   onInsertTag: (tag: string) => void;
   connectedProviders: Set<string>;
 }
