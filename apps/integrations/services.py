@@ -354,6 +354,11 @@ def get_provider_client_credentials(provider: str) -> tuple[str, str]:
 
 def get_key_vault_secret_name(tenant: Tenant, provider: str) -> str:
     """Get the Key Vault secret name for a tenant's integration."""
+    if not tenant.key_vault_prefix:
+        raise ValueError(
+            f"Tenant {tenant.id} has no key_vault_prefix — "
+            f"cannot build Key Vault secret name for {provider}"
+        )
     return f"{tenant.key_vault_prefix}-{provider}-token"
 
 
