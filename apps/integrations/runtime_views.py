@@ -389,7 +389,7 @@ class RuntimeGmailMessagesView(APIView):
         query = request.query_params.get("q", "")
 
         try:
-            token = get_valid_provider_access_token(tenant=tenant, provider="gmail")
+            token = get_valid_provider_access_token(tenant=tenant, provider="google")
             payload = list_gmail_messages(
                 access_token=token.access_token,
                 query=query,
@@ -422,7 +422,7 @@ class RuntimeGmailMessagesView(APIView):
 
         return Response(
             {
-                "provider": "gmail",
+                "provider": "google",
                 "tenant_id": str(tenant.id),
                 **payload,
             },
@@ -460,7 +460,7 @@ class RuntimeCalendarEventsView(APIView):
         try:
             token = get_valid_provider_access_token(
                 tenant=tenant,
-                provider="google-calendar",
+                provider="google",
             )
             payload = list_calendar_events(
                 access_token=token.access_token,
@@ -495,7 +495,7 @@ class RuntimeCalendarEventsView(APIView):
 
         return Response(
             {
-                "provider": "google-calendar",
+                "provider": "google",
                 "tenant_id": str(tenant.id),
                 **payload,
             },
@@ -541,7 +541,7 @@ class RuntimeGmailMessageDetailView(APIView):
             )
 
         try:
-            token = get_valid_provider_access_token(tenant=tenant, provider="gmail")
+            token = get_valid_provider_access_token(tenant=tenant, provider="google")
             payload = get_gmail_message_detail(
                 access_token=token.access_token,
                 message_id=str(message_id),
@@ -575,7 +575,7 @@ class RuntimeGmailMessageDetailView(APIView):
 
         return Response(
             {
-                "provider": "gmail",
+                "provider": "google",
                 "tenant_id": str(tenant.id),
                 **payload,
             },
@@ -601,7 +601,7 @@ class RuntimeCalendarFreeBusyView(APIView):
         try:
             token = get_valid_provider_access_token(
                 tenant=tenant,
-                provider="google-calendar",
+                provider="google",
             )
             payload = get_calendar_freebusy(
                 access_token=token.access_token,
@@ -635,7 +635,7 @@ class RuntimeCalendarFreeBusyView(APIView):
 
         return Response(
             {
-                "provider": "google-calendar",
+                "provider": "google",
                 "tenant_id": str(tenant.id),
                 **payload,
             },

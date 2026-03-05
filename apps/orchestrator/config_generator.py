@@ -539,7 +539,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
 
         has_google = Integration.objects.filter(
             tenant=tenant,
-            provider="gmail",
+            provider="google",
             status=Integration.Status.ACTIVE,
         ).exists()
 

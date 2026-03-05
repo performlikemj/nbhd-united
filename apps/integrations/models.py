@@ -14,8 +14,7 @@ class Integration(models.Model):
     """An OAuth integration connecting a tenant to an external service."""
 
     class Provider(models.TextChoices):
-        GMAIL = "gmail", "Gmail"
-        GOOGLE_CALENDAR = "google-calendar", "Google Calendar"
+        GOOGLE = "google", "Google Workspace"
         SAUTAI = "sautai", "Sautai"
         REDDIT = "reddit", "Reddit"
 

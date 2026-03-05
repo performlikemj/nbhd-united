@@ -23,7 +23,7 @@ ON_DEMAND_REFRESH_LEEWAY_SECONDS = 120
 # Composio managed-auth helpers
 # ---------------------------------------------------------------------------
 
-COMPOSIO_MANAGED_PROVIDERS: set[str] = {"gmail", "google-calendar", "reddit"}
+COMPOSIO_MANAGED_PROVIDERS: set[str] = {"reddit"}
 
 _composio_client = None
 
@@ -65,8 +65,6 @@ def _get_composio_client():
 def _get_composio_auth_config_id(provider: str) -> str:
     """Map a provider name to its Composio auth-config ID from settings."""
     mapping = {
-        "gmail": getattr(settings, "COMPOSIO_GMAIL_AUTH_CONFIG_ID", ""),
-        "google-calendar": getattr(settings, "COMPOSIO_GCAL_AUTH_CONFIG_ID", ""),
         "reddit": getattr(settings, "COMPOSIO_REDDIT_AUTH_CONFIG_ID", ""),
     }
     config_id = mapping.get(provider, "")
@@ -288,7 +286,7 @@ class ProviderAccessToken:
 
 # OAuth provider configs
 OAUTH_PROVIDERS: dict[str, dict[str, Any]] = {
-    "gmail": {
+    "google": {
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
         "token_url": "https://oauth2.googleapis.com/token",
         "scopes": [
@@ -301,16 +299,6 @@ OAUTH_PROVIDERS: dict[str, dict[str, Any]] = {
         ],
         "provider_group": "google",
     },
-    "google-calendar": {
-        "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
-        "token_url": "https://oauth2.googleapis.com/token",
-        "scopes": [
-            "openid",
-            "email",
-            "https://www.googleapis.com/auth/calendar.readonly",
-        ],
-        "provider_group": "google",
-    },
     "sautai": {
         "auth_url": "https://app.sautai.com/oauth/authorize",
         "token_url": "https://app.sautai.com/oauth/token",
@@ -320,8 +308,7 @@ OAUTH_PROVIDERS: dict[str, dict[str, Any]] = {
 }
 
 PROVIDER_GROUP = {
-    Integration.Provider.GMAIL: "google",
-    Integration.Provider.GOOGLE_CALENDAR: "google",
+    Integration.Provider.GOOGLE: "google",
     Integration.Provider.SAUTAI: "sautai",
 }
 
@@ -337,13 +324,13 @@ CLIENT_CREDENTIALS_BY_GROUP = {
 }
 
 READ_COMPATIBLE_SCOPES_BY_PROVIDER: dict[str, set[str]] = {
-    Integration.Provider.GMAIL: {
+    Integration.Provider.GOOGLE: {
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.modify",
-    },
-    Integration.Provider.GOOGLE_CALENDAR: {
         "https://www.googleapis.com/auth/calendar.readonly",
         "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/tasks",
     },
 }
 

@@ -191,7 +191,20 @@ class IntegrationViewSet(viewsets.ReadOnlyModelViewSet):
     def disconnect(self, request, pk=None):
         """Disconnect an integration — revokes tokens."""
         integration = self.get_object()
-        disconnect_integration(integration.tenant, integration.provider)
+        tenant = integration.tenant
+        disconnect_integration(tenant, integration.provider)
+
+        # Regenerate config to remove skills/env vars
+        try:
+            from apps.orchestrator.services import update_tenant_config
+            update_tenant_config(str(tenant.id))
+        except Exception:
+            logger.warning(
+                "Config regen after disconnect failed for tenant %s (non-fatal)",
+                tenant.id,
+                exc_info=True,
+            )
+
         return Response({"status": "disconnected"}, status=status.HTTP_200_OK)
 
 
@@ -328,6 +341,17 @@ class OAuthCallbackView(APIView):
                 tokens=tokens,
                 provider_email=provider_email,
             )
+
+            # Regenerate container config so new skills/env vars take effect
+            try:
+                from apps.orchestrator.services import update_tenant_config
+                update_tenant_config(str(user.tenant.id))
+            except Exception:
+                logger.warning(
+                    "Config regen after OAuth connect failed for tenant %s (non-fatal)",
+                    user.tenant.id,
+                    exc_info=True,
+                )
 
             return _redirect_to_integrations(frontend_url, {"connected": provider})
         except httpx.HTTPError:

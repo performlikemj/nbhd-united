@@ -39,7 +39,7 @@ class IntegrationServiceTest(TestCase):
     def test_connect_integration_creates_record(self, _mock_store_tokens):
         integration = connect_integration(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             tokens={"access_token": "a", "refresh_token": "r", "expires_in": 3600},
             provider_email="user@example.com",
         )
@@ -53,14 +53,14 @@ class IntegrationServiceTest(TestCase):
     def test_connect_integration_update_preserves_email_when_none_passed(self, _mock_store_tokens):
         connect_integration(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             tokens={"access_token": "a", "refresh_token": "r", "expires_in": 3600},
             provider_email="kept@example.com",
         )
 
         integration = connect_integration(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             tokens={"access_token": "b", "refresh_token": "r", "expires_in": 3600},
             provider_email=None,
         )
@@ -71,16 +71,16 @@ class IntegrationServiceTest(TestCase):
     def test_disconnect_integration_deletes_record(self, mock_delete_tokens):
         integration = Integration.objects.create(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             status=Integration.Status.ACTIVE,
         )
         integration_id = integration.id
 
-        disconnect_integration(self.tenant, "gmail")
+        disconnect_integration(self.tenant, "google")
 
         # Record should be hard-deleted (not just marked revoked)
         self.assertFalse(Integration.objects.filter(id=integration_id).exists())
-        mock_delete_tokens.assert_called_once_with(self.tenant, "gmail")
+        mock_delete_tokens.assert_called_once_with(self.tenant, "google")
 
     def test_connect_unknown_provider_raises(self):
         with self.assertRaises(ValueError):
@@ -104,7 +104,7 @@ class IntegrationServiceTest(TestCase):
 
         integration = refresh_integration_tokens(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             refresh_token="refresh-token",
             client_id="client-id",
             client_secret="client-secret",
@@ -122,10 +122,10 @@ class IntegrationServiceTest(TestCase):
         with patch.dict(os.environ, {"AZURE_MOCK": "true"}):
             from . import services as integration_services
 
-            secret_name = get_key_vault_secret_name(self.tenant, "gmail")
+            secret_name = get_key_vault_secret_name(self.tenant, "google")
             integration_services._MOCK_KEY_VAULT_STORE[secret_name] = json.dumps(["x"])
 
-        payload = load_tokens_from_key_vault(self.tenant, "gmail")
+        payload = load_tokens_from_key_vault(self.tenant, "google")
 
         self.assertIsNone(payload)
 
@@ -193,23 +193,23 @@ class IntegrationCredentialBrokerTest(TestCase):
 
     def test_get_valid_provider_access_token_requires_connected_integration(self):
         with self.assertRaises(IntegrationNotConnectedError):
-            get_valid_provider_access_token(self.tenant, "gmail")
+            get_valid_provider_access_token(self.tenant, "google")
 
     def test_get_valid_provider_access_token_requires_active_status(self):
         Integration.objects.create(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             status=Integration.Status.REVOKED,
         )
 
         with self.assertRaises(IntegrationInactiveError):
-            get_valid_provider_access_token(self.tenant, "gmail")
+            get_valid_provider_access_token(self.tenant, "google")
 
     @patch("apps.integrations.services.load_tokens_from_key_vault")
     def test_get_valid_provider_access_token_rejects_insufficient_scope(self, mock_load_tokens):
         Integration.objects.create(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             status=Integration.Status.ACTIVE,
             scopes=["https://www.googleapis.com/auth/gmail.send"],
             token_expires_at=timezone.now() + timedelta(hours=1),
@@ -217,20 +217,20 @@ class IntegrationCredentialBrokerTest(TestCase):
         mock_load_tokens.return_value = {"access_token": "access-token"}
 
         with self.assertRaises(IntegrationScopeError):
-            get_valid_provider_access_token(self.tenant, "gmail")
+            get_valid_provider_access_token(self.tenant, "google")
 
     @patch("apps.integrations.services.load_tokens_from_key_vault")
     def test_get_valid_provider_access_token_accepts_legacy_gmail_modify_scope(self, mock_load_tokens):
         Integration.objects.create(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             status=Integration.Status.ACTIVE,
             scopes=["https://www.googleapis.com/auth/gmail.modify"],
             token_expires_at=timezone.now() + timedelta(hours=1),
         )
         mock_load_tokens.return_value = {"access_token": "access-token"}
 
-        result = get_valid_provider_access_token(self.tenant, "gmail")
+        result = get_valid_provider_access_token(self.tenant, "google")
 
         self.assertEqual(result.access_token, "access-token")
 
@@ -243,7 +243,7 @@ class IntegrationCredentialBrokerTest(TestCase):
     ):
         Integration.objects.create(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             status=Integration.Status.ACTIVE,
             token_expires_at=timezone.now() + timedelta(hours=1),
         )
@@ -252,7 +252,7 @@ class IntegrationCredentialBrokerTest(TestCase):
             "refresh_token": "refresh-token",
         }
 
-        result = get_valid_provider_access_token(self.tenant, "gmail")
+        result = get_valid_provider_access_token(self.tenant, "google")
 
         self.assertEqual(result.access_token, "access-token")
         self.assertEqual(result.provider, "gmail")
@@ -268,7 +268,7 @@ class IntegrationCredentialBrokerTest(TestCase):
     ):
         integration = Integration.objects.create(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             status=Integration.Status.ACTIVE,
             token_expires_at=timezone.now() + timedelta(seconds=30),
         )
@@ -279,7 +279,7 @@ class IntegrationCredentialBrokerTest(TestCase):
             {"access_token": "new-access", "refresh_token": "refresh-token"},
         ]
 
-        result = get_valid_provider_access_token(self.tenant, "gmail")
+        result = get_valid_provider_access_token(self.tenant, "google")
 
         self.assertEqual(result.access_token, "new-access")
         mock_refresh_tokens.assert_called_once()
@@ -288,14 +288,14 @@ class IntegrationCredentialBrokerTest(TestCase):
     def test_get_valid_provider_access_token_marks_expired_without_refresh_token(self, mock_load_tokens):
         integration = Integration.objects.create(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             status=Integration.Status.ACTIVE,
             token_expires_at=timezone.now() + timedelta(seconds=30),
         )
         mock_load_tokens.return_value = {"access_token": "access-only"}
 
         with self.assertRaises(IntegrationTokenDataError):
-            get_valid_provider_access_token(self.tenant, "gmail")
+            get_valid_provider_access_token(self.tenant, "google")
 
         integration.refresh_from_db()
         self.assertEqual(integration.status, Integration.Status.EXPIRED)
@@ -308,14 +308,14 @@ class IntegrationCredentialBrokerTest(TestCase):
     def test_get_valid_provider_access_token_marks_error_when_provider_config_missing(self, mock_load_tokens):
         integration = Integration.objects.create(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             status=Integration.Status.ACTIVE,
             token_expires_at=timezone.now() + timedelta(seconds=30),
         )
         mock_load_tokens.return_value = {"refresh_token": "refresh-token"}
 
         with self.assertRaises(IntegrationProviderConfigError):
-            get_valid_provider_access_token(self.tenant, "gmail")
+            get_valid_provider_access_token(self.tenant, "google")
 
         integration.refresh_from_db()
         self.assertEqual(integration.status, Integration.Status.ERROR)
@@ -329,7 +329,7 @@ class IntegrationCredentialBrokerTest(TestCase):
     ):
         integration = Integration.objects.create(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             status=Integration.Status.ACTIVE,
             token_expires_at=timezone.now() + timedelta(seconds=30),
         )
@@ -343,7 +343,7 @@ class IntegrationCredentialBrokerTest(TestCase):
         )
 
         with self.assertRaises(IntegrationRefreshError):
-            get_valid_provider_access_token(self.tenant, "gmail")
+            get_valid_provider_access_token(self.tenant, "google")
 
         integration.refresh_from_db()
         self.assertEqual(integration.status, Integration.Status.EXPIRED)
@@ -398,12 +398,12 @@ class ComposioConnectedAccountsAPITest(TestCase):
 
         Integration.objects.create(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             status=Integration.Status.ACTIVE,
             composio_connected_account_id="conn-456",
         )
 
-        result = get_valid_provider_access_token(self.tenant, "gmail")
+        result = get_valid_provider_access_token(self.tenant, "google")
 
         self.assertEqual(result.access_token, "real-token")
         self.assertEqual(result.provider, "gmail")
@@ -420,12 +420,12 @@ class ComposioConnectedAccountsAPITest(TestCase):
 
         Integration.objects.create(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             status=Integration.Status.ACTIVE,
             composio_connected_account_id="conn-789",
         )
 
-        result = get_valid_provider_access_token(self.tenant, "gmail")
+        result = get_valid_provider_access_token(self.tenant, "google")
 
         self.assertEqual(result.access_token, "header-token")
 
@@ -438,13 +438,13 @@ class ComposioConnectedAccountsAPITest(TestCase):
 
         integration = Integration.objects.create(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             status=Integration.Status.ACTIVE,
             composio_connected_account_id="conn-masked",
         )
 
         with self.assertRaises(IntegrationTokenDataError):
-            get_valid_provider_access_token(self.tenant, "gmail")
+            get_valid_provider_access_token(self.tenant, "google")
 
         integration.refresh_from_db()
         self.assertEqual(integration.status, Integration.Status.ERROR)
@@ -458,12 +458,12 @@ class ComposioConnectedAccountsAPITest(TestCase):
 
         integration = Integration.objects.create(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             status=Integration.Status.ERROR,
             composio_connected_account_id="conn-recover",
         )
 
-        result = get_valid_provider_access_token(self.tenant, "gmail")
+        result = get_valid_provider_access_token(self.tenant, "google")
 
         self.assertEqual(result.access_token, "recovered-token")
         integration.refresh_from_db()
@@ -477,10 +477,10 @@ class ComposioConnectedAccountsAPITest(TestCase):
 
         Integration.objects.create(
             tenant=self.tenant,
-            provider="gmail",
+            provider="google",
             status=Integration.Status.ACTIVE,
             composio_connected_account_id="conn-fail",
         )
 
         with self.assertRaises(IntegrationRefreshError):
-            get_valid_provider_access_token(self.tenant, "gmail")
+            get_valid_provider_access_token(self.tenant, "google")

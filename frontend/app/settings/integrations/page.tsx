@@ -21,8 +21,11 @@ import type { TelegramLinkResponse, LineLinkResponse } from "@/lib/api";
 import { ServiceIcon } from "@/components/service-icon";
 
 const providers: { key: string; label: string; description?: string }[] = [
-  { key: "gmail", label: "Gmail" },
-  { key: "google-calendar", label: "Google Calendar" },
+  {
+    key: "google",
+    label: "Google",
+    description: "Gmail, Calendar, Drive & Tasks",
+  },
   {
     key: "reddit",
     label: "Reddit",
