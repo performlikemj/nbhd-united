@@ -2,8 +2,7 @@
 export const SERVICE_ICONS: Record<string, string> = {
   telegram: "https://telegram.org/favicon.ico",
   line: "https://line.me/favicon.ico",
-  gmail: "https://ssl.gstatic.com/ui/v1/icons/mail/rfr/gmail.ico",
-  "google-calendar": "https://calendar.google.com/googlecalendar/images/favicon_v2014_1.ico",
+  google: "https://www.google.com/favicon.ico",
   reddit: "https://www.redditstatic.com/desktop2x/img/favicon/favicon-32x32.png",
 };
 

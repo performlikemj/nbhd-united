@@ -23,7 +23,7 @@ class RefreshExpiringIntegrationsTaskTest(TestCase):
         tenant = create_tenant(display_name="Refresh User", telegram_chat_id=616161)
         self.integration = Integration.objects.create(
             tenant=tenant,
-            provider=Integration.Provider.GMAIL,
+            provider=Integration.Provider.GOOGLE,
             status=Integration.Status.ACTIVE,
             token_expires_at=timezone.now() + timedelta(minutes=5),
         )

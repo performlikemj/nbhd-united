@@ -51,7 +51,7 @@ class RuntimeIntegrationViewsTest(TestCase):
         mock_broker.return_value = ProviderAccessToken(
             access_token="access-token",
             expires_at=None,
-            provider="gmail",
+            provider="google",
             tenant_id=str(self.tenant.id),
         )
         mock_list_messages.return_value = {
@@ -80,7 +80,7 @@ class RuntimeIntegrationViewsTest(TestCase):
         self.assertEqual(body["tenant_id"], str(self.tenant.id))
         self.assertEqual(body["result_size_estimate"], 1)
         self.assertEqual(len(body["messages"]), 1)
-        mock_broker.assert_called_once_with(tenant=self.tenant, provider="gmail")
+        mock_broker.assert_called_once_with(tenant=self.tenant, provider="google")
 
     @patch("apps.integrations.runtime_views.get_valid_provider_access_token")
     def test_runtime_gmail_maps_not_connected_error(self, mock_broker):
@@ -100,7 +100,7 @@ class RuntimeIntegrationViewsTest(TestCase):
         mock_broker.return_value = ProviderAccessToken(
             access_token="access-token",
             expires_at=None,
-            provider="gmail",
+            provider="google",
             tenant_id=str(self.tenant.id),
         )
         req = httpx.Request("GET", "https://gmail.googleapis.com/gmail/v1/users/me/messages")
@@ -126,7 +126,7 @@ class RuntimeIntegrationViewsTest(TestCase):
         mock_broker.return_value = ProviderAccessToken(
             access_token="access-token",
             expires_at=None,
-            provider="google-calendar",
+            provider="google",
             tenant_id=str(self.tenant.id),
         )
         mock_list_events.return_value = {
@@ -152,7 +152,7 @@ class RuntimeIntegrationViewsTest(TestCase):
         body = response.json()
         self.assertEqual(body["provider"], "google-calendar")
         self.assertEqual(len(body["events"]), 1)
-        mock_broker.assert_called_once_with(tenant=self.tenant, provider="google-calendar")
+        mock_broker.assert_called_once_with(tenant=self.tenant, provider="google")
 
     def test_runtime_calendar_rejects_non_integer_max_results(self):
         response = self.client.get(
@@ -168,7 +168,7 @@ class RuntimeIntegrationViewsTest(TestCase):
         mock_broker.return_value = ProviderAccessToken(
             access_token="access-token",
             expires_at=None,
-            provider="gmail",
+            provider="google",
             tenant_id=str(self.tenant.id),
         )
         mock_detail.return_value = {
@@ -220,7 +220,7 @@ class RuntimeIntegrationViewsTest(TestCase):
         mock_broker.return_value = ProviderAccessToken(
             access_token="access-token",
             expires_at=None,
-            provider="google-calendar",
+            provider="google",
             tenant_id=str(self.tenant.id),
         )
         mock_freebusy.return_value = {
