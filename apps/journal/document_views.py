@@ -287,11 +287,15 @@ class SidebarTreeView(APIView):
 
     def get(self, request):
         tenant = _get_tenant(request.user)
+        today = str(timezone.now().date())
         documents = Document.objects.filter(tenant=tenant).values("kind", "slug", "title", "updated_at")
 
         # Group by kind
         tree: dict[str, list] = defaultdict(list)
         for doc in documents:
+            # Hide future daily notes from sidebar
+            if doc["kind"] == "daily" and doc["slug"] > today:
+                continue
             tree[doc["kind"]].append({
                 "slug": doc["slug"],
                 "title": doc["title"],

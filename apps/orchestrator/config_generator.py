@@ -158,11 +158,17 @@ _BACKGROUND_TASKS_PROMPT = (
     "3. Review long-term memory and recent daily notes\n"
     "4. Curate long-term memory if there are new patterns, preferences, or insights\n"
     "5. Check recent daily notes and the tasks document for any unaddressed user requests or open tasks\n"
-    "6. If you find pending items, append a reminder to tomorrow's daily note\n"
+    "6. If you find pending items or unaddressed requests, route them to the right document:\n"
+    "   - Action items → tasks document (`nbhd_document_set` with kind='tasks', slug='tasks')\n"
+    "   - Goals or aspirations → goals document (`nbhd_document_set` with kind='goal', slug='goals')\n"
+    "   - Ideas or brainstorms → ideas document (`nbhd_document_set` with kind='ideas', slug='ideas')\n"
+    "   - Lasting patterns or preferences → memory (`nbhd_memory_update`)\n"
+    "   The morning briefing reads all of these and will surface them naturally.\n"
     "7. Check the lessons constellation — if there are new approved lessons, the clusters "
     "and positions may need refreshing. The system handles this automatically.\n\n"
     "**Do NOT message the user. Do NOT call nbhd_send_to_user. This is a silent background run.**\n"
-    "Log a brief summary of what you did to tomorrow's daily note.\n"
+    "**Do NOT write to tomorrow's daily note. Update tasks, memory, or ideas documents instead — "
+    "the morning briefing will read those and surface anything relevant.**\n"
 )
 
 # Model mapping by tier

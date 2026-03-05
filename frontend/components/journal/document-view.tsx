@@ -350,6 +350,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
                   type="date"
                   className="absolute inset-0 cursor-pointer opacity-0"
                   value={effectiveSlug}
+                  max={todayISO()}
                   onChange={(e) => {
                     if (e.target.value) {
                       onNavigate?.("daily", e.target.value);
