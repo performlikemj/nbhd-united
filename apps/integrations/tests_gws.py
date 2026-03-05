@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase, override_settings
@@ -40,12 +41,12 @@ GOOGLE_PROVIDER = "google"
 @override_settings(
     GOOGLE_OAUTH_CLIENT_ID="test-client-id",
     GOOGLE_OAUTH_CLIENT_SECRET="test-client-secret",
-    AZURE_MOCK="true",
 )
+@patch("apps.integrations.services.store_tokens_in_key_vault", return_value="mock-secret")
 class GWSCredentialWriteTest(TestCase):
     """Test that Google OAuth tokens get written as gws credentials."""
 
-    def test_connect_gmail_writes_gws_creds(self):
+    def test_connect_gmail_writes_gws_creds(self, _mock_kv):
         """Connecting Gmail writes gws-credentials.json to file share."""
         from apps.integrations.services import connect_integration
 
@@ -65,7 +66,7 @@ class GWSCredentialWriteTest(TestCase):
             connect_integration(tenant, "google", tokens, provider_email="test@gmail.com")
             mock_write.assert_called_once_with(tenant, tokens)
 
-    def test_connect_google_writes_gws_creds_with_email(self):
+    def test_connect_google_writes_gws_creds_with_email(self, _mock_kv):
         """Connecting Google with provider_email stores email on integration."""
         from apps.integrations.services import connect_integration
 
@@ -86,7 +87,7 @@ class GWSCredentialWriteTest(TestCase):
             )
             self.assertEqual(integration.provider_email, "user@gmail.com")
 
-    def test_connect_non_google_does_not_write_gws(self):
+    def test_connect_non_google_does_not_write_gws(self, _mock_kv):
         """Non-Google providers don't trigger gws credential write."""
         from apps.integrations.services import connect_integration
 
@@ -101,7 +102,7 @@ class GWSCredentialWriteTest(TestCase):
             connect_integration(tenant, "sautai", tokens)
             mock_write.assert_not_called()
 
-    def test_gws_creds_format(self):
+    def test_gws_creds_format(self, _mock_kv):
         """Verify the gws credentials JSON format."""
         from apps.integrations.services import _write_gws_credentials_to_file_share
 
@@ -115,10 +116,11 @@ class GWSCredentialWriteTest(TestCase):
         }
 
         # AZURE_MOCK=true so it just logs
-        _write_gws_credentials_to_file_share(tenant, tokens)
+        with patch.dict(os.environ, {"AZURE_MOCK": "true"}):
+            _write_gws_credentials_to_file_share(tenant, tokens)
         # No assertion needed — just verify it doesn't crash in mock mode
 
-    def test_gws_creds_no_refresh_token(self):
+    def test_gws_creds_no_refresh_token(self, _mock_kv):
         """No refresh_token = no gws creds written (just a warning)."""
         from apps.integrations.services import _write_gws_credentials_to_file_share
 
@@ -127,7 +129,7 @@ class GWSCredentialWriteTest(TestCase):
 
         tokens = {"access_token": "ya29.test"}  # No refresh_token
 
-        # Should not crash, just log a warning
+        # No refresh_token → early return with warning (no Azure call)
         _write_gws_credentials_to_file_share(tenant, tokens)
 
 
@@ -136,7 +138,6 @@ class GWSCredentialWriteTest(TestCase):
 # ────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(AZURE_MOCK="true")
 class GWSDisconnectTest(TestCase):
 
     def test_disconnect_gmail_deletes_gws_creds(self):
@@ -189,7 +190,6 @@ class GWSDisconnectTest(TestCase):
 # ────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(AZURE_MOCK="true")
 class GWSConfigGeneratorTest(TestCase):
     """Test that config generator includes gws skills when Google is connected."""
 
