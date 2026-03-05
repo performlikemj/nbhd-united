@@ -22,6 +22,7 @@ from apps.lessons.models import Lesson
 from apps.lessons.serializers import LessonSerializer
 from apps.lessons.services import search_lessons
 from apps.journal.document_views import _default_markdown, _default_title
+from apps.orchestrator.personas import get_persona
 from apps.journal.services import (
     append_log_to_note,
     get_or_seed_note_template,
@@ -58,6 +59,12 @@ from .services import (
     get_valid_provider_access_token,
     initiate_composio_connection,
 )
+
+
+def _get_persona_name(tenant) -> str:
+    """Get the persona display name for a tenant, defaulting to 'Neighbor'."""
+    persona_key = (tenant.user.preferences or {}).get("agent_persona", "neighbor")
+    return get_persona(persona_key)["identity"]["name"]
 
 
 def _parse_positive_int(
@@ -762,7 +769,8 @@ class RuntimeDailyNoteAppendView(APIView):
             # Quick-log append with timestamp
             now = _tenant_now(tenant)
             timestamp = now.strftime("%H:%M")
-            entry = f"- **{timestamp}** (agent) — {content}"
+            persona_name = _get_persona_name(tenant)
+            entry = f"- **{timestamp}** ({persona_name}) — {content}"
             doc.markdown = (doc.markdown or "").rstrip() + "\n\n" + entry + "\n"
 
         doc.save()
@@ -1418,7 +1426,8 @@ class RuntimeDocumentAppendView(APIView):
         )
 
         time_str = _tenant_now(tenant).strftime("%H:%M")
-        entry_block = f"\n\n### {time_str} — Agent\n{content}\n"
+        persona_name = _get_persona_name(tenant)
+        entry_block = f"\n\n### {time_str} — {persona_name}\n{content}\n"
         doc.markdown = (doc.markdown or "").rstrip() + entry_block
         doc.save()
 

@@ -11,6 +11,14 @@ from django.utils import timezone as tz
 from .models import DailyNote, NoteTemplate, Document
 
 
+def _get_persona_name(tenant) -> str:
+    """Get the persona display name for a tenant, defaulting to 'Neighbor'."""
+    from apps.orchestrator.personas import get_persona
+
+    persona_key = (tenant.user.preferences or {}).get("agent_persona", "neighbor")
+    return get_persona(persona_key)["identity"]["name"]
+
+
 DEFAULT_TEMPLATE_SLUG = "default"
 DEFAULT_TEMPLATE_NAME = "Default"
 
@@ -437,7 +445,7 @@ def append_log_to_note(
     if not time_str:
         time_str = tz.now().strftime("%H:%M")
 
-    author_label = "Agent" if author == "agent" else "MJ"
+    author_label = _get_persona_name(note.tenant) if author == "agent" else "MJ"
     entry_block = f"\n\n### {time_str} \u2014 {author_label}\n{content.strip()}\n"
 
     # Check if there is a log section we can append within.

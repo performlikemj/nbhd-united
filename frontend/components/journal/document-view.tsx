@@ -425,17 +425,37 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
       {/* Content — desktop edit inline, or view mode */}
       <div className="flex-1 overflow-x-hidden overflow-y-auto">
         {editing && isMobile !== true ? (
-          <div className="p-4 lg:p-6">
-            <MarkdownEditor
-              value={draft}
-              onChange={setDraft}
-              onSave={handleSave}
-              onHelpToggle={() => setHelpOpen(true)}
-              autoFocus
-              cursorKey={`doc-cursor-${kind}-${effectiveSlug}`}
-              minRows={Math.max(20, (draft.split("\n").length + 5))}
-            />
-          </div>
+          <>
+            <div className="p-4 lg:p-6">
+              <MarkdownEditor
+                value={draft}
+                onChange={setDraft}
+                onSave={handleSave}
+                onHelpToggle={() => setHelpOpen(true)}
+                autoFocus
+                cursorKey={`doc-cursor-${kind}-${effectiveSlug}`}
+                minRows={Math.max(20, (draft.split("\n").length + 5))}
+              />
+            </div>
+            {/* Sticky bottom save bar — always accessible while editing */}
+            <div className="sticky bottom-0 z-10 flex items-center justify-end gap-2 border-t border-border bg-surface/90 backdrop-blur-sm px-4 py-2 lg:px-6">
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={updateMutation.isPending}
+                className="rounded-full bg-accent px-3 py-1.5 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55 min-h-[44px]"
+              >
+                {updateMutation.isPending ? "..." : "Save"}
+              </button>
+              <button
+                type="button"
+                onClick={handleCancel}
+                className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong min-h-[44px]"
+              >
+                Cancel
+              </button>
+            </div>
+          </>
         ) : (
           <div
             className={
