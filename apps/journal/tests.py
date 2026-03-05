@@ -624,7 +624,7 @@ class RuntimeToFrontendIntegrationTest(TestCase):
         resp = self.client.get("/api/v1/journal/documents/daily/2026-02-17/")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("Checked email", resp.data["markdown"])
-        self.assertIn("(agent)", resp.data["markdown"])
+        self.assertIn("(Neighbor)", resp.data["markdown"])
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")
