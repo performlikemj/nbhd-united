@@ -25,13 +25,13 @@ export const metadata: Metadata = {
   title: "Neighborhood United",
   description: "Your AI-powered personal assistant.",
   icons: {
-    icon: "/images/icon-white.jpg",
-    apple: "/images/icon-white.jpg",
+    icon: "/images/icon-white.png",
+    apple: "/images/icon-white.png",
   },
   openGraph: {
     title: "Neighborhood United",
     description: "Your AI-powered personal assistant.",
-    images: [{ url: "/images/og-image.jpg", width: 1200, height: 630 }],
+    images: [{ url: "/images/logo-textured.png", width: 1200, height: 630 }],
   },
 };
 

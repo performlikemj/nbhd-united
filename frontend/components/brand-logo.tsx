@@ -9,7 +9,7 @@ export function BrandLogo({ size = 24, showText = true }: { size?: number; showT
   return (
     <Link href="/" className="flex items-center gap-2 transition hover:opacity-80">
       <Image
-        src="/images/icon-white.jpg"
+        src="/images/icon-white.png"
         alt="Neighborhood United"
         width={size}
         height={size}
@@ -17,7 +17,7 @@ export function BrandLogo({ size = 24, showText = true }: { size?: number; showT
         priority
       />
       <Image
-        src="/images/logo-light.jpg"
+        src="/images/logo-light.png"
         alt="Neighborhood United"
         width={size}
         height={size}
@@ -39,7 +39,7 @@ export function BrandIcon({ size = 28 }: { size?: number }) {
   return (
     <Link href="/" className="transition hover:opacity-80">
       <Image
-        src="/images/icon-white.jpg"
+        src="/images/icon-white.png"
         alt="Neighborhood United"
         width={size}
         height={size}
