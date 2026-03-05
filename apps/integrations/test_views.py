@@ -86,7 +86,13 @@ class OAuthCallbackViewTest(TestCase):
         return query["state"][0]
 
     def test_callback_rejects_provider_mismatch_in_state(self):
-        state = self._state(provider="sautai")
+        # Build state manually for a different provider to test mismatch
+        nonce = "test-nonce-mismatch"
+        cache.set(_state_nonce_cache_key(nonce), "1", timeout=OAUTH_STATE_MAX_AGE_SECONDS)
+        state = signing.dumps(
+            {"user_id": str(self.tenant.user.id), "provider": "reddit", "nonce": nonce},
+            salt="oauth",
+        )
         response = self.client.get(
             f"/api/v1/integrations/callback/google/?state={state}&code=auth-code"
         )

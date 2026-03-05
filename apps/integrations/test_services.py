@@ -131,7 +131,7 @@ class IntegrationServiceTest(TestCase):
 
     @override_settings(
         COMPOSIO_API_KEY="test-key",
-        COMPOSIO_GMAIL_AUTH_CONFIG_ID="ac-test-gmail",
+        COMPOSIO_REDDIT_AUTH_CONFIG_ID="ac-test-reddit",
         COMPOSIO_ALLOW_MULTIPLE_ACCOUNTS=True,
     )
     @patch("apps.integrations.services._get_composio_client")
@@ -148,7 +148,7 @@ class IntegrationServiceTest(TestCase):
 
         redirect_url, request_id = initiate_composio_connection(
             self.tenant,
-            "gmail",
+            "reddit",
             "https://app.example.com/callback",
         )
 
@@ -156,7 +156,7 @@ class IntegrationServiceTest(TestCase):
         self.assertEqual(request_id, "conn-1")
         mock_connected_accounts.initiate.assert_called_once_with(
             user_id=f"tenant-{self.tenant.id}",
-            auth_config_id="ac-test-gmail",
+            auth_config_id="ac-test-reddit",
             callback_url="https://app.example.com/callback",
             allow_multiple=True,
         )
@@ -255,7 +255,7 @@ class IntegrationCredentialBrokerTest(TestCase):
         result = get_valid_provider_access_token(self.tenant, "google")
 
         self.assertEqual(result.access_token, "access-token")
-        self.assertEqual(result.provider, "gmail")
+        self.assertEqual(result.provider, "google")
         self.assertEqual(result.tenant_id, str(self.tenant.id))
         mock_refresh_tokens.assert_not_called()
 
@@ -398,15 +398,15 @@ class ComposioConnectedAccountsAPITest(TestCase):
 
         Integration.objects.create(
             tenant=self.tenant,
-            provider="google",
+            provider="reddit",
             status=Integration.Status.ACTIVE,
             composio_connected_account_id="conn-456",
         )
 
-        result = get_valid_provider_access_token(self.tenant, "google")
+        result = get_valid_provider_access_token(self.tenant, "reddit")
 
         self.assertEqual(result.access_token, "real-token")
-        self.assertEqual(result.provider, "gmail")
+        self.assertEqual(result.provider, "reddit")
         mock_get_client.return_value.connected_accounts.get.assert_called_once_with(
             "conn-456",
         )
@@ -420,12 +420,12 @@ class ComposioConnectedAccountsAPITest(TestCase):
 
         Integration.objects.create(
             tenant=self.tenant,
-            provider="google",
+            provider="reddit",
             status=Integration.Status.ACTIVE,
             composio_connected_account_id="conn-789",
         )
 
-        result = get_valid_provider_access_token(self.tenant, "google")
+        result = get_valid_provider_access_token(self.tenant, "reddit")
 
         self.assertEqual(result.access_token, "header-token")
 
@@ -438,13 +438,13 @@ class ComposioConnectedAccountsAPITest(TestCase):
 
         integration = Integration.objects.create(
             tenant=self.tenant,
-            provider="google",
+            provider="reddit",
             status=Integration.Status.ACTIVE,
             composio_connected_account_id="conn-masked",
         )
 
         with self.assertRaises(IntegrationTokenDataError):
-            get_valid_provider_access_token(self.tenant, "google")
+            get_valid_provider_access_token(self.tenant, "reddit")
 
         integration.refresh_from_db()
         self.assertEqual(integration.status, Integration.Status.ERROR)
@@ -458,12 +458,12 @@ class ComposioConnectedAccountsAPITest(TestCase):
 
         integration = Integration.objects.create(
             tenant=self.tenant,
-            provider="google",
+            provider="reddit",
             status=Integration.Status.ERROR,
             composio_connected_account_id="conn-recover",
         )
 
-        result = get_valid_provider_access_token(self.tenant, "google")
+        result = get_valid_provider_access_token(self.tenant, "reddit")
 
         self.assertEqual(result.access_token, "recovered-token")
         integration.refresh_from_db()
@@ -477,10 +477,10 @@ class ComposioConnectedAccountsAPITest(TestCase):
 
         Integration.objects.create(
             tenant=self.tenant,
-            provider="google",
+            provider="reddit",
             status=Integration.Status.ACTIVE,
             composio_connected_account_id="conn-fail",
         )
 
         with self.assertRaises(IntegrationRefreshError):
-            get_valid_provider_access_token(self.tenant, "google")
+            get_valid_provider_access_token(self.tenant, "reddit")

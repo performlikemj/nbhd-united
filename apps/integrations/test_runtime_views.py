@@ -76,7 +76,7 @@ class RuntimeIntegrationViewsTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["provider"], "gmail")
+        self.assertEqual(body["provider"], "google")
         self.assertEqual(body["tenant_id"], str(self.tenant.id))
         self.assertEqual(body["result_size_estimate"], 1)
         self.assertEqual(len(body["messages"]), 1)
@@ -150,7 +150,7 @@ class RuntimeIntegrationViewsTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["provider"], "google-calendar")
+        self.assertEqual(body["provider"], "google")
         self.assertEqual(len(body["events"]), 1)
         mock_broker.assert_called_once_with(tenant=self.tenant, provider="google")
 
@@ -193,7 +193,7 @@ class RuntimeIntegrationViewsTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["provider"], "gmail")
+        self.assertEqual(body["provider"], "google")
         self.assertEqual(body["id"], "msg-1")
         mock_detail.assert_called_once_with(
             access_token="access-token",
@@ -237,7 +237,7 @@ class RuntimeIntegrationViewsTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["provider"], "google-calendar")
+        self.assertEqual(body["provider"], "google")
         self.assertEqual(len(body["busy"]), 1)
         mock_freebusy.assert_called_once()
 
