@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
@@ -40,8 +41,12 @@ export default function SignupPage() {
   return (
     <div className="flex min-h-[60vh] items-center justify-center">
       <div className="w-full max-w-md rounded-panel border border-border bg-surface/90 p-8 shadow-panel animate-reveal">
-        <p className="font-mono text-xs uppercase tracking-[0.24em] text-ink-muted">Neighborhood United</p>
-        <h2 className="mt-2 font-display text-2xl text-ink">Create account</h2>
+        <div className="flex items-center gap-3">
+          <Image src="/images/icon-white.jpg" alt="" width={36} height={36} className="rounded-sm hidden dark:block" />
+          <Image src="/images/logo-light.jpg" alt="" width={36} height={36} className="rounded-sm dark:hidden block" style={{ objectFit: "contain" }} />
+          <p className="font-mono text-xs uppercase tracking-[0.24em] text-ink-muted">Neighborhood United</p>
+        </div>
+        <h2 className="mt-3 font-display text-2xl text-ink">Create account</h2>
         <p className="mt-1 text-sm text-ink-muted">Sign up to get started with your private AI assistant.</p>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
