@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -70,7 +71,16 @@ export default function LandingPage() {
     <div className="flex min-h-screen flex-col">
       {/* Hero */}
       <header className="flex flex-col items-center px-6 pt-20 pb-16 text-center">
-        <p className="animate-reveal-1 font-mono text-xs uppercase tracking-[0.24em] text-ink-muted">
+        <Image
+          src="/images/logo-light.png"
+          alt="Neighborhood United"
+          width={160}
+          height={160}
+          className="animate-reveal-1 rounded-lg"
+          style={{ objectFit: "contain" }}
+          priority
+        />
+        <p className="animate-reveal-1 mt-4 font-mono text-xs uppercase tracking-[0.24em] text-ink-muted">
           Neighborhood United
         </p>
         <h1 className="animate-reveal-2 font-display mt-4 max-w-2xl text-[clamp(2.25rem,5vw+0.5rem,3.5rem)] font-normal leading-tight text-ink">

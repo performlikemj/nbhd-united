@@ -40,11 +40,11 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-[60vh] items-center justify-center">
       <div className="w-full max-w-md rounded-panel border border-border bg-surface/90 p-8 shadow-panel animate-reveal">
-        <div className="flex items-center gap-3">
-          <Image src="/images/logo-light.png" alt="" width={36} height={36} className="rounded-sm" style={{ objectFit: "contain" }} />
-          <p className="font-mono text-xs uppercase tracking-[0.24em] text-ink-muted">Neighborhood United</p>
+        <div className="flex flex-col items-center gap-3 mb-6">
+          <Image src="/images/logo-light.png" alt="Neighborhood United" width={120} height={120} className="rounded-md" style={{ objectFit: "contain" }} />
+          <p className="font-mono text-sm uppercase tracking-[0.24em] text-ink-muted">Neighborhood United</p>
         </div>
-        <h2 className="mt-3 font-display text-2xl text-ink">Sign in</h2>
+        <h2 className="font-display text-2xl text-ink">Sign in</h2>
         <p className="mt-1 text-sm text-ink-muted">Enter your credentials to access the console.</p>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
