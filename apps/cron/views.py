@@ -613,3 +613,76 @@ def resync_cron_timezones(request):
             results.append({"tenant": tid[:8], "status": "error", "error": str(e)})
 
     return JsonResponse({"results": results, "total": len(results)})
+
+
+@csrf_exempt
+def run_update_cron_prompts(request):
+    """Run update_system_cron_prompts for all active tenants.
+
+    Auth: X-Deploy-Secret header.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not deploy_secret or not provided or provided != deploy_secret:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    from apps.tenants.middleware import set_rls_context
+    set_rls_context(service_role=True)
+
+    from apps.orchestrator.services import update_system_cron_prompts
+
+    tenants = Tenant.objects.filter(
+        status=Tenant.Status.ACTIVE,
+    ).exclude(container_id="")
+
+    results = []
+    for tenant in tenants:
+        try:
+            result = update_system_cron_prompts(tenant)
+            results.append({"tenant": str(tenant.id)[:8], "updated": result["updated"], "errors": result["errors"]})
+        except Exception as e:
+            results.append({"tenant": str(tenant.id)[:8], "status": "error", "error": str(e)})
+
+    total_updated = sum(r.get("updated", 0) for r in results)
+    logger.info("run_update_cron_prompts: %d tenants, %d prompts updated", len(results), total_updated)
+    return JsonResponse({"results": results, "total_updated": total_updated})
+
+
+@csrf_exempt
+def run_backfill_lesson_embeddings(request):
+    """Backfill embeddings for approved lessons missing them.
+
+    Auth: X-Deploy-Secret header.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not deploy_secret or not provided or provided != deploy_secret:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    from apps.tenants.middleware import set_rls_context
+    set_rls_context(service_role=True)
+
+    from apps.lessons.models import Lesson
+    from apps.lessons.services import process_approved_lesson
+
+    lessons = Lesson.objects.filter(status="approved", embedding__isnull=True)
+    total = lessons.count()
+    processed = 0
+    errors = 0
+
+    for lesson in lessons:
+        try:
+            process_approved_lesson(lesson)
+            processed += 1
+        except Exception as e:
+            errors += 1
+            logger.error("backfill_lesson_embeddings: lesson %s failed: %s", lesson.id, e)
+
+    logger.info("backfill_lesson_embeddings: %d/%d processed, %d errors", processed, total, errors)
+    return JsonResponse({"total": total, "processed": processed, "errors": errors})
