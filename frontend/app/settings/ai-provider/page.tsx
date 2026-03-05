@@ -7,6 +7,7 @@ import { SectionCardSkeleton } from "@/components/skeleton";
 import { useLLMConfigQuery, useTenantQuery, useUpdateLLMConfigMutation } from "@/lib/queries";
 import { fetchProviderModels } from "@/lib/api";
 import type { LLMConfigUpdate, ProviderModel } from "@/lib/types";
+import { IntelligenceMeter, TIER_INTELLIGENCE } from "@/components/intelligence-meter";
 
 const PROVIDERS = [
   { value: "openai", label: "OpenAI" },
@@ -135,6 +136,9 @@ export default function AIProviderPage() {
             <div className="rounded-panel border border-border bg-surface-elevated p-4">
               <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Current Model</dt>
               <dd className="mt-1 text-sm text-ink">{TIER_MODEL_INFO[tier] ?? tier}</dd>
+              <div className="mt-3">
+                <IntelligenceMeter level={TIER_INTELLIGENCE[tier] ?? 6} />
+              </div>
             </div>
             <div className="rounded-panel border-2 border-dashed border-accent/30 bg-accent/5 p-5">
               <p className="text-sm font-medium text-ink">Want to use your own model?</p>

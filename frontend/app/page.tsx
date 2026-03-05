@@ -5,11 +5,15 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { isLoggedIn } from "@/lib/auth";
+import { IntelligenceMeter } from "@/components/intelligence-meter";
+
+type LevelSpec = number | [number, number];
 
 type PlanCard = {
   name: string;
   price: string;
   model: string;
+  intelligence?: LevelSpec;
   features: string[];
   comingSoon?: boolean;
   comingSoonLabel?: string;
@@ -21,6 +25,7 @@ const plans: PlanCard[] = [
     name: "Starter",
     price: "$12",
     model: "MiniMax M2.5",
+    intelligence: 6,
     features: [
       "Private AI assistant via Telegram",
       "Journaling & daily notes",
@@ -32,6 +37,7 @@ const plans: PlanCard[] = [
     name: "Premium",
     price: "$25",
     model: "Claude Sonnet / Opus",
+    intelligence: [8, 9],
     highlight: true,
     features: [
       "Everything in Starter",
@@ -175,6 +181,11 @@ export default function LandingPage() {
                 )}
               </div>
               <p className="mt-1 text-sm text-ink-muted">{plan.model}</p>
+              {plan.intelligence != null && (
+                <div className="mt-2">
+                  <IntelligenceMeter level={plan.intelligence} compact />
+                </div>
+              )}
               <p className={`mt-3 text-3xl font-bold ${"comingSoon" in plan && plan.comingSoon ? "text-ink-muted" : "text-ink"}`}>
                 {plan.price}
                 <span className="text-base font-normal text-ink-muted">/mo</span>

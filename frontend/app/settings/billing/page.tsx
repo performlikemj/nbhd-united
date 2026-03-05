@@ -7,6 +7,7 @@ import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
 import { useCheckoutMutation, useStripePortalMutation, useTenantQuery } from "@/lib/queries";
+import { IntelligenceMeter, TIER_INTELLIGENCE } from "@/components/intelligence-meter";
 
 const PLAN_OPTIONS = [
   { id: "starter", name: "Starter", price: "$12/mo", description: "MiniMax M2.5 — 50 messages/day", available: true },
@@ -94,6 +95,9 @@ export default function SettingsBillingPage() {
               <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
                 <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Tier</dt>
                 <dd className="mt-1 text-lg font-semibold uppercase">{tenant.model_tier}</dd>
+                <div className="mt-2">
+                  <IntelligenceMeter level={TIER_INTELLIGENCE[tenant.model_tier] ?? 6} compact />
+                </div>
               </div>
               <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
                 <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Tenant State</dt>
