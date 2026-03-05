@@ -321,7 +321,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
                         }
                       }}
                       placeholder="Name..."
-                      className="min-w-0 flex-1 rounded border border-border bg-surface px-2 py-1 text-xs text-ink placeholder-ink-faint focus:outline-none focus:ring-1 focus:ring-border"
+                      className="min-w-0 flex-1 rounded border border-border bg-surface px-2 py-1 text-xs text-ink placeholder-ink-faint focus:outline-none focus:ring-1 focus:ring-accent"
                     />
                     <button
                       type="button"

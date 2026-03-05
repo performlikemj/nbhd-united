@@ -39,7 +39,7 @@ export function IntelligenceMeter({ level, label, compact = false }: Intelligenc
           {Array.from({ length: 10 }, (_, i) => (
             <span
               key={i}
-              className={`inline-block h-2.5 w-1 rounded-sm ${i < fill ? color : "bg-border"}`}
+              className={`inline-block h-2.5 w-1 rounded-sm ${i < fill ? color : "bg-border-strong"}`}
             />
           ))}
         </span>
@@ -60,7 +60,7 @@ export function IntelligenceMeter({ level, label, compact = false }: Intelligenc
         {Array.from({ length: 10 }, (_, i) => (
           <div
             key={i}
-            className={`h-1.5 flex-1 rounded-sm ${i < fill ? color : "bg-border"}`}
+            className={`h-1.5 flex-1 rounded-sm ${i < fill ? color : "bg-border-strong"}`}
           />
         ))}
       </div>

@@ -79,7 +79,7 @@ export function CapabilityChips({
                   className={[
                     "inline-flex items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm transition min-h-[44px]",
                     isDisconnected
-                      ? "border-border text-ink-faint opacity-50 cursor-not-allowed"
+                      ? "border-border text-ink-faint opacity-65 cursor-not-allowed"
                       : isActive
                         ? "border-accent bg-accent/10 text-accent"
                         : "border-border text-ink-muted hover:border-border-strong hover:text-ink",
