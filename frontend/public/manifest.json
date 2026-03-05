@@ -1,0 +1,14 @@
+{
+  "name": "Neighborhood United",
+  "short_name": "NBHD United",
+  "description": "Your AI-powered personal assistant.",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#f8f6ef",
+  "background_color": "#f8f6ef",
+  "icons": [
+    { "src": "/icons/pwa/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/pwa/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icons/pwa/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

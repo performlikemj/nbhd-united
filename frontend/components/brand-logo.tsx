@@ -1,20 +1,26 @@
+"use client";
+
 import Image from "next/image";
 import Link from "next/link";
 
+import { useTheme } from "@/components/theme-provider";
+
 /**
  * Brand logo — icon + wordmark.
- * Uses the white icon on dark surfaces (default) or light version when specified.
+ * Uses the green icon on light surfaces and white icon on dark surfaces.
  */
-export function BrandLogo({ size = 24, showText = true }: { size?: number; showText?: boolean }) {
+export function BrandLogo({ size = 32, showText = true }: { size?: number; showText?: boolean }) {
+  const { theme } = useTheme();
+  const iconSrc = theme === "dark" ? "/icons/brand/icon-white-64.png" : "/icons/brand/icon-green-64.png";
+
   return (
     <Link href="/" className="flex items-center gap-2 transition hover:opacity-80">
       <Image
-        src="/images/logo-light.png"
+        src={iconSrc}
         alt="Neighborhood United"
         width={size}
         height={size}
         className="rounded-sm"
-        style={{ objectFit: "contain" }}
         priority
       />
       {showText && (
@@ -27,16 +33,18 @@ export function BrandLogo({ size = 24, showText = true }: { size?: number; showT
 }
 
 /** Icon-only version for compact spaces (mobile header, favicon-adjacent). */
-export function BrandIcon({ size = 28 }: { size?: number }) {
+export function BrandIcon({ size = 36 }: { size?: number }) {
+  const { theme } = useTheme();
+  const iconSrc = theme === "dark" ? "/icons/brand/icon-white-64.png" : "/icons/brand/icon-green-64.png";
+
   return (
     <Link href="/" className="transition hover:opacity-80">
       <Image
-        src="/images/logo-light.png"
+        src={iconSrc}
         alt="Neighborhood United"
         width={size}
         height={size}
         className="rounded-sm"
-        style={{ objectFit: "contain" }}
         priority
       />
     </Link>

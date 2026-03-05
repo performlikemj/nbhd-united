@@ -4,6 +4,8 @@
     "exclude": [
       "/_next/*",
       "/assets/*",
+      "/icons/*",
+      "/images/*",
       "/*.css",
       "/*.js",
       "/*.map",

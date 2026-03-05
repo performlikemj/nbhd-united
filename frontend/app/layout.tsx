@@ -25,9 +25,16 @@ export const metadata: Metadata = {
   title: "Neighborhood United",
   description: "Your AI-powered personal assistant.",
   icons: {
-    icon: "/images/icon-white.png",
-    apple: "/images/icon-white.png",
+    icon: [
+      { url: "/favicon.ico", sizes: "32x32" },
+      { url: "/icons/favicon/favicon-32x32.png", sizes: "32x32", type: "image/png" },
+      { url: "/icons/favicon/favicon-16x16.png", sizes: "16x16", type: "image/png" },
+    ],
+    apple: [
+      { url: "/icons/apple-touch-icon.png", sizes: "180x180", type: "image/png" },
+    ],
   },
+  manifest: "/manifest.json",
   openGraph: {
     title: "Neighborhood United",
     description: "Your AI-powered personal assistant.",
@@ -42,6 +49,7 @@ export default function RootLayout({
     <html lang="en" className={`h-full ${plusJakarta.variable} ${dmSerif.variable}`}>
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        <meta name="theme-color" content="#f8f6ef" />
       </head>
       <body className="overflow-x-hidden bg-bg">
         <ThemeProvider>
