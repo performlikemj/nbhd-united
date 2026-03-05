@@ -64,6 +64,13 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
   const [mobileEditor, setMobileEditor] = useState<Editor | null>(null);
   const fabDrag = useRef<{ startTouchY: number; startBtnY: number } | null>(null);
 
+  // Exit edit mode when navigating to a different document
+  useEffect(() => {
+    setEditing(false);
+    setMobileEditor(null);
+    mobileEditorRef.current = null;
+  }, [kind, slug]);
+
   useEffect(() => {
     const saved = localStorage.getItem(FAB_KEY);
     setFabY(saved ? parseInt(saved, 10) : window.innerHeight - 80 - 28);

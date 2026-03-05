@@ -275,7 +275,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      <main id="main-content" className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">{children}</main>
+      <main id="main-content" className="mx-auto w-full max-w-6xl flex-1 flex flex-col min-h-0 px-4 py-8 sm:px-6">{children}</main>
       <SiteFooter />
     </div>
   );
