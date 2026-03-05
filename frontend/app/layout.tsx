@@ -24,6 +24,15 @@ const dmSerif = DM_Serif_Display({
 export const metadata: Metadata = {
   title: "Neighborhood United",
   description: "Your AI-powered personal assistant.",
+  icons: {
+    icon: "/images/icon-white.png",
+    apple: "/images/icon-white.png",
+  },
+  openGraph: {
+    title: "Neighborhood United",
+    description: "Your AI-powered personal assistant.",
+    images: [{ url: "/images/logo-textured.png", width: 1200, height: 630 }],
+  },
 };
 
 export default function RootLayout({

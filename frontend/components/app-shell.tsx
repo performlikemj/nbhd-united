@@ -8,6 +8,7 @@ import { ReactNode, useEffect, useRef, useState } from "react";
 import { logout } from "@/lib/api";
 import { clearTokens, isLoggedIn } from "@/lib/auth";
 import { useMeQuery } from "@/lib/queries";
+import { BrandLogo } from "@/components/brand-logo";
 import { SiteFooter } from "@/components/site-footer";
 import { useTheme } from "@/components/theme-provider";
 
@@ -174,9 +175,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <a href="#main-content" className="skip-link">Skip to main content</a>
         <header className="border-b border-border bg-surface/75 backdrop-blur-xl backdrop-saturate-150">
           <div className="mx-auto flex w-full max-w-6xl items-center px-4 py-3 sm:px-6">
-            <Link href="/" className="font-mono text-xs uppercase tracking-[0.24em] text-ink-faint transition hover:text-ink">
-              Neighborhood United
-            </Link>
+            <BrandLogo size={28} />
           </div>
         </header>
         <main id="main-content" className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">{children}</main>
@@ -193,7 +192,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <header className="sticky top-0 z-30 border-b border-border bg-surface/75 backdrop-blur-xl backdrop-saturate-150">
         <div className="mx-auto flex w-full max-w-6xl min-w-0 items-center justify-between gap-2 px-4 py-2.5 sm:gap-3 sm:px-6 sm:py-3">
           <div className="min-w-0">
-            <Link href="/" className="font-mono text-xs uppercase tracking-[0.24em] text-ink-faint transition hover:text-ink">Neighborhood United</Link>
+            <BrandLogo size={24} showText={false} />
             <h1 className="text-sm font-semibold text-ink sm:text-lg">
               <span className="hidden sm:inline">Subscriber Control Console</span>
               <span className="sm:hidden">Console</span>
