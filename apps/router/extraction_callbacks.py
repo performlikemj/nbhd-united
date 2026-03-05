@@ -21,6 +21,7 @@ from django.utils import timezone
 
 from apps.journal.models import Document, PendingExtraction
 from apps.lessons.models import Lesson
+from apps.lessons.services import process_approved_lesson
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -52,8 +53,8 @@ def _edit_message(chat_id: int, message_id: int, text: str) -> None:
 # ── Approval actions ──────────────────────────────────────────────────────────
 
 def _approve_lesson(pending: PendingExtraction) -> str:
-    """Create a Lesson from the pending extraction."""
-    Lesson.objects.create(
+    """Create a Lesson from the pending extraction and process its embedding."""
+    lesson = Lesson.objects.create(
         tenant=pending.tenant,
         text=pending.text,
         tags=pending.tags,
@@ -62,6 +63,22 @@ def _approve_lesson(pending: PendingExtraction) -> str:
         status="approved",
         approved_at=timezone.now(),
     )
+
+    # Generate embedding + connections (matches lesson_callbacks.py pattern)
+    try:
+        process_approved_lesson(lesson)
+    except Exception:
+        logger.exception("extraction_callbacks: embedding failed for lesson %s", lesson.id)
+
+    # Re-cluster if threshold reached (matches views.py pattern)
+    try:
+        from apps.lessons.clustering import refresh_constellation
+
+        if Lesson.objects.filter(tenant=pending.tenant, status="approved").count() >= 5:
+            refresh_constellation(pending.tenant)
+    except Exception:
+        logger.exception("extraction_callbacks: clustering failed for tenant %s", str(pending.tenant.id)[:8])
+
     return "Added to your learning constellation! ✨"
 
 

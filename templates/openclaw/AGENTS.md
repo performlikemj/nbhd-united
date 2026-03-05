@@ -23,11 +23,15 @@ Don't announce that you're doing this. Just do it and be informed.
 
 At session start:
 1. Call `nbhd_journal_context({"days": 7})`.
-2. Call `nbhd_lessons_pending` - check if there are lessons waiting for approval.
-3. Read: today's priorities/blockers, long-term memory sections relevant to current topic, open patterns in `goal`, `tasks`, and `project` docs.
-4. Before answering, acknowledge relevant context naturally (e.g., "Last week you planned to finish X...").
-5. If 2+ pending risks/decisions from prior notes, ask: "Want me to help you close any of those first?"
-6. **Lesson scan** - after reading journal context, look for insights worth saving:
+2. Call `nbhd_lessons_pending` — check if there are lessons waiting for approval.
+3. The `nbhd_journal_context` response includes a `backbone` section with the user's current tasks, goals, and ideas. Review these carefully:
+   - **Tasks**: Check which are open (`- [ ]`) vs completed (`- [x]`). Never tell the user a completed task is still due.
+   - **Goals**: Note active goals and their status. Reference them naturally in conversation.
+   - **Ideas**: Be aware of captured ideas for when context is relevant.
+4. If the backbone section is missing or empty for a doc type, call `nbhd_document_get` with the appropriate kind (`tasks`, `goal`, `ideas`) as fallback.
+5. Before answering, acknowledge relevant context naturally (e.g., "Last week you planned to finish X...").
+6. If 2+ pending risks/decisions from prior notes, ask: "Want me to help you close any of those first?"
+7. **Lesson scan** — after reading journal context, look for insights worth saving:
    - Decisions made, things that worked/didn't, patterns, realisations, tradeoffs
    - Surface 1 candidate naturally: *"I noticed something worth saving — [brief summary]. Want me to add it to your constellation?"*
    - If pending lessons exist (step 2), mention those first: *"You have X lessons waiting at [/constellation/pending](/constellation/pending)."*

@@ -220,6 +220,8 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
         logger.info("extraction: no content for tenant %s, skipping", str(tenant.id)[:8])
         return {"lessons": 0, "goals": 0, "tasks": 0, "skipped": "no_content"}
 
+    logger.info("extraction: tenant=%s content_length=%d", str(tenant.id)[:8], len(content))
+
     # Get bot token and chat_id from tenant config
     bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
     if not bot_token:
@@ -237,6 +239,14 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
     except Exception:
         logger.exception("extraction: LLM call failed for tenant %s", str(tenant.id)[:8])
         return {"lessons": 0, "goals": 0, "tasks": 0, "skipped": "llm_error"}
+
+    logger.info(
+        "extraction: tenant=%s llm_result lessons=%d goals=%d tasks=%d",
+        str(tenant.id)[:8],
+        len(extracted.get("lessons", [])),
+        len(extracted.get("goals", [])),
+        len(extracted.get("tasks", [])),
+    )
 
     expires_at = timezone.now() + timedelta(days=7)
     counts = {"lessons": 0, "goals": 0, "tasks": 0}

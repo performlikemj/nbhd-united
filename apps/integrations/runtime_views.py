@@ -837,9 +837,11 @@ class RuntimeUserMemoryView(APIView):
 
 
 class RuntimeJournalContextView(APIView):
-    """Combined context: recent daily notes (raw md) + long-term memory (raw md).
+    """Combined context: recent daily notes, long-term memory, and backbone docs.
 
-    Designed for agent session initialization.
+    Designed for agent session initialization.  The ``backbone`` key
+    returns the tenant's tasks, goals, and ideas documents so the agent
+    always starts a session aware of them.
     """
 
     permission_classes = [AllowAny]
@@ -876,6 +878,25 @@ class RuntimeJournalContextView(APIView):
             tenant=tenant, kind="memory", slug="long-term"
         ).first()
 
+        # Backbone docs: tasks, goals, ideas — always included so the agent
+        # starts every session aware of the user's current state.
+        backbone_kinds = [
+            Document.Kind.TASKS,
+            Document.Kind.GOAL,
+            Document.Kind.IDEAS,
+        ]
+        backbone_docs = Document.objects.filter(
+            tenant=tenant, kind__in=backbone_kinds,
+        )
+        backbone_data = {
+            doc.kind: {
+                "slug": doc.slug,
+                "title": doc.title,
+                "markdown": doc.markdown,
+            }
+            for doc in backbone_docs
+        }
+
         notes_data = [
             {
                 "tenant_id": str(tenant.id),
@@ -893,6 +914,7 @@ class RuntimeJournalContextView(APIView):
                 "long_term_memory": memory_doc.markdown if memory_doc else "",
                 "recent_notes_count": len(notes_data),
                 "days_back": days,
+                "backbone": backbone_data,
             },
             status=status.HTTP_200_OK,
         )
