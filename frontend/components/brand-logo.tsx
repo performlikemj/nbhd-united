@@ -9,19 +9,11 @@ export function BrandLogo({ size = 24, showText = true }: { size?: number; showT
   return (
     <Link href="/" className="flex items-center gap-2 transition hover:opacity-80">
       <Image
-        src="/images/icon-white.png"
-        alt="Neighborhood United"
-        width={size}
-        height={size}
-        className="rounded-sm dark:block hidden"
-        priority
-      />
-      <Image
         src="/images/logo-light.png"
         alt="Neighborhood United"
         width={size}
         height={size}
-        className="rounded-sm dark:hidden block"
+        className="rounded-sm"
         style={{ objectFit: "contain" }}
         priority
       />
@@ -39,11 +31,12 @@ export function BrandIcon({ size = 28 }: { size?: number }) {
   return (
     <Link href="/" className="transition hover:opacity-80">
       <Image
-        src="/images/icon-white.png"
+        src="/images/logo-light.png"
         alt="Neighborhood United"
         width={size}
         height={size}
         className="rounded-sm"
+        style={{ objectFit: "contain" }}
         priority
       />
     </Link>

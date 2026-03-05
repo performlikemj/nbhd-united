@@ -42,8 +42,7 @@ export default function SignupPage() {
     <div className="flex min-h-[60vh] items-center justify-center">
       <div className="w-full max-w-md rounded-panel border border-border bg-surface/90 p-8 shadow-panel animate-reveal">
         <div className="flex items-center gap-3">
-          <Image src="/images/icon-white.png" alt="" width={36} height={36} className="rounded-sm hidden dark:block" />
-          <Image src="/images/logo-light.png" alt="" width={36} height={36} className="rounded-sm dark:hidden block" style={{ objectFit: "contain" }} />
+          <Image src="/images/logo-light.png" alt="" width={36} height={36} className="rounded-sm" style={{ objectFit: "contain" }} />
           <p className="font-mono text-xs uppercase tracking-[0.24em] text-ink-muted">Neighborhood United</p>
         </div>
         <h2 className="mt-3 font-display text-2xl text-ink">Create account</h2>
