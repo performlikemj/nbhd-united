@@ -146,7 +146,14 @@ def unlink_telegram(user: User) -> bool:
     user.telegram_user_id = None
     user.telegram_chat_id = None
     user.telegram_username = ""
-    user.save(update_fields=["telegram_user_id", "telegram_chat_id", "telegram_username"])
+
+    update_fields = ["telegram_user_id", "telegram_chat_id", "telegram_username"]
+
+    if user.preferred_channel == "telegram" and user.line_user_id:
+        user.preferred_channel = "line"
+        update_fields.append("preferred_channel")
+
+    user.save(update_fields=update_fields)
 
     logger.info("Unlinked Telegram for user %s", user.id)
     return True
