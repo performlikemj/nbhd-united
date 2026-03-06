@@ -198,7 +198,7 @@ class GWSConfigGeneratorTest(TestCase):
         from apps.orchestrator.config_generator import generate_openclaw_config as generate_config
 
         user = _make_user()
-        tenant = _make_tenant(user)
+        tenant = _make_tenant(user, model_tier="premium")
 
         Integration.objects.create(
             tenant=tenant,

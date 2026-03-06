@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     "apps.cron",
     "apps.platform_logs",
     "apps.lessons",
+    "apps.actions",
 ]
 
 MIDDLEWARE = [

@@ -632,6 +632,11 @@ class TelegramPoller:
                 self._handle_extraction_callback(update, tenant)
                 return
 
+            # Action gate callbacks (approve/deny destructive actions)
+            if callback_data.startswith("gate_approve:") or callback_data.startswith("gate_deny:"):
+                self._handle_gate_callback(update, tenant, callback_data, callback_id, chat_id)
+                return
+
             # Container update callbacks
             if callback_data.startswith("container_update:"):
                 # Debounce: check if already processing
@@ -1239,6 +1244,87 @@ class TelegramPoller:
             callback_id = update["callback_query"].get("id")
             if callback_id:
                 self._answer_callback_query(callback_id, "Something went wrong")
+
+    def _handle_gate_callback(
+        self,
+        update: dict,
+        tenant: Tenant,
+        callback_data: str,
+        callback_id: str,
+        chat_id: int,
+    ) -> None:
+        """Handle action gate approve/deny callbacks."""
+        from apps.actions.models import ActionStatus, PendingAction
+        from apps.actions.messaging import update_gate_message
+        from apps.actions.models import ActionAuditLog
+
+        try:
+            # Parse: gate_approve:123 or gate_deny:123
+            parts = callback_data.split(":")
+            if len(parts) != 2:
+                self._answer_callback_query(callback_id, "Invalid callback")
+                return
+
+            action_str, action_id_str = parts[0], parts[1]
+            is_approve = action_str == "gate_approve"
+            action_id = int(action_id_str)
+
+            action = PendingAction.objects.get(id=action_id, tenant=tenant)
+
+            # Already resolved?
+            if action.status != ActionStatus.PENDING:
+                self._answer_callback_query(
+                    callback_id, f"Already {action.status}"
+                )
+                return
+
+            # Expired?
+            if action.is_expired:
+                action.status = ActionStatus.EXPIRED
+                action.save(update_fields=["status"])
+                ActionAuditLog.objects.create(
+                    tenant=tenant,
+                    action_type=action.action_type,
+                    action_payload=action.action_payload,
+                    display_summary=action.display_summary,
+                    result=ActionStatus.EXPIRED,
+                )
+                update_gate_message(action)
+                self._answer_callback_query(callback_id, "⏰ Expired")
+                return
+
+            # Apply response
+            from django.utils import timezone
+            now = timezone.now()
+            action.status = ActionStatus.APPROVED if is_approve else ActionStatus.DENIED
+            action.responded_at = now
+            action.save(update_fields=["status", "responded_at"])
+
+            ActionAuditLog.objects.create(
+                tenant=tenant,
+                action_type=action.action_type,
+                action_payload=action.action_payload,
+                display_summary=action.display_summary,
+                result=action.status,
+                responded_at=now,
+            )
+
+            update_gate_message(action)
+
+            icon = "✅" if is_approve else "❌"
+            label = "Approved" if is_approve else "Denied"
+            self._answer_callback_query(callback_id, f"{icon} {label}")
+
+            logger.info(
+                "Gate callback: tenant=%s action=%s result=%s",
+                tenant.id, action_id, action.status,
+            )
+
+        except PendingAction.DoesNotExist:
+            self._answer_callback_query(callback_id, "Action not found")
+        except Exception:
+            logger.exception("Error handling gate callback")
+            self._answer_callback_query(callback_id, "Something went wrong")
 
     def _handle_lesson_callback(self, update: dict, tenant: Tenant) -> None:
         """Handle lesson approval callback queries via the existing handler.

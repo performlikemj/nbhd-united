@@ -568,12 +568,23 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             config.setdefault("env", {})["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = (
                 "/workspace/gws-credentials.json"
             )
-            # Add gws skills — load from container's /opt/nbhd/skills/
-            gws_skill_names = [
-                "gws-shared", "gws-gmail", "gws-gmail-send", "gws-gmail-triage",
-                "gws-calendar", "gws-calendar-agenda", "gws-calendar-insert",
+
+            # GWS skills — read-only safe for all tiers
+            gws_read_skills = [
+                "gws-shared", "gws-gmail-triage", "gws-calendar-agenda",
+            ]
+            # GWS skills with destructive capabilities — Premium/BYOK only
+            gws_write_skills = [
+                "gws-gmail", "gws-gmail-send",
+                "gws-calendar", "gws-calendar-insert",
                 "gws-drive", "gws-tasks",
             ]
+
+            if tier == "starter":
+                gws_skill_names = gws_read_skills
+            else:
+                gws_skill_names = gws_read_skills + gws_write_skills
+
             skills_section = config.setdefault("skills", {})
             skills_section["load"] = skills_section.get("load", {})
             extra_dirs = skills_section["load"].setdefault("extraDirs", [])
@@ -581,6 +592,18 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 skill_path = f"/opt/nbhd/skills/{skill_name}"
                 if skill_path not in extra_dirs:
                     extra_dirs.append(skill_path)
+
+            # Action gate skill — loaded for all tiers with GWS access
+            # On Starter: returns educational block message
+            # On Premium/BYOK: sends confirmation prompt to user
+            gate_skill_path = "/opt/nbhd/skills/nbhd-action-gate"
+            if gate_skill_path not in extra_dirs:
+                extra_dirs.append(gate_skill_path)
+
+            # Set env vars the gate script needs to call Django
+            env = config.setdefault("env", {})
+            env["NBHD_TENANT_ID"] = str(tenant.id)
+            env["NBHD_API_BASE_URL"] = api_base or ""
     except Exception:
         pass  # Don't break config generation if integration check fails
 

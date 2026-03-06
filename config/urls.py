@@ -18,6 +18,16 @@ urlpatterns = [
         RuntimeUsageReportView.as_view(),
         name="runtime-usage-report-internal",
     ),
+    # Action gating — container→Django (request + poll)
+    path(
+        "api/v1/internal/runtime/<uuid:tenant_id>/gate/",
+        include("apps.actions.runtime_urls"),
+    ),
+    # Action gating — internal respond (from button callbacks)
+    path(
+        "api/v1/gate/",
+        include("apps.actions.respond_urls"),
+    ),
     path("api/v1/telegram/", include("apps.router.urls")),
     path("api/v1/line/", include("apps.router.line_urls")),
     path("api/v1/cron-jobs/", include("apps.cron.tenant_urls")),
