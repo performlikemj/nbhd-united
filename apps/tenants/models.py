@@ -184,6 +184,16 @@ class Tenant(models.Model):
         help_text="Duration of the heartbeat window in hours (1-6)",
     )
 
+    # Action gating
+    gate_all_actions = models.BooleanField(
+        default=True,
+        help_text="Master switch: require confirmation for all irreversible actions",
+    )
+    gate_acknowledged_risk = models.BooleanField(
+        default=False,
+        help_text="User has explicitly acknowledged the risk of disabling gates",
+    )
+
     # Metadata
     last_message_at = models.DateTimeField(null=True, blank=True)
     config_version = models.IntegerField(
