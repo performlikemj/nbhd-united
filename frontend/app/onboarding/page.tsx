@@ -19,12 +19,12 @@ import type { TelegramLinkResponse } from "@/lib/api";
 
 type StepState = "completed" | "current" | "upcoming";
 
-const STEP_LABELS = ["Account", "Persona", "Telegram", "Ready"] as const;
+const STEP_LABELS = ["Account", "Persona", "Messaging", "Ready"] as const;
 
 const STEP_TITLES = [
   "Create your account",
   "Choose your agent",
-  "Connect Telegram",
+  "Connect Messaging",
   "Your agent is ready",
 ] as const;
 
@@ -225,7 +225,7 @@ export default function OnboardingPage() {
         return (
           <>
             <p className="mt-1 text-sm text-ink-muted">
-              Link your Telegram account so the assistant can message you.
+              Link your Telegram or LINE account so the assistant can message you.
             </p>
             {stepStates[2] === "completed" && telegramStatus?.telegram_username && (
               <p className="mt-1 text-sm text-signal">
@@ -354,17 +354,17 @@ export default function OnboardingPage() {
       {showTelegramCta && (
         <div className="relative rounded-panel border border-[#0088cc]/45 bg-gradient-to-r from-[#0088cc]/15 to-[#00a3ff]/10 px-4 py-3 shadow-[0_0_28px_rgba(0,136,204,0.35)]">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-ink">
-            Your assistant is powered by Telegram
+            Connect your messaging app
           </p>
           <p className="mt-1 text-sm text-ink-muted">
-            Connect Telegram now to unlock messaging, reminders, and the upcoming feature set.
+            Connect Telegram or LINE to unlock messaging, reminders, and the upcoming feature set.
           </p>
           <button
             type="button"
             onClick={jumpToTelegramStep}
             className="mt-3 rounded-full bg-[#0088cc] px-4 py-2 text-sm font-medium text-white shadow-[0_0_20px_rgba(0,136,204,0.45)] transition hover:bg-[#0077b5] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0088cc]"
           >
-            {hasTenant ? "Connect Telegram" : "Set up your assistant"}
+            {hasTenant ? "Connect Messaging" : "Set up your assistant"}
           </button>
           <button
             type="button"
@@ -377,7 +377,7 @@ export default function OnboardingPage() {
       )}
       <SectionCard
         title="Onboarding"
-        subtitle="Complete these steps to activate your private Telegram assistant"
+        subtitle="Complete these steps to activate your private AI assistant"
       >
         {/* Horizontal stepper */}
         <div className="mb-8 flex items-start justify-between">

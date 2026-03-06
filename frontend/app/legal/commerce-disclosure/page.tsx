@@ -78,7 +78,7 @@ export default function CommerceDisclosurePage() {
       <h2>Operating Environment (動作環境)</h2>
       <p>
         Neighborhood United is a web-based service accessible via modern web browsers
-        (Chrome, Safari, Firefox, Edge). The Telegram messaging app is required for
+        (Chrome, Safari, Firefox, Edge). The Telegram or LINE messaging app is required for
         AI assistant communication.
       </p>
     </LegalPage>

@@ -87,7 +87,7 @@ const AGENT_CAPABILITIES = [
   { icon: "🌐", name: "Web Search", desc: "Search the internet for current information", example: "Search for the latest AI news" },
   { icon: "🌤️", name: "Weather", desc: "Check weather forecasts for any location", example: "What's the weather like tomorrow?" },
   { icon: "📰", name: "News", desc: "Find and summarize news articles", example: "Give me a summary of today's tech news" },
-  { icon: "💬", name: "Message", desc: "Send you updates via Telegram", example: "Let me know if anything important comes up" },
+  { icon: "💬", name: "Message", desc: "Send you updates via chat", example: "Let me know if anything important comes up" },
   { icon: "🧠", name: "Memory", desc: "Remember things about you and recall past conversations", example: "Remember that I prefer morning meetings" },
   { icon: "📝", name: "Journal", desc: "Write to your daily notes and long-term memory", example: "Write a summary of my day in my journal" },
   { icon: "🎯", name: "Goals & Projects", desc: "Track goals, projects, tasks, and ideas", example: "Update my fitness goal with this week's progress" },

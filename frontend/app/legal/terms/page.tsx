@@ -6,8 +6,8 @@ export default function TermsPage() {
       <h2>1. Service Description</h2>
       <p>
         Neighborhood United (&ldquo;we,&rdquo; &ldquo;us,&rdquo; &ldquo;our&rdquo;) provides a private AI-powered assistant
-        delivered via Telegram. Our service includes a dedicated AI agent that
-        responds to your messages in a private Telegram chat. The service is
+        delivered via Telegram or LINE. Our service includes a dedicated AI agent that
+        responds to your messages in a private chat. The service is
         offered on a subscription basis. Current pricing is available on our website and during checkout.
       </p>
 
@@ -80,7 +80,7 @@ export default function TermsPage() {
       </p>
       <ul>
         <li>
-          <strong>Telegram</strong> — used as the messaging interface for your
+          <strong>Telegram & LINE</strong> — used as the messaging interface for your
           AI assistant.
         </li>
         <li>

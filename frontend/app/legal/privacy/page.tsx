@@ -11,7 +11,7 @@ export default function PrivacyPage() {
           provided during registration.
         </li>
         <li>
-          <strong>Telegram chat ID</strong> — used to link your Telegram account
+          <strong>Telegram chat ID & LINE user ID</strong> — used to link your messaging account
           and deliver AI assistant messages.
         </li>
         <li>
@@ -46,7 +46,7 @@ export default function PrivacyPage() {
           subscription billing.
         </li>
         <li>
-          <strong>Telegram</strong> — receives messages you send and delivers
+          <strong>Telegram & LINE</strong> — receive messages you send and deliver
           assistant responses.
         </li>
         <li>

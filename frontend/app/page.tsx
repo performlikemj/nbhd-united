@@ -27,7 +27,7 @@ const plans: PlanCard[] = [
     model: "MiniMax M2.5",
     intelligence: 6,
     features: [
-      "Private AI assistant via Telegram",
+      "Private AI assistant via Telegram or LINE",
       "Journaling & daily notes",
       "Scheduled tasks & reminders",
       "50 messages/day",
@@ -93,7 +93,7 @@ export default function LandingPage() {
           Your AI-powered personal&nbsp;assistant
         </h1>
         <p className="animate-reveal-3 mt-4 max-w-xl text-lg text-ink-muted">
-          A private AI assistant delivered through Telegram. Journal your
+          A private AI assistant delivered through Telegram or LINE. Journal your
           thoughts, schedule tasks, get briefings, and stay organized — all
           through natural conversation.
         </p>
@@ -118,8 +118,8 @@ export default function LandingPage() {
         {[
           {
             icon: "💬",
-            title: "Telegram-native",
-            desc: "Chat with your AI assistant in a private Telegram conversation. No new apps to install.",
+            title: "Telegram & LINE",
+            desc: "Chat with your AI assistant via Telegram or LINE. No new apps to install.",
           },
           {
             icon: "📓",

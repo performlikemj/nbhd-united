@@ -66,8 +66,8 @@ export default function SettingsBillingPage() {
   const isTrialExpired = Boolean(tenant?.is_trial && tenant?.trial_days_remaining === 0);
   const isTelegramLinked = Boolean(tenant?.user.telegram_chat_id);
   const onboardingCta = isTelegramLinked
-    ? { href: "/settings/integrations", label: "Review Telegram setup" }
-    : { href: "/onboarding", label: "Connect Telegram" };
+    ? { href: "/settings/integrations", label: "Review messaging setup" }
+    : { href: "/onboarding", label: "Connect messaging" };
 
   return (
     <div className="space-y-4">
