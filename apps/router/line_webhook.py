@@ -681,12 +681,71 @@ class LineWebhookView(View):
         if not tenant:
             return
 
+        # Action gate callbacks
+        if data.startswith("gate_approve:") or data.startswith("gate_deny:"):
+            self._handle_gate_postback(tenant, data)
+            return
+
         # Forward postback data as a message to the agent
         self._forward_to_container(
             line_user_id,
             tenant,
             f'[User tapped button: "{data}"]',
         )
+
+    @staticmethod
+    def _handle_gate_postback(tenant, data: str) -> None:
+        """Handle action gate approve/deny from LINE postback."""
+        from apps.actions.models import ActionStatus, PendingAction, ActionAuditLog
+        from apps.actions.messaging import update_gate_message
+        from django.utils import timezone
+
+        try:
+            parts = data.split(":")
+            if len(parts) != 2:
+                return
+
+            is_approve = parts[0] == "gate_approve"
+            action_id = int(parts[1])
+
+            action = PendingAction.objects.get(id=action_id, tenant=tenant)
+
+            if action.status != ActionStatus.PENDING:
+                return
+
+            if action.is_expired:
+                action.status = ActionStatus.EXPIRED
+                action.save(update_fields=["status"])
+                ActionAuditLog.objects.create(
+                    tenant=tenant,
+                    action_type=action.action_type,
+                    action_payload=action.action_payload,
+                    display_summary=action.display_summary,
+                    result=ActionStatus.EXPIRED,
+                )
+                update_gate_message(action)
+                return
+
+            now = timezone.now()
+            action.status = ActionStatus.APPROVED if is_approve else ActionStatus.DENIED
+            action.responded_at = now
+            action.save(update_fields=["status", "responded_at"])
+
+            ActionAuditLog.objects.create(
+                tenant=tenant,
+                action_type=action.action_type,
+                action_payload=action.action_payload,
+                display_summary=action.display_summary,
+                result=action.status,
+                responded_at=now,
+            )
+
+            update_gate_message(action)
+
+        except PendingAction.DoesNotExist:
+            logger.warning("Gate postback: action %s not found", data)
+        except Exception:
+            logger.exception("Error handling gate postback: %s", data)
 
     @staticmethod
     def _extract_ai_response(result: dict) -> str | None:

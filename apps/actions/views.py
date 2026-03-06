@@ -170,8 +170,9 @@ class GateRequestView(APIView):
             display_summary=display_summary,
         )
 
-        # TODO: Send confirmation message via Telegram/LINE (Block 3)
-        # send_gate_confirmation(tenant, action)
+        # Send confirmation message via user's platform
+        from .messaging import send_gate_confirmation
+        send_gate_confirmation(tenant, action)
 
         logger.info(
             "Gate request created: %s | %s | %s",
@@ -322,8 +323,9 @@ class GateRespondView(APIView):
             action.status, action.display_summary[:60],
         )
 
-        # TODO: Edit the Telegram/LINE message to show result (Block 3)
-        # update_gate_message(action)
+        # Edit the confirmation message to show result
+        from .messaging import update_gate_message
+        update_gate_message(action)
 
         return Response(
             {"status": action.status},
