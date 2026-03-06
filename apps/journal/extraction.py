@@ -26,6 +26,8 @@ EXTRACTION_MODEL = "openai/gpt-4o-mini"
 MIN_NOTE_LENGTH = 100  # chars — below this we skip or fall back
 TELEGRAM_API_BASE = "https://api.telegram.org/bot"
 TELEGRAM_TIMEOUT = 10
+LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
+LINE_TIMEOUT = 10
 
 
 # ── LLM extraction ───────────────────────────────────────────────────────────
@@ -205,6 +207,114 @@ def _deliver_task(bot_token: str, chat_id: int, pending: PendingExtraction) -> N
         pending.save(update_fields=["telegram_message_id"])
 
 
+# ── LINE delivery ────────────────────────────────────────────────────────────
+
+def _send_line_with_buttons(
+    channel_token: str,
+    line_user_id: str,
+    text: str,
+    buttons: list[dict],
+) -> bool:
+    """Send a LINE Flex Message with postback buttons. Returns True on success."""
+    flex_content = {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": text, "wrap": True, "size": "md"},
+            ],
+        },
+        "footer": {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "sm",
+            "contents": [
+                {
+                    "type": "button",
+                    "style": "primary" if i == 0 else "secondary",
+                    **({"color": "#0D9488"} if i == 0 else {}),
+                    "action": {
+                        "type": "postback",
+                        "label": btn["text"][:20],
+                        "data": btn["callback_data"],
+                    },
+                }
+                for i, btn in enumerate(buttons)
+            ],
+        },
+    }
+    try:
+        resp = requests.post(
+            LINE_PUSH_URL,
+            json={
+                "to": line_user_id,
+                "messages": [{
+                    "type": "flex",
+                    "altText": text[:40],
+                    "contents": flex_content,
+                }],
+            },
+            headers={
+                "Authorization": f"Bearer {channel_token}",
+                "Content-Type": "application/json",
+            },
+            timeout=LINE_TIMEOUT,
+        )
+        return resp.status_code == 200
+    except Exception:
+        logger.exception("Failed to send extraction LINE message user_id=%s", line_user_id)
+        return False
+
+
+def _deliver_lesson_line(channel_token: str, line_user_id: str, pending: PendingExtraction) -> None:
+    _send_line_with_buttons(channel_token, line_user_id, f'Something worth remembering:\n\n"{pending.text}"', [
+        {"text": "✅ Add to constellation", "callback_data": f"extract:approve_lesson:{pending.id}"},
+        {"text": "❌ Skip", "callback_data": f"extract:dismiss:{pending.id}"},
+    ])
+
+
+def _deliver_goal_line(channel_token: str, line_user_id: str, pending: PendingExtraction) -> None:
+    _send_line_with_buttons(channel_token, line_user_id, f'Noticed a new goal:\n\n"{pending.text}"', [
+        {"text": "✅ Add to goals", "callback_data": f"extract:approve_goal:{pending.id}"},
+        {"text": "❌ Skip", "callback_data": f"extract:dismiss:{pending.id}"},
+    ])
+
+
+def _deliver_task_line(channel_token: str, line_user_id: str, pending: PendingExtraction) -> None:
+    _send_line_with_buttons(channel_token, line_user_id, f'Action item detected:\n\n"{pending.text}"', [
+        {"text": "✅ Add to tasks", "callback_data": f"extract:approve_task:{pending.id}"},
+        {"text": "❌ Skip", "callback_data": f"extract:dismiss:{pending.id}"},
+    ])
+
+
+# ── Channel resolution ───────────────────────────────────────────────────────
+
+def _resolve_delivery_channel(tenant: Tenant) -> tuple[str, str | int | None, str | None]:
+    """Determine delivery channel and credentials.
+
+    Returns (channel, recipient_id, token) where channel is 'telegram' or 'line'.
+    Returns ('none', None, None) if no channel is available.
+    """
+    preferred = getattr(tenant.user, "preferred_channel", "") or "telegram"
+    chat_id = getattr(tenant.user, "telegram_chat_id", None)
+    line_user_id = getattr(tenant.user, "line_user_id", None)
+
+    bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
+    line_token = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", "").strip()
+
+    if preferred == "telegram" and chat_id and bot_token:
+        return "telegram", chat_id, bot_token
+    if preferred == "line" and line_user_id and line_token:
+        return "line", line_user_id, line_token
+    # Fallback to whichever is available
+    if chat_id and bot_token:
+        return "telegram", chat_id, bot_token
+    if line_user_id and line_token:
+        return "line", line_user_id, line_token
+    return "none", None, None
+
+
 # ── Core extraction runner ────────────────────────────────────────────────────
 
 def run_extraction_for_tenant(tenant: Tenant) -> dict:
@@ -222,16 +332,11 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
 
     logger.info("extraction: tenant=%s content_length=%d", str(tenant.id)[:8], len(content))
 
-    # Get bot token and chat_id from tenant config
-    bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
-    if not bot_token:
-        logger.warning("extraction: no TELEGRAM_BOT_TOKEN, cannot deliver for tenant %s", str(tenant.id)[:8])
-        return {"lessons": 0, "goals": 0, "tasks": 0, "skipped": "no_telegram_token"}
-
-    chat_id = getattr(tenant.user, "telegram_chat_id", None)
-    if not chat_id:
-        logger.info("extraction: no telegram_chat_id for tenant %s, skipping", str(tenant.id)[:8])
-        return {"lessons": 0, "goals": 0, "tasks": 0, "skipped": "no_chat_id"}
+    # Resolve delivery channel (Telegram or LINE)
+    channel, recipient_id, channel_token = _resolve_delivery_channel(tenant)
+    if channel == "none":
+        logger.info("extraction: no delivery channel for tenant %s, skipping", str(tenant.id)[:8])
+        return {"lessons": 0, "goals": 0, "tasks": 0, "skipped": "no_channel"}
 
     # Call LLM
     try:
@@ -268,7 +373,10 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
             confidence=item.get("confidence", "medium"),
             expires_at=expires_at,
         )
-        _deliver_lesson(bot_token, chat_id, pending)
+        if channel == "telegram":
+            _deliver_lesson(channel_token, recipient_id, pending)
+        else:
+            _deliver_lesson_line(channel_token, recipient_id, pending)
         counts["lessons"] += 1
 
     # Process goals
@@ -285,7 +393,10 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
             confidence=item.get("confidence", "medium"),
             expires_at=expires_at,
         )
-        _deliver_goal(bot_token, chat_id, pending)
+        if channel == "telegram":
+            _deliver_goal(channel_token, recipient_id, pending)
+        else:
+            _deliver_goal_line(channel_token, recipient_id, pending)
         counts["goals"] += 1
 
     # Process tasks
@@ -302,7 +413,10 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
             confidence=item.get("confidence", "medium"),
             expires_at=expires_at,
         )
-        _deliver_task(bot_token, chat_id, pending)
+        if channel == "telegram":
+            _deliver_task(channel_token, recipient_id, pending)
+        else:
+            _deliver_task_line(channel_token, recipient_id, pending)
         counts["tasks"] += 1
 
     logger.info(

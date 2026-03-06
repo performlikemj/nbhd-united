@@ -768,7 +768,7 @@ class LineWebhookEdgeCaseTest(TestCase):
         event = {
             "type": "postback",
             "source": {"userId": "U_postback"},
-            "postback": {"data": "extract:approve_lesson:abc123"},
+            "postback": {"data": "some_custom:data"},
         }
 
         with patch.object(LineWebhookView, "_forward_to_container") as mock_fwd:
@@ -777,7 +777,7 @@ class LineWebhookEdgeCaseTest(TestCase):
             mock_fwd.assert_called_once()
             args = mock_fwd.call_args[0]
             self.assertEqual(args[0], "U_postback")
-            self.assertIn("extract:approve_lesson:abc123", args[2])
+            self.assertIn("some_custom:data", args[2])
 
     def test_postback_unknown_user_ignored(self):
         """Postback from unknown user is silently ignored."""

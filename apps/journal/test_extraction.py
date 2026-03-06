@@ -149,11 +149,12 @@ class TestRunExtractionForTenant(TestCase):
         self.assertEqual(result["skipped"], "no_content")
 
     @patch("django.conf.settings.TELEGRAM_BOT_TOKEN", "test-token", create=True)
-    def test_skips_when_no_chat_id(self):
+    def test_skips_when_no_channel(self):
         self.tenant.user.telegram_chat_id = None
-        self.tenant.user.save(update_fields=["telegram_chat_id"])
+        self.tenant.user.line_user_id = None
+        self.tenant.user.save(update_fields=["telegram_chat_id", "line_user_id"])
         result = run_extraction_for_tenant(self.tenant)
-        self.assertEqual(result["skipped"], "no_chat_id")
+        self.assertEqual(result["skipped"], "no_channel")
 
 
 class TestExtractionCallbacks(TestCase):

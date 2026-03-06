@@ -166,11 +166,14 @@ def telegram_webhook(request):
 
     tenant = resolve_tenant_by_chat_id(chat_id)
 
-    # Handle lesson approval callbacks
+    # Handle inline button callbacks (lessons, extraction)
     if "callback_query" in update and tenant is not None:
         callback_data = update["callback_query"].get("data", "")
         if callback_data.startswith("lesson:"):
             return handle_lesson_callback(update, tenant)
+        if callback_data.startswith("extract:"):
+            from apps.router.extraction_callbacks import handle_extraction_callback
+            return handle_extraction_callback(update, tenant)
 
     # Unknown/inactive users are guided through onboarding.
     if not tenant:

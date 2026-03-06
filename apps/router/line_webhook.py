@@ -328,6 +328,14 @@ def _resolve_tenant_by_line_user_id(line_user_id: str) -> Tenant | None:
         return None
 
 
+def _send_line_follow_up(tenant: Tenant, text: str) -> None:
+    """Send a simple text follow-up via LINE Push API (for callback confirmations)."""
+    line_user_id = getattr(tenant.user, "line_user_id", None)
+    if not line_user_id:
+        return
+    _send_line_push(line_user_id, [{"type": "text", "text": text}])
+
+
 @method_decorator(csrf_exempt, name="dispatch")
 class LineWebhookView(View):
     """Receive and process LINE webhook events."""
@@ -716,6 +724,16 @@ class LineWebhookView(View):
             self._handle_gate_postback(tenant, data)
             return
 
+        # Extraction approval callbacks (nightly extraction)
+        if data.startswith("extract:"):
+            self._handle_extraction_postback(tenant, data)
+            return
+
+        # Lesson approval callbacks (agent-suggested)
+        if data.startswith("lesson:"):
+            self._handle_lesson_postback(tenant, data)
+            return
+
         # Forward postback data as a message to the agent
         self._forward_to_container(
             line_user_id,
@@ -776,6 +794,105 @@ class LineWebhookView(View):
             logger.warning("Gate postback: action %s not found", data)
         except Exception:
             logger.exception("Error handling gate postback: %s", data)
+
+    @staticmethod
+    def _handle_extraction_postback(tenant, data: str) -> None:
+        """Handle extraction approval/dismissal from LINE postback.
+
+        Data format: extract:<action>:<pending_id>
+        """
+        from apps.journal.models import PendingExtraction
+        from apps.router.extraction_callbacks import (
+            _approve_lesson,
+            _approve_goal,
+            _approve_task,
+        )
+        from django.utils import timezone as tz
+
+        try:
+            parts = data.split(":")
+            if len(parts) != 3:
+                return
+
+            _, action, pending_id = parts
+
+            pending = PendingExtraction.objects.filter(
+                id=pending_id,
+                tenant=tenant,
+                status=PendingExtraction.Status.PENDING,
+            ).first()
+            if not pending:
+                return
+
+            if action == "dismiss":
+                pending.status = PendingExtraction.Status.DISMISSED
+                pending.resolved_at = tz.now()
+                pending.save(update_fields=["status", "resolved_at"])
+                _send_line_follow_up(tenant, f"❌ Skipped: {pending.text[:80]}")
+                return
+
+            if action == "approve_lesson":
+                _approve_lesson(pending)
+            elif action == "approve_goal":
+                _approve_goal(pending)
+            elif action == "approve_task":
+                _approve_task(pending)
+            else:
+                return
+
+            pending.status = PendingExtraction.Status.APPROVED
+            pending.resolved_at = tz.now()
+            pending.save(update_fields=["status", "resolved_at"])
+
+            kind_emoji = {"lesson": "💡", "goal": "🎯", "task": "✅"}.get(pending.kind, "✅")
+            _send_line_follow_up(tenant, f"{kind_emoji} {pending.text[:80]}")
+
+        except Exception:
+            logger.exception("Error handling extraction postback: %s", data)
+
+    @staticmethod
+    def _handle_lesson_postback(tenant, data: str) -> None:
+        """Handle lesson approval/dismissal from LINE postback.
+
+        Data format: lesson:<action>:<lesson_id>
+        """
+        from apps.lessons.models import Lesson
+        from apps.lessons.services import process_approved_lesson
+        from django.utils import timezone as tz
+
+        try:
+            parts = data.split(":")
+            if len(parts) != 3:
+                return
+
+            action = parts[1]
+            lesson_id = int(parts[2])
+
+            lesson = Lesson.objects.filter(
+                id=lesson_id, tenant=tenant, status="pending"
+            ).first()
+            if not lesson:
+                return
+
+            if action == "approve":
+                lesson.status = "approved"
+                lesson.approved_at = tz.now()
+                lesson.save(update_fields=["status", "approved_at"])
+
+                try:
+                    process_approved_lesson(lesson)
+                except Exception:
+                    logger.exception("Failed to process approved lesson %s", lesson_id)
+
+                _send_line_follow_up(tenant, f"✅ Approved: {lesson.text[:100]}")
+
+            elif action == "dismiss":
+                lesson.status = "dismissed"
+                lesson.save(update_fields=["status"])
+                _send_line_follow_up(tenant, f"❌ Dismissed: {lesson.text[:100]}")
+
+        except Exception:
+            logger.exception("Error handling lesson postback: %s", data)
 
     @staticmethod
     def _extract_ai_response(result: dict) -> str | None:

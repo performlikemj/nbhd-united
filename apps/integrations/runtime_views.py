@@ -991,6 +991,13 @@ class RuntimeLessonCreateView(APIView):
             status="pending",
         )
 
+        # Send approval buttons to the user's preferred channel (best-effort)
+        try:
+            from apps.lessons.notifications import send_lesson_approval_buttons
+            send_lesson_approval_buttons(tenant, lesson)
+        except Exception:
+            logger.exception("runtime: failed to send lesson notification for tenant %s", str(tenant.id)[:8])
+
         return Response(
             {
                 "tenant_id": str(tenant.id),
