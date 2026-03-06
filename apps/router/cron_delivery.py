@@ -219,7 +219,7 @@ class CronDeliveryView(APIView):
         line_user_id: str,
         message_text: str,
     ) -> Response:
-        """Send via LINE Push Message API."""
+        """Send via LINE Push Message API with branded Flex messages."""
         access_token = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", "")
         if not access_token:
             logger.error("LINE_CHANNEL_ACCESS_TOKEN not configured for cron delivery")
@@ -228,23 +228,41 @@ class CronDeliveryView(APIView):
                 status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        # Use shared markdown stripping (handles tables, code blocks, etc.)
-        from apps.router.line_webhook import _strip_markdown
-        clean_text = _strip_markdown(message_text)
         import re
-        clean_text = re.sub(r"\[\[button:[^\]]+\]\]", "", clean_text)
-        clean_text = re.sub(r"\n{3,}", "\n\n", clean_text).strip()
+        from apps.router.line_flex import (
+            attach_quick_reply,
+            build_flex_bubble,
+            extract_quick_reply_buttons,
+        )
+        from apps.router.line_webhook import _convert_tables, _strip_markdown
 
-        # Split into chunks (LINE 5000-char limit)
-        chunks = _split_message(clean_text, max_len=5000)
-        sent_count = 0
+        # Extract quick reply buttons before processing
+        clean_text, quick_reply_items = extract_quick_reply_buttons(message_text)
 
+        # Pre-process: convert tables and strip code blocks
+        clean_text = _convert_tables(clean_text)
+        clean_text = re.sub(r"```[^\n]*\n(.*?)```", r"\1", clean_text, flags=re.DOTALL)
+
+        # Build Flex message
         try:
-            # LINE allows max 5 messages per push call
-            batch_size = 5
+            flex_msg = build_flex_bubble(clean_text)
+            if quick_reply_items:
+                flex_msg = attach_quick_reply(flex_msg, quick_reply_items)
+            messages = [flex_msg]
+        except Exception:
+            logger.debug("Cron Flex build failed, falling back to plain text", exc_info=True)
+            plain = _strip_markdown(clean_text)
+            plain = re.sub(r"\[\[button:[^\]]+\]\]", "", plain)
+            plain = re.sub(r"\n{3,}", "\n\n", plain).strip()
+            chunks = _split_message(plain, max_len=5000)
+            messages = [{"type": "text", "text": c} for c in chunks[:5]]
+
+        sent_count = 0
+        try:
             with httpx.Client(timeout=10) as http:
-                for i in range(0, len(chunks), batch_size):
-                    batch = [{"type": "text", "text": c} for c in chunks[i : i + batch_size]]
+                # Send in batches of 5 (LINE limit)
+                for i in range(0, len(messages), 5):
+                    batch = messages[i : i + 5]
                     resp = http.post(
                         "https://api.line.me/v2/bot/message/push",
                         headers={

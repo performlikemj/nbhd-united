@@ -28,6 +28,14 @@ from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 
 from apps.billing.services import check_budget, record_usage
+from apps.router.line_flex import (
+    attach_quick_reply,
+    build_flex_bubble,
+    build_short_bubble,
+    build_status_bubble,
+    extract_quick_reply_buttons,
+    should_use_flex,
+)
 from apps.tenants.models import Tenant, User
 
 logger = logging.getLogger(__name__)
@@ -171,6 +179,11 @@ def _send_line_text(line_user_id: str, text: str) -> bool:
                 return False
         return True
     return _send_line_push(line_user_id, [{"type": "text", "text": text}])
+
+
+def _send_line_flex(line_user_id: str, flex_msg: dict) -> bool:
+    """Send a single Flex message via LINE Push API."""
+    return _send_line_push(line_user_id, [flex_msg])
 
 
 def _split_message(text: str, max_len: int = 5000) -> list[str]:
@@ -385,21 +398,25 @@ class LineWebhookView(View):
         # Check if already linked
         tenant = _resolve_tenant_by_line_user_id(line_user_id)
         if tenant:
-            _send_line_text(
+            _send_line_flex(
                 line_user_id,
-                f"Welcome back, {tenant.user.display_name}! 👋\n\n"
-                "Your LINE account is already connected. You can start chatting!",
+                build_short_bubble(
+                    f"Welcome back, {tenant.user.display_name}! \U0001f44b\n\n"
+                    "Your LINE account is already connected. You can start chatting!",
+                ),
             )
             return
 
-        _send_line_text(
+        _send_line_flex(
             line_user_id,
-            "👋 Welcome to Neighborhood United!\n\n"
-            "To connect your account:\n"
-            f"1. Sign up at {frontend_url}\n"
-            "2. Go to Settings → Connect LINE\n"
-            "3. Tap the link or scan the QR code\n\n"
-            "Once connected, you can chat with your AI assistant right here!",
+            build_flex_bubble(
+                "## Welcome to Neighborhood United!\n\n"
+                "To connect your account:\n"
+                f"1. Sign up at {frontend_url}\n"
+                "2. Go to Settings \u2192 Connect LINE\n"
+                "3. Tap the link or scan the QR code\n\n"
+                "Once connected, you can chat with your AI assistant right here!",
+            ),
         )
 
     def _handle_unfollow(self, event: dict) -> None:
@@ -428,9 +445,12 @@ class LineWebhookView(View):
         if msg_type != "text":
             line_user_id = event.get("source", {}).get("userId", "")
             if line_user_id:
-                _send_line_text(
+                _send_line_flex(
                     line_user_id,
-                    "I can only process text messages for now. Please send text!",
+                    build_status_bubble(
+                        "I can only process text messages for now. Please send text!",
+                        tone="warning",
+                    ),
                 )
             return
 
@@ -453,20 +473,25 @@ class LineWebhookView(View):
             frontend_url = getattr(
                 settings, "FRONTEND_URL", "https://neighborhoodunited.org"
             ).rstrip("/")
-            _send_line_text(
+            _send_line_flex(
                 line_user_id,
-                "I don't recognize your account yet.\n\n"
-                f"Sign up at {frontend_url} and connect LINE "
-                "from your Settings page to get started!",
+                build_status_bubble(
+                    "I don't recognize your account yet.\n\n"
+                    f"Sign up at {frontend_url} and connect LINE "
+                    "from your Settings page to get started!",
+                    tone="warning",
+                ),
             )
             return
 
         # Provisioning tenant
         if tenant.status in (Tenant.Status.PENDING, Tenant.Status.PROVISIONING):
-            _send_line_text(
+            _send_line_flex(
                 line_user_id,
-                "Your assistant is waking up! 🌅 This usually takes about a minute. "
-                "Please try again shortly!",
+                build_short_bubble(
+                    "Your assistant is waking up! \U0001f305 This usually takes about a minute. "
+                    "Please try again shortly!",
+                ),
             )
             return
 
@@ -479,19 +504,25 @@ class LineWebhookView(View):
             and not tenant.is_trial
             and not bool(tenant.stripe_subscription_id)
         ):
-            _send_line_text(
+            _send_line_flex(
                 line_user_id,
-                f"Your free trial has ended. Subscribe to continue: "
-                f"{frontend_url}/settings/billing",
+                build_status_bubble(
+                    f"Your free trial has ended. Subscribe to continue: "
+                    f"{frontend_url}/settings/billing",
+                    tone="warning",
+                ),
             )
             return
 
         # Budget check
         if not check_budget(tenant):
-            _send_line_text(
+            _send_line_flex(
                 line_user_id,
-                f"You've hit your monthly token quota. "
-                f"Open Billing to upgrade at {frontend_url}/billing.",
+                build_status_bubble(
+                    f"You've hit your monthly token quota. "
+                    f"Open Billing to upgrade at {frontend_url}/billing.",
+                    tone="warning",
+                ),
             )
             return
 
@@ -549,17 +580,12 @@ class LineWebhookView(View):
         Uses Flex Messages for structured content, quick replies for buttons,
         and Reply API (free) with Push fallback.
         """
-        from apps.router.line_flex import (
-            attach_quick_reply,
-            build_flex_bubble,
-            extract_quick_reply_buttons,
-            should_use_flex,
-        )
-
         if not tenant.container_fqdn:
-            _send_line_text(
+            _send_line_flex(
                 line_user_id,
-                "Your assistant is being set up. Please try again in a minute!",
+                build_short_bubble(
+                    "Your assistant is being set up. Please try again in a minute!",
+                ),
             )
             return
 
@@ -590,9 +616,12 @@ class LineWebhookView(View):
                 tenant.container_fqdn,
                 line_user_id,
             )
-            _send_line_text(
+            _send_line_flex(
                 line_user_id,
-                "⏱️ That took longer than expected. Could you send it again?",
+                build_status_bubble(
+                    "That took longer than expected. Could you send it again?",
+                    tone="warning",
+                ),
             )
             return
         except httpx.HTTPStatusError as e:
@@ -601,21 +630,30 @@ class LineWebhookView(View):
                 "LINE FWD_FAIL %s HTTP %s", tenant.container_fqdn, status_code
             )
             if status_code in (502, 503):
-                _send_line_text(
+                _send_line_flex(
                     line_user_id,
-                    "⏳ I'm restarting — please try again in about a minute!",
+                    build_status_bubble(
+                        "I'm restarting \u2014 please try again in about a minute!",
+                        tone="warning",
+                    ),
                 )
             else:
-                _send_line_text(
+                _send_line_flex(
                     line_user_id,
-                    "Something went wrong. Please try again.",
+                    build_status_bubble(
+                        "Something went wrong. Please try again.",
+                        tone="error",
+                    ),
                 )
             return
         except httpx.HTTPError as e:
             logger.error("LINE forward error: %s", e)
-            _send_line_text(
+            _send_line_flex(
                 line_user_id,
-                "⏳ I'm restarting — please try again in about a minute!",
+                build_status_bubble(
+                    "I'm restarting \u2014 please try again in about a minute!",
+                    tone="warning",
+                ),
             )
             return
 
@@ -633,19 +671,11 @@ class LineWebhookView(View):
             clean_text = _convert_tables(clean_text)
             clean_text = re.sub(r"```[^\n]*\n(.*?)```", r"\1", clean_text, flags=re.DOTALL)
 
-            # Decide: Flex or plain text
+            # Build Flex message (branded bubbles for all content types)
             messages: list[dict] = []
             try:
-                if should_use_flex(clean_text):
-                    flex_msg = build_flex_bubble(clean_text)
-                    messages = [flex_msg]
-                else:
-                    # Plain text with markdown stripped
-                    plain = _strip_markdown(clean_text)
-                    plain = re.sub(r"\n{3,}", "\n\n", plain).strip()
-                    if plain:
-                        chunks = _split_message(plain, max_len=5000)
-                        messages = [{"type": "text", "text": c} for c in chunks[:5]]
+                flex_msg = build_flex_bubble(clean_text)
+                messages = [flex_msg]
             except Exception:
                 # Flex construction failed — fall back to plain text
                 logger.debug("Flex build failed, falling back to plain text", exc_info=True)

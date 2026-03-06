@@ -579,8 +579,10 @@ class LineWebhookEdgeCaseTest(TestCase):
         view = LineWebhookView()
         view._handle_message(event)
         mock_push.assert_called_once()
-        msg_text = mock_push.call_args[0][1][0]["text"]
-        self.assertIn("text messages", msg_text.lower())
+        msg = mock_push.call_args[0][1][0]
+        self.assertEqual(msg["type"], "flex")
+        msg_json = json.dumps(msg).lower()
+        self.assertIn("text messages", msg_json)
 
     @patch("apps.router.line_webhook._send_line_push")
     def test_follow_already_linked_user_sends_welcome_back(self, mock_push):
@@ -597,8 +599,10 @@ class LineWebhookEdgeCaseTest(TestCase):
         view = LineWebhookView()
         view._handle_follow(event)
         mock_push.assert_called_once()
-        msg_text = mock_push.call_args[0][1][0]["text"]
-        self.assertIn("already connected", msg_text.lower())
+        msg = mock_push.call_args[0][1][0]
+        self.assertEqual(msg["type"], "flex")
+        msg_json = json.dumps(msg).lower()
+        self.assertIn("already connected", msg_json)
 
     def test_unfollow_unknown_user_no_error(self):
         """Unfollow from an unknown user doesn't raise."""
@@ -644,8 +648,10 @@ class LineWebhookEdgeCaseTest(TestCase):
         view = LineWebhookView()
         view._handle_message(event)
         mock_push.assert_called_once()
-        msg_text = mock_push.call_args[0][1][0]["text"]
-        self.assertIn("trial", msg_text.lower())
+        msg = mock_push.call_args[0][1][0]
+        self.assertEqual(msg["type"], "flex")
+        msg_json = json.dumps(msg).lower()
+        self.assertIn("trial", msg_json)
 
     @patch("apps.router.line_webhook._send_line_push")
     def test_provisioning_tenant_sends_waking_up(self, mock_push):
@@ -664,8 +670,10 @@ class LineWebhookEdgeCaseTest(TestCase):
         view = LineWebhookView()
         view._handle_message(event)
         mock_push.assert_called_once()
-        msg_text = mock_push.call_args[0][1][0]["text"]
-        self.assertIn("waking up", msg_text.lower())
+        msg = mock_push.call_args[0][1][0]
+        self.assertEqual(msg["type"], "flex")
+        msg_json = json.dumps(msg).lower()
+        self.assertIn("waking up", msg_json)
 
     @patch("httpx.post")
     def test_container_timeout_sends_retry_message(self, mock_httpx_post):
@@ -800,8 +808,10 @@ class LineWebhookEdgeCaseTest(TestCase):
         view = LineWebhookView()
         view._handle_message(event)
         mock_push.assert_called_once()
-        msg_text = mock_push.call_args[0][1][0]["text"]
-        self.assertIn("set up", msg_text.lower())
+        msg = mock_push.call_args[0][1][0]
+        self.assertEqual(msg["type"], "flex")
+        msg_json = json.dumps(msg).lower()
+        self.assertIn("set up", msg_json)
 
 
 @override_settings(LINE_CHANNEL_SECRET="test-secret", LINE_CHANNEL_ACCESS_TOKEN="test-token")

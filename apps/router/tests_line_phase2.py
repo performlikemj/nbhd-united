@@ -7,9 +7,13 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase, override_settings
 
 from apps.router.line_flex import (
+    COLORS,
     attach_quick_reply,
     build_flex_bubble,
     build_flex_carousel,
+    build_short_bubble,
+    build_status_bubble,
+    classify_content,
     extract_quick_reply_buttons,
     should_use_flex,
     _parse_sections,
@@ -19,18 +23,50 @@ from apps.router.line_flex import (
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Flex Detection Tests
+# Content Classification Tests
 # ────────────────────────────────────────────────────────────────────────────
+
+
+class ClassifyContentTest(TestCase):
+
+    def test_empty_string(self):
+        self.assertEqual(classify_content(""), "short")
+
+    def test_short_simple_text(self):
+        self.assertEqual(classify_content("Hello! How can I help?"), "short")
+
+    def test_medium_text_without_structure(self):
+        self.assertEqual(classify_content("a" * 500), "short")
+
+    def test_text_with_headers(self):
+        text = "## Weather\nSunny and warm.\n\n## Tasks\n- Buy groceries"
+        self.assertEqual(classify_content(text), "structured")
+
+    def test_text_with_bullet_list(self):
+        text = "Here are your tasks:\n- Task one\n- Task two\n- Task three\n- Task four"
+        self.assertEqual(classify_content(text), "structured")
+
+    def test_text_with_numbered_list(self):
+        text = "Steps to follow:\n1. First step\n2. Second step\n3. Third step"
+        self.assertEqual(classify_content(text), "structured")
+
+    def test_many_sections(self):
+        text = "\n\n".join([f"Section {i}: " + "content here " * 10 for i in range(5)])
+        self.assertEqual(classify_content(text), "structured")
+
+    def test_very_long_plain_text(self):
+        self.assertEqual(classify_content("a " * 1500), "plain_text")
 
 
 class ShouldUseFlexTest(TestCase):
     """Test the should_use_flex detection logic."""
 
-    def test_short_simple_text_no_flex(self):
-        self.assertFalse(should_use_flex("Hello! How can I help?"))
+    def test_short_simple_text_uses_flex(self):
+        # Short messages now use Flex (short bubble)
+        self.assertTrue(should_use_flex("Hello! How can I help?"))
 
     def test_short_text_under_200_no_newlines(self):
-        self.assertFalse(should_use_flex("a" * 199))
+        self.assertTrue(should_use_flex("a" * 199))
 
     def test_text_with_headers(self):
         text = "## Weather\nSunny and warm.\n\n## Tasks\n- Buy groceries"
@@ -48,19 +84,21 @@ class ShouldUseFlexTest(TestCase):
         text = "Steps to follow:\n1. First step\n2. Second step\n3. Third step"
         self.assertTrue(should_use_flex(text))
 
-    def test_two_bullets_not_enough(self):
+    def test_two_bullets_not_enough_for_structured(self):
         text = "Some items:\n- Item one\n- Item two"
-        self.assertFalse(should_use_flex(text))
+        # Still uses flex (short bubble), just not structured
+        self.assertTrue(should_use_flex(text))
 
     def test_many_sections(self):
         text = "\n\n".join([f"Section {i}: " + "content here " * 10 for i in range(5)])
         self.assertTrue(should_use_flex(text))
 
     def test_empty_string(self):
-        self.assertFalse(should_use_flex(""))
+        self.assertTrue(should_use_flex(""))
 
-    def test_single_line_long(self):
-        self.assertFalse(should_use_flex("a" * 500))
+    def test_very_long_plain_text_no_flex(self):
+        # Only very long unstructured text falls back to plain text
+        self.assertFalse(should_use_flex("a " * 1500))
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -71,7 +109,7 @@ class ShouldUseFlexTest(TestCase):
 class ParseSectionsTest(TestCase):
 
     def test_single_header_with_content(self):
-        text = "## Weather\nSunny and 25°C"
+        text = "## Weather\nSunny and 25\u00b0C"
         sections = _parse_sections(text)
         self.assertEqual(len(sections), 1)
         self.assertEqual(sections[0]["title"], "Weather")
@@ -166,30 +204,54 @@ class BuildFlexBubbleTest(TestCase):
         result = build_flex_bubble(text)
         self.assertEqual(result["type"], "flex")
         self.assertIn("altText", result)
-        self.assertEqual(result["contents"]["type"], "bubble")
-        body = result["contents"]["body"]
-        self.assertEqual(body["type"], "box")
-        self.assertTrue(len(body["contents"]) > 0)
+        bubble = result["contents"]
+        self.assertEqual(bubble["type"], "bubble")
+        # Should have branded styles
+        self.assertIn("styles", bubble)
+        self.assertEqual(bubble["styles"]["body"]["backgroundColor"], COLORS["mist"])
+
+    def test_header_promoted_to_bubble_header(self):
+        text = "## Weather\nSunny and warm."
+        result = build_flex_bubble(text)
+        bubble = result["contents"]
+        self.assertIn("header", bubble)
+        self.assertEqual(
+            bubble["styles"]["header"]["backgroundColor"],
+            COLORS["signal_text"],
+        )
+        # Header text should be white
+        header_text = bubble["header"]["contents"][0]
+        self.assertEqual(header_text["color"], COLORS["white"])
 
     def test_alttext_truncated(self):
         result = build_flex_bubble("## Title\nContent", alt_text="x" * 500)
         self.assertTrue(len(result["altText"]) <= 400)
 
-    def test_plain_text_fallback(self):
-        result = build_flex_bubble("Just plain text no sections")
-        self.assertEqual(result["type"], "flex")
-        body = result["contents"]["body"]["contents"]
-        # Should have at least one text component
-        texts = [c for c in body if c.get("type") == "text"]
-        self.assertTrue(len(texts) > 0)
+    def test_short_text_produces_short_bubble(self):
+        result = build_flex_bubble("Just a quick reply!")
+        bubble = result["contents"]
+        self.assertEqual(bubble["size"], "mega")
+        self.assertEqual(bubble["styles"]["body"]["backgroundColor"], COLORS["mist"])
+        # Should have accent bar (horizontal layout with box + text)
+        body = bubble["body"]
+        self.assertEqual(body["layout"], "horizontal")
 
     def test_sections_with_bullets(self):
         text = "## Shopping List\n- Apples\n- Bananas\n- Milk"
         result = build_flex_bubble(text)
         body = result["contents"]["body"]["contents"]
-        # Should have horizontal boxes for bullet items
-        horiz = [c for c in body if c.get("layout") == "horizontal"]
-        self.assertEqual(len(horiz), 3)
+        # Should have baseline boxes for bullet items
+        baseline = [c for c in body if c.get("layout") == "baseline"]
+        self.assertEqual(len(baseline), 3)
+
+    def test_bullet_uses_signal_color(self):
+        text = "## List\n- Item one\n- Item two\n- Item three"
+        result = build_flex_bubble(text)
+        body = result["contents"]["body"]["contents"]
+        baseline_boxes = [c for c in body if c.get("layout") == "baseline"]
+        self.assertTrue(len(baseline_boxes) > 0)
+        bullet_text = baseline_boxes[0]["contents"][0]
+        self.assertEqual(bullet_text["color"], COLORS["signal"])
 
     def test_body_contents_capped(self):
         """Very long content doesn't exceed 30 components."""
@@ -201,9 +263,63 @@ class BuildFlexBubbleTest(TestCase):
     def test_valid_json_serializable(self):
         text = "## Title\nContent with **bold** and [link](https://x.com)"
         result = build_flex_bubble(text)
-        # Must be JSON-serializable
         json_str = json.dumps(result)
         self.assertIsInstance(json_str, str)
+
+    def test_branded_colors_in_bubble(self):
+        text = "## Header\nBody text.\n\n## Section\n- Item"
+        result = build_flex_bubble(text)
+        bubble = result["contents"]
+        self.assertEqual(bubble["styles"]["header"]["backgroundColor"], COLORS["signal_text"])
+        self.assertEqual(bubble["styles"]["body"]["backgroundColor"], COLORS["mist"])
+
+
+class BuildShortBubbleTest(TestCase):
+
+    def test_produces_flex_message(self):
+        result = build_short_bubble("Hello!")
+        self.assertEqual(result["type"], "flex")
+
+    def test_has_accent_bar(self):
+        result = build_short_bubble("Hello!")
+        body = result["contents"]["body"]
+        self.assertEqual(body["layout"], "horizontal")
+        accent_bar = body["contents"][0]
+        self.assertEqual(accent_bar["backgroundColor"], COLORS["signal"])
+
+    def test_warm_background(self):
+        result = build_short_bubble("Hello!")
+        self.assertEqual(
+            result["contents"]["styles"]["body"]["backgroundColor"],
+            COLORS["mist"],
+        )
+
+
+class BuildStatusBubbleTest(TestCase):
+
+    def test_success_tone(self):
+        result = build_status_bubble("Done!", tone="success")
+        self.assertEqual(result["type"], "flex")
+        bg = result["contents"]["styles"]["body"]["backgroundColor"]
+        self.assertEqual(bg, COLORS["emerald_bg"])
+
+    def test_error_tone(self):
+        result = build_status_bubble("Failed.", tone="error")
+        bg = result["contents"]["styles"]["body"]["backgroundColor"]
+        self.assertEqual(bg, COLORS["rose_bg"])
+
+    def test_warning_tone(self):
+        result = build_status_bubble("Caution.", tone="warning")
+        bg = result["contents"]["styles"]["body"]["backgroundColor"]
+        self.assertEqual(bg, COLORS["amber_bg"])
+
+    def test_icon_and_text_present(self):
+        result = build_status_bubble("Message", tone="success")
+        body_contents = result["contents"]["body"]["contents"]
+        self.assertEqual(len(body_contents), 2)
+        # Icon has flex 0, text has flex 1
+        self.assertEqual(body_contents[0]["flex"], 0)
+        self.assertEqual(body_contents[1]["flex"], 1)
 
 
 class BuildFlexCarouselTest(TestCase):
@@ -236,6 +352,22 @@ class BuildFlexCarouselTest(TestCase):
         button = bubble["footer"]["contents"][0]
         self.assertEqual(button["action"]["type"], "postback")
         self.assertEqual(button["action"]["data"], "approve:lesson:123")
+
+    def test_carousel_uses_branded_button_color(self):
+        items = [{
+            "title": "Test",
+            "action_label": "Go",
+            "action_data": "test",
+        }]
+        result = build_flex_carousel(items)
+        button = result["contents"]["contents"][0]["footer"]["contents"][0]
+        self.assertEqual(button["color"], COLORS["signal_text"])
+
+    def test_carousel_has_branded_background(self):
+        items = [{"title": "Item 1"}]
+        result = build_flex_carousel(items)
+        bubble = result["contents"]["contents"][0]
+        self.assertEqual(bubble["styles"]["body"]["backgroundColor"], COLORS["mist"])
 
     def test_label_truncated_to_20(self):
         items = [{
@@ -273,9 +405,9 @@ class ExtractQuickReplyButtonsTest(TestCase):
     def test_multiple_buttons(self):
         text, items = extract_quick_reply_buttons(
             "How was your day?\n"
-            "[[button:Great 😊|mood:great]]"
-            "[[button:OK 😐|mood:ok]]"
-            "[[button:Rough 😞|mood:rough]]"
+            "[[button:Great \U0001f60a|mood:great]]"
+            "[[button:OK \U0001f610|mood:ok]]"
+            "[[button:Rough \U0001f61e|mood:rough]]"
         )
         self.assertIsNotNone(items)
         self.assertEqual(len(items), 3)
@@ -436,7 +568,7 @@ class WebhookFlexIntegrationTest(TestCase):
     @patch("apps.router.line_webhook._send_line_messages")
     @patch("apps.router.line_webhook.httpx.post")
     def test_structured_response_sends_flex(self, mock_httpx, mock_send):
-        """AI response with headers → Flex message."""
+        """AI response with headers -> Flex message."""
         from apps.router.line_webhook import LineWebhookView
         from apps.tenants.models import Tenant, User
 
@@ -456,7 +588,7 @@ class WebhookFlexIntegrationTest(TestCase):
         # Mock container response with structured content
         ai_response = {
             "choices": [{"message": {"content": (
-                "## Weather\nSunny and 25°C in Osaka.\n\n"
+                "## Weather\nSunny and 25\u00b0C in Osaka.\n\n"
                 "## Tasks\n- Review PR\n- Deploy LINE integration\n- Test Flex messages"
             )}}],
             "usage": {"prompt_tokens": 100, "completion_tokens": 50},
@@ -479,8 +611,8 @@ class WebhookFlexIntegrationTest(TestCase):
 
     @patch("apps.router.line_webhook._send_line_messages")
     @patch("apps.router.line_webhook.httpx.post")
-    def test_short_response_sends_plain_text(self, mock_httpx, mock_send):
-        """Short AI response → plain text, not Flex."""
+    def test_short_response_sends_flex(self, mock_httpx, mock_send):
+        """Short AI response -> branded Flex bubble (not plain text)."""
         from apps.router.line_webhook import LineWebhookView
         from apps.tenants.models import Tenant, User
 
@@ -514,12 +646,13 @@ class WebhookFlexIntegrationTest(TestCase):
 
         mock_send.assert_called_once()
         messages = mock_send.call_args[0][1]
-        self.assertEqual(messages[0]["type"], "text")
+        # Now returns Flex, not plain text
+        self.assertEqual(messages[0]["type"], "flex")
 
     @patch("apps.router.line_webhook._send_line_messages")
     @patch("apps.router.line_webhook.httpx.post")
     def test_response_with_buttons_gets_quick_reply(self, mock_httpx, mock_send):
-        """AI response with button markers → quick reply attached."""
+        """AI response with button markers -> quick reply attached."""
         from apps.router.line_webhook import LineWebhookView
         from apps.tenants.models import Tenant, User
 
@@ -539,9 +672,9 @@ class WebhookFlexIntegrationTest(TestCase):
         ai_response = {
             "choices": [{"message": {"content": (
                 "How was your day?\n"
-                "[[button:Great 😊|mood:great]]"
-                "[[button:OK 😐|mood:ok]]"
-                "[[button:Rough 😞|mood:rough]]"
+                "[[button:Great \U0001f60a|mood:great]]"
+                "[[button:OK \U0001f610|mood:ok]]"
+                "[[button:Rough \U0001f61e|mood:rough]]"
             )}}],
             "usage": {},
             "model": "test",
@@ -577,33 +710,30 @@ class FlexEdgeCaseTest(TestCase):
     def test_only_headers_no_content(self):
         result = build_flex_bubble("## Title One\n## Title Two")
         self.assertEqual(result["type"], "flex")
-        body = result["contents"]["body"]["contents"]
-        self.assertTrue(len(body) > 0)
+        # Should have header block for first title
+        self.assertIn("header", result["contents"])
 
     def test_deeply_nested_markdown(self):
         text = "## **Bold Header**\n- ***bold italic item***\n- [Link](https://x.com)"
         result = build_flex_bubble(text)
         self.assertEqual(result["type"], "flex")
-        # Should not crash, markdown stripped in Flex components
 
     def test_very_long_content(self):
         """Content over 2000 chars per component gets truncated."""
         long_text = "## Section\n" + ("x" * 5000)
         result = build_flex_bubble(long_text)
-        # Check text component content is capped
         body = result["contents"]["body"]["contents"]
         for comp in body:
             if comp.get("type") == "text" and comp.get("text"):
                 self.assertTrue(len(comp["text"]) <= 2000)
 
     def test_unicode_japanese_text(self):
-        text = "## 天気\n大阪は晴れ、気温25度です。\n\n## タスク\n- PRをレビュー\n- LINEの統合をデプロイ\n- Flexメッセージをテスト"
+        text = "## \u5929\u6c17\n\u5927\u962a\u306f\u6674\u308c\u3001\u6c17\u6e2925\u5ea6\u3067\u3059\u3002\n\n## \u30bf\u30b9\u30af\n- PR\u3092\u30ec\u30d3\u30e5\u30fc\n- LINE\u306e\u7d71\u5408\u3092\u30c7\u30d7\u30ed\u30a4\n- Flex\u30e1\u30c3\u30bb\u30fc\u30b8\u3092\u30c6\u30b9\u30c8"
         result = build_flex_bubble(text)
         self.assertEqual(result["type"], "flex")
-        # Verify Japanese text preserved
         json_str = json.dumps(result, ensure_ascii=False)
-        self.assertIn("天気", json_str)
-        self.assertIn("大阪", json_str)
+        self.assertIn("\u5929\u6c17", json_str)
+        self.assertIn("\u5927\u962a", json_str)
 
     def test_quick_reply_with_flex(self):
         """Quick replies work on Flex messages too."""
@@ -616,7 +746,7 @@ class FlexEdgeCaseTest(TestCase):
         self.assertEqual(result["type"], "flex")
 
     def test_special_chars_in_button_data(self):
-        text = "[[button:Approve ✅|extract:approve_lesson:abc-123_xyz]]"
+        text = "[[button:Approve \u2705|extract:approve_lesson:abc-123_xyz]]"
         _, items = extract_quick_reply_buttons(text)
         self.assertIsNotNone(items)
         self.assertEqual(items[0]["action"]["data"], "extract:approve_lesson:abc-123_xyz")
@@ -627,7 +757,7 @@ class FlexEdgeCaseTest(TestCase):
         self.assertEqual(len(items), 3)
 
     def test_bullet_with_unicode_bullet(self):
-        content = "• Bullet one\n• Bullet two\n• Bullet three"
+        content = "\u2022 Bullet one\n\u2022 Bullet two\n\u2022 Bullet three"
         items = _parse_list_items(content)
         self.assertEqual(len(items), 3)
 
@@ -638,20 +768,20 @@ class FlexEdgeCaseTest(TestCase):
 
 
 class MarkdownTableConversionTest(TestCase):
-    """Test markdown table → readable text conversion."""
+    """Test markdown table -> readable text conversion."""
 
     def test_basic_table(self):
         from apps.router.line_webhook import _strip_markdown
         text = (
-            "| Exercise | Sets × Reps | Rest |\n"
+            "| Exercise | Sets \u00d7 Reps | Rest |\n"
             "|----------|-------------|------|\n"
-            "| Pull-Ups | 4 × 6-10 | 90 sec |\n"
-            "| Incline Press | 3 × 8-10 | 90 sec |"
+            "| Pull-Ups | 4 \u00d7 6-10 | 90 sec |\n"
+            "| Incline Press | 3 \u00d7 8-10 | 90 sec |"
         )
         result = _strip_markdown(text)
         self.assertNotIn("|", result)
         self.assertIn("Exercise: Pull-Ups", result)
-        self.assertIn("Sets × Reps: 4 × 6-10", result)
+        self.assertIn("Sets \u00d7 Reps: 4 \u00d7 6-10", result)
         self.assertIn("Rest: 90 sec", result)
 
     def test_table_with_surrounding_text(self):
@@ -660,7 +790,7 @@ class MarkdownTableConversionTest(TestCase):
             "Here's your workout:\n\n"
             "| Exercise | Sets |\n"
             "|----------|------|\n"
-            "| Squats | 4×8 |\n\n"
+            "| Squats | 4\u00d78 |\n\n"
             "Have a great session!"
         )
         result = _strip_markdown(text)
@@ -701,10 +831,10 @@ class MarkdownTableConversionTest(TestCase):
     def test_japanese_table(self):
         from apps.router.line_webhook import _strip_markdown
         text = (
-            "| 種目 | セット | 休憩 |\n"
+            "| \u7a2e\u76ee | \u30bb\u30c3\u30c8 | \u4f11\u61a9 |\n"
             "|------|--------|------|\n"
-            "| スクワット | 4×8 | 90秒 |"
+            "| \u30b9\u30af\u30ef\u30c3\u30c8 | 4\u00d78 | 90\u79d2 |"
         )
         result = _strip_markdown(text)
-        self.assertIn("種目: スクワット", result)
-        self.assertIn("セット: 4×8", result)
+        self.assertIn("\u7a2e\u76ee: \u30b9\u30af\u30ef\u30c3\u30c8", result)
+        self.assertIn("\u30bb\u30c3\u30c8: 4\u00d78", result)

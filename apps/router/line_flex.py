@@ -1,7 +1,7 @@
 """LINE Flex Message builder.
 
-Converts structured agent responses (markdown-like) into LINE Flex Messages.
-Falls back to plain text for short/simple responses.
+Converts structured agent responses (markdown-like) into branded LINE Flex Messages.
+Falls back to plain text only for content that exceeds Flex size limits.
 """
 from __future__ import annotations
 
@@ -9,40 +9,77 @@ import re
 from typing import Any
 
 
-# ── Detection ────────────────────────────────────────────────────────────────
+# ── Brand Palette ───────────────────────────────────────────────────────────
 
-def should_use_flex(text: str) -> bool:
-    """Determine if a response warrants Flex formatting.
+COLORS = {
+    "ink": "#12232c",
+    "ink_muted": "#3d4f58",
+    "ink_faint": "#6b7b84",
+    "signal": "#5fbaaf",
+    "signal_text": "#0f766e",
+    "mist": "#f6f4ee",
+    "white": "#ffffff",
+    "separator": "#e8e4dc",
+    "emerald_bg": "#ecfdf5",
+    "emerald_text": "#065f46",
+    "rose_bg": "#fff1f2",
+    "rose_text": "#9f1239",
+    "amber_bg": "#fffbeb",
+    "amber_text": "#92400e",
+}
 
-    Returns True for structured content (headers, lists, multiple sections).
-    Returns False for short, simple messages.
+_TONE_MAP = {
+    "success": {"bg": COLORS["emerald_bg"], "fg": COLORS["emerald_text"], "icon": "\u2713"},
+    "error": {"bg": COLORS["rose_bg"], "fg": COLORS["rose_text"], "icon": "\u2717"},
+    "warning": {"bg": COLORS["amber_bg"], "fg": COLORS["amber_text"], "icon": "\u26a0"},
+}
+
+
+# ── Detection ───────────────────────────────────────────────────────────────
+
+def classify_content(text: str) -> str:
+    """Classify content type for template selection.
+
+    Returns: 'short', 'structured', or 'plain_text'.
     """
+    if not text or not text.strip():
+        return "short"
+
     if len(text) < 200 and "\n" not in text:
-        return False
+        return "short"
 
     # Has markdown headers
     if re.search(r"^#{1,3}\s+.+", text, re.MULTILINE):
-        return True
+        return "structured"
 
     # Has bullet lists (3+ items)
-    bullets = re.findall(r"^[\s]*[-•*]\s+.+", text, re.MULTILINE)
+    bullets = re.findall(r"^[\s]*[-\u2022*]\s+.+", text, re.MULTILINE)
     if len(bullets) >= 3:
-        return True
+        return "structured"
 
     # Has numbered lists (3+ items)
     numbered = re.findall(r"^[\s]*\d+[.)]\s+.+", text, re.MULTILINE)
     if len(numbered) >= 3:
-        return True
+        return "structured"
 
     # Multiple sections separated by double newlines with substantial content
     sections = [s.strip() for s in text.split("\n\n") if s.strip()]
     if len(sections) >= 4 and len(text) > 500:
-        return True
+        return "structured"
 
-    return False
+    # Medium-length messages still get a short bubble
+    if len(text) <= 2000:
+        return "short"
+
+    return "plain_text"
 
 
-# ── Parsing ──────────────────────────────────────────────────────────────────
+def should_use_flex(text: str) -> bool:
+    """Determine if a response warrants Flex formatting."""
+    return classify_content(text) != "plain_text"
+
+
+# ── Parsing ─────────────────────────────────────────────────────────────────
 
 def _parse_sections(text: str) -> list[dict]:
     """Parse markdown-like text into sections.
@@ -91,40 +128,49 @@ def _strip_md_inline(text: str) -> str:
 
 def _parse_list_items(content: str) -> list[str]:
     """Extract bullet or numbered list items from content."""
-    items = re.findall(r"^[\s]*(?:[-•*]|\d+[.)])\s+(.+)", content, re.MULTILINE)
+    items = re.findall(r"^[\s]*(?:[-\u2022*]|\d+[.)])\s+(.+)", content, re.MULTILINE)
     return [_strip_md_inline(item.strip()) for item in items]
 
 
-# ── Flex Builders ────────────────────────────────────────────────────────────
+# ── Flex Components ─────────────────────────────────────────────────────────
 
 def _text_component(
     text: str,
     *,
     size: str = "sm",
-    color: str = "#555555",
+    color: str | None = None,
     weight: str = "regular",
     wrap: bool = True,
     margin: str | None = None,
+    flex: int | None = None,
+    line_spacing: str | None = None,
 ) -> dict:
     """Create a Flex text component."""
     comp: dict[str, Any] = {
         "type": "text",
         "text": text[:2000],  # LINE text component limit
         "size": size,
-        "color": color,
+        "color": color or COLORS["ink_muted"],
         "weight": weight,
         "wrap": wrap,
     }
     if margin:
         comp["margin"] = margin
+    if flex is not None:
+        comp["flex"] = flex
+    if line_spacing:
+        comp["lineSpacing"] = line_spacing
     return comp
 
 
-def _separator(margin: str = "lg") -> dict:
-    return {"type": "separator", "margin": margin}
+def _separator(margin: str = "lg", color: str | None = None) -> dict:
+    sep: dict[str, Any] = {"type": "separator", "margin": margin}
+    if color:
+        sep["color"] = color
+    return sep
 
 
-def _section_box(title: str | None, content: str) -> list[dict]:
+def _section_box(title: str | None, content: str, is_first: bool = False) -> list[dict]:
     """Build Flex components for a single section."""
     components: list[dict] = []
 
@@ -132,7 +178,7 @@ def _section_box(title: str | None, content: str) -> list[dict]:
         components.append(_text_component(
             _strip_md_inline(title),
             size="md",
-            color="#1a1a1a",
+            color=COLORS["ink"],
             weight="bold",
         ))
 
@@ -144,71 +190,213 @@ def _section_box(title: str | None, content: str) -> list[dict]:
     if list_items:
         # Non-list content before the list
         non_list = re.sub(
-            r"^[\s]*(?:[-•*]|\d+[.)])\s+.+\n?", "", content, flags=re.MULTILINE
+            r"^[\s]*(?:[-\u2022*]|\d+[.)])\s+.+\n?", "", content, flags=re.MULTILINE
         ).strip()
         if non_list:
             components.append(_text_component(
                 _strip_md_inline(non_list),
+                color=COLORS["ink_muted"],
                 margin="sm",
+                line_spacing="4px",
             ))
 
         for item in list_items:
             components.append({
                 "type": "box",
-                "layout": "horizontal",
+                "layout": "baseline",
                 "margin": "sm",
+                "spacing": "sm",
                 "contents": [
-                    _text_component("•", size="sm", color="#888888", wrap=False),
-                    _text_component(item, size="sm", color="#555555", margin="sm"),
+                    _text_component(
+                        "\u2022", size="sm", color=COLORS["signal"],
+                        wrap=False, flex=0,
+                    ),
+                    _text_component(
+                        item, size="sm", color=COLORS["ink_muted"],
+                        flex=1, line_spacing="4px",
+                    ),
                 ],
             })
     else:
         components.append(_text_component(
             _strip_md_inline(content),
+            color=COLORS["ink_muted"],
             margin="sm" if title else None,
+            line_spacing="4px",
         ))
 
     return components
 
 
-def build_flex_bubble(text: str, alt_text: str = "Message from your assistant") -> dict:
-    """Build a single Flex bubble from structured text.
+# ── Bubble Builders ─────────────────────────────────────────────────────────
 
+def build_short_bubble(text: str, alt_text: str = "Message from your assistant") -> dict:
+    """Build a compact kilo-sized bubble with accent bar for short messages."""
+    return {
+        "type": "flex",
+        "altText": alt_text[:400],
+        "contents": {
+            "type": "bubble",
+            "size": "mega",
+            "styles": {
+                "body": {"backgroundColor": COLORS["mist"]},
+            },
+            "body": {
+                "type": "box",
+                "layout": "horizontal",
+                "paddingAll": "16px",
+                "spacing": "lg",
+                "contents": [
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "width": "4px",
+                        "backgroundColor": COLORS["signal"],
+                        "cornerRadius": "2px",
+                        "contents": [{"type": "filler"}],
+                    },
+                    _text_component(
+                        _strip_md_inline(text.strip()),
+                        size="sm",
+                        color=COLORS["ink"],
+                        flex=1,
+                        line_spacing="4px",
+                    ),
+                ],
+            },
+        },
+    }
+
+
+def build_status_bubble(
+    text: str,
+    tone: str = "success",
+    alt_text: str = "Message from your assistant",
+) -> dict:
+    """Build a compact status bubble (success/error/warning)."""
+    style = _TONE_MAP.get(tone, _TONE_MAP["success"])
+    return {
+        "type": "flex",
+        "altText": alt_text[:400],
+        "contents": {
+            "type": "bubble",
+            "size": "mega",
+            "styles": {
+                "body": {"backgroundColor": style["bg"]},
+            },
+            "body": {
+                "type": "box",
+                "layout": "horizontal",
+                "paddingAll": "16px",
+                "spacing": "md",
+                "contents": [
+                    _text_component(
+                        style["icon"], size="lg", color=style["fg"],
+                        wrap=False, flex=0,
+                    ),
+                    _text_component(
+                        _strip_md_inline(text.strip()),
+                        size="sm", color=style["fg"],
+                        flex=1, line_spacing="4px",
+                    ),
+                ],
+            },
+        },
+    }
+
+
+def build_flex_bubble(text: str, alt_text: str = "Message from your assistant") -> dict:
+    """Build a branded Flex bubble from structured text.
+
+    Dispatches to the appropriate template based on content classification.
     Returns a LINE Flex message object ready for the Push/Reply API.
     """
+    content_type = classify_content(text)
+
+    if content_type == "short":
+        return build_short_bubble(text, alt_text)
+
+    # Structured content: full branded bubble
     sections = _parse_sections(text)
 
     if not sections:
-        # Fallback: treat entire text as one section
         sections = [{"title": None, "content": _strip_md_inline(text)}]
 
+    # Determine if first section title becomes the bubble header
+    header_block = None
+    body_sections = sections
+
+    if sections[0].get("title"):
+        header_title = _strip_md_inline(sections[0]["title"])
+        header_content_text = sections[0].get("content", "").strip()
+
+        header_block = {
+            "type": "box",
+            "layout": "vertical",
+            "paddingAll": "16px",
+            "paddingBottom": "14px",
+            "contents": [
+                _text_component(
+                    header_title,
+                    size="lg",
+                    color=COLORS["white"],
+                    weight="bold",
+                ),
+            ],
+        }
+
+        # If the first section also has body content, keep it in the body
+        if header_content_text:
+            body_sections = [{"title": None, "content": header_content_text}] + sections[1:]
+        else:
+            body_sections = sections[1:]
+
+    # Build body contents
     body_contents: list[dict] = []
 
-    for i, section in enumerate(sections):
+    for i, section in enumerate(body_sections):
         if i > 0:
-            body_contents.append(_separator())
+            body_contents.append(_separator(color=COLORS["separator"]))
 
-        components = _section_box(section.get("title"), section.get("content", ""))
+        components = _section_box(
+            section.get("title"),
+            section.get("content", ""),
+            is_first=(i == 0),
+        )
         body_contents.extend(components)
 
     # Trim to avoid oversized Flex (LINE has ~50KB limit per message)
-    # Keep max 20 components in body
     if len(body_contents) > 30:
         body_contents = body_contents[:30]
 
-    bubble: dict = {
+    # If no body contents at all after header extraction, add placeholder
+    if not body_contents:
+        body_contents = [_text_component(" ", color=COLORS["ink_muted"])]
+
+    # Assemble bubble
+    bubble: dict[str, Any] = {
         "type": "bubble",
-        "body": {
-            "type": "box",
-            "layout": "vertical",
-            "spacing": "md",
-            "contents": body_contents,
+        "size": "mega",
+        "styles": {
+            "body": {"backgroundColor": COLORS["mist"]},
         },
+    }
+
+    if header_block:
+        bubble["styles"]["header"] = {"backgroundColor": COLORS["signal_text"]}
+        bubble["header"] = header_block
+
+    bubble["body"] = {
+        "type": "box",
+        "layout": "vertical",
+        "spacing": "md",
+        "paddingAll": "16px",
+        "contents": body_contents,
     }
 
     return {
         "type": "flex",
-        "altText": alt_text[:400],  # LINE altText limit
+        "altText": alt_text[:400],
         "contents": bubble,
     }
 
@@ -228,20 +416,23 @@ def build_flex_carousel(
             body_contents.append(_text_component(
                 item["title"],
                 size="md",
-                color="#1a1a1a",
+                color=COLORS["ink"],
                 weight="bold",
             ))
         if item.get("content"):
             body_contents.append(_text_component(
                 item["content"],
                 size="sm",
-                color="#555555",
+                color=COLORS["ink_muted"],
                 margin="sm",
             ))
 
         bubble: dict[str, Any] = {
             "type": "bubble",
             "size": "kilo",
+            "styles": {
+                "body": {"backgroundColor": COLORS["mist"]},
+            },
             "body": {
                 "type": "box",
                 "layout": "vertical",
@@ -258,7 +449,7 @@ def build_flex_carousel(
                 "contents": [{
                     "type": "button",
                     "style": "primary",
-                    "color": "#06C755",
+                    "color": COLORS["signal_text"],
                     "action": {
                         "type": "postback",
                         "label": item["action_label"][:20],
@@ -280,7 +471,7 @@ def build_flex_carousel(
     }
 
 
-# ── Quick Reply ──────────────────────────────────────────────────────────────
+# ── Quick Reply ─────────────────────────────────────────────────────────────
 
 def extract_quick_reply_buttons(text: str) -> tuple[str, list[dict] | None]:
     """Extract inline button markers from text, return cleaned text + quick reply items.
