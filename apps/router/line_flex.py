@@ -122,8 +122,61 @@ def _strip_md_inline(text: str) -> str:
     text = re.sub(r"\*(.+?)\*", r"\1", text)
     text = re.sub(r"_(.+?)_", r"\1", text)
     text = re.sub(r"`(.+?)`", r"\1", text)
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1: \2", text)
+    # Remove markdown links — they'll be rendered as tappable link components
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
     return text
+
+
+def _extract_links(text: str) -> list[tuple[str, str]]:
+    """Extract links from text. Returns list of (label, url) tuples.
+
+    Handles markdown links [label](url) and bare https:// URLs.
+    """
+    links: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+
+    # Markdown links: [label](url)
+    for label, url in re.findall(r"\[([^\]]+)\]\(([^)]+)\)", text):
+        url = url.strip()
+        if url not in seen_urls:
+            links.append((label.strip(), url))
+            seen_urls.add(url)
+
+    # Bare URLs (not already captured as markdown link targets)
+    for url in re.findall(r"(?<!\()https?://[^\s\)\]]+", text):
+        url = url.rstrip(".,;:!?")
+        if url not in seen_urls:
+            # Use domain as label
+            domain = re.sub(r"https?://(?:www\.)?", "", url).split("/")[0]
+            links.append((domain, url))
+            seen_urls.add(url)
+
+    return links
+
+
+def _link_component(label: str, url: str) -> dict:
+    """Build a tappable link row (box with URI action)."""
+    return {
+        "type": "box",
+        "layout": "baseline",
+        "margin": "sm",
+        "spacing": "sm",
+        "action": {
+            "type": "uri",
+            "label": label[:40],
+            "uri": url,
+        },
+        "contents": [
+            _text_component(
+                "\U0001f517", size="xs", color=COLORS["signal_text"],
+                wrap=False, flex=0,
+            ),
+            _text_component(
+                label[:80], size="sm", color=COLORS["signal_text"],
+                flex=1,
+            ),
+        ],
+    }
 
 
 def _parse_list_items(content: str) -> list[str]:
@@ -185,6 +238,9 @@ def _section_box(title: str | None, content: str, is_first: bool = False) -> lis
     if not content:
         return components
 
+    # Extract links before stripping markdown (we need raw markdown/URLs)
+    links = _extract_links(content)
+
     # Check for list items in content
     list_items = _parse_list_items(content)
     if list_items:
@@ -218,12 +274,22 @@ def _section_box(title: str | None, content: str, is_first: bool = False) -> lis
                 ],
             })
     else:
-        components.append(_text_component(
-            _strip_md_inline(content),
-            color=COLORS["ink_muted"],
-            margin="sm" if title else None,
-            line_spacing="4px",
-        ))
+        # Strip bare URLs from display text when we have link components
+        display_text = _strip_md_inline(content)
+        if links:
+            display_text = re.sub(r"https?://[^\s]+", "", display_text)
+            display_text = re.sub(r"\n{2,}", "\n", display_text).strip()
+        if display_text:
+            components.append(_text_component(
+                display_text,
+                color=COLORS["ink_muted"],
+                margin="sm" if title else None,
+                line_spacing="4px",
+            ))
+
+    # Add tappable link rows
+    for label, url in links:
+        components.append(_link_component(label, url))
 
     return components
 
@@ -231,7 +297,42 @@ def _section_box(title: str | None, content: str, is_first: bool = False) -> lis
 # ── Bubble Builders ─────────────────────────────────────────────────────────
 
 def build_short_bubble(text: str, alt_text: str = "Message from your assistant") -> dict:
-    """Build a compact kilo-sized bubble with accent bar for short messages."""
+    """Build a compact bubble with accent bar for short messages."""
+    links = _extract_links(text)
+    display_text = _strip_md_inline(text.strip())
+    if links:
+        display_text = re.sub(r"https?://[^\s]+", "", display_text)
+        display_text = re.sub(r"\n{2,}", "\n", display_text).strip()
+
+    body_contents: list[dict] = [
+        {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "lg",
+            "contents": [
+                {
+                    "type": "box",
+                    "layout": "vertical",
+                    "width": "4px",
+                    "backgroundColor": COLORS["signal"],
+                    "cornerRadius": "2px",
+                    "contents": [{"type": "filler"}],
+                },
+                _text_component(
+                    display_text or text.strip(),
+                    size="sm",
+                    color=COLORS["ink"],
+                    flex=1,
+                    line_spacing="4px",
+                ),
+            ],
+        },
+    ]
+
+    # Add tappable link rows below the accent bar
+    for label, url in links:
+        body_contents.append(_link_component(label, url))
+
     return {
         "type": "flex",
         "altText": alt_text[:400],
@@ -243,26 +344,10 @@ def build_short_bubble(text: str, alt_text: str = "Message from your assistant")
             },
             "body": {
                 "type": "box",
-                "layout": "horizontal",
+                "layout": "vertical",
                 "paddingAll": "16px",
-                "spacing": "lg",
-                "contents": [
-                    {
-                        "type": "box",
-                        "layout": "vertical",
-                        "width": "4px",
-                        "backgroundColor": COLORS["signal"],
-                        "cornerRadius": "2px",
-                        "contents": [{"type": "filler"}],
-                    },
-                    _text_component(
-                        _strip_md_inline(text.strip()),
-                        size="sm",
-                        color=COLORS["ink"],
-                        flex=1,
-                        line_spacing="4px",
-                    ),
-                ],
+                "spacing": "md",
+                "contents": body_contents,
             },
         },
     }

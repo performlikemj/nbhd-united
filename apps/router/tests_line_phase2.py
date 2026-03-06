@@ -16,6 +16,8 @@ from apps.router.line_flex import (
     classify_content,
     extract_quick_reply_buttons,
     should_use_flex,
+    _extract_links,
+    _link_component,
     _parse_sections,
     _strip_md_inline,
     _parse_list_items,
@@ -157,7 +159,7 @@ class StripMdInlineTest(TestCase):
     def test_link(self):
         self.assertEqual(
             _strip_md_inline("[click](https://example.com)"),
-            "click: https://example.com",
+            "click",
         )
 
     def test_mixed(self):
@@ -190,6 +192,84 @@ class ParseListItemsTest(TestCase):
         content = "- **Bold item**\n- *Italic item*"
         items = _parse_list_items(content)
         self.assertEqual(items, ["Bold item", "Italic item"])
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Link Extraction Tests
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class ExtractLinksTest(TestCase):
+
+    def test_markdown_link(self):
+        links = _extract_links("Check [Google](https://google.com) for info")
+        self.assertEqual(len(links), 1)
+        self.assertEqual(links[0], ("Google", "https://google.com"))
+
+    def test_bare_url(self):
+        links = _extract_links("Visit https://example.com for more")
+        self.assertEqual(len(links), 1)
+        self.assertEqual(links[0][1], "https://example.com")
+        self.assertEqual(links[0][0], "example.com")
+
+    def test_multiple_links(self):
+        text = "[A](https://a.com) and [B](https://b.com)"
+        links = _extract_links(text)
+        self.assertEqual(len(links), 2)
+
+    def test_no_duplicates(self):
+        text = "[Link](https://x.com) and https://x.com again"
+        links = _extract_links(text)
+        self.assertEqual(len(links), 1)
+
+    def test_no_links(self):
+        links = _extract_links("Just plain text")
+        self.assertEqual(links, [])
+
+    def test_bare_url_strips_trailing_punctuation(self):
+        links = _extract_links("See https://example.com/path.")
+        self.assertEqual(links[0][1], "https://example.com/path")
+
+
+class LinkComponentTest(TestCase):
+
+    def test_has_uri_action(self):
+        comp = _link_component("Google", "https://google.com")
+        self.assertEqual(comp["action"]["type"], "uri")
+        self.assertEqual(comp["action"]["uri"], "https://google.com")
+
+    def test_uses_signal_text_color(self):
+        comp = _link_component("Link", "https://example.com")
+        text_comp = comp["contents"][1]
+        self.assertEqual(text_comp["color"], COLORS["signal_text"])
+
+
+class FlexBubbleLinksTest(TestCase):
+
+    def test_structured_bubble_includes_link_rows(self):
+        text = "## Info\nCheck [docs](https://docs.example.com) for details."
+        result = build_flex_bubble(text)
+        body = result["contents"]["body"]["contents"]
+        # Find link components (boxes with URI action)
+        link_boxes = [c for c in body if c.get("action", {}).get("type") == "uri"]
+        self.assertEqual(len(link_boxes), 1)
+        self.assertEqual(link_boxes[0]["action"]["uri"], "https://docs.example.com")
+
+    def test_short_bubble_includes_link_rows(self):
+        text = "Visit https://example.com for more info"
+        result = build_short_bubble(text)
+        body = result["contents"]["body"]["contents"]
+        # Second item should be a link row
+        self.assertTrue(len(body) >= 2)
+        link_box = body[1]
+        self.assertEqual(link_box["action"]["type"], "uri")
+
+    def test_no_links_no_extra_components(self):
+        text = "## Title\nJust text, no links here."
+        result = build_flex_bubble(text)
+        body = result["contents"]["body"]["contents"]
+        link_boxes = [c for c in body if c.get("action", {}).get("type") == "uri"]
+        self.assertEqual(len(link_boxes), 0)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -232,9 +312,11 @@ class BuildFlexBubbleTest(TestCase):
         bubble = result["contents"]
         self.assertEqual(bubble["size"], "mega")
         self.assertEqual(bubble["styles"]["body"]["backgroundColor"], COLORS["mist"])
-        # Should have accent bar (horizontal layout with box + text)
+        # Body is vertical, first child is horizontal accent bar row
         body = bubble["body"]
-        self.assertEqual(body["layout"], "horizontal")
+        self.assertEqual(body["layout"], "vertical")
+        accent_row = body["contents"][0]
+        self.assertEqual(accent_row["layout"], "horizontal")
 
     def test_sections_with_bullets(self):
         text = "## Shopping List\n- Apples\n- Bananas\n- Milk"
@@ -283,8 +365,10 @@ class BuildShortBubbleTest(TestCase):
     def test_has_accent_bar(self):
         result = build_short_bubble("Hello!")
         body = result["contents"]["body"]
-        self.assertEqual(body["layout"], "horizontal")
-        accent_bar = body["contents"][0]
+        self.assertEqual(body["layout"], "vertical")
+        accent_row = body["contents"][0]
+        self.assertEqual(accent_row["layout"], "horizontal")
+        accent_bar = accent_row["contents"][0]
         self.assertEqual(accent_bar["backgroundColor"], COLORS["signal"])
 
     def test_warm_background(self):
