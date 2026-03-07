@@ -12,7 +12,7 @@ from django.conf import settings
 from apps.orchestrator.tool_policy import generate_tool_config
 from apps.tenants.models import Tenant
 
-_MORNING_BRIEFING_PROMPT = (
+_MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "Good morning! Create today's morning briefing. This is a cron (isolated) session — "
     "you cannot have a back-and-forth conversation. You must do everything in ONE turn.\n\n"
     "⚠️ NEWS DATE RULE: Before including any news item, check its publication date. "
@@ -22,15 +22,11 @@ _MORNING_BRIEFING_PROMPT = (
     "not 'Man United sacked their manager yesterday.' "
     "Stale news presented as current is worse than no news.\n\n"
     "Steps:\n"
-    "1. Get weather using web_fetch with Open-Meteo API (free, no key needed). "
-    "Build the URL with the user's coordinates and timezone:\n"
-    "   url='https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
-    "&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m"
-    "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
-    "&timezone={tz}&forecast_days=3'\n"
+    "1. Get weather using web_fetch with the pre-built Open-Meteo URL below. "
+    "Do NOT use curl or exec — you don't have shell access. Use the web_fetch tool.\n"
+    "   Weather URL: {weather_url}\n"
     "   WMO weather codes: 0=clear, 1-3=partly cloudy/overcast, 45-48=fog, "
     "51-55=drizzle, 61-65=rain, 71-75=snow, 80-82=rain showers, 95=thunderstorm.\n"
-    "   Do NOT use curl or exec — you don't have shell access. Use web_fetch.\n"
     "2. Check their calendar for today's events and upcoming 48hrs\n"
     "3. Check for important unread emails or messages\n"
     "4. Load recent journal context — what happened yesterday, any carry-over tasks?\n"
@@ -77,6 +73,14 @@ _MORNING_BRIEFING_PROMPT = (
     "only fill in sections that exist in their template.\n\n"
     "**IMPORTANT: Send exactly ONE message. Do not send multiple messages.**\n"
 )
+
+def _build_morning_briefing_prompt(tenant) -> str:
+    """Build the morning briefing prompt with a pre-resolved weather URL."""
+    from apps.orchestrator.weather import build_weather_url
+    user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
+    weather_url = build_weather_url(user_tz)
+    return _MORNING_BRIEFING_PROMPT_TEMPLATE.format(weather_url=weather_url)
+
 
 _EVENING_CHECKIN_PROMPT = (
     "It's evening check-in time. This is a cron (isolated) session — you cannot have a "
@@ -260,7 +264,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "sessionTarget": "isolated",
             "payload": {
                 "kind": "agentTurn",
-                "message": _MORNING_BRIEFING_PROMPT,
+                "message": _build_morning_briefing_prompt(tenant),
             },
             "delivery": {"mode": "none"},
             "enabled": True,
