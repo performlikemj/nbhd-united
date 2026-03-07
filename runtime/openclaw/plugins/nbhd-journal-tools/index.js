@@ -752,8 +752,10 @@ export default function register(api) {
     description:
       "Update the user's profile settings. Use ONLY after the user has " +
       "explicitly confirmed the change in conversation. Supported fields: " +
-      "timezone (IANA string like 'America/New_York'), display_name, language. " +
-      "When updating timezone, all scheduled tasks are automatically synced.",
+      "timezone (IANA string like 'America/New_York'), display_name, language, " +
+      "location_city, location_lat, location_lon. " +
+      "When updating timezone, all scheduled tasks are automatically synced. " +
+      "When updating location, weather forecasts will use those coordinates.",
     parameters: {
       type: "object",
       properties: {
@@ -770,6 +772,18 @@ export default function register(api) {
           type: "string",
           description: "ISO language code, e.g. 'en', 'ja', 'es'.",
         },
+        location_city: {
+          type: "string",
+          description: "City name, e.g. 'Osaka', 'Brooklyn', 'London'.",
+        },
+        location_lat: {
+          type: "number",
+          description: "Latitude (-90 to 90).",
+        },
+        location_lon: {
+          type: "number",
+          description: "Longitude (-180 to 180).",
+        },
       },
     },
     async execute(_id, params) {
@@ -778,8 +792,13 @@ export default function register(api) {
       if (input.timezone) body.timezone = asTrimmedString(input.timezone);
       if (input.display_name) body.display_name = asTrimmedString(input.display_name);
       if (input.language) body.language = asTrimmedString(input.language);
+      if (input.location_city) body.location_city = asTrimmedString(input.location_city);
+      if (input.location_lat !== undefined && input.location_lon !== undefined) {
+        body.location_lat = Number(input.location_lat);
+        body.location_lon = Number(input.location_lon);
+      }
       if (Object.keys(body).length === 0) {
-        throw new Error("At least one field (timezone, display_name, language) is required");
+        throw new Error("At least one field (timezone, display_name, language, location_city, location_lat, location_lon) is required");
       }
       const payload = await callRuntime(api, {
         path: tenantPath(api, "/profile/"),

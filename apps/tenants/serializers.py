@@ -25,6 +25,7 @@ class UserSerializer(serializers.ModelSerializer):
             "id", "username", "email", "display_name", "language",
             "timezone", "telegram_chat_id", "telegram_username",
             "line_user_id", "line_display_name", "preferred_channel",
+            "location_city", "location_lat", "location_lon",
         )
         read_only_fields = (
             "id", "username", "email", "telegram_chat_id", "telegram_username",
@@ -33,6 +34,16 @@ class UserSerializer(serializers.ModelSerializer):
 
     def validate_timezone(self, value):
         return _validate_timezone(value)
+
+    def validate_location_lat(self, value):
+        if value is not None and not (-90 <= value <= 90):
+            raise serializers.ValidationError("Latitude must be between -90 and 90.")
+        return value
+
+    def validate_location_lon(self, value):
+        if value is not None and not (-180 <= value <= 180):
+            raise serializers.ValidationError("Longitude must be between -180 and 180.")
+        return value
 
 
 class TenantSerializer(serializers.ModelSerializer):

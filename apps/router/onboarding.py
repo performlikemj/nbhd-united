@@ -574,11 +574,14 @@ def _write_user_md(tenant: Tenant, interests: str) -> None:
         tz = tenant.user.timezone or "UTC"
         lang = tenant.user.language or "en"
 
+        city = getattr(tenant.user, "location_city", "") or ""
+        location_line = f"\n- **Location:** {city}" if city else ""
+
         content = f"""# About You
 
 - **Name:** {name}
 - **Language:** {lang}
-- **Timezone:** {tz}
+- **Timezone:** {tz}{location_line}
 
 ## What you're looking for
 

@@ -153,7 +153,14 @@ export function fetchMe(): Promise<AuthUser> {
   return apiFetch<AuthUser>("/api/v1/auth/me/");
 }
 
-export function updateProfile(data: { display_name?: string; language?: string; timezone?: string }): Promise<AuthUser> {
+export function updateProfile(data: {
+  display_name?: string;
+  language?: string;
+  timezone?: string;
+  location_city?: string;
+  location_lat?: number | null;
+  location_lon?: number | null;
+}): Promise<AuthUser> {
   return apiFetch<AuthUser>("/api/v1/tenants/profile/", {
     method: "PATCH",
     body: JSON.stringify(data),
