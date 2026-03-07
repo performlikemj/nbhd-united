@@ -37,8 +37,14 @@ export default function SettingsBillingPage() {
     try {
       const result = await portalMutation.mutateAsync();
       window.location.assign(result.url);
-    } catch {
-      setPortalError("Could not open customer portal. Ensure a Stripe customer is linked.");
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : "";
+      try {
+        const body = JSON.parse(raw);
+        setPortalError(body.detail || "Something went wrong. Please try again.");
+      } catch {
+        setPortalError("Something went wrong. Please try again.");
+      }
     }
   };
 
