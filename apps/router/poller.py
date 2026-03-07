@@ -1192,25 +1192,45 @@ class TelegramPoller:
 
     def _record_usage(self, tenant: Tenant, result: dict) -> None:
         """Record token usage from the webhook response."""
-        usage = result.get("usage", {})
-        if not isinstance(usage, dict):
+        usage = result.get("usage")
+        if not isinstance(usage, dict) or not usage:
+            model = result.get("model", "")
+            if model:
+                logger.warning(
+                    "USAGE_MISSING tenant=%s model=%s result_keys=%s — "
+                    "container returned a response but no usage object",
+                    tenant.id, model, list(result.keys()),
+                )
+            else:
+                logger.warning(
+                    "USAGE_MISSING tenant=%s result_keys=%s — "
+                    "no usage object and no model in response",
+                    tenant.id, list(result.keys()),
+                )
             return
 
         input_tokens = usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0) or 0
         output_tokens = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0) or 0
         model_used = result.get("model", "")
 
-        if input_tokens or output_tokens:
-            try:
-                record_usage(
-                    tenant=tenant,
-                    event_type="message",
-                    input_tokens=int(input_tokens),
-                    output_tokens=int(output_tokens),
-                    model_used=model_used or "",
-                )
-            except Exception:
-                logger.exception("Failed to record usage for tenant %s", tenant.id)
+        if not (input_tokens or output_tokens):
+            logger.warning(
+                "USAGE_ZERO tenant=%s model=%s usage_keys=%s — "
+                "usage object present but token counts are zero",
+                tenant.id, model_used, list(usage.keys()),
+            )
+            return
+
+        try:
+            record_usage(
+                tenant=tenant,
+                event_type="message",
+                input_tokens=int(input_tokens),
+                output_tokens=int(output_tokens),
+                model_used=model_used or "",
+            )
+        except Exception:
+            logger.exception("Failed to record usage for tenant %s", tenant.id)
 
     def _send_budget_exhausted(self, chat_id: int, tenant: Tenant) -> None:
         """Send budget exhausted message."""

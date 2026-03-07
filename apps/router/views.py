@@ -72,6 +72,14 @@ def _record_usage_from_openclaw_result(tenant: Tenant, result: object) -> None:
         return
 
     usage = _extract_usage_payload(result)
+    if not usage:
+        logger.warning(
+            "USAGE_MISSING tenant=%s result_keys=%s — "
+            "OpenClaw response has no usage payload",
+            tenant.id, list(result.keys()),
+        )
+        return
+
     input_tokens = _coerce_non_negative_int(
         usage.get("input_tokens", usage.get("input"))
     )
@@ -86,6 +94,13 @@ def _record_usage_from_openclaw_result(tenant: Tenant, result: object) -> None:
 
     if not model_used and isinstance(result.get("model_used"), str):
         model_used = result.get("model_used") or ""
+
+    if not (input_tokens or output_tokens):
+        logger.warning(
+            "USAGE_ZERO tenant=%s model=%s usage_keys=%s — "
+            "usage payload present but token counts are zero",
+            tenant.id, model_used, list(usage.keys()),
+        )
 
     try:
         record_usage(

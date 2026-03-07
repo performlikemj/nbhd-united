@@ -65,7 +65,7 @@ function getRuntimeConfig(api) {
   return { apiBaseUrl, tenantId, internalKey, requestTimeoutMs };
 }
 
-function extractUsage(event = {}) {
+function extractUsage(event = {}, logger = null) {
   const usage = asObject(event.usage);
   const inputTokens = asNonNegativeInteger(
     usage.input_tokens ?? usage.input,
@@ -75,15 +75,25 @@ function extractUsage(event = {}) {
   );
   const modelUsed = asTrimmedString(event.model || event.model_used || "");
 
-  if (inputTokens === null || outputTokens === null || !modelUsed) {
+  if (inputTokens === null || outputTokens === null) {
+    if (logger) {
+      logger.warn(
+        `NBHD usage extract failed: input_tokens=${inputTokens}, output_tokens=${outputTokens}, ` +
+        `model=${modelUsed || "(empty)"}, event_keys=${Object.keys(event)}, usage_keys=${Object.keys(usage)}`,
+      );
+    }
     return null;
+  }
+
+  if (!modelUsed && logger) {
+    logger.warn("NBHD usage extract: model is missing, using 'unknown' fallback");
   }
 
   return {
     event_type: "message",
     input_tokens: inputTokens,
     output_tokens: outputTokens,
-    model_used: modelUsed,
+    model_used: modelUsed || "unknown",
   };
 }
 
@@ -92,7 +102,7 @@ async function reportUsage(payload, api) {
   try {
     runtime = getRuntimeConfig(api);
   } catch (error) {
-    api.logger.debug(`Skipping usage report registration: ${error.message}`);
+    api.logger.warn(`Skipping usage report — missing config: ${error.message}`);
     return;
   }
 
@@ -136,8 +146,10 @@ export default function register(api) {
     return;
   }
 
+  api.logger.info("NBHD usage reporter plugin registered");
+
   api.on("llm_output", (event) => {
-    const payload = extractUsage(event);
+    const payload = extractUsage(event, api.logger);
     if (!payload) {
       return;
     }
