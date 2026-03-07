@@ -627,8 +627,8 @@ class LineWebhookEdgeCaseTest(TestCase):
         self.assertEqual(user.preferred_channel, "telegram")
 
     @patch("apps.router.line_webhook._send_line_push")
-    def test_suspended_no_subscription_sends_trial_ended(self, mock_push):
-        """Suspended user without subscription gets trial-ended message."""
+    def test_suspended_no_subscription_sends_paused_message(self, mock_push):
+        """Suspended user without subscription gets paused message."""
         from apps.router.line_webhook import LineWebhookView
         mock_push.return_value = True
 

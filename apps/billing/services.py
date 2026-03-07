@@ -176,6 +176,22 @@ def handle_checkout_completed(session_data: dict) -> None:
             from apps.orchestrator.azure_client import scale_container_app
             scale_container_app(tenant.container_id, min_replicas=1, max_replicas=1)
             logger.info("Woke container %s for reactivated tenant %s", tenant.container_id, tenant.id)
+
+            # Re-enable cron jobs that were disabled during suspension
+            try:
+                from apps.cron.suspension import resume_tenant_crons
+                # Refresh tenant to get updated status
+                tenant.refresh_from_db()
+                cron_result = resume_tenant_crons(tenant)
+                logger.info(
+                    "Re-enabled %d cron jobs for reactivated tenant %s",
+                    cron_result.get("enabled", 0), tenant.id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to re-enable crons for tenant %s — may need manual reseed",
+                    tenant.id,
+                )
         except Exception:
             logger.exception("Failed to wake container %s for tenant %s — may need re-provisioning", tenant.container_id, tenant.id)
 
@@ -241,6 +257,18 @@ def handle_invoice_payment_failed(invoice_data: dict) -> None:
     if tenant.status == Tenant.Status.SUSPENDED:
         logger.info("Tenant %s already paused (payment lapsed)", tenant.id)
         return
+
+    # Disable cron jobs before suspending (container must be reachable)
+    if tenant.container_fqdn:
+        try:
+            from apps.cron.suspension import suspend_tenant_crons
+            cron_result = suspend_tenant_crons(tenant)
+            logger.info(
+                "Disabled %d cron jobs for tenant %s before suspension",
+                cron_result.get("disabled", 0), tenant.id,
+            )
+        except Exception:
+            logger.exception("Failed to suspend crons for tenant %s", tenant.id)
 
     tenant.status = Tenant.Status.SUSPENDED
     tenant.save(update_fields=["status", "updated_at"])
