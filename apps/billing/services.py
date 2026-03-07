@@ -239,12 +239,12 @@ def handle_invoice_payment_failed(invoice_data: dict) -> None:
         return
 
     if tenant.status == Tenant.Status.SUSPENDED:
-        logger.info("Tenant %s already suspended", tenant.id)
+        logger.info("Tenant %s already paused (payment lapsed)", tenant.id)
         return
 
     tenant.status = Tenant.Status.SUSPENDED
     tenant.save(update_fields=["status", "updated_at"])
-    logger.warning("Suspended tenant %s after failed invoice", tenant.id)
+    logger.warning("Paused tenant %s after failed invoice", tenant.id)
 
     # Hibernate the container (scale to zero) to stop resource costs
     if tenant.container_id:
