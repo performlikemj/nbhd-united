@@ -29,10 +29,10 @@ function UserIcon() {
   );
 }
 
-function LinkIcon() {
+function PuzzleIcon() {
   return (
     <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m9.86-2.654a4.5 4.5 0 00-1.242-7.244l-4.5-4.5a4.5 4.5 0 00-6.364 6.364L4.34 8.934" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M14.25 6.087c0-.355.186-.676.401-.959.221-.29.349-.634.349-1.003 0-1.036-1.007-1.875-2.25-1.875s-2.25.84-2.25 1.875c0 .369.128.713.349 1.003.215.283.401.604.401.959v.75H8.25A2.25 2.25 0 006 9v3.75c0 .414-.336.75-.75.75h-.75c-.355 0-.676.186-.959.401-.29.221-.634.349-1.003.349-1.036 0-1.875 1.007-1.875 2.25s.84 2.25 1.875 2.25c.369 0 .713-.128 1.003-.349.283-.215.604-.401.959-.401h.75a.75.75 0 00.75-.75V14.25h2.25a2.25 2.25 0 002.25-2.25V9h.75c.355 0 .676-.186.959-.401.29-.221.634-.349 1.003-.349 1.036 0 1.875 1.007 1.875 2.25s-.84 2.25-1.875 2.25c-.369 0-.713-.128-1.003-.349-.283-.215-.604-.401-.959-.401H15V15a2.25 2.25 0 01-2.25 2.25H9v.75" />
     </svg>
   );
 }
@@ -89,7 +89,7 @@ function ChevronLeftIcon() {
 
 const settingsTabs = [
   { href: "/settings", label: "Account", icon: <UserIcon /> },
-  { href: "/settings/integrations", label: "Integrations", icon: <LinkIcon /> },
+  { href: "/settings/integrations", label: "Integrations", icon: <PuzzleIcon /> },
   { href: "/settings/cron-jobs", label: "Scheduled Tasks", icon: <ClockIcon /> },
   { href: "/settings/usage", label: "Usage", icon: <ChartIcon /> },
   { href: "/settings/billing", label: "Billing", icon: <CreditCardIcon /> },
