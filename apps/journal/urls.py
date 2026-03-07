@@ -17,6 +17,7 @@ from .views import (
 )
 from .document_views import (
     DocumentAppendView,
+    DocumentClearView,
     DocumentDetailView,
     DocumentListCreateView,
     SidebarTreeView,
@@ -27,6 +28,7 @@ urlpatterns = [
     # ── v2 Document API ──────────────────────────────────────────────────
     path("documents/", DocumentListCreateView.as_view(), name="document-list-create"),
     path("documents/<str:kind>/<path:slug>/append/", DocumentAppendView.as_view(), name="document-append"),
+    path("documents/<str:kind>/<path:slug>/clear/", DocumentClearView.as_view(), name="document-clear"),
     path("documents/<str:kind>/<path:slug>/", DocumentDetailView.as_view(), name="document-detail"),
     path("today/", TodayView.as_view(), name="today"),
     path("tree/", SidebarTreeView.as_view(), name="sidebar-tree"),

@@ -14,6 +14,7 @@ import {
   createWeeklyReview,
   deleteAutomation,
   deleteCronJob,
+  clearDocument,
   deleteDocument,
   deleteTemplate,
   deleteJournalEntry,
@@ -594,6 +595,18 @@ export function useDeleteDocumentMutation() {
       void queryClient.invalidateQueries({ queryKey: ["sidebar-tree"] });
       // Remove cached document entry directly
       queryClient.removeQueries({ queryKey: ["document", variables.kind, variables.slug] });
+    },
+  });
+}
+
+export function useClearDocumentMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ kind, slug }: { kind: string; slug: string }) => clearDocument(kind, slug),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ["documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["sidebar-tree"] });
+      void queryClient.invalidateQueries({ queryKey: ["document", variables.kind, variables.slug] });
     },
   });
 }

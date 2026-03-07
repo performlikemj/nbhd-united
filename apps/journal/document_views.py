@@ -243,6 +243,28 @@ class DocumentDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class DocumentClearView(APIView):
+    """POST /api/v1/journal/documents/<kind>/<slug>/clear/
+
+    Resets a document's markdown to empty. Used for daily notes and
+    singletons (tasks, ideas, memory) where the record should persist
+    but the content should be wiped.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, kind: str, slug: str):
+        tenant = _get_tenant(request.user)
+        _validate_slug(kind, slug)
+        try:
+            doc = Document.objects.get(tenant=tenant, kind=kind, slug=slug)
+        except Document.DoesNotExist:
+            raise Http404("Document not found.")
+        doc.markdown = ""
+        doc.save()
+        return Response(DocumentSerializer(doc).data)
+
+
 class DocumentAppendView(APIView):
     """POST /api/v1/journal/documents/<kind>/<slug>/append/
 

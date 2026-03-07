@@ -587,6 +587,10 @@ export function deleteDocument(kind: string, slug: string): Promise<void> {
   return apiFetch<void>(`/api/v1/journal/documents/${kind}/${slug}/`, { method: "DELETE" });
 }
 
+export function clearDocument(kind: string, slug: string): Promise<DocumentResponse> {
+  return apiFetch<DocumentResponse>(`/api/v1/journal/documents/${kind}/${slug}/clear/`, { method: "POST" });
+}
+
 export function getLLMConfig(): Promise<LLMConfig> {
   return apiFetch<LLMConfig>("/api/v1/settings/llm-config/");
 }

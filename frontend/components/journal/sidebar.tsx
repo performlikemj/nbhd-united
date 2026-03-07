@@ -7,6 +7,7 @@ import { fetchDocument } from "@/lib/api";
 import {
   useSidebarTreeQuery,
   useDeleteDocumentMutation,
+  useClearDocumentMutation,
   useCreateDocumentMutation,
 } from "@/lib/queries";
 import { Toast, useToast } from "@/components/toast";
@@ -34,6 +35,7 @@ const KIND_ICONS: Record<string, string> = {
 };
 
 const SINGLETON_KINDS = new Set(["tasks", "ideas", "memory"]);
+const CLEARABLE_KINDS = new Set(["daily", "tasks", "ideas", "memory"]);
 
 /**
  * Sidebar section kind → actual document kind.
@@ -78,6 +80,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
   const [toast, showToast] = useToast();
 
   const deleteMutation = useDeleteDocumentMutation();
+  const clearMutation = useClearDocumentMutation();
   const createMutation = useCreateDocumentMutation();
 
   // Clear delete timer on unmount
@@ -114,12 +117,35 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
       deleteMutation.mutate(
         { kind, slug },
         {
-          onSuccess: () => showToast("Deleted", "success"),
+          onSuccess: () => {
+            showToast("Deleted", "success");
+            // Navigate away if the deleted doc was active
+            if (activeKind === kind && activeSlug === slug) {
+              const today = new Date();
+              const todaySlug = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+              onNavigate("daily", todaySlug);
+            }
+          },
           onError: () => showToast("Delete failed", "error"),
         },
       );
     },
-    [deleteMutation, showToast],
+    [deleteMutation, showToast, activeKind, activeSlug, onNavigate],
+  );
+
+  const confirmClear = useCallback(
+    (kind: string, slug: string) => {
+      if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+      setDeletingKey(null);
+      clearMutation.mutate(
+        { kind, slug },
+        {
+          onSuccess: () => showToast("Cleared", "success"),
+          onError: () => showToast("Clear failed", "error"),
+        },
+      );
+    },
+    [clearMutation, showToast],
   );
 
   const openAdd = useCallback((kind: string) => {
@@ -259,8 +285,8 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
             const items = section.items;
             const sectionDocKind = docKind(section.kind);
             const isAddable = ADDABLE_DOC_KINDS.has(sectionDocKind);
-            // Items are deletable if the section isn't daily and isn't a singleton
-            const isDeletable = section.kind !== "daily" && !SINGLETON_KINDS.has(section.kind);
+            const isClearable = CLEARABLE_KINDS.has(section.kind);
+            const isDeletable = !isClearable;
 
             // Hide section if empty AND not addable
             if (items.length === 0 && !isAddable) return null;
@@ -368,44 +394,50 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
                             <span className="truncate">{item.title}</span>
                           </button>
 
-                          {/* Delete controls — only for deletable section kinds */}
-                          {isDeletable && (
-                            isConfirming ? (
-                              /* Confirm / Cancel inline row */
-                              <div className="flex flex-shrink-0 items-center gap-0.5 pr-1">
-                                <span className="mr-0.5 text-[10px] text-rose-400">Delete?</span>
-                                <button
-                                  type="button"
-                                  onClick={() => confirmDelete(sectionDocKind, item.slug)}
-                                  className="flex h-[28px] w-[28px] items-center justify-center rounded text-emerald-500 hover:bg-emerald-500/10"
-                                  title="Confirm delete"
-                                >
-                                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                  </svg>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={cancelDelete}
-                                  className="flex h-[28px] w-[28px] items-center justify-center rounded text-ink-faint hover:bg-surface-hover"
-                                  title="Cancel"
-                                >
-                                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                  </svg>
-                                </button>
-                              </div>
-                            ) : (
-                              /* Trash icon — always visible on mobile, hover-only on desktop */
+                          {/* Clear / Delete controls */}
+                          {isConfirming ? (
+                            /* Confirm / Cancel inline row */
+                            <div className="flex flex-shrink-0 items-center gap-0.5 pr-1">
+                              <span className="mr-0.5 text-[10px] text-rose-400">{isClearable ? "Clear?" : "Delete?"}</span>
                               <button
                                 type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  startDelete(itemKey);
-                                }}
-                                className="flex h-[36px] w-[36px] flex-shrink-0 items-center justify-center rounded text-ink-faint opacity-100 transition hover:text-rose-400 md:opacity-0 md:group-hover:opacity-100"
-                                title="Delete"
+                                onClick={() => isClearable ? confirmClear(sectionDocKind, item.slug) : confirmDelete(sectionDocKind, item.slug)}
+                                className="flex h-[28px] w-[28px] items-center justify-center rounded text-emerald-500 hover:bg-emerald-500/10"
+                                title={isClearable ? "Confirm clear" : "Confirm delete"}
                               >
+                                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                </svg>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={cancelDelete}
+                                className="flex h-[28px] w-[28px] items-center justify-center rounded text-ink-faint hover:bg-surface-hover"
+                                title="Cancel"
+                              >
+                                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
+                            </div>
+                          ) : (
+                            /* Action icon — always visible on mobile, hover-only on desktop */
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                startDelete(itemKey);
+                              }}
+                              className="flex h-[36px] w-[36px] flex-shrink-0 items-center justify-center rounded text-ink-faint opacity-100 transition hover:text-rose-400 md:opacity-0 md:group-hover:opacity-100"
+                              title={isClearable ? "Clear" : "Delete"}
+                            >
+                              {isClearable ? (
+                                /* Eraser icon for clearable items */
+                                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4l16 16M9 9l-4.5 4.5a2.121 2.121 0 000 3L7 19h5l1-1M15 9l3.5 3.5a2.121 2.121 0 010 3L15 19" />
+                                </svg>
+                              ) : (
+                                /* Trash icon for deletable items */
                                 <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                   <path
                                     strokeLinecap="round"
@@ -414,8 +446,8 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
                                     d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
                                   />
                                 </svg>
-                              </button>
-                            )
+                              )}
+                            </button>
                           )}
                         </div>
                       );
