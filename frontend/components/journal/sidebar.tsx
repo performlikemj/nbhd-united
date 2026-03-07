@@ -286,7 +286,6 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
             const sectionDocKind = docKind(section.kind);
             const isAddable = ADDABLE_DOC_KINDS.has(sectionDocKind);
             const isClearable = CLEARABLE_KINDS.has(section.kind);
-            const isDeletable = !isClearable;
 
             // Hide section if empty AND not addable
             if (items.length === 0 && !isAddable) return null;
