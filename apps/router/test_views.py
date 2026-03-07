@@ -75,7 +75,7 @@ class TelegramWebhookViewTest(TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["method"], "sendMessage")
-        self.assertIn("Your free trial has ended", body["text"])
+        self.assertIn("Your assistant is paused", body["text"])
         self.assertIn("/settings/billing", body["text"])
 
     @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)

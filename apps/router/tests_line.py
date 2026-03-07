@@ -651,7 +651,7 @@ class LineWebhookEdgeCaseTest(TestCase):
         msg = mock_push.call_args[0][1][0]
         self.assertEqual(msg["type"], "flex")
         msg_json = json.dumps(msg).lower()
-        self.assertIn("trial", msg_json)
+        self.assertIn("paused", msg_json)
 
     @patch("apps.router.line_webhook._send_line_push")
     def test_provisioning_tenant_sends_waking_up(self, mock_push):
