@@ -80,6 +80,7 @@ class ConfigGeneratorTest(TestCase):
         with override_settings(
             OPENCLAW_GOOGLE_PLUGIN_ID="nbhd-google-tools",
             OPENCLAW_JOURNAL_PLUGIN_ID="nbhd-journal-tools",
+            OPENCLAW_USAGE_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
 
@@ -95,7 +96,7 @@ class ConfigGeneratorTest(TestCase):
         self.assertIn("group:plugins", config["tools"]["allow"])
 
     def test_plugin_wiring_omitted_when_no_plugins_configured(self):
-        with override_settings(OPENCLAW_GOOGLE_PLUGIN_ID="", OPENCLAW_JOURNAL_PLUGIN_ID=""):
+        with override_settings(OPENCLAW_GOOGLE_PLUGIN_ID="", OPENCLAW_JOURNAL_PLUGIN_ID="", OPENCLAW_USAGE_PLUGIN_ID=""):
             config = generate_openclaw_config(self.tenant)
 
         self.assertNotIn("plugins", config)
@@ -106,6 +107,7 @@ class ConfigGeneratorTest(TestCase):
         with override_settings(
             OPENCLAW_GOOGLE_PLUGIN_ID="nbhd-google-tools",
             OPENCLAW_JOURNAL_PLUGIN_ID="",
+            OPENCLAW_USAGE_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
 
