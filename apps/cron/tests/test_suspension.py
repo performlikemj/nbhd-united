@@ -244,3 +244,62 @@ class CronDeliveryBlockTest(CronSuspensionTestBase):
         # Should NOT be blocked — may fail on telegram/rate limit, but not "blocked"
         if hasattr(response, 'data') and isinstance(response.data, dict):
             self.assertNotEqual(response.data.get("status"), "blocked")
+
+
+class RuntimeProfileLocationTest(CronSuspensionTestBase):
+    """Tests for location fields on the runtime profile endpoint."""
+
+    def _patch_profile(self, data):
+        from rest_framework.test import APIRequestFactory
+        from apps.integrations.runtime_views import RuntimeProfileUpdateView
+
+        factory = APIRequestFactory()
+        request = factory.patch(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/profile/",
+            data,
+            format="json",
+        )
+        request.META["HTTP_X_NBHD_INTERNAL_KEY"] = "test-key"
+        request.META["HTTP_X_NBHD_TENANT_ID"] = str(self.tenant.id)
+
+        view = RuntimeProfileUpdateView.as_view()
+        return view(request, tenant_id=self.tenant.id)
+
+    @patch("apps.integrations.runtime_views._internal_auth_or_401", return_value=None)
+    def test_set_location_city(self, mock_auth):
+        response = self._patch_profile({"location_city": "Brooklyn"})
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.location_city, "Brooklyn")
+
+    @patch("apps.integrations.runtime_views._internal_auth_or_401", return_value=None)
+    def test_set_location_with_coordinates(self, mock_auth):
+        response = self._patch_profile({
+            "location_city": "Osaka",
+            "location_lat": 34.69,
+            "location_lon": 135.50,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.location_city, "Osaka")
+        self.assertAlmostEqual(self.user.location_lat, 34.69)
+        self.assertAlmostEqual(self.user.location_lon, 135.50)
+        self.assertIn("location_city", response.data["updated"])
+        self.assertIn("location_lat", response.data["updated"])
+
+    @patch("apps.integrations.runtime_views._internal_auth_or_401", return_value=None)
+    def test_invalid_coordinates_returns_400(self, mock_auth):
+        response = self._patch_profile({
+            "location_lat": 91.0,  # out of range
+            "location_lon": 135.50,
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("invalid_coordinates", response.data.get("error", ""))
+
+    @patch("apps.integrations.runtime_views._internal_auth_or_401", return_value=None)
+    def test_response_includes_location_fields(self, mock_auth):
+        response = self._patch_profile({"location_city": "London"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["location_city"], "London")
+        self.assertIn("location_lat", response.data)
+        self.assertIn("location_lon", response.data)

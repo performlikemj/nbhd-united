@@ -239,11 +239,13 @@ export default function SettingsPage() {
   const [editingDisplayName, setEditingDisplayName] = useState(false);
   const [editingLanguage, setEditingLanguage] = useState(false);
   const [editingTimezone, setEditingTimezone] = useState(false);
+  const [editingLocation, setEditingLocation] = useState(false);
 
   const [selectedPersona, setSelectedPersona] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [language, setLanguage] = useState("en");
   const [timezone, setTimezone] = useState("UTC");
+  const [locationCity, setLocationCity] = useState("");
   const [refreshMessage, setRefreshMessage] = useState("");
   const [refreshError, setRefreshError] = useState("");
 
@@ -273,7 +275,10 @@ export default function SettingsPage() {
     if (!editingTimezone && me) {
       setTimezone(me.timezone || "UTC");
     }
-  }, [me, editingDisplayName, editingLanguage, editingTimezone]);
+    if (!editingLocation && me) {
+      setLocationCity(me.location_city || "");
+    }
+  }, [me, editingDisplayName, editingLanguage, editingTimezone, editingLocation]);
 
   useEffect(() => {
     if (!editingPersona && currentPersona) {
@@ -292,8 +297,8 @@ export default function SettingsPage() {
   };
 
   const handleSaveProfileField = async (
-    field: "display_name" | "language" | "timezone",
-    payload: { display_name?: string; language?: string; timezone?: string },
+    field: "display_name" | "language" | "timezone" | "location",
+    payload: { display_name?: string; language?: string; timezone?: string; location_city?: string; location_lat?: number | null; location_lon?: number | null },
   ) => {
     setSaveMessage("");
     setSavingField(field);
@@ -312,9 +317,14 @@ export default function SettingsPage() {
       if (field === "timezone") {
         setEditingTimezone(false);
       }
+      if (field === "location") {
+        setEditingLocation(false);
+      }
 
       if (field === "timezone" && payload.timezone && previousTimezone !== payload.timezone) {
         setSaveMessage("Saved! Agent timezone updated. Changes take effect on next message.");
+      } else if (field === "location") {
+        setSaveMessage("Saved! Weather forecasts will use your location.");
       } else {
         setSaveMessage("Saved!");
       }
@@ -331,6 +341,9 @@ export default function SettingsPage() {
       if (field === "timezone") {
         setEditingTimezone(false);
       }
+      if (field === "location") {
+        setEditingLocation(false);
+      }
       window.setTimeout(clearStatus, 3000);
     }
   };
@@ -341,6 +354,16 @@ export default function SettingsPage() {
       return;
     }
     await handleSaveProfileField("timezone", { timezone });
+  };
+
+  const handleLocationSave = async () => {
+    const city = locationCity.trim();
+    if (!city || city === me?.location_city) {
+      setEditingLocation(false);
+      return;
+    }
+    // Save city name; coordinates will be resolved by the agent on next briefing
+    await handleSaveProfileField("location", { location_city: city });
   };
 
   const handleLanguageSave = async () => {
@@ -580,6 +603,59 @@ export default function SettingsPage() {
                     <button
                       type="button"
                       onClick={() => setEditingTimezone(false)}
+                      className="rounded-full border border-border px-4 py-1.5 text-sm transition hover:border-border-strong min-h-[44px]"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Location */}
+            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible sm:col-span-2">
+              <div className="mb-2 flex items-start justify-between gap-2">
+                <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Location</dt>
+                {!editingLocation ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLocationCity(me.location_city || "");
+                      setEditingLocation(true);
+                    }}
+                    className="rounded-full border border-border px-4 py-1.5 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink min-h-[44px]"
+                  >
+                    Edit
+                  </button>
+                ) : null}
+              </div>
+              {!editingLocation ? (
+                <dd className="mt-1 break-words text-base text-ink">
+                  {me.location_city || <span className="text-ink-muted">Not set — used for weather and local info</span>}
+                </dd>
+              ) : (
+                <div className="space-y-3">
+                  <input
+                    value={locationCity}
+                    onChange={(e) => setLocationCity(e.target.value)}
+                    className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                    placeholder="e.g. Brooklyn, Osaka, London"
+                  />
+                  <p className="text-xs text-ink-faint">
+                    Your assistant uses this for weather forecasts and local recommendations.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={handleLocationSave}
+                      disabled={savingField === "location"}
+                      className="rounded-full bg-accent px-5 py-2 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55 min-h-[44px]"
+                    >
+                      {savingField === "location" ? "Saving..." : "Save"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingLocation(false)}
                       className="rounded-full border border-border px-4 py-1.5 text-sm transition hover:border-border-strong min-h-[44px]"
                     >
                       Cancel

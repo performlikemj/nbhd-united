@@ -25,6 +25,7 @@ class UserSerializer(serializers.ModelSerializer):
             "id", "username", "email", "display_name", "language",
             "timezone", "telegram_chat_id", "telegram_username",
             "line_user_id", "line_display_name", "preferred_channel",
+            "location_city", "location_lat", "location_lon",
         )
         read_only_fields = (
             "id", "username", "email", "telegram_chat_id", "telegram_username",
