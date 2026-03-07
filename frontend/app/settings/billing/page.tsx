@@ -101,8 +101,16 @@ export default function SettingsBillingPage() {
                 </div>
               </div>
               <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
-                <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Tenant State</dt>
+                <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Agent Status</dt>
                 <dd className="mt-1"><StatusPill status={tenant.status} /></dd>
+                {tenant.status === "suspended" && (
+                  <p className="mt-2 text-xs text-ink-faint leading-relaxed">
+                    Your agent is paused because there&apos;s no active subscription.
+                    Running your agent requires cloud servers on Azure and AI model
+                    tokens — every reply has a real cost. We&apos;re upfront about this
+                    because you deserve to know where your money goes.
+                  </p>
+                )}
               </div>
               <div className="rounded-panel border border-border bg-surface-elevated p-4 sm:col-span-2">
                 <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Subscription</dt>

@@ -503,7 +503,7 @@ class LineWebhookView(View):
             )
             return
 
-        # Suspended tenant
+        # Paused tenant — trial ended or payment lapsed
         frontend_url = getattr(
             settings, "FRONTEND_URL", "https://neighborhoodunited.org"
         ).rstrip("/")
@@ -515,8 +515,9 @@ class LineWebhookView(View):
             _send_line_flex(
                 line_user_id,
                 build_status_bubble(
-                    f"Your free trial has ended. Subscribe to continue: "
-                    f"{frontend_url}/settings/billing",
+                    "Your assistant is paused. Running an AI agent costs real money "
+                    "— cloud servers, model tokens, and storage. "
+                    f"Ready to pick up where you left off? {frontend_url}/settings/billing",
                     tone="warning",
                 ),
             )

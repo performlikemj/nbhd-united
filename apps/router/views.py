@@ -218,8 +218,10 @@ def telegram_webhook(request):
             "method": "sendMessage",
             "chat_id": chat_id,
             "text": (
-                "Your free trial has ended. Subscribe to continue using your assistant: "
-                f"{frontend_url}/settings/billing"
+                "Your assistant is paused. Running an AI agent costs real money "
+                "— cloud servers, model tokens (every reply costs us), and storage. "
+                "We keep things transparent so you know exactly where your money goes.\n\n"
+                f"Ready to pick up where you left off? {frontend_url}/settings/billing"
             ),
         })
 

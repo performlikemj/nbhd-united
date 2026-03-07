@@ -725,7 +725,7 @@ class TelegramPoller:
             )
             return
 
-        # Suspended tenant without subscription
+        # Paused tenant — trial ended or payment lapsed
         frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
         if (
             tenant.status == Tenant.Status.SUSPENDED
@@ -734,8 +734,10 @@ class TelegramPoller:
         ):
             self._send_message(
                 chat_id,
-                f"Your free trial has ended. Subscribe to continue using your assistant: "
-                f"{frontend_url}/settings/billing",
+                "Your assistant is paused. Running an AI agent costs real money "
+                "— cloud servers, model tokens (every reply costs us), and storage. "
+                "We keep things transparent so you know exactly where your money goes.\n\n"
+                f"Ready to pick up where you left off? {frontend_url}/settings/billing",
             )
             return
 

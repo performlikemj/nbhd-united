@@ -16,7 +16,7 @@ const tones: Record<string, StyleTuple> = {
   manual: { bg: "var(--status-indigo-bg)", text: "var(--status-indigo-text)" },
   schedule: { bg: "var(--status-violet-bg)", text: "var(--status-violet-text)" },
   provisioning: { bg: "var(--status-sky-bg)", text: "var(--status-sky-text)" },
-  suspended: { bg: "var(--status-rose-bg)", text: "var(--status-rose-text)" },
+  suspended: { bg: "var(--status-amber-bg)", text: "var(--status-amber-text)" },
   deprovisioning: { bg: "var(--status-orange-bg)", text: "var(--status-orange-text)" },
   deleted: { bg: "var(--status-slate-bg)", text: "var(--status-slate-text)" },
   revoked: { bg: "var(--status-slate-bg)", text: "var(--status-slate-text)" },
@@ -35,8 +35,14 @@ const fallbackTone: StyleTuple = {
   text: "var(--status-slate-text)",
 };
 
+// User-facing label overrides — keep internal status values but show friendlier names
+const displayLabels: Record<string, string> = {
+  suspended: "paused",
+};
+
 export function StatusPill({ status }: { status: string }) {
   const style = useMemo(() => tones[status] ?? fallbackTone, [status]);
+  const label = displayLabels[status] ?? status;
 
   return (
     <span
@@ -46,7 +52,7 @@ export function StatusPill({ status }: { status: string }) {
         color: style.text,
       }}
     >
-      {status}
+      {label}
     </span>
   );
 }
