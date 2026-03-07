@@ -16,6 +16,11 @@ fi
 export DATABASE_URL="${DATABASE_URL:-sqlite:///$DB_PATH}"
 export AZURE_MOCK="true"
 
+# Disable plugins whose paths only exist in the OpenClaw container image,
+# not in CI.  The default for OPENCLAW_USAGE_PLUGIN_ID is non-empty
+# ("nbhd-usage-reporter"), so we must explicitly clear it here.
+export OPENCLAW_USAGE_PLUGIN_ID=""
+
 $PYTHON_BIN manage.py migrate --noinput >/dev/null
 $PYTHON_BIN manage.py shell -c "
 import json

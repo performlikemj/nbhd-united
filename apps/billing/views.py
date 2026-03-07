@@ -114,11 +114,18 @@ class StripePortalView(APIView):
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        session = stripe.billing_portal.Session.create(
-            customer=tenant.stripe_customer_id,
-            return_url=f"{settings.FRONTEND_URL}/billing",
-            api_key=api_key,
-        )
+        try:
+            session = stripe.billing_portal.Session.create(
+                customer=tenant.stripe_customer_id,
+                return_url=f"{settings.FRONTEND_URL}/billing",
+                api_key=api_key,
+            )
+        except stripe.error.StripeError as exc:
+            logger.error("Stripe portal error for tenant %s: %s", tenant.id, exc)
+            return Response(
+                {"detail": "Unable to open the billing portal right now. Please try again later."},
+                status=http_status.HTTP_502_BAD_GATEWAY,
+            )
         return Response({"url": session.url})
 
 
