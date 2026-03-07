@@ -404,6 +404,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 "models": model_entries,
                 "workspace": "/home/node/.openclaw/workspace",
                 "userTimezone": str(getattr(tenant.user, "timezone", "") or "UTC"),
+                "envelopeTimezone": "user",
                 "compaction": {
                     "mode": "safeguard",
                     "memoryFlush": {
