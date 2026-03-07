@@ -84,6 +84,19 @@ class CronDeliveryView(APIView):
         if tenant is None:
             return Response({"error": "tenant_not_found"}, status=http_status.HTTP_404_NOT_FOUND)
 
+        # Block delivery for suspended/inactive tenants (trial expired, payment lapsed)
+        if tenant.status != Tenant.Status.ACTIVE:
+            logger.info(
+                "Cron delivery blocked: tenant %s status=%s (not active)",
+                tenant_id, tenant.status,
+            )
+            # Return 200 to prevent QStash/cron retries — this is expected, not an error
+            return Response({
+                "status": "blocked",
+                "reason": "tenant_not_active",
+                "tenant_status": tenant.status,
+            })
+
         # Determine channel
         channel = self._resolve_channel(tenant.user)
         if channel is None:
