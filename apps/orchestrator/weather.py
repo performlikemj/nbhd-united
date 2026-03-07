@@ -95,9 +95,8 @@ def get_coords_for_timezone(tz: str) -> tuple[float, float]:
     return region_defaults.get(region, (51.51, -0.13))
 
 
-def build_weather_url(tz: str) -> str:
-    """Build an Open-Meteo forecast URL for the given timezone."""
-    lat, lon = get_coords_for_timezone(tz)
+def build_weather_url_from_coords(lat: float, lon: float, tz: str) -> str:
+    """Build an Open-Meteo forecast URL from explicit coordinates."""
     return (
         f"https://api.open-meteo.com/v1/forecast?"
         f"latitude={lat}&longitude={lon}"
@@ -106,3 +105,12 @@ def build_weather_url(tz: str) -> str:
         f"&timezone={quote(tz, safe='')}"
         f"&forecast_days=3"
     )
+
+
+def build_weather_url(tz: str) -> str:
+    """Build an Open-Meteo forecast URL for the given timezone.
+
+    Uses approximate coordinates from timezone → city mapping.
+    """
+    lat, lon = get_coords_for_timezone(tz)
+    return build_weather_url_from_coords(lat, lon, tz)

@@ -167,6 +167,16 @@ Check your config for `userTimezone`. If it's `UTC` or empty, ask once (check me
 
 Rules: ask only once, don't nag, never infer from message timestamps.
 
+### Location
+
+If the user's location isn't set (no `location_city` in USER.md), ask once in early conversation:
+
+> "What city are you in? I use it for weather in your morning briefings."
+
+Then look up the coordinates (use `web_search` for "[city] latitude longitude") and call
+`nbhd_update_profile` with `location_city`, `location_lat`, and `location_lon`.
+Write `location_asked: true` to memory so you don't ask again.
+
 ## Sending Messages to the User
 
 **In cron/isolated sessions:** use `nbhd_send_to_user` — it's the only delivery path that works.

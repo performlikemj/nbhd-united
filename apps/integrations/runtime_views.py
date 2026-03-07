@@ -1462,7 +1462,7 @@ class RuntimeProfileUpdateView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
 
-    ALLOWED_FIELDS = {"timezone", "display_name", "language"}
+    ALLOWED_FIELDS = {"timezone", "display_name", "language", "location_city", "location_lat", "location_lon"}
 
     def patch(self, request, tenant_id):
         auth_failure = _internal_auth_or_401(request, tenant_id)
@@ -1509,6 +1509,31 @@ class RuntimeProfileUpdateView(APIView):
             if lang and len(lang) <= 10:
                 user.language = lang
                 updated_fields.append("language")
+
+        if "location_city" in data:
+            city = (data["location_city"] or "").strip()
+            if city and len(city) <= 255:
+                user.location_city = city
+                updated_fields.append("location_city")
+
+        if "location_lat" in data and "location_lon" in data:
+            try:
+                lat = float(data["location_lat"])
+                lon = float(data["location_lon"])
+                if -90 <= lat <= 90 and -180 <= lon <= 180:
+                    user.location_lat = lat
+                    user.location_lon = lon
+                    updated_fields.extend(["location_lat", "location_lon"])
+                else:
+                    return Response(
+                        {"error": "invalid_coordinates", "detail": "Latitude must be -90..90, longitude -180..180."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            except (ValueError, TypeError):
+                return Response(
+                    {"error": "invalid_coordinates", "detail": "latitude and longitude must be numbers."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         if not updated_fields:
             return Response(
@@ -1585,12 +1610,24 @@ class RuntimeProfileUpdateView(APIView):
             except Exception:
                 logger.exception("Failed to refresh config after profile update for tenant %s", tenant.id)
 
+        # If location changed, trigger config refresh so weather URL updates
+        if any(f in updated_fields for f in ("location_lat", "location_lon", "location_city")):
+            try:
+                tenant.bump_pending_config()
+                from apps.orchestrator.services import update_tenant_config
+                update_tenant_config(str(tenant.id))
+            except Exception:
+                logger.exception("Failed to refresh config after location update for tenant %s", tenant.id)
+
         return Response({
             "tenant_id": str(tenant.id),
             "updated": updated_fields,
             "timezone": user.timezone,
             "display_name": getattr(user, "display_name", ""),
             "language": getattr(user, "language", ""),
+            "location_city": getattr(user, "location_city", ""),
+            "location_lat": getattr(user, "location_lat", None),
+            "location_lon": getattr(user, "location_lon", None),
         })
 
 

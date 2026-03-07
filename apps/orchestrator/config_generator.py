@@ -75,10 +75,23 @@ _MORNING_BRIEFING_PROMPT_TEMPLATE = (
 )
 
 def _build_morning_briefing_prompt(tenant) -> str:
-    """Build the morning briefing prompt with a pre-resolved weather URL."""
-    from apps.orchestrator.weather import build_weather_url
-    user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
-    weather_url = build_weather_url(user_tz)
+    """Build the morning briefing prompt with a pre-resolved weather URL.
+
+    Uses stored user coordinates if available, falls back to timezone-based
+    approximate coordinates.
+    """
+    from apps.orchestrator.weather import build_weather_url, build_weather_url_from_coords
+    user = tenant.user
+    user_tz = str(getattr(user, "timezone", "") or "UTC")
+
+    # Prefer stored coordinates (set by user via nbhd_update_profile)
+    lat = getattr(user, "location_lat", None)
+    lon = getattr(user, "location_lon", None)
+    if lat is not None and lon is not None:
+        weather_url = build_weather_url_from_coords(lat, lon, user_tz)
+    else:
+        weather_url = build_weather_url(user_tz)
+
     return _MORNING_BRIEFING_PROMPT_TEMPLATE.format(weather_url=weather_url)
 
 
