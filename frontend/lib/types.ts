@@ -102,6 +102,9 @@ export interface AuthUser {
   display_name: string;
   language: string;
   timezone: string;
+  location_city: string;
+  location_lat: number | null;
+  location_lon: number | null;
   telegram_chat_id: number | null;
   telegram_username: string;
   line_user_id: string | null;

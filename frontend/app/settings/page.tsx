@@ -620,6 +620,7 @@ export default function SettingsPage() {
                   <button
                     type="button"
                     onClick={() => {
+                      if (!me) return;
                       setLocationCity(me.location_city || "");
                       setEditingLocation(true);
                     }}
@@ -640,6 +641,8 @@ export default function SettingsPage() {
                     onChange={(e) => setLocationCity(e.target.value)}
                     className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
                     placeholder="e.g. Brooklyn, Osaka, London"
+                    maxLength={255}
+                    autoFocus
                   />
                   <p className="text-xs text-ink-faint">
                     Your assistant uses this for weather forecasts and local recommendations.
