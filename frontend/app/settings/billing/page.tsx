@@ -1,5 +1,6 @@
 "use client";
 
+import clsx from "clsx";
 import Link from "next/link";
 import { useState } from "react";
 
@@ -140,22 +141,25 @@ export default function SettingsBillingPage() {
             {HAS_BILLABLE_PLANS && (
               <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
                 <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Select plan</p>
-                <div className="mt-2 flex gap-2">
+                <div className="mt-2 grid gap-2">
                   {(PLAN_OPTIONS as readonly { id: "starter" | "premium" | "byok"; name: string; price: string; description: string; available: boolean }[]).map((tier) => (
                     <button
                       key={tier.id}
                       type="button"
                       onClick={() => tier.available && setSelectedTier(tier.id)}
                       disabled={!tier.available}
-                      className={`rounded-full px-4 py-1.5 text-sm transition ${
+                      className={clsx(
+                        "rounded-panel border p-3 text-left text-sm transition",
                         !tier.available
-                          ? "border border-border bg-surface-elevated text-ink-faint cursor-not-allowed opacity-50"
+                          ? "border-border bg-surface-elevated text-ink-faint cursor-not-allowed opacity-50"
                           : selectedTier === tier.id
-                            ? "bg-accent text-white"
-                            : "border border-border-strong bg-surface-elevated text-ink hover:border-accent/40"
-                      }`}
+                            ? "border-accent bg-accent/10 ring-2 ring-accent/20"
+                            : "border-border bg-surface-elevated text-ink hover:border-accent/40",
+                      )}
                     >
-                      {tier.name} ({tier.price}) — {tier.description}
+                      <span className="font-medium">{tier.name}</span>
+                      <span className="ml-2 text-ink-muted">{tier.price}</span>
+                      <p className="mt-1 text-xs text-ink-muted">{tier.description}</p>
                     </button>
                   ))}
                 </div>
