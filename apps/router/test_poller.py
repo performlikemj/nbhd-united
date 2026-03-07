@@ -182,7 +182,7 @@ class TelegramPollerDispatchTest(TestCase):
         post_calls = self.poller._http.post.call_args_list
         self.assertTrue(len(post_calls) > 0)
         sent_json = post_calls[0][1].get("json", {})
-        self.assertIn("trial has ended", sent_json.get("text", ""))
+        self.assertIn("assistant is paused", sent_json.get("text", ""))
 
     @patch("apps.router.poller.TelegramPoller._handle_lesson_callback")
     @patch("apps.router.poller.resolve_tenant_by_chat_id")
