@@ -45,6 +45,7 @@ import {
   fetchUsageHistory,
   fetchUsageSummary,
   fetchTransparency,
+  updateDonationPreference,
   fetchWeeklyReviews,
   updateProfile,
   generateTelegramLink,
@@ -128,6 +129,16 @@ export function useTransparencyQuery() {
     queryKey: ["usage-transparency"],
     queryFn: fetchTransparency,
     staleTime: 5 * 60_000,
+  });
+}
+
+export function useDonationPreferenceMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateDonationPreference,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["usage-transparency"] });
+    },
   });
 }
 

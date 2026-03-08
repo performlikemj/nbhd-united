@@ -187,9 +187,11 @@ export interface TransparencyData {
   };
   subscription_price: number;
   your_actual_cost: number;
-  platform_margin: number;
-  margin_percentage: number;
-  target_margin_percentage: number;
+  platform_infra: number;
+  surplus: number;
+  donation_amount: number;
+  donation_enabled: boolean;
+  donation_percentage: number;
   message_count: number;
   model_rates: Array<{
     model: string;

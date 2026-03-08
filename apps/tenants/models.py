@@ -164,7 +164,7 @@ class Tenant(models.Model):
         max_digits=10, decimal_places=4, default=0
     )
     monthly_token_budget = models.IntegerField(
-        default=500_000,
+        default=2_000_000,
         help_text="Per-user monthly token budget",
     )
 
@@ -200,6 +200,17 @@ class Tenant(models.Model):
         default=6,
         validators=[MinValueValidator(1), MaxValueValidator(6)],
         help_text="Duration of the heartbeat window in hours (1-6)",
+    )
+
+    # Donation preferences
+    donation_enabled = models.BooleanField(
+        default=False,
+        help_text="Opt-in to donate surplus subscription revenue",
+    )
+    donation_percentage = models.IntegerField(
+        default=100,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text="Percentage of surplus to donate (0-100)",
     )
 
     # Action gating

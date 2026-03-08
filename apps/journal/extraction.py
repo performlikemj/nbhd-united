@@ -261,6 +261,12 @@ def _send_line_with_buttons(
             },
             timeout=LINE_TIMEOUT,
         )
+        if resp.status_code != 200:
+            logger.warning(
+                "LINE extraction push failed (%s): %s",
+                resp.status_code,
+                resp.text[:300],
+            )
         return resp.status_code == 200
     except Exception:
         logger.exception("Failed to send extraction LINE message user_id=%s", line_user_id)

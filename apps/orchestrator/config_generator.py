@@ -315,6 +315,9 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     # delete+recreate these jobs with the correct tz at that point.
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
 
+    # Resolve absolute base URL for webhook-type cron jobs
+    api_base = str(getattr(settings, "API_BASE_URL", "") or "").strip().rstrip("/")
+
     jobs = [
         {
             "name": "Morning Briefing",
@@ -370,7 +373,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "sessionTarget": "none",
             "payload": {
                 "kind": "webhook",
-                "url": "/api/v1/journal/extract/",
+                "url": f"{api_base}/api/v1/journal/extract/",
                 "body": {"tenant_id": str(tenant.id)},
             },
             "delivery": {"mode": "none"},
