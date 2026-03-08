@@ -411,11 +411,17 @@ def restart_tenant_container(request):
 def expire_trials(request):
     """Suspend trials that have reached their end date and are unpaid.
 
+    Disables all cron jobs (not deleted — so they can be re-enabled on
+    subscription) and hibernates the container to stop resource costs.
+
     URL: /api/v1/cron/expire-trials/
     """
     if not verify_qstash_signature(request):
         logger.warning("Unauthorized expire-trials cron attempt")
         return JsonResponse({"error": "Invalid signature"}, status=401)
+
+    from apps.cron.suspension import suspend_tenant_crons
+    from apps.orchestrator.azure_client import hibernate_container_app
 
     now = timezone.now()
     query = Tenant.objects.filter(
@@ -426,13 +432,41 @@ def expire_trials(request):
     )
 
     updated = 0
-    for tenant in query:  # noqa: PERF401
+    crons_disabled = 0
+    hibernated = 0
+    for tenant in query:
+        # 1. Disable all cron jobs (before hibernating — gateway must be reachable)
+        if tenant.container_fqdn:
+            try:
+                cron_result = suspend_tenant_crons(tenant)
+                crons_disabled += cron_result.get("disabled", 0)
+            except Exception:
+                logger.exception(
+                    "expire_trials: failed to suspend crons for tenant %s", tenant.id
+                )
+
+        # 2. Mark as suspended
         tenant.is_trial = False
         tenant.status = Tenant.Status.SUSPENDED
         tenant.save(update_fields=["is_trial", "status", "updated_at"])
         updated += 1
 
-    return JsonResponse({"updated": updated})
+        # 3. Hibernate container (deactivate revision to stop Azure costs)
+        if tenant.container_id:
+            try:
+                hibernate_container_app(tenant.container_id)
+                hibernated += 1
+            except Exception:
+                logger.exception(
+                    "expire_trials: failed to hibernate container %s for tenant %s",
+                    tenant.container_id, tenant.id,
+                )
+
+    return JsonResponse({
+        "updated": updated,
+        "crons_disabled": crons_disabled,
+        "hibernated": hibernated,
+    })
 
 
 @csrf_exempt

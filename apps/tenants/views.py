@@ -448,6 +448,28 @@ class ProfileView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
+        # If location changed, trigger config refresh so weather URL updates
+        location_changed = any(
+            k in serializer.validated_data
+            for k in ("location_city", "location_lat", "location_lon")
+        )
+        if location_changed:
+            try:
+                tenant = request.user.tenant
+                if tenant and tenant.status == Tenant.Status.ACTIVE:
+                    tenant.bump_pending_config()
+                    if tenant.container_id:
+                        from apps.orchestrator.services import update_tenant_config
+                        try:
+                            update_tenant_config(str(tenant.id))
+                        except Exception:
+                            logger.exception(
+                                "Failed to refresh config after location update for tenant %s",
+                                tenant.id,
+                            )
+            except Tenant.DoesNotExist:
+                pass
+
         if serializer.validated_data.get("timezone") and request.user.timezone != original_timezone:
             try:
                 tenant = request.user.tenant

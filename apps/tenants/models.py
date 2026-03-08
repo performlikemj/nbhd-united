@@ -48,6 +48,24 @@ class User(AbstractUser):
         help_text="Primary channel for proactive messages (cron, alerts).",
     )
 
+    # Location (for weather and local recommendations)
+    location_city = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="User's city name, e.g. 'Osaka', 'Brooklyn'",
+    )
+    location_lat = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="Latitude for weather/location services",
+    )
+    location_lon = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="Longitude for weather/location services",
+    )
+
     class Meta:
         db_table = "users"
 

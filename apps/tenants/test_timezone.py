@@ -157,6 +157,60 @@ class ProfileTimezoneAPITest(TestCase):
         mock_update_tenant_config.assert_not_called()
 
 
+class ProfileLocationAPITest(TestCase):
+    """Tests for location fields on the profile endpoint."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="profile_loc",
+            email="profile_loc@test.com",
+            password="testpass123",
+        )
+        refresh = RefreshToken.for_user(self.user)
+        self.client = APIClient()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def test_get_profile_includes_location_fields(self):
+        response = self.client.get("/api/v1/tenants/profile/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("location_city", response.data)
+        self.assertIn("location_lat", response.data)
+        self.assertIn("location_lon", response.data)
+
+    def test_patch_location_city(self):
+        response = self.client.patch(
+            "/api/v1/tenants/profile/",
+            {"location_city": "Brooklyn"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.location_city, "Brooklyn")
+
+    def test_patch_location_with_coordinates(self):
+        response = self.client.patch(
+            "/api/v1/tenants/profile/",
+            {"location_city": "Osaka", "location_lat": 34.69, "location_lon": 135.50},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.location_city, "Osaka")
+        self.assertAlmostEqual(self.user.location_lat, 34.69)
+        self.assertAlmostEqual(self.user.location_lon, 135.50)
+
+    @patch("apps.orchestrator.services.update_tenant_config")
+    def test_location_change_refreshes_config(self, mock_update):
+        Tenant.objects.create(user=self.user, status=Tenant.Status.ACTIVE, container_id="oc-test")
+        response = self.client.patch(
+            "/api/v1/tenants/profile/",
+            {"location_city": "Tokyo"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        mock_update.assert_called_once()
+
+
 class OnboardTimezoneTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(
