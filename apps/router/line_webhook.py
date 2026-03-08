@@ -559,16 +559,39 @@ class LineWebhookView(View):
                     ),
                 )
                 return
+        elif msg_type == "sticker":
+            # LINE stickers carry emotion/intent via keywords
+            keywords = message.get("keywords", [])
+            sticker_resource = message.get("stickerResourceType", "")
+            package_id = message.get("packageId", "")
+            sticker_id = message.get("stickerId", "")
+            if keywords:
+                keyword_str = ", ".join(keywords[:5])
+                text = (
+                    f"[User sent a LINE sticker expressing: {keyword_str}. "
+                    f"Respond naturally to the emotion — keep it brief, "
+                    f"use emoji to match the vibe.]"
+                )
+            else:
+                text = (
+                    "[User sent a LINE sticker (no keywords available). "
+                    "Respond warmly with a matching emoji — treat it like "
+                    "a friendly reaction.]"
+                )
+            logger.info(
+                "LINE sticker: pkg=%s id=%s type=%s keywords=%s",
+                package_id, sticker_id, sticker_resource, keywords,
+            )
         elif msg_type == "text":
             text = message.get("text", "").strip()
         else:
-            # Unsupported message types (image, video, sticker, etc.)
+            # Unsupported message types (image, video, location, etc.)
             if line_user_id:
                 _send_line_flex(
                     line_user_id,
                     build_status_bubble(
-                        "I can process text and voice messages. "
-                        "Please send text or a voice recording!",
+                        "I can process text, voice, and stickers. "
+                        "Please send one of those!",
                         tone="warning",
                     ),
                 )
