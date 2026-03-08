@@ -582,7 +582,7 @@ class LineWebhookEdgeCaseTest(TestCase):
         msg = mock_push.call_args[0][1][0]
         self.assertEqual(msg["type"], "flex")
         msg_json = json.dumps(msg).lower()
-        self.assertIn("text and voice messages", msg_json)
+        self.assertIn("text, voice, and stickers", msg_json)
 
     @patch("apps.router.line_webhook._send_line_push")
     def test_follow_already_linked_user_sends_welcome_back(self, mock_push):
@@ -797,8 +797,11 @@ class LineWebhookEdgeCaseTest(TestCase):
         from apps.router.line_webhook import LineWebhookView
         mock_push.return_value = True
 
-        user = _make_user(line_user_id="U_no_fqdn")
-        _make_tenant(user, container_fqdn="")
+        user = _make_user(
+            line_user_id="U_no_fqdn", display_name="Test",
+            timezone="Asia/Tokyo", language="ja",
+        )
+        _make_tenant(user, container_fqdn="", onboarding_complete=True, onboarding_step=5)
 
         event = {
             "type": "message",

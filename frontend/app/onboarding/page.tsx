@@ -7,7 +7,9 @@ import { PersonaSelector } from "@/components/persona-selector";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import {
+  useGenerateLineLinkMutation,
   useGenerateTelegramLinkMutation,
+  useLineStatusQuery,
   useMeQuery,
   useOnboardMutation,
   usePersonasQuery,
@@ -15,7 +17,7 @@ import {
   useRetryProvisioningMutation,
   useTelegramStatusQuery,
 } from "@/lib/queries";
-import type { TelegramLinkResponse } from "@/lib/api";
+import type { LineLinkResponse, TelegramLinkResponse } from "@/lib/api";
 
 type StepState = "completed" | "current" | "upcoming";
 
@@ -47,10 +49,13 @@ export default function OnboardingPage() {
     isSuccess: onboardingSuccess,
   } = onboard;
   const generateLink = useGenerateTelegramLinkMutation();
+  const generateLineLink = useGenerateLineLinkMutation();
   const { data: personas } = usePersonasQuery();
 
   const [linkData, setLinkData] = useState<TelegramLinkResponse | null>(null);
+  const [lineLinkData, setLineLinkData] = useState<LineLinkResponse | null>(null);
   const [linkSecondsLeft, setLinkSecondsLeft] = useState(0);
+  const [lineLinkSecondsLeft, setLineLinkSecondsLeft] = useState(0);
   const [selectedPersona, setSelectedPersona] = useState("neighbor");
   const [showCta, setShowCta] = useState(false);
 
@@ -67,9 +72,12 @@ export default function OnboardingPage() {
 
   const shouldPollTelegram = hasTenant;
   const { data: telegramStatus } = useTelegramStatusQuery(shouldPollTelegram);
+  const { data: lineStatus } = useLineStatusQuery(hasTenant);
   const telegramLinked = isTelegramLinkedInProfile || Boolean(telegramStatus?.linked);
+  const lineLinked = Boolean(lineStatus?.linked);
+  const messagingLinked = telegramLinked || lineLinked;
   const ctaStorageKey = `nbhd:telegram-onboarding-cta:${me?.id ?? "anon"}`;
-  const showTelegramCta = !isLoading && !isFetching && showCta && !telegramLinked;
+  const showTelegramCta = !isLoading && !isFetching && showCta && !messagingLinked;
 
   useEffect(() => {
     if (typeof window === "undefined" || !me?.id) {
@@ -111,8 +119,8 @@ export default function OnboardingPage() {
   const stepStates: StepState[] = [
     "completed", // Account — always done
     personaDone ? "completed" : "current",
-    personaDone ? (telegramLinked ? "completed" : "current") : "upcoming",
-    telegramLinked ? (runtimeReady ? "completed" : "current") : "upcoming",
+    personaDone ? (messagingLinked ? "completed" : "current") : "upcoming",
+    messagingLinked ? (runtimeReady ? "completed" : "current") : "upcoming",
   ];
 
   const currentStepIndex = stepStates.findIndex((s) => s === "current");
@@ -163,6 +171,36 @@ export default function OnboardingPage() {
       });
     } catch {
       autoOnboardAttempted.delete(userId);
+    }
+  };
+
+  // Auto-clear expired LINE link data and tick countdown
+  useEffect(() => {
+    if (!lineLinkData) {
+      setLineLinkSecondsLeft(0);
+      return;
+    }
+    const expiresAt = new Date(lineLinkData.expires_at).getTime();
+    const tick = () => {
+      const ms = expiresAt - Date.now();
+      if (ms <= 0) {
+        setLineLinkData(null);
+        setLineLinkSecondsLeft(0);
+      } else {
+        setLineLinkSecondsLeft(Math.ceil(ms / 1000));
+      }
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [lineLinkData]);
+
+  const handleGenerateLineLink = async () => {
+    try {
+      const data = await generateLineLink.mutateAsync();
+      setLineLinkData(data);
+    } catch {
+      // noop — mutation error state handles UI
     }
   };
 
@@ -227,20 +265,34 @@ export default function OnboardingPage() {
             <p className="mt-1 text-sm text-ink-muted">
               Link your Telegram or LINE account so the assistant can message you.
             </p>
-            {stepStates[2] === "completed" && telegramStatus?.telegram_username && (
+            {stepStates[2] === "completed" && (
               <p className="mt-1 text-sm text-signal">
-                Connected as @{telegramStatus.telegram_username}
+                {telegramLinked && telegramStatus?.telegram_username
+                  ? `Connected via Telegram (@${telegramStatus.telegram_username})`
+                  : lineLinked && lineStatus?.line_display_name
+                    ? `Connected via LINE (${lineStatus.line_display_name})`
+                    : "Connected"}
               </p>
             )}
-            {stepStates[2] === "current" && !linkData && (
-              <button
-                type="button"
-                onClick={handleGenerateLink}
-                disabled={generateLink.isPending}
-                className="mt-4 rounded-full bg-accent px-5 py-2.5 text-sm font-medium text-white transition hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-55"
-              >
-                {generateLink.isPending ? "Generating..." : "Connect Telegram"}
-              </button>
+            {stepStates[2] === "current" && !linkData && !lineLinkData && (
+              <div className="mt-4 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={handleGenerateLink}
+                  disabled={generateLink.isPending}
+                  className="rounded-full bg-[#0088cc] px-5 py-2.5 text-sm font-medium text-white transition hover:bg-[#0077b5] disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  {generateLink.isPending ? "Generating..." : "Connect Telegram"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleGenerateLineLink}
+                  disabled={generateLineLink.isPending}
+                  className="rounded-full bg-[#06C755] px-5 py-2.5 text-sm font-medium text-white transition hover:bg-[#05b04d] disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  {generateLineLink.isPending ? "Generating..." : "Connect LINE"}
+                </button>
+              </div>
             )}
             {stepStates[2] === "current" && linkData && (
               <div className="mt-4 space-y-3">
@@ -276,11 +328,69 @@ export default function OnboardingPage() {
                     )}
                     <button
                       type="button"
+                      onClick={() => { setLinkData(null); }}
+                      className="text-xs text-ink-muted underline hover:text-ink-faint"
+                    >
+                      Use LINE instead
+                    </button>
+                    <button
+                      type="button"
                       onClick={handleGenerateLink}
                       disabled={generateLink.isPending}
                       className="text-xs text-accent underline hover:text-accent/75 disabled:opacity-50"
                     >
                       {generateLink.isPending ? "Generating..." : "Generate new link"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+            {stepStates[2] === "current" && lineLinkData && (
+              <div className="mt-4 space-y-3">
+                <p className="text-sm text-ink-muted">
+                  Scan the QR code or tap the link to connect your LINE:
+                </p>
+                <div className="flex items-start gap-4">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={lineLinkData.qr_code}
+                    alt="LINE QR Code"
+                    className="h-40 w-40 rounded-panel border border-border"
+                  />
+                  <div className="space-y-2">
+                    <a
+                      href={lineLinkData.deep_link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-block rounded-full bg-[#06C755] px-4 py-2 text-sm text-white transition hover:bg-[#05b04d]"
+                    >
+                      Open in LINE
+                    </a>
+                    <div className="flex items-center gap-2">
+                      <div className="h-2 w-2 rounded-full bg-[#06C755] animate-pulse" />
+                      <p className="text-xs text-ink-faint">
+                        Waiting for you to connect...
+                      </p>
+                    </div>
+                    {lineLinkSecondsLeft > 0 && (
+                      <p className="text-xs text-ink-faint">
+                        Link expires in {Math.floor(lineLinkSecondsLeft / 60)}:{String(lineLinkSecondsLeft % 60).padStart(2, "0")}
+                      </p>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => { setLineLinkData(null); }}
+                      className="text-xs text-ink-muted underline hover:text-ink-faint"
+                    >
+                      Use Telegram instead
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleGenerateLineLink}
+                      disabled={generateLineLink.isPending}
+                      className="text-xs text-accent underline hover:text-accent/75 disabled:opacity-50"
+                    >
+                      {generateLineLink.isPending ? "Generating..." : "Generate new link"}
                     </button>
                   </div>
                 </div>

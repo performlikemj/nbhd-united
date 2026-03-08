@@ -179,7 +179,7 @@ class Tenant(models.Model):
     # Onboarding
     onboarding_complete = models.BooleanField(
         default=False,
-        help_text="Whether Telegram onboarding has been completed",
+        help_text="Whether messaging onboarding has been completed",
     )
     onboarding_step = models.IntegerField(
         default=0,
@@ -200,6 +200,17 @@ class Tenant(models.Model):
         default=6,
         validators=[MinValueValidator(1), MaxValueValidator(6)],
         help_text="Duration of the heartbeat window in hours (1-6)",
+    )
+
+    # Donation preferences
+    donation_enabled = models.BooleanField(
+        default=False,
+        help_text="Opt-in to donate surplus subscription revenue",
+    )
+    donation_percentage = models.IntegerField(
+        default=100,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text="Percentage of surplus to donate (0-100)",
     )
 
     # Action gating

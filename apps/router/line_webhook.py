@@ -36,6 +36,7 @@ from apps.router.line_flex import (
     build_status_bubble,
     extract_quick_reply_buttons,
     should_use_flex,
+    telegram_keyboard_to_quick_reply,
 )
 from apps.tenants.models import Tenant, User
 
@@ -559,16 +560,39 @@ class LineWebhookView(View):
                     ),
                 )
                 return
+        elif msg_type == "sticker":
+            # LINE stickers carry emotion/intent via keywords
+            keywords = message.get("keywords", [])
+            sticker_resource = message.get("stickerResourceType", "")
+            package_id = message.get("packageId", "")
+            sticker_id = message.get("stickerId", "")
+            if keywords:
+                keyword_str = ", ".join(keywords[:5])
+                text = (
+                    f"[User sent a LINE sticker expressing: {keyword_str}. "
+                    f"Respond naturally to the emotion — keep it brief, "
+                    f"use emoji to match the vibe.]"
+                )
+            else:
+                text = (
+                    "[User sent a LINE sticker (no keywords available). "
+                    "Respond warmly with a matching emoji — treat it like "
+                    "a friendly reaction.]"
+                )
+            logger.info(
+                "LINE sticker: pkg=%s id=%s type=%s keywords=%s",
+                package_id, sticker_id, sticker_resource, keywords,
+            )
         elif msg_type == "text":
             text = message.get("text", "").strip()
         else:
-            # Unsupported message types (image, video, sticker, etc.)
+            # Unsupported message types (image, video, location, etc.)
             if line_user_id:
                 _send_line_flex(
                     line_user_id,
                     build_status_bubble(
-                        "I can process text and voice messages. "
-                        "Please send text or a voice recording!",
+                        "I can process text, voice, and stickers. "
+                        "Please send one of those!",
                         tone="warning",
                     ),
                 )
@@ -632,6 +656,32 @@ class LineWebhookView(View):
             )
             return
 
+        # Onboarding / re-introduction gate
+        from apps.router.onboarding import get_onboarding_response, needs_reintroduction
+
+        if needs_reintroduction(tenant):
+            tenant.onboarding_step = 0
+            tenant.save(update_fields=["onboarding_step", "updated_at"])
+
+        if not tenant.onboarding_complete or tenant.onboarding_step == 0:
+            # During onboarding, only accept typed text
+            if msg_type != "text":
+                _send_line_flex(
+                    line_user_id,
+                    build_short_bubble(
+                        "I'll be ready for stickers and voice soon! "
+                        "For now, please type your answer."
+                    ),
+                )
+                return
+            # LINE has no language_code — always ask language question
+            onboarding_reply = get_onboarding_response(
+                tenant, text, telegram_lang=""
+            )
+            if onboarding_reply is not None:
+                self._send_onboarding_reply(line_user_id, onboarding_reply)
+                return
+
         # Budget check
         if not check_budget(tenant):
             _send_line_flex(
@@ -652,6 +702,24 @@ class LineWebhookView(View):
 
         # Forward to container (pass reply_token for free Reply API)
         self._forward_to_container(line_user_id, tenant, text, reply_token=reply_token)
+
+    def _send_onboarding_reply(self, line_user_id: str, reply) -> None:
+        """Render an OnboardingReply as a LINE Flex message with optional Quick Reply buttons."""
+        msg = build_short_bubble(reply.text)
+        if reply.keyboard:
+            items = telegram_keyboard_to_quick_reply(reply.keyboard)
+            msg = attach_quick_reply(msg, items)
+        _send_line_push(line_user_id, [msg])
+
+    def _handle_onboarding_postback(
+        self, tenant: Tenant, line_user_id: str, data: str
+    ) -> None:
+        """Handle onboarding button callbacks (tz_country:*, tz_zone:*)."""
+        from apps.router.onboarding import handle_onboarding_callback
+
+        reply = handle_onboarding_callback(tenant, data)
+        if reply is not None:
+            self._send_onboarding_reply(line_user_id, reply)
 
     def _process_link(self, line_user_id: str, event: dict, token: str) -> None:
         """Process account linking via link token."""
@@ -698,11 +766,12 @@ class LineWebhookView(View):
         Uses Flex Messages for structured content, quick replies for buttons,
         and Reply API (free) with Push fallback.
         """
-        if not tenant.container_fqdn:
+        if not tenant.container_fqdn or tenant.status == "provisioning":
             _send_line_flex(
                 line_user_id,
                 build_short_bubble(
-                    "Your assistant is being set up. Please try again in a minute!",
+                    "Your assistant is being set up — this usually takes about a minute. "
+                    "I'll be ready for you shortly! 🌱",
                 ),
             )
             return
@@ -748,13 +817,24 @@ class LineWebhookView(View):
                 "LINE FWD_FAIL %s HTTP %s", tenant.container_fqdn, status_code
             )
             if status_code in (502, 503):
-                _send_line_flex(
-                    line_user_id,
-                    build_status_bubble(
-                        "I'm restarting \u2014 please try again in about a minute!",
-                        tone="warning",
-                    ),
-                )
+                # Check if this is a brand new tenant still starting up
+                tenant.refresh_from_db(fields=["status"])
+                if tenant.status == "provisioning":
+                    _send_line_flex(
+                        line_user_id,
+                        build_short_bubble(
+                            "Your assistant is almost ready — just finishing setup. "
+                            "Try again in about a minute! 🌱",
+                        ),
+                    )
+                else:
+                    _send_line_flex(
+                        line_user_id,
+                        build_status_bubble(
+                            "I'm restarting \u2014 please try again in about a minute!",
+                            tone="warning",
+                        ),
+                    )
             else:
                 _send_line_flex(
                     line_user_id,
@@ -766,17 +846,69 @@ class LineWebhookView(View):
             return
         except httpx.HTTPError as e:
             logger.error("LINE forward error: %s", e)
-            _send_line_flex(
-                line_user_id,
-                build_status_bubble(
-                    "I'm restarting \u2014 please try again in about a minute!",
-                    tone="warning",
-                ),
-            )
+            tenant.refresh_from_db(fields=["status"])
+            if tenant.status == "provisioning":
+                _send_line_flex(
+                    line_user_id,
+                    build_short_bubble(
+                        "Your assistant is almost ready — just finishing setup. "
+                        "Try again in about a minute! 🌱",
+                    ),
+                )
+            else:
+                _send_line_flex(
+                    line_user_id,
+                    build_status_bubble(
+                        "I'm restarting \u2014 please try again in about a minute!",
+                        tone="warning",
+                    ),
+                )
             return
 
-        # Extract AI response
+        # Extract AI response — retry once on empty
         ai_text = self._extract_ai_response(result)
+        if not ai_text:
+            logger.warning(
+                "Empty response from container %s, retrying once",
+                tenant.container_fqdn,
+            )
+            try:
+                retry_resp = httpx.post(
+                    url,
+                    json={
+                        "model": "openclaw",
+                        "messages": [{"role": "user", "content": message_text}],
+                        "user": line_user_id,
+                    },
+                    headers={
+                        "Authorization": f"Bearer {gateway_token}",
+                        "X-User-Timezone": user_tz,
+                        "X-Line-User-Id": line_user_id,
+                    },
+                    timeout=CHAT_COMPLETIONS_TIMEOUT,
+                )
+                retry_resp.raise_for_status()
+                result = retry_resp.json()
+                ai_text = self._extract_ai_response(result)
+            except Exception:
+                logger.warning("Retry also failed for %s", tenant.container_fqdn)
+
+        if not ai_text:
+            logger.error(
+                "No response after retry from container %s for line_user_id=%s",
+                tenant.container_fqdn,
+                line_user_id,
+            )
+            _send_line_flex(
+                line_user_id,
+                build_short_bubble(
+                    "Sorry, I couldn't come up with a response. "
+                    "Could you try saying that again?",
+                ),
+            )
+            self._record_usage(tenant, result)
+            return
+
         if ai_text:
             # Remove MEDIA markers (images not supported yet)
             clean_text = re.sub(r"MEDIA:\S+", "", ai_text).strip()
@@ -827,6 +959,11 @@ class LineWebhookView(View):
 
         tenant = _resolve_tenant_by_line_user_id(line_user_id)
         if not tenant:
+            return
+
+        # Onboarding callbacks (country/timezone buttons)
+        if data.startswith("tz_"):
+            self._handle_onboarding_postback(tenant, line_user_id, data)
             return
 
         # Action gate callbacks

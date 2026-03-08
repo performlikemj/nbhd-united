@@ -145,6 +145,10 @@ class TransparencyServiceTest(TestCase):
         self.assertEqual(data["subscription_price"], 12.0)
         self.assertIn("your_actual_cost", data)
         self.assertIn("platform_infra", data)
+        self.assertIn("surplus", data)
+        self.assertIn("donation_amount", data)
+        self.assertIn("donation_enabled", data)
+        self.assertIn("donation_percentage", data)
         self.assertIn("model_rates", data)
         self.assertIn("infra_breakdown", data)
         self.assertIn("explanation", data)
@@ -180,10 +184,75 @@ class TransparencyServiceTest(TestCase):
         self.assertEqual(data["your_actual_cost"], 0.0)
         self.assertEqual(data["platform_infra"], 4.75)
 
+    def test_surplus_calculation(self):
+        data = get_transparency_data(self.tenant)
+        expected_surplus = max(0, 12.0 - data["your_actual_cost"] - 4.75)
+        self.assertAlmostEqual(data["surplus"], expected_surplus, places=4)
+
+    def test_donation_amount_zero_when_disabled(self):
+        self.tenant.donation_enabled = False
+        self.tenant.save(update_fields=["donation_enabled"])
+        data = get_transparency_data(self.tenant)
+        self.assertEqual(data["donation_amount"], 0.0)
+        self.assertFalse(data["donation_enabled"])
+
+    def test_donation_amount_when_enabled(self):
+        self.tenant.donation_enabled = True
+        self.tenant.donation_percentage = 50
+        self.tenant.save(update_fields=["donation_enabled", "donation_percentage"])
+        data = get_transparency_data(self.tenant)
+        expected = round(data["surplus"] * 0.5, 4)
+        self.assertAlmostEqual(data["donation_amount"], expected, places=4)
+        self.assertTrue(data["donation_enabled"])
+        self.assertEqual(data["donation_percentage"], 50)
+
     @override_settings(USAGE_DASHBOARD_SUBSCRIPTION_PRICE=12.5)
     def test_transparency_uses_setting_driven_subscription_price(self):
         data = get_transparency_data(self.tenant)
         self.assertEqual(data["subscription_price"], 12.5)
+
+
+class DonationPreferenceAPITest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.tenant = create_tenant(display_name="Donation Test", telegram_chat_id=999900)
+
+    def test_unauthenticated(self):
+        response = self.client.patch("/api/v1/billing/donation-preference/")
+        self.assertEqual(response.status_code, 401)
+
+    def test_toggle_donation_on(self):
+        self.client.force_authenticate(user=self.tenant.user)
+        response = self.client.patch(
+            "/api/v1/billing/donation-preference/",
+            {"donation_enabled": True},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["donation_enabled"])
+        self.tenant.refresh_from_db()
+        self.assertTrue(self.tenant.donation_enabled)
+
+    def test_set_percentage(self):
+        self.client.force_authenticate(user=self.tenant.user)
+        response = self.client.patch(
+            "/api/v1/billing/donation-preference/",
+            {"donation_percentage": 75},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["donation_percentage"], 75)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.donation_percentage, 75)
+
+    def test_invalid_percentage(self):
+        self.client.force_authenticate(user=self.tenant.user)
+        response = self.client.patch(
+            "/api/v1/billing/donation-preference/",
+            {"donation_percentage": 150},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
 
 
 class UsageAPITest(TestCase):
@@ -241,6 +310,10 @@ class UsageAPITest(TestCase):
         response = self.client.get("/api/v1/billing/usage/transparency/")
         self.assertEqual(response.status_code, 200)
         self.assertIn("subscription_price", response.data)
+        self.assertIn("surplus", response.data)
+        self.assertIn("donation_amount", response.data)
+        self.assertIn("donation_enabled", response.data)
+        self.assertIn("donation_percentage", response.data)
         self.assertIn("model_rates", response.data)
         self.assertIn("explanation", response.data)
 

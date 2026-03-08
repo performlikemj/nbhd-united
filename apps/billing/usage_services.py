@@ -186,11 +186,23 @@ def get_transparency_data(tenant: Tenant) -> dict:
         "total": 4.75,
     }
 
+    subscription_price = _get_subscription_price()
+    surplus = max(0.0, subscription_price - actual_cost - infra_breakdown["total"])
+    surplus = round(surplus, 4)
+
+    donation_amount = 0.0
+    if tenant.donation_enabled and surplus > 0:
+        donation_amount = round(surplus * (tenant.donation_percentage / 100), 4)
+
     return {
         "period": {"start": first.isoformat(), "end": last.isoformat()},
-        "subscription_price": _get_subscription_price(),
+        "subscription_price": subscription_price,
         "your_actual_cost": round(actual_cost, 4),
         "platform_infra": infra_breakdown["total"],
+        "surplus": surplus,
+        "donation_amount": donation_amount,
+        "donation_enabled": tenant.donation_enabled,
+        "donation_percentage": tenant.donation_percentage,
         "message_count": totals["message_count"],
         "model_rates": rate_card,
         "infra_breakdown": infra_breakdown,

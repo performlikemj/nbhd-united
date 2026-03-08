@@ -1098,7 +1098,18 @@ class TelegramPoller:
             # Already handling a restart for this user — don't double-notify
             return
         self._update_in_progress.add(chat_id)
-        self._send_message(chat_id, "⏳ I'm restarting right now — I'll send your message through once I'm back up (about a minute).")
+        tenant.refresh_from_db(fields=["status"])
+        if tenant.status == "provisioning":
+            self._send_message(
+                chat_id,
+                "Your assistant is almost ready — just finishing setup. "
+                "I'll send your message through as soon as it's live! 🌱",
+            )
+        else:
+            self._send_message(
+                chat_id,
+                "⏳ I'm restarting right now — I'll send your message through once I'm back up (about a minute).",
+            )
 
         def _retry():
             try:
@@ -1115,8 +1126,12 @@ class TelegramPoller:
 
     def _forward_to_container(self, chat_id: int, tenant: Tenant, message_text: str) -> None:
         """Send the message to the tenant's OpenClaw container via /v1/chat/completions and relay the response."""
-        if not tenant.container_fqdn:
-            self._send_message(chat_id, "Your assistant is being set up. Please try again in a minute!")
+        if not tenant.container_fqdn or tenant.status == "provisioning":
+            self._send_message(
+                chat_id,
+                "Your assistant is being set up — this usually takes about a minute. "
+                "I'll be ready for you shortly! 🌱",
+            )
             return
 
         url = f"https://{tenant.container_fqdn}/v1/chat/completions"
@@ -1174,10 +1189,49 @@ class TelegramPoller:
         finally:
             typing_stop.set()
 
-        # Extract AI response text from OpenAI-compatible response
+        # Extract AI response text — retry once on empty
         ai_text = self._extract_ai_response(result)
-        if ai_text:
-            self._send_rich_response(chat_id, tenant, ai_text)
+        if not ai_text:
+            logger.warning(
+                "Empty response from container %s, retrying once",
+                tenant.container_fqdn,
+            )
+            try:
+                self._send_typing(chat_id)
+                retry_resp = httpx.post(
+                    url,
+                    json={
+                        "model": "openclaw",
+                        "messages": [{"role": "user", "content": message_text}],
+                        "user": str(chat_id),
+                    },
+                    headers={
+                        "Authorization": f"Bearer {gateway_token}",
+                        "X-User-Timezone": user_tz,
+                    },
+                    timeout=CHAT_COMPLETIONS_TIMEOUT,
+                )
+                retry_resp.raise_for_status()
+                result = retry_resp.json()
+                ai_text = self._extract_ai_response(result)
+            except Exception:
+                logger.warning("Retry also failed for %s", tenant.container_fqdn)
+
+        if not ai_text:
+            logger.error(
+                "No response after retry from container %s for chat_id=%s",
+                tenant.container_fqdn,
+                chat_id,
+            )
+            self._send_message(
+                chat_id,
+                "Sorry, I couldn't come up with a response. "
+                "Could you try saying that again?",
+            )
+            self._record_usage(tenant, result)
+            return
+
+        self._send_rich_response(chat_id, tenant, ai_text)
 
         # Record usage
         self._record_usage(tenant, result)
