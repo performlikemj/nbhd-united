@@ -179,7 +179,7 @@ class Tenant(models.Model):
     # Onboarding
     onboarding_complete = models.BooleanField(
         default=False,
-        help_text="Whether Telegram onboarding has been completed",
+        help_text="Whether messaging onboarding has been completed",
     )
     onboarding_step = models.IntegerField(
         default=0,
