@@ -31,6 +31,51 @@ class UsageRecord(models.Model):
         return f"{self.event_type}: {total} tokens ({self.tenant})"
 
 
+class DonationLedger(models.Model):
+    """Tracks monthly surplus donation calculations and disbursements."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+        SKIPPED = "skipped", "Skipped"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="donation_ledger")
+    month = models.DateField(help_text="First day of the month")
+    surplus_amount = models.DecimalField(
+        max_digits=10, decimal_places=4, default=0,
+        help_text="Total surplus for the month",
+    )
+    donation_amount = models.DecimalField(
+        max_digits=10, decimal_places=4, default=0,
+        help_text="Amount allocated to donation (surplus * percentage)",
+    )
+    donation_percentage = models.IntegerField(
+        default=100,
+        help_text="Snapshot of tenant's donation_percentage at calculation time",
+    )
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.PENDING,
+    )
+    receipt_reference = models.CharField(
+        max_length=255, blank=True, default="",
+        help_text="External receipt or transaction reference",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "donation_ledger"
+        unique_together = [("tenant", "month")]
+        indexes = [
+            models.Index(fields=["month", "status"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tenant} {self.month}: ${self.donation_amount} ({self.status})"
+
+
 class MonthlyBudget(models.Model):
     """Global monthly budget cap — safety net."""
 
