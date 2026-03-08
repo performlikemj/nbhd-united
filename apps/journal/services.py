@@ -67,26 +67,10 @@ DEFAULT_TEMPLATE_SECTIONS: list[dict[str, str]] = [
         ),
         "source": "agent",
     },
-    {
-        "slug": "evening-check-in",
-        "title": "Evening Check-in",
-        "content": (
-            "### What got done today?\n"
-            "- \n\n"
-            "### What didn't get done? Why?\n"
-            "- \n\n"
-            "### Plan for tomorrow (top 3)\n"
-            "1. \n2. \n3. \n\n"
-            "### Blockers or decisions needed?\n"
-            "- \n\n"
-            "### Energy/mood (1-10)\n"
-            "- "
-        ),
-        "source": "human",
-    },
 ]
 
-# Old 3-section defaults — used to detect unmodified templates during seeding.
+# Old default slug sets — used to detect unmodified templates during seeding.
+# Evening-check-in was removed from templates (created on-demand by evening cron).
 _OLD_DEFAULT_SLUGS = {"morning-report", "log", "evening-check-in"}
 
 _ENTRY_SECTION_HEADER_RE = re.compile(r"^\d{1,2}:\d{2}\b")
@@ -378,20 +362,13 @@ def set_daily_note_section(
             break
 
     if not updated:
-        # Auto-create the section. Insert before evening-check-in if present.
+        # Auto-create the section at the end of the note.
         new_section = {
             "slug": section_slug,
             "title": section_slug.replace("-", " ").title(),
             "content": content.strip(),
         }
-        evening_idx = next(
-            (i for i, s in enumerate(sections) if s["slug"] == "evening-check-in"),
-            None,
-        )
-        if evening_idx is not None:
-            sections.insert(evening_idx, new_section)
-        else:
-            sections.append(new_section)
+        sections.append(new_section)
 
     note = set_daily_note_sections(note=note, sections=sections, template=template)
     return note, sections

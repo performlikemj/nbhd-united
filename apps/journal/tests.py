@@ -182,10 +182,10 @@ Legacy entry for migration safety.
 
 class DefaultTemplateSectionsTest(TestCase):
     def test_default_template_has_five_sections(self):
-        self.assertEqual(len(DEFAULT_TEMPLATE_SECTIONS), 5)
+        self.assertEqual(len(DEFAULT_TEMPLATE_SECTIONS), 4)
         slugs = [s["slug"] for s in DEFAULT_TEMPLATE_SECTIONS]
         self.assertEqual(slugs, [
-            "morning-report", "weather", "news", "focus", "evening-check-in",
+            "morning-report", "weather", "news", "focus",
         ])
 
     def test_seed_creates_template_with_five_sections(self):
@@ -193,7 +193,7 @@ class DefaultTemplateSectionsTest(TestCase):
         tenant = Tenant.objects.create(user=user, status="active")
         result = seed_default_templates_for_tenant(tenant=tenant)
         template = result["template"]
-        self.assertEqual(len(template.sections), 5)
+        self.assertEqual(len(template.sections), 4)
 
 
 class SetSectionTest(TestCase):
@@ -217,10 +217,8 @@ class SetSectionTest(TestCase):
         )
         slugs = [s["slug"] for s in sections]
         self.assertIn("tweet-drafts", slugs)
-        # Should be inserted before evening-check-in
-        evening_idx = slugs.index("evening-check-in")
-        tweet_idx = slugs.index("tweet-drafts")
-        self.assertLess(tweet_idx, evening_idx)
+        # Should be appended at the end
+        self.assertEqual(slugs[-1], "tweet-drafts")
 
     def test_set_unknown_slug_appended_when_no_evening(self):
         """When evening-check-in doesn't exist, new sections are appended."""
