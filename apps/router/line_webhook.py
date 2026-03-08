@@ -128,14 +128,6 @@ def _transcribe_line_audio(message_id: str) -> str | None:
             logger.warning("LINE audio content empty for message %s", message_id)
             return None
 
-        logger.info(
-            "LINE audio download: msg=%s status=%s size=%d content-type=%s",
-            message_id,
-            dl_resp.status_code,
-            len(audio_data),
-            dl_resp.headers.get("content-type", "unknown"),
-        )
-
         # LINE voice messages are m4a; determine from content-type header
         content_type = dl_resp.headers.get("content-type", "")
         if "m4a" in content_type or "mp4" in content_type:
@@ -167,13 +159,10 @@ def _transcribe_line_audio(message_id: str) -> str | None:
         text = whisper_resp.json().get("text", "").strip()
         if text:
             logger.info(
-                "Transcribed LINE audio %s (%d bytes, content-type=%s, ext=%s → %d chars): %.300s",
+                "Transcribed LINE audio %s (%d bytes → %d chars)",
                 message_id,
                 len(audio_data),
-                content_type,
-                ext,
                 len(text),
-                text,
             )
             return text
 
