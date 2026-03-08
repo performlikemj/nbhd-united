@@ -1189,10 +1189,49 @@ class TelegramPoller:
         finally:
             typing_stop.set()
 
-        # Extract AI response text from OpenAI-compatible response
+        # Extract AI response text — retry once on empty
         ai_text = self._extract_ai_response(result)
-        if ai_text:
-            self._send_rich_response(chat_id, tenant, ai_text)
+        if not ai_text:
+            logger.warning(
+                "Empty response from container %s, retrying once",
+                tenant.container_fqdn,
+            )
+            try:
+                self._send_typing(chat_id)
+                retry_resp = httpx.post(
+                    url,
+                    json={
+                        "model": "openclaw",
+                        "messages": [{"role": "user", "content": message_text}],
+                        "user": str(chat_id),
+                    },
+                    headers={
+                        "Authorization": f"Bearer {gateway_token}",
+                        "X-User-Timezone": user_tz,
+                    },
+                    timeout=CHAT_COMPLETIONS_TIMEOUT,
+                )
+                retry_resp.raise_for_status()
+                result = retry_resp.json()
+                ai_text = self._extract_ai_response(result)
+            except Exception:
+                logger.warning("Retry also failed for %s", tenant.container_fqdn)
+
+        if not ai_text:
+            logger.error(
+                "No response after retry from container %s for chat_id=%s",
+                tenant.container_fqdn,
+                chat_id,
+            )
+            self._send_message(
+                chat_id,
+                "Sorry, I couldn't come up with a response. "
+                "Could you try saying that again?",
+            )
+            self._record_usage(tenant, result)
+            return
+
+        self._send_rich_response(chat_id, tenant, ai_text)
 
         # Record usage
         self._record_usage(tenant, result)
