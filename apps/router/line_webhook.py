@@ -820,8 +820,50 @@ class LineWebhookView(View):
                 )
             return
 
-        # Extract AI response
+        # Extract AI response — retry once on empty
         ai_text = self._extract_ai_response(result)
+        if not ai_text:
+            logger.warning(
+                "Empty response from container %s, retrying once",
+                tenant.container_fqdn,
+            )
+            try:
+                retry_resp = httpx.post(
+                    url,
+                    json={
+                        "model": "openclaw",
+                        "messages": [{"role": "user", "content": message_text}],
+                        "user": line_user_id,
+                    },
+                    headers={
+                        "Authorization": f"Bearer {gateway_token}",
+                        "X-User-Timezone": user_tz,
+                        "X-Line-User-Id": line_user_id,
+                    },
+                    timeout=CHAT_COMPLETIONS_TIMEOUT,
+                )
+                retry_resp.raise_for_status()
+                result = retry_resp.json()
+                ai_text = self._extract_ai_response(result)
+            except Exception:
+                logger.warning("Retry also failed for %s", tenant.container_fqdn)
+
+        if not ai_text:
+            logger.error(
+                "No response after retry from container %s for line_user_id=%s",
+                tenant.container_fqdn,
+                line_user_id,
+            )
+            _send_line_flex(
+                line_user_id,
+                build_short_bubble(
+                    "Sorry, I couldn't come up with a response. "
+                    "Could you try saying that again?",
+                ),
+            )
+            self._record_usage(tenant, result)
+            return
+
         if ai_text:
             # Remove MEDIA markers (images not supported yet)
             clean_text = re.sub(r"MEDIA:\S+", "", ai_text).strip()
