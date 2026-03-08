@@ -4,7 +4,7 @@ import Link from "next/link";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton, StatCardSkeleton } from "@/components/skeleton";
 import { StatCard } from "@/components/stat-card";
-import { useTenantQuery, useTransparencyQuery, useUsageHistoryQuery, useUsageSummaryQuery } from "@/lib/queries";
+import { useDonationPreferenceMutation, useTenantQuery, useTransparencyQuery, useUsageHistoryQuery, useUsageSummaryQuery } from "@/lib/queries";
 
 export default function SettingsUsagePage() {
   const { data: tenant, isLoading } = useTenantQuery();
@@ -22,11 +22,22 @@ export default function SettingsUsagePage() {
   const budgetRemaining = Math.max(0, effectiveBudget - effectiveUsed);
   const modelBreakdown = usageSummary?.by_model ?? [];
 
+  const donationMutation = useDonationPreferenceMutation();
+
   const aiActualCost = transparency?.your_actual_cost ?? 0;
   const platformCost = transparency?.platform_infra ?? 0;
-  const splitTotal = Math.max(aiActualCost + platformCost, 0.01);
+  const surplus = transparency?.surplus ?? 0;
+  const donationAmount = transparency?.donation_amount ?? 0;
+  const donationEnabled = transparency?.donation_enabled ?? false;
+  const donationPercentage = transparency?.donation_percentage ?? 100;
+
+  const splitTotal = Math.max(aiActualCost + platformCost + donationAmount, 0.01);
   const aiPercent = Math.min(100, (aiActualCost / splitTotal) * 100);
-  const platformPercent = 100 - aiPercent;
+  const donationPercent = (donationAmount / splitTotal) * 100;
+  const platformPercent = 100 - aiPercent - donationPercent;
+
+  const PERCENTAGE_OPTIONS = [25, 50, 75, 100] as const;
+  const mealsEstimate = Math.floor(donationAmount / 0.25);
 
   if (isLoading || summaryLoading || transparencyLoading) {
     return (
@@ -169,12 +180,18 @@ export default function SettingsUsagePage() {
 
       <SectionCard title="Where Your Money Goes" subtitle="Actual costs behind your service">
         <div className="space-y-4">
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3 md:grid-cols-3">
             <StatCard label="AI Model Usage" value={`$${aiActualCost.toFixed(2)}`} tone="accent" hint="Actual cost this month" />
             <StatCard
               label="Platform Infrastructure"
               value={`$${platformCost.toFixed(2)}`}
               hint="Monthly estimate"
+            />
+            <StatCard
+              label="Community Impact"
+              value={`$${donationAmount.toFixed(2)}`}
+              tone="signal"
+              hint={donationEnabled ? `${donationPercentage}% of $${surplus.toFixed(2)} surplus` : "Not opted in yet"}
             />
           </div>
 
@@ -193,10 +210,16 @@ export default function SettingsUsagePage() {
                   className="absolute top-0 h-full bg-muted-foreground/30"
                   style={{ left: `${aiPercent}%`, width: `${platformPercent}%` }}
                 />
+                {donationAmount > 0 && (
+                  <div
+                    className="absolute top-0 h-full rounded-r-full bg-emerald-500"
+                    style={{ left: `${aiPercent + platformPercent}%`, width: `${donationPercent}%` }}
+                  />
+                )}
               </div>
             </div>
 
-            <div className="mt-3 grid gap-2 sm:grid-cols-2 text-xs text-ink-muted">
+            <div className="mt-3 grid gap-2 sm:grid-cols-3 text-xs text-ink-muted">
               <div className="flex items-center justify-between rounded-panel border border-accent/25 bg-accent/8 p-2">
                 <div className="flex items-center gap-2">
                   <span className="h-2 w-2 rounded-full bg-accent" />
@@ -210,6 +233,13 @@ export default function SettingsUsagePage() {
                   <span>Platform Infrastructure</span>
                 </div>
                 <span className="font-mono">${platformCost.toFixed(2)}</span>
+              </div>
+              <div className="flex items-center justify-between rounded-panel border border-emerald-500/25 bg-emerald-500/8 p-2">
+                <div className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                  <span>Community Impact</span>
+                </div>
+                <span className="font-mono">${donationAmount.toFixed(2)}</span>
               </div>
             </div>
 
@@ -252,6 +282,64 @@ export default function SettingsUsagePage() {
               </>
             ) : (
               <p className="mt-3 text-sm text-ink-muted">Transparency data unavailable.</p>
+            )}
+          </article>
+
+          <article className="rounded-panel border border-emerald-500/25 bg-emerald-500/5 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="font-medium">Donate my surplus</p>
+                <p className="mt-1 text-sm text-ink-muted">
+                  Route your unused subscription balance toward feeding children in need.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={donationEnabled}
+                onClick={() => donationMutation.mutate({ donation_enabled: !donationEnabled })}
+                disabled={donationMutation.isPending}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                  donationEnabled ? "bg-emerald-500" : "bg-border"
+                } ${donationMutation.isPending ? "opacity-50" : ""}`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                    donationEnabled ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </button>
+            </div>
+
+            {donationEnabled && (
+              <div className="mt-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-ink-muted">Percentage of surplus:</span>
+                  <div className="flex gap-1">
+                    {PERCENTAGE_OPTIONS.map((pct) => (
+                      <button
+                        key={pct}
+                        type="button"
+                        onClick={() => donationMutation.mutate({ donation_percentage: pct })}
+                        disabled={donationMutation.isPending}
+                        className={`rounded-md px-3 py-1 text-sm font-mono transition-colors ${
+                          donationPercentage === pct
+                            ? "bg-emerald-500 text-white"
+                            : "bg-border text-ink-muted hover:bg-border/80"
+                        }`}
+                      >
+                        {pct}%
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {surplus > 0 && mealsEstimate > 0 && (
+                  <p className="text-sm text-emerald-700 dark:text-emerald-400">
+                    Your surplus this month buys ~{mealsEstimate} meals for children.
+                  </p>
+                )}
+              </div>
             )}
           </article>
         </div>

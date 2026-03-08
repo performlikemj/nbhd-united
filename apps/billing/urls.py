@@ -1,6 +1,6 @@
 from django.urls import path
 
-from .usage_views import DailyUsageView, TransparencyView, UsageSummaryView
+from .usage_views import DailyUsageView, DonationPreferenceView, TransparencyView, UsageSummaryView
 from .views import StripeCheckoutView, StripePortalView, stripe_webhook
 
 urlpatterns = [
@@ -11,4 +11,5 @@ urlpatterns = [
     path("usage/summary/", UsageSummaryView.as_view(), name="usage-summary"),
     path("usage/daily/", DailyUsageView.as_view(), name="usage-daily"),
     path("usage/transparency/", TransparencyView.as_view(), name="usage-transparency"),
+    path("donation-preference/", DonationPreferenceView.as_view(), name="donation-preference"),
 ]
