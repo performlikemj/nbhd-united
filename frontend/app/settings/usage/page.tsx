@@ -22,12 +22,11 @@ export default function SettingsUsagePage() {
   const budgetRemaining = Math.max(0, effectiveBudget - effectiveUsed);
   const modelBreakdown = usageSummary?.by_model ?? [];
 
-  const subscriptionPrice = transparency?.subscription_price ?? 0;
   const aiActualCost = transparency?.your_actual_cost ?? 0;
-  const platformCost = transparency?.platform_margin ?? 0;
-  const splitTotal = Math.max(subscriptionPrice, aiActualCost + platformCost, 0.01);
+  const platformCost = transparency?.platform_infra ?? 0;
+  const splitTotal = Math.max(aiActualCost + platformCost, 0.01);
   const aiPercent = Math.min(100, (aiActualCost / splitTotal) * 100);
-  const platformPercent = Math.min(100 - aiPercent, (platformCost / splitTotal) * 100);
+  const platformPercent = 100 - aiPercent;
 
   if (isLoading || summaryLoading || transparencyLoading) {
     return (
@@ -168,16 +167,15 @@ export default function SettingsUsagePage() {
         )}
       </SectionCard>
 
-      <SectionCard title="Where Your Money Goes" subtitle="A clear split of your monthly subscription">
+      <SectionCard title="Where Your Money Goes" subtitle="Actual costs behind your service">
         <div className="space-y-4">
-          <div className="grid gap-3 md:grid-cols-3">
-            <StatCard label="AI Model Usage" value={`$${aiActualCost.toFixed(2)}`} tone="accent" />
+          <div className="grid gap-3 md:grid-cols-2">
+            <StatCard label="AI Model Usage" value={`$${aiActualCost.toFixed(2)}`} tone="accent" hint="Actual cost this month" />
             <StatCard
-              label="Platform & Infrastructure"
+              label="Platform Infrastructure"
               value={`$${platformCost.toFixed(2)}`}
-              hint={transparency ? `For ${transparency.message_count} messages this period` : undefined}
+              hint="Monthly estimate"
             />
-            <StatCard label="Your Subscription" value={`$${subscriptionPrice.toFixed(2)}`} tone="signal" />
           </div>
 
           <article className="rounded-panel border border-border bg-surface-elevated p-4">
@@ -209,7 +207,7 @@ export default function SettingsUsagePage() {
               <div className="flex items-center justify-between rounded-panel border border-muted/35 bg-muted/10 p-2">
                 <div className="flex items-center gap-2">
                   <span className="h-2 w-2 rounded-full bg-muted" />
-                  <span>Platform & Infrastructure</span>
+                  <span>Platform Infrastructure</span>
                 </div>
                 <span className="font-mono">${platformCost.toFixed(2)}</span>
               </div>

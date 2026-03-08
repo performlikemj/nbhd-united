@@ -164,7 +164,7 @@ class Tenant(models.Model):
         max_digits=10, decimal_places=4, default=0
     )
     monthly_token_budget = models.IntegerField(
-        default=500_000,
+        default=2_000_000,
         help_text="Per-user monthly token budget",
     )
 
