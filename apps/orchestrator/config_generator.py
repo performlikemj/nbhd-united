@@ -5,12 +5,37 @@ Based on actual OpenClaw config schema — see openclaw.json reference.
 from __future__ import annotations
 
 import json
+import zoneinfo
+from datetime import datetime
 from typing import Any
 
 from django.conf import settings
 
 from apps.orchestrator.tool_policy import generate_tool_config
 from apps.tenants.models import Tenant
+
+
+def _inject_date_context(prompt: str, tenant: "Tenant") -> str:
+    """Prepend current date/time context to a cron prompt.
+
+    Cheaper models (M2.5, Kimi) struggle with date math. Injecting the
+    current date server-side eliminates an entire class of errors:
+    wrong day-of-week, "tomorrow" when event is 2 days away, etc.
+    """
+    user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
+    try:
+        tz = zoneinfo.ZoneInfo(user_tz)
+    except Exception:
+        tz = zoneinfo.ZoneInfo("UTC")
+
+    now = datetime.now(tz)
+    date_line = (
+        f"Current date and time: {now.strftime('%A, %B %d, %Y at %H:%M')} ({user_tz})\n"
+        f"When mentioning future events, compute exact days: "
+        f"event_date minus {now.strftime('%Y-%m-%d')} = X days from now. "
+        f"Never say 'tomorrow' unless the math confirms exactly 1 day away.\n\n"
+    )
+    return date_line + prompt
 
 _MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "Good morning! Create today's morning briefing. This is a cron (isolated) session — "
@@ -35,7 +60,12 @@ _MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "Check which tasks are open (`- [ ]`) vs completed (`- [x]`). Only reference open tasks.\n"
     "7. Check news/topics the user follows (if configured) — use freshness filters (past 24h) "
     "and always verify publication dates before including\n\n"
-    "8. Fill in today's daily note sections:\n\n"
+    "8. VERIFICATION — before listing any carry-over item from yesterday:\n"
+    "   - Load the tasks document — is it still marked open (`- [ ]`)?\n"
+    "   - Check if the user addressed it in yesterday's evening check-in\n"
+    "   - If the user said 'done' or 'drop it' in any conversation, do NOT carry it over\n"
+    "   - Only list genuinely open items\n\n"
+    "9. Fill in today's daily note sections:\n\n"
     "**morning-report section:**\n"
     "### Overnight Summary\n"
     "- What happened since last check-in (completed tasks, messages, events)\n\n"
@@ -62,7 +92,7 @@ _MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "- Based on goals, calendar, open tasks, and what makes sense for the day\n\n"
     "### Quick Wins\n"
     "- Small things that can be knocked out easily\n\n"
-    "9. Send the user exactly ONE message via `nbhd_send_to_user`. Keep it concise:\n"
+    "10. Send the user exactly ONE message via `nbhd_send_to_user`. Keep it concise:\n"
     "- Weather + what to wear (1 line)\n"
     "- Top priority for the day (1 line)\n"
     "- Anything time-sensitive (1-2 lines)\n"
@@ -99,25 +129,34 @@ _EVENING_CHECKIN_PROMPT = (
     "It's evening check-in time. This is a cron (isolated) session — you cannot have a "
     "back-and-forth conversation. You must do everything in ONE turn.\n\n"
     "Steps:\n"
-    "1. Load today's journal context (`nbhd_journal_context`) to see what the user did today.\n"
-    "2. Load the user's goals document (`nbhd_document_get` with kind='goal', slug='goals').\n"
-    "3. Load the user's tasks document (`nbhd_document_get` with kind='tasks', slug='tasks'). "
+    "1. Load today's full daily note (`nbhd_daily_note_get` with today's date). "
+    "Read the morning-report section — note the 'Top 3 Priorities' and 'Open Tasks'.\n"
+    "2. Load today's journal context (`nbhd_journal_context`) to see what the user did today.\n"
+    "3. Load the user's goals document (`nbhd_document_get` with kind='goal', slug='goals').\n"
+    "4. Load the user's tasks document (`nbhd_document_get` with kind='tasks', slug='tasks'). "
     "Check which tasks are open (`- [ ]`) vs completed (`- [x]`).\n"
-    "4. Review today's conversations for things the user learned — decisions made, "
+    "5. VERIFICATION — before listing any item as 'not done':\n"
+    "   - Confirm it appears as `- [ ]` (unchecked) in the tasks document right now\n"
+    "   - Confirm it was actually planned for today (check morning priorities)\n"
+    "   - If a task was completed during conversation but not checked off, mark it complete first\n"
+    "   - Do NOT list items the user explicitly dropped or said 'done' to in conversation\n"
+    "   - Do NOT list items that were never planned for today\n\n"
+    "6. Review today's conversations for things the user learned — decisions made, "
     "surprises, things that worked or didn't, patterns or realisations, tradeoffs considered. "
     "For each notable insight, call `nbhd_lesson_suggest` with the lesson text, context, and "
     "source_type='conversation'. Aim for 1-3 high-quality lessons per day if the conversations "
     "warrant it. Do not force lessons from routine small talk.\n"
-    "5. Fill in the 'evening-check-in' section of today's daily note "
+    "7. Fill in the 'evening-check-in' section of today's daily note "
     "(`nbhd_daily_note_set_section` with section='evening-check-in') using this structure:\n"
     "### What got done today?\n"
-    "- Cross-reference with the tasks document — note completed tasks.\n"
+    "- Cross-reference morning priorities with tasks document — note completed items.\n"
     "- ✅ Item (brief description)\n\n"
     "### Goal progress\n"
     "- Note any active goals that saw progress today, or flag ones that are stalling\n"
     "- Skip this section if there are no active goals\n\n"
     "### What didn't get done? Why?\n"
-    "- Check for open tasks from the tasks document that were expected today\n"
+    "- ONLY list items that were planned for today AND are still open in the tasks document\n"
+    "- Do NOT list items the user dropped, completed, or deferred\n"
     "- ❌ Item — reason (only if you know from context)\n\n"
     "### Plan for tomorrow (top 3)\n"
     "1. Top priority\n"
@@ -127,7 +166,7 @@ _EVENING_CHECKIN_PROMPT = (
     "- ? (leave as ? — the user fills this in)\n\n"
     "Use the local user date when writing with date arguments to avoid timezone drift.\n"
     "Fill in what you know from the day's conversations. Leave gaps for what you don't know.\n\n"
-    "6. Send the user exactly ONE message via `nbhd_send_to_user`. Keep it short and casual:\n"
+    "8. Send the user exactly ONE message via `nbhd_send_to_user`. Keep it short and casual:\n"
     "- Brief recap of their day (2-3 lines max)\n"
     "- If any active goals saw progress, mention it (one line)\n"
     "- One prompt: 'Anything to add or adjust before tomorrow?'\n"
@@ -148,8 +187,12 @@ _WEEK_AHEAD_REVIEW_PROMPT = (
     "   - If the user is traveling, skip or redirect location-based crons\n"
     "   - If the user has a packed schedule, consider adjusting timing\n"
     "   - If everything looks fine, note 'no changes needed'\n"
-    "7. Log decisions in `memory/week-ahead/` with a brief note\n"
-    "8. Send the user exactly ONE message via `nbhd_send_to_user`:\n"
+    "7. Review the tasks document for stale items:\n"
+    "   - Any task that has been open for more than a week → mention it to the user\n"
+    "   - Suggest: 'still relevant, or should we remove it?'\n"
+    "   - Keep the stale task list short (top 3 oldest) to avoid overwhelm\n"
+    "8. Log decisions in `memory/week-ahead/` with a brief note\n"
+    "9. Send the user exactly ONE message via `nbhd_send_to_user`:\n"
     "   - Calendar highlights for the week (2-3 lines)\n"
     "   - Active goals status (1-2 lines)\n"
     "   - Any cron adjustments needed (or 'all good, no changes')\n"
@@ -165,7 +208,9 @@ _HEARTBEAT_CHECKIN_PROMPT = (
     "2. Calendar — any events in the next 2-3 hours? (`nbhd_calendar_list_events`)\n"
     "3. Recent journal context — anything unfinished from last conversation? (`nbhd_journal_context`)\n"
     "4. Pending lessons — any waiting for approval? (`nbhd_lessons_pending`)\n\n"
-    "If something needs attention, send the user exactly ONE message via `nbhd_send_to_user`. "
+    "If something needs attention, first check if it's already in the daily note "
+    "(load via `nbhd_daily_note_get`). Do NOT re-log information already captured. "
+    "Then send the user exactly ONE message via `nbhd_send_to_user`. "
     "Keep it brief and genuinely useful — a quick heads-up, not a status report.\n\n"
     "If nothing needs attention, reply: HEARTBEAT_OK\n\n"
     "**IMPORTANT: Do NOT message unless you have something genuinely useful to say. "
@@ -277,7 +322,9 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "sessionTarget": "isolated",
             "payload": {
                 "kind": "agentTurn",
-                "message": _build_morning_briefing_prompt(tenant),
+                "message": _inject_date_context(
+                    _build_morning_briefing_prompt(tenant), tenant
+                ),
             },
             "delivery": {"mode": "none"},
             "enabled": True,
@@ -288,7 +335,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "sessionTarget": "isolated",
             "payload": {
                 "kind": "agentTurn",
-                "message": _EVENING_CHECKIN_PROMPT,
+                "message": _inject_date_context(_EVENING_CHECKIN_PROMPT, tenant),
             },
             "delivery": {"mode": "none"},
             "enabled": True,
@@ -299,7 +346,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "sessionTarget": "isolated",
             "payload": {
                 "kind": "agentTurn",
-                "message": _WEEK_AHEAD_REVIEW_PROMPT,
+                "message": _inject_date_context(_WEEK_AHEAD_REVIEW_PROMPT, tenant),
             },
             "delivery": {"mode": "none"},
             "enabled": True,
