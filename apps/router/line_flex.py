@@ -593,3 +593,31 @@ def attach_quick_reply(message: dict, items: list[dict]) -> dict:
     """Attach quick reply items to a LINE message object."""
     message["quickReply"] = {"items": items}
     return message
+
+
+def telegram_keyboard_to_quick_reply(
+    keyboard: list[list[dict[str, str]]],
+) -> list[dict]:
+    """Convert a Telegram inline keyboard to LINE Quick Reply items.
+
+    Telegram keyboards are 2D (rows of buttons), each with "text" and
+    "callback_data".  LINE Quick Reply is a flat list of up to 13 postback
+    actions with labels capped at 20 chars.
+    """
+    items: list[dict] = []
+    for row in keyboard:
+        for btn in row:
+            label = btn.get("text", "")[:20]
+            data = btn.get("callback_data", "")
+            items.append({
+                "type": "action",
+                "action": {
+                    "type": "postback",
+                    "label": label,
+                    "data": data,
+                    "displayText": btn.get("text", ""),
+                },
+            })
+            if len(items) >= 13:
+                return items
+    return items

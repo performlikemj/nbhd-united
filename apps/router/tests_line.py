@@ -797,8 +797,11 @@ class LineWebhookEdgeCaseTest(TestCase):
         from apps.router.line_webhook import LineWebhookView
         mock_push.return_value = True
 
-        user = _make_user(line_user_id="U_no_fqdn")
-        _make_tenant(user, container_fqdn="")
+        user = _make_user(
+            line_user_id="U_no_fqdn", display_name="Test",
+            timezone="Asia/Tokyo", language="ja",
+        )
+        _make_tenant(user, container_fqdn="", onboarding_complete=True, onboarding_step=5)
 
         event = {
             "type": "message",

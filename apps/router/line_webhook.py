@@ -36,6 +36,7 @@ from apps.router.line_flex import (
     build_status_bubble,
     extract_quick_reply_buttons,
     should_use_flex,
+    telegram_keyboard_to_quick_reply,
 )
 from apps.tenants.models import Tenant, User
 
@@ -655,6 +656,32 @@ class LineWebhookView(View):
             )
             return
 
+        # Onboarding / re-introduction gate
+        from apps.router.onboarding import get_onboarding_response, needs_reintroduction
+
+        if needs_reintroduction(tenant):
+            tenant.onboarding_step = 0
+            tenant.save(update_fields=["onboarding_step", "updated_at"])
+
+        if not tenant.onboarding_complete or tenant.onboarding_step == 0:
+            # During onboarding, only accept typed text
+            if msg_type != "text":
+                _send_line_flex(
+                    line_user_id,
+                    build_short_bubble(
+                        "I'll be ready for stickers and voice soon! "
+                        "For now, please type your answer."
+                    ),
+                )
+                return
+            # LINE has no language_code — always ask language question
+            onboarding_reply = get_onboarding_response(
+                tenant, text, telegram_lang=""
+            )
+            if onboarding_reply is not None:
+                self._send_onboarding_reply(line_user_id, onboarding_reply)
+                return
+
         # Budget check
         if not check_budget(tenant):
             _send_line_flex(
@@ -675,6 +702,24 @@ class LineWebhookView(View):
 
         # Forward to container (pass reply_token for free Reply API)
         self._forward_to_container(line_user_id, tenant, text, reply_token=reply_token)
+
+    def _send_onboarding_reply(self, line_user_id: str, reply) -> None:
+        """Render an OnboardingReply as a LINE Flex message with optional Quick Reply buttons."""
+        msg = build_short_bubble(reply.text)
+        if reply.keyboard:
+            items = telegram_keyboard_to_quick_reply(reply.keyboard)
+            msg = attach_quick_reply(msg, items)
+        _send_line_push(line_user_id, [msg])
+
+    def _handle_onboarding_postback(
+        self, tenant: Tenant, line_user_id: str, data: str
+    ) -> None:
+        """Handle onboarding button callbacks (tz_country:*, tz_zone:*)."""
+        from apps.router.onboarding import handle_onboarding_callback
+
+        reply = handle_onboarding_callback(tenant, data)
+        if reply is not None:
+            self._send_onboarding_reply(line_user_id, reply)
 
     def _process_link(self, line_user_id: str, event: dict, token: str) -> None:
         """Process account linking via link token."""
@@ -914,6 +959,11 @@ class LineWebhookView(View):
 
         tenant = _resolve_tenant_by_line_user_id(line_user_id)
         if not tenant:
+            return
+
+        # Onboarding callbacks (country/timezone buttons)
+        if data.startswith("tz_"):
+            self._handle_onboarding_postback(tenant, line_user_id, data)
             return
 
         # Action gate callbacks
