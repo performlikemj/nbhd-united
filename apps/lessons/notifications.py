@@ -154,6 +154,12 @@ def _send_line_lesson(tenant: Tenant, lesson: Lesson) -> bool:
             },
             timeout=10,
         )
+        if resp.status_code != 200:
+            logger.warning(
+                "LINE lesson push failed (%s): %s",
+                resp.status_code,
+                resp.text[:300],
+            )
         return resp.status_code == 200
     except Exception:
         logger.exception("Failed to send lesson notification via LINE for tenant %s", tenant.id)
