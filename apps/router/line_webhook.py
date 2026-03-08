@@ -4,7 +4,7 @@ POST /api/v1/line/webhook/
 
 - Verifies LINE signature (HMAC-SHA256)
 - Parses events from the request body
-- Handles follow, message (text), and unfollow events
+- Handles follow, message (text, audio/voice), and unfollow events
 - Processes AI forwarding asynchronously (LINE requires 200 within 1 second)
 - Uses LINE Push Message API for responses (reply_token expires too fast)
 """
@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import threading
 from typing import Any
@@ -41,8 +42,10 @@ from apps.tenants.models import Tenant, User
 logger = logging.getLogger(__name__)
 
 LINE_API_BASE = "https://api.line.me/v2/bot"
+LINE_CONTENT_API = "https://api-data.line.me/v2/bot/message"
 CHAT_COMPLETIONS_TIMEOUT = 120.0  # generous timeout for AI response
 LOADING_SECONDS = 60  # loading animation max (auto-clears on response)
+WHISPER_API_URL = "https://api.openai.com/v1/audio/transcriptions"
 
 
 def _get_channel_secret() -> str:
@@ -86,6 +89,88 @@ def _show_loading(line_user_id: str) -> None:
         )
     except Exception:
         pass  # non-critical — don't log noise
+
+
+def _transcribe_line_audio(message_id: str) -> str | None:
+    """Download audio from LINE Content API and transcribe via OpenAI Whisper.
+
+    Returns transcribed text, or None on failure.
+    """
+    openai_key = getattr(settings, "OPENAI_API_KEY", "") or os.environ.get(
+        "OPENAI_API_KEY", ""
+    )
+    if not openai_key:
+        logger.warning("Cannot transcribe LINE audio: no OPENAI_API_KEY configured")
+        return None
+
+    access_token = _get_access_token()
+    if not access_token:
+        logger.warning("Cannot transcribe LINE audio: no LINE_CHANNEL_ACCESS_TOKEN")
+        return None
+
+    try:
+        # 1. Download audio content from LINE
+        dl_resp = httpx.get(
+            f"{LINE_CONTENT_API}/{message_id}/content",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=15,
+        )
+        if not dl_resp.is_success:
+            logger.warning(
+                "Failed to download LINE audio %s: %s",
+                message_id,
+                dl_resp.status_code,
+            )
+            return None
+
+        audio_data = dl_resp.content
+        if not audio_data:
+            logger.warning("LINE audio content empty for message %s", message_id)
+            return None
+
+        # LINE voice messages are m4a; determine from content-type header
+        content_type = dl_resp.headers.get("content-type", "")
+        if "m4a" in content_type or "mp4" in content_type:
+            ext = "m4a"
+        elif "ogg" in content_type:
+            ext = "ogg"
+        elif "wav" in content_type:
+            ext = "wav"
+        else:
+            ext = "m4a"  # LINE default for voice messages
+
+        # 2. Transcribe via OpenAI Whisper API
+        whisper_resp = httpx.post(
+            WHISPER_API_URL,
+            headers={"Authorization": f"Bearer {openai_key}"},
+            files={"file": (f"voice.{ext}", audio_data, f"audio/{ext}")},
+            data={"model": "whisper-1"},
+            timeout=30,
+        )
+        if not whisper_resp.is_success:
+            logger.warning(
+                "Whisper transcription failed for LINE audio %s: %s %s",
+                message_id,
+                whisper_resp.status_code,
+                whisper_resp.text[:200],
+            )
+            return None
+
+        text = whisper_resp.json().get("text", "").strip()
+        if text:
+            logger.info(
+                "Transcribed LINE audio %s (%d bytes → %d chars)",
+                message_id,
+                len(audio_data),
+                len(text),
+            )
+            return text
+
+        return None
+
+    except Exception:
+        logger.exception("LINE audio transcription error for message %s", message_id)
+        return None
 
 
 def _send_line_reply(reply_token: str, messages: list[dict]) -> bool:
@@ -445,25 +530,49 @@ class LineWebhookView(View):
             pass
 
     def _handle_message(self, event: dict) -> None:
-        """Handle incoming text message."""
+        """Handle incoming text or audio message."""
         message = event.get("message", {})
         msg_type = message.get("type", "")
         reply_token = event.get("replyToken")
+        line_user_id = event.get("source", {}).get("userId", "")
 
-        if msg_type != "text":
-            line_user_id = event.get("source", {}).get("userId", "")
+        # Audio/voice messages — transcribe via Whisper
+        if msg_type == "audio":
+            if not line_user_id:
+                return
+            message_id = message.get("id")
+            if not message_id:
+                return
+            _show_loading(line_user_id)
+            transcript = _transcribe_line_audio(message_id)
+            if transcript:
+                # Process the transcribed text as if it were a text message
+                text = transcript
+                # Fall through to normal text processing below
+            else:
+                _send_line_flex(
+                    line_user_id,
+                    build_status_bubble(
+                        "Sorry, I couldn't transcribe that audio. "
+                        "Please try again or send a text message.",
+                        tone="warning",
+                    ),
+                )
+                return
+        elif msg_type == "text":
+            text = message.get("text", "").strip()
+        else:
+            # Unsupported message types (image, video, sticker, etc.)
             if line_user_id:
                 _send_line_flex(
                     line_user_id,
                     build_status_bubble(
-                        "I can only process text messages for now. Please send text!",
+                        "I can process text and voice messages. "
+                        "Please send text or a voice recording!",
                         tone="warning",
                     ),
                 )
             return
-
-        text = message.get("text", "").strip()
-        line_user_id = event.get("source", {}).get("userId", "")
 
         if not text or not line_user_id:
             return
