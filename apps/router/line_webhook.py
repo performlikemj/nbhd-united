@@ -698,11 +698,12 @@ class LineWebhookView(View):
         Uses Flex Messages for structured content, quick replies for buttons,
         and Reply API (free) with Push fallback.
         """
-        if not tenant.container_fqdn:
+        if not tenant.container_fqdn or tenant.status == "provisioning":
             _send_line_flex(
                 line_user_id,
                 build_short_bubble(
-                    "Your assistant is being set up. Please try again in a minute!",
+                    "Your assistant is being set up — this usually takes about a minute. "
+                    "I'll be ready for you shortly! 🌱",
                 ),
             )
             return
@@ -748,13 +749,24 @@ class LineWebhookView(View):
                 "LINE FWD_FAIL %s HTTP %s", tenant.container_fqdn, status_code
             )
             if status_code in (502, 503):
-                _send_line_flex(
-                    line_user_id,
-                    build_status_bubble(
-                        "I'm restarting \u2014 please try again in about a minute!",
-                        tone="warning",
-                    ),
-                )
+                # Check if this is a brand new tenant still starting up
+                tenant.refresh_from_db(fields=["status"])
+                if tenant.status == "provisioning":
+                    _send_line_flex(
+                        line_user_id,
+                        build_short_bubble(
+                            "Your assistant is almost ready — just finishing setup. "
+                            "Try again in about a minute! 🌱",
+                        ),
+                    )
+                else:
+                    _send_line_flex(
+                        line_user_id,
+                        build_status_bubble(
+                            "I'm restarting \u2014 please try again in about a minute!",
+                            tone="warning",
+                        ),
+                    )
             else:
                 _send_line_flex(
                     line_user_id,
@@ -766,13 +778,23 @@ class LineWebhookView(View):
             return
         except httpx.HTTPError as e:
             logger.error("LINE forward error: %s", e)
-            _send_line_flex(
-                line_user_id,
-                build_status_bubble(
-                    "I'm restarting \u2014 please try again in about a minute!",
-                    tone="warning",
-                ),
-            )
+            tenant.refresh_from_db(fields=["status"])
+            if tenant.status == "provisioning":
+                _send_line_flex(
+                    line_user_id,
+                    build_short_bubble(
+                        "Your assistant is almost ready — just finishing setup. "
+                        "Try again in about a minute! 🌱",
+                    ),
+                )
+            else:
+                _send_line_flex(
+                    line_user_id,
+                    build_status_bubble(
+                        "I'm restarting \u2014 please try again in about a minute!",
+                        tone="warning",
+                    ),
+                )
             return
 
         # Extract AI response

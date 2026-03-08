@@ -1098,7 +1098,18 @@ class TelegramPoller:
             # Already handling a restart for this user — don't double-notify
             return
         self._update_in_progress.add(chat_id)
-        self._send_message(chat_id, "⏳ I'm restarting right now — I'll send your message through once I'm back up (about a minute).")
+        tenant.refresh_from_db(fields=["status"])
+        if tenant.status == "provisioning":
+            self._send_message(
+                chat_id,
+                "Your assistant is almost ready — just finishing setup. "
+                "I'll send your message through as soon as it's live! 🌱",
+            )
+        else:
+            self._send_message(
+                chat_id,
+                "⏳ I'm restarting right now — I'll send your message through once I'm back up (about a minute).",
+            )
 
         def _retry():
             try:
@@ -1115,8 +1126,12 @@ class TelegramPoller:
 
     def _forward_to_container(self, chat_id: int, tenant: Tenant, message_text: str) -> None:
         """Send the message to the tenant's OpenClaw container via /v1/chat/completions and relay the response."""
-        if not tenant.container_fqdn:
-            self._send_message(chat_id, "Your assistant is being set up. Please try again in a minute!")
+        if not tenant.container_fqdn or tenant.status == "provisioning":
+            self._send_message(
+                chat_id,
+                "Your assistant is being set up — this usually takes about a minute. "
+                "I'll be ready for you shortly! 🌱",
+            )
             return
 
         url = f"https://{tenant.container_fqdn}/v1/chat/completions"
