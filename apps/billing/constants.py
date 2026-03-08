@@ -40,9 +40,11 @@ MODEL_RATES: dict[str, dict[str, float]] = {
         "output": 1.2,
         "display_name": "MiniMax M2.5",
     },
+    "minimax/minimax-m2.5": {
+        "input": 0.3,
+        "output": 1.2,
+        "display_name": "MiniMax M2.5",
+    },
 }
 
 DEFAULT_RATE = {"input": 3.0, "output": 15.0, "display_name": "Unknown Model"}
-
-# Platform pricing defaults
-PLATFORM_MARGIN_TARGET = 0.30  # 30% target margin
