@@ -59,7 +59,7 @@ class ConfigGeneratorTest(TestCase):
     def test_byok_tier_generates_config(self):
         self.tenant.model_tier = "byok"
         config = generate_openclaw_config(self.tenant)
-        self.assertIn("sonnet", config["agents"]["defaults"]["model"]["primary"].lower())
+        self.assertIn("opus", config["agents"]["defaults"]["model"]["primary"].lower())
         # byok should not have extra models block
         self.assertNotIn("models", config)
 
