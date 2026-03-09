@@ -20,7 +20,7 @@ MODEL_RATES: dict[str, dict[str, float]] = {
         "display_name": "Claude Haiku 4.5",
     },
     # OpenRouter-style model identifiers (map to same rates)
-    "anthropic/claude-opus-4-6": {
+    "anthropic/claude-opus-4.6": {
         "input": 5.0,
         "output": 25.0,
         "display_name": "Claude Opus 4.6",
@@ -30,7 +30,7 @@ MODEL_RATES: dict[str, dict[str, float]] = {
         "output": 25.0,
         "display_name": "Claude Opus 4.6",
     },
-    "anthropic/claude-sonnet-4-6": {
+    "anthropic/claude-sonnet-4.6": {
         "input": 3.0,
         "output": 15.0,
         "display_name": "Claude Sonnet 4.6",
