@@ -264,7 +264,7 @@ def dedup_cron_jobs_task(tenant_id: str) -> None:
     errors = 0
     for job_id, name in to_delete:
         try:
-            invoke_gateway_tool(tenant, "cron.delete", {"jobId": job_id})
+            invoke_gateway_tool(tenant, "cron.remove", {"id": job_id})
             deleted += 1
         except GatewayError as e:
             logger.error("dedup: failed to delete job %s (%s) for tenant %s: %s",
