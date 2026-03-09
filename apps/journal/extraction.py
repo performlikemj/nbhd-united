@@ -16,13 +16,14 @@ import requests
 from django.conf import settings
 from django.utils import timezone
 
+from apps.billing.services import record_usage
 from apps.journal.models import DailyNote, Document, PendingExtraction
 from apps.lessons.models import Lesson
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
 
-EXTRACTION_MODEL = "openai/gpt-4o-mini"
+EXTRACTION_MODEL = "anthropic/claude-sonnet-4-6"
 MIN_NOTE_LENGTH = 100  # chars — below this we skip or fall back
 TELEGRAM_API_BASE = "https://api.telegram.org/bot"
 TELEGRAM_TIMEOUT = 10
@@ -54,8 +55,8 @@ Rules:
 """
 
 
-def _call_extraction_llm(content: str) -> dict:
-    """Call LLM via OpenRouter and return parsed extraction JSON."""
+def _call_extraction_llm(content: str) -> tuple[dict, dict]:
+    """Call LLM via OpenRouter and return (parsed extraction JSON, usage dict)."""
     api_key = getattr(settings, "OPENROUTER_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY not configured")
@@ -75,8 +76,10 @@ def _call_extraction_llm(content: str) -> dict:
         timeout=30,
     )
     resp.raise_for_status()
-    raw = resp.json()["choices"][0]["message"]["content"]
-    return json.loads(raw)
+    data = resp.json()
+    raw = data["choices"][0]["message"]["content"]
+    usage = data.get("usage", {})
+    return json.loads(raw), usage
 
 
 # ── Source-of-truth resolution ───────────────────────────────────────────────
@@ -346,10 +349,19 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
 
     # Call LLM
     try:
-        extracted = _call_extraction_llm(content)
+        extracted, usage = _call_extraction_llm(content)
     except Exception:
         logger.exception("extraction: LLM call failed for tenant %s", str(tenant.id)[:8])
         return {"lessons": 0, "goals": 0, "tasks": 0, "skipped": "llm_error"}
+
+    # Attribute cost to tenant
+    record_usage(
+        tenant,
+        event_type="extraction",
+        input_tokens=usage.get("prompt_tokens", 0),
+        output_tokens=usage.get("completion_tokens", 0),
+        model_used=EXTRACTION_MODEL,
+    )
 
     logger.info(
         "extraction: tenant=%s llm_result lessons=%d goals=%d tasks=%d",
