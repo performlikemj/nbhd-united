@@ -23,7 +23,7 @@ from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
 
-EXTRACTION_MODEL = "anthropic/claude-sonnet-4-6"
+EXTRACTION_MODEL = "anthropic/claude-sonnet-4.6"
 MIN_NOTE_LENGTH = 100  # chars — below this we skip or fall back
 TELEGRAM_API_BASE = "https://api.telegram.org/bot"
 TELEGRAM_TIMEOUT = 10
