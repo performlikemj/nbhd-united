@@ -73,6 +73,8 @@ TASK_MAP = {
     "apply_single_tenant_image": "apps.orchestrator.tasks.apply_single_tenant_image_task",
     # One-off broadcast (enqueued by broadcast-message)
     "broadcast_single_tenant": "apps.orchestrator.tasks.broadcast_single_tenant_task",
+    # Cron dedup (enqueued by dedup-crons)
+    "dedup_cron_jobs": "apps.orchestrator.tasks.dedup_cron_jobs_task",
 }
 
 
@@ -768,6 +770,41 @@ def broadcast_message(request):
             enqueued += 1
         except Exception:
             logger.exception("Failed to enqueue broadcast for tenant %s", tenant.id)
+            failed += 1
+
+    return JsonResponse({"enqueued": enqueued, "failed": failed})
+
+
+@csrf_exempt
+@require_POST
+def dedup_crons(request):
+    """Remove duplicate cron jobs from all active tenant containers.
+
+    URL: /api/cron/dedup-crons/
+    One-off cleanup endpoint. Fans out per-tenant via QStash.
+    """
+    if not verify_qstash_signature(request):
+        deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+        provided = request.headers.get("X-Deploy-Secret", "")
+        if not (provided and deploy_secret and provided == deploy_secret):
+            return JsonResponse({"error": "Invalid signature"}, status=401)
+
+    from apps.cron.publish import publish_task
+
+    tenants = Tenant.objects.filter(
+        status=Tenant.Status.ACTIVE,
+        container_id__gt="",
+        container_fqdn__gt="",
+    )
+
+    enqueued = 0
+    failed = 0
+    for tenant in tenants:
+        try:
+            publish_task("dedup_cron_jobs", str(tenant.id))
+            enqueued += 1
+        except Exception:
+            logger.exception("Failed to enqueue dedup for tenant %s", tenant.id)
             failed += 1
 
     return JsonResponse({"enqueued": enqueued, "failed": failed})
