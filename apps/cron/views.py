@@ -71,6 +71,8 @@ TASK_MAP = {
     # Per-tenant config/image updates (enqueued by apply-pending-configs)
     "apply_single_tenant_config": "apps.orchestrator.tasks.apply_single_tenant_config_task",
     "apply_single_tenant_image": "apps.orchestrator.tasks.apply_single_tenant_image_task",
+    # One-off broadcast (enqueued by broadcast-message)
+    "broadcast_single_tenant": "apps.orchestrator.tasks.broadcast_single_tenant_task",
 }
 
 
@@ -728,3 +730,51 @@ def run_backfill_lesson_embeddings(request):
 
     logger.info("backfill_lesson_embeddings: %d/%d processed, %d errors", processed, total, errors)
     return JsonResponse({"total": total, "processed": processed, "errors": errors})
+
+
+@csrf_exempt
+@require_POST
+def broadcast_message(request):
+    """Send a one-off message from each tenant's agent to their user.
+
+    URL: /api/cron/broadcast-message/
+    Body: {"message": "prompt text for the agent"}
+
+    The agent receives the prompt and uses nbhd_send_to_user to deliver it.
+    Each tenant is processed via QStash to avoid blocking the web worker.
+    """
+    if not verify_qstash_signature(request):
+        deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+        provided = request.headers.get("X-Deploy-Secret", "")
+        if not (provided and deploy_secret and provided == deploy_secret):
+            return JsonResponse({"error": "Invalid signature"}, status=401)
+
+    import json as _json
+    try:
+        body = _json.loads(request.body)
+    except (ValueError, _json.JSONDecodeError):
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+
+    message = body.get("message", "").strip()
+    if not message:
+        return JsonResponse({"error": "message is required"}, status=400)
+
+    from apps.cron.publish import publish_task
+
+    tenants = Tenant.objects.filter(
+        status=Tenant.Status.ACTIVE,
+        container_id__gt="",
+        container_fqdn__gt="",
+    )
+
+    enqueued = 0
+    failed = 0
+    for tenant in tenants:
+        try:
+            publish_task("broadcast_single_tenant", str(tenant.id), message)
+            enqueued += 1
+        except Exception:
+            logger.exception("Failed to enqueue broadcast for tenant %s", tenant.id)
+            failed += 1
+
+    return JsonResponse({"enqueued": enqueued, "failed": failed})
