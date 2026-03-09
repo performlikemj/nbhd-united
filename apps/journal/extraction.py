@@ -77,8 +77,11 @@ def _call_extraction_llm(content: str) -> tuple[dict, dict]:
     )
     resp.raise_for_status()
     data = resp.json()
-    raw = data["choices"][0]["message"]["content"]
+    raw = (data["choices"][0]["message"]["content"] or "").strip()
     usage = data.get("usage", {})
+    # Strip markdown code fences if present (Claude via OpenRouter may wrap JSON)
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     return json.loads(raw), usage
 
 
