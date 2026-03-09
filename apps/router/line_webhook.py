@@ -421,6 +421,16 @@ def _send_line_follow_up(tenant: Tenant, text: str) -> None:
     _send_line_push(line_user_id, [{"type": "text", "text": text}])
 
 
+def _send_line_status_bubble(tenant: Tenant, text: str, tone: str = "success") -> None:
+    """Send a branded status bubble via LINE Push API."""
+    from apps.router.line_flex import build_status_bubble
+
+    line_user_id = getattr(tenant.user, "line_user_id", None)
+    if not line_user_id:
+        return
+    _send_line_push(line_user_id, [build_status_bubble(text, tone=tone)])
+
+
 @method_decorator(csrf_exempt, name="dispatch")
 class LineWebhookView(View):
     """Receive and process LINE webhook events."""
@@ -1016,16 +1026,21 @@ class LineWebhookView(View):
             pending = PendingExtraction.objects.filter(
                 id=pending_id,
                 tenant=tenant,
-                status=PendingExtraction.Status.PENDING,
             ).first()
             if not pending:
+                return
+
+            # Already resolved — send friendly acknowledgment instead of silence
+            if pending.status != PendingExtraction.Status.PENDING:
+                status_text = "already added" if pending.status == PendingExtraction.Status.APPROVED else "already skipped"
+                _send_line_follow_up(tenant, f"👍 That one's {status_text}!")
                 return
 
             if action == "dismiss":
                 pending.status = PendingExtraction.Status.DISMISSED
                 pending.resolved_at = tz.now()
                 pending.save(update_fields=["status", "resolved_at"])
-                _send_line_follow_up(tenant, f"❌ Skipped: {pending.text[:80]}")
+                _send_line_status_bubble(tenant, f"Skipped: {pending.text[:80]}", tone="warning")
                 return
 
             if action == "approve_lesson":
@@ -1041,8 +1056,8 @@ class LineWebhookView(View):
             pending.resolved_at = tz.now()
             pending.save(update_fields=["status", "resolved_at"])
 
-            kind_emoji = {"lesson": "💡", "goal": "🎯", "task": "✅"}.get(pending.kind, "✅")
-            _send_line_follow_up(tenant, f"{kind_emoji} {pending.text[:80]}")
+            kind_label = {"lesson": "Saved to constellation", "goal": "Added to goals", "task": "Added to tasks"}.get(pending.kind, "Added")
+            _send_line_status_bubble(tenant, f"{kind_label}: {pending.text[:80]}", tone="success")
 
         except Exception:
             logger.exception("Error handling extraction postback: %s", data)
