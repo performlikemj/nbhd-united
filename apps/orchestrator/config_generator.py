@@ -242,8 +242,8 @@ _BACKGROUND_TASKS_PROMPT = (
 # Model mapping by tier
 TIER_MODELS: dict[str, dict[str, str]] = {
     "starter": {"primary": "openrouter/minimax/minimax-m2.5"},
-    "premium": {"primary": "anthropic/claude-sonnet-4-20250514"},
-    "byok": {"primary": "anthropic/claude-sonnet-4-20250514"},  # fallback, overridden by user config
+    "premium": {"primary": "anthropic/claude-opus-4-6"},
+    "byok": {"primary": "anthropic/claude-opus-4-6"},  # fallback, overridden by user config
 }
 
 TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
@@ -251,8 +251,8 @@ TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
         "openrouter/minimax/minimax-m2.5": {"alias": "minimax"},
     },
     "premium": {
-        "anthropic/claude-sonnet-4-20250514": {"alias": "sonnet"},
-        "anthropic/claude-opus-4-20250514": {"alias": "opus"},
+        "anthropic/claude-sonnet-4-6": {"alias": "sonnet"},
+        "anthropic/claude-opus-4-6": {"alias": "opus"},
     },
     "byok": {},  # populated dynamically from user's config
 }
