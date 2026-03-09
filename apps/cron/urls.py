@@ -15,4 +15,5 @@ urlpatterns = [
     path("run-update-cron-prompts/", views.run_update_cron_prompts, name="cron-run-update-cron-prompts"),
     path("run-backfill-lesson-embeddings/", views.run_backfill_lesson_embeddings, name="cron-run-backfill-lesson-embeddings"),
     path("register-system-crons/", views.register_system_crons, name="cron-register-system-crons"),
+    path("broadcast-message/", views.broadcast_message, name="cron-broadcast-message"),
 ]

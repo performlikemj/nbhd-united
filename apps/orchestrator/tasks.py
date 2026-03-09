@@ -176,3 +176,34 @@ def force_reseed_crons_task() -> dict:
             total_errors += 1
 
     return {"tenants": tenants.count(), "updated": total_updated, "errors": total_errors}
+
+
+def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
+    """Send a one-off agent-driven message to a single tenant's user.
+
+    Creates a temporary cron job that fires once in 30 seconds, then
+    self-deletes. The agent receives the prompt and messages the user
+    via nbhd_send_to_user.
+    """
+    import logging
+    from apps.tenants.models import Tenant
+    from apps.cron.gateway_client import invoke_gateway_tool, GatewayError
+
+    logger = logging.getLogger(__name__)
+
+    tenant = Tenant.objects.filter(id=tenant_id).first()
+    if not tenant or not tenant.container_fqdn:
+        return
+
+    # Use a one-shot cron: fires in 30s, maxRuns=1
+    job = {
+        "name": "One-off broadcast",
+        "schedule": "in 30 seconds",
+        "maxRuns": 1,
+        "prompt": message,
+    }
+    try:
+        invoke_gateway_tool(tenant, "cron.add", {"job": job})
+        logger.info("Broadcast cron added for tenant %s", tenant_id[:8])
+    except GatewayError as e:
+        logger.error("Broadcast failed for tenant %s: %s", tenant_id[:8], e)
