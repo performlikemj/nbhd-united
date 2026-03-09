@@ -121,7 +121,7 @@ class TestRunExtractionForTenant(TestCase):
             title="Today", markdown=RICH_NOTE
         )
 
-    @patch("apps.journal.extraction._call_extraction_llm", return_value=MOCK_EXTRACTION_RESPONSE)
+    @patch("apps.journal.extraction._call_extraction_llm", return_value=(MOCK_EXTRACTION_RESPONSE, {"prompt_tokens": 100, "completion_tokens": 50}))
     @patch("apps.journal.extraction._send_telegram_with_buttons", return_value=1001)
     @patch("django.conf.settings.TELEGRAM_BOT_TOKEN", "test-token", create=True)
     def test_creates_pending_extractions(self, mock_send, mock_llm):
@@ -132,7 +132,7 @@ class TestRunExtractionForTenant(TestCase):
         self.assertIsNone(result["skipped"])
         self.assertEqual(PendingExtraction.objects.filter(tenant=self.tenant).count(), 3)
 
-    @patch("apps.journal.extraction._call_extraction_llm", return_value=MOCK_EXTRACTION_RESPONSE)
+    @patch("apps.journal.extraction._call_extraction_llm", return_value=(MOCK_EXTRACTION_RESPONSE, {"prompt_tokens": 100, "completion_tokens": 50}))
     @patch("apps.journal.extraction._send_telegram_with_buttons", return_value=1002)
     @patch("django.conf.settings.TELEGRAM_BOT_TOKEN", "test-token", create=True)
     def test_deduplicates_on_second_run(self, mock_send, mock_llm):
