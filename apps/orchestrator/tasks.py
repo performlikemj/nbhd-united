@@ -207,3 +207,71 @@ def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
         logger.info("Broadcast cron added for tenant %s", tenant_id[:8])
     except GatewayError as e:
         logger.error("Broadcast failed for tenant %s: %s", tenant_id[:8], e)
+
+
+def dedup_cron_jobs_task(tenant_id: str) -> None:
+    """Remove duplicate cron jobs from a tenant's container.
+
+    Keeps the first job for each unique name and deletes the rest.
+    """
+    import logging
+    from apps.tenants.models import Tenant
+    from apps.cron.gateway_client import invoke_gateway_tool, GatewayError
+
+    logger = logging.getLogger(__name__)
+
+    tenant = Tenant.objects.filter(id=tenant_id).first()
+    if not tenant or not tenant.container_fqdn:
+        return
+
+    try:
+        list_result = invoke_gateway_tool(
+            tenant, "cron.list", {"includeDisabled": True}
+        )
+    except GatewayError as e:
+        logger.error("dedup: failed to list crons for tenant %s: %s", tenant_id[:8], e)
+        return
+
+    # Extract jobs
+    jobs = []
+    if isinstance(list_result, list):
+        jobs = list_result
+    elif isinstance(list_result, dict):
+        inner = list_result.get("details", list_result)
+        if isinstance(inner, dict):
+            jobs = inner.get("jobs", [])
+        if not jobs:
+            jobs = list_result.get("jobs", [])
+
+    if not jobs:
+        logger.info("dedup: tenant %s has no jobs", tenant_id[:8])
+        return
+
+    # Group by name, keep first, delete rest
+    seen = {}
+    to_delete = []
+    for job in jobs:
+        name = job.get("name", "")
+        job_id = job.get("id", job.get("jobId", ""))
+        if not name or not job_id:
+            continue
+        if name in seen:
+            to_delete.append((job_id, name))
+        else:
+            seen[name] = job_id
+
+    deleted = 0
+    errors = 0
+    for job_id, name in to_delete:
+        try:
+            invoke_gateway_tool(tenant, "cron.delete", {"jobId": job_id})
+            deleted += 1
+        except GatewayError as e:
+            logger.error("dedup: failed to delete job %s (%s) for tenant %s: %s",
+                         job_id, name, tenant_id[:8], e)
+            errors += 1
+
+    logger.info(
+        "dedup: tenant %s — kept %d unique jobs, deleted %d duplicates, %d errors",
+        tenant_id[:8], len(seen), deleted, errors,
+    )
