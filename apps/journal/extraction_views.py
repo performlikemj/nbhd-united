@@ -13,6 +13,8 @@ from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 
+from django.conf import settings
+
 from apps.cron.qstash_verify import verify_qstash_signature
 from apps.tenants.models import Tenant
 
@@ -32,10 +34,13 @@ class NightlyExtractionView(View):
     """
 
     def post(self, request):
-        # Verify QStash signature
-        is_valid, error = verify_qstash_signature(request)
-        if not is_valid:
-            logger.warning("Unauthorized nightly-extract attempt: %s", error)
+        # Auth: accept DEPLOY_SECRET (manual/CI) or QStash signature
+        deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+        provided = request.headers.get("X-Deploy-Secret", "")
+        if provided and deploy_secret and provided == deploy_secret:
+            pass  # Manual/CI auth
+        elif not verify_qstash_signature(request):
+            logger.warning("Unauthorized nightly-extract attempt")
             return JsonResponse({"error": "Unauthorized"}, status=401)
 
         import json as _json
