@@ -1123,7 +1123,7 @@ class LineWebhookView(View):
             choices = result.get("choices", [])
             if choices:
                 text = choices[0].get("message", {}).get("content")
-                if text and text.strip() not in LineWebhookHandler._GATEWAY_ERROR_STRINGS:
+                if text and text.strip() not in LineWebhookView._GATEWAY_ERROR_STRINGS:
                     return text
         except (IndexError, KeyError, TypeError):
             pass
