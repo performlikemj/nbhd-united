@@ -308,7 +308,11 @@ def force_reseed_crons(request):
     URL: /api/cron/force-reseed-crons/
     Use when cron job definitions have changed and need to be pushed to all containers.
     """
-    if not verify_qstash_signature(request):
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if provided and deploy_secret and provided == deploy_secret:
+        pass  # CI deploy auth
+    elif not verify_qstash_signature(request):
         logger.warning("Unauthorized force-reseed-crons attempt")
         return JsonResponse({"error": "Invalid signature"}, status=401)
 
