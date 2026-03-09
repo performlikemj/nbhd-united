@@ -369,6 +369,28 @@ def deprovision_tenant(tenant_id: str) -> None:
         raise
 
 
+def _extract_cron_jobs(list_result) -> list | None:
+    """Extract job list from a cron.list gateway response.
+
+    Returns:
+        list: The jobs list (may be empty for a fresh container).
+        None: If the response format is unrecognizable (refuse to seed).
+    """
+    if isinstance(list_result, list):
+        return list_result
+    if isinstance(list_result, dict):
+        # Gateway wraps in {"details": {"jobs": [...]}} or {"jobs": [...]}
+        inner = list_result.get("details", list_result)
+        if isinstance(inner, dict):
+            jobs = inner.get("jobs")
+            if isinstance(jobs, list):
+                return jobs
+        jobs = list_result.get("jobs")
+        if isinstance(jobs, list):
+            return jobs
+    return None  # Unrecognizable — do NOT assume empty
+
+
 def seed_cron_jobs(tenant: Tenant | str) -> dict:
     """Seed default cron jobs for a tenant through the Gateway API."""
     if isinstance(tenant, str):
@@ -412,16 +434,26 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
     if list_result is None:
         raise RuntimeError(f"Failed to list cron jobs for tenant {tenant_id}")
 
-    existing_jobs = []
-    # Gateway wraps cron.list result in {"details": {"jobs": [...]}} — unwrap it.
-    if isinstance(list_result, dict):
-        inner = list_result.get("details", list_result)
-        if isinstance(inner, dict) and isinstance(inner.get("jobs", []), list):
-            existing_jobs = inner.get("jobs", [])
-        elif isinstance(list_result.get("jobs", []), list):
-            existing_jobs = list_result.get("jobs", [])
-    elif isinstance(list_result, list):
-        existing_jobs = list_result
+    existing_jobs = _extract_cron_jobs(list_result)
+
+    # If we got a valid response (even empty list), trust it.
+    # If we got None (unparseable response), refuse to seed — safer to skip
+    # than to create duplicates.
+    if existing_jobs is None:
+        logger.warning(
+            "seed_cron_jobs: tenant %s — could not parse cron.list response, "
+            "refusing to seed (would create duplicates). Response: %s",
+            tenant_id,
+            repr(list_result)[:200],
+        )
+        return {
+            "tenant_id": tenant_id,
+            "jobs_total": len(jobs),
+            "created": 0,
+            "errors": 0,
+            "skipped": True,
+            "reason": "unparseable_cron_list",
+        }
 
     if existing_jobs:
         logger.info(
