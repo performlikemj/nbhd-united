@@ -68,6 +68,9 @@ TASK_MAP = {
     "force_reseed_crons": "apps.orchestrator.tasks.force_reseed_crons_task",
     # Hibernate suspended containers (one-off cleanup)
     "hibernate_suspended": "apps.orchestrator.tasks.hibernate_suspended_task",
+    # Per-tenant config/image updates (enqueued by apply-pending-configs)
+    "apply_single_tenant_config": "apps.orchestrator.tasks.apply_single_tenant_config_task",
+    "apply_single_tenant_image": "apps.orchestrator.tasks.apply_single_tenant_image_task",
 }
 
 
@@ -223,25 +226,24 @@ def apply_pending_configs(request):
     )
     evaluated = query.count()
 
-    updated = 0
-    failed = 0
+    # Publish individual QStash tasks instead of processing synchronously.
+    # This prevents the web worker from blocking tool calls for all tenants.
+    from apps.cron.publish import publish_task
+
+    config_enqueued = 0
+    config_failed = 0
     for tenant in query:
         try:
-            update_tenant_config(str(tenant.id))
+            publish_task("apply_single_tenant_config", str(tenant.id))
+            config_enqueued += 1
         except Exception:
-            logger.exception("Auto apply config failed for tenant %s", tenant.id)
-            failed += 1
-            continue
-
-        now = timezone.now()
-        Tenant.objects.filter(id=tenant.id).update(
-            config_version=models.F("pending_config_version"),
-            config_refreshed_at=now,
-        )
-        updated += 1
+            logger.exception(
+                "Failed to enqueue config update for tenant %s", tenant.id
+            )
+            config_failed += 1
 
     desired_tag = getattr(settings, "OPENCLAW_IMAGE_TAG", "latest")
-    image_updated = 0
+    image_enqueued = 0
     image_failed = 0
     if desired_tag and desired_tag != "latest":
         stale_image_tenants = Tenant.objects.filter(
@@ -252,17 +254,19 @@ def apply_pending_configs(request):
         ).filter(
             models.Q(last_message_at__isnull=True) | models.Q(last_message_at__lt=cutoff),
         )
-        desired_image = f"{settings.AZURE_ACR_SERVER}/nbhd-openclaw:{desired_tag}"
 
         for tenant in stale_image_tenants:
             try:
-                update_container_image(tenant.container_id, desired_image)
-                Tenant.objects.filter(id=tenant.id).update(
-                    container_image_tag=desired_tag,
+                publish_task(
+                    "apply_single_tenant_image",
+                    str(tenant.id),
+                    desired_tag,
                 )
-                image_updated += 1
+                image_enqueued += 1
             except Exception:
-                logger.exception("Auto image update failed for tenant %s", tenant.id)
+                logger.exception(
+                    "Failed to enqueue image update for tenant %s", tenant.id
+                )
                 image_failed += 1
 
     # Re-seed cron jobs for active tenants that have none.
@@ -290,10 +294,10 @@ def apply_pending_configs(request):
             logger.exception("Cron re-seed failed for tenant %s", tenant.id)
 
     return JsonResponse({
-        "updated": updated,
-        "failed": failed,
+        "config_enqueued": config_enqueued,
+        "config_failed": config_failed,
         "evaluated": evaluated,
-        "image_updated": image_updated,
+        "image_enqueued": image_enqueued,
         "image_failed": image_failed,
         "cron_seeded": cron_seeded,
         "cron_seed_failed": cron_seed_failed,
