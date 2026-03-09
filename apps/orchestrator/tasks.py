@@ -54,6 +54,61 @@ def hibernate_suspended_task() -> dict:
     return {"hibernated": hibernated, "failed": failed, "total": tenants.count()}
 
 
+def apply_single_tenant_config_task(tenant_id: str) -> None:
+    """Apply pending config for a single tenant (enqueued by apply-pending-configs).
+
+    Updates the tenant's OpenClaw config and bumps config_version.
+    """
+    import logging
+    from django.db import models as db_models
+    from django.utils import timezone as tz
+    from apps.tenants.models import Tenant
+
+    logger = logging.getLogger(__name__)
+
+    tenant = Tenant.objects.filter(id=tenant_id).first()
+    if not tenant:
+        return
+
+    # Skip if no longer pending
+    if tenant.config_version >= tenant.pending_config_version:
+        return
+
+    try:
+        update_tenant_config(tenant_id)
+    except Exception:
+        logger.exception("apply_single_tenant_config failed for %s", tenant_id)
+        return
+
+    Tenant.objects.filter(id=tenant_id).update(
+        config_version=db_models.F("pending_config_version"),
+        config_refreshed_at=tz.now(),
+    )
+
+
+def apply_single_tenant_image_task(tenant_id: str, desired_tag: str) -> None:
+    """Update a single tenant's container image (enqueued by apply-pending-configs)."""
+    import logging
+    from django.conf import settings as django_settings
+    from apps.tenants.models import Tenant
+    from apps.orchestrator.azure_client import update_container_image
+
+    logger = logging.getLogger(__name__)
+
+    tenant = Tenant.objects.filter(id=tenant_id).first()
+    if not tenant or not tenant.container_id:
+        return
+
+    desired_image = f"{django_settings.AZURE_ACR_SERVER}/nbhd-openclaw:{desired_tag}"
+    try:
+        update_container_image(tenant.container_id, desired_image)
+        Tenant.objects.filter(id=tenant_id).update(
+            container_image_tag=desired_tag,
+        )
+    except Exception:
+        logger.exception("apply_single_tenant_image failed for %s", tenant_id)
+
+
 def force_reseed_crons_task() -> dict:
     """Delete and recreate cron jobs for all active tenants.
 
