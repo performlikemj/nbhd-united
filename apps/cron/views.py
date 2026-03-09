@@ -271,29 +271,22 @@ def apply_pending_configs(request):
                 )
                 image_failed += 1
 
-    # Re-seed cron jobs for active tenants that have none.
-    cron_seeded = 0
+    # Re-seed cron jobs via QStash (non-blocking).
+    cron_seed_enqueued = 0
     cron_seed_failed = 0
-    from apps.orchestrator.services import seed_cron_jobs
 
     active_tenants_with_containers = Tenant.objects.filter(
         status=Tenant.Status.ACTIVE,
         container_id__gt="",
-    ).select_related("user")
+    ).values_list("id", flat=True)
 
-    for tenant in active_tenants_with_containers:
+    for tenant_id in active_tenants_with_containers:
         try:
-            result = seed_cron_jobs(tenant)
-            if result.get("created", 0) > 0:
-                cron_seeded += 1
-                logger.info(
-                    "Re-seeded %d cron jobs for tenant %s",
-                    result["created"],
-                    tenant.id,
-                )
+            publish_task("seed_cron_jobs", str(tenant_id))
+            cron_seed_enqueued += 1
         except Exception:
             cron_seed_failed += 1
-            logger.exception("Cron re-seed failed for tenant %s", tenant.id)
+            logger.exception("Failed to enqueue cron seed for tenant %s", tenant_id)
 
     return JsonResponse({
         "config_enqueued": config_enqueued,
@@ -301,7 +294,7 @@ def apply_pending_configs(request):
         "evaluated": evaluated,
         "image_enqueued": image_enqueued,
         "image_failed": image_failed,
-        "cron_seeded": cron_seeded,
+        "cron_seed_enqueued": cron_seed_enqueued,
         "cron_seed_failed": cron_seed_failed,
     })
 
