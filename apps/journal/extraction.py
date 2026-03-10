@@ -20,6 +20,7 @@ from django.utils import timezone
 from apps.billing.services import record_usage
 from apps.journal.models import DailyNote, Document, PendingExtraction
 from apps.lessons.models import Lesson
+from apps.router.extraction_callbacks import _approve_goal, _approve_lesson, _approve_task
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -169,128 +170,90 @@ def _send_telegram_with_buttons(
         return None
 
 
-def _deliver_lesson(bot_token: str, chat_id: int, pending: PendingExtraction) -> None:
-    text = (
-        f"💡 *Something worth remembering:*\n\n"
-        f'"{pending.text}"'
-    )
-    buttons = [[
-        {"text": "✅ Add to constellation", "callback_data": f"extract:approve_lesson:{pending.id}"},
-        {"text": "❌ Skip", "callback_data": f"extract:dismiss:{pending.id}"},
-    ]]
+def _deliver_summary_telegram(
+    bot_token: str, chat_id: int, items: list[PendingExtraction],
+) -> None:
+    """Send ONE summary message with per-item Remove buttons."""
+    kind_emoji = {"lesson": "💡", "goal": "🎯", "task": "✅"}
+    lines = ["From today's notes, I added:\n"]
+    buttons: list[list[dict]] = []
+
+    for p in items:
+        emoji = kind_emoji.get(p.kind, "•")
+        lines.append(f"{emoji} {p.text}")
+        undo_action = f"undo_{p.kind}"
+        # Telegram callback_data max is 64 bytes
+        buttons.append([{
+            "text": f"Remove: {p.text[:30]}",
+            "callback_data": f"extract:{undo_action}:{p.id}",
+        }])
+
+    lines.append("\nTap Remove to undo any item.")
+    text = "\n".join(lines)
+
     msg_id = _send_telegram_with_buttons(bot_token, chat_id, text, buttons)
     if msg_id:
-        pending.telegram_message_id = str(msg_id)
-        pending.save(update_fields=["telegram_message_id"])
-
-
-def _deliver_goal(bot_token: str, chat_id: int, pending: PendingExtraction) -> None:
-    text = (
-        f"🎯 *Noticed a new goal:*\n\n"
-        f'"{pending.text}"'
-    )
-    buttons = [[
-        {"text": "✅ Add to goals", "callback_data": f"extract:approve_goal:{pending.id}"},
-        {"text": "❌ Skip", "callback_data": f"extract:dismiss:{pending.id}"},
-    ]]
-    msg_id = _send_telegram_with_buttons(bot_token, chat_id, text, buttons)
-    if msg_id:
-        pending.telegram_message_id = str(msg_id)
-        pending.save(update_fields=["telegram_message_id"])
-
-
-def _deliver_task(bot_token: str, chat_id: int, pending: PendingExtraction) -> None:
-    text = (
-        f"✅ *Action item detected:*\n\n"
-        f'"{pending.text}"'
-    )
-    buttons = [[
-        {"text": "✅ Add to tasks", "callback_data": f"extract:approve_task:{pending.id}"},
-        {"text": "❌ Skip", "callback_data": f"extract:dismiss:{pending.id}"},
-    ]]
-    msg_id = _send_telegram_with_buttons(bot_token, chat_id, text, buttons)
-    if msg_id:
-        pending.telegram_message_id = str(msg_id)
-        pending.save(update_fields=["telegram_message_id"])
+        msg_id_str = str(msg_id)
+        for p in items:
+            p.telegram_message_id = msg_id_str
+        PendingExtraction.objects.bulk_update(items, ["telegram_message_id"])
 
 
 # ── LINE delivery ────────────────────────────────────────────────────────────
 
-def _send_line_with_buttons(
-    channel_token: str,
-    line_user_id: str,
-    text: str,
-    buttons: list[dict],
-) -> bool:
-    """Send a LINE Flex Message with postback buttons. Returns True on success."""
-    # Split header and quoted body for visual hierarchy
-    parts = text.split("\n\n", 1)
-    header_text = parts[0].strip()
-    body_text = parts[1].strip() if len(parts) > 1 else ""
+def _deliver_summary_line(
+    channel_token: str, line_user_id: str, items: list[PendingExtraction],
+) -> None:
+    """Send a Flex Message carousel — one bubble per item with a Remove button."""
+    kind_emoji = {"lesson": "💡", "goal": "🎯", "task": "✅"}
+    bubbles = []
 
-    body_contents: list[dict] = [
-        {
-            "type": "text",
-            "text": header_text,
-            "wrap": True,
-            "size": "sm",
-            "weight": "bold",
-            "color": "#12232c",
-        },
-    ]
-    if body_text:
-        body_contents.append({
-            "type": "text",
-            "text": body_text,
-            "wrap": True,
-            "size": "sm",
-            "color": "#3d4f58",
-            "margin": "md",
-        })
-
-    # Build button labels: strip emoji prefix for LINE label (20 char limit)
-    # but keep displayText with emoji for the chat bubble
-    def _clean_label(raw: str) -> str:
-        """Strip leading emoji for LINE's 20-char label limit."""
-        cleaned = re.sub(r"^[^\w]*", "", raw).strip()
-        return cleaned[:20] if cleaned else raw[:20]
-
-    flex_content = {
-        "type": "bubble",
-        "size": "kilo",
-        "styles": {
-            "body": {"backgroundColor": "#f6f4ee"},
-            "footer": {"backgroundColor": "#f6f4ee"},
-        },
-        "body": {
-            "type": "box",
-            "layout": "vertical",
-            "paddingAll": "16px",
-            "contents": body_contents,
-        },
-        "footer": {
-            "type": "box",
-            "layout": "horizontal",
-            "spacing": "sm",
-            "paddingAll": "12px",
-            "paddingTop": "0px",
-            "contents": [
-                {
+    for p in items[:10]:  # LINE carousel max 10 bubbles
+        emoji = kind_emoji.get(p.kind, "•")
+        undo_action = f"undo_{p.kind}"
+        label = re.sub(r"^[^\w]*", "", "Remove").strip()[:20]
+        bubbles.append({
+            "type": "bubble",
+            "size": "kilo",
+            "styles": {
+                "body": {"backgroundColor": "#f6f4ee"},
+                "footer": {"backgroundColor": "#f6f4ee"},
+            },
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "paddingAll": "16px",
+                "contents": [{
+                    "type": "text",
+                    "text": f"{emoji} {p.text[:120]}",
+                    "wrap": True,
+                    "size": "sm",
+                    "color": "#12232c",
+                }],
+            },
+            "footer": {
+                "type": "box",
+                "layout": "horizontal",
+                "spacing": "sm",
+                "paddingAll": "12px",
+                "paddingTop": "0px",
+                "contents": [{
                     "type": "button",
-                    "style": "primary" if i == 0 else "secondary",
+                    "style": "secondary",
                     "height": "sm",
-                    **({"color": "#0D9488"} if i == 0 else {}),
                     "action": {
                         "type": "postback",
-                        "label": _clean_label(btn["text"]),
-                        "data": btn["callback_data"],
-                        "displayText": btn["text"],
+                        "label": label,
+                        "data": f"extract:{undo_action}:{p.id}",
+                        "displayText": f"Remove: {p.text[:30]}",
                     },
-                }
-                for i, btn in enumerate(buttons)
-            ],
-        },
-    }
+                }],
+            },
+        })
+
+    if not bubbles:
+        return
+
     try:
         resp = requests.post(
             LINE_PUSH_URL,
@@ -298,8 +261,8 @@ def _send_line_with_buttons(
                 "to": line_user_id,
                 "messages": [{
                     "type": "flex",
-                    "altText": text[:40],
-                    "contents": flex_content,
+                    "altText": "From today's notes, I added some items. Tap to undo.",
+                    "contents": {"type": "carousel", "contents": bubbles},
                 }],
             },
             headers={
@@ -310,35 +273,12 @@ def _send_line_with_buttons(
         )
         if resp.status_code != 200:
             logger.warning(
-                "LINE extraction push failed (%s): %s",
+                "LINE extraction summary push failed (%s): %s",
                 resp.status_code,
                 resp.text[:300],
             )
-        return resp.status_code == 200
     except Exception:
-        logger.exception("Failed to send extraction LINE message user_id=%s", line_user_id)
-        return False
-
-
-def _deliver_lesson_line(channel_token: str, line_user_id: str, pending: PendingExtraction) -> None:
-    _send_line_with_buttons(channel_token, line_user_id, f'Something worth remembering:\n\n"{pending.text}"', [
-        {"text": "✅ Add to constellation", "callback_data": f"extract:approve_lesson:{pending.id}"},
-        {"text": "❌ Skip", "callback_data": f"extract:dismiss:{pending.id}"},
-    ])
-
-
-def _deliver_goal_line(channel_token: str, line_user_id: str, pending: PendingExtraction) -> None:
-    _send_line_with_buttons(channel_token, line_user_id, f'Noticed a new goal:\n\n"{pending.text}"', [
-        {"text": "✅ Add to goals", "callback_data": f"extract:approve_goal:{pending.id}"},
-        {"text": "❌ Skip", "callback_data": f"extract:dismiss:{pending.id}"},
-    ])
-
-
-def _deliver_task_line(channel_token: str, line_user_id: str, pending: PendingExtraction) -> None:
-    _send_line_with_buttons(channel_token, line_user_id, f'Action item detected:\n\n"{pending.text}"', [
-        {"text": "✅ Add to tasks", "callback_data": f"extract:approve_task:{pending.id}"},
-        {"text": "❌ Skip", "callback_data": f"extract:dismiss:{pending.id}"},
-    ])
+        logger.exception("Failed to send extraction LINE summary user_id=%s", line_user_id)
 
 
 # ── Channel resolution ───────────────────────────────────────────────────────
@@ -416,9 +356,11 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
     )
 
     expires_at = timezone.now() + timedelta(days=7)
+    now = timezone.now()
     counts = {"lessons": 0, "goals": 0, "tasks": 0}
+    added_items: list[PendingExtraction] = []
 
-    # Process lessons
+    # Process lessons — auto-add immediately
     for item in extracted.get("lessons", []):
         text = (item.get("text") or "").strip()
         if not text or len(text) < 20:
@@ -434,14 +376,17 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
             tags=item.get("tags", []),
             confidence=item.get("confidence", "medium"),
             expires_at=expires_at,
+            status=PendingExtraction.Status.APPROVED,
+            resolved_at=now,
         )
-        if channel == "telegram":
-            _deliver_lesson(channel_token, recipient_id, pending)
-        else:
-            _deliver_lesson_line(channel_token, recipient_id, pending)
+        _, lesson_id = _approve_lesson(pending)
+        if lesson_id:
+            pending.lesson_id = lesson_id
+            pending.save(update_fields=["lesson_id"])
+        added_items.append(pending)
         counts["lessons"] += 1
 
-    # Process goals
+    # Process goals — auto-add immediately
     for item in extracted.get("goals", []):
         text = (item.get("text") or "").strip()
         if not text or len(text) < 20:
@@ -454,14 +399,14 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
             text=text,
             confidence=item.get("confidence", "medium"),
             expires_at=expires_at,
+            status=PendingExtraction.Status.APPROVED,
+            resolved_at=now,
         )
-        if channel == "telegram":
-            _deliver_goal(channel_token, recipient_id, pending)
-        else:
-            _deliver_goal_line(channel_token, recipient_id, pending)
+        _approve_goal(pending)
+        added_items.append(pending)
         counts["goals"] += 1
 
-    # Process tasks
+    # Process tasks — auto-add immediately
     for item in extracted.get("tasks", []):
         text = (item.get("text") or "").strip()
         if not text or len(text) < 10:
@@ -474,12 +419,19 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
             text=text,
             confidence=item.get("confidence", "medium"),
             expires_at=expires_at,
+            status=PendingExtraction.Status.APPROVED,
+            resolved_at=now,
         )
-        if channel == "telegram":
-            _deliver_task(channel_token, recipient_id, pending)
-        else:
-            _deliver_task_line(channel_token, recipient_id, pending)
+        _approve_task(pending)
+        added_items.append(pending)
         counts["tasks"] += 1
+
+    # Send ONE summary message with undo buttons
+    if added_items:
+        if channel == "telegram":
+            _deliver_summary_telegram(channel_token, recipient_id, added_items)
+        else:
+            _deliver_summary_line(channel_token, recipient_id, added_items)
 
     logger.info(
         "extraction: tenant=%s lessons=%d goals=%d tasks=%d",

@@ -191,6 +191,7 @@ class PendingExtraction(models.Model):
         APPROVED = "approved", "Approved"
         DISMISSED = "dismissed", "Dismissed"
         EXPIRED = "expired", "Expired"
+        UNDONE = "undone", "Undone"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="pending_extractions")
@@ -201,6 +202,7 @@ class PendingExtraction(models.Model):
     source_date = models.DateField(null=True, blank=True)          # date of daily note extracted from
     expires_at = models.DateTimeField()
     telegram_message_id = models.CharField(max_length=64, blank=True)
+    lesson_id = models.BigIntegerField(null=True, blank=True)
 
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
     resolved_at = models.DateTimeField(null=True, blank=True)
