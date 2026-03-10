@@ -754,6 +754,11 @@ def broadcast_message(request):
     if not message:
         return JsonResponse({"error": "message is required"}, status=400)
 
+    # Idempotency key: caller can supply one, or we generate from message hash.
+    # QStash deduplicates messages with the same key within ~5 minutes.
+    import hashlib
+    broadcast_key = body.get("idempotency_key") or hashlib.sha256(message.encode()).hexdigest()[:16]
+
     from apps.cron.publish import publish_task
 
     tenants = Tenant.objects.filter(
@@ -766,7 +771,10 @@ def broadcast_message(request):
     failed = 0
     for tenant in tenants:
         try:
-            publish_task("broadcast_single_tenant", str(tenant.id), message)
+            # Per-tenant idempotency key prevents double-delivery if endpoint is
+            # called multiple times with the same message (e.g. retries).
+            tenant_key = f"{broadcast_key}-{str(tenant.id)[:8]}"
+            publish_task("broadcast_single_tenant", str(tenant.id), message, idempotency_key=tenant_key)
             enqueued += 1
         except Exception:
             logger.exception("Failed to enqueue broadcast for tenant %s", tenant.id)
