@@ -196,7 +196,7 @@ def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
         return
 
     try:
-        invoke_gateway_tool(tenant, "chat.send", {"message": message})
+        invoke_gateway_tool(tenant, "send", {"message": message})
         logger.info("Broadcast sent to tenant %s", tenant_id[:8])
     except GatewayError as e:
         logger.error("Broadcast failed for tenant %s: %s", tenant_id[:8], e)
