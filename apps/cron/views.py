@@ -272,20 +272,23 @@ def apply_pending_configs(request):
         cron_seed_count += 1
 
     # Single batch publish — one HTTP call instead of ~51 serial ones.
+    # Batch is all-or-nothing: either all tasks are enqueued or none are.
     try:
         enqueued = publish_batch(batch_tasks)
     except Exception:
         logger.exception("Batch publish failed for apply-pending-configs")
         enqueued = 0
 
+    success = enqueued == len(batch_tasks) if batch_tasks else True
+
     return JsonResponse({
-        "config_enqueued": config_count,
-        "config_failed": 0,
+        "config_enqueued": config_count if success else 0,
+        "config_failed": 0 if success else config_count,
         "evaluated": evaluated,
-        "image_enqueued": image_count,
-        "image_failed": 0,
-        "cron_seed_enqueued": cron_seed_count,
-        "cron_seed_failed": 0,
+        "image_enqueued": image_count if success else 0,
+        "image_failed": 0 if success else image_count,
+        "cron_seed_enqueued": cron_seed_count if success else 0,
+        "cron_seed_failed": 0 if success else cron_seed_count,
         "batch_total": len(batch_tasks),
         "batch_enqueued": enqueued,
     })
@@ -749,7 +752,7 @@ def broadcast_message(request):
     import hashlib
     broadcast_key = body.get("idempotency_key") or hashlib.sha256(message.encode()).hexdigest()[:16]
 
-    from apps.cron.publish import publish_task
+    from apps.cron.publish import publish_batch
 
     tenants = Tenant.objects.filter(
         status=Tenant.Status.ACTIVE,
@@ -757,14 +760,16 @@ def broadcast_message(request):
         container_fqdn__gt="",
     )
 
-    from apps.cron.publish import publish_batch
-
     batch_tasks = []
     for tenant in tenants:
+        # Per-tenant deduplication key prevents double-delivery if endpoint is
+        # called multiple times with the same message (e.g. QStash retries).
+        tenant_key = f"{broadcast_key}-{str(tenant.id)[:8]}"
         batch_tasks.append((
             "broadcast_single_tenant",
             (str(tenant.id), message),
             {},
+            tenant_key,
         ))
 
     try:
@@ -773,7 +778,8 @@ def broadcast_message(request):
         logger.exception("Batch publish failed for broadcast")
         enqueued = 0
 
-    return JsonResponse({"enqueued": enqueued, "failed": 0})
+    failed = len(batch_tasks) - enqueued
+    return JsonResponse({"enqueued": enqueued, "failed": failed})
 
 
 @csrf_exempt
@@ -790,15 +796,13 @@ def dedup_crons(request):
         if not (provided and deploy_secret and provided == deploy_secret):
             return JsonResponse({"error": "Invalid signature"}, status=401)
 
-    from apps.cron.publish import publish_task
+    from apps.cron.publish import publish_batch
 
     tenants = Tenant.objects.filter(
         status=Tenant.Status.ACTIVE,
         container_id__gt="",
         container_fqdn__gt="",
     )
-
-    from apps.cron.publish import publish_batch
 
     batch_tasks = [
         ("dedup_cron_jobs", (str(tenant.id),), {})

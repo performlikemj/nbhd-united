@@ -83,11 +83,12 @@ def publish_task(task_name: str, *args, idempotency_key: str | None = None, **kw
         raise
 
 
-def publish_batch(tasks: list[tuple[str, tuple, dict[str, Any]]]) -> int:
+def publish_batch(tasks: list[tuple[str, tuple, dict[str, Any]] | tuple[str, tuple, dict[str, Any], str]]) -> int:
     """
     Publish multiple tasks to QStash in a single HTTP call.
 
-    Each task is a tuple of (task_name, args, kwargs).  Uses QStash's
+    Each task is a tuple of ``(task_name, args, kwargs)`` or
+    ``(task_name, args, kwargs, deduplication_id)``.  Uses QStash's
     ``batch_json`` API to avoid serial HTTP calls that block the Django
     worker.
 
@@ -97,7 +98,7 @@ def publish_batch(tasks: list[tuple[str, tuple, dict[str, Any]]]) -> int:
 
         publish_batch([
             ("apply_single_tenant_config", (str(t.id),), {}),
-            ("seed_cron_jobs", (str(t.id),), {}),
+            ("broadcast_single_tenant", (str(t.id), msg), {}, "key-abc"),
         ])
     """
     if not tasks:
@@ -111,7 +112,8 @@ def publish_batch(tasks: list[tuple[str, tuple, dict[str, Any]]]) -> int:
         from .views import TASK_MAP, execute_task_sync
 
         count = 0
-        for task_name, args, kwargs in tasks:
+        for task in tasks:
+            task_name, args, kwargs = task[0], task[1], task[2]
             try:
                 task_path = TASK_MAP[task_name]
                 execute_task_sync(task_path, *args, **kwargs)
@@ -125,13 +127,18 @@ def publish_batch(tasks: list[tuple[str, tuple, dict[str, Any]]]) -> int:
 
         client = QStash(token=qstash_token)
         messages = []
-        for task_name, args, kwargs in tasks:
+        for task in tasks:
+            task_name, args, kwargs = task[0], task[1], task[2]
+            dedup_id = task[3] if len(task) > 3 else None
             url = f"{api_base_url}/api/cron/trigger/{task_name}/"
-            messages.append({
+            msg: dict[str, Any] = {
                 "url": url,
                 "body": {"args": list(args), "kwargs": kwargs},
                 "retries": 3,
-            })
+            }
+            if dedup_id:
+                msg["deduplication_id"] = dedup_id
+            messages.append(msg)
 
         results = client.message.batch_json(messages)
         logger.info("Batch published %d tasks to QStash", len(results))
