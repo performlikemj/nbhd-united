@@ -181,24 +181,50 @@ def force_reseed_crons_task() -> dict:
 def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
     """Send a one-off agent-driven message to a single tenant's user.
 
-    Sends the message directly into the agent's chat session via
-    chat.send. The agent processes the prompt and messages the user
-    via nbhd_send_to_user.
+    Posts directly to the container's /v1/chat/completions endpoint —
+    the same path used by the Telegram poller and LINE webhook.
+    The agent processes the prompt and messages the user via
+    nbhd_send_to_user.
     """
     import logging
+    import httpx
+    from django.conf import settings
     from apps.tenants.models import Tenant
-    from apps.cron.gateway_client import invoke_gateway_tool, GatewayError
 
     logger = logging.getLogger(__name__)
 
-    tenant = Tenant.objects.filter(id=tenant_id).first()
+    tenant = Tenant.objects.filter(id=tenant_id).select_related("user").first()
     if not tenant or not tenant.container_fqdn:
         return
 
+    url = f"https://{tenant.container_fqdn}/v1/chat/completions"
+    gateway_token = getattr(settings, "NBHD_INTERNAL_API_KEY", "").strip()
+    if not gateway_token:
+        from apps.orchestrator.azure_client import read_key_vault_secret
+        gateway_token = read_key_vault_secret("nbhd-internal-api-key") or ""
+
+    user_tz = getattr(tenant.user, "timezone", None) or "UTC"
+
     try:
-        invoke_gateway_tool(tenant, "send", {"message": message})
+        resp = httpx.post(
+            url,
+            json={
+                "model": "openclaw",
+                "messages": [{"role": "user", "content": message}],
+            },
+            headers={
+                "Authorization": f"Bearer {gateway_token}",
+                "X-User-Timezone": user_tz,
+            },
+            timeout=60.0,
+        )
+        resp.raise_for_status()
         logger.info("Broadcast sent to tenant %s", tenant_id[:8])
-    except GatewayError as e:
+    except httpx.TimeoutException:
+        logger.error("Broadcast timeout for tenant %s", tenant_id[:8])
+    except httpx.HTTPStatusError as e:
+        logger.error("Broadcast failed for tenant %s: %s %s", tenant_id[:8], e.response.status_code, e.response.text[:200])
+    except Exception as e:
         logger.error("Broadcast failed for tenant %s: %s", tenant_id[:8], e)
 
 
