@@ -122,20 +122,42 @@ class TestRunExtractionForTenant(TestCase):
         )
 
     @patch("apps.journal.extraction._call_extraction_llm", return_value=(MOCK_EXTRACTION_RESPONSE, {"prompt_tokens": 100, "completion_tokens": 50}))
-    @patch("apps.journal.extraction._send_telegram_with_buttons", return_value=1001)
+    @patch("apps.journal.extraction._deliver_summary_telegram")
     @patch("django.conf.settings.TELEGRAM_BOT_TOKEN", "test-token", create=True)
-    def test_creates_pending_extractions(self, mock_send, mock_llm):
+    def test_auto_adds_items(self, mock_summary, mock_llm):
         result = run_extraction_for_tenant(self.tenant)
         self.assertEqual(result["lessons"], 1)
         self.assertEqual(result["goals"], 1)
         self.assertEqual(result["tasks"], 1)
         self.assertIsNone(result["skipped"])
-        self.assertEqual(PendingExtraction.objects.filter(tenant=self.tenant).count(), 3)
+        # All items should be auto-approved
+        pendings = PendingExtraction.objects.filter(tenant=self.tenant)
+        self.assertEqual(pendings.count(), 3)
+        for p in pendings:
+            self.assertEqual(p.status, PendingExtraction.Status.APPROVED)
+        # Lesson should be created immediately
+        self.assertTrue(Lesson.objects.filter(tenant=self.tenant).exists())
+        # Goals doc should exist with content
+        doc = Document.objects.get(tenant=self.tenant, kind=Document.Kind.GOAL, slug="goals")
+        self.assertIn("first paying", doc.markdown)
+        # Tasks doc should exist with content
+        doc = Document.objects.get(tenant=self.tenant, kind=Document.Kind.TASKS, slug="tasks")
+        self.assertIn("IFSI compliance", doc.markdown)
 
     @patch("apps.journal.extraction._call_extraction_llm", return_value=(MOCK_EXTRACTION_RESPONSE, {"prompt_tokens": 100, "completion_tokens": 50}))
-    @patch("apps.journal.extraction._send_telegram_with_buttons", return_value=1002)
+    @patch("apps.journal.extraction._deliver_summary_telegram")
     @patch("django.conf.settings.TELEGRAM_BOT_TOKEN", "test-token", create=True)
-    def test_deduplicates_on_second_run(self, mock_send, mock_llm):
+    def test_sends_one_summary_message(self, mock_summary, mock_llm):
+        run_extraction_for_tenant(self.tenant)
+        # Should be called exactly once with all items
+        mock_summary.assert_called_once()
+        items = mock_summary.call_args[0][2]
+        self.assertEqual(len(items), 3)
+
+    @patch("apps.journal.extraction._call_extraction_llm", return_value=(MOCK_EXTRACTION_RESPONSE, {"prompt_tokens": 100, "completion_tokens": 50}))
+    @patch("apps.journal.extraction._deliver_summary_telegram")
+    @patch("django.conf.settings.TELEGRAM_BOT_TOKEN", "test-token", create=True)
+    def test_deduplicates_on_second_run(self, mock_summary, mock_llm):
         run_extraction_for_tenant(self.tenant)
         result = run_extraction_for_tenant(self.tenant)
         # All 3 items should be deduped on second run
@@ -216,6 +238,8 @@ class TestExtractionCallbacks(TestCase):
         self.pending_lesson.refresh_from_db()
         self.assertEqual(self.pending_lesson.status, PendingExtraction.Status.APPROVED)
         self.assertTrue(Lesson.objects.filter(tenant=self.tenant).exists())
+        # lesson_id should be stored
+        self.assertIsNotNone(self.pending_lesson.lesson_id)
 
     @patch("apps.router.extraction_callbacks._edit_message")
     def test_dismiss(self, mock_edit):
@@ -224,3 +248,107 @@ class TestExtractionCallbacks(TestCase):
         handle_extraction_callback(update, self.tenant)
         self.pending_goal.refresh_from_db()
         self.assertEqual(self.pending_goal.status, PendingExtraction.Status.DISMISSED)
+
+
+class TestExtractionUndo(TestCase):
+    """Test undo flow: items are auto-added (APPROVED), user taps Remove to undo."""
+
+    def setUp(self):
+        self.tenant = make_tenant(chat_id=88888)
+
+    def _make_update(self, callback_data: str, message_id: int = 42) -> dict:
+        return {
+            "callback_query": {
+                "id": "cb456",
+                "data": callback_data,
+                "message": {"chat": {"id": 88888}, "message_id": message_id},
+            }
+        }
+
+    @patch("apps.router.extraction_callbacks._edit_message")
+    def test_undo_lesson_deletes_lesson(self, mock_edit):
+        from apps.router.extraction_callbacks import handle_extraction_callback, _approve_lesson
+
+        pending = PendingExtraction.objects.create(
+            tenant=self.tenant,
+            kind=PendingExtraction.Kind.LESSON,
+            text="QStash retries on 5xx — always soft-fail background tasks.",
+            status=PendingExtraction.Status.APPROVED,
+            resolved_at=timezone.now(),
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        # Simulate auto-add: create the lesson and store ID
+        _, lesson_id = _approve_lesson(pending)
+        pending.lesson_id = lesson_id
+        pending.save(update_fields=["lesson_id"])
+        self.assertTrue(Lesson.objects.filter(id=lesson_id).exists())
+
+        # Undo
+        update = self._make_update(f"extract:undo_lesson:{pending.id}")
+        handle_extraction_callback(update, self.tenant)
+        pending.refresh_from_db()
+        self.assertEqual(pending.status, PendingExtraction.Status.UNDONE)
+        self.assertFalse(Lesson.objects.filter(id=lesson_id).exists())
+
+    @patch("apps.router.extraction_callbacks._edit_message")
+    def test_undo_goal_removes_from_document(self, mock_edit):
+        from apps.router.extraction_callbacks import handle_extraction_callback, _approve_goal
+
+        pending = PendingExtraction.objects.create(
+            tenant=self.tenant,
+            kind=PendingExtraction.Kind.GOAL,
+            text="Get first paying subscriber",
+            status=PendingExtraction.Status.APPROVED,
+            resolved_at=timezone.now(),
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        _approve_goal(pending)
+        doc = Document.objects.get(tenant=self.tenant, kind=Document.Kind.GOAL, slug="goals")
+        self.assertIn("Get first paying subscriber", doc.markdown)
+
+        update = self._make_update(f"extract:undo_goal:{pending.id}")
+        handle_extraction_callback(update, self.tenant)
+        pending.refresh_from_db()
+        self.assertEqual(pending.status, PendingExtraction.Status.UNDONE)
+        doc.refresh_from_db()
+        self.assertNotIn("Get first paying subscriber", doc.markdown)
+
+    @patch("apps.router.extraction_callbacks._edit_message")
+    def test_undo_task_removes_from_document(self, mock_edit):
+        from apps.router.extraction_callbacks import handle_extraction_callback, _approve_task
+
+        pending = PendingExtraction.objects.create(
+            tenant=self.tenant,
+            kind=PendingExtraction.Kind.TASK,
+            text="Create GitHub issue for IFSI",
+            status=PendingExtraction.Status.APPROVED,
+            resolved_at=timezone.now(),
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        _approve_task(pending)
+        doc = Document.objects.get(tenant=self.tenant, kind=Document.Kind.TASKS, slug="tasks")
+        self.assertIn("GitHub issue for IFSI", doc.markdown)
+
+        update = self._make_update(f"extract:undo_task:{pending.id}")
+        handle_extraction_callback(update, self.tenant)
+        pending.refresh_from_db()
+        self.assertEqual(pending.status, PendingExtraction.Status.UNDONE)
+        doc.refresh_from_db()
+        self.assertNotIn("GitHub issue for IFSI", doc.markdown)
+
+    @patch("apps.router.extraction_callbacks._edit_message")
+    def test_undo_is_idempotent(self, mock_edit):
+        from apps.router.extraction_callbacks import handle_extraction_callback
+
+        pending = PendingExtraction.objects.create(
+            tenant=self.tenant,
+            kind=PendingExtraction.Kind.LESSON,
+            text="Already undone item test.",
+            status=PendingExtraction.Status.UNDONE,
+            resolved_at=timezone.now(),
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        update = self._make_update(f"extract:undo_lesson:{pending.id}")
+        resp = handle_extraction_callback(update, self.tenant)
+        # Should return "Already removed" without error
+        self.assertEqual(resp.status_code, 200)
