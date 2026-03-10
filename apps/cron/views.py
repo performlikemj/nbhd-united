@@ -68,6 +68,13 @@ TASK_MAP = {
     "force_reseed_crons": "apps.orchestrator.tasks.force_reseed_crons_task",
     # Hibernate suspended containers (one-off cleanup)
     "hibernate_suspended": "apps.orchestrator.tasks.hibernate_suspended_task",
+    # Per-tenant config/image updates (enqueued by apply-pending-configs)
+    "apply_single_tenant_config": "apps.orchestrator.tasks.apply_single_tenant_config_task",
+    "apply_single_tenant_image": "apps.orchestrator.tasks.apply_single_tenant_image_task",
+    # One-off broadcast (enqueued by broadcast-message)
+    "broadcast_single_tenant": "apps.orchestrator.tasks.broadcast_single_tenant_task",
+    # Cron dedup (enqueued by dedup-crons)
+    "dedup_cron_jobs": "apps.orchestrator.tasks.dedup_cron_jobs_task",
 }
 
 
@@ -223,25 +230,24 @@ def apply_pending_configs(request):
     )
     evaluated = query.count()
 
-    updated = 0
-    failed = 0
+    # Publish individual QStash tasks instead of processing synchronously.
+    # This prevents the web worker from blocking tool calls for all tenants.
+    from apps.cron.publish import publish_task
+
+    config_enqueued = 0
+    config_failed = 0
     for tenant in query:
         try:
-            update_tenant_config(str(tenant.id))
+            publish_task("apply_single_tenant_config", str(tenant.id))
+            config_enqueued += 1
         except Exception:
-            logger.exception("Auto apply config failed for tenant %s", tenant.id)
-            failed += 1
-            continue
-
-        now = timezone.now()
-        Tenant.objects.filter(id=tenant.id).update(
-            config_version=models.F("pending_config_version"),
-            config_refreshed_at=now,
-        )
-        updated += 1
+            logger.exception(
+                "Failed to enqueue config update for tenant %s", tenant.id
+            )
+            config_failed += 1
 
     desired_tag = getattr(settings, "OPENCLAW_IMAGE_TAG", "latest")
-    image_updated = 0
+    image_enqueued = 0
     image_failed = 0
     if desired_tag and desired_tag != "latest":
         stale_image_tenants = Tenant.objects.filter(
@@ -252,50 +258,45 @@ def apply_pending_configs(request):
         ).filter(
             models.Q(last_message_at__isnull=True) | models.Q(last_message_at__lt=cutoff),
         )
-        desired_image = f"{settings.AZURE_ACR_SERVER}/nbhd-openclaw:{desired_tag}"
 
         for tenant in stale_image_tenants:
             try:
-                update_container_image(tenant.container_id, desired_image)
-                Tenant.objects.filter(id=tenant.id).update(
-                    container_image_tag=desired_tag,
+                publish_task(
+                    "apply_single_tenant_image",
+                    str(tenant.id),
+                    desired_tag,
                 )
-                image_updated += 1
+                image_enqueued += 1
             except Exception:
-                logger.exception("Auto image update failed for tenant %s", tenant.id)
+                logger.exception(
+                    "Failed to enqueue image update for tenant %s", tenant.id
+                )
                 image_failed += 1
 
-    # Re-seed cron jobs for active tenants that have none.
-    cron_seeded = 0
+    # Re-seed cron jobs via QStash (non-blocking).
+    cron_seed_enqueued = 0
     cron_seed_failed = 0
-    from apps.orchestrator.services import seed_cron_jobs
 
     active_tenants_with_containers = Tenant.objects.filter(
         status=Tenant.Status.ACTIVE,
         container_id__gt="",
-    ).select_related("user")
+    ).values_list("id", flat=True)
 
-    for tenant in active_tenants_with_containers:
+    for tenant_id in active_tenants_with_containers:
         try:
-            result = seed_cron_jobs(tenant)
-            if result.get("created", 0) > 0:
-                cron_seeded += 1
-                logger.info(
-                    "Re-seeded %d cron jobs for tenant %s",
-                    result["created"],
-                    tenant.id,
-                )
+            publish_task("seed_cron_jobs", str(tenant_id))
+            cron_seed_enqueued += 1
         except Exception:
             cron_seed_failed += 1
-            logger.exception("Cron re-seed failed for tenant %s", tenant.id)
+            logger.exception("Failed to enqueue cron seed for tenant %s", tenant_id)
 
     return JsonResponse({
-        "updated": updated,
-        "failed": failed,
+        "config_enqueued": config_enqueued,
+        "config_failed": config_failed,
         "evaluated": evaluated,
-        "image_updated": image_updated,
+        "image_enqueued": image_enqueued,
         "image_failed": image_failed,
-        "cron_seeded": cron_seeded,
+        "cron_seed_enqueued": cron_seed_enqueued,
         "cron_seed_failed": cron_seed_failed,
     })
 
@@ -724,3 +725,94 @@ def run_backfill_lesson_embeddings(request):
 
     logger.info("backfill_lesson_embeddings: %d/%d processed, %d errors", processed, total, errors)
     return JsonResponse({"total": total, "processed": processed, "errors": errors})
+
+
+@csrf_exempt
+@require_POST
+def broadcast_message(request):
+    """Send a one-off message from each tenant's agent to their user.
+
+    URL: /api/cron/broadcast-message/
+    Body: {"message": "prompt text for the agent"}
+
+    The agent receives the prompt and uses nbhd_send_to_user to deliver it.
+    Each tenant is processed via QStash to avoid blocking the web worker.
+    """
+    if not verify_qstash_signature(request):
+        deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+        provided = request.headers.get("X-Deploy-Secret", "")
+        if not (provided and deploy_secret and provided == deploy_secret):
+            return JsonResponse({"error": "Invalid signature"}, status=401)
+
+    import json as _json
+    try:
+        body = _json.loads(request.body)
+    except (ValueError, _json.JSONDecodeError):
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+
+    message = body.get("message", "").strip()
+    if not message:
+        return JsonResponse({"error": "message is required"}, status=400)
+
+    # Idempotency key: caller can supply one, or we generate from message hash.
+    # QStash deduplicates messages with the same key within ~5 minutes.
+    import hashlib
+    broadcast_key = body.get("idempotency_key") or hashlib.sha256(message.encode()).hexdigest()[:16]
+
+    from apps.cron.publish import publish_task
+
+    tenants = Tenant.objects.filter(
+        status=Tenant.Status.ACTIVE,
+        container_id__gt="",
+        container_fqdn__gt="",
+    )
+
+    enqueued = 0
+    failed = 0
+    for tenant in tenants:
+        try:
+            # Per-tenant idempotency key prevents double-delivery if endpoint is
+            # called multiple times with the same message (e.g. retries).
+            tenant_key = f"{broadcast_key}-{str(tenant.id)[:8]}"
+            publish_task("broadcast_single_tenant", str(tenant.id), message, idempotency_key=tenant_key)
+            enqueued += 1
+        except Exception:
+            logger.exception("Failed to enqueue broadcast for tenant %s", tenant.id)
+            failed += 1
+
+    return JsonResponse({"enqueued": enqueued, "failed": failed})
+
+
+@csrf_exempt
+@require_POST
+def dedup_crons(request):
+    """Remove duplicate cron jobs from all active tenant containers.
+
+    URL: /api/cron/dedup-crons/
+    One-off cleanup endpoint. Fans out per-tenant via QStash.
+    """
+    if not verify_qstash_signature(request):
+        deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+        provided = request.headers.get("X-Deploy-Secret", "")
+        if not (provided and deploy_secret and provided == deploy_secret):
+            return JsonResponse({"error": "Invalid signature"}, status=401)
+
+    from apps.cron.publish import publish_task
+
+    tenants = Tenant.objects.filter(
+        status=Tenant.Status.ACTIVE,
+        container_id__gt="",
+        container_fqdn__gt="",
+    )
+
+    enqueued = 0
+    failed = 0
+    for tenant in tenants:
+        try:
+            publish_task("dedup_cron_jobs", str(tenant.id))
+            enqueued += 1
+        except Exception:
+            logger.exception("Failed to enqueue dedup for tenant %s", tenant.id)
+            failed += 1
+
+    return JsonResponse({"enqueued": enqueued, "failed": failed})

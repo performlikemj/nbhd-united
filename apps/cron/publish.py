@@ -23,7 +23,7 @@ def _publish_log_context(task_name: str, args, kwargs):
     return context
 
 
-def publish_task(task_name: str, *args, **kwargs):
+def publish_task(task_name: str, *args, idempotency_key: str | None = None, **kwargs):
     """
     Publish a one-off task to QStash for async execution.
 
@@ -32,6 +32,9 @@ def publish_task(task_name: str, *args, **kwargs):
 
     Args:
         task_name: URL-safe task name (must be in TASK_MAP).
+        idempotency_key: Optional key for QStash deduplication. QStash will
+            discard duplicate messages with the same key within a time window.
+            Use this for broadcast-style tasks to prevent double delivery.
         *args, **kwargs: Arguments passed to the task function.
     """
     qstash_token = getattr(settings, "QSTASH_TOKEN", "")
@@ -55,11 +58,15 @@ def publish_task(task_name: str, *args, **kwargs):
         client = QStash(token=qstash_token)
         url = f"{api_base_url}/api/cron/trigger/{task_name}/"
 
-        client.message.publish_json(
-            url=url,
-            body={"args": list(args), "kwargs": kwargs},
-            retries=3,
-        )
+        publish_kwargs: dict = {
+            "url": url,
+            "body": {"args": list(args), "kwargs": kwargs},
+            "retries": 3,
+        }
+        if idempotency_key:
+            publish_kwargs["deduplication_id"] = idempotency_key
+
+        client.message.publish_json(**publish_kwargs)
         logger.info(
             "Published task to QStash",
             extra={**log_context, "url": url},

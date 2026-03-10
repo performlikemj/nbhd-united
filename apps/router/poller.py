@@ -1236,12 +1236,24 @@ class TelegramPoller:
         # Record usage
         self._record_usage(tenant, result)
 
+    # Gateway error strings that should be treated as empty responses
+    _GATEWAY_ERROR_STRINGS = frozenset({
+        "No response from OpenClaw.",
+        "No response from OpenClaw",
+    })
+
     def _extract_ai_response(self, result: dict) -> str | None:
-        """Extract the AI response text from a chat completions response."""
+        """Extract the AI response text from a chat completions response.
+
+        Returns None if the response is empty or contains a gateway
+        error string (e.g. 'No response from OpenClaw.').
+        """
         try:
             choices = result.get("choices", [])
             if choices:
-                return choices[0].get("message", {}).get("content")
+                text = choices[0].get("message", {}).get("content")
+                if text and text.strip() not in self._GATEWAY_ERROR_STRINGS:
+                    return text
         except (IndexError, KeyError, TypeError):
             pass
         return None

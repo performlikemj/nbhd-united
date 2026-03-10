@@ -33,8 +33,8 @@ class ApplyPendingConfigsTest(TestCase):
         self.client = APIClient()
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    @patch("apps.cron.views.update_tenant_config")
-    def test_apply_pending_configs_updates_idle_tenants_only(self, mock_update, mock_verify):
+    @patch("apps.cron.publish.publish_task")
+    def test_apply_pending_configs_enqueues_idle_tenants_only(self, mock_publish, mock_verify):
         now = timezone.now()
         ready = _create_tenant_with_config_state(
             pending_config_version=2,
@@ -69,29 +69,26 @@ class ApplyPendingConfigsTest(TestCase):
             suffix=5,
         )
 
-        mock_update.side_effect = lambda tenant_id: None
-
         response = self.client.post("/api/v1/cron/apply-pending-configs/")
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["updated"], 2)
-        self.assertEqual(body["failed"], 0)
+        self.assertEqual(body["config_enqueued"], 2)
+        self.assertEqual(body["config_failed"], 0)
         self.assertEqual(body["evaluated"], 2)
-        self.assertEqual(mock_update.call_count, 2)
 
+        # Verify publish_task was called for each eligible tenant
+        config_calls = [
+            c for c in mock_publish.call_args_list
+            if c[0][0] == "apply_single_tenant_config"
+        ]
+        self.assertEqual(len(config_calls), 2)
+
+        # Config version NOT bumped yet — that happens in the async task
         ready.refresh_from_db()
         stale.refresh_from_db()
-        active_recent.refresh_from_db()
-        updated_pending.refresh_from_db()
-
-        self.assertEqual(ready.config_version, ready.pending_config_version)
-        self.assertIsNotNone(ready.config_refreshed_at)
-        self.assertEqual(stale.config_version, stale.pending_config_version)
-        self.assertIsNotNone(stale.config_refreshed_at)
-        self.assertEqual(active_recent.config_version, 1)
-        self.assertEqual(updated_pending.config_version, 1)
-        self.assertEqual(inactive.config_version, 0)
+        self.assertEqual(ready.config_version, 1)
+        self.assertEqual(stale.config_version, 1)
 
 
 class CronAuthTest(TestCase):

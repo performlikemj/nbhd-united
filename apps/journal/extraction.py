@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date, timedelta
 
 import requests
@@ -77,8 +78,11 @@ def _call_extraction_llm(content: str) -> tuple[dict, dict]:
     )
     resp.raise_for_status()
     data = resp.json()
-    raw = data["choices"][0]["message"]["content"]
+    raw = (data["choices"][0]["message"]["content"] or "").strip()
     usage = data.get("usage", {})
+    # Strip markdown code fences if present (Claude via OpenRouter may wrap JSON)
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     return json.loads(raw), usage
 
 
@@ -219,28 +223,68 @@ def _send_line_with_buttons(
     buttons: list[dict],
 ) -> bool:
     """Send a LINE Flex Message with postback buttons. Returns True on success."""
+    # Split header and quoted body for visual hierarchy
+    parts = text.split("\n\n", 1)
+    header_text = parts[0].strip()
+    body_text = parts[1].strip() if len(parts) > 1 else ""
+
+    body_contents: list[dict] = [
+        {
+            "type": "text",
+            "text": header_text,
+            "wrap": True,
+            "size": "sm",
+            "weight": "bold",
+            "color": "#12232c",
+        },
+    ]
+    if body_text:
+        body_contents.append({
+            "type": "text",
+            "text": body_text,
+            "wrap": True,
+            "size": "sm",
+            "color": "#3d4f58",
+            "margin": "md",
+        })
+
+    # Build button labels: strip emoji prefix for LINE label (20 char limit)
+    # but keep displayText with emoji for the chat bubble
+    def _clean_label(raw: str) -> str:
+        """Strip leading emoji for LINE's 20-char label limit."""
+        cleaned = re.sub(r"^[^\w]*", "", raw).strip()
+        return cleaned[:20] if cleaned else raw[:20]
+
     flex_content = {
         "type": "bubble",
+        "size": "kilo",
+        "styles": {
+            "body": {"backgroundColor": "#f6f4ee"},
+            "footer": {"backgroundColor": "#f6f4ee"},
+        },
         "body": {
             "type": "box",
             "layout": "vertical",
-            "contents": [
-                {"type": "text", "text": text, "wrap": True, "size": "md"},
-            ],
+            "paddingAll": "16px",
+            "contents": body_contents,
         },
         "footer": {
             "type": "box",
             "layout": "horizontal",
             "spacing": "sm",
+            "paddingAll": "12px",
+            "paddingTop": "0px",
             "contents": [
                 {
                     "type": "button",
                     "style": "primary" if i == 0 else "secondary",
+                    "height": "sm",
                     **({"color": "#0D9488"} if i == 0 else {}),
                     "action": {
                         "type": "postback",
-                        "label": btn["text"][:20],
+                        "label": _clean_label(btn["text"]),
                         "data": btn["callback_data"],
+                        "displayText": btn["text"],
                     },
                 }
                 for i, btn in enumerate(buttons)

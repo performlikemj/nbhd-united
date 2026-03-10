@@ -45,12 +45,10 @@ class ApplyPendingConfigsImageTests(TestCase):
         self.client = APIClient()
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    @patch("apps.cron.views.update_container_image")
-    @patch("apps.cron.views.update_tenant_config")
-    def test_apply_pending_configs_updates_stale_images_when_tag_set(
+    @patch("apps.cron.publish.publish_task")
+    def test_apply_pending_configs_enqueues_stale_images(
         self,
-        mock_update_tenant_config,
-        mock_update_container_image,
+        mock_publish,
         _mock_verify,
     ):
         now = timezone.now()
@@ -62,7 +60,6 @@ class ApplyPendingConfigsImageTests(TestCase):
             container_image_tag="oldtag",
         )
 
-        # image stale but no config updates needed
         tenant_image_only = _create_tenant_with_state(
             user_suffix=2,
             pending_config_version=0,
@@ -75,23 +72,27 @@ class ApplyPendingConfigsImageTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["updated"], 1)
-        self.assertEqual(body["image_updated"], 2)
+        self.assertEqual(body["config_enqueued"], 1)
+        self.assertEqual(body["image_enqueued"], 2)
         self.assertEqual(body["image_failed"], 0)
 
-        desired_image = "nbhdunited.azurecr.io/nbhd-openclaw:abc123"
-        self.assertEqual(mock_update_tenant_config.call_count, 1)
-        self.assertEqual(mock_update_container_image.call_count, 2)
-        mock_update_container_image.assert_any_call(tenant_stale_idle.container_id, desired_image)
-        mock_update_container_image.assert_any_call(tenant_image_only.container_id, desired_image)
+        # Check publish_task calls
+        config_calls = [
+            c for c in mock_publish.call_args_list
+            if c[0][0] == "apply_single_tenant_config"
+        ]
+        image_calls = [
+            c for c in mock_publish.call_args_list
+            if c[0][0] == "apply_single_tenant_image"
+        ]
+        self.assertEqual(len(config_calls), 1)
+        self.assertEqual(len(image_calls), 2)
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    @patch("apps.cron.views.update_container_image")
-    @patch("apps.cron.views.update_tenant_config")
-    def test_active_non_idle_tenants_are_not_image_updated(
+    @patch("apps.cron.publish.publish_task")
+    def test_active_non_idle_tenants_are_not_image_enqueued(
         self,
-        mock_update_tenant_config,
-        mock_update_container_image,
+        mock_publish,
         _mock_verify,
     ):
         now = timezone.now()
@@ -107,17 +108,19 @@ class ApplyPendingConfigsImageTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["image_updated"], 0)
-        mock_update_container_image.assert_not_called()
-        self.assertEqual(mock_update_tenant_config.call_count, 0)
+        self.assertEqual(body["image_enqueued"], 0)
+
+        image_calls = [
+            c for c in mock_publish.call_args_list
+            if c[0][0] == "apply_single_tenant_image"
+        ]
+        self.assertEqual(len(image_calls), 0)
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    @patch("apps.cron.views.update_container_image")
-    @patch("apps.cron.views.update_tenant_config")
+    @patch("apps.cron.publish.publish_task")
     def test_tenants_already_on_desired_tag_are_skipped(
         self,
-        mock_update_tenant_config,
-        mock_update_container_image,
+        mock_publish,
         _mock_verify,
     ):
         now = timezone.now()
@@ -133,39 +136,44 @@ class ApplyPendingConfigsImageTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["image_updated"], 0)
-        mock_update_container_image.assert_not_called()
-        self.assertEqual(mock_update_tenant_config.call_count, 0)
+        self.assertEqual(body["image_enqueued"], 0)
+
+        image_calls = [
+            c for c in mock_publish.call_args_list
+            if c[0][0] == "apply_single_tenant_image"
+        ]
+        self.assertEqual(len(image_calls), 0)
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    @patch("apps.cron.views.update_container_image")
-    @patch("apps.cron.views.update_tenant_config")
-    def test_image_update_failures_do_not_block_config_updates(
+    @patch("apps.cron.publish.publish_task")
+    def test_publish_failure_does_not_block_other_tenants(
         self,
-        mock_update_tenant_config,
-        mock_update_container_image,
+        mock_publish,
         _mock_verify,
     ):
         now = timezone.now()
-        tenant = _create_tenant_with_state(
+        _create_tenant_with_state(
             user_suffix=1,
             pending_config_version=1,
             config_version=0,
             last_message_at=now - timedelta(minutes=20),
             container_image_tag="oldtag",
         )
+        _create_tenant_with_state(
+            user_suffix=2,
+            pending_config_version=1,
+            config_version=0,
+            last_message_at=now - timedelta(minutes=20),
+            container_image_tag="oldtag",
+        )
 
-        # image update fails but config update succeeds
-        mock_update_container_image.side_effect = Exception("revision failed")
+        # First call fails, second succeeds
+        mock_publish.side_effect = [Exception("QStash down"), None, None, None]
 
         response = self.client.post("/api/v1/cron/apply-pending-configs/")
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["updated"], 1)
-        self.assertEqual(body["failed"], 0)
-        self.assertEqual(body["image_updated"], 0)
-        self.assertEqual(body["image_failed"], 1)
-        mock_update_tenant_config.assert_called_once_with(str(tenant.id))
-        tenant.refresh_from_db()
-        self.assertEqual(tenant.container_image_tag, "oldtag")
+        # One config failed, one succeeded
+        self.assertEqual(body["config_enqueued"], 1)
+        self.assertEqual(body["config_failed"], 1)
