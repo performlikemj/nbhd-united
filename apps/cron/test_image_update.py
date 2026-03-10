@@ -39,16 +39,24 @@ def _create_tenant_with_state(
     return tenant
 
 
+def _extract_batch_tasks(mock_batch, task_name):
+    """Extract tasks of a given name from publish_batch mock calls."""
+    if not mock_batch.call_args:
+        return []
+    batch_tasks = mock_batch.call_args[0][0]
+    return [t for t in batch_tasks if t[0] == task_name]
+
+
 @override_settings(OPENCLAW_IMAGE_TAG="abc123", AZURE_ACR_SERVER="nbhdunited.azurecr.io")
 class ApplyPendingConfigsImageTests(TestCase):
     def setUp(self):
         self.client = APIClient()
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    @patch("apps.cron.publish.publish_task")
+    @patch("apps.cron.publish.publish_batch", return_value=0)
     def test_apply_pending_configs_enqueues_stale_images(
         self,
-        mock_publish,
+        mock_batch,
         _mock_verify,
     ):
         now = timezone.now()
@@ -76,23 +84,16 @@ class ApplyPendingConfigsImageTests(TestCase):
         self.assertEqual(body["image_enqueued"], 2)
         self.assertEqual(body["image_failed"], 0)
 
-        # Check publish_task calls
-        config_calls = [
-            c for c in mock_publish.call_args_list
-            if c[0][0] == "apply_single_tenant_config"
-        ]
-        image_calls = [
-            c for c in mock_publish.call_args_list
-            if c[0][0] == "apply_single_tenant_image"
-        ]
+        config_calls = _extract_batch_tasks(mock_batch, "apply_single_tenant_config")
+        image_calls = _extract_batch_tasks(mock_batch, "apply_single_tenant_image")
         self.assertEqual(len(config_calls), 1)
         self.assertEqual(len(image_calls), 2)
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    @patch("apps.cron.publish.publish_task")
+    @patch("apps.cron.publish.publish_batch", return_value=0)
     def test_active_non_idle_tenants_are_not_image_enqueued(
         self,
-        mock_publish,
+        mock_batch,
         _mock_verify,
     ):
         now = timezone.now()
@@ -110,17 +111,14 @@ class ApplyPendingConfigsImageTests(TestCase):
         body = response.json()
         self.assertEqual(body["image_enqueued"], 0)
 
-        image_calls = [
-            c for c in mock_publish.call_args_list
-            if c[0][0] == "apply_single_tenant_image"
-        ]
+        image_calls = _extract_batch_tasks(mock_batch, "apply_single_tenant_image")
         self.assertEqual(len(image_calls), 0)
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    @patch("apps.cron.publish.publish_task")
+    @patch("apps.cron.publish.publish_batch", return_value=0)
     def test_tenants_already_on_desired_tag_are_skipped(
         self,
-        mock_publish,
+        mock_batch,
         _mock_verify,
     ):
         now = timezone.now()
@@ -138,17 +136,14 @@ class ApplyPendingConfigsImageTests(TestCase):
         body = response.json()
         self.assertEqual(body["image_enqueued"], 0)
 
-        image_calls = [
-            c for c in mock_publish.call_args_list
-            if c[0][0] == "apply_single_tenant_image"
-        ]
+        image_calls = _extract_batch_tasks(mock_batch, "apply_single_tenant_image")
         self.assertEqual(len(image_calls), 0)
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    @patch("apps.cron.publish.publish_task")
+    @patch("apps.cron.publish.publish_batch", return_value=0)
     def test_publish_failure_does_not_block_other_tenants(
         self,
-        mock_publish,
+        mock_batch,
         _mock_verify,
     ):
         now = timezone.now()
@@ -167,13 +162,11 @@ class ApplyPendingConfigsImageTests(TestCase):
             container_image_tag="oldtag",
         )
 
-        # First call fails, second succeeds
-        mock_publish.side_effect = [Exception("QStash down"), None, None, None]
-
         response = self.client.post("/api/v1/cron/apply-pending-configs/")
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        # One config failed, one succeeded
-        self.assertEqual(body["config_enqueued"], 1)
-        self.assertEqual(body["config_failed"], 1)
+        # With batch, all tasks are collected then published together.
+        # Both config updates should be in the batch.
+        self.assertEqual(body["config_enqueued"], 2)
+        self.assertEqual(body["config_failed"], 0)
