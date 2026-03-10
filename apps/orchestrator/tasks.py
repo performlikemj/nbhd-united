@@ -216,7 +216,7 @@ def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
                 "Authorization": f"Bearer {gateway_token}",
                 "X-User-Timezone": user_tz,
             },
-            timeout=60.0,
+            timeout=120.0,
         )
         resp.raise_for_status()
         logger.info("Broadcast sent to tenant %s", tenant_id[:8])
