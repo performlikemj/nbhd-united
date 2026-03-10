@@ -195,10 +195,12 @@ def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
     if not tenant or not tenant.container_fqdn:
         return
 
-    # Use a one-shot cron: fires in 30s, maxRuns=1
+    # Use a one-shot cron: fires 60s from now, maxRuns=1
+    from datetime import datetime, timezone, timedelta
+    run_at = (datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat()
     job = {
         "name": "One-off broadcast",
-        "schedule": "in 30 seconds",
+        "schedule": {"kind": "at", "at": run_at},
         "maxRuns": 1,
         "prompt": message,
     }
