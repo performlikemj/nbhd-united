@@ -33,7 +33,7 @@ class ApplyPendingConfigsTest(TestCase):
         self.client = APIClient()
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    @patch("apps.cron.publish.publish_batch", return_value=0)
+    @patch("apps.cron.publish.publish_batch", side_effect=lambda tasks: len(tasks))
     def test_apply_pending_configs_enqueues_idle_tenants_only(self, mock_batch, mock_verify):
         now = timezone.now()
         ready = _create_tenant_with_config_state(

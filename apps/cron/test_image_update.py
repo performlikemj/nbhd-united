@@ -47,20 +47,25 @@ def _extract_batch_tasks(mock_batch, task_name):
     return [t for t in batch_tasks if t[0] == task_name]
 
 
+def _batch_return_len(tasks):
+    """Mock side_effect that returns len(tasks) to simulate success."""
+    return len(tasks)
+
+
 @override_settings(OPENCLAW_IMAGE_TAG="abc123", AZURE_ACR_SERVER="nbhdunited.azurecr.io")
 class ApplyPendingConfigsImageTests(TestCase):
     def setUp(self):
         self.client = APIClient()
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    @patch("apps.cron.publish.publish_batch", return_value=0)
+    @patch("apps.cron.publish.publish_batch", side_effect=_batch_return_len)
     def test_apply_pending_configs_enqueues_stale_images(
         self,
         mock_batch,
         _mock_verify,
     ):
         now = timezone.now()
-        tenant_stale_idle = _create_tenant_with_state(
+        _create_tenant_with_state(
             user_suffix=1,
             pending_config_version=1,
             config_version=0,
@@ -68,7 +73,7 @@ class ApplyPendingConfigsImageTests(TestCase):
             container_image_tag="oldtag",
         )
 
-        tenant_image_only = _create_tenant_with_state(
+        _create_tenant_with_state(
             user_suffix=2,
             pending_config_version=0,
             config_version=0,
@@ -90,7 +95,7 @@ class ApplyPendingConfigsImageTests(TestCase):
         self.assertEqual(len(image_calls), 2)
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    @patch("apps.cron.publish.publish_batch", return_value=0)
+    @patch("apps.cron.publish.publish_batch", side_effect=_batch_return_len)
     def test_active_non_idle_tenants_are_not_image_enqueued(
         self,
         mock_batch,
@@ -115,7 +120,7 @@ class ApplyPendingConfigsImageTests(TestCase):
         self.assertEqual(len(image_calls), 0)
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    @patch("apps.cron.publish.publish_batch", return_value=0)
+    @patch("apps.cron.publish.publish_batch", side_effect=_batch_return_len)
     def test_tenants_already_on_desired_tag_are_skipped(
         self,
         mock_batch,
@@ -140,8 +145,8 @@ class ApplyPendingConfigsImageTests(TestCase):
         self.assertEqual(len(image_calls), 0)
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    @patch("apps.cron.publish.publish_batch", return_value=0)
-    def test_publish_failure_does_not_block_other_tenants(
+    @patch("apps.cron.publish.publish_batch", side_effect=_batch_return_len)
+    def test_batch_collects_all_tenant_tasks(
         self,
         mock_batch,
         _mock_verify,
@@ -167,6 +172,39 @@ class ApplyPendingConfigsImageTests(TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         # With batch, all tasks are collected then published together.
-        # Both config updates should be in the batch.
         self.assertEqual(body["config_enqueued"], 2)
         self.assertEqual(body["config_failed"], 0)
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    @patch("apps.cron.publish.publish_batch", side_effect=Exception("QStash down"))
+    def test_batch_failure_reports_all_tasks_as_failed(
+        self,
+        mock_batch,
+        _mock_verify,
+    ):
+        now = timezone.now()
+        _create_tenant_with_state(
+            user_suffix=1,
+            pending_config_version=1,
+            config_version=0,
+            last_message_at=now - timedelta(minutes=20),
+            container_image_tag="oldtag",
+        )
+        _create_tenant_with_state(
+            user_suffix=2,
+            pending_config_version=1,
+            config_version=0,
+            last_message_at=now - timedelta(minutes=20),
+            container_image_tag="oldtag",
+        )
+
+        response = self.client.post("/api/v1/cron/apply-pending-configs/")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        # Batch is all-or-nothing — on failure, all counts go to *_failed.
+        self.assertEqual(body["config_enqueued"], 0)
+        self.assertEqual(body["config_failed"], 2)
+        self.assertEqual(body["image_enqueued"], 0)
+        self.assertEqual(body["image_failed"], 2)
+        self.assertEqual(body["batch_enqueued"], 0)
