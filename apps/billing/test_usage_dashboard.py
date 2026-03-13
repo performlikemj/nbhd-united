@@ -164,6 +164,7 @@ class TransparencyServiceTest(TestCase):
             "database_share": 0.5,
             "storage_share": 0.25,
             "total": 4.75,
+            "source": "estimate",
         })
 
     def test_transparency_explanation_mentions_infra(self):
