@@ -12,6 +12,7 @@ from django.views.decorators.http import require_POST
 
 from apps.billing.services import check_budget, record_usage
 from apps.tenants.models import Tenant
+from .error_messages import error_msg
 from .services import (
     resolve_tenant_by_chat_id,
     extract_chat_id,
@@ -119,6 +120,7 @@ def _record_usage_from_openclaw_result(tenant: Tenant, result: object) -> None:
 def _build_budget_exhausted_message(chat_id: int, tenant: Tenant) -> dict:
     frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
     budget_remaining = max(tenant.effective_token_budget - tenant.tokens_this_month, 0)
+    lang = tenant.user.language or "en"
     plus_message = (
         " Opus requests are paused while at quota."
         if tenant.model_tier == Tenant.ModelTier.PREMIUM
@@ -128,11 +130,13 @@ def _build_budget_exhausted_message(chat_id: int, tenant: Tenant) -> dict:
     return {
         "method": "sendMessage",
         "chat_id": chat_id,
-        "text": (
-            "You’ve hit your monthly token quota."
-            f" {budget_remaining} token{'' if budget_remaining == 1 else 's'} remaining."
-            " New messages are blocked until the next monthly reset."
-            f"{plus_message} Open Billing to upgrade/manage at {frontend_url}/billing."
+        "text": error_msg(
+            lang,
+            "budget_exhausted",
+            remaining=str(budget_remaining),
+            s="" if budget_remaining == 1 else "s",
+            plus_message=plus_message,
+            billing_url=f"{frontend_url}/billing",
         ),
     }
 
@@ -199,13 +203,11 @@ def telegram_webhook(request):
 
     # Provisioning tenant — assistant is still waking up
     if tenant.status in (Tenant.Status.PENDING, Tenant.Status.PROVISIONING):
+        lang = tenant.user.language or "en"
         return JsonResponse({
             "method": "sendMessage",
             "chat_id": chat_id,
-            "text": (
-                "Your assistant is waking up! 🌅 This usually takes about a minute. "
-                "I'll be ready to chat shortly — just send your message again in a moment!"
-            ),
+            "text": error_msg(lang, "waking_up"),
         })
 
     frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
@@ -214,14 +216,13 @@ def telegram_webhook(request):
         and not tenant.is_trial
         and not bool(tenant.stripe_subscription_id)
     ):
+        lang = tenant.user.language or "en"
         return JsonResponse({
             "method": "sendMessage",
             "chat_id": chat_id,
-            "text": (
-                "Your assistant is paused. Running an AI agent costs real money "
-                "— cloud servers, model tokens (every reply costs us), and storage. "
-                "We keep things transparent so you know exactly where your money goes.\n\n"
-                f"Ready to pick up where you left off? {frontend_url}/settings/billing"
+            "text": error_msg(
+                lang, "suspended",
+                billing_url=f"{frontend_url}/settings/billing",
             ),
         })
 

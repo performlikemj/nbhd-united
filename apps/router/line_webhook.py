@@ -29,6 +29,7 @@ from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 
 from apps.billing.services import check_budget, record_usage
+from apps.router.error_messages import error_msg
 from apps.router.line_flex import (
     attach_quick_reply,
     build_flex_bubble,
@@ -637,12 +638,10 @@ class LineWebhookView(View):
 
         # Provisioning tenant
         if tenant.status in (Tenant.Status.PENDING, Tenant.Status.PROVISIONING):
+            lang = tenant.user.language or "en"
             _send_line_flex(
                 line_user_id,
-                build_short_bubble(
-                    "Your assistant is waking up! \U0001f305 This usually takes about a minute. "
-                    "Please try again shortly!",
-                ),
+                build_short_bubble(error_msg(lang, "waking_up")),
             )
             return
 
@@ -655,12 +654,14 @@ class LineWebhookView(View):
             and not tenant.is_trial
             and not bool(tenant.stripe_subscription_id)
         ):
+            lang = tenant.user.language or "en"
             _send_line_flex(
                 line_user_id,
                 build_status_bubble(
-                    "Your assistant is paused. Running an AI agent costs real money "
-                    "— cloud servers, model tokens, and storage. "
-                    f"Ready to pick up where you left off? {frontend_url}/settings/billing",
+                    error_msg(
+                        lang, "suspended",
+                        billing_url=f"{frontend_url}/settings/billing",
+                    ),
                     tone="warning",
                 ),
             )
@@ -694,11 +695,24 @@ class LineWebhookView(View):
 
         # Budget check
         if not check_budget(tenant):
+            lang = tenant.user.language or "en"
+            budget_remaining = max(tenant.effective_token_budget - tenant.tokens_this_month, 0)
+            plus_message = (
+                " Opus requests are paused while at quota."
+                if tenant.model_tier == Tenant.ModelTier.PREMIUM
+                else ""
+            )
             _send_line_flex(
                 line_user_id,
                 build_status_bubble(
-                    f"You've hit your monthly token quota. "
-                    f"Open Billing to upgrade at {frontend_url}/billing.",
+                    error_msg(
+                        lang,
+                        "budget_exhausted",
+                        remaining=str(budget_remaining),
+                        s="" if budget_remaining == 1 else "s",
+                        plus_message=plus_message,
+                        billing_url=f"{frontend_url}/billing",
+                    ),
                     tone="warning",
                 ),
             )
