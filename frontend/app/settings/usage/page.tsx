@@ -203,20 +203,18 @@ export default function SettingsUsagePage() {
               </p>
             </div>
 
-            <div className="mt-3 h-3 overflow-hidden rounded-full border border-border bg-border">
-              <div className="relative h-full w-full">
-                <div className="absolute left-0 top-0 h-full rounded-l-full bg-accent" style={{ width: `${aiPercent}%` }} />
+            <div className="mt-3 flex h-3 overflow-hidden rounded-full border border-border bg-border">
+              <div className="h-full rounded-l-full bg-accent" style={{ width: `${aiPercent}%` }} />
+              <div
+                className={`h-full bg-muted-foreground/30 ${donationAmount <= 0 ? "rounded-r-full" : ""}`}
+                style={{ width: `${platformPercent}%` }}
+              />
+              {donationAmount > 0 && (
                 <div
-                  className="absolute top-0 h-full bg-muted-foreground/30"
-                  style={{ left: `${aiPercent}%`, width: `${platformPercent}%` }}
+                  className="h-full rounded-r-full bg-emerald-500"
+                  style={{ width: `${donationPercent}%` }}
                 />
-                {donationAmount > 0 && (
-                  <div
-                    className="absolute top-0 h-full rounded-r-full bg-emerald-500"
-                    style={{ left: `${aiPercent + platformPercent}%`, width: `${donationPercent}%` }}
-                  />
-                )}
-              </div>
+              )}
             </div>
 
             <div className="mt-3 grid gap-2 sm:grid-cols-3 text-xs text-ink-muted">
@@ -248,8 +246,13 @@ export default function SettingsUsagePage() {
                 <p className="mt-3 text-sm leading-relaxed text-ink-muted">{transparency.explanation}</p>
 
                 <p className="mt-2 text-xs text-ink-muted">
-                  Infrastructure estimate:
-                  container ${transparency.infra_breakdown.container.toFixed(2)} •
+                  Infrastructure{" "}
+                  {transparency.infra_breakdown.source === "azure" ? (
+                    <span className="rounded bg-emerald-500/10 px-1 py-0.5 text-emerald-700 dark:text-emerald-400">actual</span>
+                  ) : (
+                    <span className="rounded bg-amber-500/10 px-1 py-0.5 text-amber-700 dark:text-amber-400">estimate</span>
+                  )}
+                  : container ${transparency.infra_breakdown.container.toFixed(2)} •
                   database ${transparency.infra_breakdown.database_share.toFixed(2)} •
                   storage ${transparency.infra_breakdown.storage_share.toFixed(2)}
                   {" • total "}
@@ -335,9 +338,23 @@ export default function SettingsUsagePage() {
                 </div>
 
                 {surplus > 0 && mealsEstimate > 0 && (
-                  <p className="text-sm text-emerald-700 dark:text-emerald-400">
-                    Your surplus this month buys ~{mealsEstimate} meals for children.
-                  </p>
+                  <div className="space-y-1">
+                    <p className="text-sm text-emerald-700 dark:text-emerald-400">
+                      Your surplus this month buys ~{mealsEstimate} meals for children.*
+                    </p>
+                    <p className="text-xs text-ink-muted">
+                      * Based on{" "}
+                      <a
+                        href="https://www.feedingamerica.org/ways-to-give"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline hover:text-accent"
+                      >
+                        Feeding America&apos;s estimate
+                      </a>{" "}
+                      that $0.25 can help provide one meal.
+                    </p>
+                  </div>
                 )}
               </div>
             )}

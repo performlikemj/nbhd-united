@@ -149,6 +149,29 @@ def get_daily_usage(tenant: Tenant, days: int = 30) -> list[dict]:
     return daily
 
 
+def _get_infra_breakdown(tenant: Tenant, month: date) -> dict:
+    """Load real infra costs from InfraCostSnapshot, or fall back to estimates."""
+    from .models import InfraCostSnapshot
+
+    try:
+        snapshot = InfraCostSnapshot.objects.get(tenant=tenant, month=month)
+        return {
+            "container": float(snapshot.container_cost),
+            "database_share": float(snapshot.database_share),
+            "storage_share": float(snapshot.storage_cost),
+            "total": float(snapshot.total_cost),
+            "source": snapshot.source,
+        }
+    except InfraCostSnapshot.DoesNotExist:
+        return {
+            "container": 4.00,
+            "database_share": 0.50,
+            "storage_share": 0.25,
+            "total": 4.75,
+            "source": "estimate",
+        }
+
+
 def get_transparency_data(tenant: Tenant) -> dict:
     """Open-books transparency: cost breakdown, margin, model rates."""
     first, last = get_month_boundaries()
@@ -179,12 +202,7 @@ def get_transparency_data(tenant: Tenant) -> dict:
             "output_per_million": rate["output"],
         })
 
-    infra_breakdown = {
-        "container": 4.00,
-        "database_share": 0.50,
-        "storage_share": 0.25,
-        "total": 4.75,
-    }
+    infra_breakdown = _get_infra_breakdown(tenant, first)
 
     subscription_price = _get_subscription_price()
     surplus = max(0.0, subscription_price - actual_cost - infra_breakdown["total"])

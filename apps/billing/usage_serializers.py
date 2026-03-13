@@ -56,6 +56,7 @@ class InfraBreakdownSerializer(serializers.Serializer):
     database_share = serializers.FloatField()
     storage_share = serializers.FloatField()
     total = serializers.FloatField()
+    source = serializers.CharField(default="estimate")
 
 
 class TransparencySerializer(serializers.Serializer):
