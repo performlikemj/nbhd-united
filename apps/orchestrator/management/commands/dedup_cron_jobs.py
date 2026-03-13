@@ -11,7 +11,7 @@ Usage:
 """
 from django.core.management.base import BaseCommand
 
-from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
+from apps.orchestrator.services import dedup_tenant_cron_jobs
 from apps.tenants.models import Tenant
 
 
@@ -58,98 +58,38 @@ class Command(BaseCommand):
             self.stdout.write(f"\n{'='*60}")
             self.stdout.write(f"Tenant: {display} ({tenant_id[:8]}...)")
 
-            # List all jobs
-            try:
-                list_result = invoke_gateway_tool(
-                    tenant, "cron.list", {"includeDisabled": True},
-                )
-            except GatewayError as exc:
+            result = dedup_tenant_cron_jobs(tenant, dry_run=not apply)
+
+            if result["errors"] and not result["duplicates"]:
                 self.stderr.write(self.style.ERROR(
-                    f"  Failed to list jobs: {exc}"
+                    f"  Failed to list jobs"
                 ))
-                total_errors += 1
+                total_errors += result["errors"]
                 continue
 
-            # Unwrap details (same pattern as the fix)
-            jobs = []
-            if isinstance(list_result, dict):
-                inner = list_result.get("details", list_result)
-                if isinstance(inner, dict):
-                    jobs = inner.get("jobs", [])
-                else:
-                    jobs = list_result.get("jobs", [])
-            elif isinstance(list_result, list):
-                jobs = list_result
+            self.stdout.write(f"  Total unique job names: {result['kept']}")
 
-            self.stdout.write(f"  Total jobs: {len(jobs)}")
-
-            if not jobs:
-                self.stdout.write("  No jobs found, skipping.")
-                continue
-
-            # Group by name
-            by_name: dict[str, list[dict]] = {}
-            for job in jobs:
-                name = job.get("name", "")
-                if not name:
-                    continue
-                by_name.setdefault(name, []).append(job)
-
-            # Find duplicates
-            dupes_to_delete: list[dict] = []
-            for name, group in sorted(by_name.items()):
-                if len(group) <= 1:
-                    continue
-
-                self.stdout.write(self.style.WARNING(
-                    f"  '{name}': {len(group)} copies"
-                ))
-
-                # Sort by createdAt descending — keep the newest
-                group.sort(
-                    key=lambda j: j.get("createdAt", j.get("id", "")),
-                    reverse=True,
-                )
-                keeper = group[0]
-                self.stdout.write(
-                    f"    Keeping: {keeper.get('id', '?')[:12]}... "
-                    f"(created {keeper.get('createdAt', 'unknown')})"
-                )
-                for dupe in group[1:]:
-                    self.stdout.write(
-                        f"    Deleting: {dupe.get('id', '?')[:12]}... "
-                        f"(created {dupe.get('createdAt', 'unknown')})"
-                    )
-                    dupes_to_delete.append(dupe)
-
-            if not dupes_to_delete:
+            if not result["duplicates"]:
                 self.stdout.write(self.style.SUCCESS("  No duplicates found."))
                 continue
 
-            self.stdout.write(f"  Duplicates to remove: {len(dupes_to_delete)}")
+            for dupe in result["duplicates"]:
+                self.stdout.write(self.style.WARNING(
+                    f"  Duplicate: '{dupe.get('name', '?')}' "
+                    f"id={dupe.get('id', '?')[:12]}... "
+                    f"(created {dupe.get('createdAt', 'unknown')})"
+                ))
+
+            self.stdout.write(f"  Duplicates to remove: {len(result['duplicates'])}")
 
             if not apply:
                 self.stdout.write("  (dry run — no changes made)")
                 continue
 
-            # Delete duplicates
-            deleted = 0
-            for dupe in dupes_to_delete:
-                job_id = dupe.get("id") or dupe.get("name", "")
-                try:
-                    invoke_gateway_tool(
-                        tenant, "cron.remove", {"jobId": job_id},
-                    )
-                    deleted += 1
-                except GatewayError as exc:
-                    self.stderr.write(self.style.ERROR(
-                        f"  Failed to delete {job_id[:12]}: {exc}"
-                    ))
-                    total_errors += 1
-
-            total_deleted += deleted
+            total_deleted += result["deleted"]
+            total_errors += result["errors"]
             self.stdout.write(self.style.SUCCESS(
-                f"  Deleted {deleted}/{len(dupes_to_delete)} duplicates"
+                f"  Deleted {result['deleted']}/{len(result['duplicates'])} duplicates"
             ))
 
         self.stdout.write(f"\n{'='*60}")

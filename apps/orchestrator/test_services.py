@@ -8,7 +8,7 @@ from django.test import TestCase, override_settings
 from apps.cron.gateway_client import GatewayError
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
-from apps.orchestrator.services import deprovision_tenant, provision_tenant, seed_cron_jobs
+from apps.orchestrator.services import dedup_tenant_cron_jobs, deprovision_tenant, provision_tenant, seed_cron_jobs
 
 
 class OrchestratorServiceTest(TestCase):
@@ -221,54 +221,103 @@ class SeedCronJobsTest(TestCase):
         self.tenant = create_tenant(display_name="Cron Seeder", telegram_chat_id=515152)
 
     @patch("time.sleep")
+    @patch("apps.orchestrator.services._is_mock", return_value=False)
     @patch("apps.orchestrator.services.invoke_gateway_tool")
     def test_seed_creates_jobs_via_gateway(
         self,
         mock_invoke,
+        _mock_is_mock,
         mock_sleep,
     ):
         mock_invoke.side_effect = [
-            {"jobs": []},
+            {"jobs": []},  # initial cron.list
             {"name": "Morning Briefing", "enabled": True},
             {"name": "Evening Check-in", "enabled": True},
             {"name": "Week Ahead Review", "enabled": True},
             {"name": "Background Tasks", "enabled": True},
             {"name": "Nightly Extraction", "enabled": True},
             {"name": "Heartbeat Check-in", "enabled": True},
+            {"jobs": []},  # dedup pass cron.list (no dupes)
         ]
 
         result = seed_cron_jobs(self.tenant)
 
         self.assertEqual(result["created"], 6)
         self.assertEqual(result["errors"], 0)
-        self.assertEqual(mock_invoke.call_count, 7)
         self.assertEqual(mock_invoke.call_args_list[0].args[1], "cron.list")
         for i in range(1, 7):
             self.assertEqual(mock_invoke.call_args_list[i].args[1], "cron.add")
         mock_sleep.assert_not_called()
 
+    @patch("apps.orchestrator.services._is_mock", return_value=False)
     @patch("apps.orchestrator.services.invoke_gateway_tool")
-    def test_seed_skips_when_jobs_exist(
+    def test_seed_skips_when_all_jobs_exist(
         self,
         mock_invoke,
+        _mock_is_mock,
     ):
-        mock_invoke.return_value = {"jobs": [{"name": "existing"}]}
+        mock_invoke.return_value = {"jobs": [
+            {"name": "Morning Briefing"},
+            {"name": "Evening Check-in"},
+            {"name": "Week Ahead Review"},
+            {"name": "Background Tasks"},
+            {"name": "Nightly Extraction"},
+            {"name": "Heartbeat Check-in"},
+        ]}
 
         result = seed_cron_jobs(self.tenant)
 
         self.assertTrue(result.get("skipped"))
         self.assertEqual(result["created"], 0)
         self.assertEqual(result["errors"], 0)
+        # Only the initial cron.list call — no adds, no dedup
         self.assertEqual(mock_invoke.call_count, 1)
-        self.assertEqual(mock_invoke.call_args.args[0], self.tenant)
         self.assertEqual(mock_invoke.call_args.args[1], "cron.list")
 
+    @patch("time.sleep")
+    @patch("apps.orchestrator.services._is_mock", return_value=False)
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_seed_creates_only_missing_jobs(
+        self,
+        mock_invoke,
+        _mock_is_mock,
+        mock_sleep,
+    ):
+        """When some jobs already exist, only the missing ones are created."""
+        mock_invoke.side_effect = [
+            # initial cron.list — 3 of 6 already exist
+            {"jobs": [
+                {"name": "Morning Briefing"},
+                {"name": "Evening Check-in"},
+                {"name": "Week Ahead Review"},
+            ]},
+            # cron.add for the 3 missing jobs
+            {"name": "Background Tasks", "enabled": True},
+            {"name": "Nightly Extraction", "enabled": True},
+            {"name": "Heartbeat Check-in", "enabled": True},
+            # dedup pass cron.list
+            {"jobs": []},
+        ]
+
+        result = seed_cron_jobs(self.tenant)
+
+        self.assertEqual(result["created"], 3)
+        self.assertEqual(result["errors"], 0)
+        self.assertEqual(result["skipped_existing"], 3)
+        # 1 list + 3 adds + 1 dedup list = 5
+        self.assertEqual(mock_invoke.call_count, 5)
+        # Verify the add calls are for the right tool
+        for i in range(1, 4):
+            self.assertEqual(mock_invoke.call_args_list[i].args[1], "cron.add")
+        mock_sleep.assert_not_called()
 
     @patch("time.sleep")
+    @patch("apps.orchestrator.services._is_mock", return_value=False)
     @patch("apps.orchestrator.services.invoke_gateway_tool")
     def test_seed_handles_add_failure(
         self,
         mock_invoke,
+        _mock_is_mock,
         mock_sleep,
     ):
         mock_invoke.side_effect = [
@@ -279,20 +328,22 @@ class SeedCronJobsTest(TestCase):
             {"name": "Background Tasks", "enabled": True},
             {"name": "Nightly Extraction", "enabled": True},
             {"name": "Heartbeat Check-in", "enabled": True},
+            {"jobs": []},  # dedup pass
         ]
 
         result = seed_cron_jobs(self.tenant)
 
         self.assertEqual(result["created"], 5)
         self.assertEqual(result["errors"], 1)
-        self.assertEqual(mock_invoke.call_count, 7)
         mock_sleep.assert_not_called()
 
     @patch("time.sleep")
+    @patch("apps.orchestrator.services._is_mock", return_value=False)
     @patch("apps.orchestrator.services.invoke_gateway_tool")
     def test_seed_retries_on_transient_error(
         self,
         mock_invoke,
+        _mock_is_mock,
         mock_sleep,
     ):
         mock_invoke.side_effect = [
@@ -304,13 +355,13 @@ class SeedCronJobsTest(TestCase):
             {"name": "Background Tasks", "enabled": True},
             {"name": "Nightly Extraction", "enabled": True},
             {"name": "Heartbeat Check-in", "enabled": True},
+            {"jobs": []},  # dedup pass
         ]
 
         result = seed_cron_jobs(self.tenant)
 
         self.assertEqual(result["created"], 6)
         self.assertEqual(result["errors"], 0)
-        self.assertEqual(mock_invoke.call_count, 8)
         mock_sleep.assert_called_once_with(5)
 
     @patch("time.sleep")
@@ -328,6 +379,88 @@ class SeedCronJobsTest(TestCase):
         self.assertEqual(result["errors"], 0)
         self.assertFalse(result.get("skipped", False))
         mock_invoke.assert_not_called()
+
+
+class DedupTenantCronJobsTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Dedup Test", telegram_chat_id=515153)
+
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_dedup_keeps_newest_by_created_at(self, mock_invoke):
+        """When duplicates exist, the newest job (by createdAt) is kept."""
+        jobs = [
+            {"name": "Morning Briefing", "id": "old-1", "createdAt": "2026-01-01T00:00:00Z"},
+            {"name": "Morning Briefing", "id": "new-1", "createdAt": "2026-03-01T00:00:00Z"},
+            {"name": "Morning Briefing", "id": "mid-1", "createdAt": "2026-02-01T00:00:00Z"},
+            {"name": "Evening Check-in", "id": "only-1", "createdAt": "2026-01-01T00:00:00Z"},
+        ]
+        mock_invoke.side_effect = [
+            {"jobs": jobs},  # cron.list
+            {},  # cron.remove old-1
+            {},  # cron.remove mid-1
+        ]
+
+        result = dedup_tenant_cron_jobs(self.tenant)
+
+        self.assertEqual(result["kept"], 2)
+        self.assertEqual(result["deleted"], 2)
+        self.assertEqual(result["errors"], 0)
+        # Verify the right jobs were deleted (old and mid, not new)
+        remove_calls = [
+            c for c in mock_invoke.call_args_list
+            if c.args[1] == "cron.remove"
+        ]
+        deleted_ids = {c.kwargs.get("jobId") or c.args[2].get("jobId") for c in remove_calls}
+        self.assertIn("mid-1", deleted_ids)
+        self.assertIn("old-1", deleted_ids)
+        self.assertNotIn("new-1", deleted_ids)
+
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_dedup_no_duplicates(self, mock_invoke):
+        """When no duplicates exist, nothing is deleted."""
+        mock_invoke.return_value = {"jobs": [
+            {"name": "Morning Briefing", "id": "1"},
+            {"name": "Evening Check-in", "id": "2"},
+        ]}
+
+        result = dedup_tenant_cron_jobs(self.tenant)
+
+        self.assertEqual(result["kept"], 2)
+        self.assertEqual(result["deleted"], 0)
+        self.assertEqual(len(result["duplicates"]), 0)
+        self.assertEqual(mock_invoke.call_count, 1)  # only cron.list
+
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_dedup_dry_run(self, mock_invoke):
+        """Dry run reports duplicates without deleting."""
+        jobs = [
+            {"name": "Morning Briefing", "id": "old-1", "createdAt": "2026-01-01T00:00:00Z"},
+            {"name": "Morning Briefing", "id": "new-1", "createdAt": "2026-03-01T00:00:00Z"},
+        ]
+        mock_invoke.return_value = {"jobs": jobs}
+
+        result = dedup_tenant_cron_jobs(self.tenant, dry_run=True)
+
+        self.assertEqual(result["deleted"], 0)
+        self.assertEqual(len(result["duplicates"]), 1)
+        self.assertEqual(result["duplicates"][0]["id"], "old-1")
+        self.assertEqual(mock_invoke.call_count, 1)  # only cron.list, no removes
+
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_dedup_with_prefetched_jobs(self, mock_invoke):
+        """When jobs are pre-fetched, no cron.list call is made."""
+        jobs = [
+            {"name": "Morning Briefing", "id": "old-1", "createdAt": "2026-01-01T00:00:00Z"},
+            {"name": "Morning Briefing", "id": "new-1", "createdAt": "2026-03-01T00:00:00Z"},
+        ]
+        mock_invoke.return_value = {}  # for cron.remove
+
+        result = dedup_tenant_cron_jobs(self.tenant, jobs=jobs)
+
+        self.assertEqual(result["deleted"], 1)
+        # Only cron.remove call, no cron.list
+        self.assertEqual(mock_invoke.call_count, 1)
+        self.assertEqual(mock_invoke.call_args.args[1], "cron.remove")
 
 
 class RepairTenantProvisioningCommandTest(TestCase):

@@ -369,6 +369,86 @@ def deprovision_tenant(tenant_id: str) -> None:
         raise
 
 
+def dedup_tenant_cron_jobs(
+    tenant: Tenant,
+    *,
+    dry_run: bool = False,
+    jobs: list | None = None,
+) -> dict:
+    """Remove duplicate cron jobs from a tenant's container.
+
+    Groups jobs by name, keeps the newest (by createdAt), deletes the rest.
+
+    Args:
+        tenant: The tenant whose container to dedup.
+        dry_run: If True, report duplicates without deleting.
+        jobs: Pre-fetched job list (skips cron.list call if provided).
+
+    Returns:
+        {"kept": int, "deleted": int, "errors": int, "duplicates": list[dict]}
+    """
+    if jobs is None:
+        try:
+            list_result = invoke_gateway_tool(
+                tenant, "cron.list", {"includeDisabled": True},
+            )
+        except GatewayError:
+            logger.exception("dedup: failed to list crons for tenant %s", str(tenant.id)[:8])
+            return {"kept": 0, "deleted": 0, "errors": 1, "duplicates": []}
+
+        jobs = _extract_cron_jobs(list_result) or []
+
+    # Group by name
+    by_name: dict[str, list[dict]] = {}
+    for job in jobs:
+        name = job.get("name", "")
+        if not name:
+            continue
+        by_name.setdefault(name, []).append(job)
+
+    to_delete: list[dict] = []
+    for name, group in by_name.items():
+        if len(group) <= 1:
+            continue
+        # Sort by createdAt descending — keep the newest
+        group.sort(
+            key=lambda j: j.get("createdAt", j.get("id", "")),
+            reverse=True,
+        )
+        for dupe in group[1:]:
+            to_delete.append(dupe)
+
+    if dry_run or not to_delete:
+        return {
+            "kept": len(by_name),
+            "deleted": 0,
+            "errors": 0,
+            "duplicates": to_delete,
+        }
+
+    deleted = 0
+    errors = 0
+    for dupe in to_delete:
+        job_id = dupe.get("id") or dupe.get("jobId", "")
+        if not job_id:
+            continue
+        try:
+            invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
+            deleted += 1
+        except GatewayError:
+            logger.warning(
+                "dedup: failed to delete job %s for tenant %s",
+                job_id[:12], str(tenant.id)[:8],
+            )
+            errors += 1
+
+    logger.info(
+        "dedup: tenant %s — kept %d unique, deleted %d duplicates, %d errors",
+        str(tenant.id)[:8], len(by_name), deleted, errors,
+    )
+    return {"kept": len(by_name), "deleted": deleted, "errors": errors, "duplicates": to_delete}
+
+
 def _extract_cron_jobs(list_result) -> list | None:
     """Extract job list from a cron.list gateway response.
 
@@ -455,11 +535,19 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
             "reason": "unparseable_cron_list",
         }
 
-    if existing_jobs:
+    # Diff by name — only create jobs that don't already exist
+    existing_names = {
+        j.get("name", "").lower()
+        for j in existing_jobs
+        if isinstance(j, dict) and j.get("name")
+    }
+    jobs_to_create = [j for j in jobs if j.get("name", "").lower() not in existing_names]
+
+    if not jobs_to_create:
         logger.info(
-            "seed_cron_jobs: tenant %s already has %d jobs, skipping seed",
+            "seed_cron_jobs: tenant %s already has all %d jobs, skipping",
             tenant_id,
-            len(existing_jobs),
+            len(jobs),
         )
         return {
             "tenant_id": tenant_id,
@@ -469,9 +557,17 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
             "skipped": True,
         }
 
+    logger.info(
+        "seed_cron_jobs: tenant %s has %d/%d jobs, creating %d missing",
+        tenant_id,
+        len(existing_names),
+        len(jobs),
+        len(jobs_to_create),
+    )
+
     created = 0
     errors = 0
-    for job in jobs:
+    for job in jobs_to_create:
         for attempt in range(1, 4):
             try:
                 invoke_gateway_tool(tenant, "cron.add", {"job": job})
@@ -501,6 +597,17 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
                 logger.exception("Failed to create cron job for tenant %s", tenant_id)
                 break
 
+    # Post-creation dedup pass — clean up any race-condition duplicates
+    if created > 0:
+        try:
+            dedup_tenant_cron_jobs(tenant)
+        except Exception:
+            logger.warning(
+                "seed_cron_jobs: post-creation dedup failed for tenant %s (non-fatal)",
+                tenant_id,
+                exc_info=True,
+            )
+
     logger.info(
         "seed_cron_jobs: tenant %s -> created=%d errors=%d (total=%d)",
         tenant_id,
@@ -514,6 +621,7 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
         "jobs_total": len(jobs),
         "created": created,
         "errors": errors,
+        "skipped_existing": len(existing_names),
     }
 
 
