@@ -76,6 +76,33 @@ class DonationLedger(models.Model):
         return f"{self.tenant} {self.month}: ${self.donation_amount} ({self.status})"
 
 
+class InfraCostSnapshot(models.Model):
+    """Daily snapshot of real infrastructure costs per tenant from Azure billing."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="infra_costs")
+    month = models.DateField(help_text="First day of the month")
+    container_cost = models.DecimalField(max_digits=10, decimal_places=4, default=0)
+    storage_cost = models.DecimalField(max_digits=10, decimal_places=4, default=0)
+    database_share = models.DecimalField(max_digits=10, decimal_places=4, default=0)
+    total_cost = models.DecimalField(max_digits=10, decimal_places=4, default=0)
+    source = models.CharField(
+        max_length=20, default="estimate",
+        help_text="'azure' for real billing data, 'estimate' for fallback",
+    )
+    fetched_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "infra_cost_snapshots"
+        unique_together = [("tenant", "month")]
+        indexes = [
+            models.Index(fields=["month"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tenant} {self.month}: ${self.total_cost} ({self.source})"
+
+
 class MonthlyBudget(models.Model):
     """Global monthly budget cap — safety net."""
 

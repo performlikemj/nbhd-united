@@ -707,3 +707,15 @@ export function cancelAccountDeletion(): Promise<{ detail: string }> {
     method: "POST",
   });
 }
+
+// Working Hours
+export function fetchWorkingHours(): Promise<import("@/lib/types").WorkingHoursConfig> {
+  return apiFetch<import("@/lib/types").WorkingHoursConfig>("/api/v1/tenants/heartbeat/");
+}
+
+export function updateWorkingHours(data: { enabled?: boolean; start_hour?: number }): Promise<import("@/lib/types").WorkingHoursConfig> {
+  return apiFetch<import("@/lib/types").WorkingHoursConfig>("/api/v1/tenants/heartbeat/", {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}

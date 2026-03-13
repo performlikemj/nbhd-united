@@ -307,6 +307,7 @@ USAGE_DASHBOARD_SUBSCRIPTION_PRICE = env.float(
     "USAGE_DASHBOARD_SUBSCRIPTION_PRICE",
     default=12.0,
 )
+SUPABASE_MONTHLY_COST = env.float("SUPABASE_MONTHLY_COST", default=25.0)
 
 # API base URL (for OAuth callback redirects)
 API_BASE_URL = env("API_BASE_URL", default="http://localhost:8000")

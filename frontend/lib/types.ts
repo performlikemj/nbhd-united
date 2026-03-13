@@ -204,6 +204,7 @@ export interface TransparencyData {
     database_share: number;
     storage_share: number;
     total: number;
+    source?: string;
   };
   explanation: string;
 }
@@ -258,6 +259,13 @@ export interface WeeklyReview {
   intentions_next_week: string[];
   created_at: string;
   updated_at: string;
+}
+
+// Working Hours (heartbeat window)
+export interface WorkingHoursConfig {
+  enabled: boolean;
+  start_hour: number;
+  window_hours: number;
 }
 
 // Cron Jobs (OpenClaw Gateway scheduled tasks)
