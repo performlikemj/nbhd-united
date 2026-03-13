@@ -260,6 +260,13 @@ export interface WeeklyReview {
   updated_at: string;
 }
 
+// Working Hours (heartbeat window)
+export interface WorkingHoursConfig {
+  enabled: boolean;
+  start_hour: number;
+  window_hours: number;
+}
+
 // Cron Jobs (OpenClaw Gateway scheduled tasks)
 export interface CronJobSchedule {
   kind: string;

@@ -71,6 +71,8 @@ import {
   updateWeeklyReview,
   deleteAccount,
   cancelAccountDeletion,
+  fetchWorkingHours,
+  updateWorkingHours,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -718,6 +720,25 @@ export function useCancelDeletionMutation() {
     mutationFn: () => cancelAccountDeletion(),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["me"] });
+    },
+  });
+}
+
+// Working Hours
+export function useWorkingHoursQuery() {
+  return useQuery({
+    queryKey: ["working-hours"],
+    queryFn: fetchWorkingHours,
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useUpdateWorkingHoursMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateWorkingHours,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["working-hours"] });
     },
   });
 }
