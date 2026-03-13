@@ -36,10 +36,11 @@ django-redis
 # Managed OAuth (Composio — Google integrations)
 composio>=0.7
 
-# Azure SDK (for Container Apps, Key Vault, Managed Identity, Storage)
+# Azure SDK (for Container Apps, Key Vault, Managed Identity, Storage, Billing)
 azure-identity
 azure-mgmt-containerinstance
 azure-mgmt-appcontainers
+azure-mgmt-costmanagement>=4.0
 azure-mgmt-msi
 azure-mgmt-authorization
 azure-mgmt-storage

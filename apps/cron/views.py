@@ -75,6 +75,8 @@ TASK_MAP = {
     "broadcast_single_tenant": "apps.orchestrator.tasks.broadcast_single_tenant_task",
     # Cron dedup (enqueued by dedup-crons)
     "dedup_cron_jobs": "apps.orchestrator.tasks.dedup_cron_jobs_task",
+    # Daily infra cost refresh from Azure billing
+    "refresh_infra_costs": "apps.billing.tasks.refresh_infra_costs_task",
 }
 
 

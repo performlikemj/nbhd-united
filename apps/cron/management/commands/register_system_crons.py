@@ -32,6 +32,8 @@ SYSTEM_CRONS = [
     ("expire-trials", "0 2 * * *", "/api/cron/expire-trials/"),
     # Every 30 min — repair tenants stuck without container metadata
     ("repair-stale-provisioning", "*/30 * * * *", "/api/cron/trigger/repair_stale_tenant_provisioning/"),
+    # Daily at 06:30 UTC — refresh infra costs from Azure billing
+    ("refresh-infra-costs", "30 6 * * *", "/api/cron/trigger/refresh_infra_costs/"),
 ]
 
 

@@ -204,6 +204,7 @@ export interface TransparencyData {
     database_share: number;
     storage_share: number;
     total: number;
+    source?: string;
   };
   explanation: string;
 }
