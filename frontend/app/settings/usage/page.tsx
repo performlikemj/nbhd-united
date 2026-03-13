@@ -206,7 +206,7 @@ export default function SettingsUsagePage() {
             <div className="mt-3 flex h-3 overflow-hidden rounded-full border border-border bg-border">
               <div className="h-full rounded-l-full bg-accent" style={{ width: `${aiPercent}%` }} />
               <div
-                className={`h-full bg-muted-foreground/30 ${donationAmount <= 0 ? "rounded-r-full" : ""}`}
+                className={`h-full bg-slate-400 ${donationAmount <= 0 ? "rounded-r-full" : ""}`}
                 style={{ width: `${platformPercent}%` }}
               />
               {donationAmount > 0 && (
@@ -225,9 +225,9 @@ export default function SettingsUsagePage() {
                 </div>
                 <span className="font-mono">${aiActualCost.toFixed(2)}</span>
               </div>
-              <div className="flex items-center justify-between rounded-panel border border-muted/35 bg-muted/10 p-2">
+              <div className="flex items-center justify-between rounded-panel border border-slate-400/25 bg-slate-400/8 p-2">
                 <div className="flex items-center gap-2">
-                  <span className="h-2 w-2 rounded-full bg-muted" />
+                  <span className="h-2 w-2 rounded-full bg-slate-400" />
                   <span>Platform Infrastructure</span>
                 </div>
                 <span className="font-mono">${platformCost.toFixed(2)}</span>
