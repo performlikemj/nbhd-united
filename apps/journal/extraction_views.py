@@ -66,4 +66,5 @@ class NightlyExtractionView(View):
             # Soft-fail — return 200 so QStash doesn't retry indefinitely
             return JsonResponse({"ok": True, "error": "extraction_failed"})
 
+        logger.info("nightly-extract: tenant=%s result=%s", str(tenant_id)[:8], result)
         return JsonResponse({"ok": True, **result})
