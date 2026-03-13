@@ -28,6 +28,8 @@ COLORS = {
     "amber_text": "#92400e",
 }
 
+CLIPBOARD_MAX = 5000  # safe limit for clipboard action text
+
 _TONE_MAP = {
     "success": {"bg": COLORS["emerald_bg"], "fg": COLORS["emerald_text"], "icon": "\u2713"},
     "error": {"bg": COLORS["rose_bg"], "fg": COLORS["rose_text"], "icon": "\u2717"},
@@ -223,6 +225,35 @@ def _separator(margin: str = "lg", color: str | None = None) -> dict:
     return sep
 
 
+def _copy_footer(raw_text: str) -> dict:
+    """Subtle footer with a clipboard tap target styled as faint helper text."""
+    clean = _strip_md_inline(raw_text.strip())
+    if len(clean) > CLIPBOARD_MAX:
+        clean = clean[: CLIPBOARD_MAX - 1] + "\u2026"
+    return {
+        "type": "box",
+        "layout": "vertical",
+        "paddingTop": "8px",
+        "paddingBottom": "12px",
+        "paddingStart": "16px",
+        "paddingEnd": "16px",
+        "action": {
+            "type": "clipboard",
+            "label": "Copy text",
+            "clipboardText": clean,
+        },
+        "contents": [
+            {
+                "type": "text",
+                "text": "Tap to copy",
+                "size": "xxs",
+                "color": COLORS["ink_faint"],
+                "align": "end",
+            },
+        ],
+    }
+
+
 def _section_box(title: str | None, content: str, is_first: bool = False) -> list[dict]:
     """Build Flex components for a single section."""
     components: list[dict] = []
@@ -333,23 +364,26 @@ def build_short_bubble(text: str, alt_text: str = "Message from your assistant")
     for label, url in links:
         body_contents.append(_link_component(label, url))
 
+    bubble = {
+        "type": "bubble",
+        "size": "mega",
+        "styles": {
+            "body": {"backgroundColor": COLORS["mist"]},
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "paddingAll": "16px",
+            "spacing": "md",
+            "contents": body_contents,
+        },
+        "footer": _copy_footer(text),
+    }
+
     return {
         "type": "flex",
         "altText": alt_text[:400],
-        "contents": {
-            "type": "bubble",
-            "size": "mega",
-            "styles": {
-                "body": {"backgroundColor": COLORS["mist"]},
-            },
-            "body": {
-                "type": "box",
-                "layout": "vertical",
-                "paddingAll": "16px",
-                "spacing": "md",
-                "contents": body_contents,
-            },
-        },
+        "contents": bubble,
     }
 
 
@@ -478,6 +512,8 @@ def build_flex_bubble(text: str, alt_text: str = "Message from your assistant") 
         "paddingAll": "16px",
         "contents": body_contents,
     }
+
+    bubble["footer"] = _copy_footer(text)
 
     return {
         "type": "flex",
