@@ -934,7 +934,7 @@ class LineWebhookView(View):
             # Build Flex message (branded bubbles for all content types)
             messages: list[dict] = []
             try:
-                flex_msg = build_flex_bubble(clean_text)
+                flex_msg = build_flex_bubble(clean_text, alt_text=clean_text)
                 messages = [flex_msg]
             except Exception:
                 # Flex construction failed — fall back to plain text
@@ -1054,7 +1054,7 @@ class LineWebhookView(View):
 
     @staticmethod
     def _handle_extraction_postback(tenant, data: str) -> None:
-        """Handle extraction approval/dismissal from LINE postback.
+        """Handle extraction approval/dismissal/undo from LINE postback.
 
         Data format: extract:<action>:<pending_id>
         """
@@ -1063,6 +1063,9 @@ class LineWebhookView(View):
             _approve_lesson,
             _approve_goal,
             _approve_task,
+            _undo_lesson,
+            _undo_goal,
+            _undo_task,
         )
         from django.utils import timezone as tz
 
@@ -1072,12 +1075,35 @@ class LineWebhookView(View):
                 return
 
             _, action, pending_id = parts
+            is_undo = action in ("undo_lesson", "undo_goal", "undo_task")
 
             pending = PendingExtraction.objects.filter(
                 id=pending_id,
                 tenant=tenant,
             ).first()
             if not pending:
+                return
+
+            # Handle undo actions (operate on APPROVED items)
+            if is_undo:
+                if pending.status == PendingExtraction.Status.UNDONE:
+                    _send_line_follow_up(tenant, "👍 Already removed!")
+                    return
+                if pending.status != PendingExtraction.Status.APPROVED:
+                    _send_line_follow_up(tenant, "👍 Can't undo — not currently added.")
+                    return
+
+                if action == "undo_lesson":
+                    _undo_lesson(pending)
+                elif action == "undo_goal":
+                    _undo_goal(pending)
+                elif action == "undo_task":
+                    _undo_task(pending)
+
+                pending.status = PendingExtraction.Status.UNDONE
+                pending.resolved_at = tz.now()
+                pending.save(update_fields=["status", "resolved_at"])
+                _send_line_status_bubble(tenant, f"Removed: {pending.text[:80]}", tone="warning")
                 return
 
             # Already resolved — send friendly acknowledgment instead of silence
@@ -1094,7 +1120,7 @@ class LineWebhookView(View):
                 return
 
             if action == "approve_lesson":
-                _approve_lesson(pending)
+                _, lesson_id = _approve_lesson(pending)
             elif action == "approve_goal":
                 _approve_goal(pending)
             elif action == "approve_task":
@@ -1104,7 +1130,11 @@ class LineWebhookView(View):
 
             pending.status = PendingExtraction.Status.APPROVED
             pending.resolved_at = tz.now()
-            pending.save(update_fields=["status", "resolved_at"])
+            if action == "approve_lesson" and lesson_id:
+                pending.lesson_id = lesson_id
+                pending.save(update_fields=["status", "resolved_at", "lesson_id"])
+            else:
+                pending.save(update_fields=["status", "resolved_at"])
 
             kind_label = {"lesson": "Saved to constellation", "goal": "Added to goals", "task": "Added to tasks"}.get(pending.kind, "Added")
             _send_line_status_bubble(tenant, f"{kind_label}: {pending.text[:80]}", tone="success")

@@ -6,12 +6,16 @@ Actions:
   approve_lesson  — create Lesson record, mark approved
   approve_goal    — append to goals Document, mark approved
   approve_task    — append to tasks Document, mark approved
+  undo_lesson     — delete Lesson, mark undone
+  undo_goal       — remove goal from Document, mark undone
+  undo_task       — remove task from Document, mark undone
   dismiss         — mark dismissed (suppresses re-extraction for 30 days)
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date
 
 import requests
@@ -52,8 +56,11 @@ def _edit_message(chat_id: int, message_id: int, text: str) -> None:
 
 # ── Approval actions ──────────────────────────────────────────────────────────
 
-def _approve_lesson(pending: PendingExtraction) -> str:
-    """Create a Lesson from the pending extraction and process its embedding."""
+def _approve_lesson(pending: PendingExtraction) -> tuple[str, str | None]:
+    """Create a Lesson from the pending extraction and process its embedding.
+
+    Returns (user_message, lesson_id_str).
+    """
     lesson = Lesson.objects.create(
         tenant=pending.tenant,
         text=pending.text,
@@ -79,11 +86,14 @@ def _approve_lesson(pending: PendingExtraction) -> str:
     except Exception:
         logger.exception("extraction_callbacks: clustering failed for tenant %s", str(pending.tenant.id)[:8])
 
-    return "Added to your learning constellation! ✨"
+    return "Added to your learning constellation! ✨", lesson.id
 
 
-def _approve_goal(pending: PendingExtraction) -> str:
-    """Append goal to the tenant's goals Document (create if missing)."""
+def _approve_goal(pending: PendingExtraction) -> tuple[str, None]:
+    """Append goal to the tenant's goals Document (create if missing).
+
+    Returns (user_message, None).
+    """
     doc, _ = Document.objects.get_or_create(
         tenant=pending.tenant,
         kind=Document.Kind.GOAL,
@@ -100,11 +110,14 @@ def _approve_goal(pending: PendingExtraction) -> str:
         doc.markdown += f"\n## Active\n{new_entry}"
 
     doc.save(update_fields=["markdown", "updated_at"])
-    return "Added to your goals! 🎯"
+    return "Added to your goals! 🎯", None
 
 
-def _approve_task(pending: PendingExtraction) -> str:
-    """Append task to the tenant's tasks Document (create if missing)."""
+def _approve_task(pending: PendingExtraction) -> tuple[str, None]:
+    """Append task to the tenant's tasks Document (create if missing).
+
+    Returns (user_message, None).
+    """
     doc, _ = Document.objects.get_or_create(
         tenant=pending.tenant,
         kind=Document.Kind.TASKS,
@@ -114,7 +127,37 @@ def _approve_task(pending: PendingExtraction) -> str:
     today = date.today().isoformat()
     doc.markdown += f"- [ ] {pending.text}  _(added {today})_\n"
     doc.save(update_fields=["markdown", "updated_at"])
-    return "Added to your tasks! ✅"
+    return "Added to your tasks! ✅", None
+
+
+# ── Undo actions ─────────────────────────────────────────────────────────────
+
+def _undo_lesson(pending: PendingExtraction) -> None:
+    """Delete the Lesson created by this extraction."""
+    if pending.lesson_id:
+        Lesson.objects.filter(id=pending.lesson_id, tenant=pending.tenant).delete()
+
+
+def _undo_goal(pending: PendingExtraction) -> None:
+    """Remove the goal block from the tenant's goals Document."""
+    doc = Document.objects.filter(
+        tenant=pending.tenant, kind=Document.Kind.GOAL, slug="goals"
+    ).first()
+    if doc:
+        pattern = r"\n" + re.escape(f"### {pending.text}") + r"\n- Added: \d{4}-\d{2}-\d{2}\n- Status: active\n"
+        doc.markdown = re.sub(pattern, "", doc.markdown)
+        doc.save(update_fields=["markdown", "updated_at"])
+
+
+def _undo_task(pending: PendingExtraction) -> None:
+    """Remove the task line from the tenant's tasks Document."""
+    doc = Document.objects.filter(
+        tenant=pending.tenant, kind=Document.Kind.TASKS, slug="tasks"
+    ).first()
+    if doc:
+        pattern = re.escape(f"- [ ] {pending.text}") + r"  _\(added \d{4}-\d{2}-\d{2}\)_\n"
+        doc.markdown = re.sub(pattern, "", doc.markdown)
+        doc.save(update_fields=["markdown", "updated_at"])
 
 
 # ── Main handler ──────────────────────────────────────────────────────────────
@@ -134,6 +177,44 @@ def handle_extraction_callback(update: dict, tenant: Tenant) -> JsonResponse:
 
     _, action, pending_id = parts
 
+    # Undo actions operate on APPROVED items
+    is_undo = action in ("undo_lesson", "undo_goal", "undo_task")
+
+    if is_undo:
+        pending = PendingExtraction.objects.filter(
+            id=pending_id,
+            tenant=tenant,
+            status=PendingExtraction.Status.APPROVED,
+        ).first()
+
+        if not pending:
+            # May already be undone
+            already = PendingExtraction.objects.filter(
+                id=pending_id, tenant=tenant, status=PendingExtraction.Status.UNDONE,
+            ).exists()
+            if already:
+                return _answer_callback(callback_id, "Already removed")
+            return _answer_callback(callback_id, "Not found")
+
+        try:
+            if action == "undo_lesson":
+                _undo_lesson(pending)
+            elif action == "undo_goal":
+                _undo_goal(pending)
+            elif action == "undo_task":
+                _undo_task(pending)
+        except Exception:
+            logger.exception("extraction_callbacks: undo failed for %s", pending_id)
+            return _answer_callback(callback_id, "Something went wrong — try again")
+
+        pending.status = PendingExtraction.Status.UNDONE
+        pending.resolved_at = timezone.now()
+        pending.save(update_fields=["status", "resolved_at"])
+
+        _edit_message(chat_id, message_id, f"~{pending.text[:80]}~ — removed")
+        return _answer_callback(callback_id, "Removed!")
+
+    # Approve/dismiss actions operate on PENDING items
     pending = PendingExtraction.objects.filter(
         id=pending_id,
         tenant=tenant,
@@ -153,11 +234,11 @@ def handle_extraction_callback(update: dict, tenant: Tenant) -> JsonResponse:
 
     try:
         if action == "approve_lesson":
-            answer = _approve_lesson(pending)
+            answer, lesson_id = _approve_lesson(pending)
         elif action == "approve_goal":
-            answer = _approve_goal(pending)
+            answer, _ = _approve_goal(pending)
         elif action == "approve_task":
-            answer = _approve_task(pending)
+            answer, _ = _approve_task(pending)
         else:
             return _answer_callback(callback_id, "Unknown action")
     except Exception:
@@ -166,7 +247,11 @@ def handle_extraction_callback(update: dict, tenant: Tenant) -> JsonResponse:
 
     pending.status = PendingExtraction.Status.APPROVED
     pending.resolved_at = timezone.now()
-    pending.save(update_fields=["status", "resolved_at"])
+    if action == "approve_lesson" and lesson_id:
+        pending.lesson_id = lesson_id
+        pending.save(update_fields=["status", "resolved_at", "lesson_id"])
+    else:
+        pending.save(update_fields=["status", "resolved_at"])
 
     kind_emoji = {"lesson": "💡", "goal": "🎯", "task": "✅"}.get(pending.kind, "✅")
     _edit_message(chat_id, message_id, f"{kind_emoji} {pending.text[:80]}")

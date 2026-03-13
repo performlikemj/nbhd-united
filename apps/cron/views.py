@@ -230,25 +230,22 @@ def apply_pending_configs(request):
     )
     evaluated = query.count()
 
-    # Publish individual QStash tasks instead of processing synchronously.
-    # This prevents the web worker from blocking tool calls for all tenants.
-    from apps.cron.publish import publish_task
+    # Collect all tasks and publish in a single QStash batch call.
+    # This replaces 3 serial loops (~51 HTTP calls, ~25s blocking) with
+    # one batch HTTP call (~200ms).
+    from apps.cron.publish import publish_batch
 
-    config_enqueued = 0
-    config_failed = 0
+    batch_tasks: list[tuple[str, tuple, dict]] = []
+
+    # 1. Config updates for idle tenants with pending changes
+    config_count = 0
     for tenant in query:
-        try:
-            publish_task("apply_single_tenant_config", str(tenant.id))
-            config_enqueued += 1
-        except Exception:
-            logger.exception(
-                "Failed to enqueue config update for tenant %s", tenant.id
-            )
-            config_failed += 1
+        batch_tasks.append(("apply_single_tenant_config", (str(tenant.id),), {}))
+        config_count += 1
 
+    # 2. Image updates for tenants on stale image
     desired_tag = getattr(settings, "OPENCLAW_IMAGE_TAG", "latest")
-    image_enqueued = 0
-    image_failed = 0
+    image_count = 0
     if desired_tag and desired_tag != "latest":
         stale_image_tenants = Tenant.objects.filter(
             status=Tenant.Status.ACTIVE,
@@ -260,44 +257,40 @@ def apply_pending_configs(request):
         )
 
         for tenant in stale_image_tenants:
-            try:
-                publish_task(
-                    "apply_single_tenant_image",
-                    str(tenant.id),
-                    desired_tag,
-                )
-                image_enqueued += 1
-            except Exception:
-                logger.exception(
-                    "Failed to enqueue image update for tenant %s", tenant.id
-                )
-                image_failed += 1
+            batch_tasks.append(("apply_single_tenant_image", (str(tenant.id), desired_tag), {}))
+            image_count += 1
 
-    # Re-seed cron jobs via QStash (non-blocking).
-    cron_seed_enqueued = 0
-    cron_seed_failed = 0
-
+    # 3. Re-seed cron jobs for all active tenants
     active_tenants_with_containers = Tenant.objects.filter(
         status=Tenant.Status.ACTIVE,
         container_id__gt="",
     ).values_list("id", flat=True)
 
+    cron_seed_count = 0
     for tenant_id in active_tenants_with_containers:
-        try:
-            publish_task("seed_cron_jobs", str(tenant_id))
-            cron_seed_enqueued += 1
-        except Exception:
-            cron_seed_failed += 1
-            logger.exception("Failed to enqueue cron seed for tenant %s", tenant_id)
+        batch_tasks.append(("seed_cron_jobs", (str(tenant_id),), {}))
+        cron_seed_count += 1
+
+    # Single batch publish — one HTTP call instead of ~51 serial ones.
+    # Batch is all-or-nothing: either all tasks are enqueued or none are.
+    try:
+        enqueued = publish_batch(batch_tasks)
+    except Exception:
+        logger.exception("Batch publish failed for apply-pending-configs")
+        enqueued = 0
+
+    success = enqueued == len(batch_tasks) if batch_tasks else True
 
     return JsonResponse({
-        "config_enqueued": config_enqueued,
-        "config_failed": config_failed,
+        "config_enqueued": config_count if success else 0,
+        "config_failed": 0 if success else config_count,
         "evaluated": evaluated,
-        "image_enqueued": image_enqueued,
-        "image_failed": image_failed,
-        "cron_seed_enqueued": cron_seed_enqueued,
-        "cron_seed_failed": cron_seed_failed,
+        "image_enqueued": image_count if success else 0,
+        "image_failed": 0 if success else image_count,
+        "cron_seed_enqueued": cron_seed_count if success else 0,
+        "cron_seed_failed": 0 if success else cron_seed_count,
+        "batch_total": len(batch_tasks),
+        "batch_enqueued": enqueued,
     })
 
 
@@ -759,7 +752,7 @@ def broadcast_message(request):
     import hashlib
     broadcast_key = body.get("idempotency_key") or hashlib.sha256(message.encode()).hexdigest()[:16]
 
-    from apps.cron.publish import publish_task
+    from apps.cron.publish import publish_batch
 
     tenants = Tenant.objects.filter(
         status=Tenant.Status.ACTIVE,
@@ -767,19 +760,25 @@ def broadcast_message(request):
         container_fqdn__gt="",
     )
 
-    enqueued = 0
-    failed = 0
+    batch_tasks = []
     for tenant in tenants:
-        try:
-            # Per-tenant idempotency key prevents double-delivery if endpoint is
-            # called multiple times with the same message (e.g. retries).
-            tenant_key = f"{broadcast_key}-{str(tenant.id)[:8]}"
-            publish_task("broadcast_single_tenant", str(tenant.id), message, idempotency_key=tenant_key)
-            enqueued += 1
-        except Exception:
-            logger.exception("Failed to enqueue broadcast for tenant %s", tenant.id)
-            failed += 1
+        # Per-tenant deduplication key prevents double-delivery if endpoint is
+        # called multiple times with the same message (e.g. QStash retries).
+        tenant_key = f"{broadcast_key}-{str(tenant.id)[:8]}"
+        batch_tasks.append((
+            "broadcast_single_tenant",
+            (str(tenant.id), message),
+            {},
+            tenant_key,
+        ))
 
+    try:
+        enqueued = publish_batch(batch_tasks)
+    except Exception:
+        logger.exception("Batch publish failed for broadcast")
+        enqueued = 0
+
+    failed = len(batch_tasks) - enqueued
     return JsonResponse({"enqueued": enqueued, "failed": failed})
 
 
@@ -797,7 +796,7 @@ def dedup_crons(request):
         if not (provided and deploy_secret and provided == deploy_secret):
             return JsonResponse({"error": "Invalid signature"}, status=401)
 
-    from apps.cron.publish import publish_task
+    from apps.cron.publish import publish_batch
 
     tenants = Tenant.objects.filter(
         status=Tenant.Status.ACTIVE,
@@ -805,14 +804,15 @@ def dedup_crons(request):
         container_fqdn__gt="",
     )
 
-    enqueued = 0
-    failed = 0
-    for tenant in tenants:
-        try:
-            publish_task("dedup_cron_jobs", str(tenant.id))
-            enqueued += 1
-        except Exception:
-            logger.exception("Failed to enqueue dedup for tenant %s", tenant.id)
-            failed += 1
+    batch_tasks = [
+        ("dedup_cron_jobs", (str(tenant.id),), {})
+        for tenant in tenants
+    ]
 
-    return JsonResponse({"enqueued": enqueued, "failed": failed})
+    try:
+        enqueued = publish_batch(batch_tasks)
+    except Exception:
+        logger.exception("Batch publish failed for dedup")
+        enqueued = 0
+
+    return JsonResponse({"enqueued": enqueued, "failed": 0})

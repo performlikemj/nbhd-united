@@ -6,7 +6,7 @@ since weather doesn't change dramatically within a timezone.
 """
 from __future__ import annotations
 
-from urllib.parse import quote
+from urllib.parse import urlencode
 
 # Timezone → (latitude, longitude) mapping
 # Uses capital/major city of each timezone region
@@ -97,14 +97,15 @@ def get_coords_for_timezone(tz: str) -> tuple[float, float]:
 
 def build_weather_url_from_coords(lat: float, lon: float, tz: str) -> str:
     """Build an Open-Meteo forecast URL from explicit coordinates."""
-    return (
-        f"https://api.open-meteo.com/v1/forecast?"
-        f"latitude={lat}&longitude={lon}"
-        f"&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m"
-        f"&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
-        f"&timezone={quote(tz, safe='')}"
-        f"&forecast_days=3"
-    )
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "current": "temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m",
+        "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+        "timezone": tz,
+        "forecast_days": 3,
+    }
+    return f"https://api.open-meteo.com/v1/forecast?{urlencode(params)}"
 
 
 def build_weather_url(tz: str) -> str:

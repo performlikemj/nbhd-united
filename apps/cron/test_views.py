@@ -33,8 +33,8 @@ class ApplyPendingConfigsTest(TestCase):
         self.client = APIClient()
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    @patch("apps.cron.publish.publish_task")
-    def test_apply_pending_configs_enqueues_idle_tenants_only(self, mock_publish, mock_verify):
+    @patch("apps.cron.publish.publish_batch", side_effect=lambda tasks: len(tasks))
+    def test_apply_pending_configs_enqueues_idle_tenants_only(self, mock_batch, mock_verify):
         now = timezone.now()
         ready = _create_tenant_with_config_state(
             pending_config_version=2,
@@ -77,11 +77,9 @@ class ApplyPendingConfigsTest(TestCase):
         self.assertEqual(body["config_failed"], 0)
         self.assertEqual(body["evaluated"], 2)
 
-        # Verify publish_task was called for each eligible tenant
-        config_calls = [
-            c for c in mock_publish.call_args_list
-            if c[0][0] == "apply_single_tenant_config"
-        ]
+        # Verify publish_batch was called with tasks for each eligible tenant
+        batch_tasks = mock_batch.call_args[0][0]
+        config_calls = [t for t in batch_tasks if t[0] == "apply_single_tenant_config"]
         self.assertEqual(len(config_calls), 2)
 
         # Config version NOT bumped yet — that happens in the async task
