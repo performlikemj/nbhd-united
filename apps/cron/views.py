@@ -491,11 +491,30 @@ def bump_all_pending_configs(request):
         logger.warning("Unauthorized bump_all_pending_configs attempt")
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
-    from django.db.models import F as DbF
+    from django.db.models import F as DbF, Q
 
+    has_channel = Q(user__telegram_chat_id__isnull=False) | Q(user__line_user_id__isnull=False)
+    grace_cutoff = timezone.now() - timedelta(days=1)
+
+    # Reset no-channel tenants created >1 day ago to version 0
+    # (new tenants get a 24h grace period to link Telegram/LINE)
+    no_channel_reset = Tenant.objects.filter(
+        status=Tenant.Status.ACTIVE,
+        container_id__gt="",
+        created_at__lt=grace_cutoff,
+    ).exclude(has_channel).exclude(
+        config_version=0, pending_config_version=0,
+    ).update(config_version=0, pending_config_version=0)
+
+    if no_channel_reset:
+        logger.info("bump_all: reset %d no-channel tenant(s) to version 0", no_channel_reset)
+
+    # Only bump tenants that have a delivery channel (or were created <1 day ago)
     count = Tenant.objects.filter(
         status=Tenant.Status.ACTIVE,
         container_id__gt="",
+    ).filter(
+        has_channel | Q(created_at__gte=grace_cutoff)
     ).update(pending_config_version=DbF("config_version") + 1)
 
     logger.info("bump_all_pending_configs: marked %d tenant(s) for config update", count)
