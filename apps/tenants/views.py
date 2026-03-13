@@ -370,10 +370,6 @@ class HeartbeatConfigView(APIView):
         if "start_hour" in data:
             tenant.heartbeat_start_hour = data["start_hour"]
             update_fields.append("heartbeat_start_hour")
-        if "window_hours" in data:
-            tenant.heartbeat_window_hours = data["window_hours"]
-            update_fields.append("heartbeat_window_hours")
-
         if update_fields:
             tenant.full_clean()
             update_fields.append("updated_at")
