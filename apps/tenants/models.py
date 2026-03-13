@@ -164,8 +164,8 @@ class Tenant(models.Model):
         max_digits=10, decimal_places=4, default=0
     )
     monthly_token_budget = models.IntegerField(
-        default=2_000_000,
-        help_text="Per-user monthly token budget",
+        default=0,
+        help_text="Per-user monthly token budget (0 = use tier default)",
     )
 
     # NOTE: Per-tenant internal API keys were removed (2026-02-22).
@@ -256,8 +256,20 @@ class Tenant(models.Model):
         return self.status == self.Status.ACTIVE
 
     @property
+    def effective_token_budget(self) -> int:
+        """Resolve the active budget: explicit override or tier default.  0 = unlimited."""
+        from apps.billing.constants import TIER_TOKEN_BUDGETS
+
+        if self.monthly_token_budget > 0:
+            return self.monthly_token_budget
+        return TIER_TOKEN_BUDGETS.get(self.model_tier, 5_000_000)
+
+    @property
     def is_over_budget(self) -> bool:
-        return self.tokens_this_month >= self.monthly_token_budget
+        budget = self.effective_token_budget
+        if budget == 0:
+            return False  # unlimited (BYOK)
+        return self.tokens_this_month >= budget
 
     def bump_pending_config(self):
         """Signal that agent config needs refreshing."""

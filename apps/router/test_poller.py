@@ -107,6 +107,7 @@ class TelegramPollerDispatchTest(TestCase):
         tenant.status = Tenant.Status.ACTIVE
         tenant.is_trial = True
         tenant.monthly_token_budget = 100000
+        tenant.effective_token_budget = 100000
         tenant.tokens_this_month = 100000
         tenant.model_tier = Tenant.ModelTier.STARTER
         mock_resolve.return_value = tenant

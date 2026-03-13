@@ -58,3 +58,10 @@ MODEL_RATES: dict[str, dict[str, float]] = {
 }
 
 DEFAULT_RATE = {"input": 3.0, "output": 15.0, "display_name": "Unknown Model"}
+
+# Per-tier monthly token budgets.  0 = unlimited (BYOK users pay their own costs).
+TIER_TOKEN_BUDGETS: dict[str, int] = {
+    "starter": 5_000_000,
+    "premium": 10_000_000,
+    "byok": 0,
+}
