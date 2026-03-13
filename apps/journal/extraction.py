@@ -203,8 +203,11 @@ def _deliver_summary_telegram(
 
 def _deliver_summary_line(
     channel_token: str, line_user_id: str, items: list[PendingExtraction],
-) -> None:
-    """Send a Flex Message carousel — one bubble per item with a Remove button."""
+) -> bool:
+    """Send a Flex Message carousel — one bubble per item with a Remove button.
+
+    Returns True if delivery succeeded, False otherwise.
+    """
     kind_emoji = {"lesson": "💡", "goal": "🎯", "task": "✅"}
     bubbles = []
 
@@ -252,7 +255,7 @@ def _deliver_summary_line(
         })
 
     if not bubbles:
-        return
+        return True
 
     try:
         resp = requests.post(
@@ -277,8 +280,11 @@ def _deliver_summary_line(
                 resp.status_code,
                 resp.text[:300],
             )
+            return False
+        return True
     except Exception:
         logger.exception("Failed to send extraction LINE summary user_id=%s", line_user_id)
+        return False
 
 
 # ── Channel resolution ───────────────────────────────────────────────────────
@@ -320,15 +326,21 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
     # Resolve content
     content = _get_daily_note_content(tenant, today) or _get_fallback_content(tenant)
     if not content:
-        logger.info("extraction: no content for tenant %s, skipping", str(tenant.id)[:8])
+        logger.warning("extraction: no content for tenant %s, skipping", str(tenant.id)[:8])
         return {"lessons": 0, "goals": 0, "tasks": 0, "skipped": "no_content"}
 
     logger.info("extraction: tenant=%s content_length=%d", str(tenant.id)[:8], len(content))
 
     # Resolve delivery channel (Telegram or LINE)
     channel, recipient_id, channel_token = _resolve_delivery_channel(tenant)
+    logger.info(
+        "extraction: tenant=%s channel=%s preferred=%s",
+        str(tenant.id)[:8],
+        channel,
+        getattr(tenant.user, "preferred_channel", "unset"),
+    )
     if channel == "none":
-        logger.info("extraction: no delivery channel for tenant %s, skipping", str(tenant.id)[:8])
+        logger.warning("extraction: no delivery channel for tenant %s, skipping", str(tenant.id)[:8])
         return {"lessons": 0, "goals": 0, "tasks": 0, "skipped": "no_channel"}
 
     # Call LLM
@@ -378,6 +390,7 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
             expires_at=expires_at,
             status=PendingExtraction.Status.APPROVED,
             resolved_at=now,
+            source_date=today,
         )
         _, lesson_id = _approve_lesson(pending)
         if lesson_id:
@@ -401,6 +414,7 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
             expires_at=expires_at,
             status=PendingExtraction.Status.APPROVED,
             resolved_at=now,
+            source_date=today,
         )
         _approve_goal(pending)
         added_items.append(pending)
@@ -421,6 +435,7 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
             expires_at=expires_at,
             status=PendingExtraction.Status.APPROVED,
             resolved_at=now,
+            source_date=today,
         )
         _approve_task(pending)
         added_items.append(pending)
@@ -430,12 +445,27 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
     if added_items:
         if channel == "telegram":
             _deliver_summary_telegram(channel_token, recipient_id, added_items)
-        else:
-            _deliver_summary_line(channel_token, recipient_id, added_items)
+        elif channel == "line":
+            ok = _deliver_summary_line(channel_token, recipient_id, added_items)
+            if not ok:
+                # Fallback to Telegram if LINE delivery fails
+                chat_id = getattr(tenant.user, "telegram_chat_id", None)
+                bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
+                if chat_id and bot_token:
+                    logger.warning("extraction: LINE failed, falling back to Telegram for tenant %s", str(tenant.id)[:8])
+                    _deliver_summary_telegram(bot_token, chat_id, added_items)
+    else:
+        logger.warning(
+            "extraction: tenant=%s zero items after dedup (raw: lessons=%d goals=%d tasks=%d)",
+            str(tenant.id)[:8],
+            len(extracted.get("lessons", [])),
+            len(extracted.get("goals", [])),
+            len(extracted.get("tasks", [])),
+        )
 
     logger.info(
-        "extraction: tenant=%s lessons=%d goals=%d tasks=%d",
-        str(tenant.id)[:8], counts["lessons"], counts["goals"], counts["tasks"],
+        "extraction: tenant=%s added lessons=%d goals=%d tasks=%d channel=%s",
+        str(tenant.id)[:8], counts["lessons"], counts["goals"], counts["tasks"], channel,
     )
 
     # Embed today's daily note for contextual recall (best-effort)
