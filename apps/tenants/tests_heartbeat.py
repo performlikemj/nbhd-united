@@ -195,7 +195,8 @@ class HeartbeatAPITest(TestCase):
         self.assertEqual(resp.data["start_hour"], 8)
         self.assertEqual(resp.data["window_hours"], 6)
 
-    def test_patch_update_window(self):
+    def test_patch_update_window_hours_ignored(self):
+        """PATCH ignores window_hours (locked to 6) but still applies start_hour."""
         resp = self.client.patch(
             self.url,
             {"start_hour": 10, "window_hours": 4},
@@ -203,10 +204,10 @@ class HeartbeatAPITest(TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["start_hour"], 10)
-        self.assertEqual(resp.data["window_hours"], 4)
+        self.assertEqual(resp.data["window_hours"], 6)  # locked
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.heartbeat_start_hour, 10)
-        self.assertEqual(self.tenant.heartbeat_window_hours, 4)
+        self.assertEqual(self.tenant.heartbeat_window_hours, 6)  # unchanged
 
     def test_patch_disable(self):
         resp = self.client.patch(
