@@ -33,9 +33,16 @@ class TenantModelTest(TestCase):
     def test_tenant_budget(self):
         tenant = create_tenant(display_name="Test", telegram_chat_id=222)
         self.assertFalse(tenant.is_over_budget)
-        tenant.tokens_this_month = tenant.monthly_token_budget
+        tenant.tokens_this_month = tenant.effective_token_budget
         tenant.save()
         self.assertTrue(tenant.is_over_budget)
+
+    def test_byok_never_over_budget(self):
+        tenant = create_tenant(display_name="BYOK", telegram_chat_id=223)
+        tenant.model_tier = "byok"
+        tenant.tokens_this_month = 999_999_999
+        tenant.save()
+        self.assertFalse(tenant.is_over_budget)
 
     def test_unique_chat_id(self):
         create_tenant(display_name="User1", telegram_chat_id=333)

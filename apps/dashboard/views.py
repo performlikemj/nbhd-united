@@ -56,7 +56,7 @@ class DashboardView(APIView):
                 "messages_this_month": tenant.messages_this_month,
                 "tokens_this_month": tenant.tokens_this_month,
                 "estimated_cost_this_month": str(tenant.estimated_cost_this_month),
-                "monthly_token_budget": tenant.monthly_token_budget,
+                "monthly_token_budget": tenant.effective_token_budget,
                 "total_input_tokens": usage["total_input_tokens"] or 0,
                 "total_output_tokens": usage["total_output_tokens"] or 0,
                 "total_cost": str(usage["total_cost"] or 0),

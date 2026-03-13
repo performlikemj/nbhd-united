@@ -118,7 +118,7 @@ def _record_usage_from_openclaw_result(tenant: Tenant, result: object) -> None:
 
 def _build_budget_exhausted_message(chat_id: int, tenant: Tenant) -> dict:
     frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
-    budget_remaining = max(tenant.monthly_token_budget - tenant.tokens_this_month, 0)
+    budget_remaining = max(tenant.effective_token_budget - tenant.tokens_this_month, 0)
     plus_message = (
         " Opus requests are paused while at quota."
         if tenant.model_tier == Tenant.ModelTier.PREMIUM

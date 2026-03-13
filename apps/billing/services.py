@@ -152,6 +152,8 @@ def handle_checkout_completed(session_data: dict) -> None:
     tenant.stripe_subscription_id = subscription_id
     tenant.model_tier = tier
     tenant.is_trial = False
+    # Reset to tier default when plan changes (0 = use tier default)
+    tenant.monthly_token_budget = 0
 
     if tenant.status == Tenant.Status.SUSPENDED:
         tenant.status = Tenant.Status.ACTIVE
@@ -164,7 +166,8 @@ def handle_checkout_completed(session_data: dict) -> None:
 
     tenant.save(update_fields=[
         "stripe_customer_id", "stripe_subscription_id",
-        "model_tier", "is_trial", "status", "updated_at",
+        "model_tier", "is_trial", "status", "monthly_token_budget",
+        "updated_at",
     ])
 
     if was_provisioning and same_subscription:
