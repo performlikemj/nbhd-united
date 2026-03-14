@@ -198,10 +198,10 @@ class HiddenSystemCronsTest(TestCase):
         names = [j["name"] for j in resp.json()["jobs"]]
         self.assertNotIn("Background Tasks", names)
         self.assertNotIn("Nightly Extraction", names)
+        self.assertNotIn("Heartbeat Check-in", names)
         # User-visible system crons should still appear
         self.assertIn("Morning Briefing", names)
-        self.assertIn("Heartbeat Check-in", names)
-        self.assertEqual(len(names), 4)
+        self.assertEqual(len(names), 3)
 
     def test_delete_blocked_for_system_crons(self):
         resp = self.client.delete("/api/v1/cron-jobs/Background Tasks/")

@@ -806,10 +806,11 @@ def broadcast_message(request):
 @csrf_exempt
 @require_POST
 def dedup_crons(request):
-    """Remove duplicate cron jobs from all active tenant containers.
+    """Remove duplicate cron jobs from tenant containers.
 
     URL: /api/cron/dedup-crons/
-    One-off cleanup endpoint. Fans out per-tenant via QStash.
+    Without ?tenant=UUID: fans out per-tenant via QStash (async).
+    With ?tenant=UUID: runs synchronously for that tenant (immediate result).
     """
     if not verify_qstash_signature(request):
         deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
@@ -817,6 +818,29 @@ def dedup_crons(request):
         if not (provided and deploy_secret and provided == deploy_secret):
             return JsonResponse({"error": "Invalid signature"}, status=401)
 
+    # Single-tenant sync mode — immediate feedback for debugging
+    tenant_id = request.GET.get("tenant") or request.POST.get("tenant_id")
+    if tenant_id:
+        from apps.orchestrator.services import dedup_tenant_cron_jobs
+
+        tenant = Tenant.objects.filter(
+            id=tenant_id,
+            status=Tenant.Status.ACTIVE,
+            container_fqdn__gt="",
+        ).first()
+        if not tenant:
+            return JsonResponse({"error": f"Tenant {tenant_id} not found or inactive"}, status=404)
+
+        result = dedup_tenant_cron_jobs(tenant)
+        return JsonResponse({
+            "tenant": str(tenant.id),
+            "kept": result["kept"],
+            "deleted": result["deleted"],
+            "errors": result["errors"],
+            "duplicates_found": len(result["duplicates"]),
+        })
+
+    # Fan out to all active tenants via QStash
     from apps.cron.publish import publish_batch
 
     tenants = Tenant.objects.filter(
