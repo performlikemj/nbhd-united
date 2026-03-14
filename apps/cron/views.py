@@ -364,6 +364,15 @@ def force_reseed_crons(request):
             except GatewayError as e:
                 entry["errors"].append(f"add {job.get('name', '?')}: {str(e)[:80]}")
 
+        # Safety net: dedup in case partial deletion left orphaned jobs
+        try:
+            from apps.orchestrator.services import dedup_tenant_cron_jobs
+            dedup_result = dedup_tenant_cron_jobs(tenant)
+            if dedup_result.get("deleted", 0) > 0:
+                entry["deduped"] = dedup_result["deleted"]
+        except Exception:
+            pass  # Non-critical — don't fail the reseed
+
         results.append(entry)
 
     total_created = sum(r["created"] for r in results)
