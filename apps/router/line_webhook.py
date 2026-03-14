@@ -893,6 +893,12 @@ class LineWebhookView(View):
         ai_text = self._extract_ai_response(result)
         if not ai_text:
             logger.warning(
+                "Empty AI response from %s: keys=%s, choices=%r",
+                tenant.container_fqdn,
+                list(result.keys()),
+                result.get("choices", [])[:1],
+            )
+            logger.warning(
                 "Empty response from container %s, retrying once",
                 tenant.container_fqdn,
             )
@@ -919,9 +925,12 @@ class LineWebhookView(View):
 
         if not ai_text:
             logger.error(
-                "No response after retry from container %s for line_user_id=%s",
+                "No response after retry from container %s for line_user_id=%s: "
+                "keys=%s, choices=%r",
                 tenant.container_fqdn,
                 line_user_id,
+                list(result.keys()),
+                result.get("choices", [])[:1],
             )
             _send_line_flex(
                 line_user_id,

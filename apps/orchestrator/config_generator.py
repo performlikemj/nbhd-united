@@ -319,9 +319,6 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     # delete+recreate these jobs with the correct tz at that point.
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
 
-    # Resolve absolute base URL for webhook-type cron jobs
-    api_base = str(getattr(settings, "API_BASE_URL", "") or "").strip().rstrip("/")
-
     jobs = [
         {
             "name": "Morning Briefing",
@@ -369,20 +366,10 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "delivery": {"mode": "none"},
             "enabled": True,
         },
-        {
-            "name": "Nightly Extraction",
-            # 30 minutes after Evening Check-in so the check-in has time to
-            # write to the daily note before extraction reads it.
-            "schedule": {"kind": "cron", "expr": "30 21 * * *", "tz": user_tz},
-            "sessionTarget": "none",
-            "payload": {
-                "kind": "webhook",
-                "url": f"{api_base}/api/v1/journal/extract/",
-                "body": {"tenant_id": str(tenant.id)},
-            },
-            "delivery": {"mode": "none"},
-            "enabled": True,
-        },
+        # NOTE: Nightly Extraction is NOT an OpenClaw cron job — it's a
+        # Django endpoint (/api/v1/journal/extract/) triggered via QStash.
+        # OpenClaw's cron system only supports "agentTurn" payloads, not
+        # webhooks.  See apps/journal/extraction_views.py.
     ]
 
     # Heartbeat cron — hourly during user's chosen window, cheap model
