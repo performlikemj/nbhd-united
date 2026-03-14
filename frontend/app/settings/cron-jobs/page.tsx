@@ -11,6 +11,7 @@ import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
 import { Toast, useToast } from "@/components/toast";
 import TimezoneSelector from "@/components/timezone-selector";
+import { WorkingHoursSection } from "@/components/working-hours-section";
 import { CronJob } from "@/lib/types";
 import {
   useBulkDeleteCronJobsMutation,
@@ -483,6 +484,8 @@ export default function SettingsCronJobsPage() {
           onDismiss={() => {/* state auto-managed by hook */}}
         />
       )}
+
+      <WorkingHoursSection timezone={me?.timezone} />
 
       <SectionCard
         title="Scheduled Tasks"

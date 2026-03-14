@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # These are infrastructure tasks — the user gains nothing from seeing them.
 HIDDEN_SYSTEM_CRONS = frozenset({
     "Background Tasks",
+    "Heartbeat Check-in",
     "Nightly Extraction",
 })
 

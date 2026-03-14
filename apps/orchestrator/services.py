@@ -396,7 +396,20 @@ def dedup_tenant_cron_jobs(
             logger.exception("dedup: failed to list crons for tenant %s", str(tenant.id)[:8])
             return {"kept": 0, "deleted": 0, "errors": 1, "duplicates": []}
 
-        jobs = _extract_cron_jobs(list_result) or []
+        jobs = _extract_cron_jobs(list_result)
+        if jobs is None:
+            logger.warning(
+                "dedup: tenant %s — could not parse cron.list response, skipping. "
+                "Raw response: %s",
+                str(tenant.id)[:8],
+                repr(list_result)[:300],
+            )
+            return {"kept": 0, "deleted": 0, "errors": 1, "duplicates": []}
+
+        logger.info(
+            "dedup: tenant %s — found %d jobs to check",
+            str(tenant.id)[:8], len(jobs),
+        )
 
     # Group by name
     by_name: dict[str, list[dict]] = {}
