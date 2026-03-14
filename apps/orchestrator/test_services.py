@@ -24,7 +24,7 @@ class OrchestratorServiceTest(TestCase):
     )
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch("apps.orchestrator.services.assign_acr_pull_role")
-    @patch("apps.orchestrator.services.seed_cron_jobs", return_value={"tenant_id": "seed", "jobs_total": 6, "created": 6, "errors": 0})
+    @patch("apps.orchestrator.services.seed_cron_jobs", return_value={"tenant_id": "seed", "jobs_total": 5, "created": 5, "errors": 0})
     @patch("apps.cron.views._schedule_qstash_task", create=True, return_value=None)
     @patch("apps.orchestrator.services.create_tenant_file_share")
     @patch("apps.orchestrator.services.register_environment_storage")
@@ -70,7 +70,7 @@ class OrchestratorServiceTest(TestCase):
     )
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch("apps.orchestrator.services.assign_acr_pull_role")
-    @patch("apps.orchestrator.services.seed_cron_jobs", return_value={"tenant_id": "seed", "jobs_total": 6, "created": 6, "errors": 0})
+    @patch("apps.orchestrator.services.seed_cron_jobs", return_value={"tenant_id": "seed", "jobs_total": 5, "created": 5, "errors": 0})
     @patch("apps.cron.views._schedule_qstash_task", create=True, return_value=None)
     @patch("apps.orchestrator.services.create_tenant_file_share")
     @patch("apps.orchestrator.services.register_environment_storage")
@@ -235,17 +235,16 @@ class SeedCronJobsTest(TestCase):
             {"name": "Evening Check-in", "enabled": True},
             {"name": "Week Ahead Review", "enabled": True},
             {"name": "Background Tasks", "enabled": True},
-            {"name": "Nightly Extraction", "enabled": True},
             {"name": "Heartbeat Check-in", "enabled": True},
             {"jobs": []},  # dedup pass cron.list (no dupes)
         ]
 
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 6)
+        self.assertEqual(result["created"], 5)
         self.assertEqual(result["errors"], 0)
         self.assertEqual(mock_invoke.call_args_list[0].args[1], "cron.list")
-        for i in range(1, 7):
+        for i in range(1, 6):
             self.assertEqual(mock_invoke.call_args_list[i].args[1], "cron.add")
         mock_sleep.assert_not_called()
 
@@ -261,7 +260,6 @@ class SeedCronJobsTest(TestCase):
             {"name": "Evening Check-in"},
             {"name": "Week Ahead Review"},
             {"name": "Background Tasks"},
-            {"name": "Nightly Extraction"},
             {"name": "Heartbeat Check-in"},
         ]}
 
@@ -285,15 +283,14 @@ class SeedCronJobsTest(TestCase):
     ):
         """When some jobs already exist, only the missing ones are created."""
         mock_invoke.side_effect = [
-            # initial cron.list — 3 of 6 already exist
+            # initial cron.list — 3 of 5 already exist
             {"jobs": [
                 {"name": "Morning Briefing"},
                 {"name": "Evening Check-in"},
                 {"name": "Week Ahead Review"},
             ]},
-            # cron.add for the 3 missing jobs
+            # cron.add for the 2 missing jobs
             {"name": "Background Tasks", "enabled": True},
-            {"name": "Nightly Extraction", "enabled": True},
             {"name": "Heartbeat Check-in", "enabled": True},
             # dedup pass cron.list
             {"jobs": []},
@@ -301,13 +298,13 @@ class SeedCronJobsTest(TestCase):
 
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 3)
+        self.assertEqual(result["created"], 2)
         self.assertEqual(result["errors"], 0)
         self.assertEqual(result["skipped_existing"], 3)
-        # 1 list + 3 adds + 1 dedup list = 5
-        self.assertEqual(mock_invoke.call_count, 5)
+        # 1 list + 2 adds + 1 dedup list = 4
+        self.assertEqual(mock_invoke.call_count, 4)
         # Verify the add calls are for the right tool
-        for i in range(1, 4):
+        for i in range(1, 3):
             self.assertEqual(mock_invoke.call_args_list[i].args[1], "cron.add")
         mock_sleep.assert_not_called()
 
@@ -326,14 +323,13 @@ class SeedCronJobsTest(TestCase):
             GatewayError("temporary API error"),
             {"name": "Week Ahead Review", "enabled": True},
             {"name": "Background Tasks", "enabled": True},
-            {"name": "Nightly Extraction", "enabled": True},
             {"name": "Heartbeat Check-in", "enabled": True},
             {"jobs": []},  # dedup pass
         ]
 
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 5)
+        self.assertEqual(result["created"], 4)
         self.assertEqual(result["errors"], 1)
         mock_sleep.assert_not_called()
 
@@ -353,14 +349,13 @@ class SeedCronJobsTest(TestCase):
             {"name": "Evening Check-in", "enabled": True},
             {"name": "Week Ahead Review", "enabled": True},
             {"name": "Background Tasks", "enabled": True},
-            {"name": "Nightly Extraction", "enabled": True},
             {"name": "Heartbeat Check-in", "enabled": True},
             {"jobs": []},  # dedup pass
         ]
 
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 6)
+        self.assertEqual(result["created"], 5)
         self.assertEqual(result["errors"], 0)
         mock_sleep.assert_called_once_with(5)
 
@@ -375,10 +370,23 @@ class SeedCronJobsTest(TestCase):
     ):
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 6)
+        self.assertEqual(result["created"], 5)
         self.assertEqual(result["errors"], 0)
         self.assertFalse(result.get("skipped", False))
         mock_invoke.assert_not_called()
+
+    def test_cron_seed_jobs_all_use_agent_turn_payload(self):
+        """All cron seed jobs must use kind=agentTurn — OpenClaw rejects webhook payloads."""
+        from apps.orchestrator.config_generator import build_cron_seed_jobs
+
+        jobs = build_cron_seed_jobs(self.tenant)
+        for job in jobs:
+            self.assertEqual(
+                job["payload"]["kind"],
+                "agentTurn",
+                f"Job '{job['name']}' uses payload kind='{job['payload']['kind']}' "
+                f"— OpenClaw only supports 'agentTurn'",
+            )
 
 
 class DedupTenantCronJobsTest(TestCase):
