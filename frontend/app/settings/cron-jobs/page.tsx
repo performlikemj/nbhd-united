@@ -25,6 +25,17 @@ import {
 } from "@/lib/queries";
 
 /* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+/** Strip internal date-context prefix injected by _inject_date_context(). */
+function stripPromptPrefix(msg: string): string {
+  const marker = "1 day away.\n\n";
+  const idx = msg.indexOf(marker);
+  return idx !== -1 ? msg.slice(idx + marker.length) : msg;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Task templates                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -133,7 +144,7 @@ function toEditForm(job: CronJob): EditFormState {
   return {
     expr: job.schedule.expr,
     tz: job.schedule.tz || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-    message: job.payload.message,
+    message: stripPromptPrefix(job.payload.message),
     deliveryMode: job.delivery.mode,
     deliveryChannel: job.delivery.channel ?? "",
   };
@@ -795,7 +806,7 @@ export default function SettingsCronJobsPage() {
                       </div>
 
                       <p className="mt-2 text-sm text-ink-muted line-clamp-2">
-                        {(job.payload?.message ?? "").slice(0, 200)}
+                        {stripPromptPrefix(job.payload?.message ?? "").slice(0, 200)}
                       </p>
 
                       {/* Action buttons */}
