@@ -16,15 +16,20 @@ from apps.tenants.models import Tenant
 
 
 _CRON_CONTEXT_PREAMBLE = (
-    "**Before acting, establish context:**\n"
-    "1. Load today's daily note (`nbhd_daily_note_get`). Read ALL sections — "
-    "morning-report, heartbeat-log, evening-check-in, and any other content. "
-    "This is your ground truth for what has already been communicated today.\n"
+    "**MANDATORY — do this BEFORE following the instructions below:**\n"
+    "1. Load today's daily note (`nbhd_daily_note_get`). Read EVERY section — "
+    "morning-report, heartbeat-log, evening-check-in, and any others. "
+    "This tells you what the user has already been told today.\n"
     "2. Load the user's tasks (`nbhd_document_get` kind='tasks', slug='tasks') "
     "and goals (`nbhd_document_get` kind='goal', slug='goals').\n"
-    "3. Cross-reference: do NOT repeat information already present in the daily note. "
-    "Do NOT report tasks/goals whose status hasn't changed since the last section was written. "
-    "Only surface genuinely new or changed information.\n\n"
+    "3. Before writing or sending anything, check each item against the daily note:\n"
+    "   - Was it mentioned earlier AND nothing has changed since? → skip it\n"
+    "   - Was it mentioned earlier BUT the status has changed (completed, "
+    "updated, escalated, new deadline)? → include the UPDATE, not the original info\n"
+    "   - Is it brand new — not in any section of today's note? → include it\n"
+    "   If nothing new or updated survives this check, that is a VALID outcome — "
+    "say so briefly or reply HEARTBEAT_OK (for heartbeats) rather than "
+    "padding with stale content.\n\n"
 )
 
 
