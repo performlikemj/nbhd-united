@@ -228,6 +228,51 @@ def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
         logger.error("Broadcast failed for tenant %s: %s", tenant_id[:8], e)
 
 
+def hibernate_idle_tenants_task() -> dict:
+    """Find active tenants idle >24h and hibernate their containers."""
+    import logging
+    from datetime import timedelta
+
+    from django.db.models import Q
+    from django.utils import timezone
+
+    from apps.orchestrator.hibernation import hibernate_idle_tenant
+    from apps.tenants.models import Tenant
+
+    logger = logging.getLogger(__name__)
+
+    cutoff = timezone.now() - timedelta(hours=24)
+    idle_tenants = Tenant.objects.filter(
+        status=Tenant.Status.ACTIVE,
+        container_id__gt="",
+        hibernated_at__isnull=True,
+    ).filter(
+        Q(last_message_at__lt=cutoff)
+        | Q(last_message_at__isnull=True, provisioned_at__lt=cutoff)
+    ).select_for_update(skip_locked=True)
+
+    hibernated = 0
+    failed = 0
+    for tenant in idle_tenants:
+        # Re-check last_message_at to avoid TOCTOU race
+        tenant.refresh_from_db(fields=["last_message_at", "hibernated_at"])
+        if tenant.hibernated_at:
+            continue
+        if tenant.last_message_at and tenant.last_message_at >= cutoff:
+            continue
+
+        if hibernate_idle_tenant(tenant):
+            hibernated += 1
+        else:
+            failed += 1
+
+    logger.info(
+        "hibernate_idle_tenants: hibernated=%d failed=%d",
+        hibernated, failed,
+    )
+    return {"hibernated": hibernated, "failed": failed}
+
+
 def dedup_cron_jobs_task(tenant_id: str) -> None:
     """Remove duplicate cron jobs from a tenant's container.
 

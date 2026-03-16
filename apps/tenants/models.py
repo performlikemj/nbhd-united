@@ -223,6 +223,13 @@ class Tenant(models.Model):
         help_text="User has explicitly acknowledged the risk of disabling gates",
     )
 
+    # Idle hibernation
+    hibernated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the container was idle-hibernated. Null = running normally.",
+    )
+
     # Metadata
     last_message_at = models.DateTimeField(null=True, blank=True)
     config_version = models.IntegerField(

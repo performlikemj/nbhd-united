@@ -264,7 +264,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "lang_confirmed": "Great, I'll communicate in {lang_name}! 🗣️\n\nWhat country do you live in?",
         "ask_zone": "That country has multiple timezones. Which area are you in?",
         "ask_interests": "Got it! Last question — what are you most hoping your assistant can help with?\n(work stuff, personal organization, creative projects, just someone to chat with... anything goes!)",
-        "complete": "Thanks, {name}! I've got everything I need. 🎉\n\nYour assistant is all set up and ready to go. From here on out, you're chatting directly with your personal AI.\n\nGo ahead — say hi, ask a question, or tell it what you need help with!",
+        "complete": "Thanks, {name}! I've got everything I need. 🎉\n\nYour assistant is all set up and ready to go. From here on out, you're chatting directly with your personal AI.\n\nOne thing to note: if your assistant hasn't heard from you in a while, it may take about a minute to start back up.\n\nGo ahead — say hi, ask a question, or tell it what you need help with!",
     },
     "ja": {
         "welcome": (
@@ -284,7 +284,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "lang_confirmed": "{lang_name}でお話ししますね！🗣️\n\nどちらの国にお住まいですか？",
         "ask_zone": "その国には複数のタイムゾーンがあります。どの地域ですか？",
         "ask_interests": "ありがとうございます！最後に、アシスタントにどんなことを手伝ってほしいですか？\n（仕事、生活の整理、クリエイティブなこと、なんでもOKです！）",
-        "complete": "{name}さん、ありがとうございます！準備完了です🎉\n\nこれからは、あなた専用のAIと直接お話しできます。\n\n何でも聞いてくださいね！",
+        "complete": "{name}さん、ありがとうございます！準備完了です🎉\n\nこれからは、あなた専用のAIと直接お話しできます。\n\nお知らせ：しばらくご連絡がないと、アシスタントの起動に約1分かかることがあります。\n\n何でも聞いてくださいね！",
     },
     "es": {
         "welcome": (
@@ -304,7 +304,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "lang_confirmed": "¡Perfecto, hablaré en {lang_name}! 🗣️\n\n¿En qué país vives?",
         "ask_zone": "Ese país tiene varias zonas horarias. ¿En qué área estás?",
         "ask_interests": "¡Entendido! Última pregunta — ¿en qué esperas que tu asistente te pueda ayudar?\n(trabajo, organización personal, proyectos creativos... ¡lo que sea!)",
-        "complete": "¡Gracias, {name}! Ya tengo todo lo que necesito. 🎉\n\nTu asistente está listo. A partir de ahora, hablas directamente con tu IA personal.\n\n¡Adelante, pregunta lo que quieras!",
+        "complete": "¡Gracias, {name}! Ya tengo todo lo que necesito. 🎉\n\nTu asistente está listo. A partir de ahora, hablas directamente con tu IA personal.\n\nUna nota: si tu asistente no ha tenido noticias tuyas por un tiempo, puede tardar alrededor de un minuto en reactivarse.\n\n¡Adelante, pregunta lo que quieras!",
     },
 }
 

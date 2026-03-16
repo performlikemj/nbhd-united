@@ -77,6 +77,12 @@ TASK_MAP = {
     "dedup_cron_jobs": "apps.orchestrator.tasks.dedup_cron_jobs_task",
     # Daily infra cost refresh from Azure billing
     "refresh_infra_costs": "apps.billing.tasks.refresh_infra_costs_task",
+    # Idle hibernation — scale-to-zero for inactive tenants
+    "hibernate_idle_tenants": "apps.orchestrator.tasks.hibernate_idle_tenants_task",
+    "deliver_buffered_messages": "apps.orchestrator.hibernation.deliver_buffered_messages_task",
+    "resume_hibernated_crons": "apps.orchestrator.hibernation.resume_hibernated_crons_task",
+    # Cleanup delivered message buffers
+    "cleanup_delivered_buffers": "apps.orchestrator.hibernation.cleanup_delivered_buffers_task",
 }
 
 
@@ -226,6 +232,7 @@ def apply_pending_configs(request):
         pending_config_version__gt=models.F("config_version"),
         status=Tenant.Status.ACTIVE,
         container_id__gt="",
+        hibernated_at__isnull=True,
     )
     query = query.filter(
         models.Q(last_message_at__isnull=True) | models.Q(last_message_at__lt=cutoff),
@@ -252,6 +259,7 @@ def apply_pending_configs(request):
         stale_image_tenants = Tenant.objects.filter(
             status=Tenant.Status.ACTIVE,
             container_id__gt="",
+            hibernated_at__isnull=True,
         ).exclude(
             container_image_tag=desired_tag,
         ).filter(
@@ -262,10 +270,11 @@ def apply_pending_configs(request):
             batch_tasks.append(("apply_single_tenant_image", (str(tenant.id), desired_tag), {}))
             image_count += 1
 
-    # 3. Re-seed cron jobs for all active tenants
+    # 3. Re-seed cron jobs for all active (non-hibernated) tenants
     active_tenants_with_containers = Tenant.objects.filter(
         status=Tenant.Status.ACTIVE,
         container_id__gt="",
+        hibernated_at__isnull=True,
     ).values_list("id", flat=True)
 
     cron_seed_count = 0
