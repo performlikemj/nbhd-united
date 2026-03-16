@@ -63,6 +63,7 @@ class TenantSerializer(serializers.ModelSerializer):
             "monthly_token_budget", "last_message_at",
             "provisioned_at", "config_refreshed_at", "created_at",
             "pending_deletion", "deletion_scheduled_at",
+            "preferred_model",
         )
         read_only_fields = fields
 

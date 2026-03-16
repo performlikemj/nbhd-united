@@ -188,12 +188,19 @@ def get_transparency_data(tenant: Tenant) -> dict:
     )
 
     actual_cost = float(totals["total_cost"])
-    # Build rate card
+
+    from apps.orchestrator.config_generator import TIER_MODEL_CONFIGS
+
+    # Build rate card filtered to tenant's tier
+    tier_model_keys = set(TIER_MODEL_CONFIGS.get(tenant.model_tier, {}).keys())
     rate_card = []
     seen = set()
     for key, rate in MODEL_RATES.items():
         name = rate["display_name"]
         if name in seen:
+            continue
+        # For non-BYOK tiers, only show tier-relevant models
+        if tier_model_keys and key not in tier_model_keys:
             continue
         seen.add(name)
         rate_card.append({
@@ -202,6 +209,20 @@ def get_transparency_data(tenant: Tenant) -> dict:
             "input_per_million": rate["input"],
             "output_per_million": rate["output"],
         })
+    # BYOK or empty tier: show all models
+    if not rate_card:
+        seen_fallback = set()
+        for key, rate in MODEL_RATES.items():
+            name = rate["display_name"]
+            if name in seen_fallback:
+                continue
+            seen_fallback.add(name)
+            rate_card.append({
+                "model": key,
+                "display_name": name,
+                "input_per_million": rate["input"],
+                "output_per_million": rate["output"],
+            })
 
     infra_breakdown = _get_infra_breakdown(tenant, first)
 

@@ -213,6 +213,14 @@ class Tenant(models.Model):
         help_text="Percentage of surplus to donate (0-100)",
     )
 
+    # Model preference
+    preferred_model = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="User's preferred primary model (overrides tier default when set)",
+    )
+
     # Action gating
     gate_all_actions = models.BooleanField(
         default=True,

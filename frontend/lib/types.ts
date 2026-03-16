@@ -53,6 +53,7 @@ export interface Tenant {
   tokens_this_month: number;
   estimated_cost_this_month: string;
   monthly_token_budget: number;
+  preferred_model: string;
   last_message_at: string | null;
   provisioned_at: string | null;
   created_at: string;

@@ -14,6 +14,7 @@ from .models import Tenant
 from .serializers import HeartbeatConfigSerializer, TenantRegistrationSerializer, TenantSerializer, UserSerializer
 from apps.cron.publish import publish_task
 from apps.journal.services import seed_default_templates_for_tenant
+from apps.orchestrator.config_generator import TIER_MODEL_CONFIGS
 
 logger = logging.getLogger(__name__)
 
@@ -640,6 +641,31 @@ class DeleteAccountView(APIView):
                 )
 
             return Response({"scheduled": False, "detail": "Account deleted."}, status=status.HTTP_200_OK)
+
+
+class PreferredModelView(APIView):
+    """Set the user's preferred primary model within their tier."""
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request):
+        tenant = request.user.tenant
+        model_id = request.data.get("preferred_model", "")
+
+        tier_models = TIER_MODEL_CONFIGS.get(tenant.model_tier, {})
+        if model_id and model_id not in tier_models:
+            return Response(
+                {"error": "Model not available for your tier"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        tenant.preferred_model = model_id
+        tenant.save(update_fields=["preferred_model"])
+        tenant.bump_pending_config()
+
+        return Response({
+            "preferred_model": model_id,
+            "model_tier": tenant.model_tier,
+        })
 
 
 class CancelDeletionView(APIView):
