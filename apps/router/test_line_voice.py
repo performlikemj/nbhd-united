@@ -207,7 +207,9 @@ class HandleAudioMessageTest(TestCase):
         view = LineWebhookView()
         view._handle_message(self._make_event())
 
-        mock_loading.assert_called_once_with("U1234567890")
+        # Called twice: once before Whisper, once after transcription succeeds
+        self.assertEqual(mock_loading.call_count, 2)
+        mock_loading.assert_called_with("U1234567890")
         mock_transcribe.assert_called_once_with("msg-999")
         # Should have resolved tenant (meaning transcription succeeded and
         # flow continued to text processing)
