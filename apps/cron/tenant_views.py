@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 HIDDEN_SYSTEM_CRONS = frozenset({
     "Background Tasks",
     "Heartbeat Check-in",
-    "Nightly Extraction",
 })
 
 

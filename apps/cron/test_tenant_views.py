@@ -188,7 +188,6 @@ class HiddenSystemCronsTest(TestCase):
                 {"name": "Morning Briefing", "enabled": True},
                 {"name": "Evening Check-in", "enabled": True},
                 {"name": "Background Tasks", "enabled": True},
-                {"name": "Nightly Extraction", "enabled": True},
                 {"name": "Heartbeat Check-in", "enabled": True},
                 {"name": "Week Ahead Review", "enabled": True},
             ],
@@ -197,7 +196,6 @@ class HiddenSystemCronsTest(TestCase):
         self.assertEqual(resp.status_code, 200)
         names = [j["name"] for j in resp.json()["jobs"]]
         self.assertNotIn("Background Tasks", names)
-        self.assertNotIn("Nightly Extraction", names)
         self.assertNotIn("Heartbeat Check-in", names)
         # User-visible system crons should still appear
         self.assertIn("Morning Briefing", names)
@@ -207,8 +205,8 @@ class HiddenSystemCronsTest(TestCase):
         resp = self.client.delete("/api/v1/cron-jobs/Background Tasks/")
         self.assertEqual(resp.status_code, 403)
 
-    def test_delete_blocked_for_nightly_extraction(self):
-        resp = self.client.delete("/api/v1/cron-jobs/Nightly Extraction/")
+    def test_delete_blocked_for_heartbeat_checkin(self):
+        resp = self.client.delete("/api/v1/cron-jobs/Heartbeat Check-in/")
         self.assertEqual(resp.status_code, 403)
 
     def test_patch_blocked_for_system_crons(self):
@@ -221,7 +219,7 @@ class HiddenSystemCronsTest(TestCase):
 
     def test_toggle_blocked_for_system_crons(self):
         resp = self.client.post(
-            "/api/v1/cron-jobs/Nightly Extraction/toggle/",
+            "/api/v1/cron-jobs/Heartbeat Check-in/toggle/",
             {"enabled": False},
             format="json",
         )

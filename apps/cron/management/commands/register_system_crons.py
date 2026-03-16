@@ -38,6 +38,8 @@ SYSTEM_CRONS = [
     ("hibernate-idle-tenants", "0 */6 * * *", "/api/cron/trigger/hibernate_idle_tenants/"),
     # Daily at 07:00 UTC — clean up delivered message buffers older than 7 days
     ("cleanup-delivered-buffers", "0 7 * * *", "/api/cron/trigger/cleanup_delivered_buffers/"),
+    # Daily at 21:30 UTC — extract goals/tasks/lessons from daily notes
+    ("nightly-extraction", "30 21 * * *", "/api/cron/trigger/nightly_extraction/"),
 ]
 
 
