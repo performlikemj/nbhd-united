@@ -428,6 +428,11 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     tier = tenant.model_tier or "starter"
     models_config = TIER_MODELS.get(tier, TIER_MODELS["starter"])
     model_entries = TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["starter"])
+
+    # Allow user to override primary model within their tier
+    if tenant.preferred_model and tenant.preferred_model in model_entries:
+        models_config = {**models_config, "primary": tenant.preferred_model}
+
     # Collect all configured plugins
     _plugin_defs = [
         (

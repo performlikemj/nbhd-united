@@ -358,6 +358,13 @@ export function updateDonationPreference(data: {
   });
 }
 
+export function updatePreferredModel(preferred_model: string): Promise<{ preferred_model: string; model_tier: string }> {
+  return apiFetch("/api/v1/tenants/settings/preferred-model/", {
+    method: "PATCH",
+    body: JSON.stringify({ preferred_model }),
+  });
+}
+
 // Automations
 type AutomationResponse = Automation[] | { results?: Automation[] };
 

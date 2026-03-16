@@ -49,6 +49,7 @@ import {
   fetchUsageSummary,
   fetchTransparency,
   updateDonationPreference,
+  updatePreferredModel,
   fetchWeeklyReviews,
   updateProfile,
   generateTelegramLink,
@@ -171,6 +172,16 @@ export function useDonationPreferenceMutation() {
     mutationFn: updateDonationPreference,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["usage-transparency"] });
+    },
+  });
+}
+
+export function usePreferredModelMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updatePreferredModel,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["tenant"] });
     },
   });
 }

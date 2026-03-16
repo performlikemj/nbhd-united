@@ -7,6 +7,7 @@ from .views import (
     HeartbeatConfigView,
     OnboardTenantView,
     PersonaListView,
+    PreferredModelView,
     ProfileView,
     ProvisioningStatusView,
     RefreshConfigView,
@@ -41,5 +42,6 @@ urlpatterns = [
     path("heartbeat/", HeartbeatConfigView.as_view(), name="heartbeat-config"),
     path("delete-account/", DeleteAccountView.as_view(), name="delete-account"),
     path("cancel-deletion/", CancelDeletionView.as_view(), name="cancel-deletion"),
+    path("settings/preferred-model/", PreferredModelView.as_view(), name="preferred-model"),
     path("", include(router.urls)),
 ]
