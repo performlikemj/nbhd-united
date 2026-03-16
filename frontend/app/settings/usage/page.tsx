@@ -63,7 +63,7 @@ export default function SettingsUsagePage() {
               <StatCard label="Messages This Month" value={tenant.messages_this_month.toLocaleString()} />
               <StatCard
                 label="Estimated Cost"
-                value={`$${Number(tenant.estimated_cost_this_month).toFixed(2)}`}
+                value={`$${(usageSummary?.total_cost ?? Number(tenant.estimated_cost_this_month)).toFixed(2)}`}
                 tone="signal"
               />
             </div>
