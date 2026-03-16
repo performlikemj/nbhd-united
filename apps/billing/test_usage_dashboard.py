@@ -172,12 +172,19 @@ class TransparencyServiceTest(TestCase):
         self.assertIn("infrastructure", data["explanation"].lower())
 
     def test_transparency_rate_card(self):
+        # Default tenant is starter tier — rate card filtered to tier models
         data = get_transparency_data(self.tenant)
         names = [r["display_name"] for r in data["model_rates"]]
-        self.assertIn("Claude Opus 4.6", names)
-        self.assertIn("Claude Sonnet 4.5", names)
-        self.assertIn("Claude Haiku 4.5", names)
         self.assertIn("MiniMax M2.5", names)
+
+    def test_transparency_rate_card_premium(self):
+        self.tenant.model_tier = "premium"
+        self.tenant.save(update_fields=["model_tier"])
+        data = get_transparency_data(self.tenant)
+        names = [r["display_name"] for r in data["model_rates"]]
+        self.assertIn("Claude Sonnet 4.6", names)
+        self.assertIn("Claude Opus 4.6", names)
+        self.assertNotIn("MiniMax M2.5", names)
 
     def test_transparency_no_usage(self):
         tenant2 = create_tenant(display_name="NoUse", telegram_chat_id=999666)
