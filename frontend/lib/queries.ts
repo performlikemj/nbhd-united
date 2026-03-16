@@ -42,6 +42,7 @@ import {
   generateLineLink,
   unlinkLine,
   setPreferredChannel,
+  fetchHorizons,
   fetchUsageHistory,
   fetchUsageSummary,
   fetchTransparency,
@@ -115,6 +116,14 @@ export function useUsageHistoryQuery() {
     queryKey: ["usage-history"],
     queryFn: fetchUsageHistory,
     staleTime: 30_000,
+  });
+}
+
+export function useHorizonsQuery() {
+  return useQuery({
+    queryKey: ["horizons"],
+    queryFn: fetchHorizons,
+    staleTime: 60_000,
   });
 }
 
