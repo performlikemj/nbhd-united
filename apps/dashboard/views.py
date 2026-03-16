@@ -118,12 +118,13 @@ class HorizonsView(APIView):
             )
         )
 
-        # 2. Pending goal/task extractions
+        # 2. Pending goal/task extractions (exclude expired)
         pending = list(
             PendingExtraction.objects.filter(
                 tenant=tenant,
                 kind__in=[PendingExtraction.Kind.GOAL, PendingExtraction.Kind.TASK],
                 status=PendingExtraction.Status.PENDING,
+                expires_at__gte=timezone.now(),
             ).order_by("-created_at")[:10].values(
                 "id", "kind", "text", "confidence", "source_date", "created_at",
             )
