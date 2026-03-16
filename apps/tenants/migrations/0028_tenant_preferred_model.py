@@ -4,7 +4,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("tenants", "0024_tenant_donation_fields"),
+        ("tenants", "0027_tenant_hibernated_at"),
     ]
 
     operations = [
