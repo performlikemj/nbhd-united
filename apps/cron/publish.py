@@ -30,7 +30,7 @@ def _publish_log_context(task_name: str, args, kwargs):
     return context
 
 
-def publish_task(task_name: str, *args, idempotency_key: str | None = None, **kwargs):
+def publish_task(task_name: str, *args, idempotency_key: str | None = None, delay_seconds: int | None = None, **kwargs):
     """
     Publish a one-off task to QStash for async execution.
 
@@ -72,6 +72,8 @@ def publish_task(task_name: str, *args, idempotency_key: str | None = None, **kw
         }
         if idempotency_key:
             publish_kwargs["deduplication_id"] = idempotency_key
+        if delay_seconds:
+            publish_kwargs["delay"] = f"{delay_seconds}s"
 
         client.message.publish_json(**publish_kwargs)
         logger.info(

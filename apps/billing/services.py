@@ -157,6 +157,7 @@ def handle_checkout_completed(session_data: dict) -> None:
 
     if tenant.status == Tenant.Status.SUSPENDED:
         tenant.status = Tenant.Status.ACTIVE
+        tenant.hibernated_at = None  # Clear idle hibernation if set
         should_provision = False
         should_wake = True  # Wake hibernated container
     else:
@@ -167,7 +168,7 @@ def handle_checkout_completed(session_data: dict) -> None:
     tenant.save(update_fields=[
         "stripe_customer_id", "stripe_subscription_id",
         "model_tier", "is_trial", "status", "monthly_token_budget",
-        "updated_at",
+        "hibernated_at", "updated_at",
     ])
 
     if was_provisioning and same_subscription:
@@ -274,7 +275,8 @@ def handle_invoice_payment_failed(invoice_data: dict) -> None:
             logger.exception("Failed to suspend crons for tenant %s", tenant.id)
 
     tenant.status = Tenant.Status.SUSPENDED
-    tenant.save(update_fields=["status", "updated_at"])
+    tenant.hibernated_at = None  # Billing suspension supersedes idle hibernation
+    tenant.save(update_fields=["status", "hibernated_at", "updated_at"])
     logger.warning("Paused tenant %s after failed invoice", tenant.id)
 
     # Hibernate the container (scale to zero) to stop resource costs

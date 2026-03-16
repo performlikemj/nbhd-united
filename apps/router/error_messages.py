@@ -12,9 +12,10 @@ Follows the same MESSAGES dict + helper pattern as onboarding.py.
 # Error message templates
 # ---------------------------------------------------------------------------
 # Placeholders:
-#   budget_exhausted: {remaining}, {plus_message}, {billing_url}
-#   waking_up:        (none)
-#   suspended:        {billing_url}
+#   budget_exhausted:    {remaining}, {plus_message}, {billing_url}
+#   waking_up:           (none)
+#   hibernation_waking:  (none)
+#   suspended:           {billing_url}
 # ---------------------------------------------------------------------------
 
 ERROR_MESSAGES: dict[str, dict[str, str]] = {
@@ -30,6 +31,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             "Your assistant is waking up! \U0001f305"
             " This usually takes about a minute."
             " Just send your message again in a moment!"
+        ),
+        "hibernation_waking": (
+            "Your assistant is waking up from a break! \u2600\ufe0f"
+            " Your message has been received and will be delivered shortly."
+            " This usually takes about a minute."
         ),
         "suspended": (
             "Your assistant is paused."
@@ -52,6 +58,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             "\u901a\u5e38\u7d041\u5206\u307b\u3069\u304b\u304b\u308a\u307e\u3059\u3002"
             "\u5c11\u3057\u5f85\u3063\u3066\u304b\u3089\u3082\u3046\u4e00\u5ea6\u30e1\u30c3\u30bb\u30fc\u30b8\u3092\u9001\u3063\u3066\u304f\u3060\u3055\u3044\uff01"
         ),
+        "hibernation_waking": (
+            "\u30a2\u30b7\u30b9\u30bf\u30f3\u30c8\u304c\u4f11\u61a9\u304b\u3089\u8d77\u52d5\u4e2d\u3067\u3059\uff01\u2600\ufe0f"
+            "\u30e1\u30c3\u30bb\u30fc\u30b8\u3092\u53d7\u3051\u53d6\u308a\u307e\u3057\u305f\u3002\u307e\u3082\u306a\u304f\u304a\u5c4a\u3051\u3057\u307e\u3059\u3002"
+            "\u901a\u5e38\u7d041\u5206\u307b\u3069\u304b\u304b\u308a\u307e\u3059\u3002"
+        ),
         "suspended": (
             "\u30a2\u30b7\u30b9\u30bf\u30f3\u30c8\u306f\u4e00\u6642\u505c\u6b62\u4e2d\u3067\u3059\u3002"
             "AI\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u306e\u904b\u7528\u306b\u306f\u5b9f\u969b\u306e\u8cbb\u7528\u304c\u304b\u304b\u308a\u307e\u3059"
@@ -72,6 +83,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             "\u00a1Tu asistente se est\u00e1 despertando! \U0001f305"
             " Normalmente tarda alrededor de un minuto."
             " \u00a1Env\u00eda tu mensaje de nuevo en un momento!"
+        ),
+        "hibernation_waking": (
+            "\u00a1Tu asistente est\u00e1 volviendo de un descanso! \u2600\ufe0f"
+            " Tu mensaje ha sido recibido y ser\u00e1 entregado en breve."
+            " Normalmente tarda alrededor de un minuto."
         ),
         "suspended": (
             "Tu asistente est\u00e1 en pausa."
@@ -94,6 +110,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             " Cela prend g\u00e9n\u00e9ralement environ une minute."
             " Renvoyez votre message dans un instant\u00a0!"
         ),
+        "hibernation_waking": (
+            "Votre assistant revient de pause\u00a0! \u2600\ufe0f"
+            " Votre message a \u00e9t\u00e9 re\u00e7u et sera livr\u00e9 sous peu."
+            " Cela prend g\u00e9n\u00e9ralement environ une minute."
+        ),
         "suspended": (
             "Votre assistant est en pause."
             " Faire fonctionner un agent IA co\u00fbte de l\u2019argent r\u00e9el"
@@ -114,6 +135,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             "Dein Assistent wird gerade gestartet! \U0001f305"
             " Das dauert normalerweise etwa eine Minute."
             " Sende deine Nachricht gleich noch einmal!"
+        ),
+        "hibernation_waking": (
+            "Dein Assistent kommt gerade aus einer Pause zur\u00fcck! \u2600\ufe0f"
+            " Deine Nachricht wurde empfangen und wird in K\u00fcrze zugestellt."
+            " Das dauert normalerweise etwa eine Minute."
         ),
         "suspended": (
             "Dein Assistent ist pausiert."
@@ -136,6 +162,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             " Isso geralmente leva cerca de um minuto."
             " Envie sua mensagem novamente em instantes!"
         ),
+        "hibernation_waking": (
+            "Seu assistente est\u00e1 voltando de um intervalo! \u2600\ufe0f"
+            " Sua mensagem foi recebida e ser\u00e1 entregue em breve."
+            " Isso geralmente leva cerca de um minuto."
+        ),
         "suspended": (
             "Seu assistente est\u00e1 pausado."
             " Executar um agente de IA custa dinheiro real"
@@ -156,6 +187,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             "\u60a8\u7684\u52a9\u624b\u6b63\u5728\u542f\u52a8\uff01\U0001f305"
             "\u901a\u5e38\u9700\u8981\u7ea6\u4e00\u5206\u949f\u3002"
             "\u8bf7\u7a0d\u540e\u518d\u53d1\u9001\u6d88\u606f\uff01"
+        ),
+        "hibernation_waking": (
+            "\u60a8\u7684\u52a9\u624b\u6b63\u5728\u4ece\u4f11\u606f\u4e2d\u5524\u9192\uff01\u2600\ufe0f"
+            "\u60a8\u7684\u6d88\u606f\u5df2\u6536\u5230\uff0c\u5c06\u5f88\u5feb\u9001\u8fbe\u3002"
+            "\u901a\u5e38\u9700\u8981\u7ea6\u4e00\u5206\u949f\u3002"
         ),
         "suspended": (
             "\u60a8\u7684\u52a9\u624b\u5df2\u6682\u505c\u3002"
@@ -178,6 +214,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             " \ubcf4\ud1b5 \uc57d 1\ubd84 \uc815\ub3c4 \uac78\ub9bd\ub2c8\ub2e4."
             " \uc7a0\uc2dc \ud6c4 \ub2e4\uc2dc \uba54\uc2dc\uc9c0\ub97c \ubcf4\ub0b4\uc8fc\uc138\uc694!"
         ),
+        "hibernation_waking": (
+            "\uc5b4\uc2dc\uc2a4\ud134\ud2b8\uac00 \ud734\uc2dd\uc5d0\uc11c \ub3cc\uc544\uc654\uc2b5\ub2c8\ub2e4! \u2600\ufe0f"
+            " \uba54\uc2dc\uc9c0\uac00 \uc811\uc218\ub418\uc5c8\uc73c\uba70 \uacf3 \uc804\ub2ec\ub420 \uc608\uc815\uc785\ub2c8\ub2e4."
+            " \ubcf4\ud1b5 \uc57d 1\ubd84 \uc815\ub3c4 \uac78\ub9bd\ub2c8\ub2e4."
+        ),
         "suspended": (
             "\uc5b4\uc2dc\uc2a4\ud134\ud2b8\uac00 \uc77c\uc2dc \uc815\uc9c0\ub418\uc5c8\uc2b5\ub2c8\ub2e4."
             " AI \uc5d0\uc774\uc804\ud2b8\ub97c \uc6b4\uc601\ud558\ub824\uba74 \uc2e4\uc81c \ube44\uc6a9\uc774 \ub4ed\ub2c8\ub2e4"
@@ -198,6 +239,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             "Il tuo assistente si sta avviando! \U0001f305"
             " Di solito ci vuole circa un minuto."
             " Invia di nuovo il tuo messaggio tra un momento!"
+        ),
+        "hibernation_waking": (
+            "Il tuo assistente sta tornando dalla pausa! \u2600\ufe0f"
+            " Il tuo messaggio \u00e8 stato ricevuto e verr\u00e0 consegnato a breve."
+            " Di solito ci vuole circa un minuto."
         ),
         "suspended": (
             "Il tuo assistente \u00e8 in pausa."
@@ -220,6 +266,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             " Dit duurt meestal ongeveer een minuut."
             " Stuur je bericht zo meteen opnieuw!"
         ),
+        "hibernation_waking": (
+            "Je assistent komt terug van een pauze! \u2600\ufe0f"
+            " Je bericht is ontvangen en wordt binnenkort afgeleverd."
+            " Dit duurt meestal ongeveer een minuut."
+        ),
         "suspended": (
             "Je assistent is gepauzeerd."
             " Het draaien van een AI-agent kost echt geld"
@@ -240,6 +291,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             "\u0412\u0430\u0448 \u0430\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442 \u0437\u0430\u043f\u0443\u0441\u043a\u0430\u0435\u0442\u0441\u044f! \U0001f305"
             " \u041e\u0431\u044b\u0447\u043d\u043e \u044d\u0442\u043e \u0437\u0430\u043d\u0438\u043c\u0430\u0435\u0442 \u043e\u043a\u043e\u043b\u043e \u043c\u0438\u043d\u0443\u0442\u044b."
             " \u041e\u0442\u043f\u0440\u0430\u0432\u044c\u0442\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435 \u0441\u043d\u043e\u0432\u0430 \u0447\u0435\u0440\u0435\u0437 \u043c\u0438\u043d\u0443\u0442\u043a\u0443!"
+        ),
+        "hibernation_waking": (
+            "\u0412\u0430\u0448 \u0430\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442 \u0432\u043e\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u0442\u0441\u044f \u043f\u043e\u0441\u043b\u0435 \u043f\u0435\u0440\u0435\u0440\u044b\u0432\u0430! \u2600\ufe0f"
+            " \u0412\u0430\u0448\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435 \u043f\u043e\u043b\u0443\u0447\u0435\u043d\u043e \u0438 \u0431\u0443\u0434\u0435\u0442 \u0434\u043e\u0441\u0442\u0430\u0432\u043b\u0435\u043d\u043e \u0432 \u0431\u043b\u0438\u0436\u0430\u0439\u0448\u0435\u0435 \u0432\u0440\u0435\u043c\u044f."
+            " \u041e\u0431\u044b\u0447\u043d\u043e \u044d\u0442\u043e \u0437\u0430\u043d\u0438\u043c\u0430\u0435\u0442 \u043e\u043a\u043e\u043b\u043e \u043c\u0438\u043d\u0443\u0442\u044b."
         ),
         "suspended": (
             "\u0412\u0430\u0448 \u0430\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442 \u043f\u0440\u0438\u043e\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d."
@@ -262,6 +318,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             " \u0639\u0627\u062f\u0629\u064b \u064a\u0633\u062a\u063a\u0631\u0642 \u0647\u0630\u0627 \u062d\u0648\u0627\u0644\u064a \u062f\u0642\u064a\u0642\u0629."
             " \u0623\u0631\u0633\u0644 \u0631\u0633\u0627\u0644\u062a\u0643 \u0645\u0631\u0629 \u0623\u062e\u0631\u0649 \u0628\u0639\u062f \u0644\u062d\u0638\u0627\u062a!"
         ),
+        "hibernation_waking": (
+            "\u0645\u0633\u0627\u0639\u062f\u0643 \u064a\u0639\u0648\u062f \u0645\u0646 \u0627\u0633\u062a\u0631\u0627\u062d\u0629! \u2600\ufe0f"
+            " \u062a\u0645 \u0627\u0633\u062a\u0644\u0627\u0645 \u0631\u0633\u0627\u0644\u062a\u0643 \u0648\u0633\u064a\u062a\u0645 \u062a\u0633\u0644\u064a\u0645\u0647\u0627 \u0642\u0631\u064a\u0628\u064b\u0627."
+            " \u0639\u0627\u062f\u0629\u064b \u064a\u0633\u062a\u063a\u0631\u0642 \u0647\u0630\u0627 \u062d\u0648\u0627\u0644\u064a \u062f\u0642\u064a\u0642\u0629."
+        ),
         "suspended": (
             "\u0645\u0633\u0627\u0639\u062f\u0643 \u0645\u062a\u0648\u0642\u0641 \u0645\u0624\u0642\u062a\u064b\u0627."
             " \u062a\u0634\u063a\u064a\u0644 \u0648\u0643\u064a\u0644 \u0630\u0643\u0627\u0621 \u0627\u0635\u0637\u0646\u0627\u0639\u064a \u064a\u0643\u0644\u0641 \u0623\u0645\u0648\u0627\u0644\u064b\u0627 \u062d\u0642\u064a\u0642\u064a\u0629"
@@ -282,6 +343,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             "\u0906\u092a\u0915\u093e \u0938\u0939\u093e\u092f\u0915 \u0936\u0941\u0930\u0942 \u0939\u094b \u0930\u0939\u093e \u0939\u0948! \U0001f305"
             " \u0906\u092e\u0924\u094c\u0930 \u092a\u0930 \u092f\u0939 \u0932\u0917\u092d\u0917 \u090f\u0915 \u092e\u093f\u0928\u091f \u0932\u0947\u0924\u093e \u0939\u0948\u0964"
             " \u0915\u0943\u092a\u092f\u093e \u0925\u094b\u0921\u093c\u0940 \u0926\u0947\u0930 \u092e\u0947\u0902 \u0926\u094b\u092c\u093e\u0930\u093e \u0938\u0902\u0926\u0947\u0936 \u092d\u0947\u091c\u0947\u0902!"
+        ),
+        "hibernation_waking": (
+            "\u0906\u092a\u0915\u093e \u0938\u0939\u093e\u092f\u0915 \u0935\u093f\u0930\u093e\u092e \u0938\u0947 \u0932\u094c\u091f \u0930\u0939\u093e \u0939\u0948! \u2600\ufe0f"
+            " \u0906\u092a\u0915\u093e \u0938\u0902\u0926\u0947\u0936 \u092a\u094d\u0930\u093e\u092a\u094d\u0924 \u0939\u094b \u0917\u092f\u093e \u0939\u0948 \u0914\u0930 \u091c\u0932\u094d\u0926 \u0939\u0940 \u092a\u0939\u0941\u0901\u091a\u093e \u0926\u093f\u092f\u093e \u091c\u093e\u090f\u0917\u093e\u0964"
+            " \u0906\u092e\u0924\u094c\u0930 \u092a\u0930 \u092f\u0939 \u0932\u0917\u092d\u0917 \u090f\u0915 \u092e\u093f\u0928\u091f \u0932\u0947\u0924\u093e \u0939\u0948\u0964"
         ),
         "suspended": (
             "\u0906\u092a\u0915\u093e \u0938\u0939\u093e\u092f\u0915 \u0930\u0941\u0915\u093e \u0939\u0941\u0906 \u0939\u0948\u0964"
@@ -304,6 +370,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             " Genellikle yakla\u015f\u0131k bir dakika s\u00fcrer."
             " Biraz sonra mesaj\u0131n\u0131z\u0131 tekrar g\u00f6nderin!"
         ),
+        "hibernation_waking": (
+            "Asistan\u0131n\u0131z moladan d\u00f6n\u00fcyor! \u2600\ufe0f"
+            " Mesaj\u0131n\u0131z al\u0131nd\u0131 ve k\u0131sa s\u00fcre i\u00e7inde iletilecek."
+            " Genellikle yakla\u015f\u0131k bir dakika s\u00fcrer."
+        ),
         "suspended": (
             "Asistan\u0131n\u0131z duraklatild\u0131."
             " Bir AI ajan\u0131 \u00e7al\u0131\u015ft\u0131rmak ger\u00e7ek paraya mal olur"
@@ -324,6 +395,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             "\u0e1c\u0e39\u0e49\u0e0a\u0e48\u0e27\u0e22\u0e02\u0e2d\u0e07\u0e04\u0e38\u0e13\u0e01\u0e33\u0e25\u0e31\u0e07\u0e40\u0e23\u0e34\u0e48\u0e21\u0e17\u0e33\u0e07\u0e32\u0e19! \U0001f305"
             " \u0e42\u0e14\u0e22\u0e1b\u0e01\u0e15\u0e34\u0e08\u0e30\u0e43\u0e0a\u0e49\u0e40\u0e27\u0e25\u0e32\u0e1b\u0e23\u0e30\u0e21\u0e32\u0e13\u0e2b\u0e19\u0e36\u0e48\u0e07\u0e19\u0e32\u0e17\u0e35"
             " \u0e01\u0e23\u0e38\u0e13\u0e32\u0e2a\u0e48\u0e07\u0e02\u0e49\u0e2d\u0e04\u0e27\u0e32\u0e21\u0e2d\u0e35\u0e01\u0e04\u0e23\u0e31\u0e49\u0e07\u0e43\u0e19\u0e2d\u0e35\u0e01\u0e2a\u0e31\u0e01\u0e04\u0e23\u0e39\u0e48!"
+        ),
+        "hibernation_waking": (
+            "\u0e1c\u0e39\u0e49\u0e0a\u0e48\u0e27\u0e22\u0e02\u0e2d\u0e07\u0e04\u0e38\u0e13\u0e01\u0e25\u0e31\u0e1a\u0e21\u0e32\u0e08\u0e32\u0e01\u0e01\u0e32\u0e23\u0e1e\u0e31\u0e01\u0e1c\u0e48\u0e2d\u0e19\u0e41\u0e25\u0e49\u0e27! \u2600\ufe0f"
+            " \u0e02\u0e49\u0e2d\u0e04\u0e27\u0e32\u0e21\u0e02\u0e2d\u0e07\u0e04\u0e38\u0e13\u0e44\u0e14\u0e49\u0e23\u0e31\u0e1a\u0e41\u0e25\u0e49\u0e27\u0e41\u0e25\u0e30\u0e08\u0e30\u0e2a\u0e48\u0e07\u0e16\u0e36\u0e07\u0e43\u0e19\u0e44\u0e21\u0e48\u0e0a\u0e49\u0e32"
+            " \u0e42\u0e14\u0e22\u0e1b\u0e01\u0e15\u0e34\u0e08\u0e30\u0e43\u0e0a\u0e49\u0e40\u0e27\u0e25\u0e32\u0e1b\u0e23\u0e30\u0e21\u0e32\u0e13\u0e2b\u0e19\u0e36\u0e48\u0e07\u0e19\u0e32\u0e17\u0e35"
         ),
         "suspended": (
             "\u0e1c\u0e39\u0e49\u0e0a\u0e48\u0e27\u0e22\u0e02\u0e2d\u0e07\u0e04\u0e38\u0e13\u0e16\u0e39\u0e01\u0e2b\u0e22\u0e38\u0e14\u0e0a\u0e31\u0e48\u0e27\u0e04\u0e23\u0e32\u0e27"
@@ -346,6 +422,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             " Th\u01b0\u1eddng m\u1ea5t kho\u1ea3ng m\u1ed9t ph\u00fat."
             " H\u00e3y g\u1eedi l\u1ea1i tin nh\u1eafn sau \u00edt ph\u00fat!"
         ),
+        "hibernation_waking": (
+            "Tr\u1ee3 l\u00fd c\u1ee7a b\u1ea1n \u0111ang tr\u1edf l\u1ea1i sau gi\u1edd ngh\u1ec9! \u2600\ufe0f"
+            " Tin nh\u1eafn c\u1ee7a b\u1ea1n \u0111\u00e3 \u0111\u01b0\u1ee3c nh\u1eadn v\u00e0 s\u1ebd \u0111\u01b0\u1ee3c g\u1eedi s\u1edbm."
+            " Th\u01b0\u1eddng m\u1ea5t kho\u1ea3ng m\u1ed9t ph\u00fat."
+        ),
         "suspended": (
             "Tr\u1ee3 l\u00fd c\u1ee7a b\u1ea1n \u0111\u00e3 b\u1ecb t\u1ea1m d\u1eebng."
             " V\u1eadn h\u00e0nh m\u1ed9t AI agent t\u1ed1n chi ph\u00ed th\u1ef1c t\u1ebf"
@@ -366,6 +447,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             "Tw\u00f3j asystent si\u0119 uruchamia! \U0001f305"
             " Zwykle zajmuje to oko\u0142o minuty."
             " Wy\u015blij wiadomo\u015b\u0107 ponownie za chwil\u0119!"
+        ),
+        "hibernation_waking": (
+            "Tw\u00f3j asystent wraca po przerwie! \u2600\ufe0f"
+            " Twoja wiadomo\u015b\u0107 zosta\u0142a odebrana i zostanie dostarczona wkr\u00f3tce."
+            " Zwykle zajmuje to oko\u0142o minuty."
         ),
         "suspended": (
             "Tw\u00f3j asystent jest wstrzymany."
@@ -388,6 +474,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             " Biasanya memakan waktu sekitar satu menit."
             " Kirim pesan Anda lagi sebentar lagi!"
         ),
+        "hibernation_waking": (
+            "Asisten Anda kembali dari istirahat! \u2600\ufe0f"
+            " Pesan Anda telah diterima dan akan segera dikirim."
+            " Biasanya memakan waktu sekitar satu menit."
+        ),
         "suspended": (
             "Asisten Anda dijeda."
             " Menjalankan agen AI memerlukan biaya nyata"
@@ -408,6 +499,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             "Pembantu anda sedang bermula! \U0001f305"
             " Biasanya mengambil masa kira-kira satu minit."
             " Hantar mesej anda semula sebentar lagi!"
+        ),
+        "hibernation_waking": (
+            "Pembantu anda kembali dari rehat! \u2600\ufe0f"
+            " Mesej anda telah diterima dan akan dihantar tidak lama lagi."
+            " Biasanya mengambil masa kira-kira satu minit."
         ),
         "suspended": (
             "Pembantu anda dijeda."
@@ -430,6 +526,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             " Karaniwang tumatagal ng isang minuto."
             " Ipadala ulit ang iyong mensahe maya-maya!"
         ),
+        "hibernation_waking": (
+            "Bumabalik ang iyong assistant mula sa pahinga! \u2600\ufe0f"
+            " Natanggap na ang iyong mensahe at ipapadala ito sa lalong madaling panahon."
+            " Karaniwang tumatagal ng isang minuto."
+        ),
         "suspended": (
             "Naka-pause ang iyong assistant."
             " Ang pagpapatakbo ng AI agent ay nagkakahalaga ng totoong pera"
@@ -450,6 +551,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             "Msaidizi wako anaanza! \U0001f305"
             " Kawaida huchukua dakika moja hivi."
             " Tuma ujumbe wako tena baada ya muda mfupi!"
+        ),
+        "hibernation_waking": (
+            "Msaidizi wako anarudi kutoka mapumziko! \u2600\ufe0f"
+            " Ujumbe wako umepokelewa na utatumwa hivi karibuni."
+            " Kawaida huchukua dakika moja hivi."
         ),
         "suspended": (
             "Msaidizi wako amesimamishwa."

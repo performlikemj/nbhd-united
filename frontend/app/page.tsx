@@ -217,6 +217,10 @@ export default function LandingPage() {
             </div>
           ))}
         </div>
+
+        <p className="mt-6 text-center text-xs text-ink-muted">
+          Your assistant may take up to a minute to respond after periods of inactivity.
+        </p>
       </section>
 
       {/* Footer provided by AppShell's SiteFooter */}
