@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 LINE_API_BASE = "https://api.line.me/v2/bot"
 LINE_CONTENT_API = "https://api-data.line.me/v2/bot/message"
 CHAT_COMPLETIONS_TIMEOUT = 120.0  # generous timeout for AI response
+VOICE_CHAT_TIMEOUT = 180.0  # extra budget for voice (cold-start after Whisper)
 LOADING_SECONDS = 60  # loading animation max (auto-clears on response)
 WHISPER_API_URL = "https://api.openai.com/v1/audio/transcriptions"
 
@@ -555,9 +556,19 @@ class LineWebhookView(View):
             message_id = message.get("id")
             if not message_id:
                 return
+            logger.info(
+                "LINE audio received: message_id=%s from %s",
+                message_id, line_user_id,
+            )
             _show_loading(line_user_id)
             transcript = _transcribe_line_audio(message_id)
             if transcript:
+                logger.info(
+                    "LINE audio transcribed: %d chars from message_id=%s",
+                    len(transcript), message_id,
+                )
+                # Re-show loading — Whisper may have consumed most of the first one
+                _show_loading(line_user_id)
                 # Process the transcribed text as if it were a text message
                 text = transcript
                 # Fall through to normal text processing below
@@ -725,7 +736,11 @@ class LineWebhookView(View):
         Tenant.objects.filter(id=tenant.id).update(last_message_at=timezone.now())
 
         # Forward to container (pass reply_token for free Reply API)
-        self._forward_to_container(line_user_id, tenant, text, reply_token=reply_token)
+        self._forward_to_container(
+            line_user_id, tenant, text,
+            reply_token=reply_token,
+            is_voice=msg_type == "audio",
+        )
 
     def _send_onboarding_reply(self, line_user_id: str, reply) -> None:
         """Render an OnboardingReply as a LINE Flex message with optional Quick Reply buttons."""
@@ -784,6 +799,7 @@ class LineWebhookView(View):
         tenant: Tenant,
         message_text: str,
         reply_token: str | None = None,
+        is_voice: bool = False,
     ) -> None:
         """Forward message to tenant's OpenClaw container and relay response via LINE.
 
@@ -817,7 +833,7 @@ class LineWebhookView(View):
                     "X-User-Timezone": user_tz,
                     "X-Line-User-Id": line_user_id,
                 },
-                timeout=CHAT_COMPLETIONS_TIMEOUT,
+                timeout=VOICE_CHAT_TIMEOUT if is_voice else CHAT_COMPLETIONS_TIMEOUT,
             )
             resp.raise_for_status()
             result = resp.json()
@@ -943,38 +959,52 @@ class LineWebhookView(View):
             return
 
         if ai_text:
-            # Remove MEDIA markers (images not supported yet)
-            clean_text = re.sub(r"MEDIA:\S+", "", ai_text).strip()
-
-            # Extract quick reply buttons before stripping markdown
-            clean_text, quick_reply_items = extract_quick_reply_buttons(clean_text)
-
-            # Pre-process: convert tables and strip code blocks BEFORE Flex decision
-            # (both Flex and plain text paths need these gone)
-            clean_text = _convert_tables(clean_text)
-            clean_text = re.sub(r"```[^\n]*\n(.*?)```", r"\1", clean_text, flags=re.DOTALL)
-
-            # Build Flex message (branded bubbles for all content types)
-            messages: list[dict] = []
             try:
-                flex_msg = build_flex_bubble(clean_text, alt_text=clean_text)
-                messages = [flex_msg]
+                # Remove MEDIA markers (images not supported yet)
+                clean_text = re.sub(r"MEDIA:\S+", "", ai_text).strip()
+
+                # Extract quick reply buttons before stripping markdown
+                clean_text, quick_reply_items = extract_quick_reply_buttons(clean_text)
+
+                # Pre-process: convert tables and strip code blocks BEFORE Flex decision
+                # (both Flex and plain text paths need these gone)
+                clean_text = _convert_tables(clean_text)
+                clean_text = re.sub(r"```[^\n]*\n(.*?)```", r"\1", clean_text, flags=re.DOTALL)
+
+                # Build Flex message (branded bubbles for all content types)
+                messages: list[dict] = []
+                try:
+                    flex_msg = build_flex_bubble(clean_text, alt_text=clean_text)
+                    messages = [flex_msg]
+                except Exception:
+                    # Flex construction failed — fall back to plain text
+                    logger.debug("Flex build failed, falling back to plain text", exc_info=True)
+                    plain = _strip_markdown(clean_text)
+                    plain = re.sub(r"\n{3,}", "\n\n", plain).strip()
+                    if plain:
+                        chunks = _split_message(plain, max_len=5000)
+                        messages = [{"type": "text", "text": c} for c in chunks[:5]]
+
+                # Attach quick replies to the last message
+                if messages and quick_reply_items:
+                    messages[-1] = attach_quick_reply(messages[-1], quick_reply_items)
+
+                # Send via Reply API (free) with Push fallback
+                if messages:
+                    sent = _send_line_messages(line_user_id, messages, reply_token=reply_token)
+                    if not sent:
+                        logger.error(
+                            "LINE response delivery failed for %s (container=%s)",
+                            line_user_id, tenant.container_fqdn,
+                        )
+                        # Retry with plain text as emergency fallback
+                        _send_line_text(line_user_id, ai_text[:5000])
             except Exception:
-                # Flex construction failed — fall back to plain text
-                logger.debug("Flex build failed, falling back to plain text", exc_info=True)
-                plain = _strip_markdown(clean_text)
-                plain = re.sub(r"\n{3,}", "\n\n", plain).strip()
-                if plain:
-                    chunks = _split_message(plain, max_len=5000)
-                    messages = [{"type": "text", "text": c} for c in chunks[:5]]
-
-            # Attach quick replies to the last message
-            if messages and quick_reply_items:
-                messages[-1] = attach_quick_reply(messages[-1], quick_reply_items)
-
-            # Send via Reply API (free) with Push fallback
-            if messages:
-                _send_line_messages(line_user_id, messages, reply_token=reply_token)
+                logger.exception(
+                    "Error building LINE response for %s", line_user_id,
+                )
+                # Emergency fallback — send raw AI text
+                _send_line_text(line_user_id, ai_text[:5000])
 
         # Record usage
         self._record_usage(tenant, result)
