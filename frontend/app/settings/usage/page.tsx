@@ -1,10 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton, StatCardSkeleton } from "@/components/skeleton";
 import { StatCard } from "@/components/stat-card";
 import { useDonationPreferenceMutation, useTenantQuery, useTransparencyQuery, useUsageHistoryQuery, useUsageSummaryQuery } from "@/lib/queries";
+
+const USAGE_HISTORY_PREVIEW = 5;
 
 export default function SettingsUsagePage() {
   const { data: tenant, isLoading } = useTenantQuery();
@@ -22,6 +25,7 @@ export default function SettingsUsagePage() {
   const budgetRemaining = Math.max(0, effectiveBudget - effectiveUsed);
   const modelBreakdown = usageSummary?.by_model ?? [];
 
+  const [showAllUsage, setShowAllUsage] = useState(false);
   const donationMutation = useDonationPreferenceMutation();
 
   const aiActualCost = transparency?.your_actual_cost ?? 0;
@@ -143,35 +147,48 @@ export default function SettingsUsagePage() {
         {usageLoading ? (
           <SectionCardSkeleton lines={5} />
         ) : usageData?.results && usageData.results.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="pb-2 pr-4 text-left font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Date</th>
-                  <th className="pb-2 pr-4 text-left font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Event Type</th>
-                  <th className="pb-2 pr-4 text-left font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Model</th>
-                  <th className="pb-2 pr-4 text-right font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Tokens</th>
-                  <th className="pb-2 text-right font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Cost</th>
-                </tr>
-              </thead>
-              <tbody>
-                {usageData.results.map((record) => (
-                  <tr key={record.id} className="border-b border-border">
-                    <td className="py-2 pr-4 text-ink-muted">
-                      {new Date(record.created_at).toLocaleDateString()}
-                    </td>
-                    <td className="py-2 pr-4 text-ink-muted">{record.event_type}</td>
-                    <td className="py-2 pr-4 text-ink-muted">{record.model_used || "-"}</td>
-                    <td className="py-2 pr-4 text-right font-mono text-ink-muted">
-                      {(record.input_tokens + record.output_tokens).toLocaleString()}
-                    </td>
-                    <td className="py-2 text-right font-mono text-ink-muted">
-                      ${Number(record.cost_estimate).toFixed(4)}
-                    </td>
+          <div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="pb-2 pr-4 text-left font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Date</th>
+                    <th className="pb-2 pr-4 text-left font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Event Type</th>
+                    <th className="pb-2 pr-4 text-left font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Model</th>
+                    <th className="pb-2 pr-4 text-right font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Tokens</th>
+                    <th className="pb-2 text-right font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Cost</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {(showAllUsage ? usageData.results : usageData.results.slice(0, USAGE_HISTORY_PREVIEW)).map((record) => (
+                    <tr key={record.id} className="border-b border-border">
+                      <td className="py-2 pr-4 text-ink-muted">
+                        {new Date(record.created_at).toLocaleDateString()}
+                      </td>
+                      <td className="py-2 pr-4 text-ink-muted">{record.event_type}</td>
+                      <td className="py-2 pr-4 text-ink-muted">{record.model_used || "-"}</td>
+                      <td className="py-2 pr-4 text-right font-mono text-ink-muted">
+                        {(record.input_tokens + record.output_tokens).toLocaleString()}
+                      </td>
+                      <td className="py-2 text-right font-mono text-ink-muted">
+                        ${Number(record.cost_estimate).toFixed(4)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {usageData.results.length > USAGE_HISTORY_PREVIEW && (
+              <button
+                type="button"
+                onClick={() => setShowAllUsage((prev) => !prev)}
+                className="mt-3 text-sm text-accent hover:underline"
+              >
+                {showAllUsage
+                  ? "Show less"
+                  : `Show all ${usageData.results.length} records`}
+              </button>
+            )}
           </div>
         ) : (
           <p className="text-sm text-ink-muted">No usage records yet.</p>
