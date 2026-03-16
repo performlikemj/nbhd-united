@@ -406,3 +406,44 @@ export interface ConstellationData {
   edges: ConstellationEdge[];
   clusters: { id: number; label: string; count: number; tags: string[] }[];
 }
+
+// Horizons
+export interface HorizonsGoal {
+  id: string;
+  title: string;
+  slug: string;
+  preview: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HorizonsPendingExtraction {
+  id: string;
+  kind: "goal" | "task";
+  text: string;
+  confidence: string;
+  source_date: string | null;
+  created_at: string;
+}
+
+export interface HorizonsWeeklyPulse {
+  week_start: string;
+  week_end: string;
+  week_rating: WeekRating;
+  top_win: string | null;
+}
+
+export interface HorizonsMomentumDay {
+  date: string;
+  message_count: number;
+  has_journal: boolean;
+}
+
+export interface HorizonsData {
+  goals: HorizonsGoal[];
+  pending_extractions: HorizonsPendingExtraction[];
+  weekly_pulse: HorizonsWeeklyPulse[];
+  mood_trend: { date: string; mood: string; energy: string }[];
+  momentum: HorizonsMomentumDay[];
+  current_streak: number;
+}

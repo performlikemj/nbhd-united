@@ -180,6 +180,10 @@ export function fetchUsageSummary(): Promise<UsageSummary> {
   return apiFetch<UsageSummary>("/api/v1/billing/usage/summary/");
 }
 
+export function fetchHorizons(): Promise<import("@/lib/types").HorizonsData> {
+  return apiFetch<import("@/lib/types").HorizonsData>("/api/v1/dashboard/horizons/");
+}
+
 // Tenants
 export function fetchTenant(): Promise<Tenant> {
   return apiFetch<Tenant>("/api/v1/tenants/me/");
