@@ -6,6 +6,8 @@ from .views import (
     DailyNoteEntryListView,
     DailyNoteSectionView,
     DailyNoteView,
+    ExtractionApproveView,
+    ExtractionDismissView,
     JournalEntryDetailView,
     JournalEntryListCreateView,
     MemoryView,
@@ -49,4 +51,8 @@ urlpatterns = [
 
     # Nightly extraction — called by QStash tenant cron
     path("extract/", NightlyExtractionView.as_view(), name="nightly-extract"),
+
+    # Extraction approval (web)
+    path("extractions/<uuid:extraction_id>/approve/", ExtractionApproveView.as_view(), name="extraction-approve"),
+    path("extractions/<uuid:extraction_id>/dismiss/", ExtractionDismissView.as_view(), name="extraction-dismiss"),
 ]

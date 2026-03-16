@@ -129,12 +129,21 @@ class HorizonsView(APIView):
             )
         )
 
-        # 3. Weekly pulse (last 4 weeks)
+        # 3. Weekly pulse (last 4 weeks) — try legacy model first
         weeks = list(
             WeeklyReview.objects.filter(
                 tenant=tenant,
             ).order_by("-week_start")[:4].values(
                 "week_start", "week_end", "week_rating", "top_wins",
+            )
+        )
+
+        # 3b. Also fetch Document(kind='weekly') as fallback
+        weekly_docs = list(
+            Document.objects.filter(
+                tenant=tenant, kind=Document.Kind.WEEKLY,
+            ).order_by("-updated_at")[:4].values(
+                "id", "title", "slug", "markdown", "updated_at",
             )
         )
 
@@ -211,6 +220,16 @@ class HorizonsView(APIView):
                     "top_win": w["top_wins"][0] if w["top_wins"] else None,
                 }
                 for w in weeks
+            ],
+            "weekly_documents": [
+                {
+                    "id": str(wd["id"]),
+                    "title": wd["title"] or "Weekly Review",
+                    "slug": wd["slug"],
+                    "preview": (wd["markdown"] or "")[:200],
+                    "updated_at": wd["updated_at"].isoformat(),
+                }
+                for wd in weekly_docs
             ],
             "mood_trend": [
                 {"date": str(m["date"]), "mood": m["mood"], "energy": m["energy"]}

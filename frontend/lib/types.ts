@@ -439,10 +439,19 @@ export interface HorizonsMomentumDay {
   has_journal: boolean;
 }
 
+export interface HorizonsWeeklyDocument {
+  id: string;
+  title: string;
+  slug: string;
+  preview: string;
+  updated_at: string;
+}
+
 export interface HorizonsData {
   goals: HorizonsGoal[];
   pending_extractions: HorizonsPendingExtraction[];
   weekly_pulse: HorizonsWeeklyPulse[];
+  weekly_documents: HorizonsWeeklyDocument[];
   mood_trend: { date: string; mood: string; energy: string }[];
   momentum: HorizonsMomentumDay[];
   current_streak: number;

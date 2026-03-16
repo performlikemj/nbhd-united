@@ -184,6 +184,14 @@ export function fetchHorizons(): Promise<import("@/lib/types").HorizonsData> {
   return apiFetch<import("@/lib/types").HorizonsData>("/api/v1/dashboard/horizons/");
 }
 
+export function approveExtraction(id: string): Promise<{ id: string; status: string }> {
+  return apiFetch<{ id: string; status: string }>(`/api/v1/journal/extractions/${id}/approve/`, { method: "POST" });
+}
+
+export function dismissExtraction(id: string): Promise<{ id: string; status: string }> {
+  return apiFetch<{ id: string; status: string }>(`/api/v1/journal/extractions/${id}/dismiss/`, { method: "POST" });
+}
+
 // Tenants
 export function fetchTenant(): Promise<Tenant> {
   return apiFetch<Tenant>("/api/v1/tenants/me/");

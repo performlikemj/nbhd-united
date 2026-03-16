@@ -12,7 +12,36 @@ function formatDate(dateStr: string): string {
   });
 }
 
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/^#{1,6}\s+/gm, "")        // headings
+    .replace(/\*\*(.+?)\*\*/g, "$1")     // bold
+    .replace(/\*(.+?)\*/g, "$1")         // italic
+    .replace(/_(.+?)_/g, "$1")           // italic alt
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // links
+    .replace(/^[-*]\s+/gm, "")           // list items
+    .replace(/^>\s+/gm, "")             // blockquotes
+    .replace(/`([^`]+)`/g, "$1")         // inline code
+    .replace(/\n{2,}/g, " ")             // collapse blank lines
+    .replace(/\n/g, " ")                 // remaining newlines
+    .trim();
+}
+
+function extractDisplayTitle(goal: HorizonsGoal): string {
+  if (goal.title && goal.title.toLowerCase() !== "goals") {
+    return goal.title;
+  }
+  const match = goal.preview.match(/###\s+(.+)/);
+  if (match) {
+    return match[1].replace(/\*\*/g, "").trim();
+  }
+  return goal.title || "Untitled Goal";
+}
+
 export function GoalCard({ goal }: { goal: HorizonsGoal }) {
+  const displayTitle = extractDisplayTitle(goal);
+  const cleanPreview = stripMarkdown(goal.preview);
+
   return (
     <Link
       href={`/journal/goal/${goal.slug}`}
@@ -20,12 +49,12 @@ export function GoalCard({ goal }: { goal: HorizonsGoal }) {
     >
       <article>
         <h3 className="font-display text-lg text-ink md:text-xl">
-          {goal.title}
+          {displayTitle}
         </h3>
 
-        {goal.preview ? (
+        {cleanPreview ? (
           <p className="mt-2 line-clamp-3 text-sm text-ink-muted">
-            {goal.preview}
+            {cleanPreview}
           </p>
         ) : null}
 

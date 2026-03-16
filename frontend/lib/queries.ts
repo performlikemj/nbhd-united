@@ -42,6 +42,8 @@ import {
   generateLineLink,
   unlinkLine,
   setPreferredChannel,
+  approveExtraction,
+  dismissExtraction,
   fetchHorizons,
   fetchUsageHistory,
   fetchUsageSummary,
@@ -124,6 +126,26 @@ export function useHorizonsQuery() {
     queryKey: ["horizons"],
     queryFn: fetchHorizons,
     staleTime: 60_000,
+  });
+}
+
+export function useApproveExtractionMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: approveExtraction,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["horizons"] });
+    },
+  });
+}
+
+export function useDismissExtractionMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: dismissExtraction,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["horizons"] });
+    },
   });
 }
 
