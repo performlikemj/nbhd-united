@@ -241,36 +241,72 @@ def hibernate_idle_tenants_task() -> dict:
 
     logger = logging.getLogger(__name__)
 
+    from django.db import transaction
+
     cutoff = timezone.now() - timedelta(hours=24)
-    idle_tenants = Tenant.objects.filter(
-        status=Tenant.Status.ACTIVE,
-        container_id__gt="",
-        hibernated_at__isnull=True,
-    ).filter(
-        Q(last_message_at__lt=cutoff)
-        | Q(last_message_at__isnull=True, provisioned_at__lt=cutoff)
-    ).select_for_update(skip_locked=True)
 
     hibernated = 0
     failed = 0
-    for tenant in idle_tenants:
-        # Re-check last_message_at to avoid TOCTOU race
-        tenant.refresh_from_db(fields=["last_message_at", "hibernated_at"])
-        if tenant.hibernated_at:
-            continue
-        if tenant.last_message_at and tenant.last_message_at >= cutoff:
-            continue
+    with transaction.atomic():
+        idle_tenants = Tenant.objects.filter(
+            status=Tenant.Status.ACTIVE,
+            container_id__gt="",
+            hibernated_at__isnull=True,
+        ).filter(
+            Q(last_message_at__lt=cutoff)
+            | Q(last_message_at__isnull=True, provisioned_at__lt=cutoff)
+        ).select_for_update(skip_locked=True)
 
-        if hibernate_idle_tenant(tenant):
-            hibernated += 1
-        else:
-            failed += 1
+        for tenant in idle_tenants:
+            # Re-check last_message_at to avoid TOCTOU race
+            tenant.refresh_from_db(fields=["last_message_at", "hibernated_at"])
+            if tenant.hibernated_at:
+                continue
+            if tenant.last_message_at and tenant.last_message_at >= cutoff:
+                continue
+
+            if hibernate_idle_tenant(tenant):
+                hibernated += 1
+            else:
+                failed += 1
 
     logger.info(
         "hibernate_idle_tenants: hibernated=%d failed=%d",
         hibernated, failed,
     )
     return {"hibernated": hibernated, "failed": failed}
+
+
+def nightly_extraction_task() -> dict:
+    """Run nightly extraction for all active tenants.
+
+    Iterates every active tenant and calls run_extraction_for_tenant().
+    Each tenant is handled independently — one failure doesn't block the rest.
+    """
+    import logging
+
+    from apps.journal.extraction import run_extraction_for_tenant
+    from apps.tenants.models import Tenant
+
+    logger = logging.getLogger(__name__)
+
+    tenants = Tenant.objects.filter(
+        status=Tenant.Status.ACTIVE,
+    ).select_related("user")
+
+    results = []
+    for tenant in tenants:
+        try:
+            result = run_extraction_for_tenant(tenant)
+        except Exception:
+            logger.exception("nightly_extraction: failed for tenant %s", str(tenant.id)[:8])
+            result = {"skipped": "error"}
+        results.append({"tenant": str(tenant.id)[:8], **result})
+
+    extracted = sum(1 for r in results if not r.get("skipped"))
+    skipped = sum(1 for r in results if r.get("skipped"))
+    logger.info("nightly_extraction: total=%d extracted=%d skipped=%d", len(results), extracted, skipped)
+    return {"total": len(results), "extracted": extracted, "skipped": skipped}
 
 
 def dedup_cron_jobs_task(tenant_id: str) -> None:
