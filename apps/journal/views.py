@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+import logging
 from datetime import timedelta
 from uuid import UUID
 
@@ -15,8 +16,10 @@ from rest_framework.views import APIView
 from apps.tenants.models import Tenant
 
 from .md_utils import append_entry_markdown, parse_daily_note, serialise_daily_note
-from .models import DailyNote, Document, JournalEntry, UserMemory, WeeklyReview
+from .models import DailyNote, Document, JournalEntry, PendingExtraction, UserMemory, WeeklyReview
 from .models import NoteTemplate
+
+logger = logging.getLogger(__name__)
 from .serializers import (
     DailyNoteEntryInputSerializer,
     DailyNoteEntryPatchSerializer,
@@ -512,3 +515,62 @@ class TemplateDetailView(APIView):
 
         template.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# Pending extraction approval (web)
+# ---------------------------------------------------------------------------
+
+
+class ExtractionApproveView(APIView):
+    """POST /api/v1/journal/extractions/<uuid>/approve/ — approve a pending extraction."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, extraction_id: UUID):
+        tenant = _get_tenant_for_user(request.user)
+        pending = PendingExtraction.objects.filter(
+            id=extraction_id, tenant=tenant, status=PendingExtraction.Status.PENDING,
+        ).first()
+        if not pending:
+            return Response({"detail": "Not found or already processed."}, status=status.HTTP_404_NOT_FOUND)
+
+        from apps.router.extraction_callbacks import _approve_goal, _approve_task
+
+        try:
+            if pending.kind == PendingExtraction.Kind.GOAL:
+                _approve_goal(pending)
+            elif pending.kind == PendingExtraction.Kind.TASK:
+                _approve_task(pending)
+            elif pending.kind == PendingExtraction.Kind.LESSON:
+                from apps.router.extraction_callbacks import _approve_lesson
+                _approve_lesson(pending)
+        except Exception:
+            logger.exception("extraction approve failed for %s", extraction_id)
+            return Response({"detail": "Approval failed."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        pending.status = PendingExtraction.Status.APPROVED
+        pending.resolved_at = timezone.now()
+        pending.save(update_fields=["status", "resolved_at"])
+
+        return Response({"id": str(pending.id), "status": "approved"})
+
+
+class ExtractionDismissView(APIView):
+    """POST /api/v1/journal/extractions/<uuid>/dismiss/ — dismiss a pending extraction."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, extraction_id: UUID):
+        tenant = _get_tenant_for_user(request.user)
+        pending = PendingExtraction.objects.filter(
+            id=extraction_id, tenant=tenant, status=PendingExtraction.Status.PENDING,
+        ).first()
+        if not pending:
+            return Response({"detail": "Not found or already processed."}, status=status.HTTP_404_NOT_FOUND)
+
+        pending.status = PendingExtraction.Status.DISMISSED
+        pending.resolved_at = timezone.now()
+        pending.save(update_fields=["status", "resolved_at"])
+
+        return Response({"id": str(pending.id), "status": "dismissed"})

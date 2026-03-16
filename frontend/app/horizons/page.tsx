@@ -62,9 +62,11 @@ export default function HorizonsPage() {
         <MomentumStrip days={data.momentum} streak={data.current_streak} />
       </SectionCard>
 
-      <SectionCard title="Weekly Pulse" delay={200}>
-        <WeeklyPulse weeks={data.weekly_pulse} />
-      </SectionCard>
+      {(data.weekly_pulse.length > 0 || data.weekly_documents.length > 0) ? (
+        <SectionCard title="Weekly Pulse" delay={200}>
+          <WeeklyPulse weeks={data.weekly_pulse} weeklyDocuments={data.weekly_documents} />
+        </SectionCard>
+      ) : null}
 
       <div className="animate-reveal" style={{ animationDelay: "350ms" }}>
         <h2 className="font-display text-xl text-ink">Active Goals</h2>
