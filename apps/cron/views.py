@@ -312,7 +312,7 @@ def apply_pending_configs(request):
         "image_failed": 0 if success else image_count,
         "cron_seed_enqueued": cron_seed_count if success else 0,
         "cron_seed_failed": 0 if success else cron_seed_count,
-        "batch_total": len(batch_tasks),
+        "batch_total": len(all_tasks),
         "batch_enqueued": enqueued,
     })
 
