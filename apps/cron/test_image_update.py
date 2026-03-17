@@ -40,14 +40,15 @@ def _create_tenant_with_state(
 
 
 def _extract_batch_tasks(mock_batch, task_name):
-    """Extract tasks of a given name from publish_batch mock calls."""
-    if not mock_batch.call_args:
-        return []
-    batch_tasks = mock_batch.call_args[0][0]
-    return [t for t in batch_tasks if t[0] == task_name]
+    """Extract tasks of a given name from all publish_batch mock calls."""
+    results = []
+    for call in mock_batch.call_args_list:
+        batch_tasks = call[0][0]
+        results.extend(t for t in batch_tasks if t[0] == task_name)
+    return results
 
 
-def _batch_return_len(tasks):
+def _batch_return_len(tasks, **kwargs):
     """Mock side_effect that returns len(tasks) to simulate success."""
     return len(tasks)
 

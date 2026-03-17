@@ -241,17 +241,19 @@ def apply_pending_configs(request):
     )
     evaluated = query.count()
 
-    # Collect all tasks and publish in a single QStash batch call.
-    # This replaces 3 serial loops (~51 HTTP calls, ~25s blocking) with
-    # one batch HTTP call (~200ms).
+    # Publish tasks in two batches:
+    # Batch 1: config updates + cron seeds (safe, no restarts)
+    # Batch 2: image updates (triggers container restarts — delayed 30s
+    #          so config writes complete before containers read the file)
     from apps.cron.publish import publish_batch
 
-    batch_tasks: list[tuple[str, tuple, dict]] = []
+    config_tasks: list[tuple[str, tuple, dict]] = []
+    image_tasks: list[tuple[str, tuple, dict]] = []
 
     # 1. Config updates for idle tenants with pending changes
     config_count = 0
     for tenant in query:
-        batch_tasks.append(("apply_single_tenant_config", (str(tenant.id),), {}))
+        config_tasks.append(("apply_single_tenant_config", (str(tenant.id),), {}))
         config_count += 1
 
     # 2. Image updates for tenants on stale image
@@ -269,7 +271,7 @@ def apply_pending_configs(request):
         )
 
         for tenant in stale_image_tenants:
-            batch_tasks.append(("apply_single_tenant_image", (str(tenant.id), desired_tag), {}))
+            image_tasks.append(("apply_single_tenant_image", (str(tenant.id), desired_tag), {}))
             image_count += 1
 
     # 3. Re-seed cron jobs for all active (non-hibernated) tenants
@@ -281,18 +283,26 @@ def apply_pending_configs(request):
 
     cron_seed_count = 0
     for tenant_id in active_tenants_with_containers:
-        batch_tasks.append(("seed_cron_jobs", (str(tenant_id),), {}))
+        config_tasks.append(("seed_cron_jobs", (str(tenant_id),), {}))
         cron_seed_count += 1
 
-    # Single batch publish — one HTTP call instead of ~51 serial ones.
-    # Batch is all-or-nothing: either all tasks are enqueued or none are.
+    # Batch 1: config + cron seeds (no restarts, safe to run immediately)
+    enqueued = 0
     try:
-        enqueued = publish_batch(batch_tasks)
+        if config_tasks:
+            enqueued += publish_batch(config_tasks)
     except Exception:
-        logger.exception("Batch publish failed for apply-pending-configs")
-        enqueued = 0
+        logger.exception("Batch publish failed for config tasks")
 
-    success = enqueued == len(batch_tasks) if batch_tasks else True
+    # Batch 2: image updates delayed 30s so configs land before restart
+    try:
+        if image_tasks:
+            enqueued += publish_batch(image_tasks, delay_seconds=30)
+    except Exception:
+        logger.exception("Batch publish failed for image tasks")
+
+    all_tasks = config_tasks + image_tasks
+    success = enqueued == len(all_tasks) if all_tasks else True
 
     return JsonResponse({
         "config_enqueued": config_count if success else 0,
@@ -302,7 +312,7 @@ def apply_pending_configs(request):
         "image_failed": 0 if success else image_count,
         "cron_seed_enqueued": cron_seed_count if success else 0,
         "cron_seed_failed": 0 if success else cron_seed_count,
-        "batch_total": len(batch_tasks),
+        "batch_total": len(all_tasks),
         "batch_enqueued": enqueued,
     })
 

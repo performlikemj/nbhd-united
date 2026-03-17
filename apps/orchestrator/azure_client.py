@@ -311,9 +311,9 @@ def create_tenant_file_share(tenant_id: str) -> dict[str, str]:
 def upload_config_to_file_share(tenant_id: str, config_json: str) -> None:
     """Upload openclaw.json to the tenant's Azure File Share.
 
-    This writes the config directly to the file that OpenClaw reads on boot,
-    ensuring config changes take effect (the OPENCLAW_CONFIG_JSON env var
-    is only read on the very first boot).
+    Uses atomic write: upload to a temp file first, then rename to the
+    target path. This prevents the container from reading a partially-written
+    file if it restarts while the upload is in progress.
     """
     share_name = f"ws-{str(tenant_id)[:20]}"
 
@@ -332,16 +332,22 @@ def upload_config_to_file_share(tenant_id: str, config_json: str) -> None:
         settings.AZURE_RESOURCE_GROUP, account_name,
     )
     account_key = keys.keys[0].value
+    account_url = f"https://{account_name}.file.core.windows.net"
 
-    file_client = ShareFileClient(
-        account_url=f"https://{account_name}.file.core.windows.net",
+    # Write to temp file first, then atomic rename — prevents the container
+    # from reading a partially-written file during concurrent restarts.
+    tmp_client = ShareFileClient(
+        account_url=account_url,
         share_name=share_name,
-        file_path="openclaw.json",
+        file_path="openclaw.json.tmp",
         credential=account_key,
     )
     data = config_json.encode("utf-8")
-    file_client.upload_file(data, length=len(data))
-    logger.info("Uploaded openclaw.json to file share %s", share_name)
+    tmp_client.upload_file(data, length=len(data))
+
+    # Atomic rename: overwrite the target file
+    tmp_client.rename_file("openclaw.json", overwrite=True)
+    logger.info("Uploaded openclaw.json to file share %s (atomic)", share_name)
 
 
 def upload_workspace_file(tenant_id: str, file_path: str, content: str) -> None:
