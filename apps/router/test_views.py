@@ -178,13 +178,14 @@ class TelegramWebhookViewTest(TestCase):
     def test_active_tenant_over_budget_is_blocked(self, mock_forward):
         tenant = create_tenant(display_name="QuotaBlocked", telegram_chat_id=123458)
         tenant.status = Tenant.Status.ACTIVE
-        tenant.monthly_token_budget = 500
-        tenant.tokens_this_month = 500
+        # Budget enforcement is now cost-based: exceed the cost cap
+        tenant.monthly_cost_budget = 5
+        tenant.estimated_cost_this_month = 5
         tenant.container_fqdn = "oc-active.internal.azurecontainerapps.io"
         tenant.save(
             update_fields=[
-                "status", "monthly_token_budget", "tokens_this_month", "container_fqdn",
-                "updated_at",
+                "status", "monthly_cost_budget", "estimated_cost_this_month",
+                "container_fqdn", "updated_at",
             ]
         )
 
