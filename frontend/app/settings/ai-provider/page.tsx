@@ -5,9 +5,17 @@ import { useEffect, useMemo, useState } from "react";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { IntelligenceMeter } from "@/components/intelligence-meter";
-import { useLLMConfigQuery, usePreferredModelMutation, useTenantQuery, useUpdateLLMConfigMutation } from "@/lib/queries";
+import { useLLMConfigQuery, usePreferredModelMutation, useTaskModelPreferencesMutation, useTenantQuery, useUpdateLLMConfigMutation } from "@/lib/queries";
 import { fetchProviderModels } from "@/lib/api";
 import type { LLMConfigUpdate, ProviderModel } from "@/lib/types";
+
+const SCHEDULED_TASKS = [
+  { slug: "morning_briefing", label: "Morning Briefing" },
+  { slug: "evening_checkin", label: "Evening Check-in" },
+  { slug: "week_review", label: "Week Ahead Review" },
+  { slug: "background_tasks", label: "Background Tasks" },
+  { slug: "heartbeat", label: "Heartbeat Check-in" },
+] as const;
 
 const PROVIDERS = [
   { value: "openai", label: "OpenAI" },
@@ -32,6 +40,7 @@ const TIER_MODELS_UI: Record<string, TierModel[]> = {
     { model_id: "openrouter/minimax/minimax-m2.5", name: "MiniMax M2.5", tagline: "Fast and efficient", intelligence: 6, input_rate: 0.3, output_rate: 1.2 },
   ],
   premium: [
+    { model_id: "openrouter/minimax/minimax-m2.5", name: "MiniMax M2.5", tagline: "Fastest and most affordable", intelligence: 6, input_rate: 0.3, output_rate: 1.2 },
     { model_id: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet 4.6", tagline: "Great for everyday use", intelligence: 8, input_rate: 3, output_rate: 15 },
     { model_id: "anthropic/claude-opus-4.6", name: "Claude Opus 4.6", tagline: "Best for complex tasks", intelligence: 9, input_rate: 5, output_rate: 25 },
   ],
@@ -53,6 +62,7 @@ export default function AIProviderPage() {
   const { data: config, isLoading: configLoading } = useLLMConfigQuery();
   const updateMutation = useUpdateLLMConfigMutation();
   const preferredModelMutation = usePreferredModelMutation();
+  const taskModelMutation = useTaskModelPreferencesMutation();
 
   const [provider, setProvider] = useState("openai");
   const [apiKey, setApiKey] = useState("");
@@ -172,7 +182,7 @@ export default function AIProviderPage() {
           subtitle={tierModels.length > 1 ? "Choose your default model" : "Your current AI model"}
         >
           <div className="space-y-4">
-            <div className={`grid gap-3 ${tierModels.length > 1 ? "sm:grid-cols-2" : ""}`}>
+            <div className={`grid gap-3 ${tierModels.length > 2 ? "sm:grid-cols-3" : tierModels.length > 1 ? "sm:grid-cols-2" : ""}`}>
               {tierModels.map((model) => {
                 const isActive = activeModel === model.model_id;
                 return (
@@ -211,7 +221,7 @@ export default function AIProviderPage() {
 
             {tierModels.length > 1 && (
               <p className="text-xs text-ink-muted">
-                Tap a card to switch your default model. Use a lighter model for everyday chat to save tokens.
+                Tap a card to switch your default model. A lighter model stretches your monthly budget further.
               </p>
             )}
 
@@ -221,6 +231,38 @@ export default function AIProviderPage() {
                 Upgrade to the BYOK plan to bring your own API key and choose from OpenAI, Anthropic, Groq, Google Gemini, OpenRouter, or xAI.
               </p>
             </div>
+          </div>
+        </SectionCard>
+      )}
+
+      {/* Per-Task Model Selection — Premium only */}
+      {tier === "premium" && (
+        <SectionCard title="Scheduled Task Models" subtitle="Choose which model runs each background task">
+          <div className="space-y-3">
+            {SCHEDULED_TASKS.map((task) => {
+              const currentPref = (tenant?.task_model_preferences as Record<string, string> | undefined)?.[task.slug] || "";
+              return (
+                <div key={task.slug} className="flex items-center justify-between gap-3 rounded-panel border border-border p-3">
+                  <p className="text-sm font-medium text-ink">{task.label}</p>
+                  <select
+                    value={currentPref}
+                    onChange={(e) => {
+                      void taskModelMutation.mutateAsync({ [task.slug]: e.target.value });
+                    }}
+                    disabled={taskModelMutation.isPending}
+                    className="rounded-panel border border-border bg-surface px-3 py-1.5 text-sm text-ink focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                  >
+                    <option value="">Use default ({tierModels.find((m) => m.model_id === activeModel)?.name ?? "Opus"})</option>
+                    {tierModels.map((m) => (
+                      <option key={m.model_id} value={m.model_id}>{m.name}</option>
+                    ))}
+                  </select>
+                </div>
+              );
+            })}
+            <p className="text-xs text-ink-muted">
+              Use a cheaper model for routine tasks to stretch your monthly budget. Changes apply within an hour.
+            </p>
           </div>
         </SectionCard>
       )}

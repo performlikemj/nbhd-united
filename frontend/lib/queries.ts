@@ -50,6 +50,7 @@ import {
   fetchTransparency,
   updateDonationPreference,
   updatePreferredModel,
+  updateTaskModelPreferences,
   fetchWeeklyReviews,
   updateProfile,
   generateTelegramLink,
@@ -180,6 +181,16 @@ export function usePreferredModelMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: updatePreferredModel,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["tenant"] });
+    },
+  });
+}
+
+export function useTaskModelPreferencesMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateTaskModelPreferences,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["tenant"] });
     },

@@ -76,6 +76,9 @@ class UsageSummaryServiceTest(TestCase):
         summary = get_usage_summary(self.tenant)
         self.assertIn("budget", summary)
         self.assertIn("budget_percentage", summary["budget"])
+        self.assertIn("tenant_cost_used", summary["budget"])
+        self.assertIn("tenant_cost_budget", summary["budget"])
+        self.assertGreater(summary["budget"]["tenant_cost_budget"], 0)
 
     def test_summary_no_usage(self):
         tenant2 = create_tenant(display_name="Empty", telegram_chat_id=999222)
@@ -184,7 +187,7 @@ class TransparencyServiceTest(TestCase):
         names = [r["display_name"] for r in data["model_rates"]]
         self.assertIn("Claude Sonnet 4.6", names)
         self.assertIn("Claude Opus 4.6", names)
-        self.assertNotIn("MiniMax M2.5", names)
+        self.assertIn("MiniMax M2.5", names)  # premium now includes all models
 
     def test_transparency_no_usage(self):
         tenant2 = create_tenant(display_name="NoUse", telegram_chat_id=999666)

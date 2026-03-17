@@ -668,6 +668,54 @@ class PreferredModelView(APIView):
         })
 
 
+_VALID_TASK_SLUGS = {
+    "heartbeat", "morning_briefing", "evening_checkin",
+    "week_review", "background_tasks",
+}
+
+
+class TaskModelPreferencesView(APIView):
+    """Set per-task model overrides for scheduled jobs."""
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request):
+        tenant = request.user.tenant
+        prefs = request.data.get("task_model_preferences", {})
+
+        if not isinstance(prefs, dict):
+            return Response(
+                {"error": "task_model_preferences must be an object"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        tier_models = TIER_MODEL_CONFIGS.get(tenant.model_tier, {})
+        for slug, model_id in prefs.items():
+            if slug not in _VALID_TASK_SLUGS:
+                return Response(
+                    {"error": f"Invalid task: {slug}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if model_id and model_id not in tier_models:
+                return Response(
+                    {"error": f"Model '{model_id}' not available for your tier"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # Merge with existing, allowing empty string to clear
+        current = tenant.task_model_preferences or {}
+        for slug, model_id in prefs.items():
+            if model_id:
+                current[slug] = model_id
+            else:
+                current.pop(slug, None)
+
+        tenant.task_model_preferences = current
+        tenant.save(update_fields=["task_model_preferences"])
+        tenant.bump_pending_config()
+
+        return Response({"task_model_preferences": current})
+
+
 class CancelDeletionView(APIView):
     """Cancel a scheduled account deletion (only possible while subscription is active)."""
 

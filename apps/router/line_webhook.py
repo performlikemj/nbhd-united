@@ -721,7 +721,7 @@ class LineWebhookView(View):
         # Budget check
         if not check_budget(tenant):
             lang = tenant.user.language or "en"
-            budget_remaining = max(tenant.effective_token_budget - tenant.tokens_this_month, 0)
+            cost_remaining = max(tenant.effective_cost_budget - tenant.estimated_cost_this_month, 0)
             plus_message = (
                 " Opus requests are paused while at quota."
                 if tenant.model_tier == Tenant.ModelTier.PREMIUM
@@ -733,8 +733,7 @@ class LineWebhookView(View):
                     error_msg(
                         lang,
                         "budget_exhausted",
-                        remaining=str(budget_remaining),
-                        s="" if budget_remaining == 1 else "s",
+                        remaining=f"{cost_remaining:.2f}",
                         plus_message=plus_message,
                         billing_url=f"{frontend_url}/billing",
                     ),

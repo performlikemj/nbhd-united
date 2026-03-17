@@ -1,5 +1,6 @@
 """Tenant models — core of the control plane."""
 import uuid
+from decimal import Decimal
 
 from django.contrib.auth.models import AbstractUser
 from django.core.exceptions import ValidationError
@@ -167,6 +168,10 @@ class Tenant(models.Model):
         default=0,
         help_text="Per-user monthly token budget (0 = use tier default)",
     )
+    monthly_cost_budget = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text="Monthly API cost cap in USD. 0 = use tier default.",
+    )
 
     # NOTE: Per-tenant internal API keys were removed (2026-02-22).
     # All containers share a single key via Azure Key Vault. This is safe
@@ -214,6 +219,13 @@ class Tenant(models.Model):
     )
 
     # Model preference
+    task_model_preferences = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Per-task model overrides. Keys: heartbeat, morning_briefing, "
+                  "evening_checkin, week_review, background_tasks. "
+                  "Values: model IDs.",
+    )
     preferred_model = models.CharField(
         max_length=255,
         blank=True,
@@ -280,11 +292,21 @@ class Tenant(models.Model):
         return TIER_TOKEN_BUDGETS.get(self.model_tier, 5_000_000)
 
     @property
+    def effective_cost_budget(self) -> Decimal:
+        """Resolve the active cost cap in USD: explicit override or tier default.  0 = unlimited."""
+        from apps.billing.constants import TIER_COST_BUDGETS
+
+        if self.monthly_cost_budget > 0:
+            return self.monthly_cost_budget
+        budget = TIER_COST_BUDGETS.get(self.model_tier, 5.00)
+        return Decimal(str(budget)) if budget else Decimal("0")
+
+    @property
     def is_over_budget(self) -> bool:
-        budget = self.effective_token_budget
+        budget = self.effective_cost_budget
         if budget == 0:
             return False  # unlimited (BYOK)
-        return self.tokens_this_month >= budget
+        return self.estimated_cost_this_month >= budget
 
     def bump_pending_config(self):
         """Signal that agent config needs refreshing."""

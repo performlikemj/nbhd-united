@@ -21,8 +21,8 @@ Follows the same MESSAGES dict + helper pattern as onboarding.py.
 ERROR_MESSAGES: dict[str, dict[str, str]] = {
     "en": {
         "budget_exhausted": (
-            "You've hit your monthly token quota."
-            " {remaining} token{s} remaining."
+            "You've hit your monthly quota."
+            " ${remaining} remaining."
             " New messages are blocked until the next monthly reset."
             "{plus_message}"
             " Open Billing to upgrade/manage at {billing_url}."
@@ -47,8 +47,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "ja": {
         "budget_exhausted": (
-            "\u6708\u9593\u30c8\u30fc\u30af\u30f3\u4e0a\u9650\u306b\u9054\u3057\u307e\u3057\u305f\u3002"
-            "\u6b8b\u308a{remaining}\u30c8\u30fc\u30af\u30f3\u3067\u3059\u3002"
+            "\u6708\u9593\u4e0a\u9650\u306b\u9054\u3057\u307e\u3057\u305f\u3002"
+            "\u6b8b\u308a${remaining}\u3067\u3059\u3002"
             "\u6b21\u306e\u6708\u6b21\u30ea\u30bb\u30c3\u30c8\u307e\u3067\u65b0\u3057\u3044\u30e1\u30c3\u30bb\u30fc\u30b8\u306f\u30d6\u30ed\u30c3\u30af\u3055\u308c\u307e\u3059\u3002"
             "{plus_message}"
             "\u8acb\u6c42\u30da\u30fc\u30b8\u3067\u30a2\u30c3\u30d7\u30b0\u30ec\u30fc\u30c9/\u7ba1\u7406: {billing_url}"
@@ -73,8 +73,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "es": {
         "budget_exhausted": (
-            "Has alcanzado tu cuota mensual de tokens."
-            " Quedan {remaining} token{s}."
+            "Has alcanzado tu cuota mensual."
+            " Quedan ${remaining}."
             " Los mensajes nuevos est\u00e1n bloqueados hasta el pr\u00f3ximo reinicio mensual."
             "{plus_message}"
             " Abre Facturaci\u00f3n para actualizar/gestionar: {billing_url}"
@@ -99,8 +99,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "fr": {
         "budget_exhausted": (
-            "Vous avez atteint votre quota mensuel de tokens."
-            " {remaining} token{s} restant{s}."
+            "Vous avez atteint votre quota mensuel."
+            " ${remaining} restant."
             " Les nouveaux messages sont bloqu\u00e9s jusqu\u2019au prochain renouvellement mensuel."
             "{plus_message}"
             " Ouvrez la facturation pour g\u00e9rer votre abonnement\u00a0: {billing_url}"
@@ -125,8 +125,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "de": {
         "budget_exhausted": (
-            "Du hast dein monatliches Token-Kontingent erreicht."
-            " {remaining} Token{s} \u00fcbrig."
+            "Du hast dein monatliches Kontingent erreicht."
+            " ${remaining} \u00fcbrig."
             " Neue Nachrichten sind bis zum n\u00e4chsten monatlichen Reset blockiert."
             "{plus_message}"
             " \u00d6ffne die Abrechnung zum Upgraden/Verwalten: {billing_url}"
@@ -151,8 +151,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "pt": {
         "budget_exhausted": (
-            "Voc\u00ea atingiu sua cota mensal de tokens."
-            " {remaining} token{s} restante{s}."
+            "Voc\u00ea atingiu sua cota mensal."
+            " ${remaining} restante."
             " Novas mensagens est\u00e3o bloqueadas at\u00e9 a pr\u00f3xima renova\u00e7\u00e3o mensal."
             "{plus_message}"
             " Abra o Faturamento para upgrade/gerenciamento: {billing_url}"
@@ -177,8 +177,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "zh": {
         "budget_exhausted": (
-            "\u60a8\u5df2\u8fbe\u5230\u6708\u5ea6\u4ee4\u724c\u914d\u989d\u3002"
-            "\u5269\u4f59{remaining}\u4e2a\u4ee4\u724c\u3002"
+            "\u60a8\u5df2\u8fbe\u5230\u6708\u5ea6\u914d\u989d\u3002"
+            "\u5269\u4f59${remaining}\u3002"
             "\u5728\u4e0b\u6b21\u6708\u5ea6\u91cd\u7f6e\u4e4b\u524d\uff0c\u65b0\u6d88\u606f\u5c06\u88ab\u62e6\u622a\u3002"
             "{plus_message}"
             "\u6253\u5f00\u8ba1\u8d39\u9875\u9762\u5347\u7ea7/\u7ba1\u7406: {billing_url}"
@@ -203,8 +203,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "ko": {
         "budget_exhausted": (
-            "\uc6d4\uac04 \ud1a0\ud070 \ud560\ub2f9\ub7c9\uc5d0 \ub3c4\ub2ec\ud588\uc2b5\ub2c8\ub2e4."
-            " \ub0a8\uc740 \ud1a0\ud070: {remaining}\uac1c."
+            "\uc6d4\uac04 \ud560\ub2f9\ub7c9\uc5d0 \ub3c4\ub2ec\ud588\uc2b5\ub2c8\ub2e4."
+            " \ub0a8\uc740 \uae08\uc561: ${remaining}."
             " \ub2e4\uc74c \uc6d4\ubcc4 \ucd08\uae30\ud654\uae4c\uc9c0 \uc0c8 \uba54\uc2dc\uc9c0\uac00 \ucc28\ub2e8\ub429\ub2c8\ub2e4."
             "{plus_message}"
             " \uc5c5\uadf8\ub808\uc774\ub4dc/\uad00\ub9ac\ud558\ub824\uba74 \uccad\uad6c \ud398\uc774\uc9c0\ub97c \uc5ec\uc138\uc694: {billing_url}"
@@ -229,8 +229,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "it": {
         "budget_exhausted": (
-            "Hai raggiunto la tua quota mensile di token."
-            " {remaining} token rimanenti."
+            "Hai raggiunto la tua quota mensile."
+            " ${remaining} rimanenti."
             " I nuovi messaggi sono bloccati fino al prossimo rinnovo mensile."
             "{plus_message}"
             " Apri la fatturazione per aggiornare/gestire: {billing_url}"
@@ -255,8 +255,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "nl": {
         "budget_exhausted": (
-            "Je hebt je maandelijkse tokenlimiet bereikt."
-            " {remaining} token{s} over."
+            "Je hebt je maandelijkse limiet bereikt."
+            " ${remaining} over."
             " Nieuwe berichten zijn geblokkeerd tot de volgende maandelijkse reset."
             "{plus_message}"
             " Open Facturering om te upgraden/beheren: {billing_url}"
@@ -281,8 +281,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "ru": {
         "budget_exhausted": (
-            "\u0412\u044b \u0438\u0441\u0447\u0435\u0440\u043f\u0430\u043b\u0438 \u043c\u0435\u0441\u044f\u0447\u043d\u0443\u044e \u043a\u0432\u043e\u0442\u0443 \u0442\u043e\u043a\u0435\u043d\u043e\u0432."
-            " \u041e\u0441\u0442\u0430\u043b\u043e\u0441\u044c {remaining} \u0442\u043e\u043a\u0435\u043d\u043e\u0432."
+            "\u0412\u044b \u0438\u0441\u0447\u0435\u0440\u043f\u0430\u043b\u0438 \u043c\u0435\u0441\u044f\u0447\u043d\u0443\u044e \u043a\u0432\u043e\u0442\u0443."
+            " \u041e\u0441\u0442\u0430\u0442\u043e\u043a: ${remaining}."
             " \u041d\u043e\u0432\u044b\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u043d\u044b \u0434\u043e \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0435\u0433\u043e \u0435\u0436\u0435\u043c\u0435\u0441\u044f\u0447\u043d\u043e\u0433\u043e \u0441\u0431\u0440\u043e\u0441\u0430."
             "{plus_message}"
             " \u041e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 \u0440\u0430\u0437\u0434\u0435\u043b \u043e\u043f\u043b\u0430\u0442\u044b \u0434\u043b\u044f \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f: {billing_url}"
@@ -307,8 +307,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "ar": {
         "budget_exhausted": (
-            "\u0644\u0642\u062f \u0648\u0635\u0644\u062a \u0625\u0644\u0649 \u062d\u062f \u0627\u0644\u0631\u0645\u0648\u0632 \u0627\u0644\u0634\u0647\u0631\u064a."
-            " \u0645\u062a\u0628\u0642\u064a {remaining} \u0631\u0645\u0632."
+            "\u0644\u0642\u062f \u0648\u0635\u0644\u062a \u0625\u0644\u0649 \u0627\u0644\u062d\u062f \u0627\u0644\u0634\u0647\u0631\u064a."
+            " \u0645\u062a\u0628\u0642\u064a ${remaining}."
             " \u0627\u0644\u0631\u0633\u0627\u0626\u0644 \u0627\u0644\u062c\u062f\u064a\u062f\u0629 \u0645\u062d\u0638\u0648\u0631\u0629 \u062d\u062a\u0649 \u0625\u0639\u0627\u062f\u0629 \u0627\u0644\u0636\u0628\u0637 \u0627\u0644\u0634\u0647\u0631\u064a\u0629 \u0627\u0644\u0642\u0627\u062f\u0645\u0629."
             "{plus_message}"
             " \u0627\u0641\u062a\u062d \u0635\u0641\u062d\u0629 \u0627\u0644\u0641\u0648\u0627\u062a\u064a\u0631 \u0644\u0644\u062a\u0631\u0642\u064a\u0629/\u0627\u0644\u0625\u062f\u0627\u0631\u0629: {billing_url}"
@@ -333,8 +333,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "hi": {
         "budget_exhausted": (
-            "\u0906\u092a\u0915\u093e \u092e\u093e\u0938\u093f\u0915 \u091f\u094b\u0915\u0928 \u0915\u094b\u091f\u093e \u092a\u0942\u0930\u093e \u0939\u094b \u0917\u092f\u093e \u0939\u0948\u0964"
-            " {remaining} \u091f\u094b\u0915\u0928 \u0936\u0947\u0937\u0964"
+            "\u0906\u092a\u0915\u093e \u092e\u093e\u0938\u093f\u0915 \u0915\u094b\u091f\u093e \u092a\u0942\u0930\u093e \u0939\u094b \u0917\u092f\u093e \u0939\u0948\u0964"
+            " ${remaining} \u0936\u0947\u0937\u0964"
             " \u0905\u0917\u0932\u0947 \u092e\u093e\u0938\u093f\u0915 \u0930\u093f\u0938\u0947\u091f \u0924\u0915 \u0928\u090f \u0938\u0902\u0926\u0947\u0936 \u092c\u094d\u0932\u0949\u0915 \u0939\u0948\u0902\u0964"
             "{plus_message}"
             " \u0905\u092a\u0917\u094d\u0930\u0947\u0921/\u092a\u094d\u0930\u092c\u0902\u0927\u0928 \u0915\u0947 \u0932\u093f\u090f \u092c\u093f\u0932\u093f\u0902\u0917 \u0916\u094b\u0932\u0947\u0902: {billing_url}"
@@ -359,8 +359,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "tr": {
         "budget_exhausted": (
-            "Ayl\u0131k token kotan\u0131za ula\u015ft\u0131n\u0131z."
-            " {remaining} token kald\u0131."
+            "Ayl\u0131k kotan\u0131za ula\u015ft\u0131n\u0131z."
+            " ${remaining} kald\u0131."
             " Yeni mesajlar bir sonraki ayl\u0131k s\u0131f\u0131rlamaya kadar engellendi."
             "{plus_message}"
             " Y\u00fckseltme/y\u00f6netim i\u00e7in faturay\u0131 a\u00e7\u0131n: {billing_url}"
@@ -385,8 +385,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "th": {
         "budget_exhausted": (
-            "\u0e04\u0e38\u0e13\u0e43\u0e0a\u0e49\u0e42\u0e04\u0e15\u0e49\u0e32\u0e42\u0e17\u0e40\u0e04\u0e47\u0e19\u0e23\u0e32\u0e22\u0e40\u0e14\u0e37\u0e2d\u0e19\u0e04\u0e23\u0e1a\u0e41\u0e25\u0e49\u0e27"
-            " \u0e40\u0e2b\u0e25\u0e37\u0e2d {remaining} \u0e42\u0e17\u0e40\u0e04\u0e47\u0e19"
+            "\u0e04\u0e38\u0e13\u0e43\u0e0a\u0e49\u0e42\u0e04\u0e15\u0e49\u0e32\u0e23\u0e32\u0e22\u0e40\u0e14\u0e37\u0e2d\u0e19\u0e04\u0e23\u0e1a\u0e41\u0e25\u0e49\u0e27"
+            " \u0e40\u0e2b\u0e25\u0e37\u0e2d ${remaining}"
             " \u0e02\u0e49\u0e2d\u0e04\u0e27\u0e32\u0e21\u0e43\u0e2b\u0e21\u0e48\u0e08\u0e30\u0e16\u0e39\u0e01\u0e1a\u0e25\u0e47\u0e2d\u0e01\u0e08\u0e19\u0e01\u0e27\u0e48\u0e32\u0e08\u0e30\u0e23\u0e35\u0e40\u0e0b\u0e47\u0e15\u0e43\u0e19\u0e40\u0e14\u0e37\u0e2d\u0e19\u0e16\u0e31\u0e14\u0e44\u0e1b"
             "{plus_message}"
             " \u0e40\u0e1b\u0e34\u0e14\u0e2b\u0e19\u0e49\u0e32\u0e01\u0e32\u0e23\u0e40\u0e23\u0e35\u0e22\u0e01\u0e40\u0e01\u0e47\u0e1a\u0e40\u0e07\u0e34\u0e19\u0e40\u0e1e\u0e37\u0e48\u0e2d\u0e2d\u0e31\u0e1b\u0e40\u0e01\u0e23\u0e14/\u0e08\u0e31\u0e14\u0e01\u0e32\u0e23: {billing_url}"
@@ -411,8 +411,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "vi": {
         "budget_exhausted": (
-            "B\u1ea1n \u0111\u00e3 \u0111\u1ea1t h\u1ea1n ng\u1ea1ch token h\u00e0ng th\u00e1ng."
-            " C\u00f2n l\u1ea1i {remaining} token."
+            "B\u1ea1n \u0111\u00e3 \u0111\u1ea1t h\u1ea1n ng\u1ea1ch h\u00e0ng th\u00e1ng."
+            " C\u00f2n l\u1ea1i ${remaining}."
             " Tin nh\u1eafn m\u1edbi s\u1ebd b\u1ecb ch\u1eb7n cho \u0111\u1ebfn l\u1ea7n \u0111\u1eb7t l\u1ea1i h\u00e0ng th\u00e1ng ti\u1ebfp theo."
             "{plus_message}"
             " M\u1edf trang Thanh to\u00e1n \u0111\u1ec3 n\u00e2ng c\u1ea5p/qu\u1ea3n l\u00fd: {billing_url}"
@@ -437,8 +437,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "pl": {
         "budget_exhausted": (
-            "Osi\u0105gni\u0119to miesi\u0119czny limit token\u00f3w."
-            " Pozosta\u0142o {remaining} token\u00f3w."
+            "Osi\u0105gni\u0119to miesi\u0119czny limit."
+            " Pozosta\u0142o ${remaining}."
             " Nowe wiadomo\u015bci s\u0105 zablokowane do nast\u0119pnego miesi\u0119cznego resetu."
             "{plus_message}"
             " Otw\u00f3rz p\u0142atno\u015bci, aby zaktualizowa\u0107/zarz\u0105dza\u0107: {billing_url}"
@@ -463,8 +463,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "id": {
         "budget_exhausted": (
-            "Anda telah mencapai kuota token bulanan."
-            " Tersisa {remaining} token."
+            "Anda telah mencapai kuota bulanan."
+            " Tersisa ${remaining}."
             " Pesan baru diblokir hingga reset bulanan berikutnya."
             "{plus_message}"
             " Buka Tagihan untuk upgrade/kelola: {billing_url}"
@@ -489,8 +489,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "ms": {
         "budget_exhausted": (
-            "Anda telah mencapai kuota token bulanan."
-            " Baki {remaining} token."
+            "Anda telah mencapai kuota bulanan."
+            " Baki ${remaining}."
             " Mesej baharu disekat sehingga set semula bulanan seterusnya."
             "{plus_message}"
             " Buka Bil untuk naik taraf/urus: {billing_url}"
@@ -515,8 +515,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "tl": {
         "budget_exhausted": (
-            "Naabot mo na ang buwanang token quota."
-            " {remaining} token ang natitira."
+            "Naabot mo na ang buwanang quota."
+            " ${remaining} ang natitira."
             " Naka-block ang mga bagong mensahe hanggang sa susunod na buwanang reset."
             "{plus_message}"
             " Buksan ang Billing para mag-upgrade/mag-manage: {billing_url}"
@@ -541,8 +541,8 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     },
     "sw": {
         "budget_exhausted": (
-            "Umefika kikomo cha tokeni za mwezi."
-            " Tokeni {remaining} zimebaki."
+            "Umefika kikomo cha mwezi."
+            " ${remaining} zimebaki."
             " Ujumbe mpya umezuiwa hadi upya wa mwezi ujao."
             "{plus_message}"
             " Fungua Bili kuboresha/kusimamia: {billing_url}"
@@ -574,7 +574,7 @@ def error_msg(lang: str, key: str, **kwargs: str) -> str:
     Args:
         lang: Language code (e.g. "ja", "es"). Falls back to "en".
         key: Message key ("budget_exhausted", "waking_up", "suspended").
-        **kwargs: Format placeholders (remaining, plus_message, billing_url, s).
+        **kwargs: Format placeholders (remaining, plus_message, billing_url).
     """
     msgs = ERROR_MESSAGES.get(lang, ERROR_MESSAGES["en"])
     template = msgs.get(key, ERROR_MESSAGES["en"][key])

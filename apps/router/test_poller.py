@@ -106,9 +106,8 @@ class TelegramPollerDispatchTest(TestCase):
         tenant = MagicMock(spec=Tenant)
         tenant.status = Tenant.Status.ACTIVE
         tenant.is_trial = True
-        tenant.monthly_token_budget = 100000
-        tenant.effective_token_budget = 100000
-        tenant.tokens_this_month = 100000
+        tenant.effective_cost_budget = 5
+        tenant.estimated_cost_this_month = 5
         tenant.model_tier = Tenant.ModelTier.STARTER
         mock_resolve.return_value = tenant
 
@@ -119,7 +118,7 @@ class TelegramPollerDispatchTest(TestCase):
         post_calls = self.poller._http.post.call_args_list
         self.assertTrue(len(post_calls) > 0)
         sent_json = post_calls[0][1].get("json", {})
-        self.assertIn("token quota", sent_json.get("text", ""))
+        self.assertIn("monthly quota", sent_json.get("text", ""))
 
     @patch("apps.router.poller.record_usage")
     @patch("apps.router.poller.httpx.post")
