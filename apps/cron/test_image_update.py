@@ -47,7 +47,7 @@ def _extract_batch_tasks(mock_batch, task_name):
     return [t for t in batch_tasks if t[0] == task_name]
 
 
-def _batch_return_len(tasks):
+def _batch_return_len(tasks, **kwargs):
     """Mock side_effect that returns len(tasks) to simulate success."""
     return len(tasks)
 
