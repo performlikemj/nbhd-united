@@ -85,7 +85,10 @@ def publish_task(task_name: str, *args, idempotency_key: str | None = None, dela
         raise
 
 
-def publish_batch(tasks: list[tuple[str, tuple, dict[str, Any]] | tuple[str, tuple, dict[str, Any], str]]) -> int:
+def publish_batch(
+    tasks: list[tuple[str, tuple, dict[str, Any]] | tuple[str, tuple, dict[str, Any], str]],
+    delay_seconds: int | None = None,
+) -> int:
     """
     Publish multiple tasks to QStash in a single HTTP call.
 
@@ -93,6 +96,10 @@ def publish_batch(tasks: list[tuple[str, tuple, dict[str, Any]] | tuple[str, tup
     ``(task_name, args, kwargs, deduplication_id)``.  Uses QStash's
     ``batch_json`` API to avoid serial HTTP calls that block the Django
     worker.
+
+    Args:
+        delay_seconds: Optional delay before QStash delivers the messages.
+            Use this to ensure earlier batches complete before this batch runs.
 
     Returns the number of successfully enqueued tasks.
 
@@ -140,6 +147,8 @@ def publish_batch(tasks: list[tuple[str, tuple, dict[str, Any]] | tuple[str, tup
             }
             if dedup_id:
                 msg["deduplication_id"] = dedup_id
+            if delay_seconds:
+                msg["delay"] = f"{delay_seconds}s"
             messages.append(msg)
 
         results = client.message.batch_json(messages)

@@ -61,10 +61,21 @@ fi
 # Note: No webhook secret injection needed — channels.telegram is absent.
 # The central Django poller authenticates via gateway token (Bearer auth).
 
-if [ ! -f "$OPENCLAW_CONFIG_PATH" ]; then
-    echo "OPENCLAW_CONFIG_JSON is not set and config file is missing at $OPENCLAW_CONFIG_PATH" >&2
-    exit 1
-fi
+# Validate config exists and contains valid JSON.
+# Retry up to 30s to handle in-flight config writes from Django.
+MAX_CONFIG_RETRIES=6
+CONFIG_RETRY_DELAY=5
+for _attempt in $(seq 1 $MAX_CONFIG_RETRIES); do
+    if [ -f "$OPENCLAW_CONFIG_PATH" ] && node -e "JSON.parse(require('fs').readFileSync(process.argv[1]))" "$OPENCLAW_CONFIG_PATH" 2>/dev/null; then
+        break
+    fi
+    if [ "$_attempt" -eq "$MAX_CONFIG_RETRIES" ]; then
+        echo "Config file missing or invalid after ${MAX_CONFIG_RETRIES} retries at $OPENCLAW_CONFIG_PATH" >&2
+        exit 1
+    fi
+    echo "Config not ready (attempt $_attempt/$MAX_CONFIG_RETRIES), retrying in ${CONFIG_RETRY_DELAY}s..." >&2
+    sleep $CONFIG_RETRY_DELAY
+done
 
 # --- Dual-process supervisor: OpenClaw gateway + reverse proxy ---
 
