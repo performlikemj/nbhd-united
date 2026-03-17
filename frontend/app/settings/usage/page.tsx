@@ -15,14 +15,12 @@ export default function SettingsUsagePage() {
   const { data: usageSummary, isLoading: summaryLoading } = useUsageSummaryQuery();
   const { data: transparency, isLoading: transparencyLoading } = useTransparencyQuery();
 
-  const tokenBudget = tenant?.monthly_token_budget ?? 0;
-  const tokenUsed = tenant?.tokens_this_month ?? 0;
   const budgetUsage = usageSummary?.budget;
-  const effectiveUsed = budgetUsage?.tenant_tokens_used ?? tokenUsed;
-  const effectiveBudget = budgetUsage?.tenant_token_budget ?? tokenBudget;
-  const budgetPct = effectiveBudget > 0 ? Math.min(100, Math.round((effectiveUsed / effectiveBudget) * 100)) : 0;
-  const isOverQuota = effectiveUsed >= effectiveBudget && effectiveBudget > 0;
-  const budgetRemaining = Math.max(0, effectiveBudget - effectiveUsed);
+  const costUsed = budgetUsage?.tenant_cost_used ?? Number(tenant?.estimated_cost_this_month ?? 0);
+  const costBudget = budgetUsage?.tenant_cost_budget ?? 0;
+  const budgetPct = costBudget > 0 ? Math.min(100, Math.round((costUsed / costBudget) * 100)) : 0;
+  const isOverQuota = costUsed >= costBudget && costBudget > 0;
+  const costRemaining = Math.max(0, costBudget - costUsed);
   const modelBreakdown = usageSummary?.by_model ?? [];
 
   const [showAllUsage, setShowAllUsage] = useState(false);
@@ -46,7 +44,7 @@ export default function SettingsUsagePage() {
   if (isLoading || summaryLoading || transparencyLoading) {
     return (
       <div className="space-y-4">
-        <SectionCard title="Usage" subtitle="Monthly token and message burn for your tenant runtime">
+        <SectionCard title="Usage" subtitle="Monthly cost and message burn for your tenant runtime">
           <div className="grid gap-3 md:grid-cols-3">
             <StatCardSkeleton />
             <StatCardSkeleton />
@@ -73,9 +71,9 @@ export default function SettingsUsagePage() {
             </div>
             {isOverQuota && (
               <div className="rounded-panel border border-signal/30 bg-signal-faint p-4 text-sm text-ink">
-                <p className="font-medium">Token quota reached.</p>
+                <p className="font-medium">Monthly quota reached.</p>
                 <p className="mt-2 text-ink-muted">
-                  You cannot go over the token budget. Upgrade your plan or wait until next month.
+                  You&apos;ve used your full monthly budget. Upgrade your plan or wait until next month.
                 </p>
                 <Link href="/settings/billing" className="mt-3 inline-flex underline">
                   Go to Billing
@@ -85,9 +83,9 @@ export default function SettingsUsagePage() {
 
             <article className="rounded-panel border border-border bg-surface-elevated p-4">
               <div className="flex items-center justify-between gap-2 text-sm">
-                <p className="font-medium">Token budget</p>
+                <p className="font-medium">Monthly budget</p>
                 <p className="font-mono text-xs tracking-[0.1em] text-ink-muted">
-                  {effectiveUsed.toLocaleString()} / {effectiveBudget.toLocaleString()}
+                  ${costUsed.toFixed(2)} / ${costBudget.toFixed(2)}
                 </p>
               </div>
 
@@ -99,8 +97,8 @@ export default function SettingsUsagePage() {
               </div>
               <p className="mt-2 text-xs text-ink-muted">
                 {budgetPct}% of monthly budget consumed.{" "}
-                {budgetRemaining > 0
-                  ? `${budgetRemaining.toLocaleString()} tokens remaining this month.`
+                {costRemaining > 0
+                  ? `$${costRemaining.toFixed(2)} remaining this month.`
                   : "Nothing remaining this month."}
               </p>
             </article>

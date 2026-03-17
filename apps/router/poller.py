@@ -1312,7 +1312,7 @@ class TelegramPoller:
     def _send_budget_exhausted(self, chat_id: int, tenant: Tenant) -> None:
         """Send budget exhausted message."""
         frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
-        budget_remaining = max(tenant.effective_token_budget - tenant.tokens_this_month, 0)
+        cost_remaining = max(tenant.effective_cost_budget - tenant.estimated_cost_this_month, 0)
         plus_message = (
             " Opus requests are paused while at quota."
             if tenant.model_tier == Tenant.ModelTier.PREMIUM
@@ -1320,8 +1320,8 @@ class TelegramPoller:
         )
         self._send_message(
             chat_id,
-            f"You've hit your monthly token quota."
-            f" {budget_remaining} token{'s' if budget_remaining != 1 else ''} remaining."
+            f"You've hit your monthly quota."
+            f" ${cost_remaining:.2f} remaining."
             f" New messages are blocked until the next monthly reset."
             f"{plus_message} Open Billing to upgrade/manage at {frontend_url}/billing.",
         )

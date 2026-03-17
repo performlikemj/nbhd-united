@@ -33,14 +33,15 @@ class TenantModelTest(TestCase):
     def test_tenant_budget(self):
         tenant = create_tenant(display_name="Test", telegram_chat_id=222)
         self.assertFalse(tenant.is_over_budget)
-        tenant.tokens_this_month = tenant.effective_token_budget
+        # Budget is now cost-based: exceed effective_cost_budget
+        tenant.estimated_cost_this_month = tenant.effective_cost_budget
         tenant.save()
         self.assertTrue(tenant.is_over_budget)
 
     def test_byok_never_over_budget(self):
         tenant = create_tenant(display_name="BYOK", telegram_chat_id=223)
         tenant.model_tier = "byok"
-        tenant.tokens_this_month = 999_999_999
+        tenant.estimated_cost_this_month = 999_999
         tenant.save()
         self.assertFalse(tenant.is_over_budget)
 

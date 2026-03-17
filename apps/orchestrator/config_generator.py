@@ -280,6 +280,7 @@ TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
         "openrouter/minimax/minimax-m2.5": {"alias": "minimax"},
     },
     "premium": {
+        "openrouter/minimax/minimax-m2.5": {"alias": "minimax"},
         "anthropic/claude-sonnet-4.6": {"alias": "sonnet"},
         "anthropic/claude-opus-4.6": {"alias": "opus"},
     },
@@ -401,6 +402,22 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     heartbeat_job = _build_heartbeat_cron(tenant)
     if heartbeat_job is not None:
         jobs.append(heartbeat_job)
+
+    # Apply per-task model overrides from tenant preferences
+    _TASK_SLUG_MAP = {
+        "Morning Briefing": "morning_briefing",
+        "Evening Check-in": "evening_checkin",
+        "Week Ahead Review": "week_review",
+        "Background Tasks": "background_tasks",
+        "Heartbeat Check-in": "heartbeat",
+    }
+    prefs = getattr(tenant, "task_model_preferences", None) or {}
+    if prefs:
+        for job in jobs:
+            slug = _TASK_SLUG_MAP.get(job["name"], "")
+            model = prefs.get(slug)
+            if model:
+                job["model"] = model
 
     return jobs
 

@@ -92,14 +92,21 @@ def _get_budget_info(tenant: Tenant, first_of_month: date) -> dict:
         global_remaining = None
         global_spent = 0.0
 
-    effective_budget = tenant.effective_token_budget
+    effective_token_budget = tenant.effective_token_budget
+    effective_cost = tenant.effective_cost_budget
+    cost_used = float(tenant.estimated_cost_this_month)
+    cost_budget = float(effective_cost)
     return {
+        # Token fields kept for informational display
         "tenant_tokens_used": tenant.tokens_this_month,
-        "tenant_token_budget": effective_budget,
-        "tenant_estimated_cost": float(tenant.estimated_cost_this_month),
+        "tenant_token_budget": effective_token_budget,
+        "tenant_estimated_cost": cost_used,
+        # Cost-based budget (drives enforcement)
+        "tenant_cost_used": cost_used,
+        "tenant_cost_budget": cost_budget,
         "budget_percentage": (
-            round(tenant.tokens_this_month / effective_budget * 100, 1)
-            if effective_budget > 0 else 0
+            round(cost_used / cost_budget * 100, 1)
+            if cost_budget > 0 else 0
         ),
         "global_spent": global_spent,
         "global_remaining": float(global_remaining) if global_remaining is not None else None,

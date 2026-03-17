@@ -15,6 +15,8 @@ class BudgetSerializer(serializers.Serializer):
     tenant_tokens_used = serializers.IntegerField()
     tenant_token_budget = serializers.IntegerField()
     tenant_estimated_cost = serializers.FloatField()
+    tenant_cost_used = serializers.FloatField()
+    tenant_cost_budget = serializers.FloatField()
     budget_percentage = serializers.FloatField()
     global_spent = serializers.FloatField()
     global_remaining = serializers.FloatField(allow_null=True)

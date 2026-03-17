@@ -365,6 +365,15 @@ export function updatePreferredModel(preferred_model: string): Promise<{ preferr
   });
 }
 
+export function updateTaskModelPreferences(
+  prefs: Record<string, string>,
+): Promise<{ task_model_preferences: Record<string, string> }> {
+  return apiFetch("/api/v1/tenants/settings/task-model-preferences/", {
+    method: "PATCH",
+    body: JSON.stringify({ task_model_preferences: prefs }),
+  });
+}
+
 // Automations
 type AutomationResponse = Automation[] | { results?: Automation[] };
 

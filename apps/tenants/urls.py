@@ -12,6 +12,7 @@ from .views import (
     ProvisioningStatusView,
     RefreshConfigView,
     RetryProvisioningView,
+    TaskModelPreferencesView,
     TenantViewSet,
     UpdatePreferencesView,
 )
@@ -43,5 +44,6 @@ urlpatterns = [
     path("delete-account/", DeleteAccountView.as_view(), name="delete-account"),
     path("cancel-deletion/", CancelDeletionView.as_view(), name="cancel-deletion"),
     path("settings/preferred-model/", PreferredModelView.as_view(), name="preferred-model"),
+    path("settings/task-model-preferences/", TaskModelPreferencesView.as_view(), name="task-model-preferences"),
     path("", include(router.urls)),
 ]

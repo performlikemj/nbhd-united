@@ -53,7 +53,9 @@ export interface Tenant {
   tokens_this_month: number;
   estimated_cost_this_month: string;
   monthly_token_budget: number;
+  monthly_cost_budget: string;
   preferred_model: string;
+  task_model_preferences: Record<string, string>;
   last_message_at: string | null;
   provisioned_at: string | null;
   created_at: string;
@@ -162,6 +164,8 @@ export interface UsageBudgetSummary {
   tenant_tokens_used: number;
   tenant_token_budget: number;
   tenant_estimated_cost: number;
+  tenant_cost_used: number;
+  tenant_cost_budget: number;
   budget_percentage: number;
   global_spent: number;
   global_remaining: number | null;
