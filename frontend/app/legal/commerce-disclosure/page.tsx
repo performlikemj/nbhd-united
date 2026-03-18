@@ -33,7 +33,7 @@ export default function CommerceDisclosurePage() {
       <h2>Price (販売価格)</h2>
       <ul>
         <li>Starter Plan: $12/month (USD)</li>
-        <li>Premium Plan: $25/month (USD)</li>
+        <li>Premium Plan: $40/month (USD)</li>
         <li>Bring Your Own Key (BYOK) Plan: $8/month (USD)</li>
       </ul>
       <p>All prices include applicable taxes. Prices are displayed on each plan page.</p>

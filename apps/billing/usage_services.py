@@ -4,7 +4,6 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal
 
-from django.conf import settings
 from django.db.models import Count, Sum
 from django.db.models.functions import TruncDate
 from django.utils import timezone
@@ -233,7 +232,7 @@ def get_transparency_data(tenant: Tenant) -> dict:
 
     infra_breakdown = _get_infra_breakdown(tenant, first)
 
-    subscription_price = _get_subscription_price()
+    subscription_price = _get_subscription_price(tenant)
     surplus = max(0.0, subscription_price - actual_cost - infra_breakdown["total"])
     surplus = round(surplus, 4)
 
@@ -262,11 +261,12 @@ def get_transparency_data(tenant: Tenant) -> dict:
     }
 
 
-def _get_subscription_price() -> float:
-    default = 12.0
-    configured = getattr(settings, "USAGE_DASHBOARD_SUBSCRIPTION_PRICE", default)
-    try:
-        value = float(configured)
-    except (TypeError, ValueError):
-        return default
-    return value if value >= 0 else default
+TIER_SUBSCRIPTION_PRICES: dict[str, float] = {
+    "starter": 12.0,
+    "premium": 40.0,
+    "byok": 8.0,
+}
+
+
+def _get_subscription_price(tenant: Tenant) -> float:
+    return TIER_SUBSCRIPTION_PRICES.get(tenant.model_tier, 12.0)
