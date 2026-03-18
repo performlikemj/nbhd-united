@@ -2,7 +2,7 @@
 from datetime import date, timedelta
 from decimal import Decimal
 
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -217,10 +217,17 @@ class TransparencyServiceTest(TestCase):
         self.assertTrue(data["donation_enabled"])
         self.assertEqual(data["donation_percentage"], 50)
 
-    @override_settings(USAGE_DASHBOARD_SUBSCRIPTION_PRICE=12.5)
-    def test_transparency_uses_setting_driven_subscription_price(self):
+    def test_transparency_premium_subscription_price(self):
+        self.tenant.model_tier = "premium"
+        self.tenant.save(update_fields=["model_tier"])
         data = get_transparency_data(self.tenant)
-        self.assertEqual(data["subscription_price"], 12.5)
+        self.assertEqual(data["subscription_price"], 40.0)
+
+    def test_transparency_byok_subscription_price(self):
+        self.tenant.model_tier = "byok"
+        self.tenant.save(update_fields=["model_tier"])
+        data = get_transparency_data(self.tenant)
+        self.assertEqual(data["subscription_price"], 8.0)
 
 
 class DonationPreferenceAPITest(TestCase):
