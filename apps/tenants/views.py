@@ -76,13 +76,15 @@ class OnboardTenantView(APIView):
         }
         user.save(update_fields=["display_name", "language", "timezone", "preferences"])
 
-        # Create tenant and provision immediately for 7-day free trial
+        # Create tenant and provision immediately for free trial
+        # TODO: revert to timedelta(days=7) after March 2026 promotion ends
         now = timezone.now()
+        trial_end = timezone.datetime(2026, 3, 31, 23, 59, 59, tzinfo=timezone.utc)
         tenant = Tenant.objects.create(
             user=user,
             is_trial=True,
             trial_started_at=now,
-            trial_ends_at=now + timedelta(days=7),
+            trial_ends_at=max(now + timedelta(days=7), trial_end),
             model_tier=Tenant.ModelTier.STARTER,
             status=Tenant.Status.PROVISIONING,
         )
