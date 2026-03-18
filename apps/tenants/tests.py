@@ -249,7 +249,8 @@ class OnboardTenantViewTest(TestCase):
         self.assertIsNotNone(tenant.trial_ends_at)
         self.assertEqual(tenant.model_tier, Tenant.ModelTier.STARTER)
         self.assertEqual(tenant.status, Tenant.Status.PROVISIONING)
-        self.assertLessEqual(
+        # Trial extends to March 31 promo or 7 days, whichever is later
+        self.assertGreaterEqual(
             tenant.trial_ends_at - tenant.trial_started_at,
             timedelta(days=7),
         )
