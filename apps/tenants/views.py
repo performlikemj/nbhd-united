@@ -1,7 +1,7 @@
 """Tenant views."""
 import logging
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as dt_tz
 
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -79,7 +79,7 @@ class OnboardTenantView(APIView):
         # Create tenant and provision immediately for free trial
         # TODO: revert to timedelta(days=7) after March 2026 promotion ends
         now = timezone.now()
-        trial_end = timezone.datetime(2026, 3, 31, 23, 59, 59, tzinfo=timezone.utc)
+        trial_end = datetime(2026, 3, 31, 23, 59, 59, tzinfo=dt_tz.utc)
         tenant = Tenant.objects.create(
             user=user,
             is_trial=True,
