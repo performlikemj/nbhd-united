@@ -50,6 +50,7 @@ class TenantSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
     has_active_subscription = serializers.SerializerMethodField()
     trial_days_remaining = serializers.SerializerMethodField()
+    platform_budget_exceeded = serializers.SerializerMethodField()
 
     class Meta:
         model = Tenant
@@ -65,6 +66,7 @@ class TenantSerializer(serializers.ModelSerializer):
             "provisioned_at", "config_refreshed_at", "created_at",
             "pending_deletion", "deletion_scheduled_at",
             "preferred_model", "task_model_preferences",
+            "platform_budget_exceeded",
         )
         read_only_fields = fields
 
@@ -79,6 +81,17 @@ class TenantSerializer(serializers.ModelSerializer):
 
         days = (obj.trial_ends_at - timezone.now()).days
         return max(0, days)
+
+    def get_platform_budget_exceeded(self, obj):
+        from apps.billing.models import MonthlyBudget
+        from datetime import date
+
+        first_of_month = date.today().replace(day=1)
+        try:
+            budget = MonthlyBudget.objects.get(month=first_of_month)
+            return budget.is_over_budget
+        except MonthlyBudget.DoesNotExist:
+            return False
 
 
 class TenantRegistrationSerializer(serializers.Serializer):

@@ -7,7 +7,7 @@ import { ReactNode, useEffect, useRef, useState } from "react";
 
 import { logout } from "@/lib/api";
 import { clearTokens, isLoggedIn } from "@/lib/auth";
-import { useMeQuery } from "@/lib/queries";
+import { useMeQuery, useTenantQuery } from "@/lib/queries";
 import { BrandLogo } from "@/components/brand-logo";
 import { SiteFooter } from "@/components/site-footer";
 import { useTheme } from "@/components/theme-provider";
@@ -115,6 +115,22 @@ function TrialBadge() {
         ? "Trial ended"
         : `Trial: ${daysLeft ?? 0} days left`}
     </span>
+  );
+}
+
+function PlatformBudgetBanner() {
+  const { data: tenant } = useTenantQuery();
+
+  if (!tenant?.platform_budget_exceeded) {
+    return null;
+  }
+
+  return (
+    <div className="border-b border-amber-300/40 bg-amber-50 px-4 py-3 text-center text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/50 dark:text-amber-200">
+      <strong>Beta notice:</strong> Our platform budget for this month has been reached.
+      Your assistant may be temporarily unavailable &mdash; service will resume when the budget resets.
+      Thanks for your patience!
+    </div>
   );
 }
 
@@ -275,6 +291,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           </nav>
         </div>
       </header>
+
+      <PlatformBudgetBanner />
 
       <main id="main-content" className="mx-auto w-full max-w-6xl flex-1 flex flex-col min-h-0 px-4 py-8 sm:px-6">{children}</main>
       <SiteFooter />
