@@ -325,10 +325,10 @@ class UserLLMConfig(models.Model):
         OPENROUTER = "openrouter", "OpenRouter"
         XAI = "xai", "xAI (Grok)"
 
-    user = models.OneToOneField(
+    user = models.ForeignKey(
         "tenants.User",
         on_delete=models.CASCADE,
-        related_name="llm_config",
+        related_name="llm_configs",
     )
     provider = models.CharField(
         max_length=30,
@@ -351,6 +351,12 @@ class UserLLMConfig(models.Model):
 
     class Meta:
         db_table = "user_llm_configs"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "provider"],
+                name="unique_user_provider",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.user.display_name} - {self.provider}"

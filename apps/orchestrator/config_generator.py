@@ -608,37 +608,38 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     # reference (see azure_client.py). OpenClaw reads it automatically for
     # models routed through OpenRouter (e.g. openrouter/minimax/minimax-m2.5).
 
-    # BYOK: inject user's own provider config
+    # BYOK: inject all user provider keys + models
     if tier == "byok":
-        try:
-            from apps.tenants.models import UserLLMConfig
-            from apps.tenants.crypto import decrypt_api_key
+        from apps.tenants.models import UserLLMConfig
+        from apps.tenants.crypto import decrypt_api_key
 
-            llm_config = UserLLMConfig.objects.get(user=tenant.user)
-            if llm_config.encrypted_api_key:
-                api_key = decrypt_api_key(llm_config.encrypted_api_key)
-                provider = llm_config.provider
-                model_id = llm_config.model_id
+        ENV_KEY_MAP = {
+            "openai": "OPENAI_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "groq": "GROQ_API_KEY",
+            "google": "GEMINI_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY",
+            "xai": "XAI_API_KEY",
+        }
 
-                ENV_KEY_MAP = {
-                    "openai": "OPENAI_API_KEY",
-                    "anthropic": "ANTHROPIC_API_KEY",
-                    "groq": "GROQ_API_KEY",
-                    "google": "GEMINI_API_KEY",
-                    "openrouter": "OPENROUTER_API_KEY",
-                    "xai": "XAI_API_KEY",
-                }
-                env_key = ENV_KEY_MAP.get(provider)
-                if env_key:
-                    config.setdefault("env", {})[env_key] = api_key
+        all_models: dict[str, dict[str, str]] = {}
+        primary_set = False
 
-                if model_id:
-                    config["agents"]["defaults"]["model"]["primary"] = model_id
-                    config["agents"]["defaults"]["models"] = {
-                        model_id: {"alias": provider},
-                    }
-        except UserLLMConfig.DoesNotExist:
-            pass  # Fall back to default tier model
+        for llm_config in UserLLMConfig.objects.filter(user=tenant.user):
+            if not llm_config.encrypted_api_key:
+                continue
+            api_key = decrypt_api_key(llm_config.encrypted_api_key)
+            env_key = ENV_KEY_MAP.get(llm_config.provider)
+            if env_key:
+                config.setdefault("env", {})[env_key] = api_key
+            if llm_config.model_id:
+                all_models[llm_config.model_id] = {"alias": llm_config.provider}
+                if not primary_set:
+                    config["agents"]["defaults"]["model"]["primary"] = llm_config.model_id
+                    primary_set = True
+
+        if all_models:
+            config["agents"]["defaults"]["models"] = all_models
 
     if _active_plugins:
         image_gen_id = str(getattr(settings, "OPENCLAW_IMAGE_GEN_PLUGIN_ID", "") or "").strip()

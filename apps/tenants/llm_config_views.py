@@ -38,18 +38,18 @@ class LLMConfigSerializer(serializers.Serializer):
 
 
 class LLMConfigView(APIView):
-    """GET/PUT the authenticated user's BYOK LLM configuration."""
+    """GET/PUT/DELETE the authenticated user's BYOK LLM configurations.
+
+    Supports multiple provider configs per user (one key per provider).
+    """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        try:
-            config = request.user.llm_config
-        except UserLLMConfig.DoesNotExist:
-            return Response(
-                {"provider": "anthropic", "model_id": "", "key_masked": "", "has_key": False}
-            )
-        return Response(LLMConfigSerializer(config).data)
+        configs = UserLLMConfig.objects.filter(user=request.user).order_by("provider")
+        if not configs.exists():
+            return Response([])
+        return Response(LLMConfigSerializer(configs, many=True).data)
 
     def put(self, request):
         serializer = LLMConfigSerializer(data=request.data)
@@ -58,14 +58,12 @@ class LLMConfigView(APIView):
 
         config, _created = UserLLMConfig.objects.get_or_create(
             user=request.user,
-            defaults={
-                "provider": data["provider"],
-                "model_id": data.get("model_id", ""),
-            },
+            provider=data["provider"],
+            defaults={"model_id": data.get("model_id", "")},
         )
 
-        config.provider = data["provider"]
-        config.model_id = data.get("model_id", "") or config.model_id
+        if not _created:
+            config.model_id = data.get("model_id", "") or config.model_id
 
         api_key = data.get("api_key")
         if api_key:
@@ -81,6 +79,33 @@ class LLMConfigView(APIView):
             pass
 
         return Response(LLMConfigSerializer(config).data)
+
+    def delete(self, request):
+        provider = request.data.get("provider", "").strip()
+        if not provider:
+            return Response(
+                {"error": "Provider is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        deleted, _ = UserLLMConfig.objects.filter(
+            user=request.user, provider=provider
+        ).delete()
+
+        if deleted == 0:
+            return Response(
+                {"error": "No config found for that provider."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            tenant = request.user.tenant
+            if tenant.status == Tenant.Status.ACTIVE:
+                tenant.bump_pending_config()
+        except Tenant.DoesNotExist:
+            pass
+
+        return Response({"deleted": provider})
 
 
 class FetchModelsView(APIView):
@@ -112,18 +137,17 @@ class FetchModelsView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Fall back to stored key if none provided
+        # Fall back to stored key for this provider
         if not api_key:
-            try:
-                config = request.user.llm_config
-                if config.encrypted_api_key:
-                    api_key = decrypt_api_key(config.encrypted_api_key)
-            except UserLLMConfig.DoesNotExist:
-                pass
+            config = UserLLMConfig.objects.filter(
+                user=request.user, provider=provider
+            ).first()
+            if config and config.encrypted_api_key:
+                api_key = decrypt_api_key(config.encrypted_api_key)
 
         if not api_key:
             return Response(
-                {"error": "No API key provided and no key stored."},
+                {"error": "No API key provided and no key stored for this provider."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
