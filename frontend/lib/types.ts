@@ -61,6 +61,7 @@ export interface Tenant {
   created_at: string;
   pending_deletion: boolean;
   deletion_scheduled_at: string | null;
+  platform_budget_exceeded: boolean;
 }
 
 export interface RefreshConfigStatus {
