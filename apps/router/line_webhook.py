@@ -719,26 +719,28 @@ class LineWebhookView(View):
                 return
 
         # Budget check
-        if not check_budget(tenant):
+        budget_reason = check_budget(tenant)
+        if budget_reason:
             lang = tenant.user.language or "en"
-            cost_remaining = max(tenant.effective_cost_budget - tenant.estimated_cost_this_month, 0)
-            plus_message = (
-                " Opus requests are paused while at quota."
-                if tenant.model_tier == Tenant.ModelTier.PREMIUM
-                else ""
-            )
+            if budget_reason == "global":
+                msg_key = "budget_unavailable"
+                kwargs: dict[str, str] = {}
+            else:
+                msg_key = (
+                    "budget_exhausted_trial" if tenant.is_trial else "budget_exhausted_paid"
+                )
+                plus_message = (
+                    " Opus requests are paused while at quota."
+                    if tenant.model_tier == Tenant.ModelTier.PREMIUM
+                    else ""
+                )
+                kwargs = {
+                    "plus_message": plus_message,
+                    "billing_url": f"{frontend_url}/billing",
+                }
             _send_line_flex(
                 line_user_id,
-                build_status_bubble(
-                    error_msg(
-                        lang,
-                        "budget_exhausted",
-                        remaining=f"{cost_remaining:.2f}",
-                        plus_message=plus_message,
-                        billing_url=f"{frontend_url}/billing",
-                    ),
-                    tone="warning",
-                ),
+                build_status_bubble(error_msg(lang, msg_key, **kwargs), tone="warning"),
             )
             return
 

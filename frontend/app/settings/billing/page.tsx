@@ -11,7 +11,7 @@ import { useCheckoutMutation, useStripePortalMutation, useTenantQuery } from "@/
 import { IntelligenceMeter, TIER_INTELLIGENCE } from "@/components/intelligence-meter";
 
 const PLAN_OPTIONS = [
-  { id: "starter", name: "Starter", price: "$12/mo", description: "MiniMax M2.5 — $5/mo AI budget", available: true },
+  { id: "starter", name: "Starter", price: "$12/mo", description: "MiniMax M2.7 — $5/mo AI budget", available: true },
   { id: "premium", name: "Premium", price: "$40/mo", description: "MiniMax + Sonnet + Opus — $40/mo AI budget", available: true },
   { id: "byok", name: "BYOK", price: "$8/mo", description: "Bring Your Own Key — unlimited AI budget", available: true },
 ] as const;

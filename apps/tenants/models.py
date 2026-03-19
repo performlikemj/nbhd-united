@@ -89,7 +89,7 @@ class Tenant(models.Model):
         DELETED = "deleted", "Deleted"
 
     class ModelTier(models.TextChoices):
-        STARTER = "starter", "Starter (MiniMax M2.5)"
+        STARTER = "starter", "Starter (MiniMax M2.7)"
         PREMIUM = "premium", "Premium (Sonnet/Opus)"
         BYOK = "byok", "Bring Your Own Key"
 

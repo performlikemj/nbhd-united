@@ -94,7 +94,7 @@ class LineOnboardingGateTest(TestCase):
     @patch("apps.router.line_webhook.LineWebhookView._forward_to_container")
     @patch("apps.router.line_webhook._show_loading")
     @patch("apps.router.line_webhook._send_line_flex")
-    @patch("apps.router.line_webhook.check_budget", return_value=True)
+    @patch("apps.router.line_webhook.check_budget", return_value="")
     @patch("apps.router.line_webhook._send_line_push")
     @patch("apps.router.line_webhook._resolve_tenant_by_line_user_id")
     def test_onboarding_complete_passes_through(

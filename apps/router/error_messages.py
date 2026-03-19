@@ -12,20 +12,34 @@ Follows the same MESSAGES dict + helper pattern as onboarding.py.
 # Error message templates
 # ---------------------------------------------------------------------------
 # Placeholders:
-#   budget_exhausted:    {remaining}, {plus_message}, {billing_url}
-#   waking_up:           (none)
-#   hibernation_waking:  (none)
-#   suspended:           {billing_url}
+#   budget_exhausted_trial:  {plus_message}, {billing_url}
+#   budget_exhausted_paid:   {plus_message}, {billing_url}
+#   budget_unavailable:      (none)
+#   waking_up:               (none)
+#   hibernation_waking:      (none)
+#   suspended:               {billing_url}
 # ---------------------------------------------------------------------------
 
 ERROR_MESSAGES: dict[str, dict[str, str]] = {
     "en": {
-        "budget_exhausted": (
-            "You've hit your monthly quota."
-            " ${remaining} remaining."
+        "budget_exhausted_trial": (
+            "You've used your free trial allowance for this month."
+            " New messages are blocked until the next monthly reset."
+            "{plus_message}"
+            " Open Billing to upgrade at {billing_url}."
+        ),
+        "budget_exhausted_paid": (
+            "You've hit your monthly budget."
             " New messages are blocked until the next monthly reset."
             "{plus_message}"
             " Open Billing to upgrade/manage at {billing_url}."
+        ),
+        "budget_unavailable": (
+            "We're still in early testing and our platform budget"
+            " for this month has been reached."
+            " Your personal balance is unaffected"
+            " \u2014 service will resume when the budget resets."
+            " Thanks for your patience!"
         ),
         "waking_up": (
             "Your assistant is waking up! \U0001f305"
@@ -46,12 +60,23 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "ja": {
-        "budget_exhausted": (
-            "\u6708\u9593\u4e0a\u9650\u306b\u9054\u3057\u307e\u3057\u305f\u3002"
-            "\u6b8b\u308a${remaining}\u3067\u3059\u3002"
+        "budget_exhausted_trial": (
+            "\u4eca\u6708\u306e\u7121\u6599\u30c8\u30e9\u30a4\u30a2\u30eb\u67a0\u3092\u4f7f\u3044\u5207\u308a\u307e\u3057\u305f\u3002"
+            "\u6b21\u306e\u6708\u6b21\u30ea\u30bb\u30c3\u30c8\u307e\u3067\u65b0\u3057\u3044\u30e1\u30c3\u30bb\u30fc\u30b8\u306f\u30d6\u30ed\u30c3\u30af\u3055\u308c\u307e\u3059\u3002"
+            "{plus_message}"
+            "\u30a2\u30c3\u30d7\u30b0\u30ec\u30fc\u30c9\u306f\u3053\u3061\u3089: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "\u6708\u9593\u4e88\u7b97\u306b\u9054\u3057\u307e\u3057\u305f\u3002"
             "\u6b21\u306e\u6708\u6b21\u30ea\u30bb\u30c3\u30c8\u307e\u3067\u65b0\u3057\u3044\u30e1\u30c3\u30bb\u30fc\u30b8\u306f\u30d6\u30ed\u30c3\u30af\u3055\u308c\u307e\u3059\u3002"
             "{plus_message}"
             "\u8acb\u6c42\u30da\u30fc\u30b8\u3067\u30a2\u30c3\u30d7\u30b0\u30ec\u30fc\u30c9/\u7ba1\u7406: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "\u73fe\u5728\u30c6\u30b9\u30c8\u6bb5\u968e\u3067\u3001\u4eca\u6708\u306e\u30d7\u30e9\u30c3\u30c8\u30d5\u30a9\u30fc\u30e0\u4e88\u7b97\u306b\u9054\u3057\u307e\u3057\u305f\u3002"
+            "\u304a\u5ba2\u69d8\u306e\u6b8b\u9ad8\u306b\u306f\u5f71\u97ff\u3042\u308a\u307e\u305b\u3093"
+            "\u2014\u4e88\u7b97\u30ea\u30bb\u30c3\u30c8\u5f8c\u306b\u30b5\u30fc\u30d3\u30b9\u304c\u518d\u958b\u3055\u308c\u307e\u3059\u3002"
+            "\u3054\u7406\u89e3\u3044\u305f\u3060\u304d\u3042\u308a\u304c\u3068\u3046\u3054\u3056\u3044\u307e\u3059\uff01"
         ),
         "waking_up": (
             "\u30a2\u30b7\u30b9\u30bf\u30f3\u30c8\u304c\u8d77\u52d5\u4e2d\u3067\u3059\uff01\U0001f305"
@@ -72,12 +97,24 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "es": {
-        "budget_exhausted": (
-            "Has alcanzado tu cuota mensual."
-            " Quedan ${remaining}."
+        "budget_exhausted_trial": (
+            "Has usado tu asignaci\u00f3n de prueba gratuita de este mes."
+            " Los mensajes nuevos est\u00e1n bloqueados hasta el pr\u00f3ximo reinicio mensual."
+            "{plus_message}"
+            " Abre Facturaci\u00f3n para actualizar: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "Has alcanzado tu presupuesto mensual."
             " Los mensajes nuevos est\u00e1n bloqueados hasta el pr\u00f3ximo reinicio mensual."
             "{plus_message}"
             " Abre Facturaci\u00f3n para actualizar/gestionar: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "Estamos en fase de pruebas y el presupuesto de la plataforma"
+            " para este mes se ha agotado."
+            " Tu saldo personal no se ve afectado"
+            " \u2014 el servicio se reanudar\u00e1 cuando el presupuesto se reinicie."
+            " \u00a1Gracias por tu paciencia!"
         ),
         "waking_up": (
             "\u00a1Tu asistente se est\u00e1 despertando! \U0001f305"
@@ -98,12 +135,24 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "fr": {
-        "budget_exhausted": (
-            "Vous avez atteint votre quota mensuel."
-            " ${remaining} restant."
+        "budget_exhausted_trial": (
+            "Vous avez utilis\u00e9 votre allocation d\u2019essai gratuit ce mois-ci."
+            " Les nouveaux messages sont bloqu\u00e9s jusqu\u2019au prochain renouvellement mensuel."
+            "{plus_message}"
+            " Ouvrez la facturation pour mettre \u00e0 niveau\u00a0: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "Vous avez atteint votre budget mensuel."
             " Les nouveaux messages sont bloqu\u00e9s jusqu\u2019au prochain renouvellement mensuel."
             "{plus_message}"
             " Ouvrez la facturation pour g\u00e9rer votre abonnement\u00a0: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "Nous sommes encore en phase de test et le budget de la plateforme"
+            " pour ce mois a \u00e9t\u00e9 atteint."
+            " Votre solde personnel n\u2019est pas affect\u00e9"
+            " \u2014 le service reprendra lors du renouvellement du budget."
+            " Merci de votre patience\u00a0!"
         ),
         "waking_up": (
             "Votre assistant se r\u00e9veille\u00a0! \U0001f305"
@@ -124,12 +173,24 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "de": {
-        "budget_exhausted": (
-            "Du hast dein monatliches Kontingent erreicht."
-            " ${remaining} \u00fcbrig."
+        "budget_exhausted_trial": (
+            "Du hast dein kostenloses Testguthaben f\u00fcr diesen Monat aufgebraucht."
+            " Neue Nachrichten sind bis zum n\u00e4chsten monatlichen Reset blockiert."
+            "{plus_message}"
+            " \u00d6ffne die Abrechnung zum Upgraden: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "Du hast dein monatliches Budget erreicht."
             " Neue Nachrichten sind bis zum n\u00e4chsten monatlichen Reset blockiert."
             "{plus_message}"
             " \u00d6ffne die Abrechnung zum Upgraden/Verwalten: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "Wir befinden uns noch in der Testphase und das Plattformbudget"
+            " f\u00fcr diesen Monat wurde erreicht."
+            " Dein pers\u00f6nliches Guthaben ist nicht betroffen"
+            " \u2014 der Service wird fortgesetzt, wenn das Budget zur\u00fcckgesetzt wird."
+            " Danke f\u00fcr deine Geduld!"
         ),
         "waking_up": (
             "Dein Assistent wird gerade gestartet! \U0001f305"
@@ -150,12 +211,24 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "pt": {
-        "budget_exhausted": (
-            "Voc\u00ea atingiu sua cota mensal."
-            " ${remaining} restante."
+        "budget_exhausted_trial": (
+            "Voc\u00ea usou sua cota de teste gratuito deste m\u00eas."
+            " Novas mensagens est\u00e3o bloqueadas at\u00e9 a pr\u00f3xima renova\u00e7\u00e3o mensal."
+            "{plus_message}"
+            " Abra o Faturamento para upgrade: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "Voc\u00ea atingiu seu or\u00e7amento mensal."
             " Novas mensagens est\u00e3o bloqueadas at\u00e9 a pr\u00f3xima renova\u00e7\u00e3o mensal."
             "{plus_message}"
             " Abra o Faturamento para upgrade/gerenciamento: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "Ainda estamos em fase de testes e o or\u00e7amento da plataforma"
+            " para este m\u00eas foi atingido."
+            " Seu saldo pessoal n\u00e3o \u00e9 afetado"
+            " \u2014 o servi\u00e7o ser\u00e1 retomado quando o or\u00e7amento for renovado."
+            " Obrigado pela paci\u00eancia!"
         ),
         "waking_up": (
             "Seu assistente est\u00e1 iniciando! \U0001f305"
@@ -176,12 +249,23 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "zh": {
-        "budget_exhausted": (
-            "\u60a8\u5df2\u8fbe\u5230\u6708\u5ea6\u914d\u989d\u3002"
-            "\u5269\u4f59${remaining}\u3002"
+        "budget_exhausted_trial": (
+            "\u60a8\u5df2\u7528\u5b8c\u672c\u6708\u7684\u514d\u8d39\u8bd5\u7528\u989d\u5ea6\u3002"
+            "\u5728\u4e0b\u6b21\u6708\u5ea6\u91cd\u7f6e\u4e4b\u524d\uff0c\u65b0\u6d88\u606f\u5c06\u88ab\u62e6\u622a\u3002"
+            "{plus_message}"
+            "\u6253\u5f00\u8ba1\u8d39\u9875\u9762\u5347\u7ea7: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "\u60a8\u5df2\u8fbe\u5230\u6708\u5ea6\u9884\u7b97\u3002"
             "\u5728\u4e0b\u6b21\u6708\u5ea6\u91cd\u7f6e\u4e4b\u524d\uff0c\u65b0\u6d88\u606f\u5c06\u88ab\u62e6\u622a\u3002"
             "{plus_message}"
             "\u6253\u5f00\u8ba1\u8d39\u9875\u9762\u5347\u7ea7/\u7ba1\u7406: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "\u6211\u4eec\u4ecd\u5728\u65e9\u671f\u6d4b\u8bd5\u9636\u6bb5\uff0c\u672c\u6708\u7684\u5e73\u53f0\u9884\u7b97\u5df2\u8fbe\u5230\u4e0a\u9650\u3002"
+            "\u60a8\u7684\u4e2a\u4eba\u4f59\u989d\u4e0d\u53d7\u5f71\u54cd"
+            "\u2014\u2014\u9884\u7b97\u91cd\u7f6e\u540e\u670d\u52a1\u5c06\u6062\u590d\u3002"
+            "\u611f\u8c22\u60a8\u7684\u8010\u5fc3\uff01"
         ),
         "waking_up": (
             "\u60a8\u7684\u52a9\u624b\u6b63\u5728\u542f\u52a8\uff01\U0001f305"
@@ -202,12 +286,23 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "ko": {
-        "budget_exhausted": (
-            "\uc6d4\uac04 \ud560\ub2f9\ub7c9\uc5d0 \ub3c4\ub2ec\ud588\uc2b5\ub2c8\ub2e4."
-            " \ub0a8\uc740 \uae08\uc561: ${remaining}."
+        "budget_exhausted_trial": (
+            "\uc774\ubc88 \ub2ec \ubb34\ub8cc \uccb4\ud5d8 \ud560\ub2f9\ub7c9\uc744 \ubaa8\ub450 \uc0ac\uc6a9\ud588\uc2b5\ub2c8\ub2e4."
+            " \ub2e4\uc74c \uc6d4\ubcc4 \ucd08\uae30\ud654\uae4c\uc9c0 \uc0c8 \uba54\uc2dc\uc9c0\uac00 \ucc28\ub2e8\ub429\ub2c8\ub2e4."
+            "{plus_message}"
+            " \uc5c5\uadf8\ub808\uc774\ub4dc\ud558\ub824\uba74 \uccad\uad6c \ud398\uc774\uc9c0\ub97c \uc5ec\uc138\uc694: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "\uc6d4\uac04 \uc608\uc0b0\uc5d0 \ub3c4\ub2ec\ud588\uc2b5\ub2c8\ub2e4."
             " \ub2e4\uc74c \uc6d4\ubcc4 \ucd08\uae30\ud654\uae4c\uc9c0 \uc0c8 \uba54\uc2dc\uc9c0\uac00 \ucc28\ub2e8\ub429\ub2c8\ub2e4."
             "{plus_message}"
             " \uc5c5\uadf8\ub808\uc774\ub4dc/\uad00\ub9ac\ud558\ub824\uba74 \uccad\uad6c \ud398\uc774\uc9c0\ub97c \uc5ec\uc138\uc694: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "\uc544\uc9c1 \ucd08\uae30 \ud14c\uc2a4\ud2b8 \ub2e8\uacc4\uc774\uba70 \uc774\ubc88 \ub2ec \ud50c\ub7ab\ud3fc \uc608\uc0b0\uc5d0 \ub3c4\ub2ec\ud588\uc2b5\ub2c8\ub2e4."
+            " \uac1c\uc778 \uc794\uc561\uc740 \uc601\ud5a5\uc744 \ubc1b\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4"
+            " \u2014 \uc608\uc0b0\uc774 \ucd08\uae30\ud654\ub418\uba74 \uc11c\ube44\uc2a4\uac00 \uc7ac\uac1c\ub429\ub2c8\ub2e4."
+            " \uae30\ub2e4\ub824 \uc8fc\uc154\uc11c \uac10\uc0ac\ud569\ub2c8\ub2e4!"
         ),
         "waking_up": (
             "\uc5b4\uc2dc\uc2a4\ud134\ud2b8\uac00 \uc2dc\uc791\ub418\uace0 \uc788\uc2b5\ub2c8\ub2e4! \U0001f305"
@@ -228,12 +323,24 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "it": {
-        "budget_exhausted": (
-            "Hai raggiunto la tua quota mensile."
-            " ${remaining} rimanenti."
+        "budget_exhausted_trial": (
+            "Hai esaurito la tua quota di prova gratuita per questo mese."
+            " I nuovi messaggi sono bloccati fino al prossimo rinnovo mensile."
+            "{plus_message}"
+            " Apri la fatturazione per aggiornare: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "Hai raggiunto il tuo budget mensile."
             " I nuovi messaggi sono bloccati fino al prossimo rinnovo mensile."
             "{plus_message}"
             " Apri la fatturazione per aggiornare/gestire: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "Siamo ancora in fase di test e il budget della piattaforma"
+            " per questo mese \u00e8 stato raggiunto."
+            " Il tuo saldo personale non \u00e8 interessato"
+            " \u2014 il servizio riprender\u00e0 al rinnovo del budget."
+            " Grazie per la pazienza!"
         ),
         "waking_up": (
             "Il tuo assistente si sta avviando! \U0001f305"
@@ -254,12 +361,24 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "nl": {
-        "budget_exhausted": (
-            "Je hebt je maandelijkse limiet bereikt."
-            " ${remaining} over."
+        "budget_exhausted_trial": (
+            "Je hebt je gratis proeftegoed voor deze maand opgebruikt."
+            " Nieuwe berichten zijn geblokkeerd tot de volgende maandelijkse reset."
+            "{plus_message}"
+            " Open Facturering om te upgraden: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "Je hebt je maandelijks budget bereikt."
             " Nieuwe berichten zijn geblokkeerd tot de volgende maandelijkse reset."
             "{plus_message}"
             " Open Facturering om te upgraden/beheren: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "We zijn nog in de testfase en het platformbudget"
+            " voor deze maand is bereikt."
+            " Je persoonlijke saldo wordt niet be\u00efnvloed"
+            " \u2014 de service wordt hervat wanneer het budget wordt gereset."
+            " Bedankt voor je geduld!"
         ),
         "waking_up": (
             "Je assistent wordt opgestart! \U0001f305"
@@ -280,12 +399,24 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "ru": {
-        "budget_exhausted": (
-            "\u0412\u044b \u0438\u0441\u0447\u0435\u0440\u043f\u0430\u043b\u0438 \u043c\u0435\u0441\u044f\u0447\u043d\u0443\u044e \u043a\u0432\u043e\u0442\u0443."
-            " \u041e\u0441\u0442\u0430\u0442\u043e\u043a: ${remaining}."
+        "budget_exhausted_trial": (
+            "\u0412\u044b \u0438\u0441\u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u043b\u0438 \u0431\u0435\u0441\u043f\u043b\u0430\u0442\u043d\u044b\u0439 \u043f\u0440\u043e\u0431\u043d\u044b\u0439 \u043b\u0438\u043c\u0438\u0442 \u0437\u0430 \u044d\u0442\u043e\u0442 \u043c\u0435\u0441\u044f\u0446."
             " \u041d\u043e\u0432\u044b\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u043d\u044b \u0434\u043e \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0435\u0433\u043e \u0435\u0436\u0435\u043c\u0435\u0441\u044f\u0447\u043d\u043e\u0433\u043e \u0441\u0431\u0440\u043e\u0441\u0430."
             "{plus_message}"
             " \u041e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 \u0440\u0430\u0437\u0434\u0435\u043b \u043e\u043f\u043b\u0430\u0442\u044b \u0434\u043b\u044f \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "\u0412\u044b \u0438\u0441\u0447\u0435\u0440\u043f\u0430\u043b\u0438 \u043c\u0435\u0441\u044f\u0447\u043d\u044b\u0439 \u0431\u044e\u0434\u0436\u0435\u0442."
+            " \u041d\u043e\u0432\u044b\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u043d\u044b \u0434\u043e \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0435\u0433\u043e \u0435\u0436\u0435\u043c\u0435\u0441\u044f\u0447\u043d\u043e\u0433\u043e \u0441\u0431\u0440\u043e\u0441\u0430."
+            "{plus_message}"
+            " \u041e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 \u0440\u0430\u0437\u0434\u0435\u043b \u043e\u043f\u043b\u0430\u0442\u044b \u0434\u043b\u044f \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "\u041c\u044b \u0435\u0449\u0451 \u043d\u0430 \u044d\u0442\u0430\u043f\u0435 \u0442\u0435\u0441\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f, \u0438 \u0431\u044e\u0434\u0436\u0435\u0442 \u043f\u043b\u0430\u0442\u0444\u043e\u0440\u043c\u044b"
+            " \u0437\u0430 \u044d\u0442\u043e\u0442 \u043c\u0435\u0441\u044f\u0446 \u0438\u0441\u0447\u0435\u0440\u043f\u0430\u043d."
+            " \u0412\u0430\u0448 \u043b\u0438\u0447\u043d\u044b\u0439 \u0431\u0430\u043b\u0430\u043d\u0441 \u043d\u0435 \u0437\u0430\u0442\u0440\u043e\u043d\u0443\u0442"
+            " \u2014 \u0441\u0435\u0440\u0432\u0438\u0441 \u0432\u043e\u0437\u043e\u0431\u043d\u043e\u0432\u0438\u0442\u0441\u044f \u043f\u043e\u0441\u043b\u0435 \u0441\u0431\u0440\u043e\u0441\u0430 \u0431\u044e\u0434\u0436\u0435\u0442\u0430."
+            " \u0421\u043f\u0430\u0441\u0438\u0431\u043e \u0437\u0430 \u0442\u0435\u0440\u043f\u0435\u043d\u0438\u0435!"
         ),
         "waking_up": (
             "\u0412\u0430\u0448 \u0430\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442 \u0437\u0430\u043f\u0443\u0441\u043a\u0430\u0435\u0442\u0441\u044f! \U0001f305"
@@ -306,12 +437,24 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "ar": {
-        "budget_exhausted": (
-            "\u0644\u0642\u062f \u0648\u0635\u0644\u062a \u0625\u0644\u0649 \u0627\u0644\u062d\u062f \u0627\u0644\u0634\u0647\u0631\u064a."
-            " \u0645\u062a\u0628\u0642\u064a ${remaining}."
+        "budget_exhausted_trial": (
+            "\u0644\u0642\u062f \u0627\u0633\u062a\u062e\u062f\u0645\u062a \u062d\u0635\u0629 \u0627\u0644\u062a\u062c\u0631\u0628\u0629 \u0627\u0644\u0645\u062c\u0627\u0646\u064a\u0629 \u0644\u0647\u0630\u0627 \u0627\u0644\u0634\u0647\u0631."
+            " \u0627\u0644\u0631\u0633\u0627\u0626\u0644 \u0627\u0644\u062c\u062f\u064a\u062f\u0629 \u0645\u062d\u0638\u0648\u0631\u0629 \u062d\u062a\u0649 \u0625\u0639\u0627\u062f\u0629 \u0627\u0644\u0636\u0628\u0637 \u0627\u0644\u0634\u0647\u0631\u064a\u0629 \u0627\u0644\u0642\u0627\u062f\u0645\u0629."
+            "{plus_message}"
+            " \u0627\u0641\u062a\u062d \u0635\u0641\u062d\u0629 \u0627\u0644\u0641\u0648\u0627\u062a\u064a\u0631 \u0644\u0644\u062a\u0631\u0642\u064a\u0629: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "\u0644\u0642\u062f \u0648\u0635\u0644\u062a \u0625\u0644\u0649 \u0645\u064a\u0632\u0627\u0646\u064a\u062a\u0643 \u0627\u0644\u0634\u0647\u0631\u064a\u0629."
             " \u0627\u0644\u0631\u0633\u0627\u0626\u0644 \u0627\u0644\u062c\u062f\u064a\u062f\u0629 \u0645\u062d\u0638\u0648\u0631\u0629 \u062d\u062a\u0649 \u0625\u0639\u0627\u062f\u0629 \u0627\u0644\u0636\u0628\u0637 \u0627\u0644\u0634\u0647\u0631\u064a\u0629 \u0627\u0644\u0642\u0627\u062f\u0645\u0629."
             "{plus_message}"
             " \u0627\u0641\u062a\u062d \u0635\u0641\u062d\u0629 \u0627\u0644\u0641\u0648\u0627\u062a\u064a\u0631 \u0644\u0644\u062a\u0631\u0642\u064a\u0629/\u0627\u0644\u0625\u062f\u0627\u0631\u0629: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "\u0644\u0627 \u0646\u0632\u0627\u0644 \u0641\u064a \u0645\u0631\u062d\u0644\u0629 \u0627\u0644\u0627\u062e\u062a\u0628\u0627\u0631 \u0648\u0642\u062f \u062a\u0645 \u0627\u0644\u0648\u0635\u0648\u0644 \u0625\u0644\u0649 \u0645\u064a\u0632\u0627\u0646\u064a\u0629 \u0627\u0644\u0645\u0646\u0635\u0629"
+            " \u0644\u0647\u0630\u0627 \u0627\u0644\u0634\u0647\u0631."
+            " \u0631\u0635\u064a\u062f\u0643 \u0627\u0644\u0634\u062e\u0635\u064a \u063a\u064a\u0631 \u0645\u062a\u0623\u062b\u0631"
+            " \u2014 \u0633\u062a\u0633\u062a\u0623\u0646\u0641 \u0627\u0644\u062e\u062f\u0645\u0629 \u0639\u0646\u062f \u0625\u0639\u0627\u062f\u0629 \u0636\u0628\u0637 \u0627\u0644\u0645\u064a\u0632\u0627\u0646\u064a\u0629."
+            " \u0634\u0643\u0631\u0627\u064b \u0644\u0635\u0628\u0631\u0643!"
         ),
         "waking_up": (
             "\u0645\u0633\u0627\u0639\u062f\u0643 \u064a\u0633\u062a\u064a\u0642\u0638! \U0001f305"
@@ -332,12 +475,23 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "hi": {
-        "budget_exhausted": (
-            "\u0906\u092a\u0915\u093e \u092e\u093e\u0938\u093f\u0915 \u0915\u094b\u091f\u093e \u092a\u0942\u0930\u093e \u0939\u094b \u0917\u092f\u093e \u0939\u0948\u0964"
-            " ${remaining} \u0936\u0947\u0937\u0964"
+        "budget_exhausted_trial": (
+            "\u0906\u092a\u0928\u0947 \u0907\u0938 \u092e\u0939\u0940\u0928\u0947 \u0915\u0940 \u092e\u0941\u092b\u094d\u0924 \u091f\u094d\u0930\u093e\u092f\u0932 \u0938\u0940\u092e\u093e \u0915\u093e \u0909\u092a\u092f\u094b\u0917 \u0915\u0930 \u0932\u093f\u092f\u093e \u0939\u0948\u0964"
+            " \u0905\u0917\u0932\u0947 \u092e\u093e\u0938\u093f\u0915 \u0930\u093f\u0938\u0947\u091f \u0924\u0915 \u0928\u090f \u0938\u0902\u0926\u0947\u0936 \u092c\u094d\u0932\u0949\u0915 \u0939\u0948\u0902\u0964"
+            "{plus_message}"
+            " \u0905\u092a\u0917\u094d\u0930\u0947\u0921 \u0915\u0947 \u0932\u093f\u090f \u092c\u093f\u0932\u093f\u0902\u0917 \u0916\u094b\u0932\u0947\u0902: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "\u0906\u092a\u0915\u093e \u092e\u093e\u0938\u093f\u0915 \u092c\u091c\u091f \u092a\u0942\u0930\u093e \u0939\u094b \u0917\u092f\u093e \u0939\u0948\u0964"
             " \u0905\u0917\u0932\u0947 \u092e\u093e\u0938\u093f\u0915 \u0930\u093f\u0938\u0947\u091f \u0924\u0915 \u0928\u090f \u0938\u0902\u0926\u0947\u0936 \u092c\u094d\u0932\u0949\u0915 \u0939\u0948\u0902\u0964"
             "{plus_message}"
             " \u0905\u092a\u0917\u094d\u0930\u0947\u0921/\u092a\u094d\u0930\u092c\u0902\u0927\u0928 \u0915\u0947 \u0932\u093f\u090f \u092c\u093f\u0932\u093f\u0902\u0917 \u0916\u094b\u0932\u0947\u0902: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "\u0939\u092e \u0905\u092d\u0940 \u092a\u0930\u0940\u0915\u094d\u0937\u0923 \u091a\u0930\u0923 \u092e\u0947\u0902 \u0939\u0948\u0902 \u0914\u0930 \u0907\u0938 \u092e\u0939\u0940\u0928\u0947 \u0915\u093e \u092a\u094d\u0932\u0947\u091f\u092b\u0949\u0930\u094d\u092e \u092c\u091c\u091f \u092a\u0942\u0930\u093e \u0939\u094b \u0917\u092f\u093e \u0939\u0948\u0964"
+            " \u0906\u092a\u0915\u093e \u0935\u094d\u092f\u0915\u094d\u0924\u093f\u0917\u0924 \u0936\u0947\u0937 \u092a\u094d\u0930\u092d\u093e\u0935\u093f\u0924 \u0928\u0939\u0940\u0902 \u0939\u0948"
+            " \u2014 \u092c\u091c\u091f \u0930\u093f\u0938\u0947\u091f \u0939\u094b\u0928\u0947 \u092a\u0930 \u0938\u0947\u0935\u093e \u092b\u093f\u0930 \u0936\u0941\u0930\u0942 \u0939\u094b \u091c\u093e\u090f\u0917\u0940\u0964"
+            " \u0906\u092a\u0915\u0947 \u0927\u0948\u0930\u094d\u092f \u0915\u0947 \u0932\u093f\u090f \u0927\u0928\u094d\u092f\u0935\u093e\u0926!"
         ),
         "waking_up": (
             "\u0906\u092a\u0915\u093e \u0938\u0939\u093e\u092f\u0915 \u0936\u0941\u0930\u0942 \u0939\u094b \u0930\u0939\u093e \u0939\u0948! \U0001f305"
@@ -358,12 +512,23 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "tr": {
-        "budget_exhausted": (
-            "Ayl\u0131k kotan\u0131za ula\u015ft\u0131n\u0131z."
-            " ${remaining} kald\u0131."
+        "budget_exhausted_trial": (
+            "Bu ay i\u00e7in \u00fccretsiz deneme hakk\u0131n\u0131z\u0131 kulland\u0131n\u0131z."
+            " Yeni mesajlar bir sonraki ayl\u0131k s\u0131f\u0131rlamaya kadar engellendi."
+            "{plus_message}"
+            " Y\u00fckseltme i\u00e7in faturay\u0131 a\u00e7\u0131n: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "Ayl\u0131k b\u00fct\u00e7enize ula\u015ft\u0131n\u0131z."
             " Yeni mesajlar bir sonraki ayl\u0131k s\u0131f\u0131rlamaya kadar engellendi."
             "{plus_message}"
             " Y\u00fckseltme/y\u00f6netim i\u00e7in faturay\u0131 a\u00e7\u0131n: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "Hala erken test a\u015famas\u0131nday\u0131z ve bu ay\u0131n platform b\u00fct\u00e7esine ula\u015f\u0131ld\u0131."
+            " Ki\u015fisel bakiyeniz etkilenmedi"
+            " \u2014 b\u00fct\u00e7e s\u0131f\u0131rland\u0131\u011f\u0131nda hizmet devam edecektir."
+            " Sabrın\u0131z i\u00e7in te\u015fekk\u00fcrler!"
         ),
         "waking_up": (
             "Asistan\u0131n\u0131z ba\u015flat\u0131l\u0131yor! \U0001f305"
@@ -384,12 +549,24 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "th": {
-        "budget_exhausted": (
-            "\u0e04\u0e38\u0e13\u0e43\u0e0a\u0e49\u0e42\u0e04\u0e15\u0e49\u0e32\u0e23\u0e32\u0e22\u0e40\u0e14\u0e37\u0e2d\u0e19\u0e04\u0e23\u0e1a\u0e41\u0e25\u0e49\u0e27"
-            " \u0e40\u0e2b\u0e25\u0e37\u0e2d ${remaining}"
+        "budget_exhausted_trial": (
+            "\u0e04\u0e38\u0e13\u0e43\u0e0a\u0e49\u0e2a\u0e34\u0e17\u0e18\u0e34\u0e4c\u0e17\u0e14\u0e25\u0e2d\u0e07\u0e43\u0e0a\u0e49\u0e1f\u0e23\u0e35\u0e02\u0e2d\u0e07\u0e40\u0e14\u0e37\u0e2d\u0e19\u0e19\u0e35\u0e49\u0e2b\u0e21\u0e14\u0e41\u0e25\u0e49\u0e27"
+            " \u0e02\u0e49\u0e2d\u0e04\u0e27\u0e32\u0e21\u0e43\u0e2b\u0e21\u0e48\u0e08\u0e30\u0e16\u0e39\u0e01\u0e1a\u0e25\u0e47\u0e2d\u0e01\u0e08\u0e19\u0e01\u0e27\u0e48\u0e32\u0e08\u0e30\u0e23\u0e35\u0e40\u0e0b\u0e47\u0e15\u0e43\u0e19\u0e40\u0e14\u0e37\u0e2d\u0e19\u0e16\u0e31\u0e14\u0e44\u0e1b"
+            "{plus_message}"
+            " \u0e40\u0e1b\u0e34\u0e14\u0e2b\u0e19\u0e49\u0e32\u0e01\u0e32\u0e23\u0e40\u0e23\u0e35\u0e22\u0e01\u0e40\u0e01\u0e47\u0e1a\u0e40\u0e07\u0e34\u0e19\u0e40\u0e1e\u0e37\u0e48\u0e2d\u0e2d\u0e31\u0e1b\u0e40\u0e01\u0e23\u0e14: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "\u0e04\u0e38\u0e13\u0e43\u0e0a\u0e49\u0e07\u0e1a\u0e1b\u0e23\u0e30\u0e21\u0e32\u0e13\u0e23\u0e32\u0e22\u0e40\u0e14\u0e37\u0e2d\u0e19\u0e04\u0e23\u0e1a\u0e41\u0e25\u0e49\u0e27"
             " \u0e02\u0e49\u0e2d\u0e04\u0e27\u0e32\u0e21\u0e43\u0e2b\u0e21\u0e48\u0e08\u0e30\u0e16\u0e39\u0e01\u0e1a\u0e25\u0e47\u0e2d\u0e01\u0e08\u0e19\u0e01\u0e27\u0e48\u0e32\u0e08\u0e30\u0e23\u0e35\u0e40\u0e0b\u0e47\u0e15\u0e43\u0e19\u0e40\u0e14\u0e37\u0e2d\u0e19\u0e16\u0e31\u0e14\u0e44\u0e1b"
             "{plus_message}"
             " \u0e40\u0e1b\u0e34\u0e14\u0e2b\u0e19\u0e49\u0e32\u0e01\u0e32\u0e23\u0e40\u0e23\u0e35\u0e22\u0e01\u0e40\u0e01\u0e47\u0e1a\u0e40\u0e07\u0e34\u0e19\u0e40\u0e1e\u0e37\u0e48\u0e2d\u0e2d\u0e31\u0e1b\u0e40\u0e01\u0e23\u0e14/\u0e08\u0e31\u0e14\u0e01\u0e32\u0e23: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "\u0e40\u0e23\u0e32\u0e22\u0e31\u0e07\u0e2d\u0e22\u0e39\u0e48\u0e43\u0e19\u0e0a\u0e48\u0e27\u0e07\u0e17\u0e14\u0e2a\u0e2d\u0e1a\u0e40\u0e1a\u0e37\u0e49\u0e2d\u0e07\u0e15\u0e49\u0e19 \u0e41\u0e25\u0e30\u0e07\u0e1a\u0e1b\u0e23\u0e30\u0e21\u0e32\u0e13\u0e41\u0e1e\u0e25\u0e15\u0e1f\u0e2d\u0e23\u0e4c\u0e21"
+            "\u0e02\u0e2d\u0e07\u0e40\u0e14\u0e37\u0e2d\u0e19\u0e19\u0e35\u0e49\u0e16\u0e39\u0e01\u0e43\u0e0a\u0e49\u0e2b\u0e21\u0e14\u0e41\u0e25\u0e49\u0e27"
+            " \u0e22\u0e2d\u0e14\u0e40\u0e07\u0e34\u0e19\u0e2a\u0e48\u0e27\u0e19\u0e15\u0e31\u0e27\u0e02\u0e2d\u0e07\u0e04\u0e38\u0e13\u0e44\u0e21\u0e48\u0e44\u0e14\u0e49\u0e23\u0e31\u0e1a\u0e1c\u0e25\u0e01\u0e23\u0e30\u0e17\u0e1a"
+            " \u2014 \u0e1a\u0e23\u0e34\u0e01\u0e32\u0e23\u0e08\u0e30\u0e01\u0e25\u0e31\u0e1a\u0e21\u0e32\u0e40\u0e21\u0e37\u0e48\u0e2d\u0e07\u0e1a\u0e1b\u0e23\u0e30\u0e21\u0e32\u0e13\u0e23\u0e35\u0e40\u0e0b\u0e47\u0e15"
+            " \u0e02\u0e2d\u0e1a\u0e04\u0e38\u0e13\u0e17\u0e35\u0e48\u0e2d\u0e14\u0e17\u0e19!"
         ),
         "waking_up": (
             "\u0e1c\u0e39\u0e49\u0e0a\u0e48\u0e27\u0e22\u0e02\u0e2d\u0e07\u0e04\u0e38\u0e13\u0e01\u0e33\u0e25\u0e31\u0e07\u0e40\u0e23\u0e34\u0e48\u0e21\u0e17\u0e33\u0e07\u0e32\u0e19! \U0001f305"
@@ -410,12 +587,24 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "vi": {
-        "budget_exhausted": (
-            "B\u1ea1n \u0111\u00e3 \u0111\u1ea1t h\u1ea1n ng\u1ea1ch h\u00e0ng th\u00e1ng."
-            " C\u00f2n l\u1ea1i ${remaining}."
+        "budget_exhausted_trial": (
+            "B\u1ea1n \u0111\u00e3 s\u1eed d\u1ee5ng h\u1ebft h\u1ea1n m\u1ee9c d\u00f9ng th\u1eed mi\u1ec5n ph\u00ed trong th\u00e1ng n\u00e0y."
+            " Tin nh\u1eafn m\u1edbi s\u1ebd b\u1ecb ch\u1eb7n cho \u0111\u1ebfn l\u1ea7n \u0111\u1eb7t l\u1ea1i h\u00e0ng th\u00e1ng ti\u1ebfp theo."
+            "{plus_message}"
+            " M\u1edf trang Thanh to\u00e1n \u0111\u1ec3 n\u00e2ng c\u1ea5p: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "B\u1ea1n \u0111\u00e3 \u0111\u1ea1t ng\u00e2n s\u00e1ch h\u00e0ng th\u00e1ng."
             " Tin nh\u1eafn m\u1edbi s\u1ebd b\u1ecb ch\u1eb7n cho \u0111\u1ebfn l\u1ea7n \u0111\u1eb7t l\u1ea1i h\u00e0ng th\u00e1ng ti\u1ebfp theo."
             "{plus_message}"
             " M\u1edf trang Thanh to\u00e1n \u0111\u1ec3 n\u00e2ng c\u1ea5p/qu\u1ea3n l\u00fd: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "Ch\u00fang t\u00f4i v\u1eabn \u0111ang trong giai \u0111o\u1ea1n th\u1eed nghi\u1ec7m v\u00e0 ng\u00e2n s\u00e1ch n\u1ec1n t\u1ea3ng"
+            " cho th\u00e1ng n\u00e0y \u0111\u00e3 \u0111\u1ea1t gi\u1edbi h\u1ea1n."
+            " S\u1ed1 d\u01b0 c\u00e1 nh\u00e2n c\u1ee7a b\u1ea1n kh\u00f4ng b\u1ecb \u1ea3nh h\u01b0\u1edfng"
+            " \u2014 d\u1ecbch v\u1ee5 s\u1ebd ho\u1ea1t \u0111\u1ed9ng tr\u1edf l\u1ea1i khi ng\u00e2n s\u00e1ch \u0111\u01b0\u1ee3c \u0111\u1eb7t l\u1ea1i."
+            " C\u1ea3m \u01a1n s\u1ef1 ki\u00ean nh\u1eabn c\u1ee7a b\u1ea1n!"
         ),
         "waking_up": (
             "Tr\u1ee3 l\u00fd c\u1ee7a b\u1ea1n \u0111ang kh\u1edfi \u0111\u1ed9ng! \U0001f305"
@@ -436,12 +625,24 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "pl": {
-        "budget_exhausted": (
-            "Osi\u0105gni\u0119to miesi\u0119czny limit."
-            " Pozosta\u0142o ${remaining}."
+        "budget_exhausted_trial": (
+            "Wykorzysta\u0142e\u015b darmowy okres pr\u00f3bny na ten miesi\u0105c."
+            " Nowe wiadomo\u015bci s\u0105 zablokowane do nast\u0119pnego miesi\u0119cznego resetu."
+            "{plus_message}"
+            " Otw\u00f3rz p\u0142atno\u015bci, aby zaktualizowa\u0107: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "Osi\u0105gni\u0119to miesi\u0119czny bud\u017cet."
             " Nowe wiadomo\u015bci s\u0105 zablokowane do nast\u0119pnego miesi\u0119cznego resetu."
             "{plus_message}"
             " Otw\u00f3rz p\u0142atno\u015bci, aby zaktualizowa\u0107/zarz\u0105dza\u0107: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "Jeste\u015bmy jeszcze w fazie test\u00f3w i bud\u017cet platformy"
+            " na ten miesi\u0105c zosta\u0142 osi\u0105gni\u0119ty."
+            " Tw\u00f3j osobisty balans nie jest dotknięty"
+            " \u2014 us\u0142uga zostanie wznowiona po zresetowaniu bud\u017cetu."
+            " Dzi\u0119kujemy za cierpliwo\u015b\u0107!"
         ),
         "waking_up": (
             "Tw\u00f3j asystent si\u0119 uruchamia! \U0001f305"
@@ -462,12 +663,24 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "id": {
-        "budget_exhausted": (
-            "Anda telah mencapai kuota bulanan."
-            " Tersisa ${remaining}."
+        "budget_exhausted_trial": (
+            "Anda telah menggunakan jatah uji coba gratis bulan ini."
+            " Pesan baru diblokir hingga reset bulanan berikutnya."
+            "{plus_message}"
+            " Buka Tagihan untuk upgrade: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "Anda telah mencapai anggaran bulanan."
             " Pesan baru diblokir hingga reset bulanan berikutnya."
             "{plus_message}"
             " Buka Tagihan untuk upgrade/kelola: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "Kami masih dalam tahap pengujian awal dan anggaran platform"
+            " untuk bulan ini telah tercapai."
+            " Saldo pribadi Anda tidak terpengaruh"
+            " \u2014 layanan akan dilanjutkan saat anggaran direset."
+            " Terima kasih atas kesabaran Anda!"
         ),
         "waking_up": (
             "Asisten Anda sedang memulai! \U0001f305"
@@ -488,12 +701,24 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "ms": {
-        "budget_exhausted": (
-            "Anda telah mencapai kuota bulanan."
-            " Baki ${remaining}."
+        "budget_exhausted_trial": (
+            "Anda telah menggunakan peruntukan percubaan percuma bulan ini."
+            " Mesej baharu disekat sehingga set semula bulanan seterusnya."
+            "{plus_message}"
+            " Buka Bil untuk naik taraf: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "Anda telah mencapai bajet bulanan."
             " Mesej baharu disekat sehingga set semula bulanan seterusnya."
             "{plus_message}"
             " Buka Bil untuk naik taraf/urus: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "Kami masih dalam fasa ujian awal dan bajet platform"
+            " untuk bulan ini telah dicapai."
+            " Baki peribadi anda tidak terjejas"
+            " \u2014 perkhidmatan akan disambung semula apabila bajet ditetapkan semula."
+            " Terima kasih atas kesabaran anda!"
         ),
         "waking_up": (
             "Pembantu anda sedang bermula! \U0001f305"
@@ -514,12 +739,24 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "tl": {
-        "budget_exhausted": (
-            "Naabot mo na ang buwanang quota."
-            " ${remaining} ang natitira."
+        "budget_exhausted_trial": (
+            "Nagamit mo na ang libreng trial allowance mo ngayong buwan."
+            " Naka-block ang mga bagong mensahe hanggang sa susunod na buwanang reset."
+            "{plus_message}"
+            " Buksan ang Billing para mag-upgrade: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "Naabot mo na ang buwanang budget."
             " Naka-block ang mga bagong mensahe hanggang sa susunod na buwanang reset."
             "{plus_message}"
             " Buksan ang Billing para mag-upgrade/mag-manage: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "Nasa maagang testing pa kami at naabot na ang platform budget"
+            " para sa buwang ito."
+            " Hindi apektado ang iyong personal na balanse"
+            " \u2014 magpapatuloy ang serbisyo kapag na-reset ang budget."
+            " Salamat sa iyong pasensya!"
         ),
         "waking_up": (
             "Nagsisimula ang iyong assistant! \U0001f305"
@@ -540,12 +777,24 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         ),
     },
     "sw": {
-        "budget_exhausted": (
-            "Umefika kikomo cha mwezi."
-            " ${remaining} zimebaki."
+        "budget_exhausted_trial": (
+            "Umetumia mgawo wako wa majaribio ya bure kwa mwezi huu."
+            " Ujumbe mpya umezuiwa hadi upya wa mwezi ujao."
+            "{plus_message}"
+            " Fungua Bili kuboresha: {billing_url}"
+        ),
+        "budget_exhausted_paid": (
+            "Umefika bajeti yako ya mwezi."
             " Ujumbe mpya umezuiwa hadi upya wa mwezi ujao."
             "{plus_message}"
             " Fungua Bili kuboresha/kusimamia: {billing_url}"
+        ),
+        "budget_unavailable": (
+            "Bado tuko katika hatua ya majaribio ya awali na bajeti ya jukwaa"
+            " kwa mwezi huu imefikiwa."
+            " Salio lako la kibinafsi halijaathiriwa"
+            " \u2014 huduma itaendelea wakati bajeti itakapowekwa upya."
+            " Asante kwa uvumilivu wako!"
         ),
         "waking_up": (
             "Msaidizi wako anaanza! \U0001f305"
@@ -573,8 +822,8 @@ def error_msg(lang: str, key: str, **kwargs: str) -> str:
 
     Args:
         lang: Language code (e.g. "ja", "es"). Falls back to "en".
-        key: Message key ("budget_exhausted", "waking_up", "suspended").
-        **kwargs: Format placeholders (remaining, plus_message, billing_url).
+        key: Message key ("budget_exhausted_trial", "budget_unavailable", etc.).
+        **kwargs: Format placeholders (plus_message, billing_url).
     """
     msgs = ERROR_MESSAGES.get(lang, ERROR_MESSAGES["en"])
     template = msgs.get(key, ERROR_MESSAGES["en"][key])
