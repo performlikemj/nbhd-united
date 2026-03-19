@@ -18,6 +18,7 @@ from django.utils import timezone
 
 from apps.billing.services import check_budget, record_usage
 from apps.tenants.models import Tenant
+from .error_messages import error_msg
 from .services import (
     extract_chat_id,
     handle_start_command,
@@ -742,8 +743,9 @@ class TelegramPoller:
             return
 
         # Budget check
-        if not check_budget(tenant):
-            self._send_budget_exhausted(chat_id, tenant)
+        budget_reason = check_budget(tenant)
+        if budget_reason:
+            self._send_budget_exhausted(chat_id, tenant, budget_reason)
             return
 
         # Update last_message_at
@@ -1309,22 +1311,24 @@ class TelegramPoller:
         except Exception:
             logger.exception("Failed to record usage for tenant %s", tenant.id)
 
-    def _send_budget_exhausted(self, chat_id: int, tenant: Tenant) -> None:
+    def _send_budget_exhausted(self, chat_id: int, tenant: Tenant, reason: str) -> None:
         """Send budget exhausted message."""
         frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
-        cost_remaining = max(tenant.effective_cost_budget - tenant.estimated_cost_this_month, 0)
-        plus_message = (
-            " Opus requests are paused while at quota."
-            if tenant.model_tier == Tenant.ModelTier.PREMIUM
-            else ""
-        )
-        self._send_message(
-            chat_id,
-            f"You've hit your monthly quota."
-            f" ${cost_remaining:.2f} remaining."
-            f" New messages are blocked until the next monthly reset."
-            f"{plus_message} Open Billing to upgrade/manage at {frontend_url}/billing.",
-        )
+        lang = getattr(getattr(tenant, "user", None), "language", None) or "en"
+
+        if reason == "global":
+            msg_key = "budget_unavailable"
+            kwargs: dict[str, str] = {}
+        else:
+            msg_key = "budget_exhausted_trial" if tenant.is_trial else "budget_exhausted_paid"
+            plus_message = (
+                " Opus requests are paused while at quota."
+                if tenant.model_tier == Tenant.ModelTier.PREMIUM
+                else ""
+            )
+            kwargs = {"plus_message": plus_message, "billing_url": f"{frontend_url}/billing"}
+
+        self._send_message(chat_id, error_msg(lang, msg_key, **kwargs))
 
     def _handle_extraction_callback(self, update: dict, tenant: Tenant) -> None:
         """Handle PendingExtraction approve/dismiss callbacks."""

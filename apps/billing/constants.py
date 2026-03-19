@@ -45,15 +45,15 @@ MODEL_RATES: dict[str, dict[str, float]] = {
         "output": 5.0,
         "display_name": "Claude Haiku 4.5",
     },
-    "openrouter/minimax/minimax-m2.5": {
+    "openrouter/minimax/minimax-m2.7": {
         "input": 0.3,
         "output": 1.2,
-        "display_name": "MiniMax M2.5",
+        "display_name": "MiniMax M2.7",
     },
-    "minimax/minimax-m2.5": {
+    "minimax/minimax-m2.7": {
         "input": 0.3,
         "output": 1.2,
-        "display_name": "MiniMax M2.5",
+        "display_name": "MiniMax M2.7",
     },
 }
 
@@ -70,7 +70,7 @@ TIER_TOKEN_BUDGETS: dict[str, int] = {
 # Per-tier monthly cost budgets in USD.  Enforcement compares
 # estimated_cost_this_month against these caps.  0 = unlimited.
 TIER_COST_BUDGETS: dict[str, float] = {
-    "starter": 5.00,     # ~16M tokens of MiniMax M2.5
+    "starter": 5.00,     # ~16M tokens of MiniMax M2.7
     "premium": 40.00,    # ~27M Sonnet or ~133M MiniMax — user picks the tradeoff
     "byok": 0,           # unlimited (user pays their own API costs)
 }

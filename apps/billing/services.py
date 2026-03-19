@@ -105,13 +105,12 @@ def record_usage(
     return record
 
 
-def check_budget(tenant: Tenant) -> bool:
-    """Return True if tenant can send messages (within budget)."""
+def check_budget(tenant: Tenant) -> str:
+    """Return '' if within budget, or the block reason ('personal'/'global')."""
     tenant.refresh_from_db()
-    # Trial users share starter-tier budget behavior.
     if tenant.is_over_budget:
         logger.warning("Tenant %s over personal budget", tenant.id)
-        return False
+        return "personal"
 
     today = date.today()
     first_of_month = today.replace(day=1)
@@ -119,11 +118,11 @@ def check_budget(tenant: Tenant) -> bool:
         budget = MonthlyBudget.objects.get(month=first_of_month)
         if budget.is_over_budget:
             logger.warning("Global monthly budget exceeded")
-            return False
+            return "global"
     except MonthlyBudget.DoesNotExist:
         pass
 
-    return True
+    return ""
 
 
 def handle_checkout_completed(session_data: dict) -> None:

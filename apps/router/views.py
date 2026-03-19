@@ -117,26 +117,26 @@ def _record_usage_from_openclaw_result(tenant: Tenant, result: object) -> None:
         )
 
 
-def _build_budget_exhausted_message(chat_id: int, tenant: Tenant) -> dict:
+def _build_budget_exhausted_message(chat_id: int, tenant: Tenant, reason: str) -> dict:
     frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
-    cost_remaining = max(tenant.effective_cost_budget - tenant.estimated_cost_this_month, 0)
     lang = tenant.user.language or "en"
-    plus_message = (
-        " Opus requests are paused while at quota."
-        if tenant.model_tier == Tenant.ModelTier.PREMIUM
-        else ""
-    )
+
+    if reason == "global":
+        msg_key = "budget_unavailable"
+        kwargs: dict[str, str] = {}
+    else:
+        msg_key = "budget_exhausted_trial" if tenant.is_trial else "budget_exhausted_paid"
+        plus_message = (
+            " Opus requests are paused while at quota."
+            if tenant.model_tier == Tenant.ModelTier.PREMIUM
+            else ""
+        )
+        kwargs = {"plus_message": plus_message, "billing_url": f"{frontend_url}/billing"}
 
     return {
         "method": "sendMessage",
         "chat_id": chat_id,
-        "text": error_msg(
-            lang,
-            "budget_exhausted",
-            remaining=f"{cost_remaining:.2f}",
-            plus_message=plus_message,
-            billing_url=f"{frontend_url}/billing",
-        ),
+        "text": error_msg(lang, msg_key, **kwargs),
     }
 
 
@@ -242,8 +242,9 @@ def telegram_webhook(request):
     elif wake_result is False:
         return HttpResponse("ok")
 
-    if not check_budget(tenant):
-        return JsonResponse(_build_budget_exhausted_message(chat_id, tenant))
+    budget_reason = check_budget(tenant)
+    if budget_reason:
+        return JsonResponse(_build_budget_exhausted_message(chat_id, tenant, budget_reason))
 
     tenant.last_message_at = timezone.now()
     tenant.save(update_fields=["last_message_at"])

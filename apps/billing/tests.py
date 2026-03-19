@@ -29,10 +29,10 @@ class UsageTrackingTest(TestCase):
         self.assertEqual(self.tenant.tokens_this_month, 300)
 
     def test_check_budget_within_limits(self):
-        self.assertTrue(check_budget(self.tenant))
+        self.assertEqual(check_budget(self.tenant), "")
 
     def test_check_budget_over_limit(self):
         # Budget enforcement is now cost-based
         self.tenant.estimated_cost_this_month = self.tenant.effective_cost_budget
         self.tenant.save()
-        self.assertFalse(check_budget(self.tenant))
+        self.assertEqual(check_budget(self.tenant), "personal")

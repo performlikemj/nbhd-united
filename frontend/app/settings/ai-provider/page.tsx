@@ -37,17 +37,17 @@ interface TierModel {
 
 const TIER_MODELS_UI: Record<string, TierModel[]> = {
   starter: [
-    { model_id: "openrouter/minimax/minimax-m2.5", name: "MiniMax M2.5", tagline: "Fast and efficient", intelligence: 6, input_rate: 0.3, output_rate: 1.2 },
+    { model_id: "openrouter/minimax/minimax-m2.7", name: "MiniMax M2.7", tagline: "Fast and efficient", intelligence: 6, input_rate: 0.3, output_rate: 1.2 },
   ],
   premium: [
-    { model_id: "openrouter/minimax/minimax-m2.5", name: "MiniMax M2.5", tagline: "Fastest and most affordable", intelligence: 6, input_rate: 0.3, output_rate: 1.2 },
+    { model_id: "openrouter/minimax/minimax-m2.7", name: "MiniMax M2.7", tagline: "Fastest and most affordable", intelligence: 6, input_rate: 0.3, output_rate: 1.2 },
     { model_id: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet 4.6", tagline: "Great for everyday use", intelligence: 8, input_rate: 3, output_rate: 15 },
     { model_id: "anthropic/claude-opus-4.6", name: "Claude Opus 4.6", tagline: "Best for complex tasks", intelligence: 9, input_rate: 5, output_rate: 25 },
   ],
 };
 
 const TIER_DEFAULTS: Record<string, string> = {
-  starter: "openrouter/minimax/minimax-m2.5",
+  starter: "openrouter/minimax/minimax-m2.7",
   premium: "anthropic/claude-opus-4.6",
 };
 

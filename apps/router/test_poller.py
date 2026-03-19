@@ -98,7 +98,7 @@ class TelegramPollerDispatchTest(TestCase):
         # Rate-limited: no Telegram API calls
         self.poller._http.post.assert_not_called()
 
-    @patch("apps.router.poller.check_budget", return_value=False)
+    @patch("apps.router.poller.check_budget", return_value="personal")
     @patch("apps.router.poller.resolve_tenant_by_chat_id")
     @patch("apps.router.poller.is_rate_limited", return_value=False)
     @patch("apps.router.poller.handle_start_command", return_value=None)
@@ -109,6 +109,7 @@ class TelegramPollerDispatchTest(TestCase):
         tenant.effective_cost_budget = 5
         tenant.estimated_cost_this_month = 5
         tenant.model_tier = Tenant.ModelTier.STARTER
+        tenant.user = MagicMock(language="en")
         mock_resolve.return_value = tenant
 
         update = {"message": {"text": "hi", "chat": {"id": 222}}}
@@ -118,11 +119,11 @@ class TelegramPollerDispatchTest(TestCase):
         post_calls = self.poller._http.post.call_args_list
         self.assertTrue(len(post_calls) > 0)
         sent_json = post_calls[0][1].get("json", {})
-        self.assertIn("monthly quota", sent_json.get("text", ""))
+        self.assertIn("free trial allowance", sent_json.get("text", ""))
 
     @patch("apps.router.poller.record_usage")
     @patch("apps.router.poller.httpx.post")
-    @patch("apps.router.poller.check_budget", return_value=True)
+    @patch("apps.router.poller.check_budget", return_value="")
     @patch("apps.router.poller.resolve_tenant_by_chat_id")
     @patch("apps.router.poller.is_rate_limited", return_value=False)
     @patch("apps.router.poller.handle_start_command", return_value=None)
