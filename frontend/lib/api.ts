@@ -636,8 +636,8 @@ export function clearDocument(kind: string, slug: string): Promise<DocumentRespo
   return apiFetch<DocumentResponse>(`/api/v1/journal/documents/${kind}/${slug}/clear/`, { method: "POST" });
 }
 
-export function getLLMConfig(): Promise<LLMConfig> {
-  return apiFetch<LLMConfig>("/api/v1/settings/llm-config/");
+export function getLLMConfig(): Promise<LLMConfig[]> {
+  return apiFetch<LLMConfig[]>("/api/v1/settings/llm-config/");
 }
 
 export function fetchProviderModels(provider: string, api_key?: string): Promise<{ models: ProviderModel[] }> {
@@ -651,6 +651,13 @@ export function updateLLMConfig(data: LLMConfigUpdate): Promise<LLMConfig> {
   return apiFetch<LLMConfig>("/api/v1/settings/llm-config/", {
     method: "PUT",
     body: JSON.stringify(data),
+  });
+}
+
+export function deleteLLMConfig(provider: string): Promise<{ deleted: string }> {
+  return apiFetch<{ deleted: string }>("/api/v1/settings/llm-config/", {
+    method: "DELETE",
+    body: JSON.stringify({ provider }),
   });
 }
 

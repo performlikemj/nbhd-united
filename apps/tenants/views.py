@@ -653,8 +653,8 @@ class PreferredModelView(APIView):
         tenant = request.user.tenant
         model_id = request.data.get("preferred_model", "")
 
-        tier_models = TIER_MODEL_CONFIGS.get(tenant.model_tier, {})
-        if model_id and model_id not in tier_models:
+        allowed = _get_allowed_models(tenant)
+        if model_id and model_id not in allowed:
             return Response(
                 {"error": "Model not available for your tier"},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -668,6 +668,18 @@ class PreferredModelView(APIView):
             "preferred_model": model_id,
             "model_tier": tenant.model_tier,
         })
+
+
+def _get_allowed_models(tenant: Tenant) -> dict:
+    """Return the set of model IDs allowed for this tenant's tier."""
+    if tenant.model_tier == "byok":
+        from apps.tenants.models import UserLLMConfig
+        return {
+            c.model_id: {"alias": c.provider}
+            for c in UserLLMConfig.objects.filter(user=tenant.user)
+            if c.model_id
+        }
+    return TIER_MODEL_CONFIGS.get(tenant.model_tier, {})
 
 
 _VALID_TASK_SLUGS = {
@@ -690,14 +702,14 @@ class TaskModelPreferencesView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        tier_models = TIER_MODEL_CONFIGS.get(tenant.model_tier, {})
+        allowed = _get_allowed_models(tenant)
         for slug, model_id in prefs.items():
             if slug not in _VALID_TASK_SLUGS:
                 return Response(
                     {"error": f"Invalid task: {slug}"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            if model_id and model_id not in tier_models:
+            if model_id and model_id not in allowed:
                 return Response(
                     {"error": f"Model '{model_id}' not available for your tier"},
                     status=status.HTTP_400_BAD_REQUEST,

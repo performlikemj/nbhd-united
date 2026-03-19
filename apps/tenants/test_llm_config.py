@@ -35,7 +35,7 @@ class LLMConfigAPITests(TestCase):
     def test_get_no_config(self):
         resp = self.client.get(self.url)
         self.assertEqual(resp.status_code, 200)
-        self.assertFalse(resp.data["has_key"])
+        self.assertEqual(resp.data, [])
 
     def test_put_creates_config(self):
         resp = self.client.put(
@@ -60,9 +60,10 @@ class LLMConfigAPITests(TestCase):
         )
         resp = self.client.get(self.url)
         self.assertEqual(resp.status_code, 200)
-        self.assertTrue(resp.data["has_key"])
-        self.assertIn("...", resp.data["key_masked"])
-        self.assertNotEqual(resp.data["key_masked"], "sk-ant-abcdefghijk")
+        self.assertEqual(len(resp.data), 1)
+        self.assertTrue(resp.data[0]["has_key"])
+        self.assertIn("...", resp.data[0]["key_masked"])
+        self.assertNotEqual(resp.data[0]["key_masked"], "sk-ant-abcdefghijk")
 
 
 @override_settings(

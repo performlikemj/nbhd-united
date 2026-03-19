@@ -16,6 +16,7 @@ import {
   deleteCronJob,
   clearDocument,
   deleteDocument,
+  deleteLLMConfig,
   deleteTemplate,
   deleteJournalEntry,
   deleteWeeklyReview,
@@ -689,6 +690,16 @@ export function useUpdateLLMConfigMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: updateLLMConfig,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["llm-config"] });
+    },
+  });
+}
+
+export function useDeleteLLMConfigMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteLLMConfig,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["llm-config"] });
     },
