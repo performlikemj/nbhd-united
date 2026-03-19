@@ -194,7 +194,7 @@ class TelegramWebhookViewTest(TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["method"], "sendMessage")
-        self.assertIn("quota", body["text"].lower())
+        self.assertIn("budget", body["text"].lower())
         self.assertIn("/billing", body["text"])
         mock_forward.assert_not_called()
 
