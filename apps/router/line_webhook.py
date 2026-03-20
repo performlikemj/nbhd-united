@@ -989,7 +989,7 @@ class LineWebhookView(View):
                 # Build Flex message (branded bubbles for all content types)
                 messages: list[dict] = []
                 try:
-                    flex_msg = build_flex_bubble(clean_text, alt_text=clean_text)
+                    flex_msg = build_flex_bubble(clean_text, alt_text=_strip_markdown(clean_text))
                     messages = [flex_msg]
                 except Exception:
                     # Flex construction failed — fall back to plain text
@@ -1013,13 +1013,15 @@ class LineWebhookView(View):
                             line_user_id, tenant.container_fqdn,
                         )
                         # Retry with plain text as emergency fallback
-                        _send_line_text(line_user_id, ai_text[:5000])
+                        fallback_text = _strip_markdown(ai_text)
+                        _send_line_text(line_user_id, fallback_text[:5000])
             except Exception:
                 logger.exception(
                     "Error building LINE response for %s", line_user_id,
                 )
-                # Emergency fallback — send raw AI text
-                _send_line_text(line_user_id, ai_text[:5000])
+                # Emergency fallback — strip markdown before sending
+                fallback_text = _strip_markdown(ai_text)
+                _send_line_text(line_user_id, fallback_text[:5000])
 
         # Record usage
         self._record_usage(tenant, result)
