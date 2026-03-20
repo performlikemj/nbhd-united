@@ -11,6 +11,7 @@ from typing import Any
 
 from django.conf import settings
 
+from apps.billing.constants import MINIMAX_MODEL
 from apps.orchestrator.tool_policy import generate_tool_config
 from apps.tenants.models import Tenant
 
@@ -270,17 +271,17 @@ _BACKGROUND_TASKS_PROMPT = (
 
 # Model mapping by tier
 TIER_MODELS: dict[str, dict[str, str]] = {
-    "starter": {"primary": "openrouter/minimax/minimax-m2.7"},
+    "starter": {"primary": MINIMAX_MODEL},
     "premium": {"primary": "anthropic/claude-opus-4.6"},
     "byok": {"primary": "anthropic/claude-opus-4.6"},  # fallback, overridden by user config
 }
 
 TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     "starter": {
-        "openrouter/minimax/minimax-m2.7": {"alias": "minimax"},
+        MINIMAX_MODEL: {"alias": "minimax"},
     },
     "premium": {
-        "openrouter/minimax/minimax-m2.7": {"alias": "minimax"},
+        MINIMAX_MODEL: {"alias": "minimax"},
         "anthropic/claude-sonnet-4.6": {"alias": "sonnet"},
         "anthropic/claude-opus-4.6": {"alias": "opus"},
     },
@@ -290,7 +291,7 @@ TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
 WHISPER_DEFAULT_MODEL = {"provider": "openai", "model": "gpt-4o-mini-transcribe"}
 
 # Heartbeat model — always cheap, regardless of tenant tier
-HEARTBEAT_MODEL = "openrouter/minimax/minimax-m2.7"
+HEARTBEAT_MODEL = MINIMAX_MODEL
 
 
 def _heartbeat_cron_expr(start_hour: int, window_hours: int) -> str:
@@ -606,7 +607,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
 
     # Note: OPENROUTER_API_KEY is injected as a container env var via Key Vault
     # reference (see azure_client.py). OpenClaw reads it automatically for
-    # models routed through OpenRouter (e.g. openrouter/minimax/minimax-m2.7).
+    # models routed through OpenRouter (e.g. MINIMAX_MODEL).
 
     # BYOK: inject all user provider keys + models
     if tier == "byok":

@@ -83,7 +83,7 @@ class HeartbeatCronBuildTest(TestCase):
         for tier in ["starter", "premium", "byok"]:
             self.tenant.model_tier = tier
             result = _build_heartbeat_cron(self.tenant)
-            self.assertEqual(result["model"], "openrouter/minimax/minimax-m2.7")
+            self.assertEqual(result["model"], HEARTBEAT_MODEL)
 
     def test_included_in_cron_seed_jobs(self):
         self.tenant.heartbeat_enabled = True
