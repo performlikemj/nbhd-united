@@ -4,6 +4,7 @@ from __future__ import annotations
 from django.test import TestCase
 from django.test.utils import override_settings
 
+from apps.billing.constants import MINIMAX_MODEL
 from apps.billing.models import UsageRecord
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
@@ -30,7 +31,7 @@ class RuntimeUsageReportTests(TestCase):
                 "event_type": "message",
                 "input_tokens": 1234,
                 "output_tokens": 567,
-                "model_used": "openrouter/minimax/minimax-m2.7",
+                "model_used": MINIMAX_MODEL,
             },
             content_type="application/json",
             **self._headers(),
@@ -44,7 +45,7 @@ class RuntimeUsageReportTests(TestCase):
         self.assertEqual(record.event_type, "message")
         self.assertEqual(record.input_tokens, 1234)
         self.assertEqual(record.output_tokens, 567)
-        self.assertEqual(record.model_used, "openrouter/minimax/minimax-m2.7")
+        self.assertEqual(record.model_used, MINIMAX_MODEL)
 
     def test_missing_auth_returns_401(self):
         response = self.client.post(
@@ -53,7 +54,7 @@ class RuntimeUsageReportTests(TestCase):
                 "event_type": "message",
                 "input_tokens": 10,
                 "output_tokens": 5,
-                "model_used": "openrouter/minimax/minimax-m2.7",
+                "model_used": MINIMAX_MODEL,
             },
             content_type="application/json",
         )
@@ -68,7 +69,7 @@ class RuntimeUsageReportTests(TestCase):
                 "event_type": "message",
                 "input_tokens": -12,
                 "output_tokens": 10,
-                "model_used": "openrouter/minimax/minimax-m2.7",
+                "model_used": MINIMAX_MODEL,
             },
             content_type="application/json",
             **self._headers(),
@@ -83,7 +84,7 @@ class RuntimeUsageReportTests(TestCase):
             data={
                 "event_type": "message",
                 "output_tokens": 10,
-                "model_used": "openrouter/minimax/minimax-m2.7",
+                "model_used": MINIMAX_MODEL,
             },
             content_type="application/json",
             **self._headers(),
@@ -104,7 +105,7 @@ class RuntimeUsageReportTests(TestCase):
                 "event_type": "message",
                 "input_tokens": 100,
                 "output_tokens": 50,
-                "model_used": "openrouter/minimax/minimax-m2.7",
+                "model_used": MINIMAX_MODEL,
             },
             content_type="application/json",
             **self._headers(),
