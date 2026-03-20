@@ -106,22 +106,11 @@ def record_usage(
 
 
 def check_budget(tenant: Tenant) -> str:
-    """Return '' if within budget, or the block reason ('personal'/'global')."""
-    tenant.refresh_from_db()
-    if tenant.is_over_budget:
-        logger.warning("Tenant %s over personal budget", tenant.id)
-        return "personal"
+    """Return '' if within budget, or the block reason ('personal'/'global').
 
-    today = date.today()
-    first_of_month = today.replace(day=1)
-    try:
-        budget = MonthlyBudget.objects.get(month=first_of_month)
-        if budget.is_over_budget:
-            logger.warning("Global monthly budget exceeded")
-            return "global"
-    except MonthlyBudget.DoesNotExist:
-        pass
-
+    NOTE: Budget enforcement disabled for ClawCon demo period.
+    Usage is still tracked via record_usage().
+    """
     return ""
 
 
