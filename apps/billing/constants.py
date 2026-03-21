@@ -3,6 +3,12 @@
 Rates are per 1M tokens in USD. Update when providers change pricing.
 """
 
+# ── Canonical model IDs ────────────────────────────────────────────────────
+# Change these once here; every other module imports from this file.
+MINIMAX_MODEL = "openrouter/minimax/minimax-m2.5"
+MINIMAX_DISPLAY = "MiniMax M2.5"
+MINIMAX_RATE = {"input": 0.3, "output": 1.2}
+
 MODEL_RATES: dict[str, dict[str, float]] = {
     "claude-opus-4.6": {
         "input": 5.0,
@@ -45,15 +51,14 @@ MODEL_RATES: dict[str, dict[str, float]] = {
         "output": 5.0,
         "display_name": "Claude Haiku 4.5",
     },
-    "openrouter/minimax/minimax-m2.7": {
-        "input": 0.3,
-        "output": 1.2,
-        "display_name": "MiniMax M2.7",
+    MINIMAX_MODEL: {
+        **MINIMAX_RATE,
+        "display_name": MINIMAX_DISPLAY,
     },
-    "minimax/minimax-m2.7": {
-        "input": 0.3,
-        "output": 1.2,
-        "display_name": "MiniMax M2.7",
+    # OpenClaw sometimes reports without the openrouter/ prefix
+    MINIMAX_MODEL.removeprefix("openrouter/"): {
+        **MINIMAX_RATE,
+        "display_name": MINIMAX_DISPLAY,
     },
 }
 
@@ -70,7 +75,7 @@ TIER_TOKEN_BUDGETS: dict[str, int] = {
 # Per-tier monthly cost budgets in USD.  Enforcement compares
 # estimated_cost_this_month against these caps.  0 = unlimited.
 TIER_COST_BUDGETS: dict[str, float] = {
-    "starter": 5.00,     # ~16M tokens of MiniMax M2.7
+    "starter": 5.00,     # ~16M tokens of MiniMax
     "premium": 40.00,    # ~27M Sonnet or ~133M MiniMax — user picks the tradeoff
     "byok": 0,           # unlimited (user pays their own API costs)
 }

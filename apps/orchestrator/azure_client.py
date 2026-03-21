@@ -634,7 +634,7 @@ def create_container_app(
                     {
                         "name": "openclaw",
                         "image": f"{settings.AZURE_ACR_SERVER}/nbhd-openclaw:latest",
-                        "resources": {"cpu": 0.5, "memory": "1Gi"},
+                        "resources": {"cpu": 0.75, "memory": "1.5Gi"},
                         "env": [
                             {"name": "ANTHROPIC_API_KEY", "secretRef": "anthropic-key"},
                             {"name": "OPENAI_API_KEY", "secretRef": "openai-key"},
