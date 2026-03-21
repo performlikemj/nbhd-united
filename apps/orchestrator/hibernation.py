@@ -63,23 +63,25 @@ def hibernate_idle_tenant(tenant: Tenant) -> bool:
 def wake_hibernated_tenant(tenant: Tenant) -> bool:
     """Wake a hibernated tenant's container and schedule follow-up tasks.
 
+    Does NOT clear hibernated_at here — that happens in
+    deliver_buffered_messages_task() after successful delivery, proving
+    the container is actually healthy.  This prevents the deadlock where
+    a failed wake leaves the tenant permanently stuck.
+
     Returns True on success.
     """
     tid = str(tenant.id)[:8]
 
-    # 1. Activate latest revision → 1 replica (~30-60s startup)
+    # 1. Activate latest revision (best-effort — delivery task retries if this fails)
     try:
         from apps.orchestrator.azure_client import wake_container_app
 
         wake_container_app(tenant.container_id)
     except Exception:
         logger.exception("idle_wake: failed to wake container for %s", tid)
-        return False
 
-    # 2. Clear hibernation flag
-    Tenant.objects.filter(id=tenant.id).update(hibernated_at=None)
-
-    # 3. Schedule buffered message delivery (45s delay for container startup)
+    # 2. Schedule buffered message delivery (45s delay for container startup)
+    #    On success, the delivery task clears hibernated_at and resumes crons.
     try:
         from apps.cron.publish import publish_task
 
@@ -90,18 +92,6 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
         )
     except Exception:
         logger.exception("idle_wake: failed to schedule buffer delivery for %s", tid)
-
-    # 4. Schedule cron resumption (60s delay — container must be ready)
-    try:
-        from apps.cron.publish import publish_task
-
-        publish_task(
-            "resume_hibernated_crons",
-            str(tenant.id),
-            delay_seconds=60,
-        )
-    except Exception:
-        logger.exception("idle_wake: failed to schedule cron resume for %s", tid)
 
     logger.info("idle_wake: tenant %s wake initiated", tid)
     return True
@@ -161,7 +151,7 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
                     url,
                     json={
                         "model": "openclaw",
-                        "messages": [{"role": "user", "content": msg.user_text or "..."}],
+                        "messages": [{"role": "user", "content": msg.payload.get("message", {}).get("text", "") or msg.user_text or "..."}],
                         "user": line_user_id,
                     },
                     headers={
@@ -202,6 +192,27 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
         "deliver_buffered: tenant %s — delivered=%d failed=%d",
         tenant_id[:8], delivered, failed,
     )
+
+    # Only exit hibernation once ALL messages are delivered successfully,
+    # proving the container is healthy.
+    if delivered > 0 and failed == 0:
+        Tenant.objects.filter(id=tenant.id).update(hibernated_at=None)
+        logger.info("deliver_buffered: tenant %s — hibernation cleared", tenant_id[:8])
+
+        # Schedule cron resumption (15s delay — container already warm)
+        try:
+            from apps.cron.publish import publish_task
+
+            publish_task(
+                "resume_hibernated_crons",
+                str(tenant.id),
+                delay_seconds=15,
+            )
+        except Exception:
+            logger.exception(
+                "deliver_buffered: failed to schedule cron resume for %s", tenant_id[:8]
+            )
+
     return {"delivered": delivered, "failed": failed}
 
 

@@ -748,6 +748,20 @@ class TelegramPoller:
             self._send_budget_exhausted(chat_id, tenant, budget_reason)
             return
 
+        # Hibernated tenant — buffer message and wake container
+        from apps.router.wake_on_message import handle_hibernated_message
+
+        msg_text = (
+            (update.get("message") or update.get("edited_message") or {})
+            .get("text", "")
+        )
+        wake_result = handle_hibernated_message(tenant, "telegram", update, msg_text)
+        if wake_result is True:
+            self._send_markdown(chat_id, "Waking up, one moment...")
+            return
+        elif wake_result is False:
+            return  # Stay silent on subsequent messages during wake
+
         # Update last_message_at
         Tenant.objects.filter(id=tenant.id).update(last_message_at=timezone.now())
 

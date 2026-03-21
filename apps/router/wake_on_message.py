@@ -58,6 +58,24 @@ def handle_hibernated_message(
         )
         return True
 
+    # Already waking — check if the wake is stale (>3 min without delivery).
+    # This self-heals the deadlock where wake_container_app() fails and
+    # no retry is ever attempted.
+    oldest_pending = BufferedMessage.objects.filter(
+        tenant=tenant, delivered=False,
+    ).order_by("created_at").values_list("created_at", flat=True).first()
+
+    if oldest_pending and (timezone.now() - oldest_pending).total_seconds() > 180:
+        from apps.orchestrator.hibernation import wake_hibernated_tenant
+
+        logger.warning(
+            "wake_on_message: tenant %s — stale wake (oldest buffer %s), re-attempting",
+            str(tenant.id)[:8],
+            oldest_pending.isoformat(),
+        )
+        wake_hibernated_tenant(tenant)
+        return True  # Re-send "waking up" ack
+
     logger.info(
         "wake_on_message: tenant %s — additional message buffered while waking",
         str(tenant.id)[:8],
