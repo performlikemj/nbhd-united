@@ -51,3 +51,4 @@ azure-keyvault-secrets
 whitenoise
 django-extensions
 pip-tools
+python-dateutil
