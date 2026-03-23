@@ -211,7 +211,7 @@ class RuntimeFinanceTransactionsView(APIView):
         return Response({
             "transaction_id": str(transaction.id),
             "account_nickname": account.nickname,
-            "new_balance": str(account.current_balance),
+            "new_balance": str(account.current_balance.quantize(Decimal("0.01"))),
             "transaction_type": txn_type,
             "amount": str(amount),
         }, status=status.HTTP_201_CREATED)
@@ -260,7 +260,7 @@ class RuntimeFinanceBalanceUpdateView(APIView):
         return Response({
             "account_nickname": account.nickname,
             "old_balance": str(old_balance),
-            "new_balance": str(account.current_balance),
+            "new_balance": str(account.current_balance.quantize(Decimal("0.01"))),
         })
 
 
