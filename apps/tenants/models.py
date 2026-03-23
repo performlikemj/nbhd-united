@@ -243,6 +243,12 @@ class Tenant(models.Model):
         help_text="User has explicitly acknowledged the risk of disabling gates",
     )
 
+    # Finance module
+    finance_enabled = models.BooleanField(
+        default=False,
+        help_text="Enable budget tracking and debt payoff tools",
+    )
+
     # Idle hibernation
     hibernated_at = models.DateTimeField(
         null=True,

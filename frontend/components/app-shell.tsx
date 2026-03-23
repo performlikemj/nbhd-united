@@ -12,12 +12,15 @@ import { BrandLogo } from "@/components/brand-logo";
 import { SiteFooter } from "@/components/site-footer";
 import { useTheme } from "@/components/theme-provider";
 
-const navItems = [
+const baseNavItems = [
   { href: "/journal", label: "Journal" },
   { href: "/constellation", label: "★ Constellation" },
   { href: "/horizons", label: "◎ Horizons" },
-  { href: "/settings", label: "Settings" },
 ];
+
+const fuelNavItem = { href: "/finance", label: "◆ Fuel" };
+
+const settingsNavItem = { href: "/settings", label: "Settings" };
 
 const publicPages = ["/", "/login", "/signup", "/legal/terms", "/legal/privacy", "/legal/refund"];
 
@@ -156,6 +159,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const isPublicPage = publicPages.includes(pathname) || pathname.startsWith("/legal/");
+  const { data: tenant } = useTenantQuery();
+
+  const navItems = [
+    ...baseNavItems,
+    ...(tenant?.finance_enabled ? [fuelNavItem] : []),
+    settingsNavItem,
+  ];
 
   // Close mobile menu on route change
   useEffect(() => {

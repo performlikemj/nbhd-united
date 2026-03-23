@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     "apps.platform_logs",
     "apps.lessons",
     "apps.actions",
+    "apps.finance",
 ]
 
 MIDDLEWARE = [

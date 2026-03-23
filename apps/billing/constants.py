@@ -5,8 +5,8 @@ Rates are per 1M tokens in USD. Update when providers change pricing.
 
 # ── Canonical model IDs ────────────────────────────────────────────────────
 # Change these once here; every other module imports from this file.
-MINIMAX_MODEL = "openrouter/minimax/minimax-m2.5"
-MINIMAX_DISPLAY = "MiniMax M2.5"
+MINIMAX_MODEL = "openrouter/minimax/minimax-m2.7"
+MINIMAX_DISPLAY = "MiniMax M2.7"
 MINIMAX_RATE = {"input": 0.3, "output": 1.2}
 
 MODEL_RATES: dict[str, dict[str, float]] = {

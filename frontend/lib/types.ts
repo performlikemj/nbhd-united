@@ -62,6 +62,7 @@ export interface Tenant {
   pending_deletion: boolean;
   deletion_scheduled_at: string | null;
   platform_budget_exceeded: boolean;
+  finance_enabled: boolean;
 }
 
 export interface RefreshConfigStatus {
@@ -461,4 +462,75 @@ export interface HorizonsData {
   mood_trend: { date: string; mood: string; energy: string }[];
   momentum: HorizonsMomentumDay[];
   current_streak: number;
+}
+
+// ── Finance ──────────────────────────────────────────────────────────
+export interface FinanceAccount {
+  id: string;
+  account_type: string;
+  nickname: string;
+  current_balance: string;
+  original_balance: string | null;
+  interest_rate: string | null;
+  minimum_payment: string | null;
+  credit_limit: string | null;
+  due_day: number | null;
+  is_active: boolean;
+  is_debt: boolean;
+  payoff_progress: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FinanceTransaction {
+  id: string;
+  account: string;
+  account_nickname: string;
+  transaction_type: string;
+  amount: string;
+  description: string;
+  date: string;
+  created_at: string;
+}
+
+export interface PayoffPlanScheduleEntry {
+  month: number;
+  accounts: { nickname: string; balance: string; payment: string }[];
+  total_remaining: string;
+}
+
+export interface PayoffPlan {
+  id: string;
+  strategy: string;
+  monthly_budget: string;
+  total_debt: string;
+  total_interest: string;
+  payoff_months: number;
+  payoff_date: string;
+  schedule_json: PayoffPlanScheduleEntry[];
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FinanceSnapshot {
+  id: string;
+  date: string;
+  total_debt: string;
+  total_savings: string;
+  total_payments_this_month: string;
+  accounts_json: { nickname: string; type: string; balance: string }[];
+  created_at: string;
+}
+
+export interface FinanceDashboardData {
+  total_debt: string;
+  total_savings: string;
+  total_minimum_payments: string;
+  debt_account_count: number;
+  savings_account_count: number;
+  accounts: FinanceAccount[];
+  active_plan: PayoffPlan | null;
+  snapshots: FinanceSnapshot[];
+  recent_transactions: FinanceTransaction[];
 }
