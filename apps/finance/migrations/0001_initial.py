@@ -112,6 +112,7 @@ class Migration(migrations.Migration):
                 "indexes": [
                     models.Index(
                         fields=["tenant", "is_active"],
+                        name="finance_acc_tenant__e99b0f_idx",
                     ),
                 ],
             },
@@ -171,9 +172,11 @@ class Migration(migrations.Migration):
                 "indexes": [
                     models.Index(
                         fields=["tenant", "date"],
+                        name="finance_tra_tenant__066766_idx",
                     ),
                     models.Index(
                         fields=["account", "date"],
+                        name="finance_tra_account_36f79d_idx",
                     ),
                 ],
             },
