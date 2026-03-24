@@ -754,3 +754,64 @@ export function updateWorkingHours(data: { enabled?: boolean; start_hour?: numbe
     body: JSON.stringify(data),
   });
 }
+
+// Finance
+export function fetchFinanceDashboard(): Promise<import("@/lib/types").FinanceDashboardData> {
+  return apiFetch<import("@/lib/types").FinanceDashboardData>("/api/v1/finance/dashboard/");
+}
+
+export function fetchFinanceAccounts(): Promise<import("@/lib/types").FinanceAccount[]> {
+  return apiFetch<import("@/lib/types").FinanceAccount[]>("/api/v1/finance/accounts/");
+}
+
+export function createFinanceAccount(data: {
+  nickname: string;
+  account_type: string;
+  current_balance: number;
+  interest_rate?: number;
+  minimum_payment?: number;
+  credit_limit?: number;
+  due_day?: number;
+}): Promise<import("@/lib/types").FinanceAccount> {
+  return apiFetch<import("@/lib/types").FinanceAccount>("/api/v1/finance/accounts/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateFinanceAccount(
+  id: string,
+  data: Partial<{
+    nickname: string;
+    account_type: string;
+    current_balance: number;
+    interest_rate: number;
+    minimum_payment: number;
+  }>,
+): Promise<import("@/lib/types").FinanceAccount> {
+  return apiFetch<import("@/lib/types").FinanceAccount>(`/api/v1/finance/accounts/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteFinanceAccount(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/finance/accounts/${id}/`, {
+    method: "DELETE",
+  });
+}
+
+export function fetchPayoffPlans(): Promise<import("@/lib/types").PayoffPlan[]> {
+  return apiFetch<import("@/lib/types").PayoffPlan[]>("/api/v1/finance/payoff-plans/");
+}
+
+export function fetchFinanceSnapshots(): Promise<import("@/lib/types").FinanceSnapshot[]> {
+  return apiFetch<import("@/lib/types").FinanceSnapshot[]>("/api/v1/finance/snapshots/");
+}
+
+export function updateFinanceSettings(data: { finance_enabled: boolean }): Promise<{ finance_enabled: boolean }> {
+  return apiFetch<{ finance_enabled: boolean }>("/api/v1/finance/settings/", {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}

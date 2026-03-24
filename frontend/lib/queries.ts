@@ -79,6 +79,8 @@ import {
   cancelAccountDeletion,
   fetchWorkingHours,
   updateWorkingHours,
+  fetchFinanceDashboard,
+  updateFinanceSettings,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -803,6 +805,25 @@ export function useUpdateWorkingHoursMutation() {
     mutationFn: updateWorkingHours,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["working-hours"] });
+    },
+  });
+}
+
+// Finance
+export function useFinanceDashboardQuery() {
+  return useQuery({
+    queryKey: ["finance-dashboard"],
+    queryFn: fetchFinanceDashboard,
+    staleTime: 30_000,
+  });
+}
+
+export function useUpdateFinanceSettingsMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateFinanceSettings,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["tenant"] });
     },
   });
 }

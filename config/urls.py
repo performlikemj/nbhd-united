@@ -13,6 +13,7 @@ urlpatterns = [
     path("api/v1/journal/", include("apps.journal.urls")),
     path("api/v1/lessons/", include("apps.lessons.urls")),
     path("api/v1/dashboard/", include("apps.dashboard.urls")),
+    path("api/v1/finance/", include("apps.finance.urls")),
     path(
         "api/v1/internal/runtime/<uuid:tenant_id>/usage/report/",
         RuntimeUsageReportView.as_view(),

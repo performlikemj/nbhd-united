@@ -486,6 +486,13 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             str(getattr(settings, "OPENCLAW_REDDIT_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-reddit-tools") or "").strip(),
         ))
 
+    # Finance plugin — conditionally loaded when tenant has finance enabled
+    if getattr(tenant, "finance_enabled", False):
+        _plugin_defs.append((
+            str(getattr(settings, "OPENCLAW_FINANCE_PLUGIN_ID", "nbhd-finance-tools") or "").strip(),
+            str(getattr(settings, "OPENCLAW_FINANCE_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-finance-tools") or "").strip(),
+        ))
+
     _active_plugins = [(pid, ppath) for pid, ppath in _plugin_defs if pid]
 
     api_base = str(getattr(settings, "API_BASE_URL", "") or "").strip().rstrip("/")
