@@ -305,26 +305,82 @@ export default function ConstellationPage() {
     setViewMode(mode);
   };
 
-  // Graph rendering callback for low-density mode — show text labels on nodes
+  // Short title for a lesson node — from tags or first few words
+  const lessonTitle = useCallback((node: ConstellationGraphNode): string => {
+    if (node.tags.length > 0) {
+      return node.tags.slice(0, 2).join(" / ");
+    }
+    const words = node.text.split(/\s+/).slice(0, 5).join(" ");
+    return words.length < node.text.length ? words + "\u2026" : words;
+  }, []);
+
+  // Pre-computed positions for sparse graphs — prevents nodes from flying apart
+  const sparseGraphData = useMemo<ConstellationGraphData>(() => {
+    if (!isLowDensity) return filteredGraphData;
+    const count = filteredNodes.length;
+    if (count === 0) return filteredGraphData;
+    const radius = count === 1 ? 0 : 80;
+    return {
+      nodes: filteredNodes.map((node, i) => ({
+        ...node,
+        fx: radius * Math.cos((2 * Math.PI * i) / count - Math.PI / 2),
+        fy: radius * Math.sin((2 * Math.PI * i) / count - Math.PI / 2),
+      })) as ConstellationGraphNode[],
+      links: filteredGraphData.links,
+    };
+  }, [filteredNodes, filteredGraphData, isLowDensity]);
+
+  // Graph rendering callback — styled nodes with pill labels
   const lowDensityNodeCanvas = useCallback(
     (node: { x?: number; y?: number }, ctx: CanvasRenderingContext2D, globalScale: number) => {
       const graphNode = node as ConstellationGraphNode & { x: number; y: number };
-      const label = graphNode.text || "";
-      const truncated = label.length > 50 ? label.slice(0, 47) + "..." : label;
-      const fontSize = Math.max(10, 12 / globalScale);
-      const nodeR = 10;
+      const title = graphNode.tags.length > 0
+        ? graphNode.tags.slice(0, 2).join(" / ")
+        : graphNode.text.split(/\s+/).slice(0, 5).join(" ") + "\u2026";
+      const fontSize = Math.max(11, 13 / globalScale);
+      const nodeR = 16;
       const color = clusterLabelColor(graphNode.cluster_id);
 
+      // Outer glow ring
       ctx.beginPath();
-      ctx.arc(graphNode.x, graphNode.y, nodeR, 0, 2 * Math.PI);
-      ctx.fillStyle = color;
+      ctx.arc(graphNode.x, graphNode.y, nodeR + 5, 0, 2 * Math.PI);
+      ctx.fillStyle = "rgba(95, 186, 175, 0.12)";
       ctx.fill();
 
-      ctx.font = `${fontSize}px "Plus Jakarta Sans", sans-serif`;
+      // Node circle — use signal color for warmth
+      ctx.beginPath();
+      ctx.arc(graphNode.x, graphNode.y, nodeR, 0, 2 * Math.PI);
+      ctx.fillStyle = color === "#7f8b9c" ? "#5fbaaf" : color;
+      ctx.fill();
+
+      // Inner highlight
+      ctx.beginPath();
+      ctx.arc(graphNode.x - 3, graphNode.y - 3, 5, 0, 2 * Math.PI);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+      ctx.fill();
+
+      // Label pill
+      ctx.font = `500 ${fontSize}px "Plus Jakarta Sans", sans-serif`;
+      const textWidth = ctx.measureText(title).width;
+      const padX = 10;
+      const padY = 5;
+      const pillY = graphNode.y + nodeR + 10;
+      const pillW = textWidth + padX * 2;
+      const pillH = fontSize + padY * 2;
+      const pillX = graphNode.x - pillW / 2;
+
+      ctx.beginPath();
+      ctx.roundRect(pillX, pillY, pillW, pillH, pillH / 2);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(18, 35, 44, 0.08)";
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+
       ctx.textAlign = "center";
-      ctx.textBaseline = "top";
+      ctx.textBaseline = "middle";
       ctx.fillStyle = "#12232c";
-      ctx.fillText(truncated, graphNode.x, graphNode.y + nodeR + 4);
+      ctx.fillText(title, graphNode.x, pillY + pillH / 2);
     },
     [],
   );
@@ -390,11 +446,14 @@ export default function ConstellationPage() {
               isLowDensity ? "h-[40vh] min-h-[280px]" : "h-[64vh] min-h-[360px]"
             }`}>
               <ForceGraph2D
-                graphData={filteredGraphData as unknown as ConstellationGraphData}
+                graphData={(isLowDensity ? sparseGraphData : filteredGraphData) as unknown as ConstellationGraphData}
                 nodeId="id"
                 nodeLabel={isLowDensity ? undefined : (node) => (node as ConstellationGraphNode).text}
-                nodeColor={(node) => clusterLabelColor((node as ConstellationGraphNode).cluster_id)}
-                nodeVal={isLowDensity ? 3 : 1}
+                nodeColor={(node) => {
+                  const color = clusterLabelColor((node as ConstellationGraphNode).cluster_id);
+                  return color === "#7f8b9c" ? "#5fbaaf" : color;
+                }}
+                nodeVal={isLowDensity ? 4 : 1}
                 nodeRelSize={isLowDensity ? 16 : 7}
                 nodeCanvasObject={isLowDensity ? lowDensityNodeCanvas : undefined}
                 nodeCanvasObjectMode={isLowDensity ? (() => "replace" as const) : undefined}
@@ -411,11 +470,11 @@ export default function ConstellationPage() {
                 onNodeHover={(node: unknown) =>
                   setHoveredNode((node as ConstellationGraphNode | null) ?? null)
                 }
-                cooldownTicks={120}
+                cooldownTicks={isLowDensity ? 1 : 120}
                 enableZoomInteraction
                 enableNodeDrag={false}
-                d3AlphaDecay={isLowDensity ? 0.04 : 0.025}
-                d3VelocityDecay={isLowDensity ? 0.4 : 0.32}
+                d3AlphaDecay={isLowDensity ? 1 : 0.025}
+                d3VelocityDecay={isLowDensity ? 1 : 0.32}
               />
 
               {hoveredNode && !isLowDensity ? (
@@ -514,6 +573,7 @@ export default function ConstellationPage() {
                 <div className="space-y-3">
                   {filteredNodes.map((node, index) => {
                     const isExpanded = selectedCardNodeId === node.id;
+                    const title = lessonTitle(node);
 
                     return (
                       <button
@@ -527,7 +587,8 @@ export default function ConstellationPage() {
                         } active:bg-surface-hover`}
                         style={{ animationDelay: `${index * 80}ms` }}
                       >
-                        <p className="text-sm font-medium leading-relaxed text-ink">{node.text}</p>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-signal-text">{title}</p>
+                        <p className="mt-1 text-sm leading-relaxed text-ink">{node.text}</p>
                         <p className="mt-1 text-xs text-ink-faint">{formatDate(node.created_at)}</p>
                         {node.tags.length ? (
                           <div className="mt-2 flex flex-wrap gap-1">
