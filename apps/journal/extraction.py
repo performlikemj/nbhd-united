@@ -40,7 +40,7 @@ You are an assistant that extracts structured information from a user's daily no
 
 Return ONLY valid JSON matching this schema:
 {
-  "lessons": [{"text": "...", "confidence": "high|medium", "tags": ["..."]}],
+  "lessons": [{"text": "...", "context": "where/how this insight arose", "confidence": "high|medium", "tags": ["..."]}],
   "goals":   [{"text": "...", "confidence": "high|medium"}],
   "tasks":   [{"text": "...", "confidence": "high|medium"}]
 }
@@ -48,6 +48,7 @@ Return ONLY valid JSON matching this schema:
 Rules:
 - Only extract things EXPLICITLY stated, never inferred.
 - Lessons: insights, decisions, surprises, things that changed the user's approach.
+- context: 1 sentence describing where in the note this insight came from (which section, topic, or event).
 - Goals: things the user wants to build, ship, or achieve (multi-day/week scope).
 - Tasks: specific near-term action items with clear completion criteria.
 - Ignore small talk, status updates, routine questions.

@@ -1,33 +1,18 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { SectionCard } from "@/components/section-card";
 import { fetchConstellation, fetchPendingLessons } from "@/lib/api";
-import { ConstellationData, ConstellationEdge, ConstellationNode } from "@/lib/types";
+import { ConstellationData, ConstellationNode } from "@/lib/types";
 
-type ViewMode = "cards" | "graph";
-
-type ConstellationGraphNode = ConstellationNode & {
-  context?: string;
-  source_type?: string;
-  source_ref?: string;
-};
-
-type ConstellationGraphData = {
-  nodes: ConstellationGraphNode[];
-  links: ConstellationEdge[];
-};
+type ViewMode = "constellation" | "list";
 
 const VIEW_MODE_KEY = "constellationViewMode";
 const MOBILE_BREAKPOINT = 768;
 const CLUSTER_THRESHOLD = 5;
-
-const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
-  ssr: false,
-});
+const NODE_PADDING = 60;
 
 function formatDate(dateString: string): string {
   const date = new Date(dateString);
@@ -42,17 +27,9 @@ function formatDate(dateString: string): string {
   });
 }
 
-function formatLongDate(dateString: string): string {
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) {
-    return dateString;
-  }
-  return date.toLocaleString();
-}
-
-function clusterLabelColor(id: number | null): string {
+function clusterNodeColor(id: number | null): string {
   if (id == null) {
-    return "#7f8b9c";
+    return "#5fbaaf";
   }
   const hue = (id * 42) % 360;
   return `hsl(${hue}, 65%, 52%)`;
@@ -70,50 +47,33 @@ function getClusterLabel(
   return found?.label || `Cluster ${clusterId}`;
 }
 
-function getRelatedLessons(
-  nodeId: number,
-  edges: ConstellationEdge[],
-  nodesById: Map<number, ConstellationGraphNode>,
-): ConstellationGraphNode[] {
-  const related: ConstellationGraphNode[] = [];
-
-  for (const edge of edges) {
-    const sourceId = Number(edge.source);
-    const targetId = Number(edge.target);
-    const otherId = sourceId === nodeId ? targetId : targetId === nodeId ? sourceId : null;
-
-    if (otherId == null) {
-      continue;
-    }
-
-    const relatedNode = nodesById.get(otherId);
-    if (relatedNode && !related.some((item) => item.id === relatedNode.id)) {
-      related.push(relatedNode);
-    }
+function lessonTitle(node: ConstellationNode): string {
+  if (node.tags.length > 0) {
+    return node.tags.slice(0, 2).join(" / ");
   }
-
-  return related;
+  const words = node.text.split(/\s+/).slice(0, 5).join(" ");
+  return words.length < node.text.length ? words + "\u2026" : words;
 }
 
 function loadStoredViewMode(): ViewMode | null {
   if (typeof window === "undefined") {
     return null;
   }
-
   const raw = window.localStorage.getItem(VIEW_MODE_KEY);
-  if (raw === "cards" || raw === "graph") {
+  if (raw === "constellation" || raw === "list") {
     return raw;
   }
-
+  // Migrate old values
+  if (raw === "graph") return "constellation";
+  if (raw === "cards") return "list";
   return null;
 }
 
 function defaultViewMode(): ViewMode {
   if (typeof window === "undefined") {
-    return "cards";
+    return "list";
   }
-
-  return window.innerWidth >= MOBILE_BREAKPOINT ? "graph" : "cards";
+  return window.innerWidth >= MOBILE_BREAKPOINT ? "constellation" : "list";
 }
 
 export default function ConstellationPage() {
@@ -123,14 +83,14 @@ export default function ConstellationPage() {
 
   const [searchText, setSearchText] = useState("");
   const [selectedClusterId, setSelectedClusterId] = useState<number | null>(null);
-  const [, setHoveredNode] = useState<ConstellationGraphNode | null>(null);
-  const [selectedGraphNodeId, setSelectedGraphNodeId] = useState<number | null>(null);
-  const [selectedCardNodeId, setSelectedCardNodeId] = useState<number | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<number | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
-  const [viewMode, setViewMode] = useState<ViewMode>("cards");
+  const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [collapsedClusters, setCollapsedClusters] = useState<Set<string>>(new Set());
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
 
   const userToggledRef = useRef(false);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -141,22 +101,14 @@ export default function ConstellationPage() {
           fetchConstellation(),
           fetchPendingLessons(),
         ]);
-
-        if (!mounted) {
-          return;
-        }
-
+        if (!mounted) return;
         setData(constellationData);
         setPendingCount(pendingLessons.length);
       } catch (err) {
-        if (!mounted) {
-          return;
-        }
+        if (!mounted) return;
         setError(err instanceof Error ? err.message : "Failed to load constellation.");
       } finally {
-        if (mounted) {
-          setLoading(false);
-        }
+        if (mounted) setLoading(false);
       }
     }
 
@@ -167,7 +119,7 @@ export default function ConstellationPage() {
     const handleMediaChange = () => {
       const persisted = loadStoredViewMode();
       if (!persisted) {
-        setViewMode(window.innerWidth >= MOBILE_BREAKPOINT ? "graph" : "cards");
+        setViewMode(window.innerWidth >= MOBILE_BREAKPOINT ? "constellation" : "list");
       }
     };
 
@@ -180,12 +132,16 @@ export default function ConstellationPage() {
     };
   }, []);
 
-  // Default to cards view when few lessons — graph is useless with 2-3 dots
+  // Measure container for coordinate mapping
   useEffect(() => {
-    if (!loading && data.nodes.length < CLUSTER_THRESHOLD && !userToggledRef.current) {
-      setViewMode("cards");
-    }
-  }, [loading, data.nodes.length]);
+    if (!containerRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      const { width, height } = entries[0].contentRect;
+      setContainerSize({ width, height });
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -194,11 +150,10 @@ export default function ConstellationPage() {
   }, [viewMode]);
 
   const query = searchText.trim().toLowerCase();
-
   const totalLessonCount = data.nodes.length;
   const isSparse = totalLessonCount < CLUSTER_THRESHOLD;
 
-  const filteredNodes = useMemo<ConstellationGraphNode[]>(() => {
+  const filteredNodes = useMemo(() => {
     return data.nodes.filter((node) => {
       const matchesSearch = query
         ? node.text.toLowerCase().includes(query) || node.tags.some((tag) => tag.toLowerCase().includes(query))
@@ -212,45 +167,70 @@ export default function ConstellationPage() {
     return new Set(filteredNodes.map((node) => Number(node.id)));
   }, [filteredNodes]);
 
-  const filteredGraphData = useMemo<ConstellationGraphData>(() => {
-    const allEdges = [...data.edges, ...data.affinity_edges];
-    return {
-      nodes: filteredNodes,
-      links: allEdges.filter((edge) => {
-        return filteredNodeIds.has(Number(edge.source)) && filteredNodeIds.has(Number(edge.target));
-      }),
-    };
-  }, [data.edges, data.affinity_edges, filteredNodeIds, filteredNodes]);
+  const allEdges = useMemo(() => {
+    return [...data.edges, ...data.affinity_edges].filter((edge) => {
+      return filteredNodeIds.has(Number(edge.source)) && filteredNodeIds.has(Number(edge.target));
+    });
+  }, [data.edges, data.affinity_edges, filteredNodeIds]);
 
   const nodesById = useMemo(() => {
-    const map = new Map<number, ConstellationGraphNode>();
+    const map = new Map<number, ConstellationNode>();
     data.nodes.forEach((node) => map.set(Number(node.id), node));
     return map;
   }, [data.nodes]);
 
-  const selectedCardNode = useMemo(() => {
-    if (selectedCardNodeId == null) return null;
-    return nodesById.get(selectedCardNodeId) ?? null;
-  }, [nodesById, selectedCardNodeId]);
+  // Compute pixel positions for SVG constellation
+  const positionedNodes = useMemo(() => {
+    const hasPositions = filteredNodes.some((n) => n.x != null && n.y != null);
+    const count = filteredNodes.length;
 
-  const relatedLessons = useMemo(() => {
-    if (!selectedCardNode) return [];
-    return getRelatedLessons(selectedCardNode.id, data.edges, nodesById);
-  }, [data.edges, nodesById, selectedCardNode]);
+    return filteredNodes.map((node, i) => {
+      let nx: number;
+      let ny: number;
+
+      if (hasPositions && node.x != null && node.y != null) {
+        nx = node.x;
+        ny = node.y;
+      } else if (count === 1) {
+        nx = 0;
+        ny = 0;
+      } else {
+        const angle = (2 * Math.PI * i) / count - Math.PI / 2;
+        const radius = 0.6;
+        nx = radius * Math.cos(angle);
+        ny = radius * Math.sin(angle);
+      }
+
+      // Map [-1, 1] to pixel coordinates within container
+      const px = containerSize.width > 0
+        ? NODE_PADDING + ((nx + 1) / 2) * (containerSize.width - 2 * NODE_PADDING)
+        : 0;
+      const py = containerSize.height > 0
+        ? NODE_PADDING + ((ny + 1) / 2) * (containerSize.height - 2 * NODE_PADDING)
+        : 0;
+
+      return { ...node, px, py };
+    });
+  }, [filteredNodes, containerSize]);
+
+  const nodePositions = useMemo(() => {
+    const map = new Map<number, { px: number; py: number }>();
+    positionedNodes.forEach((node) => map.set(node.id, { px: node.px, py: node.py }));
+    return map;
+  }, [positionedNodes]);
+
+  const selectedNode = useMemo(() => {
+    if (selectedNodeId == null) return null;
+    return nodesById.get(selectedNodeId) ?? null;
+  }, [nodesById, selectedNodeId]);
 
   const clusterCards = useMemo(() => {
-    const groups = new Map<number | null, ConstellationGraphNode[]>();
-
+    const groups = new Map<number | null, ConstellationNode[]>();
     filteredNodes.forEach((node) => {
       const key = node.cluster_id;
       const existing = groups.get(key);
-      if (existing) {
-        existing.push(node);
-      } else {
-        groups.set(key, [node]);
-      }
+      if (existing) { existing.push(node); } else { groups.set(key, [node]); }
     });
-
     return Array.from(groups.entries())
       .map(([clusterId, nodes]) => ({
         id: clusterId,
@@ -271,13 +251,11 @@ export default function ConstellationPage() {
       label: cluster.label || `Cluster ${cluster.id}`,
       count: filteredNodes.filter((node) => node.cluster_id === cluster.id).length,
     }));
-
     const unclusteredCount = filteredNodes.filter((node) => node.cluster_id == null).length;
     if (unclusteredCount > 0) {
       const label = data.clusters.length === 0 ? "Your Lessons" : "Unclustered";
       items.push({ id: null, label, count: unclusteredCount });
     }
-
     return items.filter((item) => item.count > 0);
   }, [data.clusters, filteredNodes]);
 
@@ -285,11 +263,7 @@ export default function ConstellationPage() {
     const key = String(clusterId);
     setCollapsedClusters((previous) => {
       const next = new Set(previous);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
+      if (next.has(key)) { next.delete(key); } else { next.add(key); }
       return next;
     });
   }, []);
@@ -304,126 +278,14 @@ export default function ConstellationPage() {
     setViewMode(mode);
   };
 
-  // Short title for a lesson node — from tags or first few words
-  const lessonTitle = useCallback((node: ConstellationGraphNode): string => {
-    if (node.tags.length > 0) {
-      return node.tags.slice(0, 2).join(" / ");
-    }
-    const words = node.text.split(/\s+/).slice(0, 5).join(" ");
-    return words.length < node.text.length ? words + "\u2026" : words;
-  }, []);
-
-  // Graph data with semantic positions (from server PCA) or circular fallback
-  const positionedGraphData = useMemo<ConstellationGraphData>(() => {
-    const SCALE = 250;
-    const hasPositions = filteredNodes.some((n) => n.x != null && n.y != null);
+  // Container height based on lesson count
+  const containerHeight = useMemo(() => {
     const count = filteredNodes.length;
-
-    const nodes = filteredNodes.map((node, i) => {
-      if (hasPositions && node.x != null && node.y != null) {
-        return { ...node, fx: node.x * SCALE, fy: node.y * SCALE };
-      }
-      // Circular fallback when positions not yet computed
-      const radius = count === 1 ? 0 : 80;
-      return {
-        ...node,
-        fx: radius * Math.cos((2 * Math.PI * i) / count - Math.PI / 2),
-        fy: radius * Math.sin((2 * Math.PI * i) / count - Math.PI / 2),
-      };
-    }) as ConstellationGraphNode[];
-
-    return { nodes, links: filteredGraphData.links };
-  }, [filteredNodes, filteredGraphData.links]);
-
-  // Unified node canvas renderer — breathing glow + pill labels
-  const nodeCanvasRenderer = useCallback(
-    (node: { x?: number; y?: number }, ctx: CanvasRenderingContext2D, globalScale: number) => {
-      const graphNode = node as ConstellationGraphNode & { x: number; y: number };
-      const title = graphNode.tags.length > 0
-        ? graphNode.tags.slice(0, 2).join(" / ")
-        : graphNode.text.split(/\s+/).slice(0, 5).join(" ") + "\u2026";
-      const fontSize = Math.max(11, 13 / globalScale);
-      const nodeR = 14;
-      const color = clusterLabelColor(graphNode.cluster_id);
-      const nodeColor = color === "#7f8b9c" ? "#5fbaaf" : color;
-
-      // Breathing glow — unique phase per node
-      const breathe = 0.5 + 0.5 * Math.sin(Date.now() / 2000 + graphNode.id * 0.7);
-      const glowAlpha = 0.06 + 0.1 * breathe;
-
-      // Outer glow ring (breathing)
-      ctx.beginPath();
-      ctx.arc(graphNode.x, graphNode.y, nodeR + 6 + breathe * 3, 0, 2 * Math.PI);
-      ctx.fillStyle = `rgba(95, 186, 175, ${glowAlpha})`;
-      ctx.fill();
-
-      // Node circle
-      ctx.beginPath();
-      ctx.arc(graphNode.x, graphNode.y, nodeR, 0, 2 * Math.PI);
-      ctx.fillStyle = nodeColor;
-      ctx.fill();
-
-      // Inner highlight for depth
-      ctx.beginPath();
-      ctx.arc(graphNode.x - 3, graphNode.y - 3, 4, 0, 2 * Math.PI);
-      ctx.fillStyle = "rgba(255, 255, 255, 0.3)";
-      ctx.fill();
-
-      // Label pill background
-      ctx.font = `500 ${fontSize}px "Plus Jakarta Sans", sans-serif`;
-      const textWidth = ctx.measureText(title).width;
-      const padX = 10;
-      const padY = 5;
-      const pillY = graphNode.y + nodeR + 10;
-      const pillW = textWidth + padX * 2;
-      const pillH = fontSize + padY * 2;
-      const pillX = graphNode.x - pillW / 2;
-
-      ctx.beginPath();
-      ctx.roundRect(pillX, pillY, pillW, pillH, pillH / 2);
-      ctx.fillStyle = "rgba(255, 255, 255, 0.93)";
-      ctx.fill();
-      ctx.strokeStyle = "rgba(18, 35, 44, 0.08)";
-      ctx.lineWidth = 0.5;
-      ctx.stroke();
-
-      // Label text
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillStyle = "#12232c";
-      ctx.fillText(title, graphNode.x, pillY + pillH / 2);
-    },
-    [],
-  );
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const graphInstanceRef = useRef<any>(null);
-
-  // Auto-zoom to fit all nodes within the canvas after data loads
-  useEffect(() => {
-    if (viewMode === "graph" && !loading && positionedGraphData.nodes.length > 0) {
-      const timer = setTimeout(() => {
-        graphInstanceRef.current?.zoomToFit?.(400, 60);
-      }, 150);
-      return () => clearTimeout(timer);
-    }
-  }, [viewMode, loading, positionedGraphData.nodes.length]);
-
-  // Breathing animation — throttled to ~15fps to avoid breaking click handlers
-  useEffect(() => {
-    if (viewMode !== "graph") return;
-    let frameId: number;
-    let lastTime = 0;
-    const animate = (time: number) => {
-      if (time - lastTime > 67) {
-        graphInstanceRef.current?.refresh?.();
-        lastTime = time;
-      }
-      frameId = requestAnimationFrame(animate);
-    };
-    frameId = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(frameId);
-  }, [viewMode]);
+    if (count === 0) return 200;
+    if (count <= 4) return 320;
+    if (count <= 20) return 420;
+    return Math.min(600, 420 + (count - 20) * 5);
+  }, [filteredNodes.length]);
 
   if (error) {
     return (
@@ -446,27 +308,50 @@ export default function ConstellationPage() {
   return (
     <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_320px]">
       <main className="space-y-4 min-w-0">
+        {/* Progress banner */}
+        {isSparse && totalLessonCount > 0 ? (
+          <div className="animate-reveal rounded-panel border border-border bg-surface p-4">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm text-ink">
+                <span className="font-semibold">{totalLessonCount}</span>
+                {" of "}
+                <span className="font-semibold">{CLUSTER_THRESHOLD}</span>
+                {" lessons"}
+              </p>
+              <span className="text-xs text-ink-faint">Clusters form at {CLUSTER_THRESHOLD}</span>
+            </div>
+            <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-border">
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{ width: `${progressPercent}%`, backgroundColor: "var(--signal)" }}
+              />
+            </div>
+            <p className="mt-2 text-xs text-ink-faint">
+              Keep chatting with your assistant. Lessons appear here as they&apos;re discovered.
+            </p>
+          </div>
+        ) : null}
+
         <SectionCard title="Lessons Constellation" subtitle="Navigate how your approved lessons connect over time">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div className="inline-flex rounded-full border border-border bg-surface p-1">
               <button
                 type="button"
-                onClick={() => handleSetViewMode("cards")}
+                onClick={() => handleSetViewMode("constellation")}
                 className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
-                  viewMode === "cards" ? "bg-accent text-white" : "text-ink-muted hover:text-ink"
+                  viewMode === "constellation" ? "bg-accent text-white" : "text-ink-muted hover:text-ink"
                 }`}
               >
-                Cards
+                Constellation
               </button>
               <button
                 type="button"
-                onClick={() => handleSetViewMode("graph")}
-                title={isSparse ? "Graph view works best with more lessons" : undefined}
+                onClick={() => handleSetViewMode("list")}
                 className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
-                  viewMode === "graph" ? "bg-accent text-white" : "text-ink-muted hover:text-ink"
-                } ${isSparse && viewMode !== "graph" ? "opacity-60" : ""}`}
+                  viewMode === "list" ? "bg-accent text-white" : "text-ink-muted hover:text-ink"
+                }`}
               >
-                Graph
+                List
               </button>
             </div>
             {pendingCount > 0 ? (
@@ -474,162 +359,167 @@ export default function ConstellationPage() {
                 href="/constellation/pending"
                 className="rounded-full border border-border bg-accent/10 px-3 py-1.5 text-xs font-semibold text-accent"
               >
-                {pendingCount === 1
-                  ? "1 lesson waiting for approval"
-                  : `${pendingCount} lessons waiting for approval`}
+                {pendingCount === 1 ? "1 lesson waiting" : `${pendingCount} lessons waiting`}
               </Link>
             ) : null}
           </div>
 
-          {viewMode === "graph" ? (
-            <div className="relative h-[50vh] min-h-[320px] rounded-panel border border-border bg-surface">
-              <ForceGraph2D
-                ref={graphInstanceRef}
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                graphData={positionedGraphData as any}
-                nodeId="id"
-                nodeCanvasObject={nodeCanvasRenderer}
-                nodeCanvasObjectMode={() => "replace" as const}
-                nodePointerAreaPaint={(node, color, ctx) => {
-                  const r = 14;
-                  ctx.fillStyle = color;
-                  ctx.beginPath();
-                  ctx.arc((node as { x: number }).x, (node as { y: number }).y, r, 0, 2 * Math.PI);
-                  ctx.fill();
-                }}
-                backgroundColor="transparent"
-                linkCurvature={0}
-                linkDirectionalArrowLength={0}
-                linkWidth={(link) => {
-                  const sim = Number((link as ConstellationEdge).similarity ?? 0);
-                  if (sim >= 0.75) return 2;
-                  if (sim >= 0.5) return 1;
-                  return 0.5;
-                }}
-                linkColor={(link) => {
-                  const sim = Number((link as ConstellationEdge).similarity ?? 0);
-                  if (sim >= 0.75) return "rgba(95, 186, 175, 0.7)";
-                  if (sim >= 0.5) return "rgba(95, 186, 175, 0.35)";
-                  return "rgba(120, 130, 142, 0.12)";
-                }}
-                linkLineDash={(link) => {
-                  const sim = Number((link as ConstellationEdge).similarity ?? 0);
-                  return sim >= 0.5 ? null : [2, 4];
-                }}
-                onNodeClick={(node: unknown) => setSelectedGraphNodeId((node as ConstellationGraphNode).id)}
-                onNodeHover={(node: unknown) =>
-                  setHoveredNode((node as ConstellationGraphNode | null) ?? null)
-                }
-                cooldownTicks={0}
-                warmupTicks={0}
-                enableZoomInteraction
-                enableNodeDrag={false}
-                d3AlphaDecay={1}
-                d3VelocityDecay={1}
-              />
-
-              {selectedGraphNodeId != null && nodesById.get(selectedGraphNodeId) ? (() => {
-                const sn = nodesById.get(selectedGraphNodeId)!;
-                return (
-                  <div className="absolute right-3 top-3 z-10 w-72 max-w-[85%] rounded-panel border border-border bg-surface/95 p-3 shadow-lg md:right-4 md:top-4">
-                    <h3 className="text-sm font-semibold text-ink">Selected Lesson</h3>
-                    <p className="mt-2 text-sm text-ink">{sn.text}</p>
-                    <p className="mt-2 text-xs text-ink-muted">{sn.context || "No context"}</p>
-                    <p className="mt-2 text-xs text-ink-faint">Date: {formatLongDate(sn.created_at)}</p>
-                    {(sn.source_type || sn.source_ref) ? (
-                      <p className="mt-2 text-xs text-ink-faint">
-                        Source: {sn.source_type ?? ""}
-                        {sn.source_ref ? ` — ${sn.source_ref}` : ""}
-                      </p>
-                    ) : null}
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {sn.tags.map((tag) => (
-                        <span
-                          key={`${sn.id}-${tag}`}
-                          className="rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-ink-muted"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedGraphNodeId(null)}
-                      className="mt-3 rounded-full border border-border px-3 py-1.5 text-xs text-ink-muted transition hover:border-border-strong"
-                    >
-                      Close
-                    </button>
-                  </div>
-                );
-              })() : null}
-
-              {!positionedGraphData.nodes.length ? (
-                <div className="absolute inset-0 flex items-center justify-center p-6 text-center text-sm text-ink-muted">
-                  No approved lessons match your current search yet.
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {/* Sparse onboarding: progress banner */}
-              {isSparse && totalLessonCount > 0 ? (
-                <div className="animate-reveal rounded-panel border border-border bg-surface p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm text-ink">
-                      <span className="font-semibold">{totalLessonCount}</span>
-                      {" of "}
-                      <span className="font-semibold">{CLUSTER_THRESHOLD}</span>
-                      {" lessons"}
-                    </p>
-                    <span className="text-xs text-ink-faint">Clusters form at {CLUSTER_THRESHOLD}</span>
-                  </div>
-                  <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-border">
-                    <div
-                      className="h-full rounded-full transition-all duration-500"
-                      style={{
-                        width: `${progressPercent}%`,
-                        backgroundColor: "var(--signal)",
-                      }}
-                    />
-                  </div>
-                  <p className="mt-2 text-xs text-ink-faint">
-                    Keep chatting with your assistant. Lessons appear here as they&apos;re discovered.
-                  </p>
-                </div>
-              ) : null}
-
+          {viewMode === "constellation" ? (
+            <>
               {/* Empty state */}
-              {totalLessonCount === 0 ? (
-                <div className="animate-reveal rounded-panel border border-border bg-surface p-6 text-center">
-                  <p className="text-lg font-display text-ink">Your constellation begins here</p>
-                  <p className="mt-2 text-sm text-ink-muted">
-                    As you chat with your assistant, lessons and insights will be discovered and added automatically.
-                  </p>
-                  {pendingCount > 0 ? (
-                    <Link
-                      href="/constellation/pending"
-                      className="mt-4 inline-block rounded-full border border-accent/20 bg-accent/5 px-4 py-2 text-sm font-medium text-accent"
-                    >
-                      Review {pendingCount} pending {pendingCount === 1 ? "lesson" : "lessons"}
-                    </Link>
-                  ) : null}
+              {filteredNodes.length === 0 ? (
+                <div className="flex items-center justify-center rounded-panel border border-border bg-surface p-8 text-center" style={{ height: 200 }}>
+                  <div>
+                    <p className="text-lg font-display text-ink">Your constellation begins here</p>
+                    <p className="mt-2 text-sm text-ink-muted">
+                      As you chat with your assistant, lessons will appear as stars in your personal sky.
+                    </p>
+                  </div>
                 </div>
-              ) : null}
+              ) : (
+                /* SVG Constellation View */
+                <div
+                  ref={containerRef}
+                  className="relative overflow-hidden rounded-panel border border-border bg-surface"
+                  style={{ height: containerHeight }}
+                >
+                  {/* Connection lines (SVG layer) */}
+                  <svg className="pointer-events-none absolute inset-0 h-full w-full" style={{ zIndex: 0 }}>
+                    {allEdges.map((edge, i) => {
+                      const sourcePos = nodePositions.get(Number(edge.source));
+                      const targetPos = nodePositions.get(Number(edge.target));
+                      if (!sourcePos || !targetPos) return null;
 
-              {/* Sparse mode: flat cards without cluster grouping */}
+                      const sim = edge.similarity ?? 0;
+                      let stroke: string;
+                      let strokeWidth: number;
+                      let strokeDasharray: string | undefined;
+
+                      if (sim >= 0.75) {
+                        stroke = "rgba(95, 186, 175, 0.7)";
+                        strokeWidth = 2;
+                      } else if (sim >= 0.5) {
+                        stroke = "rgba(95, 186, 175, 0.35)";
+                        strokeWidth = 1;
+                      } else {
+                        stroke = "rgba(120, 130, 142, 0.15)";
+                        strokeWidth = 0.5;
+                        strokeDasharray = "3 5";
+                      }
+
+                      return (
+                        <line
+                          key={`${edge.source}-${edge.target}-${i}`}
+                          x1={sourcePos.px}
+                          y1={sourcePos.py}
+                          x2={targetPos.px}
+                          y2={targetPos.py}
+                          stroke={stroke}
+                          strokeWidth={strokeWidth}
+                          strokeDasharray={strokeDasharray}
+                        />
+                      );
+                    })}
+                  </svg>
+
+                  {/* Node layer */}
+                  {positionedNodes.map((node) => {
+                    const isSelected = selectedNodeId === node.id;
+                    const color = clusterNodeColor(node.cluster_id);
+
+                    return (
+                      <button
+                        key={node.id}
+                        type="button"
+                        className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1.5 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2"
+                        style={{ left: node.px, top: node.py, zIndex: isSelected ? 3 : 1 }}
+                        aria-label={`Lesson: ${lessonTitle(node)}`}
+                        onClick={() => setSelectedNodeId((prev) => (prev === node.id ? null : node.id))}
+                      >
+                        <div
+                          className={`h-8 w-8 rounded-full transition-transform duration-200 group-hover:scale-125 ${
+                            isSelected ? "scale-125 ring-2 ring-accent ring-offset-2" : ""
+                          }`}
+                          style={{
+                            backgroundColor: color,
+                            boxShadow: `0 0 12px 3px ${color}33`,
+                            animation: "constellation-breathe 4s ease-in-out infinite",
+                            animationDelay: `${(node.id * 700) % 4000}ms`,
+                          }}
+                        />
+                        <span className="max-w-[120px] truncate rounded-full bg-surface/90 px-2 py-0.5 text-center text-[11px] font-medium text-ink-muted shadow-sm">
+                          {lessonTitle(node)}
+                        </span>
+                      </button>
+                    );
+                  })}
+
+                  {/* Detail panel — positioned near selected node */}
+                  {selectedNode && nodePositions.get(selectedNode.id) ? (() => {
+                    const pos = nodePositions.get(selectedNode.id)!;
+                    const rightHalf = pos.px > containerSize.width / 2;
+                    const panelStyle: React.CSSProperties = {
+                      position: "absolute",
+                      top: Math.max(8, Math.min(pos.py - 60, containerHeight - 240)),
+                      zIndex: 10,
+                      ...(rightHalf
+                        ? { right: Math.max(8, containerSize.width - pos.px + 30) }
+                        : { left: Math.max(8, pos.px + 30) }),
+                    };
+
+                    return (
+                      <div
+                        className="w-64 rounded-panel border border-border bg-surface/95 p-3 shadow-lg animate-reveal"
+                        style={panelStyle}
+                      >
+                        <p className="text-xs font-semibold uppercase tracking-wide text-signal-text">
+                          {lessonTitle(selectedNode)}
+                        </p>
+                        <p className="mt-1.5 text-sm leading-relaxed text-ink">{selectedNode.text}</p>
+                        <p className="mt-2 text-xs text-ink-muted">
+                          {selectedNode.context || `Source: ${selectedNode.source_type || "journal"}`}
+                        </p>
+                        <p className="mt-1 text-xs text-ink-faint">{formatDate(selectedNode.created_at)}</p>
+                        {selectedNode.tags.length > 0 ? (
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {selectedNode.tags.map((tag) => (
+                              <span
+                                key={`${selectedNode.id}-${tag}`}
+                                className="rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-ink-muted"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedNodeId(null)}
+                          className="mt-2 text-xs text-ink-faint hover:text-ink-muted"
+                        >
+                          Close
+                        </button>
+                      </div>
+                    );
+                  })() : null}
+                </div>
+              )}
+            </>
+          ) : (
+            /* List View */
+            <div className="space-y-4">
+              {/* Sparse mode: flat cards */}
               {isSparse && filteredNodes.length > 0 ? (
                 <div className="space-y-3">
                   {filteredNodes.map((node, index) => {
-                    const isExpanded = selectedCardNodeId === node.id;
+                    const isExpanded = selectedNodeId === node.id;
                     const title = lessonTitle(node);
 
                     return (
                       <button
                         type="button"
                         key={node.id}
-                        onClick={() =>
-                          setSelectedCardNodeId((previous) => (previous === node.id ? null : node.id))
-                        }
+                        onClick={() => setSelectedNodeId((prev) => (prev === node.id ? null : node.id))}
                         className={`animate-reveal w-full rounded-panel border border-border bg-surface p-3 text-left transition ${
                           isExpanded ? "border-accent/60" : ""
                         } active:bg-surface-hover`}
@@ -638,43 +528,23 @@ export default function ConstellationPage() {
                         <p className="text-xs font-semibold uppercase tracking-wide text-signal-text">{title}</p>
                         <p className="mt-1 text-sm leading-relaxed text-ink">{node.text}</p>
                         <p className="mt-1 text-xs text-ink-faint">{formatDate(node.created_at)}</p>
-                        {node.tags.length ? (
+                        {node.tags.length > 0 ? (
                           <div className="mt-2 flex flex-wrap gap-1">
                             {node.tags.map((tag) => (
-                              <span
-                                key={`${node.id}-${tag}`}
-                                className="rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-ink-muted"
-                              >
+                              <span key={`${node.id}-${tag}`} className="rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-ink-muted">
                                 {tag}
                               </span>
                             ))}
                           </div>
                         ) : null}
-
                         {isExpanded ? (
-                          <div className="mt-3 space-y-2 border-t border-border pt-2 text-left">
+                          <div className="mt-3 space-y-2 border-t border-border pt-2">
                             <p className="text-xs text-ink-muted">{node.context || "No context provided."}</p>
                             {(node.source_type || node.source_ref) ? (
                               <p className="text-xs text-ink-faint">
-                                Source: {node.source_type ?? ""}
-                                {node.source_ref ? ` — ${node.source_ref}` : ""}
+                                Source: {node.source_type ?? ""}{node.source_ref ? ` \u2014 ${node.source_ref}` : ""}
                               </p>
                             ) : null}
-                            <div>
-                              <p className="text-xs font-semibold text-ink">Related lessons</p>
-                              <div className="mt-1 flex flex-wrap gap-1">
-                                {(selectedCardNode?.id === node.id ? relatedLessons : getRelatedLessons(node.id, data.edges, nodesById))
-                                  .slice(0, 4)
-                                  .map((relatedLesson) => (
-                                    <span
-                                      key={relatedLesson.id}
-                                      className="rounded-full border border-border px-2 py-0.5 text-[11px] text-ink-muted"
-                                    >
-                                      {relatedLesson.text}
-                                    </span>
-                                  ))}
-                              </div>
-                            </div>
                           </div>
                         ) : null}
                       </button>
@@ -690,7 +560,6 @@ export default function ConstellationPage() {
                 ) : (
                   clusterCards.map((cluster) => {
                     const isCollapsed = isClusterCollapsed(cluster.id);
-
                     return (
                       <section key={String(cluster.id)} className="space-y-2">
                         <button
@@ -699,10 +568,7 @@ export default function ConstellationPage() {
                           className="flex w-full items-center justify-between rounded-panel border border-border bg-surface px-3 py-2 text-left"
                         >
                           <div className="flex min-w-0 items-center gap-2">
-                            <span
-                              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-                              style={{ backgroundColor: clusterLabelColor(cluster.id) }}
-                            />
+                            <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: clusterNodeColor(cluster.id) }} />
                             <div className="min-w-0">
                               <p className="truncate text-sm font-semibold text-ink">{cluster.label}</p>
                               <p className="text-xs text-ink-muted">{cluster.count} lessons</p>
@@ -710,62 +576,34 @@ export default function ConstellationPage() {
                           </div>
                           <span className="text-xs text-ink-muted">{isCollapsed ? "\u25B8" : "\u25BE"}</span>
                         </button>
-
                         {!isCollapsed ? (
                           <div className="space-y-2">
                             {cluster.nodes.map((node) => {
-                              const isExpanded = selectedCardNodeId === node.id;
-
+                              const isExpanded = selectedNodeId === node.id;
                               return (
                                 <button
                                   type="button"
                                   key={node.id}
-                                  onClick={() =>
-                                    setSelectedCardNodeId((previous) => (previous === node.id ? null : node.id))
-                                  }
-                                  className={`w-full rounded-panel border border-border bg-surface p-3 text-left transition ${
-                                    isExpanded ? "border-accent/60" : ""
-                                  } active:bg-surface-hover`}
+                                  onClick={() => setSelectedNodeId((prev) => (prev === node.id ? null : node.id))}
+                                  className={`w-full rounded-panel border border-border bg-surface p-3 text-left transition ${isExpanded ? "border-accent/60" : ""} active:bg-surface-hover`}
                                 >
                                   <p className="text-sm font-medium leading-relaxed text-ink">{node.text}</p>
                                   <p className="mt-1 text-xs text-ink-faint">{formatDate(node.created_at)}</p>
-                                  {node.tags.length ? (
+                                  {node.tags.length > 0 ? (
                                     <div className="mt-2 flex flex-wrap gap-1">
                                       {node.tags.map((tag) => (
-                                        <span
-                                          key={`${node.id}-${tag}`}
-                                          className="rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-ink-muted"
-                                        >
-                                          {tag}
-                                        </span>
+                                        <span key={`${node.id}-${tag}`} className="rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-ink-muted">{tag}</span>
                                       ))}
                                     </div>
                                   ) : null}
-
                                   {isExpanded ? (
-                                    <div className="mt-3 space-y-2 border-t border-border pt-2 text-left">
+                                    <div className="mt-3 space-y-2 border-t border-border pt-2">
                                       <p className="text-xs text-ink-muted">{node.context || "No context provided."}</p>
                                       {(node.source_type || node.source_ref) ? (
                                         <p className="text-xs text-ink-faint">
-                                          Source: {node.source_type ?? ""}
-                                          {node.source_ref ? ` — ${node.source_ref}` : ""}
+                                          Source: {node.source_type ?? ""}{node.source_ref ? ` \u2014 ${node.source_ref}` : ""}
                                         </p>
                                       ) : null}
-                                      <div>
-                                        <p className="text-xs font-semibold text-ink">Related lessons</p>
-                                        <div className="mt-1 flex flex-wrap gap-1">
-                                          {(selectedCardNode?.id === node.id ? relatedLessons : getRelatedLessons(node.id, data.edges, nodesById))
-                                            .slice(0, 4)
-                                            .map((relatedLesson) => (
-                                              <span
-                                                key={relatedLesson.id}
-                                                className="rounded-full border border-border px-2 py-0.5 text-[11px] text-ink-muted"
-                                              >
-                                                {relatedLesson.text}
-                                              </span>
-                                            ))}
-                                        </div>
-                                      </div>
                                     </div>
                                   ) : null}
                                 </button>
@@ -777,6 +615,16 @@ export default function ConstellationPage() {
                     );
                   })
                 )
+              ) : null}
+
+              {/* Empty state for list */}
+              {totalLessonCount === 0 ? (
+                <div className="animate-reveal rounded-panel border border-border bg-surface p-6 text-center">
+                  <p className="text-lg font-display text-ink">Your constellation begins here</p>
+                  <p className="mt-2 text-sm text-ink-muted">
+                    As you chat with your assistant, lessons and insights will be discovered and added automatically.
+                  </p>
+                </div>
               ) : null}
             </div>
           )}
@@ -794,13 +642,9 @@ export default function ConstellationPage() {
               className="w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
             />
           </label>
-
           <div className="flex items-center justify-between gap-2">
             <span className="text-sm text-ink-muted">Pending approvals</span>
-            <Link
-              href="/constellation/pending"
-              className="inline-flex items-center rounded-full border border-border bg-accent/10 px-3 py-1 text-xs font-semibold text-accent"
-            >
+            <Link href="/constellation/pending" className="inline-flex items-center rounded-full border border-border bg-accent/10 px-3 py-1 text-xs font-semibold text-accent">
               {pendingCount} pending
             </Link>
           </div>
@@ -811,19 +655,13 @@ export default function ConstellationPage() {
           subtitle={isSparse ? "Clusters form as your constellation grows" : "Quick filter by cluster"}
         >
           {isSparse ? (
-            <div className="space-y-3">
-              <div className="flex items-center gap-3">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: "var(--signal)", opacity: 0.15 }}>
-                  <span style={{ color: "var(--signal-text)" }} className="text-sm" aria-hidden="true">{"\u2726"}</span>
-                </span>
-                <div>
-                  <p className="text-sm text-ink">
-                    {totalLessonCount} of {CLUSTER_THRESHOLD} lessons
-                  </p>
-                  <p className="text-xs text-ink-muted">
-                    Patterns emerge at {CLUSTER_THRESHOLD}
-                  </p>
-                </div>
+            <div className="flex items-center gap-3">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: "var(--signal)", opacity: 0.15 }}>
+                <span style={{ color: "var(--signal-text)" }} className="text-sm" aria-hidden="true">{"\u2726"}</span>
+              </span>
+              <div>
+                <p className="text-sm text-ink">{totalLessonCount} of {CLUSTER_THRESHOLD} lessons</p>
+                <p className="text-xs text-ink-muted">Patterns emerge at {CLUSTER_THRESHOLD}</p>
               </div>
             </div>
           ) : clustersForSidebar.length ? (
@@ -832,18 +670,13 @@ export default function ConstellationPage() {
                 <button
                   type="button"
                   key={`${cluster.id}-${cluster.label}`}
-                  onClick={() =>
-                    setSelectedClusterId((current) => (current === cluster.id ? null : cluster.id))
-                  }
+                  onClick={() => setSelectedClusterId((current) => (current === cluster.id ? null : cluster.id))}
                   className={`flex w-full items-center justify-between rounded-panel border border-border p-2 text-left transition ${
                     selectedClusterId === cluster.id ? "bg-surface-hover" : "bg-surface"
                   }`}
                 >
                   <div className="flex items-center gap-2 min-w-0">
-                    <span
-                      className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-                      style={{ backgroundColor: clusterLabelColor(cluster.id) }}
-                    />
+                    <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: clusterNodeColor(cluster.id) }} />
                     <span className="truncate text-sm text-ink">{cluster.label}</span>
                   </div>
                   <span className="text-xs text-ink-muted">{cluster.count}</span>
@@ -855,6 +688,17 @@ export default function ConstellationPage() {
           )}
         </SectionCard>
       </aside>
+
+      {/* Breathing animation keyframes */}
+      <style jsx global>{`
+        @keyframes constellation-breathe {
+          0%, 100% { box-shadow: 0 0 8px 2px rgba(95, 186, 175, 0.12); }
+          50% { box-shadow: 0 0 18px 6px rgba(95, 186, 175, 0.3); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .constellation-breathe { animation: none !important; }
+        }
+      `}</style>
     </div>
   );
 }
