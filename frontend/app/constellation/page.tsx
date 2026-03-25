@@ -383,6 +383,8 @@ export default function ConstellationPage() {
                   className="relative overflow-hidden rounded-panel border border-border bg-surface"
                   style={{ height: containerHeight }}
                 >
+                  {/* Wait for container to be measured before rendering nodes */}
+                  {containerSize.width === 0 ? null : <>
                   {/* Connection lines (SVG layer) */}
                   <svg className="pointer-events-none absolute inset-0 h-full w-full" style={{ zIndex: 0 }}>
                     {allEdges.map((edge, i) => {
@@ -502,6 +504,7 @@ export default function ConstellationPage() {
                       </div>
                     );
                   })() : null}
+                  </>}
                 </div>
               )}
             </>

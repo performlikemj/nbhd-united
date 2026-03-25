@@ -772,6 +772,50 @@ def run_backfill_lesson_embeddings(request):
 
 
 @csrf_exempt
+def verify_gateway_tools(request):
+    """Verify that the OpenClaw gateway cron tool is available.
+
+    Picks one active tenant and calls cron.list via the gateway.
+    Returns 200 if the tool responds, 500 if not.
+    Auth: X-Deploy-Secret header.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not deploy_secret or not provided or provided != deploy_secret:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    from apps.tenants.models import Tenant
+
+    tenant = (
+        Tenant.objects.filter(
+            status=Tenant.Status.ACTIVE,
+            container_fqdn__isnull=False,
+        )
+        .exclude(container_fqdn="")
+        .first()
+    )
+
+    if not tenant:
+        return JsonResponse({"ok": True, "skipped": True, "reason": "no active tenants with containers"})
+
+    try:
+        from apps.cron.gateway_client import invoke_gateway_tool
+
+        result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+        logger.info("verify_gateway_tools: cron.list succeeded for tenant %s", str(tenant.id)[:8])
+        return JsonResponse({"ok": True, "tenant": str(tenant.id)[:8], "cron_tool": "available"})
+    except Exception as exc:
+        logger.error("verify_gateway_tools: cron.list FAILED for tenant %s: %s", str(tenant.id)[:8], exc)
+        return JsonResponse(
+            {"ok": False, "tenant": str(tenant.id)[:8], "error": str(exc)[:300]},
+            status=500,
+        )
+
+
+@csrf_exempt
 def run_rewrite_lessons_actionable(request):
     """Rewrite approved lessons to be actionable advice via LLM.
 
