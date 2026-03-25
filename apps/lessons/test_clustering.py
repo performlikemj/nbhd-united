@@ -129,7 +129,7 @@ class LessonClusteringServiceTests(TestCase):
             Lesson.objects.filter(tenant=self.tenant, status="approved", id=lesson_1.id, cluster_id=42).exists()
         )
 
-    def test_refresh_constellation_runs_without_position_calculation(self):
+    def test_refresh_constellation_computes_positions(self):
         # Build a connected set large enough to trigger clustering (min 5).
         lessons = [self._create_approved_lesson(tags=["focus", "planning"], cluster_id=None) for _ in range(5)]
         for i in range(len(lessons) - 1):
@@ -147,11 +147,14 @@ class LessonClusteringServiceTests(TestCase):
         self.assertIn("clusters", result)
         self.assertIn("noise", result)
         self.assertIn("clusters_labeled", result)
+        self.assertIn("positions_computed", result)
         self.assertGreaterEqual(result["clusters_labeled"], 1)
+        self.assertEqual(result["positions_computed"], 5)
 
         serialized = ConstellationNodeSerializer(
             Lesson.objects.filter(tenant=self.tenant, status="approved"),
             many=True,
         ).data
-        self.assertTrue(all(item["x"] is None for item in serialized))
-        self.assertTrue(all(item["y"] is None for item in serialized))
+        # Positions should be computed from PCA on embeddings
+        self.assertTrue(all(item["x"] is not None for item in serialized))
+        self.assertTrue(all(item["y"] is not None for item in serialized))
