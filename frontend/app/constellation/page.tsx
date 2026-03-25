@@ -124,7 +124,7 @@ export default function ConstellationPage() {
   const [searchText, setSearchText] = useState("");
   const [selectedClusterId, setSelectedClusterId] = useState<number | null>(null);
   const [, setHoveredNode] = useState<ConstellationGraphNode | null>(null);
-  const [selectedNode, setSelectedNode] = useState<ConstellationGraphNode | null>(null);
+  const [selectedGraphNodeId, setSelectedGraphNodeId] = useState<number | null>(null);
   const [selectedCardNodeId, setSelectedCardNodeId] = useState<number | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
   const [viewMode, setViewMode] = useState<ViewMode>("cards");
@@ -396,14 +396,29 @@ export default function ConstellationPage() {
     [],
   );
 
-  // Trigger continuous re-render for breathing animation
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const graphInstanceRef = useRef<any>(null);
+
+  // Auto-zoom to fit all nodes within the canvas after data loads
+  useEffect(() => {
+    if (viewMode === "graph" && !loading && positionedGraphData.nodes.length > 0) {
+      const timer = setTimeout(() => {
+        graphInstanceRef.current?.zoomToFit?.(400, 60);
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+  }, [viewMode, loading, positionedGraphData.nodes.length]);
+
+  // Breathing animation — throttled to ~15fps to avoid breaking click handlers
   useEffect(() => {
     if (viewMode !== "graph") return;
     let frameId: number;
-    const animate = () => {
-      graphInstanceRef.current?.refresh?.();
+    let lastTime = 0;
+    const animate = (time: number) => {
+      if (time - lastTime > 67) {
+        graphInstanceRef.current?.refresh?.();
+        lastTime = time;
+      }
       frameId = requestAnimationFrame(animate);
     };
     frameId = requestAnimationFrame(animate);
@@ -501,7 +516,7 @@ export default function ConstellationPage() {
                   const sim = Number((link as ConstellationEdge).similarity ?? 0);
                   return sim >= 0.5 ? null : [2, 4];
                 }}
-                onNodeClick={(node: unknown) => setSelectedNode(node as ConstellationGraphNode)}
+                onNodeClick={(node: unknown) => setSelectedGraphNodeId((node as ConstellationGraphNode).id)}
                 onNodeHover={(node: unknown) =>
                   setHoveredNode((node as ConstellationGraphNode | null) ?? null)
                 }
@@ -513,37 +528,40 @@ export default function ConstellationPage() {
                 d3VelocityDecay={1}
               />
 
-              {selectedNode ? (
-                <div className="absolute right-3 top-3 z-10 w-72 max-w-[85%] rounded-panel border border-border bg-surface/95 p-3 shadow-lg md:right-4 md:top-4">
-                  <h3 className="text-sm font-semibold text-ink">Selected Lesson</h3>
-                  <p className="mt-2 text-sm text-ink">{selectedNode.text}</p>
-                  <p className="mt-2 text-xs text-ink-muted">{selectedNode.context || "No context"}</p>
-                  <p className="mt-2 text-xs text-ink-faint">Date: {formatLongDate(selectedNode.created_at)}</p>
-                  {(selectedNode.source_type || selectedNode.source_ref) ? (
-                    <p className="mt-2 text-xs text-ink-faint">
-                      Source: {selectedNode.source_type ?? ""}
-                      {selectedNode.source_ref ? ` — ${selectedNode.source_ref}` : ""}
-                    </p>
-                  ) : null}
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {selectedNode.tags.map((tag) => (
-                      <span
-                        key={`${selectedNode.id}-${tag}`}
-                        className="rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-ink-muted"
-                      >
-                        {tag}
-                      </span>
-                    ))}
+              {selectedGraphNodeId != null && nodesById.get(selectedGraphNodeId) ? (() => {
+                const sn = nodesById.get(selectedGraphNodeId)!;
+                return (
+                  <div className="absolute right-3 top-3 z-10 w-72 max-w-[85%] rounded-panel border border-border bg-surface/95 p-3 shadow-lg md:right-4 md:top-4">
+                    <h3 className="text-sm font-semibold text-ink">Selected Lesson</h3>
+                    <p className="mt-2 text-sm text-ink">{sn.text}</p>
+                    <p className="mt-2 text-xs text-ink-muted">{sn.context || "No context"}</p>
+                    <p className="mt-2 text-xs text-ink-faint">Date: {formatLongDate(sn.created_at)}</p>
+                    {(sn.source_type || sn.source_ref) ? (
+                      <p className="mt-2 text-xs text-ink-faint">
+                        Source: {sn.source_type ?? ""}
+                        {sn.source_ref ? ` — ${sn.source_ref}` : ""}
+                      </p>
+                    ) : null}
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {sn.tags.map((tag) => (
+                        <span
+                          key={`${sn.id}-${tag}`}
+                          className="rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-ink-muted"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedGraphNodeId(null)}
+                      className="mt-3 rounded-full border border-border px-3 py-1.5 text-xs text-ink-muted transition hover:border-border-strong"
+                    >
+                      Close
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedNode(null)}
-                    className="mt-3 rounded-full border border-border px-3 py-1.5 text-xs text-ink-muted transition hover:border-border-strong"
-                  >
-                    Close
-                  </button>
-                </div>
-              ) : null}
+                );
+              })() : null}
 
               {!positionedGraphData.nodes.length ? (
                 <div className="absolute inset-0 flex items-center justify-center p-6 text-center text-sm text-ink-muted">
