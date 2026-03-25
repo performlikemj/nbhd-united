@@ -12,7 +12,7 @@ type ViewMode = "constellation" | "list";
 const VIEW_MODE_KEY = "constellationViewMode";
 const MOBILE_BREAKPOINT = 768;
 const CLUSTER_THRESHOLD = 5;
-const NODE_PADDING = 60;
+const NODE_PADDING = 80;
 
 function formatDate(dateString: string): string {
   const date = new Date(dateString);
@@ -225,6 +225,12 @@ export default function ConstellationPage() {
     return map;
   }, [positionedNodes]);
 
+  const allTags = useMemo(() => {
+    const tags = new Set<string>();
+    data.nodes.forEach((n) => n.tags.forEach((t) => tags.add(t)));
+    return Array.from(tags).sort();
+  }, [data.nodes]);
+
   const selectedNode = useMemo(() => {
     if (selectedNodeId == null) return null;
     return nodesById.get(selectedNodeId) ?? null;
@@ -383,136 +389,96 @@ export default function ConstellationPage() {
                   </div>
                 </div>
               ) : (
-                /* SVG Constellation View */
+                /* SVG Constellation View — clean container, detail renders below */
                 <div
                   ref={containerRef}
-                  className="relative overflow-hidden rounded-panel border border-border bg-surface"
+                  className="relative rounded-panel border border-border bg-surface"
                   style={{ height: containerHeight }}
                 >
-                  {/* Wait for container to be measured before rendering nodes */}
-                  {containerSize.width === 0 ? null : <>
-                  {/* Connection lines (SVG layer) */}
-                  <svg className="pointer-events-none absolute inset-0 h-full w-full" style={{ zIndex: 0 }}>
-                    {allEdges.map((edge, i) => {
-                      const sourcePos = nodePositions.get(Number(edge.source));
-                      const targetPos = nodePositions.get(Number(edge.target));
-                      if (!sourcePos || !targetPos) return null;
+                  {containerSize.width > 0 ? (
+                    <>
+                      {/* Connection lines */}
+                      <svg className="pointer-events-none absolute inset-0 h-full w-full">
+                        {allEdges.map((edge, i) => {
+                          const sourcePos = nodePositions.get(Number(edge.source));
+                          const targetPos = nodePositions.get(Number(edge.target));
+                          if (!sourcePos || !targetPos) return null;
+                          const sim = edge.similarity ?? 0;
+                          const stroke = sim >= 0.75 ? "rgba(95,186,175,0.7)" : sim >= 0.5 ? "rgba(95,186,175,0.35)" : "rgba(95,186,175,0.3)";
+                          const strokeWidth = sim >= 0.75 ? 2 : 1;
+                          const strokeDasharray = sim < 0.5 ? "4 6" : undefined;
+                          return (
+                            <line key={`${edge.source}-${edge.target}-${i}`}
+                              x1={sourcePos.px} y1={sourcePos.py} x2={targetPos.px} y2={targetPos.py}
+                              stroke={stroke} strokeWidth={strokeWidth} strokeDasharray={strokeDasharray}
+                            />
+                          );
+                        })}
+                      </svg>
 
-                      const sim = edge.similarity ?? 0;
-                      let stroke: string;
-                      let strokeWidth: number;
-                      let strokeDasharray: string | undefined;
-
-                      if (sim >= 0.75) {
-                        stroke = "rgba(95, 186, 175, 0.7)";
-                        strokeWidth = 2;
-                      } else if (sim >= 0.5) {
-                        stroke = "rgba(95, 186, 175, 0.35)";
-                        strokeWidth = 1;
-                      } else {
-                        stroke = "rgba(95, 186, 175, 0.3)";
-                        strokeWidth = 1;
-                        strokeDasharray = "4 6";
-                      }
-
-                      return (
-                        <line
-                          key={`${edge.source}-${edge.target}-${i}`}
-                          x1={sourcePos.px}
-                          y1={sourcePos.py}
-                          x2={targetPos.px}
-                          y2={targetPos.py}
-                          stroke={stroke}
-                          strokeWidth={strokeWidth}
-                          strokeDasharray={strokeDasharray}
-                        />
-                      );
-                    })}
-                  </svg>
-
-                  {/* Node layer */}
-                  {positionedNodes.map((node) => {
-                    const isSelected = selectedNodeId === node.id;
-                    const color = clusterNodeColor(node.cluster_id);
-
-                    return (
-                      <button
-                        key={node.id}
-                        type="button"
-                        className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1.5 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2"
-                        style={{ left: node.px, top: node.py, zIndex: isSelected ? 3 : 1 }}
-                        aria-label={`Lesson: ${lessonTitle(node)}`}
-                        onClick={() => setSelectedNodeId((prev) => (prev === node.id ? null : node.id))}
-                      >
-                        <div
-                          className={`h-9 w-9 rounded-full transition-transform duration-200 group-hover:scale-125 ${
-                            isSelected ? "scale-125 ring-2 ring-accent ring-offset-2" : ""
-                          }`}
-                          style={{
-                            backgroundColor: color,
-                            boxShadow: `0 0 16px 5px ${color}40`,
-                            animation: "constellation-breathe 4s ease-in-out infinite",
-                            animationDelay: `${(node.id * 700) % 4000}ms`,
-                          }}
-                        />
-                        <span className="max-w-[180px] truncate rounded-full bg-surface/92 px-2.5 py-0.5 text-center text-xs font-medium text-ink-muted shadow-sm">
-                          {lessonTitle(node)}
-                        </span>
-                      </button>
-                    );
-                  })}
-
-                  {/* Detail panel — positioned near selected node */}
-                  {selectedNode && nodePositions.get(selectedNode.id) ? (() => {
-                    const pos = nodePositions.get(selectedNode.id)!;
-                    const rightHalf = pos.px > containerSize.width / 2;
-                    const panelStyle: React.CSSProperties = {
-                      position: "absolute",
-                      top: Math.max(8, Math.min(pos.py - 60, containerHeight - 240)),
-                      zIndex: 10,
-                      ...(rightHalf
-                        ? { right: Math.max(8, containerSize.width - pos.px + 30) }
-                        : { left: Math.max(8, pos.px + 30) }),
-                    };
-
-                    return (
-                      <div
-                        className="w-64 rounded-panel border border-border bg-surface/95 p-3 shadow-lg animate-reveal"
-                        style={panelStyle}
-                      >
-                        <p className="text-xs font-semibold uppercase tracking-wide text-signal-text">
-                          {lessonTitle(selectedNode)}
-                        </p>
-                        <p className="mt-1.5 text-sm leading-relaxed text-ink">{selectedNode.text}</p>
-                        <p className="mt-2 text-xs text-ink-muted">
-                          {selectedNode.context || `Source: ${selectedNode.source_type || "journal"}`}
-                        </p>
-                        <p className="mt-1 text-xs text-ink-faint">{formatDate(selectedNode.created_at)}</p>
-                        {selectedNode.tags.length > 0 ? (
-                          <div className="mt-2 flex flex-wrap gap-1">
-                            {selectedNode.tags.map((tag) => (
-                              <span
-                                key={`${selectedNode.id}-${tag}`}
-                                className="rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-ink-muted"
-                              >
-                                {tag}
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
-                        <button
-                          type="button"
-                          onClick={() => setSelectedNodeId(null)}
-                          className="mt-2 text-xs text-ink-faint hover:text-ink-muted"
-                        >
-                          Close
-                        </button>
-                      </div>
-                    );
-                  })() : null}
-                  </>}
+                      {/* Nodes */}
+                      {positionedNodes.map((node) => {
+                        const isSelected = selectedNodeId === node.id;
+                        const color = clusterNodeColor(node.cluster_id);
+                        return (
+                          <button key={node.id} type="button"
+                            className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1.5 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2"
+                            style={{ left: node.px, top: node.py, zIndex: isSelected ? 3 : 1 }}
+                            aria-label={`Lesson: ${lessonTitle(node)}`}
+                            onClick={() => setSelectedNodeId((prev) => (prev === node.id ? null : node.id))}
+                          >
+                            <div
+                              className={`h-9 w-9 rounded-full transition-transform duration-200 group-hover:scale-110 ${
+                                isSelected ? "scale-125 ring-2 ring-accent ring-offset-2" : ""
+                              }`}
+                              style={{
+                                backgroundColor: color,
+                                boxShadow: `0 0 16px 5px ${color}40`,
+                                animation: "constellation-breathe 4s ease-in-out infinite",
+                                animationDelay: `${(node.id * 700) % 4000}ms`,
+                              }}
+                            />
+                            <span className="max-w-[180px] truncate rounded-full bg-surface/95 px-2.5 py-0.5 text-center text-xs font-medium text-ink-muted shadow-sm">
+                              {lessonTitle(node)}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </>
+                  ) : null}
                 </div>
               )}
+
+              {/* Detail panel — below constellation when a node is selected */}
+              {selectedNode ? (
+                <div className="animate-reveal mt-3 rounded-panel border border-accent/20 bg-surface p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-signal-text">
+                        {lessonTitle(selectedNode)}
+                      </p>
+                      <p className="mt-1.5 text-sm leading-relaxed text-ink">{selectedNode.text}</p>
+                      <p className="mt-2 text-xs text-ink-muted">
+                        {selectedNode.context || `Source: ${selectedNode.source_type || "journal"}`}
+                      </p>
+                      <p className="mt-1 text-xs text-ink-faint">{formatDate(selectedNode.created_at)}</p>
+                      {selectedNode.tags.length > 0 ? (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {selectedNode.tags.map((tag) => (
+                            <span key={`${selectedNode.id}-${tag}`}
+                              className="rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-ink-muted"
+                            >{tag}</span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                    <button type="button" onClick={() => setSelectedNodeId(null)}
+                      className="shrink-0 rounded-full p-1 text-ink-faint hover:text-ink-muted"
+                      aria-label="Close detail"
+                    >{"\u00D7"}</button>
+                  </div>
+                </div>
+              ) : null}
             </>
           ) : (
             /* List View */
@@ -641,39 +607,40 @@ export default function ConstellationPage() {
       </main>
 
       <aside className="space-y-4 min-w-0">
-        <SectionCard title="Filters" subtitle="Search and quick filters">
-          <label className="mb-3 block text-sm text-ink-muted">
-            <span className="mb-2 block text-xs uppercase tracking-[0.1em] text-ink-faint">Search lessons</span>
-            <input
-              value={searchText}
-              onChange={(event) => setSearchText(event.target.value)}
-              placeholder="Filter by text or tag"
-              className="w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-            />
-          </label>
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-sm text-ink-muted">Pending approvals</span>
-            <Link href="/constellation/pending" className="inline-flex items-center rounded-full border border-border bg-accent/10 px-3 py-1 text-xs font-semibold text-accent">
-              {pendingCount} pending
-            </Link>
-          </div>
+        <SectionCard title="Tags" subtitle="Filter by topic">
+          {allTags.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {allTags.map((tag) => (
+                <button
+                  key={tag}
+                  type="button"
+                  onClick={() => setSearchText((prev) => prev === tag ? "" : tag)}
+                  className={`rounded-full px-2.5 py-1 text-xs transition ${
+                    searchText === tag
+                      ? "bg-accent text-white"
+                      : "border border-border text-ink-muted hover:border-border-strong hover:text-ink"
+                  }`}
+                >
+                  {tag}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-ink-muted">Tags will appear as lessons are added.</p>
+          )}
+          {pendingCount > 0 ? (
+            <div className="mt-3 flex items-center justify-between gap-2 border-t border-border pt-3">
+              <span className="text-sm text-ink-muted">Pending</span>
+              <Link href="/constellation/pending" className="inline-flex items-center rounded-full border border-border bg-accent/10 px-3 py-1 text-xs font-semibold text-accent">
+                {pendingCount} waiting
+              </Link>
+            </div>
+          ) : null}
         </SectionCard>
 
-        <SectionCard
-          title="Cluster List"
-          subtitle={isSparse ? "Clusters form as your constellation grows" : "Quick filter by cluster"}
-        >
-          {isSparse ? (
-            <div className="flex items-center gap-3">
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: "var(--signal)", opacity: 0.15 }}>
-                <span style={{ color: "var(--signal-text)" }} className="text-sm" aria-hidden="true">{"\u2726"}</span>
-              </span>
-              <div>
-                <p className="text-sm text-ink">{totalLessonCount} of {CLUSTER_THRESHOLD} lessons</p>
-                <p className="text-xs text-ink-muted">Patterns emerge at {CLUSTER_THRESHOLD}</p>
-              </div>
-            </div>
-          ) : clustersForSidebar.length ? (
+        {/* Cluster list — only show when clusters exist */}
+        {!isSparse && clustersForSidebar.length > 0 ? (
+          <SectionCard title="Clusters" subtitle="Filter by cluster">
             <div className="space-y-2">
               {clustersForSidebar.map((cluster) => (
                 <button
@@ -692,10 +659,8 @@ export default function ConstellationPage() {
                 </button>
               ))}
             </div>
-          ) : (
-            <p className="text-sm text-ink-muted">No clusters yet.</p>
-          )}
-        </SectionCard>
+          </SectionCard>
+        ) : null}
       </aside>
 
       {/* Breathing animation keyframes */}
