@@ -46,9 +46,12 @@ class ConstellationNodeSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "text",
+            "context",
             "tags",
             "cluster_id",
             "cluster_label",
+            "source_type",
+            "source_ref",
             "x",
             "y",
             "created_at",

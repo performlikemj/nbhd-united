@@ -393,9 +393,12 @@ export interface Lesson {
 export interface ConstellationNode {
   id: number;
   text: string;
+  context?: string;
   tags: string[];
   cluster_id: number | null;
   cluster_label: string;
+  source_type?: string;
+  source_ref?: string;
   x: number | null;
   y: number | null;
   created_at: string;

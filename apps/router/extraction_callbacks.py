@@ -61,9 +61,11 @@ def _approve_lesson(pending: PendingExtraction) -> tuple[str, str | None]:
 
     Returns (user_message, lesson_id_str).
     """
+    context = f"Extracted from daily note — {pending.source_date.isoformat() if pending.source_date else 'recent entries'}"
     lesson = Lesson.objects.create(
         tenant=pending.tenant,
         text=pending.text,
+        context=context,
         tags=pending.tags,
         source_type="journal",
         source_ref=str(pending.source_date or date.today()),
