@@ -154,12 +154,16 @@ class LessonViewSet(viewsets.ModelViewSet):
                 strong_pairs.add((edge.from_lesson_id, edge.to_lesson_id))
                 strong_pairs.add((edge.to_lesson_id, edge.from_lesson_id))
 
+            # Lower threshold when few lessons — always show connections
+            # so users understand the concept. As lessons grow, raise the bar.
+            min_sim = 0.1 if len(lessons_with_embeddings) <= 5 else 0.3
+
             for i in range(len(lessons_with_embeddings)):
                 for j in range(i + 1, len(lessons_with_embeddings)):
                     sim = float(sim_matrix[i, j])
                     lid_i = lessons_with_embeddings[i].id
                     lid_j = lessons_with_embeddings[j].id
-                    if sim >= 0.3 and (lid_i, lid_j) not in strong_pairs:
+                    if sim >= min_sim and (lid_i, lid_j) not in strong_pairs:
                         affinity_edges.append({
                             "source": lid_i,
                             "target": lid_j,
