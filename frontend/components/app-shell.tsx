@@ -9,6 +9,7 @@ import { logout } from "@/lib/api";
 import { clearTokens, isLoggedIn } from "@/lib/auth";
 import { useMeQuery, useTenantQuery } from "@/lib/queries";
 import { BrandLogo } from "@/components/brand-logo";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { SiteFooter } from "@/components/site-footer";
 import { useTheme } from "@/components/theme-provider";
 
@@ -304,7 +305,16 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <PlatformBudgetBanner />
 
-      <main id="main-content" className="mx-auto w-full max-w-6xl flex-1 flex flex-col min-h-0 px-4 py-8 sm:px-6">{children}</main>
+      <main id="main-content" className="mx-auto w-full max-w-6xl flex-1 flex flex-col min-h-0 px-4 py-8 sm:px-6">
+        <ErrorBoundary fallback={
+          <div className="rounded-panel border border-rose-border bg-rose-bg p-6 text-center">
+            <p className="text-sm font-medium text-rose-text">Something went wrong loading this page.</p>
+            <a href="/journal" className="mt-2 inline-block text-sm text-accent underline">Go to Journal</a>
+          </div>
+        }>
+          {children}
+        </ErrorBoundary>
+      </main>
       <SiteFooter />
     </div>
   );

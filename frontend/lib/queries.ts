@@ -90,6 +90,7 @@ export function useMeQuery() {
     queryFn: fetchMe,
     staleTime: 5 * 60_000,
     retry: false,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -117,6 +118,7 @@ export function useDashboardQuery() {
     queryKey: ["dashboard"],
     queryFn: fetchDashboard,
     staleTime: 30_000,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -125,6 +127,7 @@ export function useUsageHistoryQuery() {
     queryKey: ["usage-history"],
     queryFn: fetchUsageHistory,
     staleTime: 30_000,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -133,6 +136,7 @@ export function useHorizonsQuery() {
     queryKey: ["horizons"],
     queryFn: fetchHorizons,
     staleTime: 60_000,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -161,6 +165,7 @@ export function useUsageSummaryQuery() {
     queryKey: ["usage-summary"],
     queryFn: fetchUsageSummary,
     staleTime: 30_000,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -169,6 +174,7 @@ export function useTransparencyQuery() {
     queryKey: ["usage-transparency"],
     queryFn: fetchTransparency,
     staleTime: 5 * 60_000,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -207,6 +213,7 @@ export function useIntegrationsQuery() {
     queryKey: ["integrations"],
     queryFn: fetchIntegrations,
     staleTime: 5 * 60_000,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -254,7 +261,7 @@ export function useTelegramStatusQuery(enabled = true) {
   return useQuery({
     queryKey: ["telegram-status"],
     queryFn: fetchTelegramStatus,
-    enabled,
+    enabled: isLoggedIn() && enabled,
     refetchInterval: enabled
       ? (query) => (query.state.status === "error" ? false : 3000)
       : false,
@@ -283,7 +290,7 @@ export function useLineStatusQuery(enabled = true) {
   return useQuery({
     queryKey: ["line-status"],
     queryFn: fetchLineStatus,
-    enabled,
+    enabled: isLoggedIn() && enabled,
     refetchInterval: enabled
       ? (query) => (query.state.status === "error" ? false : 3000)
       : false,
@@ -323,6 +330,7 @@ export function usePersonasQuery() {
     queryKey: ["personas"],
     queryFn: fetchPersonas,
     staleTime: Infinity,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -331,6 +339,7 @@ export function usePreferencesQuery() {
     queryKey: ["preferences"],
     queryFn: fetchPreferences,
     staleTime: 5 * 60_000,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -348,6 +357,7 @@ export function useRefreshConfigStatusQuery() {
   return useQuery<RefreshConfigStatus>({
     queryKey: ["refresh-config-status"],
     queryFn: fetchRefreshConfigStatus,
+    enabled: isLoggedIn(),
     // Poll every 15s when an update is pending so the UI reflects when it's applied.
     // Fall back to every 60s otherwise (catches cron-triggered pending bumps).
     refetchInterval: (query) => {
@@ -372,7 +382,7 @@ export function useProvisioningStatusQuery(enabled = true) {
   return useQuery<ProvisioningStatus>({
     queryKey: ["provisioning-status"],
     queryFn: fetchProvisioningStatus,
-    enabled,
+    enabled: isLoggedIn() && enabled,
     refetchInterval: (query) => (query.state.data?.ready ? false : 5000),
   });
 }
@@ -394,6 +404,7 @@ export function useAutomationsQuery() {
   return useQuery({
     queryKey: ["automations"],
     queryFn: fetchAutomations,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -402,6 +413,7 @@ export function useAutomationRunsQuery(automationId?: string) {
     queryKey: ["automation-runs", automationId ?? "all"],
     queryFn: () =>
       automationId ? fetchAutomationRunsForAutomation(automationId) : fetchAutomationRuns(),
+    enabled: isLoggedIn(),
   });
 }
 
@@ -477,6 +489,7 @@ export function useJournalEntriesQuery() {
     queryKey: ["journal-entries"],
     queryFn: () => fetchJournalEntries(),
     staleTime: 30_000,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -520,6 +533,7 @@ export function useNoteTemplatesQuery() {
     queryKey: ["templates"],
     queryFn: fetchTemplates,
     staleTime: Infinity,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -559,6 +573,7 @@ export function useWeeklyReviewsQuery() {
   return useQuery({
     queryKey: ["weekly-reviews"],
     queryFn: fetchWeeklyReviews,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -600,7 +615,7 @@ export function useDocumentQuery(kind: string, slug: string) {
   return useQuery({
     queryKey: ["document", kind, slug],
     queryFn: () => fetchDocument(kind, slug),
-    enabled: !!kind && !!slug,
+    enabled: isLoggedIn() && !!kind && !!slug,
     refetchInterval: 30_000,
   });
 }
@@ -610,6 +625,7 @@ export function useDocumentsQuery(kind?: string) {
     queryKey: ["documents", kind ?? "all"],
     queryFn: () => fetchDocuments(kind),
     staleTime: 30_000,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -619,6 +635,7 @@ export function useSidebarTreeQuery() {
     queryFn: fetchSidebarTree,
     staleTime: 30_000,
     refetchInterval: 60_000,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -687,6 +704,7 @@ export function useLLMConfigQuery() {
     queryKey: ["llm-config"],
     queryFn: getLLMConfig,
     staleTime: 5 * 60_000,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -716,6 +734,7 @@ export function useCronJobsQuery() {
     queryKey: ["cron-jobs"],
     queryFn: fetchCronJobs,
     staleTime: 30_000,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -798,6 +817,7 @@ export function useWorkingHoursQuery() {
     queryKey: ["working-hours"],
     queryFn: fetchWorkingHours,
     staleTime: 5 * 60_000,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -817,6 +837,7 @@ export function useFinanceDashboardQuery() {
     queryKey: ["finance-dashboard"],
     queryFn: fetchFinanceDashboard,
     staleTime: 30_000,
+    enabled: isLoggedIn(),
   });
 }
 
