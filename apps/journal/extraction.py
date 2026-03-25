@@ -47,8 +47,12 @@ Return ONLY valid JSON matching this schema:
 
 Rules:
 - Only extract things EXPLICITLY stated, never inferred.
-- Lessons: insights, decisions, surprises, things that changed the user's approach.
-- context: 1 sentence describing where in the note this insight came from (which section, topic, or event).
+- Lessons: actionable takeaways the user can apply next time a similar situation arises.
+  Frame as advice to their future self — not what happened, but what to do differently.
+  Bad: "The PR photo was the wrong size (45x35cm instead of 40x30cm)"
+  Good: "Always verify exact photo dimensions for government documents before proceeding — Japanese photo machines offer non-standard sizes"
+  Each lesson should be useful when the assistant encounters a similar context later.
+- context: 1 sentence describing the situation that prompted this lesson.
 - Goals: things the user wants to build, ship, or achieve (multi-day/week scope).
 - Tasks: specific near-term action items with clear completion criteria.
 - Ignore small talk, status updates, routine questions.
