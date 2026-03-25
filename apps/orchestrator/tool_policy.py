@@ -40,9 +40,9 @@ DENIED_TOOLS: tuple[str, ...] = (
 STARTER_ALLOW: tuple[str, ...] = (
     "group:web",
     "group:plugins",
+    "group:automation",
     "tts",
     "image",
-    "cron",
 )
 
 # Premium tier adds browser automation and sandboxed exec capability.
