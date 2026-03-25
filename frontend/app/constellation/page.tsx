@@ -24,7 +24,6 @@ type ConstellationGraphData = {
 const VIEW_MODE_KEY = "constellationViewMode";
 const MOBILE_BREAKPOINT = 768;
 const CLUSTER_THRESHOLD = 5;
-const LOW_DENSITY_THRESHOLD = 10;
 
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
   ssr: false,
@@ -118,13 +117,13 @@ function defaultViewMode(): ViewMode {
 }
 
 export default function ConstellationPage() {
-  const [data, setData] = useState<ConstellationData>({ nodes: [], edges: [], clusters: [] });
+  const [data, setData] = useState<ConstellationData>({ nodes: [], edges: [], affinity_edges: [], clusters: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const [searchText, setSearchText] = useState("");
   const [selectedClusterId, setSelectedClusterId] = useState<number | null>(null);
-  const [hoveredNode, setHoveredNode] = useState<ConstellationGraphNode | null>(null);
+  const [, setHoveredNode] = useState<ConstellationGraphNode | null>(null);
   const [selectedNode, setSelectedNode] = useState<ConstellationGraphNode | null>(null);
   const [selectedCardNodeId, setSelectedCardNodeId] = useState<number | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
@@ -198,7 +197,6 @@ export default function ConstellationPage() {
 
   const totalLessonCount = data.nodes.length;
   const isSparse = totalLessonCount < CLUSTER_THRESHOLD;
-  const isLowDensity = totalLessonCount <= LOW_DENSITY_THRESHOLD;
 
   const filteredNodes = useMemo<ConstellationGraphNode[]>(() => {
     return data.nodes.filter((node) => {
@@ -215,13 +213,14 @@ export default function ConstellationPage() {
   }, [filteredNodes]);
 
   const filteredGraphData = useMemo<ConstellationGraphData>(() => {
+    const allEdges = [...data.edges, ...data.affinity_edges];
     return {
       nodes: filteredNodes,
-      links: data.edges.filter((edge) => {
+      links: allEdges.filter((edge) => {
         return filteredNodeIds.has(Number(edge.source)) && filteredNodeIds.has(Number(edge.target));
       }),
     };
-  }, [data.edges, filteredNodeIds, filteredNodes]);
+  }, [data.edges, data.affinity_edges, filteredNodeIds, filteredNodes]);
 
   const nodesById = useMemo(() => {
     const map = new Map<number, ConstellationGraphNode>();
@@ -314,52 +313,63 @@ export default function ConstellationPage() {
     return words.length < node.text.length ? words + "\u2026" : words;
   }, []);
 
-  // Pre-computed positions for sparse graphs — prevents nodes from flying apart
-  const sparseGraphData = useMemo<ConstellationGraphData>(() => {
-    if (!isLowDensity) return filteredGraphData;
+  // Graph data with semantic positions (from server PCA) or circular fallback
+  const positionedGraphData = useMemo<ConstellationGraphData>(() => {
+    const SCALE = 250;
+    const hasPositions = filteredNodes.some((n) => n.x != null && n.y != null);
     const count = filteredNodes.length;
-    if (count === 0) return filteredGraphData;
-    const radius = count === 1 ? 0 : 80;
-    return {
-      nodes: filteredNodes.map((node, i) => ({
+
+    const nodes = filteredNodes.map((node, i) => {
+      if (hasPositions && node.x != null && node.y != null) {
+        return { ...node, fx: node.x * SCALE, fy: node.y * SCALE };
+      }
+      // Circular fallback when positions not yet computed
+      const radius = count === 1 ? 0 : 80;
+      return {
         ...node,
         fx: radius * Math.cos((2 * Math.PI * i) / count - Math.PI / 2),
         fy: radius * Math.sin((2 * Math.PI * i) / count - Math.PI / 2),
-      })) as ConstellationGraphNode[],
-      links: filteredGraphData.links,
-    };
-  }, [filteredNodes, filteredGraphData, isLowDensity]);
+      };
+    }) as ConstellationGraphNode[];
 
-  // Graph rendering callback — styled nodes with pill labels
-  const lowDensityNodeCanvas = useCallback(
+    return { nodes, links: filteredGraphData.links };
+  }, [filteredNodes, filteredGraphData.links]);
+
+  // Unified node canvas renderer — breathing glow + pill labels
+  const nodeCanvasRenderer = useCallback(
     (node: { x?: number; y?: number }, ctx: CanvasRenderingContext2D, globalScale: number) => {
       const graphNode = node as ConstellationGraphNode & { x: number; y: number };
       const title = graphNode.tags.length > 0
         ? graphNode.tags.slice(0, 2).join(" / ")
         : graphNode.text.split(/\s+/).slice(0, 5).join(" ") + "\u2026";
       const fontSize = Math.max(11, 13 / globalScale);
-      const nodeR = 16;
+      const nodeR = 14;
       const color = clusterLabelColor(graphNode.cluster_id);
+      const nodeColor = color === "#7f8b9c" ? "#5fbaaf" : color;
 
-      // Outer glow ring
+      // Breathing glow — unique phase per node
+      const breathe = 0.5 + 0.5 * Math.sin(Date.now() / 2000 + graphNode.id * 0.7);
+      const glowAlpha = 0.06 + 0.1 * breathe;
+
+      // Outer glow ring (breathing)
       ctx.beginPath();
-      ctx.arc(graphNode.x, graphNode.y, nodeR + 5, 0, 2 * Math.PI);
-      ctx.fillStyle = "rgba(95, 186, 175, 0.12)";
+      ctx.arc(graphNode.x, graphNode.y, nodeR + 6 + breathe * 3, 0, 2 * Math.PI);
+      ctx.fillStyle = `rgba(95, 186, 175, ${glowAlpha})`;
       ctx.fill();
 
-      // Node circle — use signal color for warmth
+      // Node circle
       ctx.beginPath();
       ctx.arc(graphNode.x, graphNode.y, nodeR, 0, 2 * Math.PI);
-      ctx.fillStyle = color === "#7f8b9c" ? "#5fbaaf" : color;
+      ctx.fillStyle = nodeColor;
       ctx.fill();
 
-      // Inner highlight
+      // Inner highlight for depth
       ctx.beginPath();
-      ctx.arc(graphNode.x - 3, graphNode.y - 3, 5, 0, 2 * Math.PI);
-      ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+      ctx.arc(graphNode.x - 3, graphNode.y - 3, 4, 0, 2 * Math.PI);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.3)";
       ctx.fill();
 
-      // Label pill
+      // Label pill background
       ctx.font = `500 ${fontSize}px "Plus Jakarta Sans", sans-serif`;
       const textWidth = ctx.measureText(title).width;
       const padX = 10;
@@ -371,12 +381,13 @@ export default function ConstellationPage() {
 
       ctx.beginPath();
       ctx.roundRect(pillX, pillY, pillW, pillH, pillH / 2);
-      ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+      ctx.fillStyle = "rgba(255, 255, 255, 0.93)";
       ctx.fill();
       ctx.strokeStyle = "rgba(18, 35, 44, 0.08)";
       ctx.lineWidth = 0.5;
       ctx.stroke();
 
+      // Label text
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillStyle = "#12232c";
@@ -384,6 +395,20 @@ export default function ConstellationPage() {
     },
     [],
   );
+
+  // Trigger continuous re-render for breathing animation
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const graphInstanceRef = useRef<any>(null);
+  useEffect(() => {
+    if (viewMode !== "graph") return;
+    let frameId: number;
+    const animate = () => {
+      graphInstanceRef.current?.refresh?.();
+      frameId = requestAnimationFrame(animate);
+    };
+    frameId = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(frameId);
+  }, [viewMode]);
 
   if (error) {
     return (
@@ -442,46 +467,51 @@ export default function ConstellationPage() {
           </div>
 
           {viewMode === "graph" ? (
-            <div className={`relative rounded-panel border border-border bg-surface ${
-              isLowDensity ? "h-[40vh] min-h-[280px]" : "h-[64vh] min-h-[360px]"
-            }`}>
+            <div className="relative h-[50vh] min-h-[320px] rounded-panel border border-border bg-surface">
               <ForceGraph2D
-                graphData={(isLowDensity ? sparseGraphData : filteredGraphData) as unknown as ConstellationGraphData}
+                ref={graphInstanceRef}
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                graphData={positionedGraphData as any}
                 nodeId="id"
-                nodeLabel={isLowDensity ? undefined : (node) => (node as ConstellationGraphNode).text}
-                nodeColor={(node) => {
-                  const color = clusterLabelColor((node as ConstellationGraphNode).cluster_id);
-                  return color === "#7f8b9c" ? "#5fbaaf" : color;
+                nodeCanvasObject={nodeCanvasRenderer}
+                nodeCanvasObjectMode={() => "replace" as const}
+                nodePointerAreaPaint={(node, color, ctx) => {
+                  const r = 14;
+                  ctx.fillStyle = color;
+                  ctx.beginPath();
+                  ctx.arc((node as { x: number }).x, (node as { y: number }).y, r, 0, 2 * Math.PI);
+                  ctx.fill();
                 }}
-                nodeVal={isLowDensity ? 4 : 1}
-                nodeRelSize={isLowDensity ? 16 : 7}
-                nodeCanvasObject={isLowDensity ? lowDensityNodeCanvas : undefined}
-                nodeCanvasObjectMode={isLowDensity ? (() => "replace" as const) : undefined}
                 backgroundColor="transparent"
                 linkCurvature={0}
                 linkDirectionalArrowLength={0}
-                linkWidth={() => 1}
+                linkWidth={(link) => {
+                  const sim = Number((link as ConstellationEdge).similarity ?? 0);
+                  if (sim >= 0.75) return 2;
+                  if (sim >= 0.5) return 1;
+                  return 0.5;
+                }}
                 linkColor={(link) => {
-                  const similarity = Number((link as { similarity?: number }).similarity ?? 0);
-                  const opacity = Math.max(0.08, Math.min(0.9, Number(similarity) || 0.2));
-                  return `rgba(120, 130, 142, ${opacity})`;
+                  const sim = Number((link as ConstellationEdge).similarity ?? 0);
+                  if (sim >= 0.75) return "rgba(95, 186, 175, 0.7)";
+                  if (sim >= 0.5) return "rgba(95, 186, 175, 0.35)";
+                  return "rgba(120, 130, 142, 0.12)";
+                }}
+                linkLineDash={(link) => {
+                  const sim = Number((link as ConstellationEdge).similarity ?? 0);
+                  return sim >= 0.5 ? null : [2, 4];
                 }}
                 onNodeClick={(node: unknown) => setSelectedNode(node as ConstellationGraphNode)}
                 onNodeHover={(node: unknown) =>
                   setHoveredNode((node as ConstellationGraphNode | null) ?? null)
                 }
-                cooldownTicks={isLowDensity ? 1 : 120}
+                cooldownTicks={0}
+                warmupTicks={0}
                 enableZoomInteraction
                 enableNodeDrag={false}
-                d3AlphaDecay={isLowDensity ? 1 : 0.025}
-                d3VelocityDecay={isLowDensity ? 1 : 0.32}
+                d3AlphaDecay={1}
+                d3VelocityDecay={1}
               />
-
-              {hoveredNode && !isLowDensity ? (
-                <div className="pointer-events-none absolute left-3 top-3 max-w-sm rounded-panel border border-border bg-surface/95 px-3 py-2 text-sm text-ink shadow-lg">
-                  {hoveredNode.text}
-                </div>
-              ) : null}
 
               {selectedNode ? (
                 <div className="absolute right-3 top-3 z-10 w-72 max-w-[85%] rounded-panel border border-border bg-surface/95 p-3 shadow-lg md:right-4 md:top-4">
@@ -515,7 +545,7 @@ export default function ConstellationPage() {
                 </div>
               ) : null}
 
-              {!filteredGraphData.nodes.length ? (
+              {!positionedGraphData.nodes.length ? (
                 <div className="absolute inset-0 flex items-center justify-center p-6 text-center text-sm text-ink-muted">
                   No approved lessons match your current search yet.
                 </div>

@@ -579,7 +579,10 @@ export function dismissLesson(id: number): Promise<Lesson> {
 }
 
 export function fetchConstellation(): Promise<ConstellationData> {
-  return apiFetch<ConstellationData>("/api/v1/lessons/constellation/");
+  return apiFetch<ConstellationData>("/api/v1/lessons/constellation/").then((data) => ({
+    ...data,
+    affinity_edges: data.affinity_edges ?? [],
+  }));
 }
 
 
