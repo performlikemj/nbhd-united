@@ -49,9 +49,6 @@ async function refreshAccessToken(): Promise<string> {
 
   if (!response.ok) {
     clearTokens();
-    if (typeof window !== "undefined") {
-      window.location.href = "/login";
-    }
     throw new Error("Session expired. Please sign in again.");
   }
 
@@ -92,7 +89,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
       });
     } catch {
       refreshPromise = null;
-      throw new Error("Session expired. Please sign in again.");
+      // Fall through — response is still the original 401
     }
   }
 
