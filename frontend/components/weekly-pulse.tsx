@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { stripMarkdown } from "@/lib/format";
 import { HorizonsWeeklyDocument, HorizonsWeeklyPulse } from "@/lib/types";
 
 function formatWeekRange(start: string, end: string): string {
@@ -14,17 +15,6 @@ function formatDate(dateStr: string): string {
   const d = new Date(dateStr);
   if (Number.isNaN(d.getTime())) return dateStr;
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function stripMarkdown(text: string): string {
-  return text
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/\*\*(.+?)\*\*/g, "$1")
-    .replace(/\*(.+?)\*/g, "$1")
-    .replace(/^[-*]\s+/gm, "")
-    .replace(/\n{2,}/g, " ")
-    .replace(/\n/g, " ")
-    .trim();
 }
 
 const RATING_CONFIG: Record<string, { emoji: string; bg: string }> = {

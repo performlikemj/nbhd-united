@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { stripMarkdown } from "@/lib/format";
 import { HorizonsGoal } from "@/lib/types";
 
 function formatDate(dateStr: string): string {
@@ -12,25 +13,11 @@ function formatDate(dateStr: string): string {
   });
 }
 
-function stripMarkdown(text: string): string {
-  return text
-    .replace(/^#{1,6}\s+/gm, "")        // headings
-    .replace(/\*\*(.+?)\*\*/g, "$1")     // bold
-    .replace(/\*(.+?)\*/g, "$1")         // italic
-    .replace(/_(.+?)_/g, "$1")           // italic alt
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // links
-    .replace(/^[-*]\s+/gm, "")           // list items
-    .replace(/^>\s+/gm, "")             // blockquotes
-    .replace(/`([^`]+)`/g, "$1")         // inline code
-    .replace(/\n{2,}/g, " ")             // collapse blank lines
-    .replace(/\n/g, " ")                 // remaining newlines
-    .trim();
-}
-
 function extractDisplayTitle(goal: HorizonsGoal): string {
   if (goal.title && goal.title.toLowerCase() !== "goals") {
     return goal.title;
   }
+  // Look for the first ### heading in the preview
   const match = goal.preview.match(/###\s+(.+)/);
   if (match) {
     return match[1].replace(/\*\*/g, "").trim();
@@ -38,9 +25,30 @@ function extractDisplayTitle(goal: HorizonsGoal): string {
   return goal.title || "Untitled Goal";
 }
 
+function extractGoalPreview(preview: string): string {
+  // Remove document-level headings (# Goals, ## Active, ## Completed)
+  let text = preview
+    .replace(/^#\s+Goals?\s*$/gm, "")
+    .replace(/^##\s+(Active|Completed)\s*$/gm, "")
+    .trim();
+
+  // Try to extract just the first goal section (up to next ### or end)
+  const goalMatch = text.match(/###\s+.+?\n([\s\S]*?)(?=###\s|$)/);
+  if (goalMatch) {
+    text = goalMatch[1];
+  }
+
+  // Remove metadata lines (Added:, Status:, Target:, Why:)
+  text = text
+    .replace(/^-\s*(Added|Status|Target|Why):.*$/gm, "")
+    .trim();
+
+  return stripMarkdown(text);
+}
+
 export function GoalCard({ goal }: { goal: HorizonsGoal }) {
   const displayTitle = extractDisplayTitle(goal);
-  const cleanPreview = stripMarkdown(goal.preview);
+  const cleanPreview = extractGoalPreview(goal.preview);
 
   return (
     <Link
