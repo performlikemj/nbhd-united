@@ -601,11 +601,11 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                     "chatCompletions": {"enabled": True},
                 },
             },
-            # Override DEFAULT_GATEWAY_HTTP_TOOL_DENY — cron is blocked
-            # by default on the gateway HTTP endpoint. Allow it so Django
-            # can manage cron jobs via /tools/invoke.
+            # Override DEFAULT_GATEWAY_HTTP_TOOL_DENY — cron and gateway
+            # are blocked by default on the HTTP endpoint. Allow them so
+            # Django can manage cron jobs and trigger config hot-reloads.
             "tools": {
-                "allow": ["cron"],
+                "allow": ["cron", "gateway"],
             },
         },
 

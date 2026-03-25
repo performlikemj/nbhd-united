@@ -85,6 +85,17 @@ def apply_single_tenant_config_task(tenant_id: str) -> None:
         config_refreshed_at=tz.now(),
     )
 
+    # Trigger hot-reload — Azure Files (SMB) doesn't fire inotify events,
+    # so the container's file watcher won't detect the config change.
+    # gateway.reload reads the updated file and applies it without restart.
+    try:
+        from apps.cron.gateway_client import invoke_gateway_tool
+        tenant.refresh_from_db()
+        invoke_gateway_tool(tenant, "gateway.reload", {})
+        logger.info("Config hot-reloaded for tenant %s", str(tenant_id)[:8])
+    except Exception:
+        logger.warning("Config written but hot-reload failed for %s — will apply on next restart", str(tenant_id)[:8])
+
 
 def apply_single_tenant_image_task(tenant_id: str, desired_tag: str) -> None:
     """Update a single tenant's container image (enqueued by apply-pending-configs)."""
@@ -307,6 +318,38 @@ def nightly_extraction_task() -> dict:
     skipped = sum(1 for r in results if r.get("skipped"))
     logger.info("nightly_extraction: total=%d extracted=%d skipped=%d", len(results), extracted, skipped)
     return {"total": len(results), "extracted": extracted, "skipped": skipped}
+
+
+def nightly_task_propagation_task() -> dict:
+    """Propagate checked-off tasks from documents to the tasks document.
+
+    Iterates every active tenant and calls propagate_completions_for_tenant().
+    Each tenant is handled independently — one failure doesn't block the rest.
+    """
+    import logging
+
+    from apps.journal.propagation import propagate_completions_for_tenant
+    from apps.tenants.models import Tenant
+
+    logger = logging.getLogger(__name__)
+
+    tenants = Tenant.objects.filter(
+        status=Tenant.Status.ACTIVE,
+    ).select_related("user")
+
+    results = []
+    for tenant in tenants:
+        try:
+            result = propagate_completions_for_tenant(tenant)
+        except Exception:
+            logger.exception("nightly_task_propagation: failed for tenant %s", str(tenant.id)[:8])
+            result = {"skipped": "error"}
+        results.append({"tenant": str(tenant.id)[:8], **result})
+
+    propagated = sum(1 for r in results if not r.get("skipped"))
+    skipped = sum(1 for r in results if r.get("skipped"))
+    logger.info("nightly_task_propagation: total=%d propagated=%d skipped=%d", len(results), propagated, skipped)
+    return {"total": len(results), "propagated": propagated, "skipped": skipped}
 
 
 def dedup_cron_jobs_task(tenant_id: str) -> None:
