@@ -93,6 +93,18 @@ def handle_lesson_callback(update: dict, tenant: Tenant) -> JsonResponse:
         except Exception:
             logger.exception("Failed to process approved lesson %s", lesson_id)
 
+        # Re-cluster if enough lessons are approved
+        try:
+            from apps.lessons.clustering import refresh_constellation
+
+            approved_count = Lesson.objects.filter(
+                tenant=tenant, status="approved",
+            ).count()
+            if approved_count >= 5:
+                refresh_constellation(tenant)
+        except Exception:
+            logger.exception("Failed to refresh constellation for tenant %s", str(tenant.id)[:8])
+
         return _edit_and_answer(
             callback_id,
             chat_id,

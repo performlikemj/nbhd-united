@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { SectionCard } from "@/components/section-card";
 import { fetchConstellation, fetchPendingLessons } from "@/lib/api";
@@ -23,6 +23,8 @@ type ConstellationGraphData = {
 
 const VIEW_MODE_KEY = "constellationViewMode";
 const MOBILE_BREAKPOINT = 768;
+const CLUSTER_THRESHOLD = 5;
+const LOW_DENSITY_THRESHOLD = 10;
 
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
   ssr: false,
@@ -57,9 +59,12 @@ function clusterLabelColor(id: number | null): string {
   return `hsl(${hue}, 65%, 52%)`;
 }
 
-function getClusterLabel(clusterId: number | null, clusters: ConstellationData["clusters"]): string {
+function getClusterLabel(
+  clusterId: number | null,
+  clusters: ConstellationData["clusters"],
+): string {
   if (clusterId == null) {
-    return "Unclustered";
+    return clusters.length === 0 ? "Your Lessons" : "Unclustered";
   }
 
   const found = clusters.find((cluster) => cluster.id === clusterId);
@@ -126,6 +131,8 @@ export default function ConstellationPage() {
   const [viewMode, setViewMode] = useState<ViewMode>("cards");
   const [collapsedClusters, setCollapsedClusters] = useState<Set<string>>(new Set());
 
+  const userToggledRef = useRef(false);
+
   useEffect(() => {
     let mounted = true;
 
@@ -174,6 +181,13 @@ export default function ConstellationPage() {
     };
   }, []);
 
+  // Default to cards view when few lessons — graph is useless with 2-3 dots
+  useEffect(() => {
+    if (!loading && data.nodes.length < CLUSTER_THRESHOLD && !userToggledRef.current) {
+      setViewMode("cards");
+    }
+  }, [loading, data.nodes.length]);
+
   useEffect(() => {
     if (typeof window !== "undefined") {
       window.localStorage.setItem(VIEW_MODE_KEY, viewMode);
@@ -181,6 +195,10 @@ export default function ConstellationPage() {
   }, [viewMode]);
 
   const query = searchText.trim().toLowerCase();
+
+  const totalLessonCount = data.nodes.length;
+  const isSparse = totalLessonCount < CLUSTER_THRESHOLD;
+  const isLowDensity = totalLessonCount <= LOW_DENSITY_THRESHOLD;
 
   const filteredNodes = useMemo<ConstellationGraphNode[]>(() => {
     return data.nodes.filter((node) => {
@@ -257,7 +275,8 @@ export default function ConstellationPage() {
 
     const unclusteredCount = filteredNodes.filter((node) => node.cluster_id == null).length;
     if (unclusteredCount > 0) {
-      items.push({ id: null, label: "Unclustered", count: unclusteredCount });
+      const label = data.clusters.length === 0 ? "Your Lessons" : "Unclustered";
+      items.push({ id: null, label, count: unclusteredCount });
     }
 
     return items.filter((item) => item.count > 0);
@@ -282,8 +301,33 @@ export default function ConstellationPage() {
   );
 
   const handleSetViewMode = (mode: ViewMode) => {
+    userToggledRef.current = true;
     setViewMode(mode);
   };
+
+  // Graph rendering callback for low-density mode — show text labels on nodes
+  const lowDensityNodeCanvas = useCallback(
+    (node: { x?: number; y?: number }, ctx: CanvasRenderingContext2D, globalScale: number) => {
+      const graphNode = node as ConstellationGraphNode & { x: number; y: number };
+      const label = graphNode.text || "";
+      const truncated = label.length > 50 ? label.slice(0, 47) + "..." : label;
+      const fontSize = Math.max(10, 12 / globalScale);
+      const nodeR = 10;
+      const color = clusterLabelColor(graphNode.cluster_id);
+
+      ctx.beginPath();
+      ctx.arc(graphNode.x, graphNode.y, nodeR, 0, 2 * Math.PI);
+      ctx.fillStyle = color;
+      ctx.fill();
+
+      ctx.font = `${fontSize}px "Plus Jakarta Sans", sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillStyle = "#12232c";
+      ctx.fillText(truncated, graphNode.x, graphNode.y + nodeR + 4);
+    },
+    [],
+  );
 
   if (error) {
     return (
@@ -300,6 +344,8 @@ export default function ConstellationPage() {
       </SectionCard>
     );
   }
+
+  const progressPercent = Math.min(100, (totalLessonCount / CLUSTER_THRESHOLD) * 100);
 
   return (
     <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_320px]">
@@ -319,30 +365,39 @@ export default function ConstellationPage() {
               <button
                 type="button"
                 onClick={() => handleSetViewMode("graph")}
+                title={isSparse ? "Graph view works best with more lessons" : undefined}
                 className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
                   viewMode === "graph" ? "bg-accent text-white" : "text-ink-muted hover:text-ink"
-                }`}
+                } ${isSparse && viewMode !== "graph" ? "opacity-60" : ""}`}
               >
                 Graph
               </button>
             </div>
-            <Link
-              href="/constellation/pending"
-              className="rounded-full border border-border bg-accent/10 px-3 py-1.5 text-xs font-semibold text-accent"
-            >
-              {`You have ${pendingCount} lessons waiting for approval`}
-            </Link>
+            {pendingCount > 0 ? (
+              <Link
+                href="/constellation/pending"
+                className="rounded-full border border-border bg-accent/10 px-3 py-1.5 text-xs font-semibold text-accent"
+              >
+                {pendingCount === 1
+                  ? "1 lesson waiting for approval"
+                  : `${pendingCount} lessons waiting for approval`}
+              </Link>
+            ) : null}
           </div>
 
           {viewMode === "graph" ? (
-            <div className="relative h-[64vh] min-h-[360px] rounded-panel border border-border bg-surface">
+            <div className={`relative rounded-panel border border-border bg-surface ${
+              isLowDensity ? "h-[40vh] min-h-[280px]" : "h-[64vh] min-h-[360px]"
+            }`}>
               <ForceGraph2D
                 graphData={filteredGraphData as unknown as ConstellationGraphData}
                 nodeId="id"
-                nodeLabel={(node) => (node as ConstellationGraphNode).text}
+                nodeLabel={isLowDensity ? undefined : (node) => (node as ConstellationGraphNode).text}
                 nodeColor={(node) => clusterLabelColor((node as ConstellationGraphNode).cluster_id)}
-                nodeVal={1}
-                nodeRelSize={7}
+                nodeVal={isLowDensity ? 3 : 1}
+                nodeRelSize={isLowDensity ? 16 : 7}
+                nodeCanvasObject={isLowDensity ? lowDensityNodeCanvas : undefined}
+                nodeCanvasObjectMode={isLowDensity ? (() => "replace" as const) : undefined}
                 backgroundColor="transparent"
                 linkCurvature={0}
                 linkDirectionalArrowLength={0}
@@ -359,11 +414,11 @@ export default function ConstellationPage() {
                 cooldownTicks={120}
                 enableZoomInteraction
                 enableNodeDrag={false}
-                d3AlphaDecay={0.025}
-                d3VelocityDecay={0.32}
+                d3AlphaDecay={isLowDensity ? 0.04 : 0.025}
+                d3VelocityDecay={isLowDensity ? 0.4 : 0.32}
               />
 
-              {hoveredNode ? (
+              {hoveredNode && !isLowDensity ? (
                 <div className="pointer-events-none absolute left-3 top-3 max-w-sm rounded-panel border border-border bg-surface/95 px-3 py-2 text-sm text-ink shadow-lg">
                   {hoveredNode.text}
                 </div>
@@ -409,98 +464,211 @@ export default function ConstellationPage() {
             </div>
           ) : (
             <div className="space-y-4">
-              {clusterCards.length === 0 ? (
-                <p className="rounded-panel border border-border bg-surface p-4 text-sm text-ink-muted">No approved lessons match your current search yet.</p>
-              ) : (
-                clusterCards.map((cluster) => {
-                  const isCollapsed = isClusterCollapsed(cluster.id);
+              {/* Sparse onboarding: progress banner */}
+              {isSparse && totalLessonCount > 0 ? (
+                <div className="animate-reveal rounded-panel border border-border bg-surface p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm text-ink">
+                      <span className="font-semibold">{totalLessonCount}</span>
+                      {" of "}
+                      <span className="font-semibold">{CLUSTER_THRESHOLD}</span>
+                      {" lessons"}
+                    </p>
+                    <span className="text-xs text-ink-faint">Clusters form at {CLUSTER_THRESHOLD}</span>
+                  </div>
+                  <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-border">
+                    <div
+                      className="h-full rounded-full transition-all duration-500"
+                      style={{
+                        width: `${progressPercent}%`,
+                        backgroundColor: "var(--signal)",
+                      }}
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-ink-faint">
+                    Keep chatting with your assistant. Lessons appear here as they&apos;re discovered.
+                  </p>
+                </div>
+              ) : null}
 
-                  return (
-                    <section key={String(cluster.id)} className="space-y-2">
+              {/* Empty state */}
+              {totalLessonCount === 0 ? (
+                <div className="animate-reveal rounded-panel border border-border bg-surface p-6 text-center">
+                  <p className="text-lg font-display text-ink">Your constellation begins here</p>
+                  <p className="mt-2 text-sm text-ink-muted">
+                    As you chat with your assistant, lessons and insights will be discovered and added automatically.
+                  </p>
+                  {pendingCount > 0 ? (
+                    <Link
+                      href="/constellation/pending"
+                      className="mt-4 inline-block rounded-full border border-accent/20 bg-accent/5 px-4 py-2 text-sm font-medium text-accent"
+                    >
+                      Review {pendingCount} pending {pendingCount === 1 ? "lesson" : "lessons"}
+                    </Link>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {/* Sparse mode: flat cards without cluster grouping */}
+              {isSparse && filteredNodes.length > 0 ? (
+                <div className="space-y-3">
+                  {filteredNodes.map((node, index) => {
+                    const isExpanded = selectedCardNodeId === node.id;
+
+                    return (
                       <button
                         type="button"
-                        onClick={() => handleToggleCluster(cluster.id)}
-                        className="flex w-full items-center justify-between rounded-panel border border-border bg-surface px-3 py-2 text-left"
+                        key={node.id}
+                        onClick={() =>
+                          setSelectedCardNodeId((previous) => (previous === node.id ? null : node.id))
+                        }
+                        className={`animate-reveal w-full rounded-panel border border-border bg-surface p-3 text-left transition ${
+                          isExpanded ? "border-accent/60" : ""
+                        } active:bg-surface-hover`}
+                        style={{ animationDelay: `${index * 80}ms` }}
                       >
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span
-                            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-                            style={{ backgroundColor: clusterLabelColor(cluster.id) }}
-                          />
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold text-ink">{cluster.label}</p>
-                            <p className="text-xs text-ink-muted">{cluster.count} lessons</p>
-                          </div>
-                        </div>
-                        <span className="text-xs text-ink-muted">{isCollapsed ? "▸" : "▾"}</span>
-                      </button>
-
-                      {!isCollapsed ? (
-                        <div className="space-y-2">
-                          {cluster.nodes.map((node) => {
-                            const isExpanded = selectedCardNodeId === node.id;
-
-                            return (
-                              <button
-                                type="button"
-                                key={node.id}
-                                onClick={() =>
-                                  setSelectedCardNodeId((previous) => (previous === node.id ? null : node.id))
-                                }
-                                className={`w-full rounded-panel border border-border bg-surface p-3 text-left transition ${
-                                  isExpanded ? "border-accent/60" : ""
-                                } active:bg-surface-hover`}
+                        <p className="text-sm font-medium leading-relaxed text-ink">{node.text}</p>
+                        <p className="mt-1 text-xs text-ink-faint">{formatDate(node.created_at)}</p>
+                        {node.tags.length ? (
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {node.tags.map((tag) => (
+                              <span
+                                key={`${node.id}-${tag}`}
+                                className="rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-ink-muted"
                               >
-                                <p className="text-sm font-medium leading-relaxed text-ink">{node.text}</p>
-                                <p className="mt-1 text-xs text-ink-faint">{formatDate(node.created_at)}</p>
-                                {node.tags.length ? (
-                                  <div className="mt-2 flex flex-wrap gap-1">
-                                    {node.tags.map((tag) => (
-                                      <span
-                                        key={`${node.id}-${tag}`}
-                                        className="rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-ink-muted"
-                                      >
-                                        {tag}
-                                      </span>
-                                    ))}
-                                  </div>
-                                ) : null}
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
 
-                                {isExpanded ? (
-                                  <div className="mt-3 space-y-2 border-t border-border pt-2 text-left">
-                                    <p className="text-xs text-ink-muted">{node.context || "No context provided."}</p>
-                                    {(node.source_type || node.source_ref) ? (
-                                      <p className="text-xs text-ink-faint">
-                                        Source: {node.source_type ?? ""}
-                                        {node.source_ref ? ` — ${node.source_ref}` : ""}
-                                      </p>
-                                    ) : null}
-                                    <div>
-                                      <p className="text-xs font-semibold text-ink">Related lessons</p>
-                                      <div className="mt-1 flex flex-wrap gap-1">
-                                        {(selectedCardNode?.id === node.id ? relatedLessons : getRelatedLessons(node.id, data.edges, nodesById))
-                                          .slice(0, 4)
-                                          .map((relatedLesson) => (
-                                            <span
-                                              key={relatedLesson.id}
-                                              className="rounded-full border border-border px-2 py-0.5 text-[11px] text-ink-muted"
-                                            >
-                                              {relatedLesson.text}
-                                            </span>
-                                          ))}
+                        {isExpanded ? (
+                          <div className="mt-3 space-y-2 border-t border-border pt-2 text-left">
+                            <p className="text-xs text-ink-muted">{node.context || "No context provided."}</p>
+                            {(node.source_type || node.source_ref) ? (
+                              <p className="text-xs text-ink-faint">
+                                Source: {node.source_type ?? ""}
+                                {node.source_ref ? ` — ${node.source_ref}` : ""}
+                              </p>
+                            ) : null}
+                            <div>
+                              <p className="text-xs font-semibold text-ink">Related lessons</p>
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {(selectedCardNode?.id === node.id ? relatedLessons : getRelatedLessons(node.id, data.edges, nodesById))
+                                  .slice(0, 4)
+                                  .map((relatedLesson) => (
+                                    <span
+                                      key={relatedLesson.id}
+                                      className="rounded-full border border-border px-2 py-0.5 text-[11px] text-ink-muted"
+                                    >
+                                      {relatedLesson.text}
+                                    </span>
+                                  ))}
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+
+              {/* Normal mode: cluster-grouped cards */}
+              {!isSparse ? (
+                clusterCards.length === 0 ? (
+                  <p className="rounded-panel border border-border bg-surface p-4 text-sm text-ink-muted">No approved lessons match your current search yet.</p>
+                ) : (
+                  clusterCards.map((cluster) => {
+                    const isCollapsed = isClusterCollapsed(cluster.id);
+
+                    return (
+                      <section key={String(cluster.id)} className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleCluster(cluster.id)}
+                          className="flex w-full items-center justify-between rounded-panel border border-border bg-surface px-3 py-2 text-left"
+                        >
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span
+                              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+                              style={{ backgroundColor: clusterLabelColor(cluster.id) }}
+                            />
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold text-ink">{cluster.label}</p>
+                              <p className="text-xs text-ink-muted">{cluster.count} lessons</p>
+                            </div>
+                          </div>
+                          <span className="text-xs text-ink-muted">{isCollapsed ? "\u25B8" : "\u25BE"}</span>
+                        </button>
+
+                        {!isCollapsed ? (
+                          <div className="space-y-2">
+                            {cluster.nodes.map((node) => {
+                              const isExpanded = selectedCardNodeId === node.id;
+
+                              return (
+                                <button
+                                  type="button"
+                                  key={node.id}
+                                  onClick={() =>
+                                    setSelectedCardNodeId((previous) => (previous === node.id ? null : node.id))
+                                  }
+                                  className={`w-full rounded-panel border border-border bg-surface p-3 text-left transition ${
+                                    isExpanded ? "border-accent/60" : ""
+                                  } active:bg-surface-hover`}
+                                >
+                                  <p className="text-sm font-medium leading-relaxed text-ink">{node.text}</p>
+                                  <p className="mt-1 text-xs text-ink-faint">{formatDate(node.created_at)}</p>
+                                  {node.tags.length ? (
+                                    <div className="mt-2 flex flex-wrap gap-1">
+                                      {node.tags.map((tag) => (
+                                        <span
+                                          key={`${node.id}-${tag}`}
+                                          className="rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-ink-muted"
+                                        >
+                                          {tag}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  ) : null}
+
+                                  {isExpanded ? (
+                                    <div className="mt-3 space-y-2 border-t border-border pt-2 text-left">
+                                      <p className="text-xs text-ink-muted">{node.context || "No context provided."}</p>
+                                      {(node.source_type || node.source_ref) ? (
+                                        <p className="text-xs text-ink-faint">
+                                          Source: {node.source_type ?? ""}
+                                          {node.source_ref ? ` — ${node.source_ref}` : ""}
+                                        </p>
+                                      ) : null}
+                                      <div>
+                                        <p className="text-xs font-semibold text-ink">Related lessons</p>
+                                        <div className="mt-1 flex flex-wrap gap-1">
+                                          {(selectedCardNode?.id === node.id ? relatedLessons : getRelatedLessons(node.id, data.edges, nodesById))
+                                            .slice(0, 4)
+                                            .map((relatedLesson) => (
+                                              <span
+                                                key={relatedLesson.id}
+                                                className="rounded-full border border-border px-2 py-0.5 text-[11px] text-ink-muted"
+                                              >
+                                                {relatedLesson.text}
+                                              </span>
+                                            ))}
+                                        </div>
                                       </div>
                                     </div>
-                                  </div>
-                                ) : null}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      ) : null}
-                    </section>
-                  );
-                })
-              )}
+                                  ) : null}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </section>
+                    );
+                  })
+                )
+              ) : null}
             </div>
           )}
         </SectionCard>
@@ -529,8 +697,27 @@ export default function ConstellationPage() {
           </div>
         </SectionCard>
 
-        <SectionCard title="Cluster List" subtitle="Quick filter by cluster">
-          {clustersForSidebar.length ? (
+        <SectionCard
+          title="Cluster List"
+          subtitle={isSparse ? "Clusters form as your constellation grows" : "Quick filter by cluster"}
+        >
+          {isSparse ? (
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: "var(--signal)", opacity: 0.15 }}>
+                  <span style={{ color: "var(--signal-text)" }} className="text-sm" aria-hidden="true">{"\u2726"}</span>
+                </span>
+                <div>
+                  <p className="text-sm text-ink">
+                    {totalLessonCount} of {CLUSTER_THRESHOLD} lessons
+                  </p>
+                  <p className="text-xs text-ink-muted">
+                    Patterns emerge at {CLUSTER_THRESHOLD}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : clustersForSidebar.length ? (
             <div className="space-y-2">
               {clustersForSidebar.map((cluster) => (
                 <button
