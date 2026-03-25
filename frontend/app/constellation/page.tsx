@@ -90,7 +90,22 @@ export default function ConstellationPage() {
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
 
   const userToggledRef = useRef(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const observerRef = useRef<ResizeObserver | null>(null);
+
+  // Ref callback — attaches ResizeObserver when the container div mounts/unmounts
+  const containerRef = useCallback((node: HTMLDivElement | null) => {
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+      observerRef.current = null;
+    }
+    if (node) {
+      observerRef.current = new ResizeObserver((entries) => {
+        const { width, height } = entries[0].contentRect;
+        setContainerSize({ width, height });
+      });
+      observerRef.current.observe(node);
+    }
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -132,16 +147,7 @@ export default function ConstellationPage() {
     };
   }, []);
 
-  // Measure container for coordinate mapping
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const observer = new ResizeObserver((entries) => {
-      const { width, height } = entries[0].contentRect;
-      setContainerSize({ width, height });
-    });
-    observer.observe(containerRef.current);
-    return () => observer.disconnect();
-  }, []);
+  // Container measurement is handled by the containerRef callback above
 
   useEffect(() => {
     if (typeof window !== "undefined") {
