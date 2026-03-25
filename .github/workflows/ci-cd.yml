@@ -219,11 +219,20 @@ jobs:
         run: |
           # Delete and recreate system cron jobs for all active tenants.
           # Ensures cron definition changes (e.g. webhook URLs) propagate.
+          # FATAL — broken crons mean no morning briefings, evening check-ins, or lesson generation.
           DJANGO_URL="https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io"
           curl -sf -X POST \
             -H "X-Deploy-Secret: ${{ secrets.DEPLOY_SECRET }}" \
-            "$DJANGO_URL/api/cron/force-reseed-crons/" \
-            || echo "Warning: force-reseed-crons failed (non-fatal)"
+            "$DJANGO_URL/api/cron/force-reseed-crons/"
+
+      - name: Verify gateway cron tool available
+        run: |
+          # Confirm at least one tenant's OpenClaw gateway exposes the cron tool.
+          # Catches version mismatches where the cron API changed or was removed.
+          DJANGO_URL="https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io"
+          curl -sf -X POST \
+            -H "X-Deploy-Secret: ${{ secrets.DEPLOY_SECRET }}" \
+            "$DJANGO_URL/api/cron/verify-gateway-tools/"
 
       - name: Register system QStash cron schedules
         run: |

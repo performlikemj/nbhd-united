@@ -39,7 +39,8 @@ set +e
 DOCTOR_OUTPUT="$(
   OPENCLAW_CONFIG_PATH="$CONFIG_PATH" \
   OPENCLAW_STATE_DIR="$STATE_DIR" \
-  npx --yes --package openclaw@latest openclaw doctor --non-interactive 2>&1
+  OPENCLAW_VERSION=$(grep -oP 'ARG OPENCLAW_VERSION=\K.*' Dockerfile.openclaw 2>/dev/null || echo "latest")
+  npx --yes --package "openclaw@${OPENCLAW_VERSION}" openclaw doctor --non-interactive 2>&1
 )"
 DOCTOR_EXIT=$?
 set -e
