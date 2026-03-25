@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { isLoggedIn } from "@/lib/auth";
 import { ProvisioningStatus, RefreshConfigStatus, Tenant } from "@/lib/types";
 import {
   appendToDocument,
@@ -107,6 +108,7 @@ export function useTenantQuery() {
     queryKey: ["tenant"],
     queryFn: fetchTenant,
     staleTime: 5 * 60_000,
+    enabled: isLoggedIn(),
   });
 }
 
