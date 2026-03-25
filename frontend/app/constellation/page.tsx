@@ -402,9 +402,9 @@ export default function ConstellationPage() {
                         stroke = "rgba(95, 186, 175, 0.35)";
                         strokeWidth = 1;
                       } else {
-                        stroke = "rgba(120, 130, 142, 0.15)";
-                        strokeWidth = 0.5;
-                        strokeDasharray = "3 5";
+                        stroke = "rgba(95, 186, 175, 0.3)";
+                        strokeWidth = 1;
+                        strokeDasharray = "4 6";
                       }
 
                       return (
@@ -437,17 +437,17 @@ export default function ConstellationPage() {
                         onClick={() => setSelectedNodeId((prev) => (prev === node.id ? null : node.id))}
                       >
                         <div
-                          className={`h-8 w-8 rounded-full transition-transform duration-200 group-hover:scale-125 ${
+                          className={`h-9 w-9 rounded-full transition-transform duration-200 group-hover:scale-125 ${
                             isSelected ? "scale-125 ring-2 ring-accent ring-offset-2" : ""
                           }`}
                           style={{
                             backgroundColor: color,
-                            boxShadow: `0 0 12px 3px ${color}33`,
+                            boxShadow: `0 0 16px 5px ${color}40`,
                             animation: "constellation-breathe 4s ease-in-out infinite",
                             animationDelay: `${(node.id * 700) % 4000}ms`,
                           }}
                         />
-                        <span className="max-w-[120px] truncate rounded-full bg-surface/90 px-2 py-0.5 text-center text-[11px] font-medium text-ink-muted shadow-sm">
+                        <span className="max-w-[180px] truncate rounded-full bg-surface/92 px-2.5 py-0.5 text-center text-xs font-medium text-ink-muted shadow-sm">
                           {lessonTitle(node)}
                         </span>
                       </button>
