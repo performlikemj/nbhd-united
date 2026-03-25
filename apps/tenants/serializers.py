@@ -67,6 +67,7 @@ class TenantSerializer(serializers.ModelSerializer):
             "pending_deletion", "deletion_scheduled_at",
             "preferred_model", "task_model_preferences",
             "platform_budget_exceeded",
+            "finance_enabled",
         )
         read_only_fields = fields
 

@@ -21,6 +21,7 @@ import {
 } from "@/lib/queries";
 import type { TelegramLinkResponse, LineLinkResponse } from "@/lib/api";
 import { ServiceIcon } from "@/components/service-icon";
+import { ErrorBoundary } from "@/components/error-boundary";
 
 const providers: { key: string; label: string; description?: string }[] = [
   {
@@ -315,9 +316,15 @@ function IntegrationsContent() {
         </p>
       )}
 
-      <TelegramCard />
-      <LineCard />
-      <FuelCard />
+      <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load Telegram settings.</p>}>
+        <TelegramCard />
+      </ErrorBoundary>
+      <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load LINE settings.</p>}>
+        <LineCard />
+      </ErrorBoundary>
+      <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load Fuel settings.</p>}>
+        <FuelCard />
+      </ErrorBoundary>
 
       {connectError && (
         <p className="mt-3 rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">

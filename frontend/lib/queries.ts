@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ProvisioningStatus, RefreshConfigStatus } from "@/lib/types";
+import { ProvisioningStatus, RefreshConfigStatus, Tenant } from "@/lib/types";
 import {
   appendToDocument,
   bulkDeleteCronJobs,
@@ -822,7 +822,20 @@ export function useUpdateFinanceSettingsMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: updateFinanceSettings,
-    onSuccess: () => {
+    onMutate: async (newData) => {
+      await queryClient.cancelQueries({ queryKey: ["tenant"] });
+      const previous = queryClient.getQueryData<Tenant>(["tenant"]);
+      queryClient.setQueryData<Tenant>(["tenant"], (old) =>
+        old ? { ...old, ...newData } : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _newData, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["tenant"], context.previous);
+      }
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["tenant"] });
     },
   });
