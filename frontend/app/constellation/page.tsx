@@ -12,7 +12,7 @@ type ViewMode = "constellation" | "list";
 const VIEW_MODE_KEY = "constellationViewMode";
 const MOBILE_BREAKPOINT = 768;
 const CLUSTER_THRESHOLD = 5;
-const NODE_PADDING = 80;
+const NODE_PADDING = 100;
 
 function formatDate(dateString: string): string {
   const date = new Date(dateString);
