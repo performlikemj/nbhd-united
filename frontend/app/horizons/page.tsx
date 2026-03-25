@@ -68,24 +68,25 @@ export default function HorizonsPage() {
         </SectionCard>
       ) : null}
 
-      <div className="animate-reveal" style={{ animationDelay: "350ms" }}>
-        <h2 className="font-display text-xl text-ink">Active Goals</h2>
-
-        {data.goals.length > 0 ? (
-          <div className="mt-3 grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2">
-            {data.goals.map((goal) => (
-              <GoalCard key={goal.id} goal={goal} />
-            ))}
-          </div>
-        ) : (
-          <div className="mt-3 rounded-panel border border-border bg-card/95 p-4">
-            <p className="py-8 text-center text-sm text-ink-muted">
+      <SectionCard title="Active Goals" delay={350}>
+        {(() => {
+          const realGoals = data.goals.filter(
+            (g) => !g.preview.includes("[Goal Name]") && !g.preview.includes("[Specific, measurable outcome]"),
+          );
+          return realGoals.length > 0 ? (
+            <div className="grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2">
+              {realGoals.map((goal) => (
+                <GoalCard key={goal.id} goal={goal} />
+              ))}
+            </div>
+          ) : (
+            <p className="py-6 text-center text-sm text-ink-muted">
               No goals yet. Write about your goals in your journal, and your
               assistant will help you track them.
             </p>
-          </div>
-        )}
-      </div>
+          );
+        })()}
+      </SectionCard>
 
       {data.pending_extractions.length > 0 ? (
         <div className="animate-reveal" style={{ animationDelay: "500ms" }}>
