@@ -179,12 +179,71 @@ def generate_cluster_labels(tenant: Tenant) -> int:
     return labeled
 
 
+def compute_positions(tenant: Tenant) -> int:
+    """Compute 2D positions from embeddings using PCA (numpy SVD).
+
+    Projects 1536-dim embeddings onto the top 2 principal components
+    and normalizes to [-1, 1]. Positions are stored as position_x/position_y
+    on each Lesson so the frontend can render semantic proximity.
+
+    Returns the number of lessons updated.
+    """
+    import numpy as np
+
+    lessons = list(
+        Lesson.objects.filter(
+            tenant=tenant,
+            status="approved",
+            embedding__isnull=False,
+        )
+    )
+
+    n = len(lessons)
+    if n == 0:
+        return 0
+
+    if n == 1:
+        Lesson.objects.filter(pk=lessons[0].pk).update(position_x=0.0, position_y=0.0)
+        return 1
+
+    # Build embedding matrix (N x 1536)
+    embeddings = np.array([lesson.embedding for lesson in lessons], dtype=np.float64)
+
+    # Mean-center
+    mean = embeddings.mean(axis=0)
+    centered = embeddings - mean
+
+    # SVD for PCA — project onto top 2 components
+    _U, _S, Vt = np.linalg.svd(centered, full_matrices=False)
+    projected = centered @ Vt[:2].T  # shape (N, 2)
+
+    # Normalize each axis to [-1, 1]
+    for axis in range(2):
+        max_val = np.abs(projected[:, axis]).max()
+        if max_val > 0:
+            projected[:, axis] /= max_val
+
+    # Bulk update
+    updates = []
+    for i, lesson in enumerate(lessons):
+        lesson.position_x = float(projected[i, 0])
+        lesson.position_y = float(projected[i, 1])
+        updates.append(lesson)
+
+    with transaction.atomic():
+        Lesson.objects.bulk_update(updates, ["position_x", "position_y"])
+
+    return n
+
+
 def refresh_constellation(tenant: Tenant) -> dict[str, object]:
-    """Run clustering + labeling for a tenant and return combined result."""
+    """Run clustering + labeling + position computation for a tenant."""
 
     clustering_result = cluster_lessons(tenant)
     label_count = generate_cluster_labels(tenant)
+    positions_count = compute_positions(tenant)
     return {
         **clustering_result,
         "clusters_labeled": label_count,
+        "positions_computed": positions_count,
     }

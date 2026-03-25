@@ -64,9 +64,9 @@ class ConstellationNodeSerializer(serializers.ModelSerializer):
 class ConstellationEdgeSerializer(serializers.ModelSerializer):
     """Edge representation for lesson links."""
 
-    from_id = serializers.IntegerField(source="from_lesson_id")
-    to_id = serializers.IntegerField(source="to_lesson_id")
+    source = serializers.IntegerField(source="from_lesson_id")
+    target = serializers.IntegerField(source="to_lesson_id")
 
     class Meta:
         model = LessonConnection
-        fields = ["from_id", "to_id", "similarity", "connection_type"]
+        fields = ["source", "target", "similarity", "connection_type"]

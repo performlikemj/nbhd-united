@@ -50,6 +50,10 @@ class Lesson(models.Model):
     suggested_at = models.DateTimeField(auto_now_add=True)
     approved_at = models.DateTimeField(null=True, blank=True)
 
+    # 2D position from PCA on embedding space, normalized [-1,1]
+    position_x = models.FloatField(null=True, blank=True)
+    position_y = models.FloatField(null=True, blank=True)
+
     # Sharing (Phase 2+)
     shared = models.BooleanField(default=False)
     shared_at = models.DateTimeField(null=True, blank=True)

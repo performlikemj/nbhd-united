@@ -129,13 +129,43 @@ class LessonViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="constellation")
     def constellation(self, request):
-        lessons = self.get_queryset().filter(status="approved")
+        lessons = list(self.get_queryset().filter(status="approved"))
         lesson_ids = [lesson.id for lesson in lessons]
 
         edges = LessonConnection.objects.filter(
             from_lesson_id__in=lesson_ids,
             to_lesson_id__in=lesson_ids,
         )
+
+        # Compute weak affinity edges on-the-fly from embeddings
+        affinity_edges = []
+        lessons_with_embeddings = [l for l in lessons if l.embedding is not None]
+        if 2 <= len(lessons_with_embeddings) <= 150:
+            import numpy as np
+
+            embs = np.array([l.embedding for l in lessons_with_embeddings], dtype=np.float64)
+            norms = np.linalg.norm(embs, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            normalized = embs / norms
+            sim_matrix = normalized @ normalized.T
+
+            strong_pairs = set()
+            for edge in edges:
+                strong_pairs.add((edge.from_lesson_id, edge.to_lesson_id))
+                strong_pairs.add((edge.to_lesson_id, edge.from_lesson_id))
+
+            for i in range(len(lessons_with_embeddings)):
+                for j in range(i + 1, len(lessons_with_embeddings)):
+                    sim = float(sim_matrix[i, j])
+                    lid_i = lessons_with_embeddings[i].id
+                    lid_j = lessons_with_embeddings[j].id
+                    if sim >= 0.3 and (lid_i, lid_j) not in strong_pairs:
+                        affinity_edges.append({
+                            "source": lid_i,
+                            "target": lid_j,
+                            "similarity": round(sim, 4),
+                            "connection_type": "affinity",
+                        })
 
         # Build cluster summaries for the frontend sidebar.
         grouped: dict[tuple[int, str], list[Lesson]] = {}
@@ -160,6 +190,7 @@ class LessonViewSet(viewsets.ModelViewSet):
             {
                 "nodes": ConstellationNodeSerializer(lessons, many=True).data,
                 "edges": ConstellationEdgeSerializer(edges, many=True).data,
+                "affinity_edges": affinity_edges,
                 "clusters": clusters,
             }
         )

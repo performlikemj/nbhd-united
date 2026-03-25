@@ -396,8 +396,8 @@ export interface ConstellationNode {
   tags: string[];
   cluster_id: number | null;
   cluster_label: string;
-  x: number;
-  y: number;
+  x: number | null;
+  y: number | null;
   created_at: string;
 }
 
@@ -411,6 +411,7 @@ export interface ConstellationEdge {
 export interface ConstellationData {
   nodes: ConstellationNode[];
   edges: ConstellationEdge[];
+  affinity_edges: ConstellationEdge[];
   clusters: { id: number; label: string; count: number; tags: string[] }[];
 }
 
