@@ -1145,18 +1145,6 @@ class TelegramPoller:
         url = f"https://{tenant.container_fqdn}/v1/chat/completions"
         user_tz = tenant.user.timezone or "UTC"
 
-        # Redact PII before forwarding to the LLM provider
-        from apps.pii.redactor import redact_user_message
-        original_text = message_text
-        message_text = redact_user_message(message_text, tenant)
-        pii_was_redacted = message_text != original_text
-
-        messages: list[dict[str, str]] = []
-        if pii_was_redacted:
-            from apps.pii.config import PII_SYSTEM_MESSAGE
-            messages.append({"role": "system", "content": PII_SYSTEM_MESSAGE})
-        messages.append({"role": "user", "content": message_text})
-
         # Show typing indicator while waiting for AI response
         self._send_typing(chat_id)
         typing_stop = threading.Event()
@@ -1173,7 +1161,7 @@ class TelegramPoller:
                 url,
                 json={
                     "model": "openclaw",
-                    "messages": messages,
+                    "messages": [{"role": "user", "content": message_text}],
                     "user": str(chat_id),
                 },
                 headers={

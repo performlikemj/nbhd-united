@@ -835,24 +835,12 @@ class LineWebhookView(View):
         user_tz = tenant.user.timezone or "UTC"
         gateway_token = getattr(settings, "NBHD_INTERNAL_API_KEY", "").strip()
 
-        # Redact PII before forwarding to the LLM provider
-        from apps.pii.redactor import redact_user_message
-        original_text = message_text
-        message_text = redact_user_message(message_text, tenant)
-        pii_was_redacted = message_text != original_text
-
-        messages: list[dict[str, str]] = []
-        if pii_was_redacted:
-            from apps.pii.config import PII_SYSTEM_MESSAGE
-            messages.append({"role": "system", "content": PII_SYSTEM_MESSAGE})
-        messages.append({"role": "user", "content": message_text})
-
         try:
             resp = httpx.post(
                 url,
                 json={
                     "model": "openclaw",
-                    "messages": messages,
+                    "messages": [{"role": "user", "content": message_text}],
                     "user": line_user_id,
                 },
                 headers={
