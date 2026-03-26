@@ -95,6 +95,13 @@ def _parse_sections(text: str) -> list[dict]:
 
     for line in lines:
         header_match = re.match(r"^#{1,3}\s+(.+)", line)
+        if not header_match:
+            # Also treat emoji-prefixed lines as section headers
+            # (e.g. "🔴 Worth knowing:", "📬 Newsletters:")
+            emoji_match = re.match(r"^([^\x00-\x7F]\S*\s+.+?)$", line)
+            if emoji_match and not re.match(r"^\s*[-\u2022*]\s", line):
+                header_match = emoji_match
+
         if header_match:
             # Save previous section
             if current_lines or current_title:
@@ -102,7 +109,8 @@ def _parse_sections(text: str) -> list[dict]:
                     "title": current_title,
                     "content": "\n".join(current_lines).strip(),
                 })
-            current_title = header_match.group(1).strip()
+            current_title = header_match.group(1) if header_match.lastindex and header_match.group(1) else header_match.group(0)
+            current_title = current_title.strip()
             current_lines = []
         else:
             current_lines.append(line)
