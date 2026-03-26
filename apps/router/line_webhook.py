@@ -835,6 +835,10 @@ class LineWebhookView(View):
         user_tz = tenant.user.timezone or "UTC"
         gateway_token = getattr(settings, "NBHD_INTERNAL_API_KEY", "").strip()
 
+        # Redact PII before forwarding to the LLM provider
+        from apps.pii.redactor import redact_user_message
+        message_text = redact_user_message(message_text, tenant)
+
         try:
             resp = httpx.post(
                 url,
@@ -974,6 +978,12 @@ class LineWebhookView(View):
             return
 
         if ai_text:
+            # Rehydrate PII placeholders before sending to user
+            entity_map = getattr(tenant, "pii_entity_map", None)
+            if entity_map:
+                from apps.pii.redactor import rehydrate_text
+                ai_text = rehydrate_text(ai_text, entity_map)
+
             try:
                 # Remove MEDIA markers (images not supported yet)
                 clean_text = re.sub(r"MEDIA:\S+", "", ai_text).strip()
