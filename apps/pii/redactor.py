@@ -294,16 +294,7 @@ def redact_tool_response(data: Any, tenant: Tenant) -> Any:
         return data
 
     try:
-        map_before = dict(getattr(tenant, "pii_entity_map", None) or {})
-        result = _redact_tool_value(data, tenant, policy, _TOOL_SKIP_KEYS)
-        map_after = getattr(tenant, "pii_entity_map", None) or {}
-        new_entities = {k: v for k, v in map_after.items() if k not in map_before}
-        if new_entities:
-            logger.info(
-                "PII tool redaction: tenant=%s new_entities=%d keys=%s",
-                tenant.id, len(new_entities), list(new_entities.keys()),
-            )
-        return result
+        return _redact_tool_value(data, tenant, policy, _TOOL_SKIP_KEYS)
     except Exception:
         logger.exception("Tool response PII redaction failed — returning original")
         return data
