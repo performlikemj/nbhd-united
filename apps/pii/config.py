@@ -34,6 +34,16 @@ TIER_POLICIES = {
     },
 }
 
+# System message prepended to chat completions when redaction is active.
+# Tells the model to treat placeholders as real values.
+PII_SYSTEM_MESSAGE = (
+    "Privacy note: The user's message may contain placeholders like [PERSON_1], "
+    "[EMAIL_ADDRESS_1], or [PHONE_NUMBER_1]. These represent real values anonymized "
+    "by a privacy layer. Treat them as the actual values — do NOT ask the user for "
+    "the 'real' information. Use placeholders naturally in your responses. "
+    "The system restores real values before the user sees your message."
+)
+
 # Country/region names that Presidio often misidentifies as PERSON
 COUNTRY_DENYLIST = {
     "jordan", "georgia", "chad", "mali", "india", "china", "japan",
