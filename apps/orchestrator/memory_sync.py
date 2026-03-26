@@ -35,11 +35,29 @@ def render_memory_files(tenant) -> dict[str, str]:
         slug__lt=str(cutoff),
     ).order_by("kind", "slug")
 
+    from apps.pii.redactor import RedactionSession
+
+    session = RedactionSession(tenant=tenant)
+
     files: dict[str, str] = {}
     for doc in documents:
         path = f"memory/journal/{doc.kind}/{doc.slug}.md"
         content = f"# {doc.title}\n\n{doc.markdown}"
+        content = session.redact(content)
         files[path] = content
+
+    # Merge workspace entity mapping with any message-originated entities
+    if session.entity_map:
+        existing_map = (
+            type(tenant).objects.filter(pk=tenant.pk)
+            .values_list("pii_entity_map", flat=True)
+            .first()
+        ) or {}
+        # Workspace entities override, message entities preserved
+        merged = {**existing_map, **session.entity_map}
+        type(tenant).objects.filter(pk=tenant.pk).update(
+            pii_entity_map=merged,
+        )
 
     return files
 

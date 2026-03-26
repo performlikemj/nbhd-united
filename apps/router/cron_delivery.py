@@ -124,6 +124,12 @@ class CronDeliveryView(APIView):
         message_text = serializer.validated_data["message"]
         parse_mode = serializer.validated_data.get("parse_mode", "Markdown")
 
+        # Rehydrate PII placeholders before sending to user
+        entity_map = tenant.pii_entity_map
+        if entity_map:
+            from apps.pii.redactor import rehydrate_text
+            message_text = rehydrate_text(message_text, entity_map)
+
         # Route to appropriate channel
         if channel == "line":
             return self._send_via_line(
