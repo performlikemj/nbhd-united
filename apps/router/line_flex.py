@@ -55,12 +55,6 @@ def classify_content(text: str) -> str:
     if re.search(r"^#{1,3}\s+.+", text, re.MULTILINE):
         return "structured"
 
-    # Has emoji-prefixed headers (e.g. "🔴 Worth knowing:", "📬 Newsletters:")
-    for line in text.split("\n"):
-        if line and not line[0].isascii() and unicodedata.category(line[0]) == "So":
-            if re.match(r"^\S+\s+.+$", line):
-                return "structured"
-
     # Has bullet lists (3+ items)
     bullets = re.findall(r"^[\s]*[-\u2022*]\s+.+", text, re.MULTILINE)
     if len(bullets) >= 3:
@@ -71,9 +65,15 @@ def classify_content(text: str) -> str:
     if len(numbered) >= 3:
         return "structured"
 
+    # Has section-like structure: short header lines followed by content
+    # (catches emoji headers, plain text headers like "Today", etc.)
+    sections = _parse_sections(text)
+    if len(sections) >= 2 and any(s.get("title") for s in sections):
+        return "structured"
+
     # Multiple sections separated by double newlines with substantial content
-    sections = [s.strip() for s in text.split("\n\n") if s.strip()]
-    if len(sections) >= 4 and len(text) > 500:
+    para_sections = [s.strip() for s in text.split("\n\n") if s.strip()]
+    if len(para_sections) >= 4 and len(text) > 500:
         return "structured"
 
     # Medium-length messages still get a short bubble
@@ -90,38 +90,98 @@ def should_use_flex(text: str) -> bool:
 
 # ── Parsing ─────────────────────────────────────────────────────────────────
 
+def _is_header_line(stripped: str) -> bool:
+    """Check if a non-markdown line looks like a section header.
+
+    Recognizes (when preceded by a blank line):
+    - Emoji-prefixed: 🔴 Worth knowing:
+    - Plain text headers: Today, Yesterday, Action Required
+
+    Note: Markdown headers (## Title) are handled separately and don't
+    need blank-line gating. This function is only called for non-## lines.
+    """
+    if not stripped:
+        return False
+
+    # Emoji-prefixed (Unicode category So = Symbol, Other)
+    if (not stripped[0].isascii()
+            and unicodedata.category(stripped[0]) == "So"
+            and re.match(r"^\S+\s+.+$", stripped)):
+        return True
+
+    # Plain text header: short, starts uppercase, looks like a label
+    # Must be short (< 40 chars), few words (< 6), and not a full sentence
+    if (stripped[0].isascii()
+            and stripped[0].isupper()
+            and len(stripped) < 40
+            and len(stripped.split()) < 6
+            and not stripped.endswith(".")
+            and not stripped.endswith("!")):
+        return True
+
+    return False
+
+
 def _parse_sections(text: str) -> list[dict]:
-    """Parse markdown-like text into sections.
+    """Parse text into sections with titles and content.
+
+    Uses a two-pass approach:
+    1. Identify header lines (markdown, emoji-prefixed, or plain text headers
+       that appear after a blank line)
+    2. Group content under each header
 
     Returns a list of dicts with 'title' (optional) and 'content'.
     """
     lines = text.split("\n")
+
+    # Pass 1: identify header line indices
+    header_indices: set[int] = set()
+    prev_blank = False  # first line needs blank line AFTER it to qualify as header
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+
+        # Blank lines and horizontal rules are boundaries, not headers
+        if not stripped or re.match(r"^[-*_]{3,}$", stripped):
+            prev_blank = True
+            continue
+
+        # Bullet/numbered items are never headers
+        if re.match(r"^\s*[-\u2022*]\s|^\s*\d+[.)]\s", stripped):
+            prev_blank = False
+            continue
+
+        # Markdown headers (## Title) are ALWAYS headers, no blank line needed
+        if re.match(r"^#{1,3}\s+", stripped):
+            header_indices.add(i)
+        # Emoji and plain text headers require a preceding blank line
+        elif prev_blank and _is_header_line(stripped):
+            header_indices.add(i)
+
+        prev_blank = False
+
+    # Pass 2: group lines into sections
     sections: list[dict] = []
     current_title: str | None = None
     current_lines: list[str] = []
 
-    for line in lines:
-        # Skip markdown horizontal rules
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+
+        # Skip horizontal rules
         if re.match(r"^[\s]*[-*_]{3,}\s*$", line):
             continue
 
-        header_match = re.match(r"^#{1,3}\s+(.+)", line)
-        if not header_match:
-            # Detect emoji-prefixed headers (e.g. "🔴 Worth knowing:", "📬 Newsletters:")
-            # Only match actual emoji (Unicode category So), not currency/dashes/CJK
-            if (line and not line[0].isascii()
-                    and unicodedata.category(line[0]) == "So"
-                    and re.match(r"^\S+\s+.+$", line)):
-                header_match = re.match(r"^(.+)$", line)
-
-        if header_match:
+        if i in header_indices:
             # Save previous section
             if current_lines or current_title:
                 sections.append({
                     "title": current_title,
                     "content": "\n".join(current_lines).strip(),
                 })
-            current_title = header_match.group(1).strip()
+            # Extract title text (strip markdown # prefix if present)
+            md_match = re.match(r"^#{1,3}\s+(.+)", stripped)
+            current_title = md_match.group(1).strip() if md_match else stripped
             current_lines = []
         else:
             current_lines.append(line)
