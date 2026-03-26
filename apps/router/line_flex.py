@@ -6,6 +6,7 @@ Falls back to plain text only for content that exceeds Flex size limits.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
 
 
@@ -54,6 +55,12 @@ def classify_content(text: str) -> str:
     if re.search(r"^#{1,3}\s+.+", text, re.MULTILINE):
         return "structured"
 
+    # Has emoji-prefixed headers (e.g. "🔴 Worth knowing:", "📬 Newsletters:")
+    for line in text.split("\n"):
+        if line and not line[0].isascii() and unicodedata.category(line[0]) == "So":
+            if re.match(r"^\S+\s+.+$", line):
+                return "structured"
+
     # Has bullet lists (3+ items)
     bullets = re.findall(r"^[\s]*[-\u2022*]\s+.+", text, re.MULTILINE)
     if len(bullets) >= 3:
@@ -94,13 +101,18 @@ def _parse_sections(text: str) -> list[dict]:
     current_lines: list[str] = []
 
     for line in lines:
+        # Skip markdown horizontal rules
+        if re.match(r"^[\s]*[-*_]{3,}\s*$", line):
+            continue
+
         header_match = re.match(r"^#{1,3}\s+(.+)", line)
         if not header_match:
-            # Also treat emoji-prefixed lines as section headers
-            # (e.g. "🔴 Worth knowing:", "📬 Newsletters:")
-            emoji_match = re.match(r"^([^\x00-\x7F]\S*\s+.+?)$", line)
-            if emoji_match and not re.match(r"^\s*[-\u2022*]\s", line):
-                header_match = emoji_match
+            # Detect emoji-prefixed headers (e.g. "🔴 Worth knowing:", "📬 Newsletters:")
+            # Only match actual emoji (Unicode category So), not currency/dashes/CJK
+            if (line and not line[0].isascii()
+                    and unicodedata.category(line[0]) == "So"
+                    and re.match(r"^\S+\s+.+$", line)):
+                header_match = re.match(r"^(.+)$", line)
 
         if header_match:
             # Save previous section
@@ -109,8 +121,7 @@ def _parse_sections(text: str) -> list[dict]:
                     "title": current_title,
                     "content": "\n".join(current_lines).strip(),
                 })
-            current_title = header_match.group(1) if header_match.lastindex and header_match.group(1) else header_match.group(0)
-            current_title = current_title.strip()
+            current_title = header_match.group(1).strip()
             current_lines = []
         else:
             current_lines.append(line)
