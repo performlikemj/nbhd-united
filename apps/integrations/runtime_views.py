@@ -427,6 +427,9 @@ class RuntimeGmailMessagesView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
+        from apps.pii.redactor import redact_tool_response
+        payload = redact_tool_response(payload, tenant)
+
         return Response(
             {
                 "provider": "google",
@@ -499,6 +502,9 @@ class RuntimeCalendarEventsView(APIView):
                 {"error": "provider_request_failed"},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
+
+        from apps.pii.redactor import redact_tool_response
+        payload = redact_tool_response(payload, tenant)
 
         return Response(
             {
@@ -579,6 +585,9 @@ class RuntimeGmailMessageDetailView(APIView):
                 {"error": "provider_request_failed"},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
+
+        from apps.pii.redactor import redact_tool_response
+        payload = redact_tool_response(payload, tenant)
 
         return Response(
             {
@@ -1825,5 +1834,8 @@ class RedditToolView(APIView):
                 {"error": "tool_execution_failed", "detail": str(exc)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+        from apps.pii.redactor import redact_tool_response
+        result = redact_tool_response(result, tenant)
 
         return Response(result, status=status.HTTP_200_OK)

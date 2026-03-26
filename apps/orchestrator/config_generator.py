@@ -141,9 +141,12 @@ def _build_morning_briefing_prompt(tenant) -> str:
     user_tz = str(getattr(user, "timezone", "") or "UTC")
 
     # Prefer stored coordinates (set by user via nbhd_update_profile)
+    # Quantize to ~11km resolution (city-level) to avoid leaking precise location
     lat = getattr(user, "location_lat", None)
     lon = getattr(user, "location_lon", None)
     if lat is not None and lon is not None:
+        lat = round(lat, 1)
+        lon = round(lon, 1)
         weather_url = build_weather_url_from_coords(lat, lon, user_tz)
     else:
         weather_url = build_weather_url(user_tz)

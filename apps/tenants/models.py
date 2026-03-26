@@ -218,6 +218,14 @@ class Tenant(models.Model):
         help_text="Percentage of surplus to donate (0-100)",
     )
 
+    # PII redaction entity mapping for rehydrating outgoing messages
+    pii_entity_map = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Maps PII placeholders to original values, e.g. "
+                  '{"[PERSON_1]": "Sarah Chen", "[EMAIL_ADDRESS_1]": "sarah@example.com"}',
+    )
+
     # Model preference
     task_model_preferences = models.JSONField(
         default=dict,

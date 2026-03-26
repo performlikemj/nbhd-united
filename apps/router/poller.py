@@ -298,6 +298,12 @@ class TelegramPoller:
         """
         import re
 
+        # Rehydrate PII placeholders before sending to user
+        entity_map = getattr(tenant, "pii_entity_map", None)
+        if entity_map:
+            from apps.pii.redactor import rehydrate_text
+            text = rehydrate_text(text, entity_map)
+
         # Pattern: MEDIA:path or common image extensions in workspace paths
         # OpenClaw uses MEDIA:./path or MEDIA:https://... convention
         media_pattern = re.compile(
@@ -1138,6 +1144,10 @@ class TelegramPoller:
 
         url = f"https://{tenant.container_fqdn}/v1/chat/completions"
         user_tz = tenant.user.timezone or "UTC"
+
+        # Redact PII before forwarding to the LLM provider
+        from apps.pii.redactor import redact_user_message
+        message_text = redact_user_message(message_text, tenant)
 
         # Show typing indicator while waiting for AI response
         self._send_typing(chat_id)

@@ -249,6 +249,10 @@ def telegram_webhook(request):
     tenant.last_message_at = timezone.now()
     tenant.save(update_fields=["last_message_at"])
 
+    # Redact PII before forwarding to the LLM provider
+    from apps.pii.redactor import redact_telegram_update
+    update = redact_telegram_update(update, tenant)
+
     # Forward to the correct OpenClaw instance
     loop = asyncio.new_event_loop()
     try:
