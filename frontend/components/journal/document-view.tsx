@@ -328,7 +328,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2 lg:px-6 lg:py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/5 px-4 py-3 lg:px-6 lg:py-4">
         <div className="flex items-center gap-2 min-w-0">
           {/* Date navigation for daily notes */}
           {kind === "daily" && (
@@ -337,12 +337,16 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
                 type="button"
                 onClick={() => handleDateNav(-1)}
                 aria-label="Previous day"
-                className="rounded-full border border-border-strong px-2 py-1 text-sm hover:border-border-strong min-h-[44px] min-w-[44px] flex items-center justify-center"
+                className="rounded-full border border-border px-2 py-1 text-sm text-ink-faint hover:text-ink hover:border-border-strong min-h-[44px] min-w-[44px] flex items-center justify-center transition"
               >
                 ←
               </button>
               <label className="relative cursor-pointer min-w-0">
-                <span className="text-base font-semibold text-ink sm:text-lg">
+                <div className="hidden sm:flex items-center gap-2 text-signal-text text-[10px] font-bold uppercase tracking-[0.15em] mb-0.5">
+                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5"><path d="M10 2L11.09 8.26L16 4L13.74 9.91L20 10L13.74 12.09L16 18L11.09 13.74L10 20L8.91 13.74L4 18L6.26 12.09L0 10L6.26 9.91L4 4L8.91 8.26L10 2Z"/></svg>
+                  Current Orbit
+                </div>
+                <span className="font-headline text-lg font-bold text-ink sm:text-2xl tracking-tight">
                   <span className="hidden sm:inline">{formatDate(effectiveSlug)}</span>
                   <span className="sm:hidden">{formatDateShort(effectiveSlug)}</span>
                 </span>
@@ -461,7 +465,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
             className={
               isMobile === true
                 ? "p-4"
-                : "group cursor-text rounded-sm border border-transparent p-4 transition-colors duration-150 hover:border-border hover:bg-surface-hover lg:p-6"
+                : "group cursor-text rounded-2xl border border-white/[0.03] bg-surface-elevated/30 p-5 transition-colors duration-150 hover:border-white/[0.06] lg:p-8 shadow-inner"
             }
             onClick={isMobile === true ? undefined : handleContentAreaClick}
           >
