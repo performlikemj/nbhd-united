@@ -843,6 +843,34 @@ def run_rewrite_lessons_actionable(request):
 
 
 @csrf_exempt
+def run_reseed_lessons(request):
+    """Delete journal-sourced lessons and re-extract from all daily notes.
+
+    Auth: X-Deploy-Secret header.
+    URL: /api/cron/run-reseed-lessons/
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not deploy_secret or not provided or provided != deploy_secret:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    from apps.tenants.middleware import set_rls_context
+    set_rls_context(service_role=True)
+
+    from django.core.management import call_command
+    from io import StringIO
+
+    out = StringIO()
+    call_command("reseed_lessons", stdout=out)
+    output = out.getvalue()
+    logger.info("reseed_lessons: %s", output[-1000:])
+    return JsonResponse({"ok": True, "output": output})
+
+
+@csrf_exempt
 @require_POST
 def broadcast_message(request):
     """Send a one-off message from each tenant's agent to their user.
