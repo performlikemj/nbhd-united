@@ -11,7 +11,7 @@ import { useMeQuery, useTenantQuery } from "@/lib/queries";
 import { BrandLogo } from "@/components/brand-logo";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { SiteFooter } from "@/components/site-footer";
-import { useTheme } from "@/components/theme-provider";
+import { SynapseNetwork } from "@/components/landing/synapse-network";
 
 const baseNavItems = [
   { href: "/journal", label: "Journal" },
@@ -24,21 +24,6 @@ const fuelNavItem = { href: "/finance", label: "◆ Fuel" };
 const settingsNavItem = { href: "/settings", label: "Settings" };
 
 const publicPages = ["/", "/login", "/signup", "/legal/terms", "/legal/privacy", "/legal/refund"];
-
-function ThemeToggle() {
-  const { theme, toggleTheme } = useTheme();
-
-  return (
-    <button
-      type="button"
-      onClick={toggleTheme}
-      className="flex h-11 w-11 items-center justify-center rounded-full border border-border text-sm transition hover:border-border-strong"
-      aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-    >
-      {theme === "dark" ? "☀️" : "🌙"}
-    </button>
-  );
-}
 
 function UserMenu({ onLogout }: { onLogout: () => void }) {
   const { data: me } = useMeQuery();
@@ -122,6 +107,7 @@ function TrialBadge() {
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function PlatformBudgetBanner() {
   const { data: tenant } = useTenantQuery();
 
@@ -130,7 +116,7 @@ function PlatformBudgetBanner() {
   }
 
   return (
-    <div className="border-b border-amber-300/40 bg-amber-50 px-4 py-3 text-center text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/50 dark:text-amber-200">
+    <div className="border-b border-amber-border bg-amber-bg px-4 py-3 text-center text-sm text-amber-text">
       <strong>Beta notice:</strong> Our platform budget for this month has been reached.
       Your assistant may be temporarily unavailable &mdash; service will resume when the budget resets.
       Thanks for your patience!
@@ -146,9 +132,10 @@ function BackgroundLayers() {
         style={{ background: "var(--bg-gradient)" }}
       />
       <div
-        className="pointer-events-none fixed inset-0 -z-10 bg-[linear-gradient(rgba(18,31,38,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(18,31,38,0.05)_1px,transparent_1px)] bg-[size:32px_32px]"
+        className="pointer-events-none fixed inset-0 -z-10 bg-[linear-gradient(rgba(226,232,240,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(226,232,240,0.03)_1px,transparent_1px)] bg-[size:32px_32px]"
         style={{ opacity: "var(--grid-opacity)" }}
       />
+      <SynapseNetwork className="fixed inset-0 -z-10 opacity-[0.04]" />
     </>
   );
 }
@@ -196,12 +183,22 @@ export function AppShell({ children }: { children: ReactNode }) {
     return null;
   }
 
+  // Landing page gets a full-bleed layout — no shell chrome
+  if (pathname === "/") {
+    return (
+      <ErrorBoundary>
+        <a href="#main-content" className="skip-link">Skip to main content</a>
+        <main id="main-content">{children}</main>
+      </ErrorBoundary>
+    );
+  }
+
   if (isPublicPage) {
     return (
       <div className="relative flex min-h-screen flex-col overflow-x-hidden">
         <BackgroundLayers />
         <a href="#main-content" className="skip-link">Skip to main content</a>
-        <header className="border-b border-border bg-surface/75 backdrop-blur-xl backdrop-saturate-150">
+        <header className="border-b border-border bg-surface/80 backdrop-blur-md">
           <div className="mx-auto flex w-full max-w-6xl items-center px-4 py-3 sm:px-6">
             <BrandLogo size={36} />
           </div>
@@ -217,7 +214,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <BackgroundLayers />
       <a href="#main-content" className="skip-link">Skip to main content</a>
 
-      <header className="sticky top-0 z-30 border-b border-border bg-surface/75 backdrop-blur-xl backdrop-saturate-150">
+      <header className="sticky top-0 z-30 border-b border-border bg-surface/80 backdrop-blur-md">
         <div className="mx-auto flex w-full max-w-6xl min-w-0 items-center justify-between gap-2 px-4 py-2.5 sm:gap-3 sm:px-6 sm:py-3">
           <div className="min-w-0">
             <BrandLogo size={32} />
@@ -231,7 +228,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <TrialBadge />
             </div>
             {/* Desktop nav */}
-            <nav className="hidden items-center gap-1 rounded-full border border-border bg-surface p-1 md:flex" role="navigation" aria-label="Main navigation">
+            <nav className="hidden items-center gap-1 rounded-full border border-border bg-surface/60 backdrop-blur-sm p-1 md:flex" role="navigation" aria-label="Main navigation">
               {navItems.map((item) => {
                 const active = pathname.startsWith(item.href);
                 return (
@@ -251,7 +248,6 @@ export function AppShell({ children }: { children: ReactNode }) {
                 );
               })}
             </nav>
-            <ThemeToggle />
             <UserMenu onLogout={handleLogout} />
             {/* Hamburger — mobile only */}
             <button
