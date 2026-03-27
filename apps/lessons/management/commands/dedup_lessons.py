@@ -41,10 +41,14 @@ class Command(BaseCommand):
         tid = str(tenant.id)[:8]
 
         # ── Remove goals from constellation (they don't belong here) ──
-        goal_count = Lesson.objects.filter(tenant=tenant, tags__contains=["goal"]).count()
+        from django.db.models import Q
+        goal_qs = Lesson.objects.filter(tenant=tenant).filter(
+            Q(tags__contains=["goal"]) | Q(context__startswith="Goal")
+        )
+        goal_count = goal_qs.count()
         if goal_count > 0:
             if not dry_run:
-                Lesson.objects.filter(tenant=tenant, tags__contains=["goal"]).delete()
+                goal_qs.delete()
             self.stdout.write(f"  [{tid}] Removed {goal_count} goal nodes from constellation")
 
         lessons = list(
