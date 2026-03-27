@@ -46,3 +46,4 @@ ENV OPENCLAW_IMAGE_GEN_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-image-gen
 EXPOSE 8080
 
 ENTRYPOINT ["/usr/local/bin/nbhd-openclaw-entrypoint"]
+
