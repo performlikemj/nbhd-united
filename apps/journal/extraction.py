@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 EXTRACTION_MODEL = "anthropic/claude-sonnet-4.6"
 MIN_NOTE_LENGTH = 100  # chars — below this we skip or fall back
-DEDUP_SIMILARITY_THRESHOLD = 0.85  # cosine similarity for semantic dedup
+DEDUP_SIMILARITY_THRESHOLD = 0.75  # cosine similarity for semantic dedup
 TELEGRAM_API_BASE = "https://api.telegram.org/bot"
 TELEGRAM_TIMEOUT = 10
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
