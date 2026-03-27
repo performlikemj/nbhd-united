@@ -39,6 +39,14 @@ class Command(BaseCommand):
 
     def _dedup_tenant(self, tenant: Tenant, *, threshold: float, dry_run: bool) -> None:
         tid = str(tenant.id)[:8]
+
+        # ── Remove goals from constellation (they don't belong here) ──
+        goal_count = Lesson.objects.filter(tenant=tenant, tags__contains=["goal"]).count()
+        if goal_count > 0:
+            if not dry_run:
+                Lesson.objects.filter(tenant=tenant, tags__contains=["goal"]).delete()
+            self.stdout.write(f"  [{tid}] Removed {goal_count} goal nodes from constellation")
+
         lessons = list(
             Lesson.objects.filter(tenant=tenant, status="approved", embedding__isnull=False)
             .order_by("id")

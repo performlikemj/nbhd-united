@@ -80,11 +80,10 @@ def reseed_lessons_single_tenant_task(tenant_id: str) -> dict:
             logger.error("reseed[%s]: batch %d LLM error — %s", tid, i, e)
             continue
 
+        # Only lessons go into the constellation — goals stay in documents
         lessons_raw = extracted.get("lessons", [])
-        goals_raw = extracted.get("goals", [])
-        total_extracted += len(lessons_raw) + len(goals_raw)
+        total_extracted += len(lessons_raw)
 
-        # Process lessons
         for item in lessons_raw:
             text = (item.get("text") or "").strip()
             if not text or len(text) < 20:
@@ -106,30 +105,6 @@ def reseed_lessons_single_tenant_task(tenant_id: str) -> dict:
                 process_approved_lesson(lesson)
             except Exception as e:
                 logger.warning("reseed[%s]: embedding failed for lesson %s: %s", tid, lesson.id, e)
-            total_added += 1
-
-        # Process goals as constellation nodes too
-        for item in goals_raw:
-            text = (item.get("text") or "").strip()
-            if not text or len(text) < 20:
-                continue
-            if _embedding_duplicate(tenant, text):
-                total_deduped += 1
-                continue
-            goal = Lesson.objects.create(
-                tenant=tenant,
-                text=text,
-                context=f"Goal — re-seeded from daily notes — {date.today().isoformat()}",
-                tags=["goal"],
-                source_type="journal",
-                source_ref="reseed",
-                status="approved",
-                approved_at=timezone.now(),
-            )
-            try:
-                process_approved_lesson(goal)
-            except Exception as e:
-                logger.warning("reseed[%s]: embedding failed for goal %s: %s", tid, goal.id, e)
             total_added += 1
 
     logger.info(
