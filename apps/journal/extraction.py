@@ -20,6 +20,7 @@ from django.utils import timezone
 from apps.billing.services import record_usage
 from apps.journal.models import DailyNote, Document, PendingExtraction
 from apps.lessons.models import Lesson
+from apps.lessons.services import generate_embedding
 from apps.router.extraction_callbacks import _approve_goal, _approve_lesson, _approve_task
 from apps.tenants.models import Tenant
 
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 EXTRACTION_MODEL = "anthropic/claude-sonnet-4.6"
 MIN_NOTE_LENGTH = 100  # chars — below this we skip or fall back
+DEDUP_SIMILARITY_THRESHOLD = 0.85  # cosine similarity for semantic dedup
 TELEGRAM_API_BASE = "https://api.telegram.org/bot"
 TELEGRAM_TIMEOUT = 10
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
@@ -47,11 +49,10 @@ Return ONLY valid JSON matching this schema:
 
 Rules:
 - Only extract things EXPLICITLY stated, never inferred.
-- Lessons: actionable takeaways the user can apply next time a similar situation arises.
+- Lessons: personal insights the user arrived at — things they now know or would do differently.
   Frame as advice to their future self — not what happened, but what to do differently.
   Bad: "The PR photo was the wrong size (45x35cm instead of 40x30cm)"
   Good: "Always verify exact photo dimensions for government documents before proceeding — Japanese photo machines offer non-standard sizes"
-  Each lesson should be useful when the assistant encounters a similar context later.
 - context: 1 sentence describing the situation that prompted this lesson.
 - Goals: things the user wants to build, ship, or achieve (multi-day/week scope).
 - Tasks: specific near-term action items with clear completion criteria.
@@ -110,11 +111,16 @@ def _get_daily_note_content(tenant: Tenant, for_date: date) -> str | None:
 
 
 def _get_fallback_content(tenant: Tenant) -> str | None:
-    """Fall back to last 2 days of notes concatenated, or return None."""
+    """Fall back to recent notes that haven't been extracted yet."""
     today = date.today()
     parts = []
     for delta in (0, 1):
         d = today - timedelta(days=delta)
+        # Skip dates that already had successful extraction
+        if PendingExtraction.objects.filter(
+            tenant=tenant, source_date=d,
+        ).exclude(status="expired").exists():
+            continue
         content = _get_daily_note_content(tenant, d)
         if content:
             parts.append(f"## {d}\n{content}")
@@ -148,6 +154,28 @@ def _existing_lesson_duplicate(tenant: Tenant, text: str) -> bool:
         text__icontains=text[:50],
         created_at__gte=cutoff,
     ).exists()
+
+
+def _embedding_duplicate(tenant: Tenant, text: str) -> bool:
+    """Return True if a semantically similar approved lesson already exists."""
+    from pgvector.django import CosineDistance
+
+    try:
+        embedding = generate_embedding(text)
+    except Exception:
+        logger.warning("embedding_duplicate: embedding generation failed, skipping semantic check")
+        return False
+
+    closest = (
+        Lesson.objects.filter(tenant=tenant, status="approved", embedding__isnull=False)
+        .annotate(distance=CosineDistance("embedding", embedding))
+        .order_by("distance")
+        .values_list("distance", flat=True)
+        .first()
+    )
+    if closest is not None and (1.0 - float(closest)) >= DEDUP_SIMILARITY_THRESHOLD:
+        return True
+    return False
 
 
 # ── Telegram delivery ─────────────────────────────────────────────────────────
@@ -385,6 +413,8 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
         if _existing_lesson_duplicate(tenant, text):
             continue
         if _is_duplicate(tenant, PendingExtraction.Kind.LESSON, text):
+            continue
+        if _embedding_duplicate(tenant, text):
             continue
         pending = PendingExtraction.objects.create(
             tenant=tenant,
