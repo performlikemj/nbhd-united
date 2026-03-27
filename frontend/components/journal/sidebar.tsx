@@ -231,8 +231,11 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
   return (
     <nav aria-label="Journal sidebar" className="flex h-full w-64 flex-col border-r border-white/5 bg-c-dark/80 backdrop-blur-2xl">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-white/5 px-4 py-3">
-        <h2 className="font-headline text-sm font-bold text-ink">Journal</h2>
+      <div className="flex items-center justify-between border-b border-white/5 px-4 py-4">
+        <div>
+          <h2 className="font-headline text-lg font-bold text-ink">Journal</h2>
+          <p className="text-[10px] uppercase tracking-[0.15em] text-ink-faint">Celestial Sanctuary</p>
+        </div>
         {onToggle && (
           <button
             type="button"
