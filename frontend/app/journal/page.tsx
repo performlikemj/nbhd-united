@@ -91,7 +91,7 @@ export default function JournalPage() {
             if (!fabDrag.current) setMobileSidebarOpen(!mobileSidebarOpen);
           }}
           style={{ top: `${fabY}px` }}
-          className="fixed left-4 z-50 touch-none select-none rounded-full bg-accent p-3 text-white shadow-lg lg:hidden"
+          className="fixed left-4 z-50 touch-none select-none rounded-full bg-accent p-3 text-white shadow-lg glow-purple lg:hidden"
           aria-label="Toggle sidebar — drag to reposition"
           aria-expanded={mobileSidebarOpen}
           aria-controls="journal-mobile-sidebar"
@@ -130,7 +130,7 @@ export default function JournalPage() {
           onClick={() => setMobileSidebarOpen(false)}
         />
         <div
-          className={`relative z-10 h-full w-72 bg-surface shadow-xl transition-transform duration-200 ease-out ${
+          className={`relative z-10 h-full w-72 bg-c-dark/95 backdrop-blur-2xl shadow-xl transition-transform duration-200 ease-out ${
             mobileSidebarOpen ? "translate-x-0" : "-translate-x-full"
           }`}
         >
@@ -143,7 +143,7 @@ export default function JournalPage() {
       </div>
 
       {/* Main content */}
-      <div className="min-w-0 flex-1 overflow-hidden bg-surface">
+      <div className="min-w-0 flex-1 overflow-hidden">
         <DocumentView
           kind={activeKind}
           slug={activeSlug}
