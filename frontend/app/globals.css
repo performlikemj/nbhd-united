@@ -3,73 +3,7 @@
 @tailwind utilities;
 
 :root {
-  --ink: #12232c;
-  --ink-muted: rgba(18, 35, 44, 0.72);
-  --ink-faint: rgba(18, 35, 44, 0.48);
-  --mist: #f6f4ee;
-  --bg: #f4f1e9;
-  --surface: #ffffff;
-  --surface-elevated: #ffffff;
-  --surface-hover: rgba(18, 35, 44, 0.05);
-  --card: rgba(252, 252, 248, 0.95);
-  --accent: #1d4ed8;
-  --accent-hover: #1e40af;
-  --signal: #5fbaaf;
-  --signal-text: #0f766e;
-  --signal-faint: rgba(95, 186, 175, 0.12);
-  --border: rgba(18, 35, 44, 0.18);
-  --border-strong: rgba(18, 35, 44, 0.35);
-  --rose-bg: #fff1f2;
-  --rose-border: #fecaca;
-  --rose-text: #9f1239;
-  --amber-bg: #fffbeb;
-  --amber-border: rgba(146, 64, 14, 0.20);
-  --amber-text: #92400e;
-  --emerald-bg: #ecfdf5;
-  --emerald-text: #065f46;
-  --overlay: rgba(18, 35, 44, 0.55);
-  --shadow-panel: 0 20px 55px rgba(18, 31, 38, 0.14);
-  --bg-gradient: radial-gradient(circle at 20% 20%, rgba(255,194,153,0.42), transparent 40%),
-    radial-gradient(circle at 85% 15%, rgba(112,194,184,0.45), transparent 32%),
-    linear-gradient(180deg, #f4f1e9 0%, #eaf0f0 48%, #f5f5f2 100%);
-  --grid-opacity: 0.35;
-  --font-display: "DM Serif Display", "Georgia", "Times New Roman", serif;
-  --font-body: "Plus Jakarta Sans", "Avenir Next", "Trebuchet MS", "Verdana", sans-serif;
-  --font-mono: "IBM Plex Mono", "Consolas", "Menlo", monospace;
-  color-scheme: light;
-
-  /* Focus ring */
-  --focus-ring: 0 0 0 3px rgba(29, 78, 216, 0.12), 0 0 0 2px #1d4ed8;
-  --focus-ring-offset: 0 0 0 2px var(--surface), 0 0 0 4px #1d4ed8;
-
-  /* Fluid spacing */
-  --space-xs: clamp(0.25rem, 0.5vw, 0.5rem);
-  --space-sm: clamp(0.5rem, 1vw, 0.75rem);
-  --space-md: clamp(0.75rem, 1.5vw + 0.25rem, 1.5rem);
-  --space-lg: clamp(1.25rem, 2.5vw + 0.25rem, 2.5rem);
-  --space-xl: clamp(2rem, 4vw + 0.5rem, 5rem);
-  --page-pad: clamp(1rem, 4vw, 2.5rem);
-
-  /* Status tones */
-  --status-emerald-bg: #ecfdf5;
-  --status-emerald-text: #065f46;
-  --status-rose-bg: #fff1f2;
-  --status-rose-text: #9f1239;
-  --status-amber-bg: #fffbeb;
-  --status-amber-text: #92400e;
-  --status-sky-bg: #f0f9ff;
-  --status-sky-text: #075985;
-  --status-slate-bg: #f1f5f9;
-  --status-slate-text: #334155;
-  --status-indigo-bg: #eef2ff;
-  --status-indigo-text: #3730a3;
-  --status-violet-bg: #f5f3ff;
-  --status-violet-text: #5b21b6;
-  --status-orange-bg: #fff7ed;
-  --status-orange-text: #9a3412;
-}
-
-[data-theme="dark"] {
+  /* ── Constellation Dark Palette ── */
   --ink: #e2e8f0;
   --ink-muted: rgba(226, 232, 240, 0.72);
   --ink-faint: rgba(226, 232, 240, 0.42);
@@ -79,11 +13,11 @@
   --surface-elevated: #1e252e;
   --surface-hover: rgba(226, 232, 240, 0.06);
   --card: rgba(22, 27, 34, 0.95);
-  --accent: #60a5fa;
-  --accent-hover: #93bbfd;
-  --signal: #5fbaaf;
-  --signal-text: #5eead4;
-  --signal-faint: rgba(95, 186, 175, 0.15);
+  --accent: #7C6BF0;
+  --accent-hover: #9B8DF5;
+  --signal: #4ECDC4;
+  --signal-text: #4ECDC4;
+  --signal-faint: rgba(78, 205, 196, 0.15);
   --border: rgba(226, 232, 240, 0.12);
   --border-strong: rgba(226, 232, 240, 0.25);
   --rose-bg: rgba(159, 18, 57, 0.15);
@@ -96,17 +30,32 @@
   --emerald-text: #6ee7b7;
   --overlay: rgba(0, 0, 0, 0.70);
   --shadow-panel: 0 20px 55px rgba(0, 0, 0, 0.35);
-  --bg-gradient: radial-gradient(circle at 20% 20%, rgba(255,194,153,0.08), transparent 40%),
-    radial-gradient(circle at 85% 15%, rgba(112,194,184,0.10), transparent 32%),
+  --bg-gradient:
+    radial-gradient(circle at 20% 30%, rgba(124, 107, 240, 0.05) 0%, transparent 40%),
+    radial-gradient(circle at 80% 70%, rgba(78, 205, 196, 0.05) 0%, transparent 40%),
+    radial-gradient(circle at 50% 50%, rgba(232, 180, 184, 0.03) 0%, transparent 50%),
     linear-gradient(180deg, #0b0f13 0%, #0d1218 48%, #0b0f13 100%);
-  --grid-opacity: 0.15;
+  --grid-opacity: 0.08;
+  --font-display: "DM Serif Display", "Georgia", "Times New Roman", serif;
+  --font-body: "Plus Jakarta Sans", "Avenir Next", "Trebuchet MS", "Verdana", sans-serif;
+  --font-mono: "IBM Plex Mono", "Consolas", "Menlo", monospace;
+  --font-headline: "Space Grotesk", sans-serif;
+  --font-serif: "Instrument Serif", Georgia, serif;
   color-scheme: dark;
 
-  /* Focus ring - dark */
-  --focus-ring: 0 0 0 3px rgba(96, 165, 250, 0.15), 0 0 0 2px #60a5fa;
-  --focus-ring-offset: 0 0 0 2px var(--surface), 0 0 0 4px #60a5fa;
+  /* Focus ring */
+  --focus-ring: 0 0 0 3px rgba(124, 107, 240, 0.15), 0 0 0 2px #7C6BF0;
+  --focus-ring-offset: 0 0 0 2px var(--surface), 0 0 0 4px #7C6BF0;
 
-  /* Status tones - dark */
+  /* Fluid spacing */
+  --space-xs: clamp(0.25rem, 0.5vw, 0.5rem);
+  --space-sm: clamp(0.5rem, 1vw, 0.75rem);
+  --space-md: clamp(0.75rem, 1.5vw + 0.25rem, 1.5rem);
+  --space-lg: clamp(1.25rem, 2.5vw + 0.25rem, 2.5rem);
+  --space-xl: clamp(2rem, 4vw + 0.5rem, 5rem);
+  --page-pad: clamp(1rem, 4vw, 2.5rem);
+
+  /* Status tones */
   --status-emerald-bg: rgba(6, 95, 70, 0.2);
   --status-emerald-text: #6ee7b7;
   --status-rose-bg: rgba(159, 18, 57, 0.2);
@@ -123,6 +72,17 @@
   --status-violet-text: #c4b5fd;
   --status-orange-bg: rgba(154, 52, 18, 0.2);
   --status-orange-text: #fdba74;
+
+  /* Constellation tokens (used by landing + synapse) */
+  --constellation-purple: #7C6BF0;
+  --constellation-pink: #E8B4B8;
+  --constellation-teal: #4ECDC4;
+  --constellation-dark: #0B0F13;
+  --constellation-surface: rgba(255, 255, 255, 0.03);
+  --constellation-border: rgba(255, 255, 255, 0.1);
+  --constellation-text: #E2E8F0;
+  --constellation-text-muted: #94A3B8;
+  --constellation-text-faint: #64748B;
 }
 
 * {
@@ -153,13 +113,13 @@ body {
 .btn-shine {
   position: relative;
   overflow: hidden;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.15);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
 }
 .btn-shine::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(to bottom, rgba(255,255,255,0.15), transparent 50%);
+  background: linear-gradient(to bottom, rgba(255,255,255,0.08), transparent 50%);
   opacity: 0;
   transition: opacity 200ms ease;
   pointer-events: none;
@@ -167,11 +127,31 @@ body {
 }
 .btn-shine:hover::after { opacity: 1; }
 
-[data-theme="dark"] .btn-shine {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+.landing-dark {
+  background-color: var(--constellation-dark);
+  color: var(--constellation-text);
 }
-[data-theme="dark"] .btn-shine::after {
-  background: linear-gradient(to bottom, rgba(255,255,255,0.08), transparent 50%);
+
+.constellation-bg {
+  background-image:
+    radial-gradient(circle at 20% 30%, rgba(124, 107, 240, 0.05) 0%, transparent 40%),
+    radial-gradient(circle at 80% 70%, rgba(78, 205, 196, 0.05) 0%, transparent 40%),
+    radial-gradient(circle at 50% 50%, rgba(232, 180, 184, 0.03) 0%, transparent 50%);
+}
+
+.glass-card {
+  background: var(--constellation-surface);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--constellation-border);
+}
+
+.glow-purple {
+  box-shadow: 0 0 20px rgba(124, 107, 240, 0.3);
+}
+
+.glow-purple-hover:hover {
+  box-shadow: 0 0 30px rgba(124, 107, 240, 0.45);
 }
 
 a {

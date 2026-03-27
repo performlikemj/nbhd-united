@@ -29,10 +29,10 @@ function formatDate(dateString: string): string {
 
 function clusterNodeColor(id: number | null): string {
   if (id == null) {
-    return "#5fbaaf";
+    return "#4ECDC4";
   }
   const hue = (id * 42) % 360;
-  return `hsl(${hue}, 65%, 52%)`;
+  return `hsl(${hue}, 60%, 65%)`;
 }
 
 function getClusterLabel(
@@ -404,7 +404,7 @@ export default function ConstellationPage() {
                           const targetPos = nodePositions.get(Number(edge.target));
                           if (!sourcePos || !targetPos) return null;
                           const sim = edge.similarity ?? 0;
-                          const stroke = sim >= 0.75 ? "rgba(95,186,175,0.7)" : sim >= 0.5 ? "rgba(95,186,175,0.35)" : "rgba(95,186,175,0.3)";
+                          const stroke = sim >= 0.75 ? "rgba(78,205,196,0.7)" : sim >= 0.5 ? "rgba(78,205,196,0.35)" : "rgba(78,205,196,0.3)";
                           const strokeWidth = sim >= 0.75 ? 2 : 1;
                           const strokeDasharray = sim < 0.5 ? "4 6" : undefined;
                           return (
@@ -666,8 +666,8 @@ export default function ConstellationPage() {
       {/* Breathing animation keyframes */}
       <style jsx global>{`
         @keyframes constellation-breathe {
-          0%, 100% { box-shadow: 0 0 8px 2px rgba(95, 186, 175, 0.12); }
-          50% { box-shadow: 0 0 18px 6px rgba(95, 186, 175, 0.3); }
+          0%, 100% { box-shadow: 0 0 8px 2px rgba(78, 205, 196, 0.12); }
+          50% { box-shadow: 0 0 18px 6px rgba(78, 205, 196, 0.3); }
         }
         @media (prefers-reduced-motion: reduce) {
           .constellation-breathe { animation: none !important; }

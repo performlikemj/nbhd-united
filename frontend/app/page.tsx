@@ -1,63 +1,82 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { isLoggedIn } from "@/lib/auth";
-import { IntelligenceMeter } from "@/components/intelligence-meter";
+import { Starfield } from "@/components/landing/starfield";
+import { ConstellationLines } from "@/components/landing/constellation-lines";
+import { SynapseNetwork } from "@/components/landing/synapse-network";
 
-type LevelSpec = number | [number, number];
-
-type PlanCard = {
-  name: string;
-  price: string;
-  model: string;
-  intelligence?: LevelSpec;
-  features: string[];
-  comingSoon?: boolean;
-  comingSoonLabel?: string;
-  highlight?: boolean;
-};
-
-const plans: PlanCard[] = [
+const steps = [
   {
-    name: "Starter",
-    price: "$12",
-    model: "MiniMax M2.7",
-    intelligence: 6,
-    features: [
-      "Private AI assistant via Telegram or LINE",
-      "Journaling & daily notes",
-      "Scheduled tasks & reminders",
-      "50 messages/day",
-    ],
+    title: "Talk naturally",
+    description:
+      "Daily check-ins, voice notes, stream of consciousness. Just talk\u00a0\u2014 your assistant is always listening.",
+    color: "c-purple",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" className="h-7 w-7" aria-hidden="true">
+        <path
+          d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5Z"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    ),
   },
   {
-    name: "Premium",
-    price: "$25",
-    model: "Claude Sonnet / Opus",
-    intelligence: [8, 9],
-    highlight: true,
-    features: [
-      "Everything in Starter",
-      "Advanced reasoning models",
-      "200 messages/day",
-      "Priority support",
-    ],
+    title: "Patterns emerge",
+    description:
+      "Your assistant extracts lessons, tracks goals, and connects the dots you can\u2019t see yet.",
+    color: "c-teal",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" className="h-7 w-7" aria-hidden="true">
+        <circle cx="12" cy="12" r="2" stroke="currentColor" strokeWidth="1.5" />
+        <circle cx="5" cy="7" r="1.5" stroke="currentColor" strokeWidth="1.5" />
+        <circle cx="19" cy="7" r="1.5" stroke="currentColor" strokeWidth="1.5" />
+        <circle cx="5" cy="17" r="1.5" stroke="currentColor" strokeWidth="1.5" />
+        <circle cx="19" cy="17" r="1.5" stroke="currentColor" strokeWidth="1.5" />
+        <path d="M6.5 8L10.5 11M13.5 11L17.5 8M6.5 16L10.5 13M13.5 13L17.5 16" stroke="currentColor" strokeWidth="1" />
+      </svg>
+    ),
   },
   {
-    name: "Bring Your Own Key",
-    price: "$8",
-    model: "Your API key",
-    features: [
-      "Everything in Starter",
-      "Use your own AI provider key",
-      "Full model flexibility",
-      "200 messages/day",
-    ],
+    title: "See your constellation",
+    description:
+      "A living visual map of who you\u2019re becoming. Your growth, your connections, your universe.",
+    color: "c-pink",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" className="h-7 w-7" aria-hidden="true">
+        <path
+          d="M12 2L13.09 8.26L18 4L14.74 9.91L21 10L14.74 12.09L18 18L13.09 13.74L12 20L10.91 13.74L6 18L9.26 12.09L3 10L9.26 9.91L6 4L10.91 8.26L12 2Z"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinejoin="round"
+        />
+      </svg>
+    ),
   },
 ];
+
+const colorMap: Record<string, { bg: string; text: string; hoverBg: string }> = {
+  "c-purple": {
+    bg: "bg-c-purple/10",
+    text: "text-c-purple",
+    hoverBg: "group-hover:bg-c-purple/20",
+  },
+  "c-teal": {
+    bg: "bg-c-teal/10",
+    text: "text-c-teal",
+    hoverBg: "group-hover:bg-c-teal/20",
+  },
+  "c-pink": {
+    bg: "bg-c-pink/10",
+    text: "text-c-pink",
+    hoverBg: "group-hover:bg-c-pink/20",
+  },
+};
 
 export default function LandingPage() {
   const router = useRouter();
@@ -74,156 +93,135 @@ export default function LandingPage() {
   if (!ready) return null;
 
   return (
-    <div className="flex min-h-screen flex-col">
-      {/* Hero */}
-      <header className="flex flex-col items-center px-6 pt-20 pb-16 text-center">
-        <Image
-          src="/images/logo-light.png"
-          alt="Neighborhood United"
-          width={160}
-          height={160}
-          className="animate-reveal-1 rounded-lg"
-          style={{ objectFit: "contain" }}
-          priority
-        />
-        <p className="animate-reveal-1 mt-4 font-mono text-xs uppercase tracking-[0.24em] text-ink-muted">
-          Neighborhood United
-        </p>
-        <h1 className="animate-reveal-2 font-display mt-4 max-w-2xl text-[clamp(2.25rem,5vw+0.5rem,3.5rem)] font-normal leading-tight text-ink">
-          Your AI-powered personal&nbsp;assistant
-        </h1>
-        <p className="animate-reveal-3 mt-4 max-w-xl text-lg text-ink-muted">
-          A private AI assistant delivered through Telegram or LINE. Journal your
-          thoughts, schedule tasks, get briefings, and stay organized — all
-          through natural conversation.
-        </p>
-        <div className="animate-reveal-4 mt-8 flex gap-4">
-          <Link
-            href="/signup"
-            className="btn-shine rounded-full bg-accent px-6 py-3 text-sm font-medium text-white transition hover:bg-accent/85 min-h-[44px] inline-flex items-center"
-          >
-            Start free trial
-          </Link>
-          <Link
-            href="/login"
-            className="rounded-full border border-border-strong px-6 py-3 text-sm font-medium text-ink transition hover:border-border-strong hover:bg-surface-hover min-h-[44px] inline-flex items-center"
-          >
-            Sign in
-          </Link>
-        </div>
-      </header>
+    <div className="landing-dark flex min-h-screen flex-col">
+      {/* ── Hero ── */}
+      <section className="constellation-bg relative flex min-h-screen flex-col items-center justify-center overflow-hidden px-6 pt-20">
+        <Starfield />
+        <ConstellationLines />
+        <SynapseNetwork className="opacity-[0.12]" />
 
-      {/* Features */}
-      <section className="mx-auto grid w-full max-w-4xl gap-6 px-6 py-12 sm:grid-cols-2 lg:grid-cols-3">
-        {[
-          {
-            icon: "💬",
-            title: "Telegram & LINE",
-            desc: "Chat with your AI assistant via Telegram or LINE. No new apps to install.",
-          },
-          {
-            icon: "📓",
-            title: "Journaling & Notes",
-            desc: "Capture thoughts, daily reflections, and long-term memory — all searchable and organized.",
-          },
-          {
-            icon: "⏰",
-            title: "Scheduled Tasks",
-            desc: "Set up morning briefings, reminders, recurring check-ins, and automated workflows.",
-          },
-          {
-            icon: "🧠",
-            title: "Personal Knowledge",
-            desc: "Your assistant remembers context across conversations — preferences, projects, and goals.",
-          },
-          {
-            icon: "🔒",
-            title: "Private & Secure",
-            desc: "Each subscriber gets a dedicated AI instance. Your data is never shared with other users.",
-          },
-          {
-            icon: "⚡",
-            title: "Choose Your Model",
-            desc: "Pick the AI model that fits your needs — from fast and affordable to the most capable available.",
-          },
-        ].map((f) => (
-          <div
-            key={f.title}
-            className="group rounded-panel border border-border bg-card p-5 transition hover:shadow-panel hover:-translate-y-1"
-          >
-            <span className="text-2xl">{f.icon}</span>
-            <h3 className="mt-2 font-semibold text-ink">{f.title}</h3>
-            <p className="mt-1 text-sm text-ink-muted">{f.desc}</p>
-            <span className="mt-3 inline-block text-sm text-ink-faint transition-transform group-hover:translate-x-1" aria-hidden="true">→</span>
-          </div>
-        ))}
-      </section>
-
-      {/* Pricing */}
-      <section className="mx-auto w-full max-w-4xl px-6 py-12">
-        <h2 className="font-display mb-8 text-center text-[clamp(1.5rem,3vw+0.25rem,2.25rem)] font-normal text-ink">Plans</h2>
-        <div className="grid gap-6 sm:grid-cols-3">
-          {plans.map((plan) => (
-            <div
-              key={plan.name}
-              className={`rounded-panel border p-6 ${
-                plan.highlight
-                  ? "border-accent bg-accent/5 shadow-lg"
-                  : "border-border bg-surface-elevated"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <h3 className="text-lg font-semibold text-ink">{plan.name}</h3>
-                {"comingSoon" in plan && plan.comingSoon && (
-                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
-                    {plan.comingSoonLabel || "Coming soon"}
-                  </span>
-                )}
-              </div>
-              <p className="mt-1 text-sm text-ink-muted">{plan.model}</p>
-              {plan.intelligence != null && (
-                <div className="mt-2">
-                  <IntelligenceMeter level={plan.intelligence} compact />
-                </div>
-              )}
-              <p className={`mt-3 text-3xl font-bold ${"comingSoon" in plan && plan.comingSoon ? "text-ink-muted" : "text-ink"}`}>
-                {plan.price}
-                <span className="text-base font-normal text-ink-muted">/mo</span>
-              </p>
-              <ul className="mt-4 space-y-2">
-                {plan.features.map((f) => (
-                  <li key={f} className="flex items-start gap-2 text-sm text-ink-muted">
-                    <span className="mt-0.5 text-emerald-500">✓</span>
-                    {f}
-                  </li>
-                ))}
-              </ul>
-              {"comingSoon" in plan && plan.comingSoon ? (
-                <span className="mt-6 block rounded-full border border-border-strong px-4 py-2.5 text-center text-sm font-medium text-ink-muted cursor-default opacity-60 min-h-[44px] leading-[44px]">
-                  {plan.comingSoonLabel || "Coming soon"}
-                </span>
-              ) : (
-                <Link
-                  href="/signup"
-                  className={`mt-6 block rounded-full px-4 py-2.5 text-center text-sm font-medium transition ${
-                    plan.highlight
-                      ? "bg-accent text-white hover:bg-accent/85"
-                      : "border border-border-strong text-ink hover:bg-surface-hover"
-                  }`}
-                >
-                  Get started
-                </Link>
-              )}
+        <div className="relative z-10 max-w-4xl space-y-8 text-center">
+          {/* Logo mark */}
+          <div className="animate-reveal-1 flex justify-center">
+            <div className="glow-purple flex h-12 w-12 items-center justify-center rounded-full border border-c-purple/30 bg-c-purple/20">
+              <svg viewBox="0 0 24 24" fill="none" className="h-6 w-6 text-c-purple" aria-hidden="true">
+                <path
+                  d="M12 2L13.09 8.26L18 4L14.74 9.91L21 10L14.74 12.09L18 18L13.09 13.74L12 20L10.91 13.74L6 18L9.26 12.09L3 10L9.26 9.91L6 4L10.91 8.26L12 2Z"
+                  fill="currentColor"
+                />
+              </svg>
             </div>
-          ))}
+          </div>
+
+          <h1 className="animate-reveal-2 font-headline text-[clamp(2.5rem,5vw+0.5rem,4.5rem)] font-bold leading-tight tracking-tight text-c-text">
+            Explore the universe{" "}
+            <br />
+            <span className="bg-gradient-to-r from-c-purple via-c-pink to-c-teal bg-clip-text text-transparent">
+              inside you
+            </span>
+          </h1>
+
+          <p className="animate-reveal-3 mx-auto max-w-2xl text-lg font-light leading-relaxed text-c-text-muted md:text-xl">
+            A private AI companion that listens, learns, and helps you
+            grow&nbsp;&mdash; through natural conversation on Telegram and LINE.
+          </p>
+
+          <div className="animate-reveal-4 flex flex-col items-center justify-center gap-4 pt-4 sm:flex-row">
+            <Link
+              href="/signup"
+              className="glow-purple glow-purple-hover inline-flex min-h-[44px] items-center rounded-lg bg-c-purple px-8 py-4 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-95"
+            >
+              Begin your journey
+            </Link>
+            <Link
+              href="/login"
+              className="inline-flex min-h-[44px] items-center rounded-lg border border-white/20 bg-transparent px-8 py-4 text-sm font-semibold text-c-text transition-all hover:bg-white/5 active:scale-95"
+            >
+              Sign in
+            </Link>
+          </div>
         </div>
 
-        <p className="mt-6 text-center text-xs text-ink-muted">
-          Your assistant may take up to a minute to respond after periods of inactivity.
-        </p>
+        {/* Scroll indicator */}
+        <div className="absolute bottom-10 left-1/2 flex -translate-x-1/2 flex-col items-center gap-2 opacity-40">
+          <span className="text-[10px] uppercase tracking-[0.25em]">
+            Scroll to explore
+          </span>
+          <div className="h-12 w-px bg-gradient-to-b from-white to-transparent" />
+        </div>
       </section>
 
-      {/* Footer provided by AppShell's SiteFooter */}
+      {/* ── How It Works ── */}
+      <section className="mx-auto w-full max-w-7xl px-6 py-24">
+        <div className="grid grid-cols-1 gap-8 md:grid-cols-3">
+          {steps.map((step) => {
+            const colors = colorMap[step.color];
+            return (
+              <div
+                key={step.title}
+                className="glass-card group flex flex-col gap-6 rounded-xl p-8 transition-transform duration-500 hover:-translate-y-1"
+              >
+                <div
+                  className={`flex h-14 w-14 items-center justify-center rounded-full transition-colors ${colors.bg} ${colors.text} ${colors.hoverBg}`}
+                >
+                  {step.icon}
+                </div>
+                <div>
+                  <h3 className="font-headline mb-3 text-xl font-semibold text-c-text">
+                    {step.title}
+                  </h3>
+                  <p className="leading-relaxed text-c-text-muted">
+                    {step.description}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* ── The Vision ── */}
+      <section className="relative overflow-hidden bg-black/40 px-6 py-32">
+        <Starfield className="opacity-40" />
+        <SynapseNetwork className="opacity-[0.08] scale-x-[-1]" />
+        <div className="relative z-10 mx-auto max-w-4xl text-center">
+          <span className="mb-8 block text-xs font-semibold uppercase tracking-[0.3em] text-c-teal">
+            The Vision
+          </span>
+          <blockquote className="font-serif text-[clamp(1.5rem,3vw+0.5rem,3rem)] italic leading-snug text-slate-200">
+            &ldquo;There are as many neurons in your brain as stars in the Milky
+            Way. We carry a universe inside us.{" "}
+            <span className="text-c-pink">Neighborhood United</span> helps you
+            explore yours.&rdquo;
+          </blockquote>
+          <div className="mt-16 flex items-center justify-center gap-6 opacity-30">
+            <div className="h-px w-24 bg-gradient-to-r from-transparent to-slate-400" />
+            <svg viewBox="0 0 24 24" className="h-5 w-5 text-slate-400" fill="currentColor" aria-hidden="true">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2Zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9Z" opacity="0" />
+              <path d="M15.5 2.5L12 8l-3.5-5.5L12 5.5l3.5-3ZM22 12l-5.5-3.5L22 12l-5.5 3.5L22 12ZM2 12l5.5-3.5L2 12l5.5 3.5L2 12ZM12 22l3.5-5.5L12 22l-3.5-5.5L12 22ZM8.5 2.5L12 8l3.5-5.5" stroke="currentColor" strokeWidth="1" fill="none" />
+            </svg>
+            <div className="h-px w-24 bg-gradient-to-l from-transparent to-slate-400" />
+          </div>
+        </div>
+      </section>
+
+      {/* ── Final CTA ── */}
+      <section className="px-6 py-32 text-center">
+        <div className="mx-auto max-w-2xl space-y-10">
+          <h2 className="font-headline text-[clamp(2rem,4vw+0.5rem,3.25rem)] font-bold tracking-tight text-c-text">
+            Your constellation is waiting.
+          </h2>
+          <div className="flex justify-center">
+            <Link
+              href="/signup"
+              className="glow-purple group relative inline-flex min-h-[44px] items-center overflow-hidden rounded-lg bg-c-purple px-12 py-5 text-lg font-bold text-white transition-all duration-300 hover:scale-105"
+            >
+              <span className="relative z-10">Get started</span>
+              <div className="absolute inset-0 translate-y-full bg-white/10 transition-transform duration-300 group-hover:translate-y-0" />
+            </Link>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }

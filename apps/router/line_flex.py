@@ -151,10 +151,15 @@ def _parse_sections(text: str) -> list[dict]:
             prev_blank = False
             continue
 
-        # Markdown headers (## Title) are ALWAYS headers, no blank line needed
+        # Markdown headers (## Title) — always a header
         if re.match(r"^#{1,3}\s+", stripped):
             header_indices.add(i)
-        # Emoji and plain text headers require a preceding blank line
+        # Emoji headers (🔴 Title) — always a header (visually unambiguous)
+        elif (not stripped[0].isascii()
+                and unicodedata.category(stripped[0]) == "So"
+                and re.match(r"^\S+\s+.+$", stripped)):
+            header_indices.add(i)
+        # Plain text headers — only after a blank line (to avoid false positives)
         elif prev_blank and _is_header_line(stripped):
             header_indices.add(i)
 

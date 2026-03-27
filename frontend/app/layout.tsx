@@ -1,5 +1,10 @@
 import type { Metadata } from "next";
-import { DM_Serif_Display, Plus_Jakarta_Sans } from "next/font/google";
+import {
+  DM_Serif_Display,
+  Plus_Jakarta_Sans,
+  Space_Grotesk,
+  Instrument_Serif,
+} from "next/font/google";
 
 import { AppShell } from "@/components/app-shell";
 import { ThemeProvider } from "@/components/theme-provider";
@@ -19,6 +24,21 @@ const dmSerif = DM_Serif_Display({
   variable: "--font-display",
   display: "swap",
   weight: "400",
+});
+
+const spaceGrotesk = Space_Grotesk({
+  subsets: ["latin"],
+  variable: "--font-headline",
+  display: "swap",
+  weight: ["400", "500", "600", "700"],
+});
+
+const instrumentSerif = Instrument_Serif({
+  subsets: ["latin"],
+  variable: "--font-serif",
+  display: "swap",
+  weight: "400",
+  style: "italic",
 });
 
 export const metadata: Metadata = {
@@ -46,10 +66,10 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`h-full ${plusJakarta.variable} ${dmSerif.variable}`}>
+    <html lang="en" className={`h-full ${plusJakarta.variable} ${dmSerif.variable} ${spaceGrotesk.variable} ${instrumentSerif.variable}`}>
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-        <meta name="theme-color" content="#f8f6ef" />
+        <meta name="theme-color" content="#0b0f13" />
       </head>
       <body className="overflow-x-hidden bg-bg">
         <ThemeProvider>
