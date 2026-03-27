@@ -9,6 +9,18 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 
+def dedup_lessons_task() -> dict:
+    """Remove near-duplicate lessons for all active tenants."""
+    from django.core.management import call_command
+    from io import StringIO
+
+    out = StringIO()
+    call_command("dedup_lessons", stdout=out)
+    output = out.getvalue()
+    logger.info("dedup_lessons_task: %s", output[-1000:])
+    return {"ok": True, "output_tail": output[-1000:]}
+
+
 def reseed_lessons_task() -> dict:
     """Fan out reseed to each active tenant via QStash."""
     from apps.tenants.models import Tenant

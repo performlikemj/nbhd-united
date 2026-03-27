@@ -66,7 +66,8 @@ TASK_MAP = {
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
     # Force reseed cron jobs for all tenants (one-off)
     "force_reseed_crons": "apps.orchestrator.tasks.force_reseed_crons_task",
-    # One-time lesson re-seed from daily notes
+    # Lesson constellation maintenance
+    "dedup_lessons": "apps.lessons.tasks.dedup_lessons_task",
     "reseed_lessons": "apps.lessons.tasks.reseed_lessons_task",
     "reseed_lessons_single_tenant": "apps.lessons.tasks.reseed_lessons_single_tenant_task",
     # Hibernate suspended containers (one-off cleanup)
