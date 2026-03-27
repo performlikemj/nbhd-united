@@ -66,6 +66,8 @@ TASK_MAP = {
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
     # Force reseed cron jobs for all tenants (one-off)
     "force_reseed_crons": "apps.orchestrator.tasks.force_reseed_crons_task",
+    # One-time lesson re-seed from daily notes
+    "reseed_lessons": "apps.lessons.tasks.reseed_lessons_task",
     # Hibernate suspended containers (one-off cleanup)
     "hibernate_suspended": "apps.orchestrator.tasks.hibernate_suspended_task",
     # Per-tenant config/image updates (enqueued by apply-pending-configs)
