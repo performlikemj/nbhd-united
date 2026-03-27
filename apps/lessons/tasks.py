@@ -40,12 +40,12 @@ def reseed_lessons_single_tenant_task(tenant_id: str) -> dict:
     tenant = Tenant.objects.get(id=tenant_id)
     tid = str(tenant.id)[:8]
 
-    # ── Delete ALL existing lessons for a clean slate ──
-    deleted_lessons, _ = Lesson.objects.filter(tenant=tenant).delete()
+    # ── Delete old lessons (preserve any from a prior reseed attempt) ──
+    deleted_lessons, _ = Lesson.objects.filter(tenant=tenant).exclude(source_ref="reseed").delete()
     deleted_pending, _ = PendingExtraction.objects.filter(
         tenant=tenant, kind=PendingExtraction.Kind.LESSON,
     ).delete()
-    logger.info("reseed[%s]: cleared %d lessons, %d pending", tid, deleted_lessons, deleted_pending)
+    logger.info("reseed[%s]: cleared %d old lessons, %d pending", tid, deleted_lessons, deleted_pending)
 
     # ── Gather daily notes ──
     notes = _gather_notes(tenant)
