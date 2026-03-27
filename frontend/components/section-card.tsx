@@ -17,7 +17,7 @@ export function SectionCard({
       style={{ animationDelay: `${delay}ms` }}
     >
       <header className="mb-4">
-        <h2 className="font-display text-xl text-ink">{title}</h2>
+        <h2 className="font-headline text-xl font-bold text-ink">{title}</h2>
         {subtitle ? <p className="mt-1 text-sm text-ink-muted">{subtitle}</p> : null}
       </header>
       {children}
