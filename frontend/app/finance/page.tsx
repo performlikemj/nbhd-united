@@ -31,7 +31,7 @@ export default function FinancePage() {
     return (
       <div className="space-y-4 sm:space-y-6">
         <div>
-          <h1 className="font-display text-2xl text-ink sm:text-3xl">
+          <h1 className="font-headline text-3xl font-bold tracking-tight text-ink sm:text-4xl">
             Fuel
           </h1>
           <p className="mt-1 text-sm text-ink-muted">
@@ -53,7 +53,7 @@ export default function FinancePage() {
     return (
       <div className="space-y-4 sm:space-y-6">
         <div>
-          <h1 className="font-display text-2xl text-ink sm:text-3xl">
+          <h1 className="font-headline text-3xl font-bold tracking-tight text-ink sm:text-4xl">
             Fuel
           </h1>
         </div>
@@ -76,7 +76,7 @@ export default function FinancePage() {
     return (
       <div className="space-y-4 sm:space-y-6">
         <div>
-          <h1 className="font-display text-2xl text-ink sm:text-3xl">
+          <h1 className="font-headline text-3xl font-bold tracking-tight text-ink sm:text-4xl">
             Fuel
           </h1>
           <p className="mt-1 text-sm text-ink-muted">
@@ -84,7 +84,7 @@ export default function FinancePage() {
           </p>
         </div>
         <div className="rounded-panel border border-border bg-card/95 p-8 text-center shadow-panel animate-reveal">
-          <p className="font-display text-xl text-ink">No accounts yet</p>
+          <p className="font-headline text-xl font-bold text-ink">No accounts yet</p>
           <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-ink-muted">
             Tell your assistant about your debts and savings. Say something like
             &ldquo;I have a credit card with $5,000 at 22% APR&rdquo; and it
@@ -99,7 +99,7 @@ export default function FinancePage() {
     <div className="space-y-4 sm:space-y-6">
       {/* Header */}
       <div>
-        <h1 className="font-display text-2xl text-ink sm:text-3xl">Fuel</h1>
+        <h1 className="font-headline text-3xl font-bold tracking-tight text-ink sm:text-4xl">Fuel</h1>
         <p className="mt-1 text-sm text-ink-muted">
           What powers the journey.
         </p>
@@ -155,7 +155,7 @@ export default function FinancePage() {
           className="animate-reveal"
           style={{ animationDelay: "350ms" }}
         >
-          <h2 className="font-display text-xl text-ink">Debt Accounts</h2>
+          <h2 className="font-headline text-xl font-bold text-ink">Debt Accounts</h2>
           <div className="mt-3 grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2">
             {debtAccounts.map((account) => (
               <AccountCard key={account.id} account={account} />
@@ -169,7 +169,7 @@ export default function FinancePage() {
           className="animate-reveal"
           style={{ animationDelay: "400ms" }}
         >
-          <h2 className="font-display text-xl text-ink">Savings</h2>
+          <h2 className="font-headline text-xl font-bold text-ink">Savings</h2>
           <div className="mt-3 grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2">
             {savingsAccounts.map((account) => (
               <AccountCard key={account.id} account={account} />
