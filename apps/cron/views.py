@@ -68,6 +68,7 @@ TASK_MAP = {
     "force_reseed_crons": "apps.orchestrator.tasks.force_reseed_crons_task",
     # One-time lesson re-seed from daily notes
     "reseed_lessons": "apps.lessons.tasks.reseed_lessons_task",
+    "reseed_lessons_single_tenant": "apps.lessons.tasks.reseed_lessons_single_tenant_task",
     # Hibernate suspended containers (one-off cleanup)
     "hibernate_suspended": "apps.orchestrator.tasks.hibernate_suspended_task",
     # Per-tenant config/image updates (enqueued by apply-pending-configs)
