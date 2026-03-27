@@ -53,21 +53,21 @@ export function GoalCard({ goal }: { goal: HorizonsGoal }) {
   return (
     <Link
       href={`/journal/goal/${goal.slug}`}
-      className="group block rounded-panel border border-border bg-card/95 p-4 transition-colors hover:border-border-strong hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 md:p-5"
+      className="group block glass-card-horizons border-l-2 border-l-accent p-5 transition-all hover:border-l-accent-hover focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 md:p-6"
     >
       <article>
-        <h3 className="font-display text-lg text-ink md:text-xl">
+        <h3 className="font-headline font-semibold text-lg leading-tight text-ink">
           {displayTitle}
         </h3>
 
         {cleanPreview ? (
-          <p className="mt-2 line-clamp-3 text-sm text-ink-muted">
+          <p className="mt-2 line-clamp-3 text-xs text-ink-muted leading-relaxed">
             {cleanPreview}
           </p>
         ) : null}
 
-        <div className="mt-3 flex items-center justify-between">
-          <span className="font-mono text-xs text-ink-faint">
+        <div className="mt-4 flex items-center justify-between">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-ink-faint">
             {formatDate(goal.created_at)}
           </span>
           <span className="text-xs text-accent opacity-100 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100 sm:group-focus-visible:opacity-100">

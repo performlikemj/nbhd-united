@@ -57,18 +57,16 @@ class Command(BaseCommand):
         self.stdout.write(f"\n{'='*60}")
         self.stdout.write(f"Tenant {tid}")
 
-        # ── Delete existing journal-sourced lessons ──
+        # ── Delete ALL existing lessons for a clean slate ──
         if not dry_run:
-            deleted_lessons, _ = Lesson.objects.filter(
-                tenant=tenant, source_type="journal",
-            ).delete()
+            deleted_lessons, _ = Lesson.objects.filter(tenant=tenant).delete()
             deleted_pending, _ = PendingExtraction.objects.filter(
                 tenant=tenant, kind=PendingExtraction.Kind.LESSON,
             ).delete()
             self.stdout.write(f"  Cleared {deleted_lessons} lessons, {deleted_pending} pending extractions")
         else:
-            existing = Lesson.objects.filter(tenant=tenant, source_type="journal").count()
-            self.stdout.write(f"  Would delete {existing} existing journal lessons")
+            existing = Lesson.objects.filter(tenant=tenant).count()
+            self.stdout.write(f"  Would delete {existing} existing lessons")
 
         # ── Gather daily notes ──
         notes = self._gather_notes(tenant, since)

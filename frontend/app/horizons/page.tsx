@@ -1,43 +1,60 @@
 "use client";
 
 import { GoalCard } from "@/components/goal-card";
+import { HorizonsSection } from "@/components/horizons/horizons-section";
 import { MomentumStrip } from "@/components/momentum-strip";
 import { PendingGoal } from "@/components/pending-goal";
-import { SectionCard } from "@/components/section-card";
-import { SectionCardSkeleton } from "@/components/skeleton";
 import { WeeklyPulse } from "@/components/weekly-pulse";
 import { useHorizonsQuery } from "@/lib/queries";
+
+function HorizonsSkeleton() {
+  return (
+    <div className="space-y-6 sm:space-y-8">
+      <div>
+        <h1 className="font-headline text-5xl font-bold tracking-tight text-ink md:text-7xl">
+          Horizons
+        </h1>
+        <p className="mt-2 text-lg font-light text-ink-muted">
+          Your goals, your momentum.
+        </p>
+      </div>
+      {[1, 2, 3].map((i) => (
+        <div
+          key={i}
+          className="glass-card-horizons animate-pulse p-5 sm:p-8"
+        >
+          <div className="mb-4 h-6 w-32 rounded bg-surface-elevated" />
+          <div className="space-y-2">
+            {Array.from({ length: i + 1 }).map((_, j) => (
+              <div
+                key={j}
+                className="h-4 rounded bg-surface-elevated"
+                style={{ width: `${70 - j * 15}%` }}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function HorizonsPage() {
   const { data, isLoading, error } = useHorizonsQuery();
 
   if (isLoading) {
-    return (
-      <div className="space-y-6">
-        <div>
-          <h1 className="font-headline text-3xl font-bold text-ink sm:text-4xl">
-            Horizons
-          </h1>
-          <p className="mt-1 text-sm text-ink-muted">
-            Your goals, your momentum.
-          </p>
-        </div>
-        <SectionCardSkeleton lines={2} />
-        <SectionCardSkeleton lines={3} />
-        <SectionCardSkeleton lines={4} />
-      </div>
-    );
+    return <HorizonsSkeleton />;
   }
 
   if (error) {
     return (
       <div className="space-y-6">
         <div>
-          <h1 className="font-headline text-3xl font-bold text-ink sm:text-4xl">
+          <h1 className="font-headline text-5xl font-bold tracking-tight text-ink md:text-7xl">
             Horizons
           </h1>
         </div>
-        <div className="rounded-panel border border-rose-border bg-rose-bg p-4 text-sm text-rose-text">
+        <div className="glass-card-horizons p-5 text-sm text-rose-text sm:p-8">
           Failed to load Horizons.{" "}
           {error instanceof Error ? error.message : "Please try again."}
         </div>
@@ -52,34 +69,34 @@ export default function HorizonsPage() {
   );
 
   return (
-    <div className="space-y-6 sm:space-y-8">
-      {/* Header */}
-      <div>
-        <h1 className="font-headline text-3xl font-bold tracking-tight text-ink sm:text-4xl">
+    <div className="space-y-8 sm:space-y-12">
+      {/* Hero Header */}
+      <div className="space-y-2">
+        <h1 className="font-headline text-5xl font-bold tracking-tight text-ink md:text-7xl">
           Horizons
         </h1>
-        <p className="mt-1 text-sm text-ink-muted">
+        <p className="text-lg font-light text-ink-muted">
           Your goals, your momentum.
         </p>
       </div>
 
       {/* Momentum — full width */}
-      <SectionCard title="Momentum" subtitle="Last 30 days" delay={100}>
+      <HorizonsSection title="Momentum" subtitle="Last 30 days" delay={100}>
         <MomentumStrip days={data.momentum} streak={data.current_streak} />
-      </SectionCard>
+      </HorizonsSection>
 
       {/* Weekly Pulse + Active Goals — side by side on large screens */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
         <div className="lg:col-span-1">
-          <SectionCard title="Weekly Pulse" delay={200}>
+          <HorizonsSection title="Weekly Pulse" delay={200}>
             <WeeklyPulse weeks={data.weekly_pulse} />
-          </SectionCard>
+          </HorizonsSection>
         </div>
 
         <div className="lg:col-span-2">
-          <SectionCard title="Active Goals" delay={350}>
+          <HorizonsSection title="Active Goals" delay={350}>
             {realGoals.length > 0 ? (
-              <div className="grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 md:gap-6">
                 {realGoals.map((goal) => (
                   <GoalCard key={goal.id} goal={goal} />
                 ))}
@@ -90,17 +107,20 @@ export default function HorizonsPage() {
                 assistant will help you track them.
               </p>
             )}
-          </SectionCard>
+          </HorizonsSection>
         </div>
       </div>
 
       {/* Suggestions from journal */}
       {data.pending_extractions.length > 0 ? (
-        <div className="animate-reveal" style={{ animationDelay: "500ms" }}>
-          <h2 className="font-headline text-xl font-bold text-ink">
-            Suggestions from your journal
-          </h2>
-          <div className="mt-3 grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2">
+        <div className="animate-reveal space-y-6" style={{ animationDelay: "500ms" }}>
+          <div className="flex items-center gap-3">
+            <span className="text-accent text-xl" aria-hidden="true">{"\u2728"}</span>
+            <h2 className="font-headline text-2xl font-bold text-ink">
+              Suggestions from your journal
+            </h2>
+          </div>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 md:gap-6">
             {data.pending_extractions.map((extraction) => (
               <PendingGoal key={extraction.id} extraction={extraction} />
             ))}

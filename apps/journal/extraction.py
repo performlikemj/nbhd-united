@@ -48,16 +48,16 @@ Return ONLY valid JSON matching this schema:
 }
 
 Rules:
-- Only extract things EXPLICITLY stated, never inferred.
-- Lessons: personal insights the user arrived at — things they now know or would do differently.
+- Extract things the user stated or clearly implied through their writing.
+- Lessons: personal insights, realizations, or things the user learned — what they now know or would do differently.
   Frame as advice to their future self — not what happened, but what to do differently.
+  Include life lessons, professional insights, relationship realizations, health observations, and personal growth moments.
   Bad: "The PR photo was the wrong size (45x35cm instead of 40x30cm)"
   Good: "Always verify exact photo dimensions for government documents before proceeding — Japanese photo machines offer non-standard sizes"
 - context: 1 sentence describing the situation that prompted this lesson.
 - Goals: things the user wants to build, ship, or achieve (multi-day/week scope).
 - Tasks: specific near-term action items with clear completion criteria.
-- Ignore small talk, status updates, routine questions.
-- Only include high or medium confidence items — skip anything vague.
+- Ignore small talk, routine status updates, and things that are purely observational with no insight.
 - Return empty arrays if nothing qualifies. Never force output.
 - Keep each item concise (1-2 sentences max).
 """

@@ -40,10 +40,8 @@ def reseed_lessons_single_tenant_task(tenant_id: str) -> dict:
     tenant = Tenant.objects.get(id=tenant_id)
     tid = str(tenant.id)[:8]
 
-    # ── Delete existing journal-sourced lessons ──
-    deleted_lessons, _ = Lesson.objects.filter(
-        tenant=tenant, source_type="journal",
-    ).delete()
+    # ── Delete ALL existing lessons for a clean slate ──
+    deleted_lessons, _ = Lesson.objects.filter(tenant=tenant).delete()
     deleted_pending, _ = PendingExtraction.objects.filter(
         tenant=tenant, kind=PendingExtraction.Kind.LESSON,
     ).delete()
@@ -71,17 +69,17 @@ def reseed_lessons_single_tenant_task(tenant_id: str) -> dict:
             continue
 
         lessons_raw = extracted.get("lessons", [])
-        total_extracted += len(lessons_raw)
+        goals_raw = extracted.get("goals", [])
+        total_extracted += len(lessons_raw) + len(goals_raw)
 
+        # Process lessons
         for item in lessons_raw:
             text = (item.get("text") or "").strip()
             if not text or len(text) < 20:
                 continue
-
             if _embedding_duplicate(tenant, text):
                 total_deduped += 1
                 continue
-
             lesson = Lesson.objects.create(
                 tenant=tenant,
                 text=text,
@@ -96,7 +94,30 @@ def reseed_lessons_single_tenant_task(tenant_id: str) -> dict:
                 process_approved_lesson(lesson)
             except Exception as e:
                 logger.warning("reseed[%s]: embedding failed for lesson %s: %s", tid, lesson.id, e)
+            total_added += 1
 
+        # Process goals as constellation nodes too
+        for item in goals_raw:
+            text = (item.get("text") or "").strip()
+            if not text or len(text) < 20:
+                continue
+            if _embedding_duplicate(tenant, text):
+                total_deduped += 1
+                continue
+            goal = Lesson.objects.create(
+                tenant=tenant,
+                text=text,
+                context=f"Goal — re-seeded from daily notes — {date.today().isoformat()}",
+                tags=["goal"],
+                source_type="journal",
+                source_ref="reseed",
+                status="approved",
+                approved_at=timezone.now(),
+            )
+            try:
+                process_approved_lesson(goal)
+            except Exception as e:
+                logger.warning("reseed[%s]: embedding failed for goal %s: %s", tid, goal.id, e)
             total_added += 1
 
     logger.info(

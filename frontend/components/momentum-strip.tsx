@@ -30,16 +30,16 @@ export function MomentumStrip({
       role="img"
       aria-label={`Activity over the last 30 days. Current streak: ${streak} day${streak === 1 ? "" : "s"}.`}
     >
-      {/* Streak hero */}
-      <div className="mb-3 flex items-baseline gap-2">
+      {/* Streak badge */}
+      <div className="mb-4">
         {hasActivity ? (
           streak > 0 ? (
-            <>
-              <span className="text-2xl font-bold" style={{ color: "var(--signal-text)" }}>
-                {streak}
+            <div className="inline-flex items-center gap-2 rounded-full border border-signal/20 bg-signal/10 px-4 py-2">
+              <span className="text-signal text-sm" aria-hidden="true">{"\u26A1"}</span>
+              <span className="text-sm font-bold tracking-tight text-signal">
+                {streak} DAY STREAK
               </span>
-              <span className="text-sm text-ink-muted">day streak</span>
-            </>
+            </div>
           ) : (
             <span className="text-sm text-ink-muted">No active streak</span>
           )
@@ -51,41 +51,35 @@ export function MomentumStrip({
       </div>
 
       {/* Activity grid */}
-      <div className="flex flex-wrap items-center gap-[3px] sm:gap-1">
+      <div className="grid grid-cols-10 md:grid-cols-15 lg:grid-cols-30 gap-2">
         {days.map((day) => {
           const isActive = day.message_count > 0 || day.has_journal;
           const inStreak = streakDays.has(day.date);
           const label = `${formatCellDate(day.date)}: ${day.message_count} message${day.message_count === 1 ? "" : "s"}${day.has_journal ? ", journal entry" : ""}${inStreak ? " (in streak)" : ""}`;
-
-          // Three tiers: streak (solid), active-outside-streak (medium), inactive (faint)
-          let opacity: number;
-          if (inStreak) {
-            opacity = 0.95;
-          } else if (isActive) {
-            opacity = 0.45;
-          } else {
-            opacity = 0.08;
-          }
 
           return (
             <div
               key={day.date}
               title={label}
               aria-label={label}
-              className="relative rounded transition-opacity duration-150"
-              style={{
-                backgroundColor: "var(--signal)",
-                opacity,
-                width: isActive ? 16 : 12,
-                height: isActive ? 16 : 12,
-              }}
+              className={`aspect-square rounded-sm transition-opacity duration-150 ${
+                inStreak
+                  ? "bg-signal glow-signal"
+                  : isActive
+                    ? "bg-signal opacity-45"
+                    : "bg-surface-elevated opacity-40"
+              }`}
             >
               {day.has_journal && isActive ? (
                 <span
-                  className="absolute left-1/2 top-1/2 block h-[4px] w-[4px] -translate-x-1/2 -translate-y-1/2 rounded-full"
-                  style={{ backgroundColor: "var(--accent)", opacity: 0.8 }}
+                  className="flex h-full w-full items-center justify-center"
                   aria-hidden="true"
-                />
+                >
+                  <span
+                    className="block h-[4px] w-[4px] rounded-full"
+                    style={{ backgroundColor: "var(--accent)", opacity: 0.8 }}
+                  />
+                </span>
               ) : null}
             </div>
           );
@@ -93,17 +87,17 @@ export function MomentumStrip({
       </div>
 
       {/* Legend */}
-      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-ink-faint">
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-ink-faint">
         <span className="flex items-center gap-1">
-          <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: "var(--signal)", opacity: 0.95 }} />
+          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-signal glow-signal" />
           In streak
         </span>
         <span className="flex items-center gap-1">
-          <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: "var(--signal)", opacity: 0.45 }} />
+          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-signal opacity-45" />
           Active
         </span>
         <span className="flex items-center gap-1">
-          <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: "var(--signal)", opacity: 0.08 }} />
+          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-surface-elevated opacity-40" />
           No activity
         </span>
         <span className="flex items-center gap-1">
