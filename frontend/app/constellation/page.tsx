@@ -360,13 +360,15 @@ export default function ConstellationPage() {
     setViewMode(mode);
   };
 
-  // Node size based on cluster importance
+  // Node size based on cluster importance — smaller on mobile
+  const isMobile = containerSize.width > 0 && containerSize.width < 768;
   function nodeSize(clusterId: number | null): number {
     const count = clusterSizes.get(clusterId) || 1;
-    if (count >= 5) return 48;
-    if (count >= 3) return 40;
-    if (count >= 2) return 32;
-    return 24;
+    const scale = isMobile ? 0.7 : 1;
+    if (count >= 5) return Math.round(48 * scale);
+    if (count >= 3) return Math.round(40 * scale);
+    if (count >= 2) return Math.round(32 * scale);
+    return Math.round(24 * scale);
   }
 
   if (error) {
@@ -389,11 +391,11 @@ export default function ConstellationPage() {
   if (viewMode === "constellation") {
     return (
       <div className="relative -mx-4 -mt-8 sm:-mx-6">
-        {/* Full-viewport graph container */}
+        {/* Graph container — sized to content, not full viewport */}
         <div
           ref={containerRef}
           className="constellation-bg relative overflow-hidden"
-          style={{ minHeight: "calc(100vh - 4rem)" }}
+          style={{ height: Math.max(400, Math.min(650, filteredNodes.length * 80 + 200)) }}
         >
           {/* Top-left controls */}
           <div className="absolute left-6 top-6 z-20 flex flex-col gap-3">
@@ -496,20 +498,19 @@ export default function ConstellationPage() {
                 })}
               </svg>
 
-              {/* Cluster labels — short, positioned above cluster centroid */}
+              {/* Cluster labels — hidden on mobile, short on desktop */}
               {Array.from(clusterAnchors.entries()).map(([clusterId, anchor]) => {
                 const label = getClusterLabel(clusterId, data.clusters);
-                // Truncate long cluster labels
-                const shortLabel = label.length > 20 ? label.slice(0, 20) + "\u2026" : label;
+                const shortLabel = label.length > 18 ? label.slice(0, 18) + "\u2026" : label;
                 const color = clusterNodeColor(clusterId);
                 return (
                   <div
                     key={`cluster-label-${clusterId}`}
-                    className="pointer-events-none absolute -translate-x-1/2 max-w-[160px] text-center"
-                    style={{ left: anchor.px, top: anchor.py - nodeSize(clusterId) / 2 - 24 }}
+                    className="pointer-events-none absolute -translate-x-1/2 max-w-[140px] text-center hidden md:block"
+                    style={{ left: anchor.px, top: anchor.py - nodeSize(clusterId) / 2 - 22 }}
                   >
                     <span
-                      className="text-[9px] font-headline font-semibold uppercase tracking-[0.1em] opacity-60"
+                      className="text-[9px] font-headline font-semibold uppercase tracking-[0.08em] opacity-50"
                       style={{ color }}
                     >
                       {shortLabel}
@@ -578,83 +579,105 @@ export default function ConstellationPage() {
             </div>
           )}
 
-          {/* Bottom-left legend */}
+          {/* Bottom legend — scrollable on mobile */}
           {clustersForSidebar.length > 0 && (
-            <div className="absolute bottom-6 left-6 z-20 glass rounded-xl px-4 py-3 flex flex-wrap gap-4">
-              {clustersForSidebar.map((cluster) => (
-                <button
-                  key={`legend-${cluster.id}`}
-                  type="button"
-                  onClick={() => setSelectedClusterId((c) => (c === cluster.id ? null : cluster.id))}
-                  className={`flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.12em] transition ${
-                    selectedClusterId === cluster.id ? "text-ink" : "text-ink-faint hover:text-ink-muted"
-                  }`}
-                >
-                  <span
-                    className="inline-block h-2 w-2 rounded-full"
-                    style={{ backgroundColor: clusterNodeColor(cluster.id) }}
-                  />
-                  {cluster.label}
-                </button>
-              ))}
+            <div className="absolute bottom-4 left-4 right-4 md:left-6 md:right-auto z-20 glass rounded-xl px-3 py-2 md:px-4 md:py-3 overflow-x-auto scrollbar-none">
+              <div className="flex gap-3 md:gap-4 md:flex-wrap whitespace-nowrap">
+                {clustersForSidebar.map((cluster) => {
+                  const shortName = cluster.label.length > 16 ? cluster.label.slice(0, 16) + "\u2026" : cluster.label;
+                  return (
+                    <button
+                      key={`legend-${cluster.id}`}
+                      type="button"
+                      onClick={() => setSelectedClusterId((c) => (c === cluster.id ? null : cluster.id))}
+                      className={`flex shrink-0 items-center gap-1.5 text-[9px] md:text-[10px] font-bold uppercase tracking-[0.1em] transition ${
+                        selectedClusterId === cluster.id ? "text-ink" : "text-ink-faint hover:text-ink-muted"
+                      }`}
+                    >
+                      <span
+                        className="inline-block h-2 w-2 shrink-0 rounded-full"
+                        style={{ backgroundColor: clusterNodeColor(cluster.id) }}
+                      />
+                      {shortName}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
 
-          {/* Right detail panel */}
+          {/* Detail panel: bottom sheet on mobile, right panel on desktop */}
           {selectedNode && (
-            <aside
-              className="absolute right-0 top-0 bottom-0 z-30 w-full sm:w-96 p-4 sm:p-6 pointer-events-none"
-            >
-              <div className="glass pointer-events-auto h-full rounded-2xl flex flex-col shadow-2xl overflow-hidden">
-                <div className="p-5 border-b border-white/10 bg-white/5">
-                  <div className="flex items-start justify-between gap-3">
+            <>
+              {/* Mobile: bottom sheet */}
+              <aside className="fixed inset-x-0 bottom-0 z-40 max-h-[45vh] md:hidden">
+                <div className="glass rounded-t-2xl shadow-2xl overflow-hidden">
+                  <div className="flex items-center justify-between gap-3 border-b border-white/10 bg-white/5 px-4 py-3">
                     <span
-                      className="rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.15em]"
+                      className="rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em]"
                       style={{ backgroundColor: `${clusterNodeColor(selectedNode.cluster_id)}20`, color: clusterNodeColor(selectedNode.cluster_id) }}
                     >
                       {lessonTitle(selectedNode)}
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedNodeId(null)}
-                      className="shrink-0 rounded-full p-1 text-ink-faint hover:text-ink transition"
-                      aria-label="Close"
-                    >
+                    <button type="button" onClick={() => setSelectedNodeId(null)} className="shrink-0 p-1 text-ink-faint" aria-label="Close">
                       <svg viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5"><path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd"/></svg>
                     </button>
                   </div>
-                </div>
-
-                <div className="flex-grow overflow-y-auto p-5 space-y-4">
-                  <p className="text-sm leading-relaxed text-ink">{selectedNode.text}</p>
-
-                  {selectedNode.context && (
-                    <p className="text-xs text-ink-muted">{selectedNode.context}</p>
-                  )}
-
-                  <div className="space-y-1">
+                  <div className="overflow-y-auto p-4 space-y-3" style={{ maxHeight: "calc(45vh - 52px)" }}>
+                    <p className="text-sm leading-relaxed text-ink">{selectedNode.text}</p>
+                    {selectedNode.context && <p className="text-xs text-ink-muted">{selectedNode.context}</p>}
                     <p className="text-xs text-ink-faint">
                       {selectedNode.source_type ? `Extracted from ${selectedNode.source_type}` : "Source: journal"}
-                      {selectedNode.source_ref ? ` \u2014 ${selectedNode.source_ref}` : ""}
+                      {selectedNode.source_ref ? ` \u2014 ${selectedNode.source_ref}` : ""} &middot; {formatDate(selectedNode.created_at)}
                     </p>
-                    <p className="text-xs text-ink-faint">{formatDate(selectedNode.created_at)}</p>
+                    {selectedNode.tags.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {selectedNode.tags.map((tag) => (
+                          <span key={`m-${selectedNode.id}-${tag}`} className="rounded-full border border-border bg-surface/80 px-2 py-0.5 text-[11px] text-ink-muted">{tag}</span>
+                        ))}
+                      </div>
+                    )}
                   </div>
-
-                  {selectedNode.tags.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 pt-2 border-t border-white/10">
-                      {selectedNode.tags.map((tag) => (
-                        <span
-                          key={`${selectedNode.id}-${tag}`}
-                          className="rounded-full border border-border bg-surface/80 px-2.5 py-0.5 text-[11px] text-ink-muted"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  )}
                 </div>
-              </div>
-            </aside>
+              </aside>
+
+              {/* Desktop: right panel */}
+              <aside className="hidden md:block absolute right-0 top-0 bottom-0 z-30 w-96 p-6 pointer-events-none">
+                <div className="glass pointer-events-auto h-full rounded-2xl flex flex-col shadow-2xl overflow-hidden">
+                  <div className="p-5 border-b border-white/10 bg-white/5">
+                    <div className="flex items-start justify-between gap-3">
+                      <span
+                        className="rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.15em]"
+                        style={{ backgroundColor: `${clusterNodeColor(selectedNode.cluster_id)}20`, color: clusterNodeColor(selectedNode.cluster_id) }}
+                      >
+                        {lessonTitle(selectedNode)}
+                      </span>
+                      <button type="button" onClick={() => setSelectedNodeId(null)} className="shrink-0 rounded-full p-1 text-ink-faint hover:text-ink transition" aria-label="Close">
+                        <svg viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5"><path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd"/></svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex-grow overflow-y-auto p-5 space-y-4">
+                    <p className="text-sm leading-relaxed text-ink">{selectedNode.text}</p>
+                    {selectedNode.context && <p className="text-xs text-ink-muted">{selectedNode.context}</p>}
+                    <div className="space-y-1">
+                      <p className="text-xs text-ink-faint">
+                        {selectedNode.source_type ? `Extracted from ${selectedNode.source_type}` : "Source: journal"}
+                        {selectedNode.source_ref ? ` \u2014 ${selectedNode.source_ref}` : ""}
+                      </p>
+                      <p className="text-xs text-ink-faint">{formatDate(selectedNode.created_at)}</p>
+                    </div>
+                    {selectedNode.tags.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 pt-2 border-t border-white/10">
+                        {selectedNode.tags.map((tag) => (
+                          <span key={`d-${selectedNode.id}-${tag}`} className="rounded-full border border-border bg-surface/80 px-2.5 py-0.5 text-[11px] text-ink-muted">{tag}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </aside>
+            </>
           )}
 
           {/* Filters panel (toggleable) */}
