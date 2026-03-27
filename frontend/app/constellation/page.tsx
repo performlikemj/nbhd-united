@@ -11,9 +11,10 @@ type ViewMode = "constellation" | "list";
 const VIEW_MODE_KEY = "constellationViewMode";
 const MOBILE_BREAKPOINT = 768;
 const CLUSTER_THRESHOLD = 5;
-const NODE_PADDING = 120;
-const MIN_NODE_SPACING = 90;
-const COLLISION_ITERATIONS = 5;
+const NODE_PADDING = 140;
+const MIN_NODE_SPACING = 140;
+const COLLISION_ITERATIONS = 15;
+const CLUSTER_MIN_SPACING = 200;
 
 // Brand palette for clusters — cycles through constellation colors
 const CLUSTER_PALETTE = [
@@ -73,23 +74,29 @@ function defaultViewMode(): ViewMode {
   return window.innerWidth >= MOBILE_BREAKPOINT ? "constellation" : "list";
 }
 
-/** Push overlapping nodes apart until spacing is satisfied */
+/** Push overlapping nodes apart with strong repulsion + cluster separation */
 function resolveCollisions(
-  nodes: { id: number; px: number; py: number }[],
+  nodes: { id: number; px: number; py: number; cluster_id: number | null }[],
   width: number,
   height: number,
 ): { id: number; px: number; py: number }[] {
   const result = nodes.map((n) => ({ ...n }));
+
   for (let iter = 0; iter < COLLISION_ITERATIONS; iter++) {
+    // Node-level repulsion
     for (let i = 0; i < result.length; i++) {
       for (let j = i + 1; j < result.length; j++) {
         const dx = result[j].px - result[i].px;
         const dy = result[j].py - result[i].py;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        if (dist < MIN_NODE_SPACING) {
-          const overlap = (MIN_NODE_SPACING - dist) / 2;
-          const nx = (dx / dist) * overlap;
-          const ny = (dy / dist) * overlap;
+        // Use larger spacing for nodes in different clusters
+        const sameCluster = result[i].cluster_id === result[j].cluster_id;
+        const minDist = sameCluster ? MIN_NODE_SPACING : CLUSTER_MIN_SPACING;
+        if (dist < minDist) {
+          // Push proportional to overlap severity
+          const force = ((minDist - dist) / minDist) * minDist * 0.6;
+          const nx = (dx / dist) * force;
+          const ny = (dy / dist) * force;
           result[i].px -= nx;
           result[i].py -= ny;
           result[j].px += nx;
@@ -97,7 +104,8 @@ function resolveCollisions(
         }
       }
     }
-    // Clamp to bounds
+
+    // Clamp to bounds with padding
     for (const n of result) {
       n.px = Math.max(NODE_PADDING, Math.min(width - NODE_PADDING, n.px));
       n.py = Math.max(NODE_PADDING, Math.min(height - NODE_PADDING, n.py));
@@ -256,7 +264,7 @@ export default function ConstellationPage() {
     // Resolve collisions
     if (raw.length > 1 && containerSize.width > 0) {
       const resolved = resolveCollisions(
-        raw.map((n) => ({ id: n.id, px: n.px, py: n.py })),
+        raw.map((n) => ({ id: n.id, px: n.px, py: n.py, cluster_id: n.cluster_id })),
         containerSize.width,
         containerSize.height,
       );
@@ -488,21 +496,23 @@ export default function ConstellationPage() {
                 })}
               </svg>
 
-              {/* Cluster labels */}
+              {/* Cluster labels — short, positioned above cluster centroid */}
               {Array.from(clusterAnchors.entries()).map(([clusterId, anchor]) => {
                 const label = getClusterLabel(clusterId, data.clusters);
+                // Truncate long cluster labels
+                const shortLabel = label.length > 20 ? label.slice(0, 20) + "\u2026" : label;
                 const color = clusterNodeColor(clusterId);
                 return (
                   <div
                     key={`cluster-label-${clusterId}`}
-                    className="pointer-events-none absolute -translate-x-1/2"
-                    style={{ left: anchor.px, top: anchor.py - nodeSize(clusterId) / 2 - 28 }}
+                    className="pointer-events-none absolute -translate-x-1/2 max-w-[160px] text-center"
+                    style={{ left: anchor.px, top: anchor.py - nodeSize(clusterId) / 2 - 24 }}
                   >
                     <span
-                      className="text-[10px] font-headline font-bold uppercase tracking-[0.15em]"
+                      className="text-[9px] font-headline font-semibold uppercase tracking-[0.1em] opacity-60"
                       style={{ color }}
                     >
-                      {label}
+                      {shortLabel}
                     </span>
                   </div>
                 );
@@ -517,14 +527,20 @@ export default function ConstellationPage() {
                   <button
                     key={node.id}
                     type="button"
-                    className="absolute -translate-x-1/2 -translate-y-1/2 group focus-visible:outline-none"
-                    style={{ left: node.px, top: node.py, zIndex: isSelected ? 20 : 1 }}
+                    className="absolute -translate-x-1/2 -translate-y-1/2 focus-visible:outline-none group"
+                    style={{
+                      left: node.px,
+                      top: node.py,
+                      zIndex: isSelected ? 3 : 2,
+                      width: size + 8,
+                      height: size + 8,
+                    }}
                     aria-label={`Lesson: ${lessonTitle(node)}`}
                     onClick={() => setSelectedNodeId((prev) => (prev === node.id ? null : node.id))}
                   >
                     <div
-                      className={`rounded-full transition-transform duration-200 group-hover:scale-125 ${
-                        isSelected ? "scale-125 ring-2 ring-white/40 ring-offset-2 ring-offset-c-dark" : ""
+                      className={`mx-auto rounded-full transition-transform duration-200 group-hover:scale-110 ${
+                        isSelected ? "scale-110 ring-2 ring-white/50 ring-offset-2 ring-offset-c-dark" : ""
                       }`}
                       style={{
                         width: size,
@@ -535,9 +551,12 @@ export default function ConstellationPage() {
                         animationDelay: `${(node.id * 700) % 4000}ms`,
                       }}
                     />
-                    {/* Hover tooltip */}
-                    <div className="absolute left-1/2 -translate-x-1/2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
-                      <span className="rounded-lg bg-surface/95 backdrop-blur-md border border-border px-2.5 py-1 text-[11px] font-medium text-ink shadow-lg">
+                    {/* Tooltip — above node, pointer-events-none */}
+                    <div
+                      className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                      style={{ zIndex: 50 }}
+                    >
+                      <span className="block max-w-[180px] truncate rounded-lg bg-surface/95 backdrop-blur-md border border-border px-2.5 py-1 text-[11px] font-medium text-ink shadow-lg whitespace-nowrap">
                         {lessonTitle(node)}
                       </span>
                     </div>

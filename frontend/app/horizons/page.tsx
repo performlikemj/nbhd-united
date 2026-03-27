@@ -13,9 +13,9 @@ export default function HorizonsPage() {
 
   if (isLoading) {
     return (
-      <div className="space-y-4 sm:space-y-6">
+      <div className="space-y-6">
         <div>
-          <h1 className="font-display text-2xl text-ink sm:text-3xl">
+          <h1 className="font-headline text-3xl font-bold text-ink sm:text-4xl">
             Horizons
           </h1>
           <p className="mt-1 text-sm text-ink-muted">
@@ -31,9 +31,9 @@ export default function HorizonsPage() {
 
   if (error) {
     return (
-      <div className="space-y-4 sm:space-y-6">
+      <div className="space-y-6">
         <div>
-          <h1 className="font-display text-2xl text-ink sm:text-3xl">
+          <h1 className="font-headline text-3xl font-bold text-ink sm:text-4xl">
             Horizons
           </h1>
         </div>
@@ -47,10 +47,15 @@ export default function HorizonsPage() {
 
   if (!data) return null;
 
+  const realGoals = data.goals.filter(
+    (g) => !g.preview.includes("[Goal Name]") && !g.preview.includes("[Specific, measurable outcome]"),
+  );
+
   return (
-    <div className="space-y-4 sm:space-y-6">
+    <div className="space-y-6 sm:space-y-8">
+      {/* Header */}
       <div>
-        <h1 className="font-display text-2xl text-ink sm:text-3xl">
+        <h1 className="font-headline text-3xl font-bold tracking-tight text-ink sm:text-4xl">
           Horizons
         </h1>
         <p className="mt-1 text-sm text-ink-muted">
@@ -58,37 +63,41 @@ export default function HorizonsPage() {
         </p>
       </div>
 
+      {/* Momentum — full width */}
       <SectionCard title="Momentum" subtitle="Last 30 days" delay={100}>
         <MomentumStrip days={data.momentum} streak={data.current_streak} />
       </SectionCard>
 
-      <SectionCard title="Weekly Pulse" delay={200}>
-        <WeeklyPulse weeks={data.weekly_pulse} />
-      </SectionCard>
+      {/* Weekly Pulse + Active Goals — side by side on large screens */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <div className="lg:col-span-1">
+          <SectionCard title="Weekly Pulse" delay={200}>
+            <WeeklyPulse weeks={data.weekly_pulse} />
+          </SectionCard>
+        </div>
 
-      <SectionCard title="Active Goals" delay={350}>
-        {(() => {
-          const realGoals = data.goals.filter(
-            (g) => !g.preview.includes("[Goal Name]") && !g.preview.includes("[Specific, measurable outcome]"),
-          );
-          return realGoals.length > 0 ? (
-            <div className="grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2">
-              {realGoals.map((goal) => (
-                <GoalCard key={goal.id} goal={goal} />
-              ))}
-            </div>
-          ) : (
-            <p className="py-6 text-center text-sm text-ink-muted">
-              No goals yet. Write about your goals in your journal, and your
-              assistant will help you track them.
-            </p>
-          );
-        })()}
-      </SectionCard>
+        <div className="lg:col-span-2">
+          <SectionCard title="Active Goals" delay={350}>
+            {realGoals.length > 0 ? (
+              <div className="grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2">
+                {realGoals.map((goal) => (
+                  <GoalCard key={goal.id} goal={goal} />
+                ))}
+              </div>
+            ) : (
+              <p className="py-6 text-center text-sm text-ink-muted">
+                No goals yet. Write about your goals in your journal, and your
+                assistant will help you track them.
+              </p>
+            )}
+          </SectionCard>
+        </div>
+      </div>
 
+      {/* Suggestions from journal */}
       {data.pending_extractions.length > 0 ? (
         <div className="animate-reveal" style={{ animationDelay: "500ms" }}>
-          <h2 className="font-display text-xl text-ink">
+          <h2 className="font-headline text-xl font-bold text-ink">
             Suggestions from your journal
           </h2>
           <div className="mt-3 grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2">

@@ -189,7 +189,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
 
   if (collapsed) {
     return (
-      <div className="flex flex-col items-center border-r border-border bg-surface/50 py-4">
+      <div className="flex flex-col items-center border-r border-white/5 bg-c-dark/80 backdrop-blur-2xl py-4">
         <button
           type="button"
           onClick={onToggle}
@@ -229,10 +229,10 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
   ];
 
   return (
-    <nav aria-label="Journal sidebar" className="flex h-full w-64 flex-col border-r border-border bg-surface/50">
+    <nav aria-label="Journal sidebar" className="flex h-full w-64 flex-col border-r border-white/5 bg-c-dark/80 backdrop-blur-2xl">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold text-ink-muted">Journal</h2>
+      <div className="flex items-center justify-between border-b border-white/5 px-4 py-3">
+        <h2 className="font-headline text-sm font-bold text-ink">Journal</h2>
         {onToggle && (
           <button
             type="button"
@@ -248,7 +248,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
       </div>
 
       {/* Quick nav */}
-      <div className="border-b border-border px-2 py-2">
+      <div className="border-b border-white/5 px-2 py-2">
         {staticItems.map((item) => (
           <button
             key={`${item.kind}-${item.slug}`}
@@ -256,10 +256,10 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
             onMouseEnter={() => prefetchDocument(item.kind, item.slug)}
             onClick={() => onNavigate(item.kind, item.slug)}
             className={clsx(
-              "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-sm transition min-h-[44px]",
+              "flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm transition min-h-[44px]",
               activeKind === item.kind && activeSlug === item.slug
-                ? "bg-border font-medium text-ink"
-                : "text-ink-muted hover:bg-surface-hover hover:text-ink",
+                ? "bg-accent/10 font-semibold text-accent"
+                : "text-ink-muted hover:bg-white/5 hover:text-ink",
             )}
           >
             <span>{item.icon}</span>
