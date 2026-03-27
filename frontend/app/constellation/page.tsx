@@ -141,6 +141,11 @@ export default function ConstellationPage() {
       observerRef.current = null;
     }
     if (node) {
+      // Immediate measurement (ResizeObserver callback can be delayed)
+      const rect = node.getBoundingClientRect();
+      if (rect.width > 0 || rect.height > 0) {
+        setContainerSize({ width: rect.width, height: rect.height });
+      }
       observerRef.current = new ResizeObserver((entries) => {
         const { width, height } = entries[0].contentRect;
         setContainerSize({ width, height });
@@ -489,8 +494,8 @@ export default function ConstellationPage() {
           {/* Graph container */}
           <div
             ref={containerRef}
-            className="constellation-bg relative flex-1 min-w-0 overflow-hidden"
-            style={{ height: graphHeight }}
+            className="constellation-bg relative w-full flex-1 min-w-0"
+            style={{ height: graphHeight, overflow: "hidden" }}
           >
             {containerSize.width > 0 && filteredNodes.length > 0 && (
               <>
