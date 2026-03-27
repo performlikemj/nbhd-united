@@ -20,7 +20,6 @@ function getSpacing(width: number) {
     nodePadding: mobile ? 40 : 80,
     minNodeSpacing: mobile ? 60 : 120,
     clusterMinSpacing: mobile ? 90 : 180,
-    panelWidth: 384, // w-96
   };
 }
 
@@ -238,16 +237,14 @@ export default function ConstellationPage() {
   const spacing = useMemo(() => getSpacing(containerSize.width), [containerSize.width]);
 
   // Compute pixel positions with collision avoidance
-  // On desktop, reserve right side for detail panel
+  // Graph container is a flex child — ResizeObserver gives its actual width
+  // (shrinks automatically when desktop panel is open)
   const positionedNodes = useMemo(() => {
     const hasPositions = filteredNodes.some((n) => n.x != null && n.y != null);
     const count = filteredNodes.length;
-    const { nodePadding, panelWidth } = spacing;
-    const isMobileLayout = containerSize.width < 768;
-    // On desktop, constrain nodes to the left area (leave room for panel)
-    const usableWidth = isMobileLayout
-      ? containerSize.width
-      : Math.max(containerSize.width - panelWidth - 24, containerSize.width * 0.55);
+    const { nodePadding } = spacing;
+    const w = containerSize.width;
+    const h = containerSize.height;
 
     const raw = filteredNodes.map((node, i) => {
       let nx: number;
@@ -266,23 +263,16 @@ export default function ConstellationPage() {
         ny = radius * Math.sin(angle);
       }
 
-      const px = usableWidth > 0
-        ? nodePadding + ((nx + 1) / 2) * (usableWidth - 2 * nodePadding)
-        : 0;
-      const py = containerSize.height > 0
-        ? nodePadding + ((ny + 1) / 2) * (containerSize.height - 2 * nodePadding)
-        : 0;
+      const px = w > 0 ? nodePadding + ((nx + 1) / 2) * (w - 2 * nodePadding) : 0;
+      const py = h > 0 ? nodePadding + ((ny + 1) / 2) * (h - 2 * nodePadding) : 0;
 
       return { ...node, px, py };
     });
 
-    // Resolve collisions within usable area
-    if (raw.length > 1 && usableWidth > 0) {
+    if (raw.length > 1 && w > 0) {
       const resolved = resolveCollisions(
         raw.map((n) => ({ id: n.id, px: n.px, py: n.py, cluster_id: n.cluster_id })),
-        usableWidth,
-        containerSize.height,
-        spacing,
+        w, h, spacing,
       );
       const posMap = new Map(resolved.map((r) => [r.id, r]));
       return raw.map((n) => {
@@ -387,6 +377,14 @@ export default function ConstellationPage() {
     return Math.round(24 * scale);
   }
 
+  // Ref for auto-scrolling to detail panel on mobile
+  const detailRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (selectedNode && detailRef.current && containerSize.width < MOBILE_BREAKPOINT) {
+      detailRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [selectedNode, containerSize.width]);
+
   if (error) {
     return (
       <div className="rounded-panel border border-rose-border bg-rose-bg px-3 py-2 text-sm text-rose-text">{error}</div>
@@ -405,353 +403,256 @@ export default function ConstellationPage() {
 
   // ── Constellation view ──
   if (viewMode === "constellation") {
+    const graphHeight = Math.max(380, Math.min(520, filteredNodes.length * 55 + 160));
+
+    // Shared detail panel content
+    const detailContent = selectedNode ? (
+      <div className="space-y-4 p-5">
+        <div className="flex items-start justify-between gap-3">
+          <span
+            className="rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em]"
+            style={{ backgroundColor: `${clusterNodeColor(selectedNode.cluster_id)}20`, color: clusterNodeColor(selectedNode.cluster_id) }}
+          >
+            {lessonTitle(selectedNode)}
+          </span>
+          <button type="button" onClick={() => setSelectedNodeId(null)} className="shrink-0 rounded-full p-1 text-ink-faint hover:text-ink transition" aria-label="Close">
+            <svg viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5"><path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd"/></svg>
+          </button>
+        </div>
+        <p className="text-sm leading-relaxed text-ink">{selectedNode.text}</p>
+        {selectedNode.context && <p className="text-xs text-ink-muted">{selectedNode.context}</p>}
+        <div className="space-y-1">
+          <p className="text-xs text-ink-faint">
+            {selectedNode.source_type ? `Extracted from ${selectedNode.source_type}` : "Source: journal"}
+            {selectedNode.source_ref ? ` \u2014 ${selectedNode.source_ref}` : ""}
+          </p>
+          <p className="text-xs text-ink-faint">{formatDate(selectedNode.created_at)}</p>
+        </div>
+        {selectedNode.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 pt-3 border-t border-border">
+            {selectedNode.tags.map((tag) => (
+              <span key={`tag-${selectedNode.id}-${tag}`} className="rounded-full border border-border bg-surface-elevated px-2.5 py-0.5 text-[11px] text-ink-muted">{tag}</span>
+            ))}
+          </div>
+        )}
+      </div>
+    ) : null;
+
     return (
-      <div className="relative -mx-4 -mt-8 sm:-mx-6">
-        {/* Graph container — sized to content, not full viewport */}
-        <div
-          ref={containerRef}
-          className="constellation-bg relative overflow-hidden"
-          style={{ height: Math.max(350, Math.min(550, filteredNodes.length * 60 + 150)) }}
-        >
-          {/* Top-left controls */}
-          <div className="absolute left-6 top-6 z-20 flex flex-col gap-3">
-            <div>
-              <h1 className="font-headline text-xl font-bold text-ink">Lessons Constellation</h1>
-              <p className="text-xs text-ink-muted">Navigate how your approved lessons connect</p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="inline-flex rounded-xl border border-border bg-surface/60 backdrop-blur-md p-1">
-                <button
-                  type="button"
-                  onClick={() => handleSetViewMode("constellation")}
-                  className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium bg-accent text-white shadow-lg"
-                >
-                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5"><circle cx="10" cy="10" r="3"/><circle cx="3" cy="5" r="2"/><circle cx="17" cy="5" r="2"/><circle cx="3" cy="15" r="2"/><circle cx="17" cy="15" r="2"/><line x1="10" y1="10" x2="3" y2="5" stroke="currentColor" strokeWidth="1"/><line x1="10" y1="10" x2="17" y2="5" stroke="currentColor" strokeWidth="1"/></svg>
-                  Constellation
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleSetViewMode("list")}
-                  className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium text-ink-muted hover:text-ink transition"
-                >
-                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5"><rect x="2" y="3" width="16" height="2" rx="1"/><rect x="2" y="9" width="16" height="2" rx="1"/><rect x="2" y="15" width="16" height="2" rx="1"/></svg>
-                  List
-                </button>
-              </div>
-
-              {pendingCount > 0 && (
-                <Link
-                  href="/constellation/pending"
-                  className="rounded-full border border-accent/30 bg-accent/10 px-3 py-1.5 text-xs font-semibold text-accent backdrop-blur-sm"
-                >
-                  {pendingCount === 1 ? "1 lesson waiting" : `${pendingCount} lessons waiting`}
-                </Link>
-              )}
-
-              <button
-                type="button"
-                onClick={() => setShowFilters(!showFilters)}
-                className="rounded-lg border border-border bg-surface/60 backdrop-blur-md px-3 py-2 text-xs text-ink-muted hover:text-ink transition"
-              >
-                Filters
+      <div className="-mx-4 -mt-8 sm:-mx-6 flex flex-col">
+        {/* ── Controls bar ── */}
+        <div className="px-4 sm:px-6 py-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="font-headline text-xl font-bold text-ink">Lessons Constellation</h1>
+            <p className="text-xs text-ink-muted">Navigate how your approved lessons connect</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex rounded-xl border border-border bg-surface-elevated p-1">
+              <button type="button" onClick={() => handleSetViewMode("constellation")}
+                className="rounded-lg px-3 py-1.5 text-xs font-medium bg-accent text-white">
+                Constellation
+              </button>
+              <button type="button" onClick={() => handleSetViewMode("list")}
+                className="rounded-lg px-3 py-1.5 text-xs font-medium text-ink-muted hover:text-ink transition">
+                List
               </button>
             </div>
+            {pendingCount > 0 && (
+              <Link href="/constellation/pending"
+                className="rounded-full border border-accent/30 bg-accent/10 px-3 py-1.5 text-xs font-semibold text-accent">
+                {pendingCount === 1 ? "1 lesson waiting" : `${pendingCount} lessons waiting`}
+              </Link>
+            )}
+            <button type="button" onClick={() => setShowFilters(!showFilters)}
+              className="rounded-lg border border-border bg-surface-elevated px-3 py-1.5 text-xs text-ink-muted hover:text-ink transition">
+              Filters
+            </button>
+          </div>
+        </div>
 
-            {/* Progress banner (sparse) */}
-            {isSparse && totalLessonCount > 0 && (
-              <div className="glass rounded-xl p-3 max-w-xs">
-                <p className="text-xs text-ink-muted">
-                  <span className="font-semibold text-ink">{totalLessonCount}</span> of {CLUSTER_THRESHOLD} lessons — clusters form at {CLUSTER_THRESHOLD}
-                </p>
-                <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-border">
-                  <div className="h-full rounded-full" style={{ width: `${progressPercent}%`, backgroundColor: "var(--signal)" }} />
+        {/* Progress (sparse) */}
+        {isSparse && totalLessonCount > 0 && (
+          <div className="px-4 sm:px-6 pb-3">
+            <div className="rounded-xl border border-border bg-surface-elevated p-3 max-w-md">
+              <p className="text-xs text-ink-muted">
+                <span className="font-semibold text-ink">{totalLessonCount}</span> of {CLUSTER_THRESHOLD} lessons — clusters form at {CLUSTER_THRESHOLD}
+              </p>
+              <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-border">
+                <div className="h-full rounded-full transition-all" style={{ width: `${progressPercent}%`, backgroundColor: "var(--signal)" }} />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Graph + Desktop Panel (flex row on md+) ── */}
+        <div className="flex flex-col md:flex-row min-w-0">
+          {/* Graph container */}
+          <div
+            ref={containerRef}
+            className="constellation-bg relative flex-1 min-w-0 overflow-hidden"
+            style={{ height: graphHeight }}
+          >
+            {containerSize.width > 0 && filteredNodes.length > 0 && (
+              <>
+                {/* Edges */}
+                <svg className="pointer-events-none absolute inset-0 h-full w-full">
+                  <defs>
+                    <linearGradient id="edge-grad-pt" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stopColor="#7C6BF0" /><stop offset="100%" stopColor="#4ECDC4" />
+                    </linearGradient>
+                    <linearGradient id="edge-grad-tp" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stopColor="#4ECDC4" /><stop offset="100%" stopColor="#E8B4B8" />
+                    </linearGradient>
+                    <linearGradient id="edge-grad-pp" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stopColor="#7C6BF0" /><stop offset="100%" stopColor="#E8B4B8" />
+                    </linearGradient>
+                  </defs>
+                  {allEdges.map((edge, i) => {
+                    const s = nodePositions.get(Number(edge.source));
+                    const t = nodePositions.get(Number(edge.target));
+                    if (!s || !t) return null;
+                    const sim = edge.similarity ?? 0;
+                    const grads = ["url(#edge-grad-pt)", "url(#edge-grad-tp)", "url(#edge-grad-pp)"];
+                    return (
+                      <line key={`e-${edge.source}-${edge.target}-${i}`}
+                        x1={s.px} y1={s.py} x2={t.px} y2={t.py}
+                        stroke={grads[i % grads.length]}
+                        strokeWidth={sim >= 0.75 ? 2 : sim >= 0.5 ? 1.5 : 1}
+                        strokeDasharray={sim < 0.5 ? "4 6" : undefined}
+                        opacity={sim >= 0.75 ? 0.45 : sim >= 0.5 ? 0.25 : 0.12}
+                      />
+                    );
+                  })}
+                </svg>
+
+                {/* Cluster labels (desktop only) */}
+                {Array.from(clusterAnchors.entries()).map(([cid, anchor]) => {
+                  const label = getClusterLabel(cid, data.clusters);
+                  const short = label.length > 18 ? label.slice(0, 18) + "\u2026" : label;
+                  return (
+                    <div key={`cl-${cid}`}
+                      className="pointer-events-none absolute -translate-x-1/2 max-w-[140px] text-center hidden md:block"
+                      style={{ left: anchor.px, top: anchor.py - nodeSize(cid) / 2 - 20 }}>
+                      <span className="text-[9px] font-headline font-semibold uppercase tracking-[0.08em] opacity-40"
+                        style={{ color: clusterNodeColor(cid) }}>{short}</span>
+                    </div>
+                  );
+                })}
+
+                {/* Nodes */}
+                {positionedNodes.map((node) => {
+                  const sel = selectedNodeId === node.id;
+                  const color = clusterNodeColor(node.cluster_id);
+                  const size = nodeSize(node.cluster_id);
+                  return (
+                    <button key={node.id} type="button"
+                      className="absolute -translate-x-1/2 -translate-y-1/2 focus-visible:outline-none group"
+                      style={{ left: node.px, top: node.py, zIndex: sel ? 3 : 2, width: size + 8, height: size + 8 }}
+                      aria-label={`Lesson: ${lessonTitle(node)}`}
+                      onClick={() => setSelectedNodeId((p) => (p === node.id ? null : node.id))}>
+                      <div className={`mx-auto rounded-full transition-transform duration-200 group-hover:scale-110 ${sel ? "scale-110 ring-2 ring-white/50 ring-offset-2 ring-offset-c-dark" : ""}`}
+                        style={{ width: size, height: size, backgroundColor: color,
+                          filter: `drop-shadow(0 0 ${size / 3}px ${color}90)`,
+                          animation: "constellation-breathe 4s ease-in-out infinite",
+                          animationDelay: `${(node.id * 700) % 4000}ms` }} />
+                      <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-2 opacity-0 group-hover:opacity-100 transition-opacity" style={{ zIndex: 50 }}>
+                        <span className="block max-w-[180px] truncate rounded-lg bg-surface border border-border px-2.5 py-1 text-[11px] font-medium text-ink shadow-lg whitespace-nowrap">
+                          {lessonTitle(node)}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </>
+            )}
+
+            {/* Empty state */}
+            {filteredNodes.length === 0 && (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="text-center max-w-sm px-4">
+                  <p className="text-lg font-headline font-bold text-ink">Your constellation begins here</p>
+                  <p className="mt-2 text-sm text-ink-muted">As you chat with your assistant, lessons will appear as stars in your personal sky.</p>
                 </div>
+              </div>
+            )}
+
+            {/* Filters overlay */}
+            {showFilters && (
+              <div className="absolute right-4 top-4 z-20 rounded-2xl border border-border bg-surface p-5 w-72 max-h-[60vh] overflow-y-auto space-y-4 shadow-xl">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-headline text-sm font-bold text-ink">Filters</h3>
+                  <button type="button" onClick={() => setShowFilters(false)} className="text-ink-faint hover:text-ink text-xs">Close</button>
+                </div>
+                {allTags.length > 0 && (
+                  <div>
+                    <h4 className="text-[10px] font-bold uppercase tracking-[0.12em] text-ink-faint mb-2">Tags</h4>
+                    <div className="flex flex-wrap gap-1.5">
+                      {allTags.map((tag) => (
+                        <button key={tag} type="button"
+                          onClick={() => setSearchText((p) => p === tag ? "" : tag)}
+                          className={`rounded-full px-2.5 py-1 text-xs transition ${searchText === tag ? "bg-accent text-white" : "border border-border text-ink-muted hover:text-ink"}`}>
+                          {tag}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {!isSparse && clustersForSidebar.length > 0 && (
+                  <div>
+                    <h4 className="text-[10px] font-bold uppercase tracking-[0.12em] text-ink-faint mb-2">Clusters</h4>
+                    <div className="space-y-1">
+                      {clustersForSidebar.map((c) => (
+                        <button type="button" key={`f-${c.id}`}
+                          onClick={() => setSelectedClusterId((cur) => (cur === c.id ? null : c.id))}
+                          className={`flex w-full items-center justify-between rounded-lg p-2 text-left transition ${selectedClusterId === c.id ? "bg-surface-hover" : "hover:bg-surface-hover"}`}>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: clusterNodeColor(c.id) }} />
+                            <span className="truncate text-xs text-ink">{c.label}</span>
+                          </div>
+                          <span className="text-xs text-ink-faint">{c.count}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
 
-          {/* Graph area */}
-          {containerSize.width > 0 && filteredNodes.length > 0 && (
-            <>
-              {/* Edge lines with gradients */}
-              <svg className="pointer-events-none absolute inset-0 h-full w-full">
-                <defs>
-                  <linearGradient id="edge-grad-pt" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" stopColor="#7C6BF0" />
-                    <stop offset="100%" stopColor="#4ECDC4" />
-                  </linearGradient>
-                  <linearGradient id="edge-grad-tp" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" stopColor="#4ECDC4" />
-                    <stop offset="100%" stopColor="#E8B4B8" />
-                  </linearGradient>
-                  <linearGradient id="edge-grad-pp" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" stopColor="#7C6BF0" />
-                    <stop offset="100%" stopColor="#E8B4B8" />
-                  </linearGradient>
-                </defs>
-                {allEdges.map((edge, i) => {
-                  const sourcePos = nodePositions.get(Number(edge.source));
-                  const targetPos = nodePositions.get(Number(edge.target));
-                  if (!sourcePos || !targetPos) return null;
-                  const sim = edge.similarity ?? 0;
-                  const strokeWidth = sim >= 0.75 ? 2 : sim >= 0.5 ? 1.5 : 1;
-                  const strokeDasharray = sim < 0.5 ? "4 6" : undefined;
-                  const opacity = sim >= 0.75 ? 0.5 : sim >= 0.5 ? 0.3 : 0.15;
-                  // Pick gradient based on edge index for variety
-                  const grads = ["url(#edge-grad-pt)", "url(#edge-grad-tp)", "url(#edge-grad-pp)"];
-                  const stroke = grads[i % grads.length];
-                  return (
-                    <line
-                      key={`${edge.source}-${edge.target}-${i}`}
-                      x1={sourcePos.px} y1={sourcePos.py}
-                      x2={targetPos.px} y2={targetPos.py}
-                      stroke={stroke} strokeWidth={strokeWidth}
-                      strokeDasharray={strokeDasharray}
-                      opacity={opacity}
-                    />
-                  );
-                })}
-              </svg>
+          {/* ── Desktop detail panel (flex sibling, solid bg) ── */}
+          {selectedNode && (
+            <aside className="hidden md:flex w-96 shrink-0 flex-col border-l border-border bg-surface overflow-y-auto" style={{ height: graphHeight }}>
+              {detailContent}
+            </aside>
+          )}
+        </div>
 
-              {/* Cluster labels — hidden on mobile, short on desktop */}
-              {Array.from(clusterAnchors.entries()).map(([clusterId, anchor]) => {
-                const label = getClusterLabel(clusterId, data.clusters);
-                const shortLabel = label.length > 18 ? label.slice(0, 18) + "\u2026" : label;
-                const color = clusterNodeColor(clusterId);
+        {/* ── Legend (in flow, below graph) ── */}
+        {clustersForSidebar.length > 0 && (
+          <div className="px-4 sm:px-6 py-3 overflow-x-auto scrollbar-none border-t border-border bg-surface-elevated">
+            <div className="flex gap-4 md:flex-wrap whitespace-nowrap">
+              {clustersForSidebar.map((cluster) => {
+                const short = cluster.label.length > 20 ? cluster.label.slice(0, 20) + "\u2026" : cluster.label;
                 return (
-                  <div
-                    key={`cluster-label-${clusterId}`}
-                    className="pointer-events-none absolute -translate-x-1/2 max-w-[140px] text-center hidden md:block"
-                    style={{ left: anchor.px, top: anchor.py - nodeSize(clusterId) / 2 - 22 }}
-                  >
-                    <span
-                      className="text-[9px] font-headline font-semibold uppercase tracking-[0.08em] opacity-50"
-                      style={{ color }}
-                    >
-                      {shortLabel}
-                    </span>
-                  </div>
-                );
-              })}
-
-              {/* Nodes */}
-              {positionedNodes.map((node) => {
-                const isSelected = selectedNodeId === node.id;
-                const color = clusterNodeColor(node.cluster_id);
-                const size = nodeSize(node.cluster_id);
-                return (
-                  <button
-                    key={node.id}
-                    type="button"
-                    className="absolute -translate-x-1/2 -translate-y-1/2 focus-visible:outline-none group"
-                    style={{
-                      left: node.px,
-                      top: node.py,
-                      zIndex: isSelected ? 3 : 2,
-                      width: size + 8,
-                      height: size + 8,
-                    }}
-                    aria-label={`Lesson: ${lessonTitle(node)}`}
-                    onClick={() => setSelectedNodeId((prev) => (prev === node.id ? null : node.id))}
-                  >
-                    <div
-                      className={`mx-auto rounded-full transition-transform duration-200 group-hover:scale-110 ${
-                        isSelected ? "scale-110 ring-2 ring-white/50 ring-offset-2 ring-offset-c-dark" : ""
-                      }`}
-                      style={{
-                        width: size,
-                        height: size,
-                        backgroundColor: color,
-                        filter: `drop-shadow(0 0 ${size / 3}px ${color}90)`,
-                        animation: "constellation-breathe 4s ease-in-out infinite",
-                        animationDelay: `${(node.id * 700) % 4000}ms`,
-                      }}
-                    />
-                    {/* Tooltip — above node, pointer-events-none */}
-                    <div
-                      className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-2 opacity-0 group-hover:opacity-100 transition-opacity"
-                      style={{ zIndex: 50 }}
-                    >
-                      <span className="block max-w-[180px] truncate rounded-lg bg-surface/95 backdrop-blur-md border border-border px-2.5 py-1 text-[11px] font-medium text-ink shadow-lg whitespace-nowrap">
-                        {lessonTitle(node)}
-                      </span>
-                    </div>
+                  <button key={`leg-${cluster.id}`} type="button"
+                    onClick={() => setSelectedClusterId((c) => (c === cluster.id ? null : cluster.id))}
+                    className={`flex shrink-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.1em] transition ${
+                      selectedClusterId === cluster.id ? "text-ink" : "text-ink-faint hover:text-ink-muted"}`}>
+                    <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: clusterNodeColor(cluster.id) }} />
+                    {short}
                   </button>
                 );
               })}
-            </>
-          )}
-
-          {/* Empty state */}
-          {filteredNodes.length === 0 && (
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="text-center max-w-sm">
-                <p className="text-lg font-headline font-bold text-ink">Your constellation begins here</p>
-                <p className="mt-2 text-sm text-ink-muted">
-                  As you chat with your assistant, lessons will appear as stars in your personal sky.
-                </p>
-              </div>
             </div>
-          )}
+          </div>
+        )}
 
-          {/* Bottom legend — scrollable on mobile */}
-          {clustersForSidebar.length > 0 && (
-            <div className="absolute bottom-4 left-4 right-4 md:left-6 md:right-auto z-20 glass rounded-xl px-3 py-2 md:px-4 md:py-3 overflow-x-auto scrollbar-none">
-              <div className="flex gap-3 md:gap-4 md:flex-wrap whitespace-nowrap">
-                {clustersForSidebar.map((cluster) => {
-                  const shortName = cluster.label.length > 16 ? cluster.label.slice(0, 16) + "\u2026" : cluster.label;
-                  return (
-                    <button
-                      key={`legend-${cluster.id}`}
-                      type="button"
-                      onClick={() => setSelectedClusterId((c) => (c === cluster.id ? null : cluster.id))}
-                      className={`flex shrink-0 items-center gap-1.5 text-[9px] md:text-[10px] font-bold uppercase tracking-[0.1em] transition ${
-                        selectedClusterId === cluster.id ? "text-ink" : "text-ink-faint hover:text-ink-muted"
-                      }`}
-                    >
-                      <span
-                        className="inline-block h-2 w-2 shrink-0 rounded-full"
-                        style={{ backgroundColor: clusterNodeColor(cluster.id) }}
-                      />
-                      {shortName}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Detail panel: bottom sheet on mobile, right panel on desktop */}
-          {selectedNode && (
-            <>
-              {/* Mobile: bottom sheet */}
-              <aside className="fixed inset-x-0 bottom-0 z-40 max-h-[45vh] md:hidden">
-                <div className="glass rounded-t-2xl shadow-2xl overflow-hidden">
-                  <div className="flex items-center justify-between gap-3 border-b border-white/10 bg-white/5 px-4 py-3">
-                    <span
-                      className="rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em]"
-                      style={{ backgroundColor: `${clusterNodeColor(selectedNode.cluster_id)}20`, color: clusterNodeColor(selectedNode.cluster_id) }}
-                    >
-                      {lessonTitle(selectedNode)}
-                    </span>
-                    <button type="button" onClick={() => setSelectedNodeId(null)} className="shrink-0 p-1 text-ink-faint" aria-label="Close">
-                      <svg viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5"><path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd"/></svg>
-                    </button>
-                  </div>
-                  <div className="overflow-y-auto p-4 space-y-3" style={{ maxHeight: "calc(45vh - 52px)" }}>
-                    <p className="text-sm leading-relaxed text-ink">{selectedNode.text}</p>
-                    {selectedNode.context && <p className="text-xs text-ink-muted">{selectedNode.context}</p>}
-                    <p className="text-xs text-ink-faint">
-                      {selectedNode.source_type ? `Extracted from ${selectedNode.source_type}` : "Source: journal"}
-                      {selectedNode.source_ref ? ` \u2014 ${selectedNode.source_ref}` : ""} &middot; {formatDate(selectedNode.created_at)}
-                    </p>
-                    {selectedNode.tags.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {selectedNode.tags.map((tag) => (
-                          <span key={`m-${selectedNode.id}-${tag}`} className="rounded-full border border-border bg-surface/80 px-2 py-0.5 text-[11px] text-ink-muted">{tag}</span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </aside>
-
-              {/* Desktop: right panel */}
-              <aside className="hidden md:block absolute right-0 top-0 bottom-0 z-30 w-96 p-6 pointer-events-none">
-                <div className="glass pointer-events-auto h-full rounded-2xl flex flex-col shadow-2xl overflow-hidden">
-                  <div className="p-5 border-b border-white/10 bg-white/5">
-                    <div className="flex items-start justify-between gap-3">
-                      <span
-                        className="rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.15em]"
-                        style={{ backgroundColor: `${clusterNodeColor(selectedNode.cluster_id)}20`, color: clusterNodeColor(selectedNode.cluster_id) }}
-                      >
-                        {lessonTitle(selectedNode)}
-                      </span>
-                      <button type="button" onClick={() => setSelectedNodeId(null)} className="shrink-0 rounded-full p-1 text-ink-faint hover:text-ink transition" aria-label="Close">
-                        <svg viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5"><path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd"/></svg>
-                      </button>
-                    </div>
-                  </div>
-                  <div className="flex-grow overflow-y-auto p-5 space-y-4">
-                    <p className="text-sm leading-relaxed text-ink">{selectedNode.text}</p>
-                    {selectedNode.context && <p className="text-xs text-ink-muted">{selectedNode.context}</p>}
-                    <div className="space-y-1">
-                      <p className="text-xs text-ink-faint">
-                        {selectedNode.source_type ? `Extracted from ${selectedNode.source_type}` : "Source: journal"}
-                        {selectedNode.source_ref ? ` \u2014 ${selectedNode.source_ref}` : ""}
-                      </p>
-                      <p className="text-xs text-ink-faint">{formatDate(selectedNode.created_at)}</p>
-                    </div>
-                    {selectedNode.tags.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5 pt-2 border-t border-white/10">
-                        {selectedNode.tags.map((tag) => (
-                          <span key={`d-${selectedNode.id}-${tag}`} className="rounded-full border border-border bg-surface/80 px-2.5 py-0.5 text-[11px] text-ink-muted">{tag}</span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </aside>
-            </>
-          )}
-
-          {/* Filters panel (toggleable) */}
-          {showFilters && (
-            <div className="absolute right-6 top-6 z-20 glass rounded-2xl p-5 w-80 max-h-[70vh] overflow-y-auto space-y-5">
-              <div className="flex items-center justify-between">
-                <h3 className="font-headline text-sm font-bold text-ink">Filters</h3>
-                <button type="button" onClick={() => setShowFilters(false)} className="text-ink-faint hover:text-ink text-xs">Close</button>
-              </div>
-
-              {allTags.length > 0 && (
-                <div>
-                  <h4 className="text-[10px] font-bold uppercase tracking-[0.15em] text-ink-faint mb-2">Tags</h4>
-                  <div className="flex flex-wrap gap-1.5">
-                    {allTags.map((tag) => (
-                      <button
-                        key={tag}
-                        type="button"
-                        onClick={() => setSearchText((prev) => prev === tag ? "" : tag)}
-                        className={`rounded-full px-2.5 py-1 text-xs transition ${
-                          searchText === tag
-                            ? "bg-accent text-white"
-                            : "border border-border text-ink-muted hover:border-border-strong hover:text-ink"
-                        }`}
-                      >
-                        {tag}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {!isSparse && clustersForSidebar.length > 0 && (
-                <div>
-                  <h4 className="text-[10px] font-bold uppercase tracking-[0.15em] text-ink-faint mb-2">Clusters</h4>
-                  <div className="space-y-1.5">
-                    {clustersForSidebar.map((cluster) => (
-                      <button
-                        type="button"
-                        key={`filter-${cluster.id}-${cluster.label}`}
-                        onClick={() => setSelectedClusterId((c) => (c === cluster.id ? null : cluster.id))}
-                        className={`flex w-full items-center justify-between rounded-lg p-2 text-left transition ${
-                          selectedClusterId === cluster.id ? "bg-surface-hover" : "hover:bg-surface-hover"
-                        }`}
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: clusterNodeColor(cluster.id) }} />
-                          <span className="truncate text-xs text-ink">{cluster.label}</span>
-                        </div>
-                        <span className="text-xs text-ink-faint">{cluster.count}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+        {/* ── Mobile detail panel (in flow, below legend) ── */}
+        {selectedNode && (
+          <aside ref={detailRef} className="md:hidden border-t border-border bg-surface">
+            {detailContent}
+          </aside>
+        )}
 
         {/* Breathing animation */}
         <style jsx global>{`
