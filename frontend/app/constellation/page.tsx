@@ -11,10 +11,18 @@ type ViewMode = "constellation" | "list";
 const VIEW_MODE_KEY = "constellationViewMode";
 const MOBILE_BREAKPOINT = 768;
 const CLUSTER_THRESHOLD = 5;
-const NODE_PADDING = 140;
-const MIN_NODE_SPACING = 140;
 const COLLISION_ITERATIONS = 15;
-const CLUSTER_MIN_SPACING = 200;
+
+/** Responsive spacing — scales with container width */
+function getSpacing(width: number) {
+  const mobile = width < 768;
+  return {
+    nodePadding: mobile ? 40 : 80,
+    minNodeSpacing: mobile ? 60 : 120,
+    clusterMinSpacing: mobile ? 90 : 180,
+    panelWidth: 384, // w-96
+  };
+}
 
 // Brand palette for clusters — cycles through constellation colors
 const CLUSTER_PALETTE = [
@@ -79,22 +87,21 @@ function resolveCollisions(
   nodes: { id: number; px: number; py: number; cluster_id: number | null }[],
   width: number,
   height: number,
+  spacing: ReturnType<typeof getSpacing>,
 ): { id: number; px: number; py: number }[] {
   const result = nodes.map((n) => ({ ...n }));
+  const { nodePadding, minNodeSpacing, clusterMinSpacing } = spacing;
 
   for (let iter = 0; iter < COLLISION_ITERATIONS; iter++) {
-    // Node-level repulsion
     for (let i = 0; i < result.length; i++) {
       for (let j = i + 1; j < result.length; j++) {
         const dx = result[j].px - result[i].px;
         const dy = result[j].py - result[i].py;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        // Use larger spacing for nodes in different clusters
         const sameCluster = result[i].cluster_id === result[j].cluster_id;
-        const minDist = sameCluster ? MIN_NODE_SPACING : CLUSTER_MIN_SPACING;
+        const minDist = sameCluster ? minNodeSpacing : clusterMinSpacing;
         if (dist < minDist) {
-          // Push proportional to overlap severity
-          const force = ((minDist - dist) / minDist) * minDist * 0.6;
+          const force = ((minDist - dist) / minDist) * minDist * 0.5;
           const nx = (dx / dist) * force;
           const ny = (dy / dist) * force;
           result[i].px -= nx;
@@ -104,11 +111,9 @@ function resolveCollisions(
         }
       }
     }
-
-    // Clamp to bounds with padding
     for (const n of result) {
-      n.px = Math.max(NODE_PADDING, Math.min(width - NODE_PADDING, n.px));
-      n.py = Math.max(NODE_PADDING, Math.min(height - NODE_PADDING, n.py));
+      n.px = Math.max(nodePadding, Math.min(width - nodePadding, n.px));
+      n.py = Math.max(nodePadding, Math.min(height - nodePadding, n.py));
     }
   }
   return result;
@@ -229,10 +234,20 @@ export default function ConstellationPage() {
     return counts;
   }, [filteredNodes]);
 
+  // Responsive spacing based on container width
+  const spacing = useMemo(() => getSpacing(containerSize.width), [containerSize.width]);
+
   // Compute pixel positions with collision avoidance
+  // On desktop, reserve right side for detail panel
   const positionedNodes = useMemo(() => {
     const hasPositions = filteredNodes.some((n) => n.x != null && n.y != null);
     const count = filteredNodes.length;
+    const { nodePadding, panelWidth } = spacing;
+    const isMobileLayout = containerSize.width < 768;
+    // On desktop, constrain nodes to the left area (leave room for panel)
+    const usableWidth = isMobileLayout
+      ? containerSize.width
+      : Math.max(containerSize.width - panelWidth - 24, containerSize.width * 0.55);
 
     const raw = filteredNodes.map((node, i) => {
       let nx: number;
@@ -251,22 +266,23 @@ export default function ConstellationPage() {
         ny = radius * Math.sin(angle);
       }
 
-      const px = containerSize.width > 0
-        ? NODE_PADDING + ((nx + 1) / 2) * (containerSize.width - 2 * NODE_PADDING)
+      const px = usableWidth > 0
+        ? nodePadding + ((nx + 1) / 2) * (usableWidth - 2 * nodePadding)
         : 0;
       const py = containerSize.height > 0
-        ? NODE_PADDING + ((ny + 1) / 2) * (containerSize.height - 2 * NODE_PADDING)
+        ? nodePadding + ((ny + 1) / 2) * (containerSize.height - 2 * nodePadding)
         : 0;
 
       return { ...node, px, py };
     });
 
-    // Resolve collisions
-    if (raw.length > 1 && containerSize.width > 0) {
+    // Resolve collisions within usable area
+    if (raw.length > 1 && usableWidth > 0) {
       const resolved = resolveCollisions(
         raw.map((n) => ({ id: n.id, px: n.px, py: n.py, cluster_id: n.cluster_id })),
-        containerSize.width,
+        usableWidth,
         containerSize.height,
+        spacing,
       );
       const posMap = new Map(resolved.map((r) => [r.id, r]));
       return raw.map((n) => {
@@ -276,7 +292,7 @@ export default function ConstellationPage() {
     }
 
     return raw;
-  }, [filteredNodes, containerSize]);
+  }, [filteredNodes, containerSize, spacing]);
 
   const nodePositions = useMemo(() => {
     const map = new Map<number, { px: number; py: number }>();
@@ -395,7 +411,7 @@ export default function ConstellationPage() {
         <div
           ref={containerRef}
           className="constellation-bg relative overflow-hidden"
-          style={{ height: Math.max(400, Math.min(650, filteredNodes.length * 80 + 200)) }}
+          style={{ height: Math.max(350, Math.min(550, filteredNodes.length * 60 + 150)) }}
         >
           {/* Top-left controls */}
           <div className="absolute left-6 top-6 z-20 flex flex-col gap-3">
