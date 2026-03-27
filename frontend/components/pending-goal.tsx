@@ -24,8 +24,8 @@ export function PendingGoal({
 
   if (resolved === "approved") {
     return (
-      <article className="rounded-panel border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-800/30 dark:bg-emerald-900/10 md:p-5">
-        <p className="text-sm text-emerald-700 dark:text-emerald-300">
+      <article className="glass-card-horizons border-l-2 border-l-signal p-5 md:p-6">
+        <p className="text-sm text-signal">
           {extraction.kind === "goal" ? "Added to your goals!" : "Added to your tasks!"}
         </p>
       </article>
@@ -33,38 +33,35 @@ export function PendingGoal({
   }
 
   const busy = approveMutation.isPending || dismissMutation.isPending;
+  const isGoal = extraction.kind === "goal";
+  const borderColor = isGoal ? "border-l-accent" : "border-l-signal";
+  const badgeLabel = isGoal ? "AI Extraction" : "Pattern Found";
+  const badgeClasses = isGoal
+    ? "text-accent bg-accent/10"
+    : "text-signal bg-signal/10";
 
   return (
-    <article className="rounded-panel border border-dashed border-border bg-surface/60 p-4 md:p-5">
-      <p className="mb-2 text-xs italic text-ink-faint">
-        Your assistant noticed&hellip;
-      </p>
-
-      <p className="text-sm leading-relaxed text-ink">{extraction.text}</p>
-
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <span
-          className={`rounded-full px-2 py-0.5 font-mono text-[11px] ${
-            extraction.kind === "goal"
-              ? "bg-sky-50 text-sky-800 dark:bg-sky-900/20 dark:text-sky-300"
-              : "bg-slate-100 text-slate-600 dark:bg-slate-800/30 dark:text-slate-400"
-          }`}
-        >
-          {extraction.kind}
-        </span>
-
-        <span className="text-xs text-ink-faint">
-          {extraction.confidence} confidence
-        </span>
-
-        {extraction.source_date ? (
-          <span className="font-mono text-xs text-ink-faint">
-            from {formatDate(extraction.source_date)}
+    <article className={`glass-card-horizons border-l-4 ${borderColor} p-5 flex flex-col justify-between md:p-6`}>
+      <div>
+        <div className="mb-3 flex items-start justify-between">
+          <span className={`rounded px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest ${badgeClasses}`}>
+            {badgeLabel}
           </span>
-        ) : null}
+        </div>
+
+        <p className="text-sm font-medium leading-snug text-ink mb-3">
+          &ldquo;{extraction.text}&rdquo;
+        </p>
+
+        <div className="flex flex-wrap items-center gap-2 text-xs text-ink-faint">
+          <span>{extraction.confidence} confidence</span>
+          {extraction.source_date ? (
+            <span className="font-mono">from {formatDate(extraction.source_date)}</span>
+          ) : null}
+        </div>
       </div>
 
-      <div className="mt-3 flex items-center gap-2">
+      <div className="mt-4 flex items-center gap-2">
         <button
           type="button"
           disabled={busy}
@@ -73,9 +70,13 @@ export function PendingGoal({
               onSuccess: () => setResolved("approved"),
             });
           }}
-          className="rounded-full bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+          className={`w-full rounded-lg py-2 text-xs font-mono uppercase tracking-widest transition-all disabled:opacity-50 ${
+            isGoal
+              ? "bg-accent/10 text-accent hover:bg-accent hover:text-white"
+              : "bg-signal/10 text-signal hover:bg-signal hover:text-[#0b0f13]"
+          }`}
         >
-          {approveMutation.isPending ? "Saving..." : "Approve"}
+          {approveMutation.isPending ? "Saving..." : `Accept ${extraction.kind === "goal" ? "Goal" : "Task"}`}
         </button>
         <button
           type="button"
@@ -85,7 +86,7 @@ export function PendingGoal({
               onSuccess: () => setResolved("dismissed"),
             });
           }}
-          className="rounded-full border border-border px-3 py-1.5 text-xs text-ink-muted transition-colors hover:border-border-strong hover:text-ink disabled:opacity-50"
+          className="rounded-lg border border-border px-4 py-2 text-xs font-mono uppercase tracking-widest text-ink-muted transition-colors hover:border-border-strong hover:text-ink disabled:opacity-50"
         >
           Dismiss
         </button>
