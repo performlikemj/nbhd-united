@@ -15,7 +15,7 @@ from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
 
-DEDUP_THRESHOLD = 0.75  # cosine similarity — anything above this is a duplicate
+DEDUP_THRESHOLD = 0.65  # cosine similarity — anything above this is a duplicate
 
 
 class Command(BaseCommand):
