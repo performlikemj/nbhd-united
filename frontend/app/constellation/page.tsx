@@ -77,8 +77,7 @@ function loadStoredViewMode(): ViewMode | null {
 }
 
 function defaultViewMode(): ViewMode {
-  if (typeof window === "undefined") return "list";
-  return window.innerWidth >= MOBILE_BREAKPOINT ? "constellation" : "list";
+  return "constellation";
 }
 
 /** Push overlapping nodes apart with strong repulsion + cluster separation */
