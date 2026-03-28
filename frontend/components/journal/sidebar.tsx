@@ -52,6 +52,14 @@ function docKind(sectionKind: string): string {
 /** Kinds that support multiple user-created entries (and get a "+" button). */
 const ADDABLE_DOC_KINDS = new Set(["goal", "project"]);
 
+/** Primary nav items — the main document types */
+const PRIMARY_NAV = [
+  { kind: "daily", label: "Daily", icon: "📅" },
+  { kind: "tasks", label: "Tasks", icon: "📋" },
+  { kind: "ideas", label: "Ideas", icon: "💡" },
+  { kind: "memory", label: "Memory", icon: "🧠" },
+];
+
 interface SidebarProps {
   activeKind?: string;
   activeSlug?: string;
@@ -119,7 +127,6 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
         {
           onSuccess: () => {
             showToast("Deleted", "success");
-            // Navigate away if the deleted doc was active
             if (activeKind === kind && activeSlug === slug) {
               const today = new Date();
               const todaySlug = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
@@ -211,36 +218,31 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
     });
   };
 
-  // Static items that always show (even if no documents exist yet)
-  const staticItems: Array<{ kind: string; slug: string; label: string; icon: string }> = [
-    {
-      kind: "daily",
-      slug: (() => {
-        const d = new Date();
-        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      })(),
-      label: "Today",
-      icon: "📅",
-    },
-    { kind: "tasks", slug: "tasks", label: "Tasks", icon: "📋" },
-    { kind: "goal", slug: "goals", label: "Goals", icon: "🎯" },
-    { kind: "ideas", slug: "ideas", label: "Ideas", icon: "💡" },
-    { kind: "memory", slug: "memory", label: "Memory", icon: "🧠" },
-  ];
+  function todaySlug() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+
+  // User documents: goals, projects, and other multi-doc sections from the tree
+  const userDocSections = (tree ?? []).filter((section: SidebarSection) => {
+    const dk = docKind(section.kind);
+    // Show sections that have user-created docs or are addable
+    return ADDABLE_DOC_KINDS.has(dk) || (!SINGLETON_KINDS.has(section.kind) && section.kind !== "daily" && section.items.length > 0);
+  });
 
   return (
     <nav aria-label="Journal sidebar" className="flex h-full w-64 flex-col border-r border-white/5 bg-c-dark/80 backdrop-blur-2xl">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-white/5 px-4 py-4">
+      <div className="flex items-center justify-between border-b border-white/5 px-4 py-5">
         <div>
-          <h2 className="font-headline text-lg font-bold text-ink">Journal</h2>
+          <h2 className="font-headline text-xl font-bold text-ink">Journal</h2>
           <p className="text-[10px] uppercase tracking-[0.15em] text-ink-faint">Celestial Sanctuary</p>
         </div>
         {onToggle && (
           <button
             type="button"
             onClick={onToggle}
-            className="rounded p-1 text-ink-faint hover:bg-surface-hover hover:text-ink min-h-[44px] min-w-[44px] flex items-center justify-center"
+            className="rounded p-1 text-ink-faint hover:bg-white/5 hover:text-ink min-h-[44px] min-w-[44px] flex items-center justify-center"
             aria-label="Collapse sidebar"
           >
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -250,29 +252,47 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
         )}
       </div>
 
-      {/* Quick nav */}
-      <div className="border-b border-white/5 px-2 py-2">
-        {staticItems.map((item) => (
-          <button
-            key={`${item.kind}-${item.slug}`}
-            type="button"
-            onMouseEnter={() => prefetchDocument(item.kind, item.slug)}
-            onClick={() => onNavigate(item.kind, item.slug)}
-            className={clsx(
-              "flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm transition min-h-[44px]",
-              activeKind === item.kind && activeSlug === item.slug
-                ? "bg-accent/10 font-semibold text-accent"
-                : "text-ink-muted hover:bg-white/5 hover:text-ink",
-            )}
-          >
-            <span>{item.icon}</span>
-            <span>{item.label}</span>
-          </button>
-        ))}
+      {/* New Entry button */}
+      <div className="px-3 py-3">
+        <button
+          type="button"
+          onClick={() => onNavigate("daily", todaySlug())}
+          className="w-full rounded-xl bg-accent px-4 py-3 text-sm font-bold text-white flex items-center justify-center gap-2 transition-all hover:brightness-110 glow-purple"
+        >
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+          New Entry
+        </button>
       </div>
 
-      {/* File tree */}
-      <div className="flex-1 overflow-y-auto px-2 py-2">
+      {/* Primary nav */}
+      <div className="px-2 py-1 space-y-0.5">
+        {PRIMARY_NAV.map((item) => {
+          const isActive = activeKind === item.kind || (item.kind === "daily" && activeKind === "daily");
+          const slug = item.kind === "daily" ? todaySlug() : item.kind;
+          return (
+            <button
+              key={item.kind}
+              type="button"
+              onMouseEnter={() => prefetchDocument(item.kind, slug)}
+              onClick={() => onNavigate(item.kind, slug)}
+              className={clsx(
+                "flex w-full items-center gap-3 rounded-xl px-4 py-2.5 text-left text-sm transition min-h-[44px]",
+                isActive
+                  ? "bg-accent/10 font-semibold text-accent"
+                  : "text-ink-faint hover:bg-white/5 hover:text-ink",
+              )}
+            >
+              <span className="text-base">{item.icon}</span>
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* User documents (goals, projects, etc.) */}
+      <div className="flex-1 overflow-y-auto px-2 py-2 border-t border-white/5 mt-1">
         {isLoading ? (
           <div className="space-y-2 px-3">
             {[1, 2, 3].map((i) => (
@@ -280,22 +300,18 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
             ))}
           </div>
         ) : (
-          tree?.map((section: SidebarSection) => {
-            // Skip singleton kinds in the tree (they're in quick nav)
-            if (SINGLETON_KINDS.has(section.kind) && section.items.length <= 1) return null;
-
+          userDocSections.map((section: SidebarSection) => {
             const expanded = expandedSections.has(section.kind);
             const items = section.items;
             const sectionDocKind = docKind(section.kind);
             const isAddable = ADDABLE_DOC_KINDS.has(sectionDocKind);
             const isClearable = CLEARABLE_KINDS.has(section.kind);
 
-            // Hide section if empty AND not addable
             if (items.length === 0 && !isAddable) return null;
 
             return (
               <div key={section.kind} className="mb-1">
-                {/* Section header row */}
+                {/* Section header */}
                 <div className="flex items-center gap-0.5">
                   <button
                     type="button"
@@ -315,13 +331,12 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
                     <span className="ml-auto text-[10px] text-ink-faint">{items.length}</span>
                   </button>
 
-                  {/* "+" add button — only for addable kinds */}
                   {isAddable && (
                     <button
                       type="button"
                       title={`Add new ${section.label.replace(/s$/, "").toLowerCase()}`}
                       onClick={() => openAdd(sectionDocKind)}
-                      className="flex h-[28px] w-[28px] flex-shrink-0 items-center justify-center rounded text-ink-faint hover:bg-surface-hover hover:text-ink"
+                      className="flex h-[28px] w-[28px] flex-shrink-0 items-center justify-center rounded text-ink-faint hover:bg-white/5 hover:text-ink"
                     >
                       <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -330,7 +345,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
                   )}
                 </div>
 
-                {/* Inline add input — shown when "+" was tapped for this kind */}
+                {/* Inline add input */}
                 {isAddable && addingKind === sectionDocKind && (
                   <div className="ml-2 mt-1 flex items-center gap-1 px-1">
                     <input
@@ -343,7 +358,6 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
                         if (e.key === "Escape") cancelAdd();
                       }}
                       onBlur={(e) => {
-                        // Cancel only if focus left the entire add row (not to the Save button)
                         if (!e.currentTarget.parentElement?.contains(e.relatedTarget as Node)) {
                           cancelAdd();
                         }
@@ -353,7 +367,6 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
                     />
                     <button
                       type="button"
-                      // Prevent blur on the input before the click fires
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={confirmAdd}
                       disabled={!newName.trim() || createMutation.isPending}
@@ -379,7 +392,6 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
                             isConfirming && "bg-rose-500/10",
                           )}
                         >
-                          {/* Main nav button */}
                           <button
                             type="button"
                             onMouseEnter={() => prefetchDocument(sectionDocKind, item.slug)}
@@ -396,9 +408,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
                             <span className="truncate">{item.title}</span>
                           </button>
 
-                          {/* Clear / Delete controls */}
                           {isConfirming ? (
-                            /* Confirm / Cancel inline row */
                             <div className="flex flex-shrink-0 items-center gap-0.5 pr-1">
                               <span className="mr-0.5 text-[10px] text-rose-400">{isClearable ? "Clear?" : "Delete?"}</span>
                               <button
@@ -423,7 +433,6 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
                               </button>
                             </div>
                           ) : (
-                            /* Action icon — always visible on mobile, hover-only on desktop */
                             <button
                               type="button"
                               onClick={(e) => {
@@ -434,12 +443,10 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
                               title={isClearable ? "Clear" : "Delete"}
                             >
                               {isClearable ? (
-                                /* Eraser icon for clearable items */
                                 <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4l16 16M9 9l-4.5 4.5a2.121 2.121 0 000 3L7 19h5l1-1M15 9l3.5 3.5a2.121 2.121 0 010 3L15 19" />
                                 </svg>
                               ) : (
-                                /* Trash icon for deletable items */
                                 <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                   <path
                                     strokeLinecap="round"
