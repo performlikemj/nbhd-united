@@ -468,18 +468,10 @@ export default function ConstellationPage() {
             <p className="text-[11px] text-accent mb-2">
               Connected to {connectedCount} other lesson{connectedCount !== 1 ? "s" : ""}
             </p>
-<<<<<<< HEAD
             <div className="space-y-1.5 max-h-[140px] overflow-y-auto scrollbar-none">
               {[...data.edges, ...data.affinity_edges]
                 .filter((e) => Number(e.source) === selectedNodeId || Number(e.target) === selectedNodeId)
                 .sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))
-=======
-            <div className="space-y-1.5">
-              {[...data.edges, ...data.affinity_edges]
-                .filter((e) => Number(e.source) === selectedNodeId || Number(e.target) === selectedNodeId)
-                .sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))
-                .slice(0, 5)
->>>>>>> origin/main
                 .map((edge) => {
                   const otherId = Number(edge.source) === selectedNodeId ? Number(edge.target) : Number(edge.source);
                   const other = nodesById.get(otherId);
