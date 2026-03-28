@@ -310,7 +310,7 @@ export default function register(api) {
     {
       name: "nbhd_finance_calculate_payoff",
       description:
-        "Calculate and compare debt payoff strategies. If no strategy is specified, compares all three: snowball (smallest balance first), avalanche (highest interest first), and hybrid. Returns timelines, total interest, and month-by-month schedules.",
+        "Calculate and compare debt payoff strategies. If no strategy is specified, compares all three: snowball (smallest balance first), avalanche (highest interest first), and hybrid. Returns timelines, total interest, and month-by-month schedules. IMPORTANT: When the user chooses or confirms a strategy, ALWAYS set save=true so the plan appears on their Gravity dashboard. Only omit save when doing an initial comparison.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -329,7 +329,7 @@ export default function register(api) {
           save: {
             type: "boolean",
             description:
-              "Set to true to save the result as the active payoff plan (requires a specific strategy).",
+              "Save the result as the active payoff plan for the Gravity dashboard. ALWAYS set true when a specific strategy is chosen. Requires a specific strategy to be set.",
           },
         },
         required: ["monthly_budget"],
