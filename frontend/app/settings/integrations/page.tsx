@@ -221,7 +221,7 @@ function LineCard() {
   );
 }
 
-function FuelCard() {
+function GravityCard() {
   const { data: tenant } = useTenantQuery();
   const mutation = useUpdateFinanceSettingsMutation();
   const enabled = tenant?.finance_enabled ?? false;
@@ -236,7 +236,7 @@ function FuelCard() {
         <div>
           <div className="flex items-center gap-2">
             <span className="text-base" aria-hidden="true">◆</span>
-            <h3 className="text-base font-medium">Fuel</h3>
+            <h3 className="text-base font-medium">Gravity</h3>
           </div>
           <p className="mt-1 text-sm text-ink-muted">
             Budget tracking, debt payoff strategies, and financial progress
@@ -247,7 +247,7 @@ function FuelCard() {
           type="button"
           role="switch"
           aria-checked={enabled}
-          aria-label={enabled ? "Disable Fuel" : "Enable Fuel"}
+          aria-label={enabled ? "Disable Gravity" : "Enable Gravity"}
           onClick={() => mutation.mutate({ finance_enabled: !enabled })}
           disabled={mutation.isPending}
           className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
@@ -322,8 +322,8 @@ function IntegrationsContent() {
       <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load LINE settings.</p>}>
         <LineCard />
       </ErrorBoundary>
-      <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load Fuel settings.</p>}>
-        <FuelCard />
+      <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load Gravity settings.</p>}>
+        <GravityCard />
       </ErrorBoundary>
 
       {connectError && (
