@@ -502,6 +502,10 @@ export default function ConstellationPage() {
             className="constellation-bg relative w-full flex-1 overflow-hidden rounded-xl"
             style={{ height: graphHeight }}
           >
+            {/* TEMP DEBUG */}
+            <pre className="absolute top-1 left-1 z-50 rounded bg-black/80 px-2 py-1 text-[9px] text-green-400 font-mono pointer-events-none">
+              w:{Math.round(containerSize.width)} h:{Math.round(containerSize.height)} nodes:{filteredNodes.length} gate:{String(containerSize.width > 0 && filteredNodes.length > 0)}
+            </pre>
 
 
             {containerSize.width > 0 && filteredNodes.length > 0 && (
