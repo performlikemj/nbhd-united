@@ -176,19 +176,9 @@ export default function ConstellationPage() {
     const storedMode = loadStoredViewMode();
     setViewMode(storedMode ?? defaultViewMode());
 
-    const mediaQuery = window.matchMedia(`(min-width: ${MOBILE_BREAKPOINT}px)`);
-    const handleMediaChange = () => {
-      const persisted = loadStoredViewMode();
-      if (!persisted) {
-        setViewMode(window.innerWidth >= MOBILE_BREAKPOINT ? "constellation" : "list");
-      }
-    };
-
-    mediaQuery.addEventListener("change", handleMediaChange);
     loadData();
 
     return () => {
-      mediaQuery.removeEventListener("change", handleMediaChange);
       mounted = false;
     };
   }, []);
@@ -497,14 +487,6 @@ export default function ConstellationPage() {
             className="constellation-bg relative w-full flex-1 min-w-0"
             style={{ height: graphHeight, overflow: "hidden" }}
           >
-            {/* DEBUG — remove after diagnosis */}
-            <div className="absolute top-2 right-2 z-50 rounded bg-rose-bg/90 px-2 py-1 text-[10px] font-mono text-rose-text">
-              container: {Math.round(containerSize.width)}x{Math.round(containerSize.height)} |
-              nodes: {filteredNodes.length} |
-              mode: {viewMode} |
-              gate: {containerSize.width > 0 && filteredNodes.length > 0 ? "PASS" : "FAIL"}
-            </div>
-
             {containerSize.width > 0 && filteredNodes.length > 0 && (
               <>
                 {/* Edges */}
