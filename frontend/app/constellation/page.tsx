@@ -449,7 +449,7 @@ export default function ConstellationPage() {
     ) : null;
 
     return (
-      <div className="-mx-4 -mt-8 sm:-mx-6 flex flex-col">
+      <div className="flex flex-col -mt-4">
         {/* ── Controls bar ── */}
         <div className="px-4 sm:px-6 py-4 flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -495,12 +495,12 @@ export default function ConstellationPage() {
         )}
 
         {/* ── Graph + Desktop Panel (flex row on md+) ── */}
-        <div className="flex flex-col md:flex-row min-w-0">
+        <div className="flex flex-col md:flex-row">
           {/* Graph container */}
           <div
             ref={containerRef}
-            className="constellation-bg relative w-full flex-1 min-w-0"
-            style={{ height: graphHeight, overflow: "hidden" }}
+            className="constellation-bg relative w-full flex-1 overflow-hidden rounded-xl"
+            style={{ height: graphHeight }}
           >
 
 
