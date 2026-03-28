@@ -322,6 +322,35 @@ export default function ConstellationPage() {
     return nodesById.get(selectedNodeId) ?? null;
   }, [nodesById, selectedNodeId]);
 
+  // Nodes directly connected to the selected node via edges
+  const connectedNodeIds = useMemo(() => {
+    if (selectedNodeId == null) return new Set<number>();
+    const connected = new Set<number>();
+    connected.add(selectedNodeId);
+    for (const edge of [...data.edges, ...data.affinity_edges]) {
+      const src = Number(edge.source);
+      const tgt = Number(edge.target);
+      if (src === selectedNodeId) connected.add(tgt);
+      if (tgt === selectedNodeId) connected.add(src);
+    }
+    return connected;
+  }, [selectedNodeId, data.edges, data.affinity_edges]);
+
+  // Age-based opacity: older lessons are slightly dimmer
+  const nodeAgeOpacity = useMemo(() => {
+    const map = new Map<number, number>();
+    if (filteredNodes.length === 0) return map;
+    const now = Date.now();
+    const oldest = Math.min(...filteredNodes.map((n) => new Date(n.created_at).getTime()));
+    const range = now - oldest || 1;
+    for (const node of filteredNodes) {
+      const age = now - new Date(node.created_at).getTime();
+      // Newest = 1.0, oldest = 0.5
+      map.set(node.id, 1 - (age / range) * 0.5);
+    }
+    return map;
+  }, [filteredNodes]);
+
   const clusterCards = useMemo(() => {
     const groups = new Map<number | null, ConstellationNode[]>();
     filteredNodes.forEach((node) => {
@@ -415,6 +444,9 @@ export default function ConstellationPage() {
   if (viewMode === "constellation") {
     const graphHeight = Math.max(380, Math.min(520, filteredNodes.length * 55 + 160));
 
+    // Connected nodes count for the detail panel
+    const connectedCount = selectedNodeId != null ? connectedNodeIds.size - 1 : 0;
+
     // Shared detail panel content
     const detailContent = selectedNode ? (
       <div className="space-y-4 p-5">
@@ -429,6 +461,14 @@ export default function ConstellationPage() {
             <svg viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5"><path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd"/></svg>
           </button>
         </div>
+
+        {/* Connection info */}
+        {connectedCount > 0 && (
+          <p className="text-[11px] text-accent">
+            Connected to {connectedCount} other lesson{connectedCount !== 1 ? "s" : ""}
+          </p>
+        )}
+
         <p className="text-sm leading-relaxed text-ink">{selectedNode.text}</p>
         {selectedNode.context && <p className="text-xs text-ink-muted">{selectedNode.context}</p>}
         <div className="space-y-1">
@@ -438,13 +478,39 @@ export default function ConstellationPage() {
           </p>
           <p className="text-xs text-ink-faint">{formatDate(selectedNode.created_at)}</p>
         </div>
+
+        {/* Tags — clickable to filter */}
         {selectedNode.tags.length > 0 && (
           <div className="flex flex-wrap gap-1.5 pt-3 border-t border-border">
             {selectedNode.tags.map((tag) => (
-              <span key={`tag-${selectedNode.id}-${tag}`} className="rounded-full border border-border bg-surface-elevated px-2.5 py-0.5 text-[11px] text-ink-muted">{tag}</span>
+              <button
+                key={`tag-${selectedNode.id}-${tag}`}
+                type="button"
+                onClick={() => {
+                  setSearchText((prev) => prev === tag ? "" : tag);
+                  setSelectedNodeId(null);
+                }}
+                className={`rounded-full border px-2.5 py-0.5 text-[11px] transition ${
+                  searchText === tag
+                    ? "border-accent bg-accent/10 text-accent"
+                    : "border-border bg-surface-elevated text-ink-muted hover:border-accent/30 hover:text-ink"
+                }`}
+              >
+                {tag}
+              </button>
             ))}
           </div>
         )}
+
+        {/* "How might this apply?" prompt */}
+        <div className="pt-3 border-t border-border">
+          <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-ink-faint mb-1.5">
+            How might this apply?
+          </p>
+          <p className="text-xs text-ink-muted italic leading-relaxed">
+            Consider how this lesson connects to your current goals or daily practice.
+          </p>
+        </div>
       </div>
     ) : null;
 
@@ -523,13 +589,20 @@ export default function ConstellationPage() {
                     if (!s || !t) return null;
                     const sim = edge.similarity ?? 0;
                     const grads = ["url(#edge-grad-pt)", "url(#edge-grad-tp)", "url(#edge-grad-pp)"];
+                    // Highlight edges connected to selected node, dim others
+                    const isConnectedEdge = selectedNodeId != null && (
+                      Number(edge.source) === selectedNodeId || Number(edge.target) === selectedNodeId
+                    );
+                    const dimmed = selectedNodeId != null && !isConnectedEdge;
+                    const baseOpacity = sim >= 0.75 ? 0.45 : sim >= 0.5 ? 0.25 : 0.12;
                     return (
                       <line key={`e-${edge.source}-${edge.target}-${i}`}
                         x1={s.px} y1={s.py} x2={t.px} y2={t.py}
                         stroke={grads[i % grads.length]}
-                        strokeWidth={sim >= 0.75 ? 2 : sim >= 0.5 ? 1.5 : 1}
-                        strokeDasharray={sim < 0.5 ? "4 6" : undefined}
-                        opacity={sim >= 0.75 ? 0.45 : sim >= 0.5 ? 0.25 : 0.12}
+                        strokeWidth={isConnectedEdge ? Math.max(2, sim >= 0.75 ? 3 : 2) : (sim >= 0.75 ? 2 : sim >= 0.5 ? 1.5 : 1)}
+                        strokeDasharray={sim < 0.5 && !isConnectedEdge ? "4 6" : undefined}
+                        opacity={dimmed ? 0.04 : isConnectedEdge ? 0.7 : baseOpacity}
+                        className="transition-opacity duration-300"
                       />
                     );
                   })}
@@ -552,18 +625,28 @@ export default function ConstellationPage() {
                 {/* Nodes */}
                 {positionedNodes.map((node) => {
                   const sel = selectedNodeId === node.id;
+                  const isConnected = connectedNodeIds.has(node.id);
+                  const dimmed = selectedNodeId != null && !isConnected;
                   const color = clusterNodeColor(node.cluster_id);
                   const size = nodeSize(node.cluster_id);
+                  const ageScale = nodeAgeOpacity.get(node.id) ?? 1;
+                  // Older nodes slightly smaller (90-100% of base size)
+                  const timeSize = Math.round(size * (0.9 + ageScale * 0.1));
                   return (
                     <button key={node.id} type="button"
-                      className="absolute -translate-x-1/2 -translate-y-1/2 focus-visible:outline-none group"
-                      style={{ left: node.px, top: node.py, zIndex: sel ? 3 : 2, width: size + 8, height: size + 8 }}
+                      className="absolute -translate-x-1/2 -translate-y-1/2 focus-visible:outline-none group transition-opacity duration-300"
+                      style={{
+                        left: node.px, top: node.py,
+                        zIndex: sel ? 3 : isConnected ? 2 : 1,
+                        width: timeSize + 8, height: timeSize + 8,
+                        opacity: dimmed ? 0.15 : ageScale,
+                      }}
                       aria-label={`Lesson: ${lessonTitle(node)}`}
                       onClick={() => setSelectedNodeId((p) => (p === node.id ? null : node.id))}>
                       <div className={`mx-auto rounded-full transition-transform duration-200 group-hover:scale-110 ${sel ? "scale-110 ring-2 ring-white/50 ring-offset-2 ring-offset-c-dark" : ""}`}
-                        style={{ width: size, height: size, backgroundColor: color,
-                          filter: `drop-shadow(0 0 ${size / 3}px ${color}90)`,
-                          animation: "constellation-breathe 4s ease-in-out infinite",
+                        style={{ width: timeSize, height: timeSize, backgroundColor: color,
+                          filter: `drop-shadow(0 0 ${timeSize / 3}px ${color}${dimmed ? "30" : "90"})`,
+                          animation: dimmed ? "none" : "constellation-breathe 4s ease-in-out infinite",
                           animationDelay: `${(node.id * 700) % 4000}ms` }} />
                       <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-2 opacity-0 group-hover:opacity-100 transition-opacity" style={{ zIndex: 50 }}>
                         <span className="block max-w-[180px] truncate rounded-lg bg-surface border border-border px-2.5 py-1 text-[11px] font-medium text-ink shadow-lg whitespace-nowrap">
