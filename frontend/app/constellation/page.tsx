@@ -135,15 +135,17 @@ export default function ConstellationPage() {
   const userToggledRef = useRef(false);
   const observerRef = useRef<ResizeObserver | null>(null);
 
+  const graphNodeRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useCallback((node: HTMLDivElement | null) => {
+    graphNodeRef.current = node;
     if (observerRef.current) {
       observerRef.current.disconnect();
       observerRef.current = null;
     }
     if (node) {
-      // Immediate measurement (ResizeObserver callback can be delayed)
+      // Immediate measurement
       const rect = node.getBoundingClientRect();
-      if (rect.width > 0 || rect.height > 0) {
+      if (rect.width > 0 && rect.height > 0) {
         setContainerSize({ width: rect.width, height: rect.height });
       }
       observerRef.current = new ResizeObserver((entries) => {
@@ -153,6 +155,20 @@ export default function ConstellationPage() {
       observerRef.current.observe(node);
     }
   }, []);
+
+  // Fallback measurement after paint (mobile Safari can delay ResizeObserver)
+  useEffect(() => {
+    if (containerSize.width > 0) return;
+    const timer = setTimeout(() => {
+      if (graphNodeRef.current) {
+        const rect = graphNodeRef.current.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          setContainerSize({ width: rect.width, height: rect.height });
+        }
+      }
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [containerSize.width, viewMode]);
 
   useEffect(() => {
     let mounted = true;
