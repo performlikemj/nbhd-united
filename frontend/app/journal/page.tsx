@@ -1,12 +1,19 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import clsx from "clsx";
 import { Sidebar } from "@/components/journal/sidebar";
 import { DocumentView } from "@/components/journal/document-view";
+import { useSidebarTreeQuery } from "@/lib/queries";
 
 function todayISO(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function formatEntryDate(dateStr: string): string {
+  const d = new Date(dateStr + "T00:00:00");
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 export default function JournalPage() {
@@ -15,6 +22,10 @@ export default function JournalPage() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
+  // Recent entries from sidebar tree
+  const { data: tree } = useSidebarTreeQuery();
+  const dailyEntries = (tree ?? []).find((s) => s.kind === "daily")?.items ?? [];
+
   // Draggable sidebar FAB — persists Y position in localStorage
   const SIDEBAR_FAB_KEY = "sidebar-fab-y";
   const [fabY, setFabY] = useState<number | null>(null);
@@ -22,7 +33,6 @@ export default function JournalPage() {
 
   useEffect(() => {
     const saved = localStorage.getItem(SIDEBAR_FAB_KEY);
-    // Default: higher than footer (window.innerHeight - 120px)
     setFabY(saved ? parseInt(saved, 10) : window.innerHeight - 120);
   }, []);
 
@@ -73,7 +83,7 @@ export default function JournalPage() {
 
   return (
     <div className="flex h-full">
-      {/* Mobile sidebar toggle — draggable along Y, clears footer */}
+      {/* Mobile sidebar toggle — draggable along Y */}
       {fabY !== null && (
         <button
           type="button"
@@ -87,7 +97,6 @@ export default function JournalPage() {
             }
           }}
           onClick={() => {
-            // Desktop fallback (no touch)
             if (!fabDrag.current) setMobileSidebarOpen(!mobileSidebarOpen);
           }}
           style={{ top: `${fabY}px` }}
@@ -141,6 +150,48 @@ export default function JournalPage() {
           />
         </div>
       </div>
+
+      {/* Recent Entries panel — desktop only, visible when viewing daily entries */}
+      {activeKind === "daily" && dailyEntries.length > 0 && (
+        <div className="hidden xl:block w-72 shrink-0 overflow-y-auto border-r border-white/5 bg-surface-elevated/30 backdrop-blur-sm">
+          <div className="p-5">
+            <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-ink-faint mb-4">
+              Recent Entries
+            </h3>
+            <div className="space-y-1">
+              {dailyEntries.map((entry) => {
+                const isActive = activeKind === "daily" && activeSlug === entry.slug;
+                return (
+                  <button
+                    key={entry.slug}
+                    type="button"
+                    onClick={() => handleNavigate("daily", entry.slug)}
+                    className={clsx(
+                      "w-full rounded-xl p-3 text-left transition-all duration-200",
+                      isActive
+                        ? "bg-accent/10 border border-accent/20"
+                        : "hover:bg-white/5",
+                    )}
+                  >
+                    <span className={clsx(
+                      "block text-sm font-bold mb-0.5",
+                      isActive ? "text-accent" : "text-ink-muted",
+                    )}>
+                      {formatEntryDate(entry.slug)}
+                    </span>
+                    <span className={clsx(
+                      "block text-sm truncate",
+                      isActive ? "text-ink" : "text-ink-faint",
+                    )}>
+                      {entry.title}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main content */}
       <div className="min-w-0 flex-1 overflow-hidden">
