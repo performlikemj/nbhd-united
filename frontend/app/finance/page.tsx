@@ -32,10 +32,10 @@ export default function FinancePage() {
       <div className="space-y-4 sm:space-y-6">
         <div>
           <h1 className="font-headline text-3xl font-bold tracking-tight text-ink sm:text-4xl">
-            Fuel
+            Gravity
           </h1>
           <p className="mt-1 text-sm text-ink-muted">
-            What powers the journey.
+            What keeps everything grounded.
           </p>
         </div>
         <div className="grid gap-3 md:grid-cols-3">
@@ -54,11 +54,11 @@ export default function FinancePage() {
       <div className="space-y-4 sm:space-y-6">
         <div>
           <h1 className="font-headline text-3xl font-bold tracking-tight text-ink sm:text-4xl">
-            Fuel
+            Gravity
           </h1>
         </div>
         <div className="rounded-panel border border-rose-border bg-rose-bg p-4 text-sm text-rose-text">
-          Failed to load Fuel.{" "}
+          Failed to load Gravity.{" "}
           {error instanceof Error ? error.message : "Please try again."}
         </div>
       </div>
@@ -77,10 +77,10 @@ export default function FinancePage() {
       <div className="space-y-4 sm:space-y-6">
         <div>
           <h1 className="font-headline text-3xl font-bold tracking-tight text-ink sm:text-4xl">
-            Fuel
+            Gravity
           </h1>
           <p className="mt-1 text-sm text-ink-muted">
-            What powers the journey.
+            What keeps everything grounded.
           </p>
         </div>
         <div className="rounded-panel border border-border bg-card/95 p-8 text-center shadow-panel animate-reveal">
@@ -99,9 +99,9 @@ export default function FinancePage() {
     <div className="space-y-4 sm:space-y-6">
       {/* Header */}
       <div>
-        <h1 className="font-headline text-3xl font-bold tracking-tight text-ink sm:text-4xl">Fuel</h1>
+        <h1 className="font-headline text-3xl font-bold tracking-tight text-ink sm:text-4xl">Gravity</h1>
         <p className="mt-1 text-sm text-ink-muted">
-          What powers the journey.
+          What keeps everything grounded.
         </p>
       </div>
 

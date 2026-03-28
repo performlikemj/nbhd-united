@@ -19,7 +19,7 @@ const baseNavItems = [
   { href: "/horizons", label: "◎ Horizons" },
 ];
 
-const fuelNavItem = { href: "/finance", label: "◆ Fuel" };
+const gravityNavItem = { href: "/finance", label: "◆ Gravity" };
 
 const settingsNavItem = { href: "/settings", label: "Settings" };
 
@@ -151,7 +151,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const navItems = [
     ...baseNavItems,
-    ...(tenant?.finance_enabled ? [fuelNavItem] : []),
+    ...(tenant?.finance_enabled ? [gravityNavItem] : []),
     settingsNavItem,
   ];
 

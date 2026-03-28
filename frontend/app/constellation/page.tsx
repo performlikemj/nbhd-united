@@ -462,11 +462,43 @@ export default function ConstellationPage() {
           </button>
         </div>
 
-        {/* Connection info */}
+        {/* Connected lessons with strength */}
         {connectedCount > 0 && (
-          <p className="text-[11px] text-accent">
-            Connected to {connectedCount} other lesson{connectedCount !== 1 ? "s" : ""}
-          </p>
+          <div>
+            <p className="text-[11px] text-accent mb-2">
+              Connected to {connectedCount} other lesson{connectedCount !== 1 ? "s" : ""}
+            </p>
+            <div className="space-y-1.5">
+              {[...data.edges, ...data.affinity_edges]
+                .filter((e) => Number(e.source) === selectedNodeId || Number(e.target) === selectedNodeId)
+                .sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))
+                .slice(0, 5)
+                .map((edge) => {
+                  const otherId = Number(edge.source) === selectedNodeId ? Number(edge.target) : Number(edge.source);
+                  const other = nodesById.get(otherId);
+                  if (!other) return null;
+                  const sim = edge.similarity ?? 0;
+                  const strengthLabel = sim >= 0.75 ? "Strong" : sim >= 0.5 ? "Moderate" : "Weak";
+                  return (
+                    <button
+                      key={`conn-${otherId}`}
+                      type="button"
+                      onClick={() => setSelectedNodeId(otherId)}
+                      className="flex w-full items-center gap-2 rounded-lg p-1.5 text-left transition hover:bg-white/5"
+                    >
+                      <span
+                        className="inline-block h-2 w-2 shrink-0 rounded-full"
+                        style={{ backgroundColor: clusterNodeColor(other.cluster_id) }}
+                      />
+                      <span className="flex-1 truncate text-[11px] text-ink-muted">{lessonTitle(other)}</span>
+                      <span className={`shrink-0 text-[9px] font-medium ${sim >= 0.75 ? "text-accent" : sim >= 0.5 ? "text-ink-faint" : "text-ink-faint/60"}`}>
+                        {strengthLabel}
+                      </span>
+                    </button>
+                  );
+                })}
+            </div>
+          </div>
         )}
 
         <p className="text-sm leading-relaxed text-ink">{selectedNode.text}</p>
@@ -561,8 +593,8 @@ export default function ConstellationPage() {
           >
             {containerSize.width > 0 && filteredNodes.length > 0 && (
               <>
-                {/* Edges */}
-                <svg className="pointer-events-none absolute inset-0 h-full w-full">
+                {/* Edges — pointer-events on lines for hover tooltips */}
+                <svg className="absolute inset-0 h-full w-full" style={{ pointerEvents: "none" }}>
                   <defs>
                     <linearGradient id="edge-grad-pt" x1="0%" y1="0%" x2="100%" y2="100%">
                       <stop offset="0%" stopColor="#7C6BF0" /><stop offset="100%" stopColor="#4ECDC4" />
@@ -586,6 +618,13 @@ export default function ConstellationPage() {
                     );
                     const dimmed = selectedNodeId != null && !isConnectedEdge;
                     const baseOpacity = sim >= 0.75 ? 0.45 : sim >= 0.5 ? 0.25 : 0.12;
+                    const srcNode = nodesById.get(Number(edge.source));
+                    const tgtNode = nodesById.get(Number(edge.target));
+                    const strengthLabel = sim >= 0.75 ? "Strong" : sim >= 0.5 ? "Moderate" : "Weak";
+                    const sharedTags = srcNode && tgtNode
+                      ? srcNode.tags.filter((t) => tgtNode.tags.includes(t))
+                      : [];
+                    const tooltipText = `${strengthLabel} connection (${Math.round(sim * 100)}%)${sharedTags.length > 0 ? `\nShared themes: ${sharedTags.join(", ")}` : ""}`;
                     return (
                       <line key={`e-${edge.source}-${edge.target}-${i}`}
                         x1={s.px} y1={s.py} x2={t.px} y2={t.py}
@@ -594,7 +633,10 @@ export default function ConstellationPage() {
                         strokeDasharray={sim < 0.5 && !isConnectedEdge ? "4 6" : undefined}
                         opacity={dimmed ? 0.04 : isConnectedEdge ? 0.7 : baseOpacity}
                         className="transition-opacity duration-300"
-                      />
+                        style={{ pointerEvents: "stroke" }}
+                      >
+                        <title>{tooltipText}</title>
+                      </line>
                     );
                   })}
                 </svg>
