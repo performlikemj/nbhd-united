@@ -192,19 +192,9 @@ export default function ConstellationPage() {
     const storedMode = loadStoredViewMode();
     setViewMode(storedMode ?? defaultViewMode());
 
-    const mediaQuery = window.matchMedia(`(min-width: ${MOBILE_BREAKPOINT}px)`);
-    const handleMediaChange = () => {
-      const persisted = loadStoredViewMode();
-      if (!persisted) {
-        setViewMode(window.innerWidth >= MOBILE_BREAKPOINT ? "constellation" : "list");
-      }
-    };
-
-    mediaQuery.addEventListener("change", handleMediaChange);
     loadData();
 
     return () => {
-      mediaQuery.removeEventListener("change", handleMediaChange);
       mounted = false;
     };
   }, []);
