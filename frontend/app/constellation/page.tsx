@@ -502,15 +502,6 @@ export default function ConstellationPage() {
           </div>
         )}
 
-        {/* "How might this apply?" prompt */}
-        <div className="pt-3 border-t border-border">
-          <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-ink-faint mb-1.5">
-            How might this apply?
-          </p>
-          <p className="text-xs text-ink-muted italic leading-relaxed">
-            Consider how this lesson connects to your current goals or daily practice.
-          </p>
-        </div>
       </div>
     ) : null;
 
