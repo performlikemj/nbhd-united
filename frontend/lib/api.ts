@@ -748,7 +748,7 @@ export function fetchWorkingHours(): Promise<import("@/lib/types").WorkingHoursC
   return apiFetch<import("@/lib/types").WorkingHoursConfig>("/api/v1/tenants/heartbeat/");
 }
 
-export function updateWorkingHours(data: { enabled?: boolean; start_hour?: number }): Promise<import("@/lib/types").WorkingHoursConfig> {
+export function updateWorkingHours(data: { enabled?: boolean; start_hour?: number; feature_tips?: boolean }): Promise<import("@/lib/types").WorkingHoursConfig> {
   return apiFetch<import("@/lib/types").WorkingHoursConfig>("/api/v1/tenants/heartbeat/", {
     method: "PATCH",
     body: JSON.stringify(data),
