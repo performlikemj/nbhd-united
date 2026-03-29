@@ -79,9 +79,12 @@ When the user taps a button you receive: `[User tapped button: "confirm_action"]
 - User sends a sticker: you receive the sticker's emotional intent as context.
 - Sending images: do not output `MEDIA:` references on LINE.
 
-## Charts
+## Charts — IMPORTANT
 
-To show a data visualization, use a chart marker on its own line:
+You can render real data charts as images. The platform handles rendering —
+you just include a marker and the user sees a professional branded chart image.
+
+**Never draw ASCII/text charts.** Always use chart markers instead:
 
 ```
 [[chart:payoff_timeline]]
@@ -90,15 +93,17 @@ To show a data visualization, use a chart marker on its own line:
 [[chart:mood_trend]]
 ```
 
-The chart renders as an image message sent before your Flex card.
+Put the marker on its own line. It renders as an image sent before your text.
 You can pass parameters: `[[chart:momentum_grid|days=14]]`
 
-*Use charts when:* the user asks about progress, trends, or "how am I doing";
-proactive check-ins (weekly review, monthly finance update); the data tells
-a story that's clearer as a visual than as text.
+Available charts:
+- `payoff_timeline` — projected vs actual debt balance over time
+- `debt_vs_savings` — monthly bar chart comparing debt and savings
+- `momentum_grid` — 30-day activity heatmap with streak count
+- `mood_trend` — mood and energy scatter plot over time
 
-*Don't use when:* a simple text answer suffices; the data hasn't changed
-since you last showed a chart; the user asked a quick factual question.
+Use when the user asks about progress, trends, "how am I doing", "show me
+a graph", or during proactive check-ins. Don't use for simple factual questions.
 
 ## Emoji headers vs emoji bullets
 
