@@ -8,9 +8,9 @@ const STRATEGY_LABELS: Record<string, string> = {
 };
 
 const STRATEGY_DESCRIPTIONS: Record<string, string> = {
-  snowball: "Lowest balance first",
-  avalanche: "Highest interest first",
-  hybrid: "Balanced approach",
+  snowball: "Pays off smallest balances first for psychological wins.",
+  avalanche: "Prioritizes highest APR to minimize total interest paid.",
+  hybrid: "Balanced approach — 60% interest, 40% balance priority.",
 };
 
 function formatCurrency(value: string | number): string {
@@ -35,17 +35,15 @@ export function StrategyComparison({
   activePlan: PayoffPlan | null;
   allPlans?: PayoffPlan[];
 }) {
-  // If we only have the active plan, show a single card
   const plans = allPlans?.length ? allPlans : activePlan ? [activePlan] : [];
   if (plans.length === 0) return null;
 
-  // Find the best (lowest interest) for comparison
   const lowestInterest = Math.min(
     ...plans.map((p) => parseFloat(p.total_interest)),
   );
 
   return (
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+    <div className="space-y-3">
       {plans.map((plan) => {
         const isActive = activePlan?.id === plan.id;
         const interest = parseFloat(plan.total_interest);
@@ -55,67 +53,57 @@ export function StrategyComparison({
           <article
             key={plan.id}
             className={clsx(
-              "rounded-panel border p-4 transition-colors",
+              "rounded-xl border p-4 transition-colors",
               isActive
-                ? "border-accent/30 bg-accent/5"
-                : "border-border bg-card/95",
+                ? "border-accent/20 bg-accent/5"
+                : "border-white/5 bg-white/5 opacity-60 hover:opacity-100",
             )}
           >
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="font-display text-lg text-ink">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <h3 className="font-headline font-bold text-ink">
                 {STRATEGY_LABELS[plan.strategy] ?? plan.strategy}
               </h3>
-              {isActive ? (
-                <span className="flex items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-xs font-medium text-accent">
-                  <span
-                    className="inline-block h-1.5 w-1.5 rounded-full bg-accent"
-                    aria-hidden="true"
-                  />
+              {isActive && (
+                <span className="flex items-center gap-1 text-[10px] font-bold text-accent">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent" aria-hidden="true" />
                   Active
                 </span>
-              ) : null}
+              )}
             </div>
 
-            <p className="mt-1 text-xs text-ink-faint">
+            <p className="text-xs text-ink-faint mb-3 leading-relaxed">
               {STRATEGY_DESCRIPTIONS[plan.strategy] ?? ""}
             </p>
 
-            <div className="mt-3 space-y-1.5">
-              <div className="flex justify-between text-sm">
-                <span className="text-ink-muted">Payoff in</span>
-                <span className="font-mono font-medium text-ink">
-                  {plan.payoff_months} months
-                </span>
+            <div className="space-y-1.5 text-sm">
+              <div className="flex justify-between">
+                <span className="text-ink-muted">Payoff</span>
+                <span className="font-mono font-medium text-ink">{plan.payoff_months} mo</span>
               </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-ink-muted">Free by</span>
-                <span className="font-mono font-medium text-ink">
-                  {formatPayoffDate(plan.payoff_date)}
-                </span>
+              <div className="flex justify-between">
+                <span className="text-ink-muted">Debt-free</span>
+                <span className="font-mono font-medium text-ink">{formatPayoffDate(plan.payoff_date)}</span>
               </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-ink-muted">Total interest</span>
-                <span className="font-mono font-medium text-ink">
-                  {formatCurrency(plan.total_interest)}
-                </span>
+              <div className="flex justify-between">
+                <span className="text-ink-muted">Interest</span>
+                <span className="font-mono font-medium text-ink">{formatCurrency(plan.total_interest)}</span>
               </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-ink-muted">Monthly budget</span>
-                <span className="font-mono font-medium text-ink">
-                  {formatCurrency(plan.monthly_budget)}
-                </span>
+              <div className="flex justify-between">
+                <span className="text-ink-muted">Budget</span>
+                <span className="font-mono font-medium text-ink">{formatCurrency(plan.monthly_budget)}/mo</span>
               </div>
             </div>
 
-            {savings > 0 ? (
+            {savings > 0 && (
               <p className="mt-3 text-xs text-amber-text">
                 +{formatCurrency(savings)} vs best strategy
               </p>
-            ) : plans.length > 1 ? (
+            )}
+            {savings === 0 && plans.length > 1 && (
               <p className="mt-3 text-xs text-emerald-text">
                 Lowest interest cost
               </p>
-            ) : null}
+            )}
           </article>
         );
       })}
