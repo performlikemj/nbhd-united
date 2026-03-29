@@ -5,7 +5,7 @@ import json
 import logging
 
 from django.conf import settings
-from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseForbidden, JsonResponse
+from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseForbidden, HttpResponseNotFound, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
@@ -273,3 +273,57 @@ def telegram_webhook(request):
     # reply asynchronously via the bot token.  Silently ack to Telegram
     # instead of sending a confusing "try again" message.
     return HttpResponse("ok")
+
+
+# ── Chart image serving (for LINE image messages) ─────────────────────────
+
+@csrf_exempt
+def serve_chart_image(request, tenant_id, filename):
+    """Serve a chart PNG from a tenant's Azure File Share.
+
+    No authentication — security is provided by unguessable filenames
+    (UUID-based).  LINE's servers fetch this URL to deliver image messages.
+    """
+    import re
+    if request.method != "GET":
+        return HttpResponseBadRequest("GET only")
+
+    # Validate filename to prevent path traversal
+    if not re.match(r'^[\w-]+\.png$', filename):
+        return HttpResponseNotFound("Not found")
+
+    try:
+        from apps.orchestrator.azure_client import _is_mock
+
+        if _is_mock():
+            return HttpResponseNotFound("Not found (mock)")
+
+        account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
+        if not account_name:
+            return HttpResponseNotFound("Not found")
+
+        from azure.storage.fileshare import ShareFileClient
+        from apps.orchestrator.azure_client import get_storage_client
+
+        storage_client = get_storage_client()
+        keys = storage_client.storage_accounts.list_keys(
+            settings.AZURE_RESOURCE_GROUP, account_name,
+        )
+        account_key = keys.keys[0].value
+        share_name = f"ws-{str(tenant_id)[:20]}"
+
+        file_client = ShareFileClient(
+            account_url=f"https://{account_name}.file.core.windows.net",
+            share_name=share_name,
+            file_path=f"workspace/charts/{filename}",
+            credential=account_key,
+        )
+        data = file_client.download_file().readall()
+
+        response = HttpResponse(data, content_type="image/png")
+        response["Cache-Control"] = "public, max-age=3600"
+        return response
+
+    except Exception:
+        logger.exception("Failed to serve chart %s for tenant %s", filename, tenant_id)
+        return HttpResponseNotFound("Not found")

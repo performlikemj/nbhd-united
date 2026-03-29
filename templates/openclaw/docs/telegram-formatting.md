@@ -62,6 +62,27 @@ To reference a generated or workspace image in your response, use:
 
 The image will be sent as a separate Telegram photo message before your text.
 
+## Charts
+
+To show a data visualization, use a chart marker on its own line:
+
+```
+[[chart:payoff_timeline]]
+[[chart:debt_vs_savings]]
+[[chart:momentum_grid]]
+[[chart:mood_trend]]
+```
+
+The chart renders as an image sent before your text message.
+You can pass parameters: `[[chart:momentum_grid|days=14]]`
+
+*Use charts when:* the user asks about progress, trends, or "how am I doing";
+proactive check-ins (weekly review, monthly finance update); the data tells
+a story that's clearer as a visual than as text.
+
+*Don't use when:* a simple text answer suffices; the data hasn't changed
+since you last showed a chart; the user asked a quick factual question.
+
 ## Long responses
 
 Long messages are auto-split at 4096 characters. Don't worry about
