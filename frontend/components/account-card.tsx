@@ -13,17 +13,17 @@ const TYPE_LABELS: Record<string, string> = {
   emergency_fund: "Emergency Fund",
 };
 
-const TYPE_TONES: Record<string, string> = {
-  credit_card: "bg-status-rose text-status-rose-text",
-  student_loan: "bg-status-indigo text-status-indigo-text",
-  personal_loan: "bg-status-violet text-status-violet-text",
-  mortgage: "bg-status-slate text-status-slate-text",
-  auto_loan: "bg-status-sky text-status-sky-text",
-  medical_debt: "bg-status-orange text-status-orange-text",
-  other_debt: "bg-status-amber text-status-amber-text",
-  savings: "bg-status-emerald text-status-emerald-text",
-  checking: "bg-status-emerald text-status-emerald-text",
-  emergency_fund: "bg-status-emerald text-status-emerald-text",
+const TYPE_EMOJI: Record<string, string> = {
+  credit_card: "💳",
+  student_loan: "🎓",
+  personal_loan: "🏦",
+  mortgage: "🏠",
+  auto_loan: "🚗",
+  medical_debt: "🏥",
+  other_debt: "📄",
+  savings: "💰",
+  checking: "🏦",
+  emergency_fund: "🛡️",
 };
 
 function formatCurrency(value: string | number): string {
@@ -31,46 +31,55 @@ function formatCurrency(value: string | number): string {
   return num.toLocaleString("en-US", {
     style: "currency",
     currency: "USD",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   });
 }
 
 export function AccountCard({ account }: { account: FinanceAccount }) {
   const typeLabel = TYPE_LABELS[account.account_type] ?? account.account_type;
-  const toneCls = TYPE_TONES[account.account_type] ?? "bg-status-slate text-status-slate-text";
+  const emoji = TYPE_EMOJI[account.account_type] ?? "📄";
   const progress = account.payoff_progress;
+  const isDebt = account.is_debt;
+  const aprValue = account.interest_rate ? parseFloat(account.interest_rate).toFixed(1) : null;
+  const originalBalance = account.original_balance ? parseFloat(account.original_balance) : null;
+  const iconBg = isDebt ? "bg-accent/10" : "bg-signal/10";
+  const barColor = isDebt ? "bg-accent" : "bg-signal";
+  const barGlow = isDebt ? "shadow-[0_0_10px_rgba(124,107,240,0.5)]" : "shadow-[0_0_10px_rgba(78,205,196,0.5)]";
 
   return (
-    <article className="rounded-panel border border-border bg-card/95 p-4 transition-colors hover:border-border-strong">
-      <div className="flex items-start justify-between gap-2">
-        <h3 className="font-display text-lg text-ink">{account.nickname}</h3>
-        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${toneCls}`}>
-          {typeLabel}
-        </span>
+    <article className="group">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+        <div className="flex items-center gap-3">
+          <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl ${iconBg} flex items-center justify-center shrink-0 text-xl sm:text-2xl`}>
+            {emoji}
+          </div>
+          <div>
+            <h4 className="font-bold text-ink text-base sm:text-lg">{account.nickname}</h4>
+            <p className="text-[10px] sm:text-xs text-ink-faint font-medium tracking-wide uppercase">
+              {typeLabel}{aprValue ? ` \u2022 ${aprValue}% APR` : ""}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-6 sm:gap-10 text-right pl-13 sm:pl-0">
+          {account.minimum_payment && (
+            <div>
+              <p className="text-[10px] text-ink-faint uppercase font-bold mb-0.5">Monthly</p>
+              <p className="font-bold text-ink text-sm sm:text-base">{formatCurrency(account.minimum_payment)}</p>
+            </div>
+          )}
+          <div>
+            <p className="text-[10px] text-ink-faint uppercase font-bold mb-0.5">Balance</p>
+            <p className="font-bold text-ink text-sm sm:text-base">{formatCurrency(account.current_balance)}</p>
+          </div>
+        </div>
       </div>
 
-      <div className="mt-3 flex items-baseline gap-2">
-        <span className="font-mono text-xl font-semibold text-ink">
-          {formatCurrency(account.current_balance)}
-        </span>
-        {account.interest_rate ? (
-          <span className="rounded bg-amber-bg px-1.5 py-0.5 font-mono text-xs text-amber-text">
-            {parseFloat(account.interest_rate).toFixed(1)}% APR
-          </span>
-        ) : null}
-      </div>
-
-      {account.minimum_payment ? (
-        <p className="mt-2 text-sm text-ink-muted">
-          Min: {formatCurrency(account.minimum_payment)}/mo
-        </p>
-      ) : null}
-
-      {progress !== null && progress !== undefined && account.is_debt ? (
-        <div className="mt-3">
+      {/* Progress bar */}
+      {progress !== null && progress !== undefined && isDebt && (
+        <>
           <div
-            className="h-2 overflow-hidden rounded-full bg-border"
+            className="w-full h-2 rounded-full overflow-hidden bg-surface-elevated"
             role="progressbar"
             aria-valuenow={Math.round(progress)}
             aria-valuemin={0}
@@ -78,27 +87,22 @@ export function AccountCard({ account }: { account: FinanceAccount }) {
             aria-label={`${Math.round(progress)}% paid off`}
           >
             <div
-              className="h-full rounded-full bg-gradient-to-r from-accent to-signal transition-[width] duration-300"
+              className={`h-full rounded-full ${barColor} ${barGlow} transition-[width] duration-500`}
               style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
             />
           </div>
-          <p className="mt-1 font-mono text-xs text-ink-faint">
-            {Math.round(progress)}% paid off
-          </p>
-        </div>
-      ) : null}
-
-      {account.due_day ? (
-        <p className="mt-2 font-mono text-xs text-ink-faint">
-          Due: {account.due_day}{ordinalSuffix(account.due_day)} of each month
-        </p>
-      ) : null}
+          <div className="flex justify-between mt-1.5">
+            <span className="text-[10px] font-bold text-ink-faint uppercase">
+              {Math.round(progress)}% Paid
+            </span>
+            {originalBalance && originalBalance > 0 && (
+              <span className="text-[10px] font-bold text-ink-faint uppercase">
+                {formatCurrency(originalBalance)} Original
+              </span>
+            )}
+          </div>
+        </>
+      )}
     </article>
   );
-}
-
-function ordinalSuffix(n: number): string {
-  const s = ["th", "st", "nd", "rd"];
-  const v = n % 100;
-  return s[(v - 20) % 10] || s[v] || s[0];
 }

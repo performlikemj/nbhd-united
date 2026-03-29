@@ -163,10 +163,12 @@ export default function FinancePage() {
       {debtAccounts.length > 0 && (
         <div className="mb-10 sm:mb-16 animate-reveal" style={{ animationDelay: "350ms" }}>
           <div className="glass-card rounded-xl border border-white/5 p-6 sm:p-8">
-            <h2 className="font-headline text-xl font-bold text-ink mb-6">Debt Accounts</h2>
-            <div className="space-y-4">
+            <h2 className="font-headline text-2xl font-bold text-ink mb-6">Debt Accounts</h2>
+            <div className="divide-y divide-white/5 space-y-6">
               {debtAccounts.map((account) => (
-                <AccountCard key={account.id} account={account} />
+                <div key={account.id} className="pt-6 first:pt-0">
+                  <AccountCard account={account} />
+                </div>
               ))}
             </div>
           </div>
@@ -177,10 +179,12 @@ export default function FinancePage() {
       {savingsAccounts.length > 0 && (
         <div className="mb-10 sm:mb-16 animate-reveal" style={{ animationDelay: "400ms" }}>
           <div className="glass-card rounded-xl border border-white/5 p-6 sm:p-8">
-            <h2 className="font-headline text-xl font-bold text-ink mb-6">Savings</h2>
-            <div className="space-y-4">
+            <h2 className="font-headline text-2xl font-bold text-ink mb-6">Savings</h2>
+            <div className="divide-y divide-white/5 space-y-6">
               {savingsAccounts.map((account) => (
-                <AccountCard key={account.id} account={account} />
+                <div key={account.id} className="pt-6 first:pt-0">
+                  <AccountCard account={account} />
+                </div>
               ))}
             </div>
           </div>
