@@ -273,6 +273,7 @@ export interface WorkingHoursConfig {
   enabled: boolean;
   start_hour: number;
   window_hours: number;
+  feature_tips: boolean;
 }
 
 // Cron Jobs (OpenClaw Gateway scheduled tasks)

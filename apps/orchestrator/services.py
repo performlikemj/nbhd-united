@@ -315,6 +315,15 @@ def update_tenant_config(tenant_id: str) -> None:
             "NBHD_DOC_ERROR_HANDLING": "workspace/docs/error-handling.md",
             "NBHD_DOC_PRIVACY_REDACTION": "workspace/docs/privacy-redaction.md",
         }
+
+        # Deploy full or silent platform guide based on feature_tips_enabled
+        guide_key = (
+            "NBHD_DOC_PLATFORM_GUIDE"
+            if tenant.feature_tips_enabled
+            else "NBHD_DOC_PLATFORM_GUIDE_SILENT"
+        )
+        file_map[guide_key] = "workspace/docs/platform-guide.md"
+
         for env_key, file_path in file_map.items():
             content = workspace_files.get(env_key, "")
             if content:

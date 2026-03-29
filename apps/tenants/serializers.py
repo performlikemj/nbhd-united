@@ -113,7 +113,7 @@ class TenantRegistrationSerializer(serializers.Serializer):
 
 
 class HeartbeatConfigSerializer(serializers.Serializer):
-    """Serializer for heartbeat window settings."""
+    """Serializer for heartbeat window and proactive assistant settings."""
     enabled = serializers.BooleanField(required=False)
     start_hour = serializers.IntegerField(
         required=False, min_value=0, max_value=23
@@ -121,6 +121,7 @@ class HeartbeatConfigSerializer(serializers.Serializer):
     window_hours = serializers.IntegerField(
         required=False, min_value=1, max_value=6,
     )
+    feature_tips = serializers.BooleanField(required=False)
 
     def validate_window_hours(self, value):
         if value > 6:

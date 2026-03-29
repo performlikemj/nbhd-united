@@ -336,7 +336,7 @@ class RefreshConfigView(APIView):
 
 
 class HeartbeatConfigView(APIView):
-    """Get/update heartbeat window settings."""
+    """Get/update heartbeat window and proactive assistant settings."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -351,6 +351,7 @@ class HeartbeatConfigView(APIView):
             "enabled": tenant.heartbeat_enabled,
             "start_hour": tenant.heartbeat_start_hour,
             "window_hours": tenant.heartbeat_window_hours,
+            "feature_tips": tenant.feature_tips_enabled,
         })
 
     def patch(self, request):
@@ -373,12 +374,15 @@ class HeartbeatConfigView(APIView):
         if "start_hour" in data:
             tenant.heartbeat_start_hour = data["start_hour"]
             update_fields.append("heartbeat_start_hour")
+        if "feature_tips" in data:
+            tenant.feature_tips_enabled = data["feature_tips"]
+            update_fields.append("feature_tips_enabled")
         if update_fields:
             tenant.full_clean()
             update_fields.append("updated_at")
             tenant.save(update_fields=update_fields)
 
-            # Trigger config regeneration so cron schedule updates
+            # Trigger config regeneration so settings propagate
             if tenant.status == Tenant.Status.ACTIVE:
                 tenant.bump_pending_config()
                 try:
@@ -386,7 +390,7 @@ class HeartbeatConfigView(APIView):
                     update_tenant_config(str(tenant.id))
                 except Exception:
                     logger.exception(
-                        "Failed to push heartbeat config for tenant %s (will apply on next cycle)",
+                        "Failed to push config for tenant %s (will apply on next cycle)",
                         tenant.id,
                     )
 
@@ -394,6 +398,7 @@ class HeartbeatConfigView(APIView):
             "enabled": tenant.heartbeat_enabled,
             "start_hour": tenant.heartbeat_start_hour,
             "window_hours": tenant.heartbeat_window_hours,
+            "feature_tips": tenant.feature_tips_enabled,
         })
 
 

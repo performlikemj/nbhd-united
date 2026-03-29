@@ -11,6 +11,7 @@ import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
 import { Toast, useToast } from "@/components/toast";
 import TimezoneSelector from "@/components/timezone-selector";
+import { FeatureTipsSection } from "@/components/feature-tips-section";
 import { WorkingHoursSection } from "@/components/working-hours-section";
 import { CronJob } from "@/lib/types";
 import {
@@ -497,6 +498,8 @@ export default function SettingsCronJobsPage() {
       )}
 
       <WorkingHoursSection timezone={me?.timezone} />
+
+      <FeatureTipsSection />
 
       <SectionCard
         title="Scheduled Tasks"

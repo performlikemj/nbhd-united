@@ -374,6 +374,8 @@ _WORKSPACE_DOCS = {
     "NBHD_DOC_TOOLS_REFERENCE": "tools-reference.md",
     "NBHD_DOC_CRON_MANAGEMENT": "cron-management.md",
     "NBHD_DOC_ERROR_HANDLING": "error-handling.md",
+    "NBHD_DOC_PLATFORM_GUIDE": "platform-guide.md",
+    "NBHD_DOC_PLATFORM_GUIDE_SILENT": "platform-guide-silent.md",
 }
 
 

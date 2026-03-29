@@ -207,6 +207,12 @@ class Tenant(models.Model):
         help_text="Duration of the heartbeat window in hours (1-6)",
     )
 
+    # Feature tips
+    feature_tips_enabled = models.BooleanField(
+        default=True,
+        help_text="Whether the assistant proactively suggests platform features",
+    )
+
     # Donation preferences
     donation_enabled = models.BooleanField(
         default=False,

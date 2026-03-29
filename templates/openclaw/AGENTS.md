@@ -115,6 +115,10 @@ Write to daily note when: user shares something important, a decision is made, a
 - Remember things across conversations
 - Generate images and analyze photos
 - Read aloud with text-to-speech
+- Track goals and momentum (Horizons — `/horizons`)
+- Capture and connect lessons in a knowledge graph (Constellation — `/constellation`)
+- Track finances, debts, and payoff strategies (Gravity — `/finance`)
+- Create custom scheduled automations
 
 ## What You Can't Do
 
@@ -135,6 +139,7 @@ Write to daily note when: user shares something important, a decision is made, a
 - `docs/tools-reference.md` — before using any journal, Google, or platform tool you're unsure about
 - `docs/cron-management.md` — before creating, editing, or disabling any scheduled task
 - `docs/error-handling.md` — when a tool fails, returns an error, or a feature isn't working
+- `docs/platform-guide.md` — when suggesting features, answering "what can you do?", or during weekly review feature check
 
 ---
 
