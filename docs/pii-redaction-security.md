@@ -129,7 +129,7 @@ The entity mapping is stored as a JSON field on the `Tenant` model (`pii_entity_
 ## False positive mitigation
 
 - **Country/city denylist**: Names like "Jordan", "Georgia", "Victoria" that Presidio misidentifies as `PERSON` are excluded via `COUNTRY_DENYLIST` in `apps/pii/config.py`
-- **User's own name excluded**: The tenant user's `display_name` (and first name) are added to an allow-list so the model can address them by name
+- **User's own name excluded**: The tenant user's `display_name`, first name, and last name are added to an allow-list so the model can address them by name
 - **Confidence threshold**: Starter tier uses 0.7, premium uses 0.8 (higher = fewer false positives)
 - **Overlap deduplication**: When Presidio detects overlapping entities (e.g., "bob" as PERSON inside "bob@test.com" as EMAIL_ADDRESS), the higher-confidence match wins
 - **Graceful failure**: If Presidio errors, the original text is returned unredacted — redaction never blocks the user experience
@@ -139,7 +139,7 @@ The entity mapping is stored as a JSON field on the `Tenant` model (`pii_entity_
 | Gap | Reason | Risk level |
 |-----|--------|-----------|
 | User's own messages | Redacting confuses the model; user intentionally shared the PII | Low — user consented |
-| PII the model generates from reasoning | Model may infer names from context patterns | Very low — rare |
+| PII the model generates from reasoning | Mitigated by `docs/privacy-redaction.md` workspace doc instructing the model to preserve placeholders verbatim | Low — model may still hallucinate in edge cases |
 | OpenClaw's internal conversation memory | Accumulated context from past turns lives in OpenClaw, not Django | Medium — mitigated by workspace redaction covering the densest PII |
 | Tool results from non-Django plugins | If a future plugin calls external APIs directly (bypassing Django), those results won't be redacted | N/A currently — all plugins route through Django |
 
@@ -148,7 +148,7 @@ The entity mapping is stored as a JSON field on the `Tenant` model (`pii_entity_
 | File | Role |
 |------|------|
 | `apps/pii/__init__.py` | App init |
-| `apps/pii/config.py` | Tier policies, entity types, system message |
+| `apps/pii/config.py` | Tier policies, entity types |
 | `apps/pii/engine.py` | Lazy-singleton Presidio analyzer + anonymizer |
 | `apps/pii/redactor.py` | `redact_text()`, `RedactionSession`, `rehydrate_text()`, `redact_tool_response()`, `redact_user_message()` |
 | `apps/pii/tests.py` | 40 tests covering all redaction and rehydration paths |
@@ -158,6 +158,7 @@ The entity mapping is stored as a JSON field on the `Tenant` model (`pii_entity_
 | `apps/router/cron_delivery.py` | Rehydration for cron/proactive messages |
 | `apps/router/poller.py` | Rehydration for Telegram replies |
 | `apps/router/line_webhook.py` | Rehydration for LINE replies |
+| `templates/openclaw/docs/privacy-redaction.md` | Model instructions for preserving placeholders (starter tier only) |
 | `apps/tenants/models.py` | `pii_entity_map` JSONField on Tenant |
 | `Dockerfile` | `spacy download en_core_web_sm` in production image |
 

@@ -313,6 +313,7 @@ def update_tenant_config(tenant_id: str) -> None:
             "NBHD_DOC_CHANNEL_FORMATTING": "workspace/docs/channel-formatting.md",
             "NBHD_DOC_CRON_MANAGEMENT": "workspace/docs/cron-management.md",
             "NBHD_DOC_ERROR_HANDLING": "workspace/docs/error-handling.md",
+            "NBHD_DOC_PRIVACY_REDACTION": "workspace/docs/privacy-redaction.md",
         }
         for env_key, file_path in file_map.items():
             content = workspace_files.get(env_key, "")

@@ -129,6 +129,7 @@ Write to daily note when: user shares something important, a decision is made, a
 
 ### Read at session start (every time)
 - `docs/channel-formatting.md` — channel-specific formatting rules (Telegram or LINE). Always load this.
+- `docs/privacy-redaction.md` — if present, privacy placeholder rules. Always follow these.
 
 ### Read when triggered
 - `docs/tools-reference.md` — before using any journal, Google, or platform tool you're unsure about

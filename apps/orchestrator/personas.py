@@ -421,6 +421,17 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     if formatting_content:
         result["NBHD_DOC_CHANNEL_FORMATTING"] = formatting_content
 
+    # Privacy placeholder doc — only for tiers that redact PERSON entities
+    if tenant is not None:
+        from apps.pii.config import TIER_POLICIES
+
+        tier = getattr(tenant, "model_tier", "starter")
+        policy = TIER_POLICIES.get(tier, TIER_POLICIES["starter"])
+        if policy.get("enabled") and "PERSON" in policy.get("entities", []):
+            pii_doc = _load_doc_template("privacy-redaction.md")
+            if pii_doc:
+                result["NBHD_DOC_PRIVACY_REDACTION"] = pii_doc
+
     if tenant is not None:
         result["NBHD_SKILL_TEMPLATES_MD"] = render_templates_md(tenant)
     return result
