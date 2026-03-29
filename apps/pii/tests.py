@@ -485,3 +485,85 @@ class RedactToolResponseTest(TestCase):
 
         # Should reuse the known placeholder
         self.assertIn("[EMAIL_ADDRESS_1]", result["from"])
+
+
+class AllowNameLastNameTest(TestCase):
+    """Test that the user's last name is included in the allow-list."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        try:
+            import spacy
+            spacy.load("en_core_web_sm")
+            cls.has_spacy = True
+        except (ImportError, OSError):
+            cls.has_spacy = False
+
+    def setUp(self):
+        if not self.has_spacy:
+            self.skipTest("spaCy en_core_web_sm not installed")
+
+    def test_last_name_not_redacted_in_redact_text(self):
+        """User's last name alone should not be redacted."""
+        tenant = create_tenant(display_name="Michael Jones", telegram_chat_id=700001)
+        text = "Email from Jones about the quarterly review."
+        result = redact_text(text, tenant=tenant)
+        self.assertIn("Jones", result)
+
+    def test_first_name_not_redacted_in_redact_text(self):
+        tenant = create_tenant(display_name="Michael Jones", telegram_chat_id=700002)
+        text = "Michael mentioned the project timeline."
+        result = redact_text(text, tenant=tenant)
+        self.assertIn("Michael", result)
+
+    def test_last_name_not_redacted_in_user_message(self):
+        from apps.pii.redactor import redact_user_message
+
+        tenant = create_tenant(display_name="Michael Jones", telegram_chat_id=700003)
+        text = "Tell Jones I'll be late."
+        result = redact_user_message(text, tenant)
+        self.assertIn("Jones", result)
+
+    def test_single_name_display_name(self):
+        """Single-word display name should still be allowed."""
+        tenant = create_tenant(display_name="MJ", telegram_chat_id=700004)
+        text = "MJ will handle it."
+        result = redact_text(text, tenant=tenant)
+        self.assertIn("MJ", result)
+
+
+class PrivacyRedactionDocTest(TestCase):
+    """Test that the privacy-redaction workspace doc is conditionally loaded."""
+
+    def test_starter_tier_includes_privacy_doc(self):
+        from apps.orchestrator.personas import render_workspace_files
+
+        tenant = create_tenant(display_name="Doc User", telegram_chat_id=800001)
+        tenant.model_tier = "starter"
+        tenant.save(update_fields=["model_tier"])
+
+        files = render_workspace_files("neighbor", tenant=tenant)
+        self.assertIn("NBHD_DOC_PRIVACY_REDACTION", files)
+        self.assertIn("Privacy Placeholders", files["NBHD_DOC_PRIVACY_REDACTION"])
+
+    def test_byok_tier_excludes_privacy_doc(self):
+        from apps.orchestrator.personas import render_workspace_files
+
+        tenant = create_tenant(display_name="BYOK User", telegram_chat_id=800002)
+        tenant.model_tier = "byok"
+        tenant.save(update_fields=["model_tier"])
+
+        files = render_workspace_files("neighbor", tenant=tenant)
+        self.assertNotIn("NBHD_DOC_PRIVACY_REDACTION", files)
+
+    def test_premium_tier_excludes_privacy_doc(self):
+        from apps.orchestrator.personas import render_workspace_files
+
+        tenant = create_tenant(display_name="Premium User", telegram_chat_id=800003)
+        tenant.model_tier = "premium"
+        tenant.save(update_fields=["model_tier"])
+
+        files = render_workspace_files("neighbor", tenant=tenant)
+        # Premium doesn't redact PERSON, so no privacy doc
+        self.assertNotIn("NBHD_DOC_PRIVACY_REDACTION", files)

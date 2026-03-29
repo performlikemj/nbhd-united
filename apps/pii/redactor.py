@@ -196,16 +196,19 @@ def _redact_user_message(text: str, tenant: Tenant, policy: dict) -> str:
     entities = policy.get("entities", [])
     score_threshold = policy.get("score_threshold", 0.7)
 
-    # Build allow-list for tenant's own name
+    # Build allow-list for tenant's own name (full, first, and last)
     allow_names: set[str] = set()
     user = getattr(tenant, "user", None)
     if user is not None:
         display_name = getattr(user, "display_name", "") or ""
         if display_name:
             allow_names.add(display_name)
-            first = display_name.split()[0]
-            if first != display_name:
-                allow_names.add(first)
+            parts = display_name.split()
+            if len(parts) > 1:
+                allow_names.add(parts[0])   # first name
+                allow_names.add(parts[-1])  # last name
+            elif parts:
+                allow_names.add(parts[0])
 
     analyzer = get_analyzer()
     results = analyzer.analyze(
@@ -350,16 +353,18 @@ def _redact(
 
     analyzer = get_analyzer()
 
-    # Build the allow-list from tenant's display name
+    # Build the allow-list from tenant's display name (full, first, and last)
     if tenant is not None:
         user = getattr(tenant, "user", None)
         if user is not None:
             display_name = getattr(user, "display_name", "") or ""
             if display_name:
                 allow_names = allow_names | {display_name}
-                first = display_name.split()[0]
-                if first != display_name:
-                    allow_names = allow_names | {first}
+                parts = display_name.split()
+                if len(parts) > 1:
+                    allow_names = allow_names | {parts[0], parts[-1]}
+                elif parts:
+                    allow_names = allow_names | {parts[0]}
 
     results = analyzer.analyze(
         text=text,
