@@ -144,7 +144,7 @@ export default function FinancePage() {
               subtitle={`${data.active_plan.payoff_months} months to debt-free`}
               delay={200}
             >
-              <PayoffChart plan={data.active_plan} />
+              <PayoffChart plan={data.active_plan} snapshots={data.snapshots} />
             </SectionCard>
           </div>
           <div className="lg:col-span-4">
