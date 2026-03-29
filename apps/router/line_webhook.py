@@ -847,6 +847,7 @@ class LineWebhookView(View):
                     "Authorization": f"Bearer {gateway_token}",
                     "X-User-Timezone": user_tz,
                     "X-Line-User-Id": line_user_id,
+                    "X-Channel": "line",
                 },
                 timeout=VOICE_CHAT_TIMEOUT if is_voice else CHAT_COMPLETIONS_TIMEOUT,
             )
@@ -945,6 +946,7 @@ class LineWebhookView(View):
                         "Authorization": f"Bearer {gateway_token}",
                         "X-User-Timezone": user_tz,
                         "X-Line-User-Id": line_user_id,
+                        "X-Channel": "line",
                     },
                     timeout=CHAT_COMPLETIONS_TIMEOUT,
                 )

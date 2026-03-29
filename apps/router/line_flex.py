@@ -38,6 +38,71 @@ _TONE_MAP = {
 }
 
 
+# ── Bullet helpers ─────────────────────────────────────────────────────────
+
+# Standard bullet markers: -, •, *
+_STD_BULLET_RE = re.compile(r"^([\s]*)(?:[-\u2022*])\s+(.+)", re.MULTILINE)
+# Numbered list items: 1. or 1)
+_NUM_BULLET_RE = re.compile(r"^([\s]*)\d+[.)]\s+(.+)", re.MULTILINE)
+# Emoji bullet: line starts with optional whitespace then an emoji followed by a space
+_EMOJI_BULLET_RE = re.compile(r"^([\s]*)(\S)\s+(.+)", re.MULTILINE)
+
+
+def _is_emoji_char(ch: str) -> bool:
+    """Check if a character is an emoji (Unicode Symbol, Other)."""
+    return not ch.isascii() and unicodedata.category(ch) == "So"
+
+
+def _is_bullet_line(line: str) -> bool:
+    """Check if a line is any kind of bullet (standard, numbered, or emoji)."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if re.match(r"^[-\u2022*]\s+", stripped):
+        return True
+    if re.match(r"^\d+[.)]\s+", stripped):
+        return True
+    if _is_emoji_char(stripped[0]) and len(stripped) > 2 and stripped[1] == " ":
+        return True
+    return False
+
+
+def _parse_list_items_with_depth(content: str) -> list[tuple[int, str]]:
+    """Extract list items with indentation depth.
+
+    Returns list of (depth, text) tuples.  depth 0 = top-level,
+    depth 1 = indented (2+ spaces or tab before the bullet marker).
+    """
+    items: list[tuple[int, str]] = []
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # Measure leading whitespace for nesting depth
+        leading = len(line) - len(line.lstrip())
+        depth = 1 if leading >= 2 else 0
+
+        # Standard bullet
+        m = re.match(r"^[-\u2022*]\s+(.+)", stripped)
+        if m:
+            items.append((depth, _strip_md_inline(m.group(1).strip())))
+            continue
+
+        # Numbered
+        m = re.match(r"^\d+[.)]\s+(.+)", stripped)
+        if m:
+            items.append((depth, _strip_md_inline(m.group(1).strip())))
+            continue
+
+        # Emoji bullet
+        if _is_emoji_char(stripped[0]) and len(stripped) > 2 and stripped[1] == " ":
+            items.append((depth, _strip_md_inline(stripped)))
+            continue
+
+    return items
+
+
 # ── Detection ───────────────────────────────────────────────────────────────
 
 def classify_content(text: str) -> str:
@@ -55,14 +120,9 @@ def classify_content(text: str) -> str:
     if re.search(r"^#{1,3}\s+.+", text, re.MULTILINE):
         return "structured"
 
-    # Has bullet lists (3+ items)
-    bullets = re.findall(r"^[\s]*[-\u2022*]\s+.+", text, re.MULTILINE)
-    if len(bullets) >= 3:
-        return "structured"
-
-    # Has numbered lists (3+ items)
-    numbered = re.findall(r"^[\s]*\d+[.)]\s+.+", text, re.MULTILINE)
-    if len(numbered) >= 3:
+    # Has bullet lists (3+ items) — standard or emoji bullets
+    bullet_count = sum(1 for line in text.split("\n") if _is_bullet_line(line))
+    if bullet_count >= 3:
         return "structured"
 
     # Has section-like structure: short header lines followed by content
@@ -134,6 +194,32 @@ def _parse_sections(text: str) -> list[dict]:
     """
     lines = text.split("\n")
 
+    # Pre-scan: identify which lines are emoji-prefixed to detect emoji
+    # bullet *lists* (consecutive emoji lines) vs emoji *headers* (isolated
+    # emoji line followed by different content).
+    emoji_line_indices: set[int] = set()
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if (s and _is_emoji_char(s[0])
+                and len(s) > 2 and s[1] == " "):
+            emoji_line_indices.add(i)
+
+    def _is_emoji_list_item(idx: int) -> bool:
+        """True if this emoji-prefixed line is part of a cluster (≥2 nearby)."""
+        if idx not in emoji_line_indices:
+            return False
+        # Check neighbours (skip blanks)
+        for direction in (-1, 1):
+            j = idx + direction
+            while 0 <= j < len(lines):
+                if not lines[j].strip():
+                    j += direction
+                    continue
+                if j in emoji_line_indices:
+                    return True
+                break
+        return False
+
     # Pass 1: identify header line indices
     header_indices: set[int] = set()
     prev_blank = False  # first line needs blank line AFTER it to qualify as header
@@ -146,15 +232,18 @@ def _parse_sections(text: str) -> list[dict]:
             prev_blank = True
             continue
 
-        # Bullet/numbered items are never headers
+        # Bullet/numbered/emoji-list items are never headers
         if re.match(r"^\s*[-\u2022*]\s|^\s*\d+[.)]\s", stripped):
+            prev_blank = False
+            continue
+        if _is_emoji_list_item(i):
             prev_blank = False
             continue
 
         # Markdown headers (## Title) — always a header
         if re.match(r"^#{1,3}\s+", stripped):
             header_indices.add(i)
-        # Emoji headers (🔴 Title) — always a header (visually unambiguous)
+        # Emoji headers (🔴 Title) — only when NOT part of an emoji bullet list
         elif (not stripped[0].isascii()
                 and unicodedata.category(stripped[0]) == "So"
                 and re.match(r"^\S+\s+.+$", stripped)):
@@ -266,9 +355,8 @@ def _link_component(label: str, url: str) -> dict:
 
 
 def _parse_list_items(content: str) -> list[str]:
-    """Extract bullet or numbered list items from content."""
-    items = re.findall(r"^[\s]*(?:[-\u2022*]|\d+[.)])\s+(.+)", content, re.MULTILINE)
-    return [_strip_md_inline(item.strip()) for item in items]
+    """Extract bullet or numbered list items from content (flat, no depth)."""
+    return [text for _depth, text in _parse_list_items_with_depth(content)]
 
 
 # ── Flex Components ─────────────────────────────────────────────────────────
@@ -356,13 +444,15 @@ def _section_box(title: str | None, content: str, is_first: bool = False) -> lis
     # Extract links before stripping markdown (we need raw markdown/URLs)
     links = _extract_links(content)
 
-    # Check for list items in content
-    list_items = _parse_list_items(content)
-    if list_items:
+    # Check for list items in content (with nesting depth)
+    list_items_with_depth = _parse_list_items_with_depth(content)
+    if list_items_with_depth:
         # Non-list content before the list
-        non_list = re.sub(
-            r"^[\s]*(?:[-\u2022*]|\d+[.)])\s+.+\n?", "", content, flags=re.MULTILINE
-        ).strip()
+        non_list_lines = [
+            line for line in content.split("\n")
+            if line.strip() and not _is_bullet_line(line)
+        ]
+        non_list = "\n".join(non_list_lines).strip()
         if non_list:
             components.append(_text_component(
                 _strip_md_inline(non_list),
@@ -371,23 +461,29 @@ def _section_box(title: str | None, content: str, is_first: bool = False) -> lis
                 line_spacing="4px",
             ))
 
-        for item in list_items:
-            components.append({
+        for depth, item in list_items_with_depth:
+            bullet_box: dict[str, Any] = {
                 "type": "box",
                 "layout": "baseline",
                 "margin": "sm",
                 "spacing": "sm",
                 "contents": [
                     _text_component(
-                        "\u2022", size="sm", color=COLORS["signal"],
+                        "\u2022", size="xs" if depth > 0 else "sm",
+                        color=COLORS["ink_faint"] if depth > 0 else COLORS["signal"],
                         wrap=False, flex=0,
                     ),
                     _text_component(
-                        item, size="sm", color=COLORS["ink_muted"],
+                        item, size="xs" if depth > 0 else "sm",
+                        color=COLORS["ink_muted"],
                         flex=1, line_spacing="4px",
                     ),
                 ],
-            })
+            }
+            # Indent nested items
+            if depth > 0:
+                bullet_box["paddingStart"] = "16px"
+            components.append(bullet_box)
     else:
         # Strip bare URLs from display text when we have link components
         display_text = _strip_md_inline(content)

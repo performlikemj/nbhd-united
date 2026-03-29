@@ -372,10 +372,27 @@ def _load_doc_template(filename: str) -> str | None:
 # Static docs shipped to every tenant workspace under docs/
 _WORKSPACE_DOCS = {
     "NBHD_DOC_TOOLS_REFERENCE": "tools-reference.md",
-    "NBHD_DOC_TELEGRAM_FORMATTING": "telegram-formatting.md",
     "NBHD_DOC_CRON_MANAGEMENT": "cron-management.md",
     "NBHD_DOC_ERROR_HANDLING": "error-handling.md",
 }
+
+
+def _resolve_channel_formatting(tenant=None) -> str | None:
+    """Load the channel-specific formatting doc for a tenant.
+
+    Uses the user's preferred_channel to pick telegram-formatting.md or
+    line-formatting.md.  Falls back to telegram-formatting.md.
+    """
+    channel = "telegram"
+    if tenant is not None:
+        try:
+            channel = tenant.user.preferred_channel or "telegram"
+        except Exception:
+            pass
+    content = _load_doc_template(f"{channel}-formatting.md")
+    if content is None and channel != "telegram":
+        content = _load_doc_template("telegram-formatting.md")
+    return content
 
 
 def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
@@ -398,6 +415,12 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         content = _load_doc_template(filename)
         if content:
             result[key] = content
+
+    # Channel-specific formatting doc (telegram or line)
+    formatting_content = _resolve_channel_formatting(tenant)
+    if formatting_content:
+        result["NBHD_DOC_CHANNEL_FORMATTING"] = formatting_content
+
     if tenant is not None:
         result["NBHD_SKILL_TEMPLATES_MD"] = render_templates_md(tenant)
     return result
