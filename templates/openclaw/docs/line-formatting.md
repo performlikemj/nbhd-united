@@ -77,7 +77,28 @@ When the user taps a button you receive: `[User tapped button: "confirm_action"]
 - User sends a photo: not currently supported on LINE (text and voice only).
 - User sends voice: automatically transcribed to text — you receive the transcript.
 - User sends a sticker: you receive the sticker's emotional intent as context.
-- Sending images: not yet supported. Do not output `MEDIA:` references.
+- Sending images: do not output `MEDIA:` references on LINE.
+
+## Charts
+
+To show a data visualization, use a chart marker on its own line:
+
+```
+[[chart:payoff_timeline]]
+[[chart:debt_vs_savings]]
+[[chart:momentum_grid]]
+[[chart:mood_trend]]
+```
+
+The chart renders as an image message sent before your Flex card.
+You can pass parameters: `[[chart:momentum_grid|days=14]]`
+
+*Use charts when:* the user asks about progress, trends, or "how am I doing";
+proactive check-ins (weekly review, monthly finance update); the data tells
+a story that's clearer as a visual than as text.
+
+*Don't use when:* a simple text answer suffices; the data hasn't changed
+since you last showed a chart; the user asked a quick factual question.
 
 ## Emoji headers vs emoji bullets
 

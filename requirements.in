@@ -52,6 +52,9 @@ azure-mgmt-storage
 azure-storage-file-share
 azure-keyvault-secrets
 
+# Charts (server-side rendering for chat channels)
+matplotlib
+
 # Utils
 whitenoise
 django-extensions

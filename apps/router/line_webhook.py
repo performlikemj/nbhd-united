@@ -983,7 +983,33 @@ class LineWebhookView(View):
                 ai_text = rehydrate_text(ai_text, entity_map)
 
             try:
-                # Remove MEDIA markers (images not supported yet)
+                # Render [[chart:type]] markers into images
+                image_messages: list[dict] = []
+                chart_pattern = re.compile(r'\[\[chart:(\w+)(?:\|(.+?))?\]\]')
+                for match in chart_pattern.finditer(ai_text):
+                    chart_type = match.group(1)
+                    raw_params = match.group(2) or ""
+                    params = dict(p.split("=", 1) for p in raw_params.split(",") if "=" in p)
+                    try:
+                        from apps.router.charts import render_chart
+                        png_bytes = render_chart(chart_type, tenant, params)
+                        if png_bytes:
+                            import uuid as _uuid
+                            fname = f"charts/{chart_type}_{_uuid.uuid4().hex[:8]}.png"
+                            fpath = f"workspace/{fname}"
+                            from apps.orchestrator.azure_client import upload_workspace_file_binary
+                            upload_workspace_file_binary(str(tenant.id), fpath, png_bytes)
+                            chart_url = f"{settings.API_BASE_URL}/api/v1/charts/{tenant.id}/{fname.split('/')[-1]}"
+                            image_messages.append({
+                                "type": "image",
+                                "originalContentUrl": chart_url,
+                                "previewImageUrl": chart_url,
+                            })
+                    except Exception:
+                        logger.exception("Chart rendering failed for %s (LINE)", chart_type)
+                ai_text = chart_pattern.sub("", ai_text)
+
+                # Strip MEDIA markers (image sending from workspace not yet supported on LINE)
                 clean_text = re.sub(r"MEDIA:\S+", "", ai_text).strip()
 
                 # Extract quick reply buttons before stripping markdown
@@ -1008,9 +1034,16 @@ class LineWebhookView(View):
                         chunks = _split_message(plain, max_len=5000)
                         messages = [{"type": "text", "text": c} for c in chunks[:5]]
 
+                # Prepend chart images before text/Flex messages
+                if image_messages:
+                    messages = image_messages + messages
+
                 # Attach quick replies to the last message
                 if messages and quick_reply_items:
                     messages[-1] = attach_quick_reply(messages[-1], quick_reply_items)
+
+                # LINE Push API allows max 5 messages per request
+                messages = messages[:5]
 
                 # Send via Reply API (free) with Push fallback
                 if messages:

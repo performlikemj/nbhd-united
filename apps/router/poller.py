@@ -304,6 +304,29 @@ class TelegramPoller:
             from apps.pii.redactor import rehydrate_text
             text = rehydrate_text(text, entity_map)
 
+        # Render [[chart:type]] markers into images and inject MEDIA: paths
+        chart_pattern = re.compile(r'\[\[chart:(\w+)(?:\|(.+?))?\]\]')
+        for match in chart_pattern.finditer(text):
+            chart_type = match.group(1)
+            raw_params = match.group(2) or ""
+            params = dict(p.split("=", 1) for p in raw_params.split(",") if "=" in p)
+            try:
+                from apps.router.charts import render_chart
+                png_bytes = render_chart(chart_type, tenant, params)
+                if png_bytes:
+                    import uuid as _uuid
+                    fname = f"charts/{chart_type}_{_uuid.uuid4().hex[:8]}.png"
+                    fpath = f"workspace/{fname}"
+                    from apps.orchestrator.azure_client import upload_workspace_file_binary
+                    upload_workspace_file_binary(str(tenant.id), fpath, png_bytes)
+                    container_path = f"/home/node/.openclaw/workspace/{fname}"
+                    text = text.replace(match.group(0), f"MEDIA:{container_path}")
+                else:
+                    text = text.replace(match.group(0), "")
+            except Exception:
+                logger.exception("Chart rendering failed for %s", chart_type)
+                text = text.replace(match.group(0), "")
+
         # Pattern: MEDIA:path or common image extensions in workspace paths
         # OpenClaw uses MEDIA:./path or MEDIA:https://... convention
         media_pattern = re.compile(

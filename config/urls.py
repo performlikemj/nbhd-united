@@ -2,9 +2,12 @@ from django.contrib import admin
 from django.urls import include, path
 
 from apps.integrations.runtime_views import RuntimeUsageReportView
+from apps.router.views import serve_chart_image
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    # Chart images — unauthenticated, served for LINE image messages
+    path("api/v1/charts/<uuid:tenant_id>/<str:filename>", serve_chart_image, name="serve-chart-image"),
     path("api/v1/auth/", include("apps.tenants.auth_urls")),
     path("api/v1/tenants/", include("apps.tenants.urls")),
     path("api/v1/billing/", include("apps.billing.urls")),
