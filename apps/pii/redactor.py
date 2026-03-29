@@ -146,12 +146,23 @@ def rehydrate_text(text: str, entity_map: dict[str, str]) -> str:
     return _PLACEHOLDER_RE.sub(_replace, text)
 
 
-def redact_user_message(text: str, tenant: Tenant) -> str:
+def redact_user_message(
+    text: str,
+    tenant: Tenant,
+    *,
+    allow_user_name: bool = True,
+) -> str:
     """Redact PII in a user's message before forwarding to OpenClaw.
 
     Reuses the tenant's existing entity map for consistency: known entities
     get the same placeholder they have in workspace context. New entities
     are detected via Presidio and appended to the map.
+
+    Args:
+        allow_user_name: When True (default), the tenant user's own name is
+            excluded from redaction.  Set to False for tool responses so the
+            model never sees raw name fragments it can mix with contact
+            placeholders.
 
     Returns the redacted text. Updates tenant.pii_entity_map in the DB
     if new entities are discovered.
@@ -165,13 +176,19 @@ def redact_user_message(text: str, tenant: Tenant) -> str:
         return text
 
     try:
-        return _redact_user_message(text, tenant, policy)
+        return _redact_user_message(text, tenant, policy, allow_user_name=allow_user_name)
     except Exception:
         logger.exception("User message PII redaction failed — returning original")
         return text
 
 
-def _redact_user_message(text: str, tenant: Tenant, policy: dict) -> str:
+def _redact_user_message(
+    text: str,
+    tenant: Tenant,
+    policy: dict,
+    *,
+    allow_user_name: bool = True,
+) -> str:
     """Internal: redact user message with known + new entity detection."""
     from apps.pii.engine import get_analyzer
 
@@ -196,19 +213,22 @@ def _redact_user_message(text: str, tenant: Tenant, policy: dict) -> str:
     entities = policy.get("entities", [])
     score_threshold = policy.get("score_threshold", 0.7)
 
-    # Build allow-list for tenant's own name (full, first, and last)
+    # Build allow-list for tenant's own name (full, first, and last).
+    # Skipped for tool responses (allow_user_name=False) so the model never
+    # sees raw name fragments it can mix with contact placeholders.
     allow_names: set[str] = set()
-    user = getattr(tenant, "user", None)
-    if user is not None:
-        display_name = getattr(user, "display_name", "") or ""
-        if display_name:
-            allow_names.add(display_name)
-            parts = display_name.split()
-            if len(parts) > 1:
-                allow_names.add(parts[0])   # first name
-                allow_names.add(parts[-1])  # last name
-            elif parts:
-                allow_names.add(parts[0])
+    if allow_user_name:
+        user = getattr(tenant, "user", None)
+        if user is not None:
+            display_name = getattr(user, "display_name", "") or ""
+            if display_name:
+                allow_names.add(display_name)
+                parts = display_name.split()
+                if len(parts) > 1:
+                    allow_names.add(parts[0])   # first name
+                    allow_names.add(parts[-1])  # last name
+                elif parts:
+                    allow_names.add(parts[0])
 
     analyzer = get_analyzer()
     results = analyzer.analyze(
@@ -322,7 +342,10 @@ def _redact_tool_value(
     if isinstance(value, str):
         if not value.strip():
             return value
-        return redact_user_message(value, tenant)
+        # allow_user_name=False so the user's own name gets redacted too —
+        # prevents the model from mixing the user's surname with contact
+        # placeholders (e.g., "[PERSON_1] Jones" → "Mitsumasa Jones").
+        return redact_user_message(value, tenant, allow_user_name=False)
     elif isinstance(value, dict):
         return {
             k: (v if k in skip_keys else _redact_tool_value(v, tenant, policy, skip_keys))

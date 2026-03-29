@@ -486,6 +486,24 @@ class RedactToolResponseTest(TestCase):
         # Should reuse the known placeholder
         self.assertIn("[EMAIL_ADDRESS_1]", result["from"])
 
+    def test_user_own_name_redacted_in_tool_response(self):
+        """User's own name should be redacted in tool responses to prevent name mixing."""
+        from apps.pii.redactor import redact_tool_response
+        self.tenant = create_tenant(display_name="Michael Jones", telegram_chat_id=555556)
+        data = {
+            "from": "Michael Jones <mj@example.com>",
+            "to": "alice@example.com",
+            "subject": "Hello",
+            "body_text": "Hi Alice, this is Michael Jones.",
+        }
+        result = redact_tool_response(data, self.tenant)
+
+        # User's own name should be redacted in tool responses
+        self.assertNotIn("Michael Jones", result["from"])
+        self.assertNotIn("Michael Jones", result["body_text"])
+        # Should have PERSON placeholders
+        self.assertIn("[PERSON_", result["from"])
+
 
 class AllowNameLastNameTest(TestCase):
     """Test that the user's last name is included in the allow-list."""

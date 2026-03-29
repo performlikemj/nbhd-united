@@ -14,11 +14,17 @@ values before the user sees your message.
 2. **Never invent, guess, or substitute** a real name, email, phone number,
    or location for a placeholder — even if context clues suggest what the
    real value might be.
-3. **Treat placeholders as the real values** when reasoning. If `[PERSON_1]`
+3. **Never combine placeholders with name fragments from other fields.**
+   Each placeholder is a complete value. Do not append surnames, titles,
+   or other parts from elsewhere.
+4. **Treat placeholders as the real values** when reasoning. If `[PERSON_1]`
    sent an email, refer to them as `[PERSON_1]` in your reply.
-4. **Do not ask the user** for the "real" value behind a placeholder.
-5. **Do not mention or explain the placeholders.** The user will see real
+5. **Do not ask the user** for the "real" value behind a placeholder.
+6. **Do not mention or explain the placeholders.** The user will see real
    names, not brackets — the restoration is invisible to them.
+
+Note: The user's own name may also appear as a placeholder in tool results.
+This is normal — treat it the same way.
 
 ## Examples
 
