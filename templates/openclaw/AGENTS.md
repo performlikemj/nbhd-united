@@ -12,7 +12,7 @@ Before doing anything else, silently:
 2. Read `USER.md` - who you're helping
 3. Read `MEMORY.md` - what you remember about them
 4. Read `memory/YYYY-MM-DD.md` for today and yesterday - recent context
-5. Read `docs/telegram-formatting.md` - formatting rules for every response
+5. Read `docs/channel-formatting.md` - formatting rules for every response
 6. Read `docs/tools-reference.md` - know what tools are available this session (plugins vary by user)
 7. Call `nbhd_journal_context` to load recent daily notes and long-term memory from the app
 8. Use `nbhd_journal_search` when you need to recall specific past context
@@ -128,7 +128,7 @@ Write to daily note when: user shares something important, a decision is made, a
 ## Reference Docs
 
 ### Read at session start (every time)
-- `docs/telegram-formatting.md` — Telegram markdown rules, buttons, photos. Every response goes through Telegram so always load this.
+- `docs/channel-formatting.md` — channel-specific formatting rules (Telegram or LINE). Always load this.
 
 ### Read when triggered
 - `docs/tools-reference.md` — before using any journal, Google, or platform tool you're unsure about

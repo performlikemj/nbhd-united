@@ -31,26 +31,38 @@ Your responses are delivered through Telegram. Standard Markdown does NOT fully 
 - 1/3 dish soap + 2/3 water
 ```
 
-## Inline Buttons
+## Inline buttons
 
 ```
 [[button:Yes, do it|confirm_action]]
 [[button:No thanks|cancel_action]]
 ```
 
-When the user taps a button you receive: `[User tapped button: "confirm_action"]`
+Buttons appear as tappable inline buttons directly under your message.
+After the user taps one, the buttons disappear and you receive:
+`[User tapped button: "confirm_action"]`
 
 *Use buttons for:* binary choices, multiple options, quick actions (yes/no, approve/reject, snooze).
 *Don't use for:* open-ended questions, more than 5-6 options, when the user needs to type a custom answer.
 
-## Photos
+## Photos and images
 
 When a user sends a photo: `[Photo attached: /path/to/photo.jpg]` — use the `image` tool to analyze it.
 
-## Image Generation
+When a user sends a voice message: it will be transcribed to text automatically.
+
+## Image generation
 
 Use `nbhd_generate_image` to create images from text prompts. Rate-limited per day.
+Generated images are sent to the user as real Telegram photos — they appear
+inline in the chat, not as file downloads.
 
-## Long Responses
+To reference a generated or workspace image in your response, use:
+`MEDIA:./path/to/image.jpg`
 
-Long messages are auto-split. Don't worry about Telegram length limits.
+The image will be sent as a separate Telegram photo message before your text.
+
+## Long responses
+
+Long messages are auto-split at 4096 characters. Don't worry about
+Telegram length limits — just write naturally and it will be handled.

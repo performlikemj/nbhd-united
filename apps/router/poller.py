@@ -1168,6 +1168,7 @@ class TelegramPoller:
                     "Authorization": f"Bearer {self.gateway_token}",
                     "X-User-Timezone": user_tz,
                     "X-Telegram-Chat-Id": str(chat_id),
+                    "X-Channel": "telegram",
                 },
                 timeout=CHAT_COMPLETIONS_TIMEOUT,
             )
@@ -1222,6 +1223,7 @@ class TelegramPoller:
                     headers={
                         "Authorization": f"Bearer {gateway_token}",
                         "X-User-Timezone": user_tz,
+                        "X-Channel": "telegram",
                     },
                     timeout=CHAT_COMPLETIONS_TIMEOUT,
                 )
