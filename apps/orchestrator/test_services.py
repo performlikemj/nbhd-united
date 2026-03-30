@@ -375,18 +375,26 @@ class SeedCronJobsTest(TestCase):
         self.assertFalse(result.get("skipped", False))
         mock_invoke.assert_not_called()
 
-    def test_cron_seed_jobs_all_use_agent_turn_payload(self):
-        """All cron seed jobs must use kind=agentTurn — OpenClaw rejects webhook payloads."""
+    def test_cron_seed_jobs_use_valid_payload_kinds(self):
+        """All cron seed jobs must use kind=agentTurn or systemEvent."""
         from apps.orchestrator.config_generator import build_cron_seed_jobs
 
+        VALID_KINDS = {"agentTurn", "systemEvent"}
+        # Jobs targeting "main" session use systemEvent; isolated jobs use agentTurn.
+        EXPECTED = {
+            "Morning Briefing": "systemEvent",
+            "Evening Check-in": "systemEvent",
+        }
         jobs = build_cron_seed_jobs(self.tenant)
         for job in jobs:
+            kind = job["payload"]["kind"]
+            expected = EXPECTED.get(job["name"], "agentTurn")
             self.assertEqual(
-                job["payload"]["kind"],
-                "agentTurn",
-                f"Job '{job['name']}' uses payload kind='{job['payload']['kind']}' "
-                f"— OpenClaw only supports 'agentTurn'",
+                kind,
+                expected,
+                f"Job '{job['name']}' uses payload kind='{kind}', expected '{expected}'",
             )
+            self.assertIn(kind, VALID_KINDS)
 
 
 class DedupTenantCronJobsTest(TestCase):
