@@ -166,6 +166,31 @@ body {
   box-shadow: 0 0 30px rgba(124, 107, 240, 0.45);
 }
 
+/* ── Onboarding nebula background ── */
+.nebula-bg {
+  background-color: #060a0e;
+  color: #e0e3e8;
+  background-image:
+    radial-gradient(ellipse 140% 100% at 65% 55%, rgba(78, 205, 196, 0.18) 0%, rgba(78, 205, 196, 0.04) 40%, transparent 70%),
+    radial-gradient(ellipse 110% 90% at 10% 20%, rgba(78, 205, 196, 0.12) 0%, rgba(78, 205, 196, 0.02) 45%, transparent 65%),
+    radial-gradient(ellipse 120% 80% at 40% 90%, rgba(124, 107, 240, 0.10) 0%, rgba(124, 107, 240, 0.02) 40%, transparent 60%),
+    radial-gradient(ellipse 80% 70% at 92% 10%, rgba(78, 205, 196, 0.09) 0%, transparent 55%),
+    radial-gradient(ellipse 50% 80% at 5% 50%, rgba(124, 107, 240, 0.07) 0%, transparent 50%),
+    radial-gradient(ellipse 200% 200% at 50% 50%, rgba(78, 205, 196, 0.05) 0%, transparent 60%);
+  background-attachment: fixed;
+}
+
+@keyframes pulseNode {
+  0% { box-shadow: 0 0 0 0 rgba(199, 191, 255, 0.5), 0 0 20px rgba(199, 191, 255, 0.4); }
+  70% { box-shadow: 0 0 0 10px rgba(199, 191, 255, 0), 0 0 20px rgba(199, 191, 255, 0.4); }
+  100% { box-shadow: 0 0 0 0 rgba(199, 191, 255, 0), 0 0 20px rgba(199, 191, 255, 0.4); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nebula-bg { background-attachment: scroll; }
+  @keyframes pulseNode { 0%, 100% { box-shadow: 0 0 20px rgba(199, 191, 255, 0.4); } }
+}
+
 a {
   color: inherit;
   text-decoration: none;

@@ -183,8 +183,9 @@ export function AppShell({ children }: { children: ReactNode }) {
     return null;
   }
 
-  // Landing page gets a full-bleed layout — no shell chrome
-  if (pathname === "/") {
+  // Full-bleed pages — no shell chrome (landing, auth, onboarding)
+  const fullBleedPages = ["/", "/signup", "/login", "/onboarding"];
+  if (fullBleedPages.includes(pathname)) {
     return (
       <ErrorBoundary>
         <a href="#main-content" className="skip-link">Skip to main content</a>
