@@ -299,6 +299,7 @@ export interface CronJob {
   name: string;
   schedule: CronJobSchedule;
   sessionTarget: string;
+  wakeMode?: string;
   payload: CronJobPayload;
   delivery: CronJobDelivery;
   enabled: boolean;

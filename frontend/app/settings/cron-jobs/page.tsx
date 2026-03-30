@@ -45,6 +45,7 @@ interface TaskTemplate {
   name: string;
   message: string;
   expr: string;
+  sessionTarget?: "main" | "isolated";
 }
 
 const TASK_TEMPLATES: TaskTemplate[] = [
@@ -54,6 +55,7 @@ const TASK_TEMPLATES: TaskTemplate[] = [
     message:
       "Check my calendar, weather, and any important emails. Give me a quick summary to start my day.",
     expr: "0 7 * * *",
+    sessionTarget: "main",
   },
   {
     icon: "📰",
@@ -82,6 +84,7 @@ const TASK_TEMPLATES: TaskTemplate[] = [
     message:
       "Summarize what happened today — any messages I missed, tasks completed, and what's coming up tomorrow.",
     expr: "0 21 * * *",
+    sessionTarget: "main",
   },
   {
     icon: "💪",
@@ -118,6 +121,7 @@ type CreateFormState = {
   message: string;
   deliveryMode: string;
   deliveryChannel: string;
+  sessionTarget: "main" | "isolated";
 };
 
 function defaultCreateForm(tz?: string): CreateFormState {
@@ -130,6 +134,7 @@ function defaultCreateForm(tz?: string): CreateFormState {
     message: "",
     deliveryMode: "announce",
     deliveryChannel: "telegram",
+    sessionTarget: "isolated",
   };
 }
 
@@ -139,6 +144,7 @@ type EditFormState = {
   message: string;
   deliveryMode: string;
   deliveryChannel: string;
+  sessionTarget: "main" | "isolated";
 };
 
 function toEditForm(job: CronJob): EditFormState {
@@ -148,6 +154,7 @@ function toEditForm(job: CronJob): EditFormState {
     message: stripPromptPrefix(job.payload.message),
     deliveryMode: job.delivery.mode,
     deliveryChannel: job.delivery.channel ?? "",
+    sessionTarget: (job.sessionTarget === "main" ? "main" : "isolated"),
   };
 }
 
@@ -224,6 +231,7 @@ export default function SettingsCronJobsPage() {
     message: "",
     deliveryMode: "announce",
     deliveryChannel: "",
+    sessionTarget: "isolated",
   });
   const [editFeedback, setEditFeedback] = useState<ActionFeedback>({ status: "idle", text: "" });
   const editTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -312,6 +320,7 @@ export default function SettingsCronJobsPage() {
       name: template.name,
       message: template.message,
       expr: template.expr,
+      sessionTarget: template.sessionTarget ?? "isolated",
     }));
   };
 
@@ -325,8 +334,12 @@ export default function SettingsCronJobsPage() {
       await createMutation.mutateAsync({
         name: createForm.name.trim(),
         schedule: { kind: "cron", expr: createForm.expr.trim(), tz: createForm.tz.trim() },
-        sessionTarget: "isolated",
-        payload: { kind: "agentTurn", message: createForm.message.trim() },
+        sessionTarget: createForm.sessionTarget,
+        ...(createForm.sessionTarget === "main" ? { wakeMode: "now" } : {}),
+        payload: {
+          kind: createForm.sessionTarget === "main" ? "systemEvent" : "agentTurn",
+          message: createForm.message.trim(),
+        },
         delivery: {
           mode: createForm.deliveryMode,
           ...(createForm.deliveryChannel ? { channel: createForm.deliveryChannel } : {}),
@@ -362,7 +375,12 @@ export default function SettingsCronJobsPage() {
         name: editingName,
         data: {
           schedule: { kind: "cron", expr: editForm.expr.trim(), tz: editForm.tz.trim() },
-          payload: { kind: "agentTurn", message: editForm.message.trim() },
+          sessionTarget: editForm.sessionTarget,
+          ...(editForm.sessionTarget === "main" ? { wakeMode: "now" } : {}),
+          payload: {
+            kind: editForm.sessionTarget === "main" ? "systemEvent" : "agentTurn",
+            message: editForm.message.trim(),
+          },
           delivery: {
             mode: editForm.deliveryMode,
             ...(editForm.deliveryChannel ? { channel: editForm.deliveryChannel } : {}),
@@ -576,6 +594,37 @@ export default function SettingsCronJobsPage() {
                   <option value="none">Silent (no message)</option>
                 </select>
               </label>
+
+              <div className="flex items-center justify-between gap-3 rounded-panel border border-border bg-surface px-3 py-2.5">
+                <div>
+                  <p className="text-sm font-medium">Session mode</p>
+                  <p className="mt-0.5 text-xs text-ink-muted">
+                    {createForm.sessionTarget === "main"
+                      ? "Main — your assistant will remember this"
+                      : "Background — runs silently, assistant won\u2019t see output"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={createForm.sessionTarget === "main"}
+                  onClick={() =>
+                    setCreateForm((prev) => ({
+                      ...prev,
+                      sessionTarget: prev.sessionTarget === "main" ? "isolated" : "main",
+                    }))
+                  }
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                    createForm.sessionTarget === "main" ? "bg-accent" : "bg-border"
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                      createForm.sessionTarget === "main" ? "translate-x-5" : "translate-x-0"
+                    }`}
+                  />
+                </button>
+              </div>
 
               <div className="text-sm text-ink-muted md:col-span-2">
                 <span
@@ -805,6 +854,9 @@ export default function SettingsCronJobsPage() {
                               {job.delivery.channel}
                             </span>
                           ) : null}
+                          <span className="rounded-full bg-surface-hover px-2.5 py-0.5 text-xs text-ink-muted">
+                            {job.sessionTarget === "main" ? "Main" : "Background"}
+                          </span>
                         </div>
                       </div>
 
@@ -928,6 +980,37 @@ export default function SettingsCronJobsPage() {
                                     </select>
                                   </label>
 
+                                  <div className="flex items-center justify-between gap-3 rounded-panel border border-border bg-surface px-3 py-2.5">
+                                    <div>
+                                      <p className="text-sm font-medium">Session mode</p>
+                                      <p className="mt-0.5 text-xs text-ink-muted">
+                                        {editForm.sessionTarget === "main"
+                                          ? "Main — your assistant will remember this"
+                                          : "Background — runs silently, assistant won\u2019t see output"}
+                                      </p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      role="switch"
+                                      aria-checked={editForm.sessionTarget === "main"}
+                                      onClick={() =>
+                                        setEditForm((prev) => ({
+                                          ...prev,
+                                          sessionTarget: prev.sessionTarget === "main" ? "isolated" : "main",
+                                        }))
+                                      }
+                                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                                        editForm.sessionTarget === "main" ? "bg-accent" : "bg-border"
+                                      }`}
+                                    >
+                                      <span
+                                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                                          editForm.sessionTarget === "main" ? "translate-x-5" : "translate-x-0"
+                                        }`}
+                                      />
+                                    </button>
+                                  </div>
+
                                   <div className="text-sm text-ink-muted">
                                     <span
                                       className="block mb-1 cursor-pointer"
@@ -990,6 +1073,37 @@ export default function SettingsCronJobsPage() {
                               <option value="none">Silent (no message)</option>
                             </select>
                           </label>
+
+                          <div className="flex items-center justify-between gap-3 rounded-panel border border-border bg-surface px-3 py-2.5">
+                            <div>
+                              <p className="text-sm font-medium">Session mode</p>
+                              <p className="mt-0.5 text-xs text-ink-muted">
+                                {editForm.sessionTarget === "main"
+                                  ? "Main — your assistant will remember this"
+                                  : "Background — runs silently, assistant won\u2019t see output"}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={editForm.sessionTarget === "main"}
+                              onClick={() =>
+                                setEditForm((prev) => ({
+                                  ...prev,
+                                  sessionTarget: prev.sessionTarget === "main" ? "isolated" : "main",
+                                }))
+                              }
+                              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                                editForm.sessionTarget === "main" ? "bg-accent" : "bg-border"
+                              }`}
+                            >
+                              <span
+                                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                                  editForm.sessionTarget === "main" ? "translate-x-5" : "translate-x-0"
+                                }`}
+                              />
+                            </button>
+                          </div>
 
                           <div className="text-sm text-ink-muted md:col-span-2">
                             <span

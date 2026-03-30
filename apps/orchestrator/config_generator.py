@@ -365,9 +365,10 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
         {
             "name": "Morning Briefing",
             "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": user_tz},
-            "sessionTarget": "isolated",
+            "sessionTarget": "main",
+            "wakeMode": "now",
             "payload": {
-                "kind": "agentTurn",
+                "kind": "systemEvent",
                 "message": _prepare_cron_prompt(
                     _build_morning_briefing_prompt(tenant), tenant
                 ),
@@ -378,9 +379,10 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
         {
             "name": "Evening Check-in",
             "schedule": {"kind": "cron", "expr": "0 21 * * *", "tz": user_tz},
-            "sessionTarget": "isolated",
+            "sessionTarget": "main",
+            "wakeMode": "now",
             "payload": {
-                "kind": "agentTurn",
+                "kind": "systemEvent",
                 "message": _prepare_cron_prompt(_EVENING_CHECKIN_PROMPT, tenant),
             },
             "delivery": {"mode": "none"},
