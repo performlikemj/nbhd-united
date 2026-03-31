@@ -394,6 +394,17 @@ class HeartbeatConfigView(APIView):
                         tenant.id,
                     )
 
+                # Sync heartbeat cron job (add/remove/update schedule)
+                if any(f in ("heartbeat_enabled", "heartbeat_start_hour") for f in update_fields):
+                    try:
+                        from apps.orchestrator.services import sync_heartbeat_cron
+                        sync_heartbeat_cron(tenant)
+                    except Exception:
+                        logger.exception(
+                            "Failed to sync heartbeat cron for tenant %s",
+                            tenant.id,
+                        )
+
         return Response({
             "enabled": tenant.heartbeat_enabled,
             "start_hour": tenant.heartbeat_start_hour,

@@ -763,7 +763,100 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
             logger.exception("update_system_cron_prompts: failed to update '%s' for %s", name, tenant_id)
             errors += 1
 
+    # --- Heartbeat add/remove drift correction ---
+    sync_heartbeat_cron(tenant, existing_by_name)
+
     return {"tenant_id": tenant_id, "updated": updated, "skipped": skipped, "errors": errors}
+
+
+def sync_heartbeat_cron(
+    tenant: Tenant,
+    existing_by_name: dict[str, dict] | None = None,
+) -> str:
+    """Ensure the Heartbeat Check-in cron job matches the tenant's settings.
+
+    - heartbeat_enabled=True → job must exist (add if missing, update schedule if changed)
+    - heartbeat_enabled=False → job must not exist (remove if present)
+
+    ``existing_by_name`` is an optional pre-fetched {name: job} map to avoid
+    a redundant cron.list call when called from update_system_cron_prompts.
+
+    Returns: "added", "removed", "updated", "ok", or "error".
+    """
+    from .config_generator import _build_heartbeat_cron
+
+    HEARTBEAT_NAME = "Heartbeat Check-in"
+
+    if not tenant.container_fqdn:
+        return "ok"
+
+    # Fetch existing jobs if not provided
+    if existing_by_name is None:
+        try:
+            list_result = invoke_gateway_tool(
+                tenant, "cron.list", {"includeDisabled": True}
+            )
+        except GatewayError:
+            logger.exception("sync_heartbeat_cron: cannot list jobs for %s", tenant.id)
+            return "error"
+
+        jobs = []
+        if isinstance(list_result, dict):
+            inner = list_result.get("details", list_result)
+            if isinstance(inner, dict):
+                jobs = inner.get("jobs", [])
+            else:
+                jobs = list_result.get("jobs", [])
+        elif isinstance(list_result, list):
+            jobs = list_result
+
+        existing_by_name = {}
+        for job in jobs:
+            name = job.get("name", "")
+            if name:
+                existing_by_name[name] = job
+
+    existing_hb = existing_by_name.get(HEARTBEAT_NAME)
+    desired_hb = _build_heartbeat_cron(tenant)  # None if disabled
+
+    try:
+        if desired_hb and not existing_hb:
+            # Heartbeat enabled but job missing → add it
+            invoke_gateway_tool(tenant, "cron.add", {"job": desired_hb})
+            logger.info("sync_heartbeat_cron: added heartbeat for tenant %s", tenant.id)
+            return "added"
+
+        if not desired_hb and existing_hb:
+            # Heartbeat disabled but job exists → remove it
+            job_id = existing_hb.get("id") or existing_hb.get("jobId", HEARTBEAT_NAME)
+            invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
+            logger.info("sync_heartbeat_cron: removed heartbeat for tenant %s", tenant.id)
+            return "removed"
+
+        if desired_hb and existing_hb:
+            # Both exist — check if schedule needs updating
+            existing_expr = existing_hb.get("schedule", {}).get("expr", "")
+            desired_expr = desired_hb["schedule"]["expr"]
+            existing_tz = existing_hb.get("schedule", {}).get("tz", "UTC")
+            desired_tz = desired_hb["schedule"]["tz"]
+
+            if existing_expr != desired_expr or existing_tz != desired_tz:
+                job_id = existing_hb.get("id") or existing_hb.get("jobId", HEARTBEAT_NAME)
+                invoke_gateway_tool(
+                    tenant, "cron.update",
+                    {"jobId": job_id, "patch": {"schedule": desired_hb["schedule"]}},
+                )
+                logger.info(
+                    "sync_heartbeat_cron: updated schedule for tenant %s (%s → %s)",
+                    tenant.id, existing_expr, desired_expr,
+                )
+                return "updated"
+
+    except GatewayError:
+        logger.exception("sync_heartbeat_cron: failed for tenant %s", tenant.id)
+        return "error"
+
+    return "ok"
 
 
 def check_tenant_health(tenant_id: str) -> dict:
