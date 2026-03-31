@@ -141,7 +141,7 @@ django-extensions==4.1
     # via -r requirements.in
 django-redis==6.0.0
     # via -r requirements.in
-djangorestframework==3.17.0
+djangorestframework==3.17.1
     # via
     #   -r requirements.in
     #   djangorestframework-simplejwt
