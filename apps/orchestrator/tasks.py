@@ -372,3 +372,71 @@ def dedup_cron_jobs_task(tenant_id: str) -> None:
         "dedup_task: tenant %s — kept %d, deleted %d, errors %d",
         tenant_id[:8], result["kept"], result["deleted"], result["errors"],
     )
+
+
+def remove_zombie_heartbeats_task() -> dict:
+    """Remove Heartbeat Check-in cron jobs from tenants with heartbeat disabled."""
+    import logging
+    import time
+    from apps.tenants.models import Tenant
+    from apps.cron.gateway_client import invoke_gateway_tool, GatewayError
+
+    logger = logging.getLogger(__name__)
+
+    tenants = Tenant.objects.filter(
+        status=Tenant.Status.ACTIVE,
+        container_id__gt="",
+        heartbeat_enabled=False,
+    ).select_related("user")
+
+    removed = 0
+    skipped = 0
+    errors = 0
+
+    for tenant in tenants:
+        tid = str(tenant.id)[:8]
+        if not tenant.container_fqdn:
+            skipped += 1
+            continue
+
+        try:
+            list_result = invoke_gateway_tool(
+                tenant, "cron.list", {"includeDisabled": True}
+            )
+        except GatewayError:
+            logger.warning("zombie_heartbeats: tenant %s — cannot list jobs", tid)
+            errors += 1
+            time.sleep(1)
+            continue
+
+        jobs = []
+        if isinstance(list_result, dict):
+            inner = list_result.get("details", list_result)
+            if isinstance(inner, dict):
+                jobs = inner.get("jobs", [])
+            else:
+                jobs = list_result.get("jobs", [])
+        elif isinstance(list_result, list):
+            jobs = list_result
+
+        heartbeat = next(
+            (j for j in jobs if isinstance(j, dict) and j.get("name") == "Heartbeat Check-in"),
+            None,
+        )
+        if not heartbeat:
+            skipped += 1
+            time.sleep(0.5)
+            continue
+
+        job_id = heartbeat.get("id") or heartbeat.get("jobId", "Heartbeat Check-in")
+        try:
+            invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
+            removed += 1
+            logger.info("zombie_heartbeats: tenant %s — removed heartbeat (id=%s)", tid, job_id)
+        except GatewayError:
+            logger.exception("zombie_heartbeats: tenant %s — failed to remove", tid)
+            errors += 1
+
+        time.sleep(1)
+
+    return {"removed": removed, "skipped": skipped, "errors": errors}
