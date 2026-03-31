@@ -337,7 +337,7 @@ export default function SettingsCronJobsPage() {
         sessionTarget: createForm.sessionTarget,
         ...(createForm.sessionTarget === "main" ? { wakeMode: "now" } : {}),
         payload: {
-          kind: createForm.sessionTarget === "main" ? "systemEvent" : "agentTurn",
+          kind: "agentTurn",
           message: createForm.message.trim(),
         },
         delivery: {
@@ -378,7 +378,7 @@ export default function SettingsCronJobsPage() {
           sessionTarget: editForm.sessionTarget,
           ...(editForm.sessionTarget === "main" ? { wakeMode: "now" } : {}),
           payload: {
-            kind: editForm.sessionTarget === "main" ? "systemEvent" : "agentTurn",
+            kind: "agentTurn",
             message: editForm.message.trim(),
           },
           delivery: {
