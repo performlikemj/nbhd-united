@@ -252,7 +252,7 @@ numpy==2.4.3
     #   thinc
 oauthlib==3.3.1
     # via requests-oauthlib
-openai==2.29.0
+openai==2.30.0
     # via
     #   -r requirements.in
     #   composio
