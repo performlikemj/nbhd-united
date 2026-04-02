@@ -396,7 +396,7 @@ srsly==2.5.3
     #   spacy
     #   thinc
     #   weasel
-stripe==15.0.0
+stripe==15.0.1
     # via
     #   -r requirements.in
     #   dj-stripe
