@@ -134,7 +134,7 @@ def force_reseed_crons_task() -> dict:
 
     # Only touch system-managed cron jobs (by name).
     # User-created crons (reminders, custom schedules) are left untouched.
-    SYSTEM_JOB_NAMES = {"Morning Briefing", "Evening Check-in", "Week Ahead Review", "Background Tasks"}
+    SYSTEM_JOB_NAMES = {"Morning Briefing", "Evening Check-in", "Weekly Reflection", "Week Ahead Review", "Background Tasks"}
 
     tenants = Tenant.objects.filter(
         status=Tenant.Status.ACTIVE,
