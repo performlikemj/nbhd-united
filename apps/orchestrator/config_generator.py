@@ -394,7 +394,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "wakeMode": "now",
             "payload": {
                 "kind": "systemEvent",
-                "message": _prepare_cron_prompt(
+                "text": _prepare_cron_prompt(
                     _build_morning_briefing_prompt(tenant), tenant
                 ),
             },
@@ -408,7 +408,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "wakeMode": "now",
             "payload": {
                 "kind": "systemEvent",
-                "message": _prepare_cron_prompt(_EVENING_CHECKIN_PROMPT, tenant),
+                "text": _prepare_cron_prompt(_EVENING_CHECKIN_PROMPT, tenant),
             },
             "delivery": {"mode": "none"},
             "enabled": True,
@@ -420,7 +420,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "wakeMode": "now",
             "payload": {
                 "kind": "systemEvent",
-                "message": _prepare_cron_prompt(_WEEKLY_REFLECTION_PROMPT, tenant),
+                "text": _prepare_cron_prompt(_WEEKLY_REFLECTION_PROMPT, tenant),
             },
             "delivery": {"mode": "none"},
             "enabled": True,
