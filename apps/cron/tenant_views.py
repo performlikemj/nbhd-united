@@ -145,6 +145,11 @@ class CronJobListCreateView(APIView):
 class CronJobDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
+    # Fields that the OpenClaw gateway accepts in cron.update patch.
+    # "payload" (with message/kind) and arbitrary top-level fields like "id"
+    # are rejected — full edits need a delete+recreate cycle.
+    _PATCHABLE_FIELDS = {"schedule", "sessionTarget", "wakeMode", "delivery", "enabled"}
+
     def patch(self, request, job_name: str):
         if job_name in HIDDEN_SYSTEM_CRONS:
             return Response(
@@ -152,8 +157,8 @@ class CronJobDetailView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
         tenant = _get_tenant_for_user(request.user)
-        patch_data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
-        delivery = patch_data.get("delivery")
+        data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+        delivery = data.get("delivery")
         if (
             isinstance(delivery, dict)
             and delivery.get("channel") == "telegram"
@@ -161,16 +166,43 @@ class CronJobDetailView(APIView):
         ):
             chat_id = _tenant_telegram_chat_id(tenant)
             if chat_id and not delivery.get("to"):
-                patch_data = {**patch_data, "delivery": {**delivery, "to": str(chat_id)}}
+                data = {**data, "delivery": {**delivery, "to": str(chat_id)}}
 
-        patch_data = _fix_payload_kind_for_session_target(patch_data)
+        data = _fix_payload_kind_for_session_target(data)
+
+        # If non-patchable fields are present (e.g. payload with message),
+        # we must delete+recreate instead of patching in-place.
+        has_unpatchable = bool(set(data.keys()) - self._PATCHABLE_FIELDS)
 
         try:
             _require_active_tenant(tenant)
-            logger.info("cron.update job_name=%s patch_keys=%s", job_name, list(patch_data.keys()))
-            result = invoke_gateway_tool(
-                tenant, "cron.update", {"jobId": job_name, "patch": patch_data},
-            )
+
+            if has_unpatchable:
+                # Fetch existing job to merge with new data
+                list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+                jobs = list_result.get("jobs", []) if isinstance(list_result, dict) else list_result
+                existing = next((j for j in jobs if j.get("jobId") == job_name or j.get("name") == job_name), None)
+                if not existing:
+                    return Response({"detail": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+                # Merge existing job with new data, preserving name and enabled state
+                merged = {**existing, **data}
+                merged.pop("jobId", None)
+                merged.pop("id", None)
+                merged["name"] = existing.get("name", job_name)
+                if "enabled" not in data:
+                    merged["enabled"] = existing.get("enabled", True)
+                merged = _fix_payload_kind_for_session_target(merged)
+
+                logger.info("cron.update (delete+create) job_name=%s", job_name)
+                invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_name})
+                result = invoke_gateway_tool(tenant, "cron.add", {"job": merged})
+            else:
+                logger.info("cron.update job_name=%s patch_keys=%s", job_name, list(data.keys()))
+                result = invoke_gateway_tool(
+                    tenant, "cron.update", {"jobId": job_name, "patch": data},
+                )
+
             logger.info("cron.update success job_name=%s", job_name)
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
