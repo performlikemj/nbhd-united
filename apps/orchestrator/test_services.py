@@ -375,7 +375,7 @@ class SeedCronJobsTest(TestCase):
     ):
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 5)
+        self.assertEqual(result["created"], 6)
         self.assertEqual(result["errors"], 0)
         self.assertFalse(result.get("skipped", False))
         mock_invoke.assert_not_called()
