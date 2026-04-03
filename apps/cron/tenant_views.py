@@ -20,17 +20,23 @@ logger = logging.getLogger(__name__)
 
 
 def _fix_payload_kind_for_session_target(data: dict) -> dict:
-    """OpenClaw requires payload.kind="systemEvent" for main-session jobs.
+    """Fix payload kind AND field name for the session target.
 
-    The frontend always sends "agentTurn", so we correct it here based on
-    the sessionTarget value.
+    OpenClaw's cron schema uses ``anyOf`` validation:
+    - ``systemEvent`` requires ``{kind: "systemEvent", text: "..."}``
+    - ``agentTurn``   requires ``{kind: "agentTurn", message: "..."}``
+
+    The frontend always sends ``agentTurn`` + ``message``, so we correct
+    both the kind and the content field name here.
     """
     session_target = data.get("sessionTarget", "isolated")
     payload = data.get("payload")
     if isinstance(payload, dict) and session_target == "main":
-        data = {**data, "payload": {**payload, "kind": "systemEvent"}}
+        text = payload.get("text") or payload.get("message", "")
+        data = {**data, "payload": {"kind": "systemEvent", "text": text}}
     elif isinstance(payload, dict) and session_target != "main":
-        data = {**data, "payload": {**payload, "kind": "agentTurn"}}
+        message = payload.get("message") or payload.get("text", "")
+        data = {**data, "payload": {"kind": "agentTurn", "message": message}}
     return data
 
 
