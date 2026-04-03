@@ -393,7 +393,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "sessionTarget": "main",
             "wakeMode": "now",
             "payload": {
-                "kind": "agentTurn",
+                "kind": "systemEvent",
                 "message": _prepare_cron_prompt(
                     _build_morning_briefing_prompt(tenant), tenant
                 ),
@@ -407,7 +407,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "sessionTarget": "main",
             "wakeMode": "now",
             "payload": {
-                "kind": "agentTurn",
+                "kind": "systemEvent",
                 "message": _prepare_cron_prompt(_EVENING_CHECKIN_PROMPT, tenant),
             },
             "delivery": {"mode": "none"},
@@ -419,7 +419,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "sessionTarget": "main",
             "wakeMode": "now",
             "payload": {
-                "kind": "agentTurn",
+                "kind": "systemEvent",
                 "message": _prepare_cron_prompt(_WEEKLY_REFLECTION_PROMPT, tenant),
             },
             "delivery": {"mode": "none"},
@@ -449,8 +449,8 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
         },
         # NOTE: Nightly Extraction is NOT an OpenClaw cron job — it's a
         # Django endpoint (/api/v1/journal/extract/) triggered via QStash.
-        # OpenClaw's cron system only supports "agentTurn" payloads, not
-        # webhooks.  See apps/journal/extraction_views.py.
+        # OpenClaw cron payloads: "agentTurn" for isolated sessions,
+        # "systemEvent" for main sessions.  See apps/journal/extraction_views.py.
     ]
 
     # Heartbeat cron — hourly during user's chosen window, cheap model
