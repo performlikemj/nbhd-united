@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 SYSTEM_JOB_NAMES = {
     "Morning Briefing",
     "Evening Check-in",
+    "Weekly Reflection",
     "Week Ahead Review",
     "Background Tasks",
 }

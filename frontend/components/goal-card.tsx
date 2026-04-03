@@ -68,7 +68,7 @@ export function GoalCard({ goal }: { goal: HorizonsGoal }) {
 
         <div className="mt-4 flex items-center justify-between">
           <span className="font-mono text-[10px] uppercase tracking-wider text-ink-faint">
-            {formatDate(goal.created_at)}
+            {formatDate(goal.updated_at)}
           </span>
           <span className="text-xs text-accent opacity-100 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100 sm:group-focus-visible:opacity-100">
             View in Journal &rarr;

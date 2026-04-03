@@ -224,7 +224,12 @@ _WEEK_AHEAD_REVIEW_PROMPT = (
     "Check usage signals from the guide. Include a single casual line in your message. "
     "Update memory: `feature_last_suggested: <today>`, `feature_suggested: <name>`. "
     "If it says not to suggest, or everything is explored, skip this.\n"
-    "9. Send the user exactly ONE message via `nbhd_send_to_user`:\n"
+    "9. **Weekly review fallback:** Check if a weekly review was saved for last week "
+    "(use `skills/nbhd-managed/weekly-review/SKILL.md`). If the user already reflected "
+    "on Sunday evening, a review will exist — skip this step. If no review exists, "
+    "auto-generate one from the past week's journal entries, mood data, and goal progress. "
+    "Use a 'meh' rating as default if there's not enough signal to judge.\n"
+    "10. Send the user exactly ONE message via `nbhd_send_to_user`:\n"
     "   - Calendar highlights for the week (2-3 lines)\n"
     "   - Active goals status (1-2 lines)\n"
     "   - Any cron adjustments needed (or 'all good, no changes')\n"
@@ -256,6 +261,26 @@ _HEARTBEAT_CHECKIN_PROMPT = (
     "This prevents the next heartbeat from repeating the same nudge.\n\n"
     "**IMPORTANT: Do NOT message unless you have something genuinely NEW to say. "
     "Do NOT send multiple messages. Quality over quantity.**\n"
+)
+
+_WEEKLY_REFLECTION_PROMPT = (
+    "It's Sunday evening — time for the weekly reflection. This runs in the main session "
+    "so the user can reply and shape the reflection with you.\n\n"
+    "Steps:\n"
+    "1. Load journal context for the past 7 days (`nbhd_journal_context`)\n"
+    "2. Load goals (`nbhd_document_get` with kind='goal', slug='goals') and tasks\n"
+    "3. Review what happened this week: conversations, journal entries, mood, goal progress\n"
+    "4. Send the user exactly ONE message via `nbhd_send_to_user` that:\n"
+    "   - Opens with a warm, brief recap of what you noticed this week (2-3 lines)\n"
+    "   - Asks: how would they rate the week — thumbs up, meh, or thumbs down?\n"
+    "   - Asks: what was the biggest win?\n"
+    "   - Keep it conversational and short — don't list everything, just the highlights\n\n"
+    "The user may respond with their thoughts. When they do, use "
+    "`skills/nbhd-managed/weekly-review/SKILL.md` to save the weekly review, "
+    "combining their input with what you already know from journal data.\n\n"
+    "If the user doesn't respond, that's OK — the Monday morning review will "
+    "auto-generate a summary from available data.\n\n"
+    "**Send exactly ONE message. Keep it casual and inviting, not a data dump.**\n"
 )
 
 _BACKGROUND_TASKS_PROMPT = (
@@ -389,6 +414,18 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "enabled": True,
         },
         {
+            "name": "Weekly Reflection",
+            "schedule": {"kind": "cron", "expr": "0 20 * * 0", "tz": user_tz},
+            "sessionTarget": "main",
+            "wakeMode": "now",
+            "payload": {
+                "kind": "agentTurn",
+                "message": _prepare_cron_prompt(_WEEKLY_REFLECTION_PROMPT, tenant),
+            },
+            "delivery": {"mode": "none"},
+            "enabled": True,
+        },
+        {
             "name": "Week Ahead Review",
             "schedule": {"kind": "cron", "expr": "0 8 * * 1", "tz": user_tz},
             "sessionTarget": "isolated",
@@ -425,6 +462,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     _TASK_SLUG_MAP = {
         "Morning Briefing": "morning_briefing",
         "Evening Check-in": "evening_checkin",
+        "Weekly Reflection": "weekly_reflection",
         "Week Ahead Review": "week_review",
         "Background Tasks": "background_tasks",
         "Heartbeat Check-in": "heartbeat",
