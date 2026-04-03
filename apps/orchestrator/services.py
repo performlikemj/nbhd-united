@@ -494,6 +494,63 @@ def _extract_cron_jobs(list_result) -> list | None:
     return None  # Unrecognizable — do NOT assume empty
 
 
+SYSTEM_JOB_NAMES = frozenset({
+    "Morning Briefing", "Evening Check-in", "Week Ahead Review",
+    "Background Tasks", "Weekly Reflection", "Heartbeat Check-in",
+})
+
+
+def restore_user_cron_jobs(tenant: Tenant, existing_job_names: set[str]) -> dict:
+    """Restore user-created cron jobs from the PostgreSQL snapshot.
+
+    Called after seeding/reseeding when user jobs may have been lost
+    due to a container restart wiping the in-memory SQLite.
+
+    Returns: {"restored": int, "errors": int}
+    """
+    snapshot = getattr(tenant, "cron_jobs_snapshot", None)
+    if not snapshot or not isinstance(snapshot, dict):
+        return {"restored": 0, "errors": 0}
+
+    snapshot_jobs = snapshot.get("jobs", [])
+    if not snapshot_jobs:
+        return {"restored": 0, "errors": 0}
+
+    existing_lower = {n.lower() for n in existing_job_names}
+    user_jobs_to_restore = [
+        job for job in snapshot_jobs
+        if isinstance(job, dict)
+        and job.get("name")
+        and job["name"] not in SYSTEM_JOB_NAMES
+        and job["name"].lower() not in existing_lower
+    ]
+
+    if not user_jobs_to_restore:
+        return {"restored": 0, "errors": 0}
+
+    snapshot_at = snapshot.get("snapshot_at", "unknown")
+    logger.info(
+        "Restoring %d user cron jobs for tenant %s from snapshot at %s",
+        len(user_jobs_to_restore), str(tenant.id)[:8], snapshot_at,
+    )
+
+    restored = 0
+    errors = 0
+    for job in user_jobs_to_restore:
+        clean_job = {k: v for k, v in job.items() if k not in ("id", "jobId", "createdAt")}
+        try:
+            invoke_gateway_tool(tenant, "cron.add", {"job": clean_job})
+            restored += 1
+        except GatewayError as exc:
+            logger.warning(
+                "Failed to restore cron job '%s' for tenant %s: %s",
+                job.get("name"), str(tenant.id)[:8], exc,
+            )
+            errors += 1
+
+    return {"restored": restored, "errors": errors}
+
+
 def seed_cron_jobs(tenant: Tenant | str) -> dict:
     """Seed default cron jobs for a tenant through the Gateway API."""
     if isinstance(tenant, str):
@@ -639,12 +696,31 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
         len(jobs),
     )
 
+    # Restore user-created jobs from snapshot if any were lost
+    user_restore = {"restored": 0, "errors": 0}
+    try:
+        post_seed_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+        post_seed_jobs = _extract_cron_jobs(post_seed_result) or []
+        post_seed_names = {j.get("name", "") for j in post_seed_jobs if isinstance(j, dict)}
+        user_restore = restore_user_cron_jobs(tenant, post_seed_names)
+        if user_restore["restored"] > 0:
+            logger.info(
+                "seed_cron_jobs: restored %d user jobs for tenant %s",
+                user_restore["restored"], tenant_id,
+            )
+    except Exception:
+        logger.warning(
+            "seed_cron_jobs: user job restore failed for tenant %s (non-fatal)",
+            tenant_id, exc_info=True,
+        )
+
     return {
         "tenant_id": tenant_id,
         "jobs_total": len(jobs),
         "created": created,
         "errors": errors,
         "skipped_existing": len(existing_names),
+        "user_jobs_restored": user_restore["restored"],
     }
 
 

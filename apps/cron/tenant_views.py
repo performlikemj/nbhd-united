@@ -75,8 +75,21 @@ class CronJobListCreateView(APIView):
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
-        # Filter out hidden system crons from user-facing list
+        # Snapshot the full job list (including system crons) to PostgreSQL
+        # so user-created jobs can be restored after container restarts.
         data = result.get("details", result)
+        if isinstance(data, dict) and "jobs" in data:
+            try:
+                from django.utils import timezone as tz
+                tenant.cron_jobs_snapshot = {
+                    "jobs": data["jobs"],
+                    "snapshot_at": tz.now().isoformat(),
+                }
+                tenant.save(update_fields=["cron_jobs_snapshot"])
+            except Exception:
+                logger.warning("Failed to snapshot cron jobs for tenant %s", tenant.id, exc_info=True)
+
+        # Filter out hidden system crons from user-facing list
         if isinstance(data, dict) and "jobs" in data:
             data = {
                 **data,
@@ -201,8 +214,19 @@ class CronJobDetailView(APIView):
                 merged = _fix_payload_kind_for_session_target(merged)
 
                 logger.info("cron.update (delete+create) job_name=%s", job_name)
+                # Back up existing job before delete so we can rollback if recreate fails
+                backup_job = {k: v for k, v in existing.items() if k not in ("id", "jobId", "createdAt")}
                 invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_name})
-                result = invoke_gateway_tool(tenant, "cron.add", {"job": merged})
+                try:
+                    result = invoke_gateway_tool(tenant, "cron.add", {"job": merged})
+                except GatewayError:
+                    logger.error("cron.update recreate failed for %s, attempting rollback", job_name)
+                    try:
+                        invoke_gateway_tool(tenant, "cron.add", {"job": backup_job})
+                        logger.info("cron.update rollback succeeded for %s", job_name)
+                    except GatewayError:
+                        logger.exception("cron.update rollback ALSO failed for %s", job_name)
+                    raise
             else:
                 logger.info("cron.update job_name=%s patch_keys=%s", job_name, list(data.keys()))
                 result = invoke_gateway_tool(

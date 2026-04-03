@@ -240,6 +240,15 @@ class Tenant(models.Model):
                   "evening_checkin, week_review, background_tasks. "
                   "Values: model IDs.",
     )
+    # Cron job backup — snapshot of the last-known cron.list response.
+    # Used to restore user-created jobs after container restarts.
+    cron_jobs_snapshot = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Last-known cron job list from gateway. '
+                  'Format: {"jobs": [...], "snapshot_at": "ISO8601"}',
+    )
+
     preferred_model = models.CharField(
         max_length=255,
         blank=True,
