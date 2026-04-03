@@ -18,6 +18,22 @@ from .gateway_client import GatewayError, invoke_gateway_tool
 
 logger = logging.getLogger(__name__)
 
+
+def _fix_payload_kind_for_session_target(data: dict) -> dict:
+    """OpenClaw requires payload.kind="systemEvent" for main-session jobs.
+
+    The frontend always sends "agentTurn", so we correct it here based on
+    the sessionTarget value.
+    """
+    session_target = data.get("sessionTarget", "isolated")
+    payload = data.get("payload")
+    if isinstance(payload, dict) and session_target == "main":
+        data = {**data, "payload": {**payload, "kind": "systemEvent"}}
+    elif isinstance(payload, dict) and session_target != "main":
+        data = {**data, "payload": {**payload, "kind": "agentTurn"}}
+    return data
+
+
 # System cron jobs that should be hidden from the user's Scheduled Tasks page.
 # These are infrastructure tasks — the user gains nothing from seeing them.
 HIDDEN_SYSTEM_CRONS = frozenset({
@@ -117,6 +133,8 @@ class CronJobListCreateView(APIView):
             if chat_id and not delivery.get("to"):
                 data = {**data, "delivery": {**delivery, "to": str(chat_id)}}
 
+        data = _fix_payload_kind_for_session_target(data)
+
         try:
             result = invoke_gateway_tool(tenant, "cron.add", {"job": data})
         except GatewayError as exc:
@@ -144,6 +162,8 @@ class CronJobDetailView(APIView):
             chat_id = _tenant_telegram_chat_id(tenant)
             if chat_id and not delivery.get("to"):
                 patch_data = {**patch_data, "delivery": {**delivery, "to": str(chat_id)}}
+
+        patch_data = _fix_payload_kind_for_session_target(patch_data)
 
         try:
             _require_active_tenant(tenant)
