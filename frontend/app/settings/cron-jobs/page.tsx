@@ -12,6 +12,7 @@ import { StatusPill } from "@/components/status-pill";
 import { Toast, useToast } from "@/components/toast";
 import TimezoneSelector from "@/components/timezone-selector";
 import { FeatureTipsSection } from "@/components/feature-tips-section";
+import SessionModeSelector from "@/components/session-mode-selector";
 import { WorkingHoursSection } from "@/components/working-hours-section";
 import { CronJob } from "@/lib/types";
 import {
@@ -100,14 +101,14 @@ const TASK_TEMPLATES: TaskTemplate[] = [
 /* ------------------------------------------------------------------ */
 
 const AGENT_CAPABILITIES = [
-  { icon: "🌐", name: "Web Search", desc: "Search the internet for current information", example: "Search for the latest AI news" },
-  { icon: "🌤️", name: "Weather", desc: "Check weather forecasts for any location", example: "What's the weather like tomorrow?" },
-  { icon: "📰", name: "News", desc: "Find and summarize news articles", example: "Give me a summary of today's tech news" },
-  { icon: "💬", name: "Message", desc: "Send you updates via chat", example: "Let me know if anything important comes up" },
-  { icon: "🧠", name: "Memory", desc: "Remember things about you and recall past conversations", example: "Remember that I prefer morning meetings" },
-  { icon: "📝", name: "Journal", desc: "Write to your daily notes and long-term memory", example: "Write a summary of my day in my journal" },
-  { icon: "🎯", name: "Goals & Projects", desc: "Track goals, projects, tasks, and ideas", example: "Update my fitness goal with this week's progress" },
-  { icon: "🔍", name: "Search Notes", desc: "Search across all your journal entries and notes", example: "What did I write about last week's meeting?" },
+  { icon: "🌐", name: "Web Search", desc: "Search the internet for current information" },
+  { icon: "🌤️", name: "Weather", desc: "Check weather forecasts for any location" },
+  { icon: "📰", name: "News", desc: "Find and summarize news articles" },
+  { icon: "💬", name: "Message", desc: "Send you updates via chat" },
+  { icon: "🧠", name: "Memory", desc: "Remember things about you and recall past conversations" },
+  { icon: "📝", name: "Journal", desc: "Write to your daily notes and long-term memory" },
+  { icon: "🎯", name: "Goals & Projects", desc: "Track goals, projects, tasks, and ideas" },
+  { icon: "🔍", name: "Search Notes", desc: "Search across all your journal entries and notes" },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -595,35 +596,11 @@ export default function SettingsCronJobsPage() {
                 </select>
               </label>
 
-              <div className="flex items-center justify-between gap-3 rounded-panel border border-border bg-surface px-3 py-2.5">
-                <div>
-                  <p className="text-sm font-medium">Session mode</p>
-                  <p className="mt-0.5 text-xs text-ink-muted">
-                    {createForm.sessionTarget === "main"
-                      ? "Main — your assistant will remember this"
-                      : "Background — runs silently, assistant won\u2019t see output"}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={createForm.sessionTarget === "main"}
-                  onClick={() =>
-                    setCreateForm((prev) => ({
-                      ...prev,
-                      sessionTarget: prev.sessionTarget === "main" ? "isolated" : "main",
-                    }))
-                  }
-                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-                    createForm.sessionTarget === "main" ? "bg-accent" : "bg-border"
-                  }`}
-                >
-                  <span
-                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-                      createForm.sessionTarget === "main" ? "translate-x-5" : "translate-x-0"
-                    }`}
-                  />
-                </button>
+              <div className="md:col-span-2">
+                <SessionModeSelector
+                  value={createForm.sessionTarget}
+                  onChange={(v) => setCreateForm((prev) => ({ ...prev, sessionTarget: v }))}
+                />
               </div>
 
               <div className="text-sm text-ink-muted md:col-span-2">
@@ -670,7 +647,6 @@ export default function SettingsCronJobsPage() {
                           <div>
                             <span className="font-medium text-ink">{cap.name}</span>
                             <span className="text-ink-muted"> — {cap.desc}</span>
-                            <p className="text-xs text-ink-faint italic">&ldquo;{cap.example}&rdquo;</p>
                           </div>
                         </div>
                       ))}
@@ -980,36 +956,10 @@ export default function SettingsCronJobsPage() {
                                     </select>
                                   </label>
 
-                                  <div className="flex items-center justify-between gap-3 rounded-panel border border-border bg-surface px-3 py-2.5">
-                                    <div>
-                                      <p className="text-sm font-medium">Session mode</p>
-                                      <p className="mt-0.5 text-xs text-ink-muted">
-                                        {editForm.sessionTarget === "main"
-                                          ? "Main — your assistant will remember this"
-                                          : "Background — runs silently, assistant won\u2019t see output"}
-                                      </p>
-                                    </div>
-                                    <button
-                                      type="button"
-                                      role="switch"
-                                      aria-checked={editForm.sessionTarget === "main"}
-                                      onClick={() =>
-                                        setEditForm((prev) => ({
-                                          ...prev,
-                                          sessionTarget: prev.sessionTarget === "main" ? "isolated" : "main",
-                                        }))
-                                      }
-                                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-                                        editForm.sessionTarget === "main" ? "bg-accent" : "bg-border"
-                                      }`}
-                                    >
-                                      <span
-                                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-                                          editForm.sessionTarget === "main" ? "translate-x-5" : "translate-x-0"
-                                        }`}
-                                      />
-                                    </button>
-                                  </div>
+                                  <SessionModeSelector
+                                    value={editForm.sessionTarget}
+                                    onChange={(v) => setEditForm((prev) => ({ ...prev, sessionTarget: v }))}
+                                  />
 
                                   <div className="text-sm text-ink-muted">
                                     <span
@@ -1074,35 +1024,11 @@ export default function SettingsCronJobsPage() {
                             </select>
                           </label>
 
-                          <div className="flex items-center justify-between gap-3 rounded-panel border border-border bg-surface px-3 py-2.5">
-                            <div>
-                              <p className="text-sm font-medium">Session mode</p>
-                              <p className="mt-0.5 text-xs text-ink-muted">
-                                {editForm.sessionTarget === "main"
-                                  ? "Main — your assistant will remember this"
-                                  : "Background — runs silently, assistant won\u2019t see output"}
-                              </p>
-                            </div>
-                            <button
-                              type="button"
-                              role="switch"
-                              aria-checked={editForm.sessionTarget === "main"}
-                              onClick={() =>
-                                setEditForm((prev) => ({
-                                  ...prev,
-                                  sessionTarget: prev.sessionTarget === "main" ? "isolated" : "main",
-                                }))
-                              }
-                              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-                                editForm.sessionTarget === "main" ? "bg-accent" : "bg-border"
-                              }`}
-                            >
-                              <span
-                                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-                                  editForm.sessionTarget === "main" ? "translate-x-5" : "translate-x-0"
-                                }`}
-                              />
-                            </button>
+                          <div className="md:col-span-2">
+                            <SessionModeSelector
+                              value={editForm.sessionTarget}
+                              onChange={(v) => setEditForm((prev) => ({ ...prev, sessionTarget: v }))}
+                            />
                           </div>
 
                           <div className="text-sm text-ink-muted md:col-span-2">
