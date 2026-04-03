@@ -238,6 +238,7 @@ class SeedCronJobsTest(TestCase):
             {"name": "Background Tasks", "enabled": True},
             {"name": "Heartbeat Check-in", "enabled": True},
             {"jobs": []},  # dedup pass cron.list (no dupes)
+            {"jobs": []},  # restore pass cron.list
         ]
 
         result = seed_cron_jobs(self.tenant)
@@ -270,9 +271,10 @@ class SeedCronJobsTest(TestCase):
         self.assertTrue(result.get("skipped"))
         self.assertEqual(result["created"], 0)
         self.assertEqual(result["errors"], 0)
-        # Only the initial cron.list call — no adds, no dedup
-        self.assertEqual(mock_invoke.call_count, 1)
-        self.assertEqual(mock_invoke.call_args.args[1], "cron.list")
+        # 1 initial cron.list + 1 restore cron.list — no adds, no dedup
+        self.assertEqual(mock_invoke.call_count, 2)
+        self.assertEqual(mock_invoke.call_args_list[0].args[1], "cron.list")
+        self.assertEqual(mock_invoke.call_args_list[1].args[1], "cron.list")
 
     @patch("time.sleep")
     @patch("apps.orchestrator.services._is_mock", return_value=False)
@@ -297,6 +299,8 @@ class SeedCronJobsTest(TestCase):
             {"name": "Heartbeat Check-in", "enabled": True},
             # dedup pass cron.list
             {"jobs": []},
+            # restore pass cron.list
+            {"jobs": []},
         ]
 
         result = seed_cron_jobs(self.tenant)
@@ -304,8 +308,8 @@ class SeedCronJobsTest(TestCase):
         self.assertEqual(result["created"], 3)
         self.assertEqual(result["errors"], 0)
         self.assertEqual(result["skipped_existing"], 3)
-        # 1 list + 3 adds + 1 dedup list = 5
-        self.assertEqual(mock_invoke.call_count, 5)
+        # 1 list + 3 adds + 1 dedup list + 1 restore list = 6
+        self.assertEqual(mock_invoke.call_count, 6)
         # Verify the add calls are for the right tool
         for i in range(1, 4):
             self.assertEqual(mock_invoke.call_args_list[i].args[1], "cron.add")
@@ -329,6 +333,7 @@ class SeedCronJobsTest(TestCase):
             {"name": "Background Tasks", "enabled": True},
             {"name": "Heartbeat Check-in", "enabled": True},
             {"jobs": []},  # dedup pass
+            {"jobs": []},  # restore pass
         ]
 
         result = seed_cron_jobs(self.tenant)
@@ -356,6 +361,7 @@ class SeedCronJobsTest(TestCase):
             {"name": "Background Tasks", "enabled": True},
             {"name": "Heartbeat Check-in", "enabled": True},
             {"jobs": []},  # dedup pass
+            {"jobs": []},  # restore pass
         ]
 
         result = seed_cron_jobs(self.tenant)
