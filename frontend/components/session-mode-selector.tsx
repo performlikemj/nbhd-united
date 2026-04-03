@@ -39,7 +39,7 @@ export default function SessionModeSelector({
     <div>
       <p className="mb-3 text-sm font-medium text-ink-muted">Session mode</p>
       <div
-        className="grid grid-cols-1 gap-4 sm:grid-cols-2"
+        className="grid grid-cols-1 gap-4 md:grid-cols-2"
         role="radiogroup"
         aria-label="Session mode"
       >
