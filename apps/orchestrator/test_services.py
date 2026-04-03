@@ -380,17 +380,18 @@ class SeedCronJobsTest(TestCase):
         self.assertFalse(result.get("skipped", False))
         mock_invoke.assert_not_called()
 
-    def test_cron_seed_jobs_all_use_agent_turn_payload(self):
-        """All cron seed jobs must use kind=agentTurn — gateway rejects other kinds."""
+    def test_cron_seed_jobs_use_correct_payload_kind(self):
+        """Main-session jobs must use systemEvent; isolated jobs must use agentTurn."""
         from apps.orchestrator.config_generator import build_cron_seed_jobs
 
         jobs = build_cron_seed_jobs(self.tenant)
         for job in jobs:
+            expected = "systemEvent" if job.get("sessionTarget") == "main" else "agentTurn"
             self.assertEqual(
                 job["payload"]["kind"],
-                "agentTurn",
-                f"Job '{job['name']}' uses payload kind='{job['payload']['kind']}' "
-                f"— OpenClaw gateway only supports 'agentTurn'",
+                expected,
+                f"Job '{job['name']}' (sessionTarget={job.get('sessionTarget')}) "
+                f"uses payload kind='{job['payload']['kind']}' but should be '{expected}'",
             )
 
 
