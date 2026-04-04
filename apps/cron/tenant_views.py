@@ -200,7 +200,7 @@ class CronJobDetailView(APIView):
                 # Fetch existing job to merge with new data
                 list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
                 jobs = list_result.get("jobs", []) if isinstance(list_result, dict) else list_result
-                existing = next((j for j in jobs if j.get("jobId") == job_name or j.get("name") == job_name), None)
+                existing = next((j for j in jobs if j.get("jobId") == job_name or j.get("id") == job_name or j.get("name") == job_name), None)
                 if not existing:
                     return Response({"detail": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -213,11 +213,13 @@ class CronJobDetailView(APIView):
                     merged["enabled"] = existing.get("enabled", True)
                 merged = _fix_payload_kind_for_session_target(merged)
 
-                logger.info("cron.update (delete+create) job_name=%s", job_name)
+                # Use the actual ID from the gateway response for remove
+                gateway_job_id = existing.get("jobId") or existing.get("id") or job_name
+                logger.info("cron.update (delete+create) job_name=%s gateway_id=%s", job_name, gateway_job_id)
                 # Back up existing job before delete so we can rollback if recreate fails
                 _STRIP = {"id", "jobId", "createdAt", "state", "createdAtMs", "updatedAtMs", "nextRunAtMs", "runningAtMs"}
                 backup_job = {k: v for k, v in existing.items() if k not in _STRIP}
-                invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_name})
+                invoke_gateway_tool(tenant, "cron.remove", {"jobId": gateway_job_id})
                 try:
                     result = invoke_gateway_tool(tenant, "cron.add", {"job": merged})
                 except GatewayError:
