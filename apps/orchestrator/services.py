@@ -537,7 +537,9 @@ def restore_user_cron_jobs(tenant: Tenant, existing_job_names: set[str]) -> dict
     restored = 0
     errors = 0
     for job in user_jobs_to_restore:
-        clean_job = {k: v for k, v in job.items() if k not in ("id", "jobId", "createdAt")}
+        # Strip gateway-internal fields that cron.add rejects
+        _STRIP_FIELDS = {"id", "jobId", "createdAt", "state", "createdAtMs", "updatedAtMs", "nextRunAtMs", "runningAtMs"}
+        clean_job = {k: v for k, v in job.items() if k not in _STRIP_FIELDS}
         try:
             invoke_gateway_tool(tenant, "cron.add", {"job": clean_job})
             restored += 1
@@ -629,21 +631,12 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
             tenant_id,
             len(jobs),
         )
-        # Still attempt to restore user jobs — system jobs may all exist
-        # but user-created jobs could be missing after a container restart.
-        user_restore = {"restored": 0, "errors": 0}
-        try:
-            current_names = {j.get("name", "") for j in existing_jobs if isinstance(j, dict)}
-            user_restore = restore_user_cron_jobs(tenant, current_names)
-        except Exception:
-            logger.warning("seed_cron_jobs: user job restore failed for tenant %s (non-fatal)", tenant_id, exc_info=True)
         return {
             "tenant_id": tenant_id,
             "jobs_total": len(jobs),
             "created": 0,
             "errors": 0,
             "skipped": True,
-            "user_jobs_restored": user_restore["restored"],
         }
 
     logger.info(
