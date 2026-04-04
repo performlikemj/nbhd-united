@@ -271,10 +271,10 @@ class SeedCronJobsTest(TestCase):
         self.assertTrue(result.get("skipped"))
         self.assertEqual(result["created"], 0)
         self.assertEqual(result["errors"], 0)
-        # 1 initial cron.list + 1 restore cron.list — no adds, no dedup
-        self.assertEqual(mock_invoke.call_count, 2)
-        self.assertEqual(mock_invoke.call_args_list[0].args[1], "cron.list")
-        self.assertEqual(mock_invoke.call_args_list[1].args[1], "cron.list")
+        # 1 initial cron.list — no adds, no dedup.
+        # Restore uses the snapshot (no extra gateway call).
+        self.assertEqual(mock_invoke.call_count, 1)
+        self.assertEqual(mock_invoke.call_args.args[1], "cron.list")
 
     @patch("time.sleep")
     @patch("apps.orchestrator.services._is_mock", return_value=False)
