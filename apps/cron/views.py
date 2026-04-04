@@ -399,6 +399,18 @@ def force_reseed_crons(request):
         except Exception:
             pass  # Non-critical — don't fail the reseed
 
+        # Restore user-created jobs from snapshot if any were lost
+        try:
+            from apps.orchestrator.services import restore_user_cron_jobs
+            post_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+            post_jobs = post_result.get("jobs", []) if isinstance(post_result, dict) else post_result if isinstance(post_result, list) else []
+            post_names = {j.get("name", "") for j in post_jobs if isinstance(j, dict)}
+            restore = restore_user_cron_jobs(tenant, post_names)
+            if restore["restored"] > 0:
+                entry["user_jobs_restored"] = restore["restored"]
+        except Exception:
+            pass  # Non-critical
+
         results.append(entry)
 
     total_created = sum(r["created"] for r in results)
