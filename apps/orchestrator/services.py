@@ -537,7 +537,9 @@ def restore_user_cron_jobs(tenant: Tenant, existing_job_names: set[str]) -> dict
     restored = 0
     errors = 0
     for job in user_jobs_to_restore:
-        clean_job = {k: v for k, v in job.items() if k not in ("id", "jobId", "createdAt")}
+        # Strip gateway-internal fields that cron.add rejects
+        _STRIP_FIELDS = {"id", "jobId", "createdAt", "state", "createdAtMs", "updatedAtMs", "nextRunAtMs", "runningAtMs"}
+        clean_job = {k: v for k, v in job.items() if k not in _STRIP_FIELDS}
         try:
             invoke_gateway_tool(tenant, "cron.add", {"job": clean_job})
             restored += 1

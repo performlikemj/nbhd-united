@@ -206,8 +206,8 @@ class CronJobDetailView(APIView):
 
                 # Merge existing job with new data, preserving name and enabled state
                 merged = {**existing, **data}
-                merged.pop("jobId", None)
-                merged.pop("id", None)
+                for _f in ("jobId", "id", "state", "createdAt", "createdAtMs", "updatedAtMs", "nextRunAtMs", "runningAtMs"):
+                    merged.pop(_f, None)
                 merged["name"] = existing.get("name", job_name)
                 if "enabled" not in data:
                     merged["enabled"] = existing.get("enabled", True)
@@ -215,7 +215,8 @@ class CronJobDetailView(APIView):
 
                 logger.info("cron.update (delete+create) job_name=%s", job_name)
                 # Back up existing job before delete so we can rollback if recreate fails
-                backup_job = {k: v for k, v in existing.items() if k not in ("id", "jobId", "createdAt")}
+                _STRIP = {"id", "jobId", "createdAt", "state", "createdAtMs", "updatedAtMs", "nextRunAtMs", "runningAtMs"}
+                backup_job = {k: v for k, v in existing.items() if k not in _STRIP}
                 invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_name})
                 try:
                     result = invoke_gateway_tool(tenant, "cron.add", {"job": merged})
