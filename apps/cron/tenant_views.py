@@ -121,7 +121,9 @@ class CronJobListCreateView(APIView):
 
         existing_jobs = []
         if isinstance(list_result, dict):
-            existing_jobs = list_result.get("jobs", [])
+            # Unwrap "details" envelope if present.
+            unwrapped = list_result.get("details", list_result)
+            existing_jobs = unwrapped.get("jobs", []) if isinstance(unwrapped, dict) else []
         elif isinstance(list_result, list):
             existing_jobs = list_result
 
@@ -199,35 +201,66 @@ class CronJobDetailView(APIView):
             if has_unpatchable:
                 # Fetch existing job to merge with new data
                 list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+                # Unwrap "details" envelope — gateway may return
+                # {"details": {"jobs": [...]}} or {"jobs": [...]}.
+                if isinstance(list_result, dict):
+                    list_result = list_result.get("details", list_result)
                 jobs = list_result.get("jobs", []) if isinstance(list_result, dict) else list_result
                 existing = next((j for j in jobs if j.get("jobId") == job_name or j.get("name") == job_name), None)
+
+                # If job not in container, fall back to PostgreSQL snapshot
+                # (container restart may have wiped SQLite state).
+                job_vanished = False
                 if not existing:
-                    return Response({"detail": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+                    logger.warning(
+                        "cron.update: job '%s' not found in container for tenant %s. "
+                        "Available: %s",
+                        job_name, tenant.id,
+                        [(j.get("jobId"), j.get("name")) for j in jobs],
+                    )
+                    snapshot = tenant.cron_jobs_snapshot or {}
+                    snapshot_jobs = snapshot.get("jobs", [])
+                    existing = next(
+                        (j for j in snapshot_jobs
+                         if j.get("jobId") == job_name or j.get("name") == job_name),
+                        None,
+                    )
+                    if existing:
+                        logger.info("cron.update: found job '%s' in snapshot, will recreate", job_name)
+                    else:
+                        logger.info("cron.update: job '%s' not in snapshot either, creating fresh", job_name)
+                        existing = {"name": job_name}
+                    job_vanished = True
 
                 # Merge existing job with new data, preserving name and enabled state
                 merged = {**existing, **data}
-                for _f in ("jobId", "id", "state", "createdAt", "createdAtMs", "updatedAtMs", "nextRunAtMs", "runningAtMs"):
+                _STRIP = {"id", "jobId", "createdAt", "state", "createdAtMs", "updatedAtMs", "nextRunAtMs", "runningAtMs"}
+                for _f in _STRIP:
                     merged.pop(_f, None)
                 merged["name"] = existing.get("name", job_name)
                 if "enabled" not in data:
                     merged["enabled"] = existing.get("enabled", True)
                 merged = _fix_payload_kind_for_session_target(merged)
 
-                logger.info("cron.update (delete+create) job_name=%s", job_name)
-                # Back up existing job before delete so we can rollback if recreate fails
-                _STRIP = {"id", "jobId", "createdAt", "state", "createdAtMs", "updatedAtMs", "nextRunAtMs", "runningAtMs"}
-                backup_job = {k: v for k, v in existing.items() if k not in _STRIP}
-                invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_name})
-                try:
+                if job_vanished:
+                    # Job doesn't exist in container — just create it directly.
+                    logger.info("cron.update (create-only) job_name=%s", job_name)
                     result = invoke_gateway_tool(tenant, "cron.add", {"job": merged})
-                except GatewayError:
-                    logger.error("cron.update recreate failed for %s, attempting rollback", job_name)
+                else:
+                    logger.info("cron.update (delete+create) job_name=%s", job_name)
+                    # Back up existing job before delete so we can rollback if recreate fails
+                    backup_job = {k: v for k, v in existing.items() if k not in _STRIP}
+                    invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_name})
                     try:
-                        invoke_gateway_tool(tenant, "cron.add", {"job": backup_job})
-                        logger.info("cron.update rollback succeeded for %s", job_name)
+                        result = invoke_gateway_tool(tenant, "cron.add", {"job": merged})
                     except GatewayError:
-                        logger.exception("cron.update rollback ALSO failed for %s", job_name)
-                    raise
+                        logger.error("cron.update recreate failed for %s, attempting rollback", job_name)
+                        try:
+                            invoke_gateway_tool(tenant, "cron.add", {"job": backup_job})
+                            logger.info("cron.update rollback succeeded for %s", job_name)
+                        except GatewayError:
+                            logger.exception("cron.update rollback ALSO failed for %s", job_name)
+                        raise
             else:
                 logger.info("cron.update job_name=%s patch_keys=%s", job_name, list(data.keys()))
                 result = invoke_gateway_tool(

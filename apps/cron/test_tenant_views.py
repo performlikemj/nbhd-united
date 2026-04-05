@@ -235,6 +235,107 @@ class HiddenSystemCronsTest(TestCase):
         self.assertIn("Background Tasks", resp.json()["detail"])
 
 
+class CronJobUpdateSnapshotFallbackTest(TestCase):
+    """Tests for the snapshot fallback when a job vanishes from the container."""
+
+    def setUp(self):
+        self.user, self.tenant = _create_user_and_tenant()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_update_vanished_job_found_in_snapshot(self, mock_invoke):
+        """Job missing from container but present in snapshot is recreated."""
+        self.tenant.cron_jobs_snapshot = {
+            "jobs": [
+                {
+                    "jobId": "abc123",
+                    "name": "My Task",
+                    "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"},
+                    "sessionTarget": "isolated",
+                    "payload": {"kind": "agentTurn", "message": "do stuff"},
+                    "delivery": {"mode": "none"},
+                    "enabled": True,
+                },
+            ],
+            "snapshot_at": "2026-04-04T00:00:00Z",
+        }
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        mock_invoke.side_effect = [
+            {"jobs": []},  # cron.list returns empty (job vanished)
+            {"name": "My Task", "enabled": True},  # cron.add succeeds
+        ]
+        resp = self.client.patch(
+            "/api/v1/cron-jobs/abc123/",
+            {
+                "sessionTarget": "main",
+                "payload": {"kind": "agentTurn", "message": "do stuff"},
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(mock_invoke.call_count, 2)
+        # Should call cron.list then cron.add (no cron.remove since job vanished)
+        self.assertEqual(mock_invoke.call_args_list[0][0][1], "cron.list")
+        self.assertEqual(mock_invoke.call_args_list[1][0][1], "cron.add")
+        # The recreated job should have the updated sessionTarget
+        created_job = mock_invoke.call_args_list[1][0][2]["job"]
+        self.assertEqual(created_job["sessionTarget"], "main")
+        # payload kind should be fixed to systemEvent for main session
+        self.assertEqual(created_job["payload"]["kind"], "systemEvent")
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_update_vanished_job_not_in_snapshot_creates_fresh(self, mock_invoke):
+        """Job missing from both container and snapshot is created from scratch."""
+        self.tenant.cron_jobs_snapshot = {"jobs": [], "snapshot_at": "2026-04-04T00:00:00Z"}
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        mock_invoke.side_effect = [
+            {"jobs": []},  # cron.list returns empty
+            {"name": "Ghost Task", "enabled": True},  # cron.add succeeds
+        ]
+        resp = self.client.patch(
+            "/api/v1/cron-jobs/Ghost Task/",
+            {
+                "sessionTarget": "main",
+                "payload": {"kind": "agentTurn", "message": "hello"},
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(mock_invoke.call_count, 2)
+        self.assertEqual(mock_invoke.call_args_list[1][0][1], "cron.add")
+        created_job = mock_invoke.call_args_list[1][0][2]["job"]
+        self.assertEqual(created_job["name"], "Ghost Task")
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_update_existing_job_still_uses_delete_recreate(self, mock_invoke):
+        """Job present in container still goes through normal delete+recreate."""
+        mock_invoke.side_effect = [
+            # cron.list returns the job
+            {"jobs": [
+                {"jobId": "abc123", "name": "My Task", "sessionTarget": "isolated",
+                 "payload": {"kind": "agentTurn", "message": "old"}, "enabled": True},
+            ]},
+            {},  # cron.remove succeeds
+            {"name": "My Task", "enabled": True},  # cron.add succeeds
+        ]
+        resp = self.client.patch(
+            "/api/v1/cron-jobs/abc123/",
+            {
+                "sessionTarget": "main",
+                "payload": {"kind": "agentTurn", "message": "new"},
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(mock_invoke.call_count, 3)
+        self.assertEqual(mock_invoke.call_args_list[0][0][1], "cron.list")
+        self.assertEqual(mock_invoke.call_args_list[1][0][1], "cron.remove")
+        self.assertEqual(mock_invoke.call_args_list[2][0][1], "cron.add")
+
+
 class InactiveTenantTest(TestCase):
     def setUp(self):
         self.user, self.tenant = _create_user_and_tenant(active=False)

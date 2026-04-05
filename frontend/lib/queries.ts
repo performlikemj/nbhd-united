@@ -756,6 +756,9 @@ export function useUpdateCronJobMutation() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
     },
+    onError: () => {
+      void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
+    },
   });
 }
 
@@ -767,6 +770,9 @@ export function useDeleteCronJobMutation() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
     },
+    onError: () => {
+      void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
+    },
   });
 }
 
@@ -776,6 +782,9 @@ export function useToggleCronJobMutation() {
     mutationFn: ({ name, jobId, enabled }: { name: string; jobId?: string; enabled: boolean }) =>
       toggleCronJob(jobId ?? name, enabled),
     onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
+    },
+    onError: () => {
       void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
     },
   });
