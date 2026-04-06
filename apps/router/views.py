@@ -126,12 +126,7 @@ def _build_budget_exhausted_message(chat_id: int, tenant: Tenant, reason: str) -
         kwargs: dict[str, str] = {}
     else:
         msg_key = "budget_exhausted_trial" if tenant.is_trial else "budget_exhausted_paid"
-        plus_message = (
-            " Opus requests are paused while at quota."
-            if tenant.model_tier == Tenant.ModelTier.PREMIUM
-            else ""
-        )
-        kwargs = {"plus_message": plus_message, "billing_url": f"{frontend_url}/billing"}
+        kwargs = {"plus_message": "", "billing_url": f"{frontend_url}/billing"}
 
     return {
         "method": "sendMessage",

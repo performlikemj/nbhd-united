@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 def _billing_is_enabled() -> bool:
     """Whether paid billing flows should be allowed."""
-    return bool(settings.ENABLED_STRIPE_TIERS)
+    return bool(getattr(settings, "STRIPE_PRICE_ID", ""))
 
 
 def _get_stripe_api_key() -> str:
@@ -146,25 +146,17 @@ class StripeCheckoutView(APIView):
                 status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        tier = (request.data.get("tier", "starter") or "").strip()
-
-        if tier not in set(settings.ENABLED_STRIPE_TIERS):
-            return Response(
-                {"detail": f"Tier '{tier}' is temporarily unavailable."},
-                status=http_status.HTTP_400_BAD_REQUEST,
-            )
-
-        price_id = settings.STRIPE_PRICE_IDS.get(tier)
+        price_id = settings.STRIPE_PRICE_ID
         if not price_id:
             return Response(
-                {"detail": f"Unknown tier: {tier}"},
-                status=http_status.HTTP_400_BAD_REQUEST,
+                {"detail": "Stripe pricing is not configured."},
+                status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
         user = request.user
         customer_email = user.email
 
-        metadata = {"user_id": str(user.id), "tier": tier}
+        metadata = {"user_id": str(user.id), "tier": "starter"}
         try:
             tenant = user.tenant
             metadata["tenant_id"] = str(tenant.id)

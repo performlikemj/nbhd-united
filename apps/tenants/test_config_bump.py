@@ -57,22 +57,6 @@ class TenantConfigVersionBumpTests(TestCase):
         self.assertEqual(self.tenant.pending_config_version, 1)
         mock_update_tenant_config.assert_called_once_with(str(self.tenant.id))
 
-    def test_llm_config_put_bumps_pending_config(self):
-        response = self.client.put(
-            "/api/v1/tenants/settings/llm-config/",
-            {
-                "provider": "openai",
-                "model_id": "openai/gpt-4o",
-                "api_key": "sk-test-key",
-            },
-            format="json",
-        )
-        self.assertEqual(response.status_code, 200)
-
-        self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.pending_config_version, 1)
-        self.assertEqual(response.data["provider"], "openai")
-
     def test_refresh_config_view_indicates_pending_update(self):
         self.tenant.pending_config_version = 2
         self.tenant.config_version = 1

@@ -38,13 +38,6 @@ class TenantModelTest(TestCase):
         tenant.save()
         self.assertTrue(tenant.is_over_budget)
 
-    def test_byok_never_over_budget(self):
-        tenant = create_tenant(display_name="BYOK", telegram_chat_id=223)
-        tenant.model_tier = "byok"
-        tenant.estimated_cost_this_month = 999_999
-        tenant.save()
-        self.assertFalse(tenant.is_over_budget)
-
     def test_unique_chat_id(self):
         create_tenant(display_name="User1", telegram_chat_id=333)
         with self.assertRaises(Exception):

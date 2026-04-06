@@ -198,7 +198,7 @@ class GWSConfigGeneratorTest(TestCase):
         from apps.orchestrator.config_generator import generate_openclaw_config as generate_config
 
         user = _make_user()
-        tenant = _make_tenant(user, model_tier="premium")
+        tenant = _make_tenant(user, model_tier="starter")
 
         Integration.objects.create(
             tenant=tenant,
@@ -217,9 +217,9 @@ class GWSConfigGeneratorTest(TestCase):
         # Check skills loaded
         skills = config.get("skills", {})
         extra_dirs = skills.get("load", {}).get("extraDirs", [])
-        self.assertIn("/opt/nbhd/skills/gws-gmail", extra_dirs)
-        self.assertIn("/opt/nbhd/skills/gws-calendar", extra_dirs)
         self.assertIn("/opt/nbhd/skills/gws-shared", extra_dirs)
+        self.assertIn("/opt/nbhd/skills/gws-gmail-triage", extra_dirs)
+        self.assertIn("/opt/nbhd/skills/gws-calendar-agenda", extra_dirs)
 
     def test_config_no_gws_without_connection(self):
         from apps.orchestrator.config_generator import generate_openclaw_config as generate_config

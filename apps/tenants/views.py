@@ -688,13 +688,6 @@ class PreferredModelView(APIView):
 
 def _get_allowed_models(tenant: Tenant) -> dict:
     """Return the set of model IDs allowed for this tenant's tier."""
-    if tenant.model_tier == "byok":
-        from apps.tenants.models import UserLLMConfig
-        return {
-            c.model_id: {"alias": c.provider}
-            for c in UserLLMConfig.objects.filter(user=tenant.user)
-            if c.model_id
-        }
     return TIER_MODEL_CONFIGS.get(tenant.model_tier, {})
 
 

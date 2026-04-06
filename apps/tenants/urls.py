@@ -18,8 +18,6 @@ from .views import (
 )
 from .telegram_views import telegram_generate_link, telegram_status, telegram_unlink
 from .line_views import line_generate_link, line_status, line_unlink, line_set_preferred_channel
-from .llm_config_views import FetchModelsView, LLMConfigView
-
 router = DefaultRouter()
 router.register("", TenantViewSet, basename="tenant")
 
@@ -38,8 +36,6 @@ urlpatterns = [
     path("line/unlink/", line_unlink, name="line-unlink"),
     path("line/status/", line_status, name="line-status"),
     path("line/preferred-channel/", line_set_preferred_channel, name="line-preferred-channel"),
-    path("settings/llm-config/", LLMConfigView.as_view(), name="llm-config"),
-    path("settings/llm-config/models/", FetchModelsView.as_view(), name="llm-config-models"),
     path("heartbeat/", HeartbeatConfigView.as_view(), name="heartbeat-config"),
     path("delete-account/", DeleteAccountView.as_view(), name="delete-account"),
     path("cancel-deletion/", CancelDeletionView.as_view(), name="cancel-deletion"),

@@ -45,21 +45,8 @@ STARTER_ALLOW: tuple[str, ...] = (
     "image",
 )
 
-# Premium tier adds browser automation and sandboxed exec capability.
-PREMIUM_ALLOW: tuple[str, ...] = STARTER_ALLOW + (
-    "group:ui",
-)
-
-# Legacy aliases for backward compatibility in tests
-BASIC_ALLOW = STARTER_ALLOW
-PLUS_ALLOW = PREMIUM_ALLOW
-
-
 def get_allowed_tools(tier: str = "starter") -> list[str]:
     """Return documented allow-list entries for a subscriber tier."""
-    normalized = (tier or "starter").lower()
-    if normalized in ("premium", "byok"):
-        return list(PREMIUM_ALLOW)
     return list(STARTER_ALLOW)
 
 

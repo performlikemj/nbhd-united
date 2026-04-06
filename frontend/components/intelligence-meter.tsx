@@ -70,7 +70,5 @@ export function IntelligenceMeter({ level, label, compact = false }: Intelligenc
 
 /** Tier-to-level mapping for the models we actually offer. */
 export const TIER_INTELLIGENCE: Record<string, LevelSpec> = {
-  starter: 6,
-  premium: [8, 9],
-  byok: 7,
+  starter: [6, 7],
 };

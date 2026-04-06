@@ -49,32 +49,24 @@ class ConfigGeneratorTest(TestCase):
         # OpenRouter is built-in; no custom providers block needed
         self.assertNotIn("models", config)
 
-    def test_premium_tier_has_opus(self):
-        self.tenant.model_tier = "premium"
+    def test_starter_tier_has_all_three_models(self):
+        self.tenant.model_tier = "starter"
         config = generate_openclaw_config(self.tenant)
         models = config["agents"]["defaults"]["models"]
-        aliases = [v.get("alias") for v in models.values()]
-        self.assertIn("opus", aliases)
+        aliases = sorted(v.get("alias") for v in models.values())
+        self.assertEqual(aliases, ["gemma", "kimi", "minimax"])
 
-    def test_byok_tier_generates_config(self):
-        self.tenant.model_tier = "byok"
+    def test_audio_model_defaults_to_whisper(self):
+        self.tenant.model_tier = "starter"
         config = generate_openclaw_config(self.tenant)
-        self.assertIn("opus", config["agents"]["defaults"]["model"]["primary"].lower())
-        # byok should not have extra models block
-        self.assertNotIn("models", config)
-
-    def test_audio_model_defaults_to_whisper_for_all_tiers(self):
-        for tier in ("starter", "premium", "byok"):
-            self.tenant.model_tier = tier
-            config = generate_openclaw_config(self.tenant)
-            audio = config["tools"]["media"]["audio"]
-            self.assertTrue(audio["enabled"])
-            models = audio["models"]
-            self.assertEqual(len(models), 1)
-            self.assertEqual(
-                models[0],
-                {"provider": "openai", "model": "gpt-4o-mini-transcribe"},
-            )
+        audio = config["tools"]["media"]["audio"]
+        self.assertTrue(audio["enabled"])
+        models = audio["models"]
+        self.assertEqual(len(models), 1)
+        self.assertEqual(
+            models[0],
+            {"provider": "openai", "model": "gpt-4o-mini-transcribe"},
+        )
 
     def test_plugin_wiring_enabled_when_plugin_id_configured(self):
         with override_settings(
@@ -124,13 +116,6 @@ class ConfigGeneratorTest(TestCase):
         self.assertNotIn("group:automation", tools["deny"])
         self.assertNotIn("group:ui", tools["allow"])
 
-    def test_premium_tier_tools_enable_browser(self):
-        self.tenant.model_tier = "premium"
-        config = generate_openclaw_config(self.tenant)
-        tools = config["tools"]
-        self.assertIn("group:ui", tools["allow"])
-        self.assertNotIn("group:runtime", tools["allow"])
-        self.assertEqual(tools["elevated"], {"enabled": False})
 
     def test_channels_empty_no_telegram(self):
         """No Telegram channel — central Django poller handles all Telegram."""

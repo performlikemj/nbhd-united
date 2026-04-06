@@ -729,13 +729,8 @@ class LineWebhookView(View):
                 msg_key = (
                     "budget_exhausted_trial" if tenant.is_trial else "budget_exhausted_paid"
                 )
-                plus_message = (
-                    " Opus requests are paused while at quota."
-                    if tenant.model_tier == Tenant.ModelTier.PREMIUM
-                    else ""
-                )
                 kwargs = {
-                    "plus_message": plus_message,
+                    "plus_message": "",
                     "billing_url": f"{frontend_url}/billing",
                 }
             _send_line_flex(

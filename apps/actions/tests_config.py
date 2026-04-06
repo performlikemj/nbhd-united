@@ -24,7 +24,7 @@ def _make_tenant(user, **kwargs):
         "status": Tenant.Status.ACTIVE,
         "container_fqdn": "test.example.com",
         "container_id": f"oc-cfg-{user.username[:10]}",
-        "model_tier": "premium",
+        "model_tier": "starter",
     }
     defaults.update(kwargs)
     return Tenant.objects.create(**defaults)
@@ -77,59 +77,6 @@ class StarterTierGWSConfigTest(TestCase):
         self.assertIn("/opt/nbhd/skills/nbhd-action-gate", extra_dirs)
 
 
-class PremiumTierGWSConfigTest(TestCase):
-    """Premium tier should get all GWS skills plus the gate tool."""
-
-    def test_premium_gets_all_gws_skills(self):
-        from apps.orchestrator.config_generator import generate_openclaw_config
-
-        user = _make_user(username="premium1")
-        tenant = _make_tenant(user, model_tier="premium", container_id="oc-premium1")
-        _make_google_integration(tenant)
-
-        config = generate_openclaw_config(tenant)
-        extra_dirs = config.get("skills", {}).get("load", {}).get("extraDirs", [])
-
-        # Should have ALL skills
-        self.assertIn("/opt/nbhd/skills/gws-shared", extra_dirs)
-        self.assertIn("/opt/nbhd/skills/gws-gmail-triage", extra_dirs)
-        self.assertIn("/opt/nbhd/skills/gws-calendar-agenda", extra_dirs)
-        self.assertIn("/opt/nbhd/skills/gws-gmail", extra_dirs)
-        self.assertIn("/opt/nbhd/skills/gws-gmail-send", extra_dirs)
-        self.assertIn("/opt/nbhd/skills/gws-calendar", extra_dirs)
-        self.assertIn("/opt/nbhd/skills/gws-calendar-insert", extra_dirs)
-        self.assertIn("/opt/nbhd/skills/gws-drive", extra_dirs)
-        self.assertIn("/opt/nbhd/skills/gws-tasks", extra_dirs)
-
-    def test_premium_gets_gate_skill(self):
-        from apps.orchestrator.config_generator import generate_openclaw_config
-
-        user = _make_user(username="premium2")
-        tenant = _make_tenant(user, model_tier="premium", container_id="oc-premium2")
-        _make_google_integration(tenant)
-
-        config = generate_openclaw_config(tenant)
-        extra_dirs = config.get("skills", {}).get("load", {}).get("extraDirs", [])
-
-        self.assertIn("/opt/nbhd/skills/nbhd-action-gate", extra_dirs)
-
-
-class BYOKTierGWSConfigTest(TestCase):
-    """BYOK tier should get all GWS skills (same as Premium)."""
-
-    def test_byok_gets_all_gws_skills(self):
-        from apps.orchestrator.config_generator import generate_openclaw_config
-
-        user = _make_user(username="byok1")
-        tenant = _make_tenant(user, model_tier="byok", container_id="oc-byok1")
-        _make_google_integration(tenant)
-
-        config = generate_openclaw_config(tenant)
-        extra_dirs = config.get("skills", {}).get("load", {}).get("extraDirs", [])
-
-        self.assertIn("/opt/nbhd/skills/gws-gmail", extra_dirs)
-        self.assertIn("/opt/nbhd/skills/gws-gmail-send", extra_dirs)
-        self.assertIn("/opt/nbhd/skills/gws-drive", extra_dirs)
 
 
 class GateEnvVarsConfigTest(TestCase):
