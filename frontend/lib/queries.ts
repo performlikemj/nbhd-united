@@ -17,7 +17,6 @@ import {
   deleteCronJob,
   clearDocument,
   deleteDocument,
-  deleteLLMConfig,
   deleteTemplate,
   deleteJournalEntry,
   deleteWeeklyReview,
@@ -56,7 +55,6 @@ import {
   fetchWeeklyReviews,
   updateProfile,
   generateTelegramLink,
-  getLLMConfig,
   getOAuthAuthorizeUrl,
   onboardTenant,
   pauseAutomation,
@@ -68,7 +66,6 @@ import {
   unlinkTelegram,
   updateAutomation,
   updateCronJob,
-  updateLLMConfig,
   updateDocument,
   updateJournalEntry,
   updatePreferences,
@@ -695,35 +692,6 @@ export function useClearDocumentMutation() {
       void queryClient.invalidateQueries({ queryKey: ["documents"] });
       void queryClient.invalidateQueries({ queryKey: ["sidebar-tree"] });
       void queryClient.invalidateQueries({ queryKey: ["document", variables.kind, variables.slug] });
-    },
-  });
-}
-
-export function useLLMConfigQuery() {
-  return useQuery({
-    queryKey: ["llm-config"],
-    queryFn: getLLMConfig,
-    staleTime: 5 * 60_000,
-    enabled: isLoggedIn(),
-  });
-}
-
-export function useUpdateLLMConfigMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: updateLLMConfig,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["llm-config"] });
-    },
-  });
-}
-
-export function useDeleteLLMConfigMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: deleteLLMConfig,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["llm-config"] });
     },
   });
 }

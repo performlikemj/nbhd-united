@@ -180,15 +180,6 @@ class TransparencyServiceTest(TestCase):
         names = [r["display_name"] for r in data["model_rates"]]
         self.assertIn(MINIMAX_DISPLAY, names)
 
-    def test_transparency_rate_card_premium(self):
-        self.tenant.model_tier = "premium"
-        self.tenant.save(update_fields=["model_tier"])
-        data = get_transparency_data(self.tenant)
-        names = [r["display_name"] for r in data["model_rates"]]
-        self.assertIn("Claude Sonnet 4.6", names)
-        self.assertIn("Claude Opus 4.6", names)
-        self.assertIn(MINIMAX_DISPLAY, names)  # premium now includes all models
-
     def test_transparency_no_usage(self):
         tenant2 = create_tenant(display_name="NoUse", telegram_chat_id=999666)
         data = get_transparency_data(tenant2)
@@ -217,17 +208,6 @@ class TransparencyServiceTest(TestCase):
         self.assertTrue(data["donation_enabled"])
         self.assertEqual(data["donation_percentage"], 50)
 
-    def test_transparency_premium_subscription_price(self):
-        self.tenant.model_tier = "premium"
-        self.tenant.save(update_fields=["model_tier"])
-        data = get_transparency_data(self.tenant)
-        self.assertEqual(data["subscription_price"], 40.0)
-
-    def test_transparency_byok_subscription_price(self):
-        self.tenant.model_tier = "byok"
-        self.tenant.save(update_fields=["model_tier"])
-        data = get_transparency_data(self.tenant)
-        self.assertEqual(data["subscription_price"], 8.0)
 
 
 class DonationPreferenceAPITest(TestCase):

@@ -27,7 +27,7 @@ def _make_tenant(user, **overrides):
         "status": Tenant.Status.ACTIVE,
         "container_fqdn": "test.example.com",
         "container_id": f"oc-test-{user.username[:10]}",
-        "model_tier": "premium",
+        "model_tier": "starter",
     }
     defaults.update(overrides)
     return Tenant.objects.create(**defaults)
@@ -52,7 +52,7 @@ class GateRequestViewTests(TestCase):
         self.client = APIClient()
         self.url = reverse("gate-request", kwargs={"tenant_id": self.tenant.id})
 
-    def test_create_pending_action(self):
+    def test_starter_tier_blocks_destructive_action(self):
         resp = self.client.post(
             self.url,
             {
@@ -63,11 +63,8 @@ class GateRequestViewTests(TestCase):
             format="json",
             **_internal_headers(self.tenant.id),
         )
-        self.assertEqual(resp.status_code, 202)
-        self.assertEqual(resp.data["status"], "pending")
-        self.assertIn("action_id", resp.data)
-        self.assertIn("expires_at", resp.data)
-        self.assertEqual(PendingAction.objects.count(), 1)
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.data["status"], "blocked")
 
     def test_invalid_action_type(self):
         resp = self.client.post(
@@ -111,7 +108,8 @@ class GateRequestViewTests(TestCase):
         self.assertEqual(resp.data["status"], "blocked")
         self.assertIn("prompt injection", resp.data["message"])
 
-    def test_auto_approve_when_gate_disabled(self):
+    def test_gate_disabled_still_blocked_on_starter(self):
+        """Even with gate_all_actions=False, starter tier blocks destructive actions."""
         self.tenant.gate_all_actions = False
         self.tenant.gate_acknowledged_risk = True
         self.tenant.save()
@@ -125,32 +123,8 @@ class GateRequestViewTests(TestCase):
             format="json",
             **_internal_headers(self.tenant.id),
         )
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data["status"], "approved")
-        self.assertTrue(resp.data["auto_approved"])
-        # Should still create audit log
-        self.assertEqual(ActionAuditLog.objects.count(), 1)
-        self.assertEqual(PendingAction.objects.count(), 0)
-
-    def test_auto_approve_per_action_preference(self):
-        GatePreference.objects.create(
-            tenant=self.tenant,
-            action_type=ActionType.GMAIL_TRASH,
-            require_confirmation=False,
-        )
-        resp = self.client.post(
-            self.url,
-            {
-                "action_type": "gmail_trash",
-                "payload": {},
-                "display_summary": "Trash email",
-            },
-            format="json",
-            **_internal_headers(self.tenant.id),
-        )
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data["status"], "approved")
-        self.assertTrue(resp.data["auto_approved"])
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.data["status"], "blocked")
 
     def test_auth_required(self):
         resp = self.client.post(
@@ -164,7 +138,7 @@ class GateRequestViewTests(TestCase):
         )
         self.assertEqual(resp.status_code, 403)
 
-    def test_all_valid_action_types(self):
+    def test_all_action_types_blocked_on_starter(self):
         for action_type in ActionType.values:
             resp = self.client.post(
                 self.url,
@@ -176,7 +150,7 @@ class GateRequestViewTests(TestCase):
                 format="json",
                 **_internal_headers(self.tenant.id),
             )
-            self.assertEqual(resp.status_code, 202, f"Failed for {action_type}")
+            self.assertEqual(resp.status_code, 403, f"Expected blocked for {action_type}")
 
 
 @override_settings(NBHD_INTERNAL_API_KEY=INTERNAL_KEY, DEPLOY_SECRET=DEPLOY_SECRET)

@@ -8,7 +8,6 @@ import { ReactNode } from "react";
 
 import {
   fetchIntegrations,
-  getLLMConfig,
   fetchMe,
   fetchCronJobs,
   fetchPersonas,
@@ -123,9 +122,6 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         break;
       case "/settings/billing":
         void queryClient.prefetchQuery({ queryKey: ["tenant"], queryFn: fetchTenant });
-        break;
-      case "/settings/ai-provider":
-        void queryClient.prefetchQuery({ queryKey: ["llm-config"], queryFn: getLLMConfig });
         break;
       default:
         break;

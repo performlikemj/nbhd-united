@@ -17,10 +17,6 @@ class RedactTextPolicyTest(TestCase):
         self.assertEqual(redact_text(""), "")
         self.assertEqual(redact_text("   "), "   ")
 
-    def test_byok_tier_skips_redaction(self):
-        text = "Call John at 555-123-4567"
-        self.assertEqual(redact_text(text, tier="byok"), text)
-
     def test_unknown_tier_falls_back_to_starter(self):
         policy = TIER_POLICIES.get("nonexistent", TIER_POLICIES["starter"])
         self.assertTrue(policy["enabled"])
@@ -71,13 +67,6 @@ class RedactTextIntegrationTest(TestCase):
         self.assertNotIn("David Thompson", result)
         self.assertIn("[PERSON_", result)
 
-    def test_premium_only_redacts_financial(self):
-        text = "Call Sarah at sarah@example.com, card 4111-1111-1111-1111"
-        result = redact_text(text, tier="premium")
-        self.assertIn("Sarah", result)
-        self.assertIn("sarah@example.com", result)
-        self.assertNotIn("4111-1111-1111-1111", result)
-
     def test_allows_tenant_display_name(self):
         tenant = create_tenant(display_name="Michael Jones", telegram_chat_id=222222)
         text = "Michael mentioned that David Smith should join the meeting."
@@ -87,7 +76,7 @@ class RedactTextIntegrationTest(TestCase):
 
     def test_country_names_not_redacted_as_person(self):
         text = "Jordan called me from Georgia about the project."
-        result = redact_text(text, tier="premium")
+        result = redact_text(text, tier="starter")
         self.assertIn("Jordan", result)
         self.assertIn("Georgia", result)
 
@@ -170,12 +159,6 @@ class RedactionSessionTest(TestCase):
         self.assertEqual(session.entity_map["[EMAIL_ADDRESS_1]"], "alice@test.com")
         self.assertEqual(session.entity_map["[EMAIL_ADDRESS_2]"], "bob@test.com")
 
-    def test_session_disabled_for_byok(self):
-        session = RedactionSession(tier="byok")
-        text = "Email alice@test.com for info."
-        result = session.redact(text)
-        self.assertEqual(result, text)
-        self.assertEqual(session.entity_map, {})
 
 
 class RehydrateTextTest(TestCase):
@@ -291,14 +274,6 @@ class RedactUserMessageTest(TestCase):
         # Should contain the new email
         self.assertIn("bob@test.com", self.tenant.pii_entity_map.values())
 
-    def test_byok_skips_redaction(self):
-        from apps.pii.redactor import redact_user_message
-        self.tenant.model_tier = "byok"
-        self.tenant.save(update_fields=["model_tier"])
-
-        text = "Email alice@test.com"
-        result = redact_user_message(text, self.tenant)
-        self.assertEqual(result, text)
 
     def test_empty_message_unchanged(self):
         from apps.pii.redactor import redact_user_message
@@ -452,14 +427,6 @@ class RedactToolResponseTest(TestCase):
         self.assertEqual(result["events"][0]["id"], "evt123")
         self.assertEqual(result["events"][0]["status"], "confirmed")
 
-    def test_skips_redaction_for_byok(self):
-        from apps.pii.redactor import redact_tool_response
-        self.tenant.model_tier = "byok"
-        self.tenant.save(update_fields=["model_tier"])
-
-        data = {"from": "alice@example.com", "body": "test"}
-        result = redact_tool_response(data, self.tenant)
-        self.assertEqual(result["from"], "alice@example.com")
 
     def test_handles_nested_lists(self):
         from apps.pii.redactor import redact_tool_response
@@ -565,23 +532,3 @@ class PrivacyRedactionDocTest(TestCase):
         self.assertIn("NBHD_DOC_PRIVACY_REDACTION", files)
         self.assertIn("Privacy Placeholders", files["NBHD_DOC_PRIVACY_REDACTION"])
 
-    def test_byok_tier_excludes_privacy_doc(self):
-        from apps.orchestrator.personas import render_workspace_files
-
-        tenant = create_tenant(display_name="BYOK User", telegram_chat_id=800002)
-        tenant.model_tier = "byok"
-        tenant.save(update_fields=["model_tier"])
-
-        files = render_workspace_files("neighbor", tenant=tenant)
-        self.assertNotIn("NBHD_DOC_PRIVACY_REDACTION", files)
-
-    def test_premium_tier_excludes_privacy_doc(self):
-        from apps.orchestrator.personas import render_workspace_files
-
-        tenant = create_tenant(display_name="Premium User", telegram_chat_id=800003)
-        tenant.model_tier = "premium"
-        tenant.save(update_fields=["model_tier"])
-
-        files = render_workspace_files("neighbor", tenant=tenant)
-        # Premium doesn't redact PERSON, so no privacy doc
-        self.assertNotIn("NBHD_DOC_PRIVACY_REDACTION", files)

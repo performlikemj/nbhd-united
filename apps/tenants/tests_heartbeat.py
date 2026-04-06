@@ -80,10 +80,8 @@ class HeartbeatCronBuildTest(TestCase):
         self.assertEqual(result["schedule"]["tz"], "Asia/Tokyo")
 
     def test_model_is_always_openrouter_minimax(self):
-        for tier in ["starter", "premium", "byok"]:
-            self.tenant.model_tier = tier
-            result = _build_heartbeat_cron(self.tenant)
-            self.assertEqual(result["model"], HEARTBEAT_MODEL)
+        result = _build_heartbeat_cron(self.tenant)
+        self.assertEqual(result["model"], HEARTBEAT_MODEL)
 
     def test_included_in_cron_seed_jobs(self):
         self.tenant.heartbeat_enabled = True

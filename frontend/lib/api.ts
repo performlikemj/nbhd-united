@@ -11,8 +11,6 @@ import {
   DocumentListItem,
   DocumentResponse,
   Integration,
-  LLMConfig,
-  LLMConfigUpdate,
   JournalEntry,
   JournalEntryEnergy,
   NoteTemplate,
@@ -24,7 +22,6 @@ import {
   UsageSummary,
   RefreshConfigStatus,
   ProvisioningStatus,
-  ProviderModel,
   WeeklyReview,
   Lesson,
   ConstellationData,
@@ -334,10 +331,9 @@ export function requestStripePortal(): Promise<{ url: string }> {
   return apiFetch<{ url: string }>("/api/v1/billing/portal/", { method: "POST" });
 }
 
-export function requestStripeCheckout(tier: string): Promise<{ url: string }> {
+export function requestStripeCheckout(): Promise<{ url: string }> {
   return apiFetch<{ url: string }>("/api/v1/billing/checkout/", {
     method: "POST",
-    body: JSON.stringify({ tier }),
   });
 }
 
@@ -636,30 +632,6 @@ export function clearDocument(kind: string, slug: string): Promise<DocumentRespo
   return apiFetch<DocumentResponse>(`/api/v1/journal/documents/${kind}/${slug}/clear/`, { method: "POST" });
 }
 
-export function getLLMConfig(): Promise<LLMConfig[]> {
-  return apiFetch<LLMConfig[]>("/api/v1/settings/llm-config/");
-}
-
-export function fetchProviderModels(provider: string, api_key?: string): Promise<{ models: ProviderModel[] }> {
-  return apiFetch<{ models: ProviderModel[] }>("/api/v1/settings/llm-config/models/", {
-    method: "POST",
-    body: JSON.stringify({ provider, ...(api_key ? { api_key } : {}) }),
-  });
-}
-
-export function updateLLMConfig(data: LLMConfigUpdate): Promise<LLMConfig> {
-  return apiFetch<LLMConfig>("/api/v1/settings/llm-config/", {
-    method: "PUT",
-    body: JSON.stringify(data),
-  });
-}
-
-export function deleteLLMConfig(provider: string): Promise<{ deleted: string }> {
-  return apiFetch<{ deleted: string }>("/api/v1/settings/llm-config/", {
-    method: "DELETE",
-    body: JSON.stringify({ provider }),
-  });
-}
 
 // Cron Jobs (scheduled tasks managed via OpenClaw Gateway)
 function normalizeCronJob(raw: Record<string, unknown>): CronJob {

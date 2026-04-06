@@ -261,12 +261,5 @@ def get_transparency_data(tenant: Tenant) -> dict:
     }
 
 
-TIER_SUBSCRIPTION_PRICES: dict[str, float] = {
-    "starter": 12.0,
-    "premium": 40.0,
-    "byok": 8.0,
-}
-
-
 def _get_subscription_price(tenant: Tenant) -> float:
-    return TIER_SUBSCRIPTION_PRICES.get(tenant.model_tier, 12.0)
+    return 12.0

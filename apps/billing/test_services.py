@@ -8,7 +8,6 @@ from apps.tenants.services import create_tenant
 from .services import handle_checkout_completed, handle_invoice_payment_failed, handle_subscription_deleted
 
 
-@override_settings(ENABLED_STRIPE_TIERS=["starter", "premium", "byok"])
 class BillingWebhookServiceTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Billing", telegram_chat_id=424242)
@@ -17,7 +16,7 @@ class BillingWebhookServiceTest(TestCase):
     def test_checkout_completed_sets_provisioning_and_enqueues(self, mock_publish):
         handle_checkout_completed(
             {
-                "metadata": {"user_id": str(self.tenant.user_id), "tier": "premium"},
+                "metadata": {"user_id": str(self.tenant.user_id), "tier": "starter"},
                 "customer": "cus_123",
                 "subscription": "sub_123",
             }
@@ -25,7 +24,7 @@ class BillingWebhookServiceTest(TestCase):
 
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.status, Tenant.Status.PROVISIONING)
-        self.assertEqual(self.tenant.model_tier, Tenant.ModelTier.PREMIUM)
+        self.assertEqual(self.tenant.model_tier, Tenant.ModelTier.STARTER)
         self.assertEqual(self.tenant.stripe_customer_id, "cus_123")
         self.assertEqual(self.tenant.stripe_subscription_id, "sub_123")
         mock_publish.assert_called_once_with("provision_tenant", str(self.tenant.id))
@@ -44,9 +43,8 @@ class BillingWebhookServiceTest(TestCase):
         self.assertEqual(self.tenant.model_tier, Tenant.ModelTier.STARTER)
         mock_publish.assert_called_once()
 
-    @override_settings(ENABLED_STRIPE_TIERS=["starter"])
     @patch("apps.cron.publish.publish_task")
-    def test_checkout_completed_disabled_tier_defaults_to_basic(self, mock_publish):
+    def test_checkout_completed_unknown_tier_defaults_to_starter(self, mock_publish):
         handle_checkout_completed(
             {
                 "metadata": {"user_id": str(self.tenant.user_id), "tier": "premium"},

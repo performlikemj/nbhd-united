@@ -11,7 +11,7 @@ from typing import Any
 
 from django.conf import settings
 
-from apps.billing.constants import MINIMAX_MODEL
+from apps.billing.constants import GEMMA_MODEL, KIMI_MODEL, MINIMAX_MODEL
 from apps.orchestrator.tool_policy import generate_tool_config
 from apps.tenants.models import Tenant
 
@@ -312,20 +312,14 @@ _BACKGROUND_TASKS_PROMPT = (
 # Model mapping by tier
 TIER_MODELS: dict[str, dict[str, str]] = {
     "starter": {"primary": MINIMAX_MODEL},
-    "premium": {"primary": "anthropic/claude-opus-4.6"},
-    "byok": {"primary": "anthropic/claude-opus-4.6"},  # fallback, overridden by user config
 }
 
 TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     "starter": {
         MINIMAX_MODEL: {"alias": "minimax"},
+        KIMI_MODEL: {"alias": "kimi"},
+        GEMMA_MODEL: {"alias": "gemma"},
     },
-    "premium": {
-        MINIMAX_MODEL: {"alias": "minimax"},
-        "anthropic/claude-sonnet-4.6": {"alias": "sonnet"},
-        "anthropic/claude-opus-4.6": {"alias": "opus"},
-    },
-    "byok": {},  # populated dynamically from user's config
 }
 
 WHISPER_DEFAULT_MODEL = {"provider": "openai", "model": "gpt-4o-mini-transcribe"}
@@ -677,39 +671,6 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     # reference (see azure_client.py). OpenClaw reads it automatically for
     # models routed through OpenRouter (e.g. MINIMAX_MODEL).
 
-    # BYOK: inject all user provider keys + models
-    if tier == "byok":
-        from apps.tenants.models import UserLLMConfig
-        from apps.tenants.crypto import decrypt_api_key
-
-        ENV_KEY_MAP = {
-            "openai": "OPENAI_API_KEY",
-            "anthropic": "ANTHROPIC_API_KEY",
-            "groq": "GROQ_API_KEY",
-            "google": "GEMINI_API_KEY",
-            "openrouter": "OPENROUTER_API_KEY",
-            "xai": "XAI_API_KEY",
-        }
-
-        all_models: dict[str, dict[str, str]] = {}
-        primary_set = False
-
-        for llm_config in UserLLMConfig.objects.filter(user=tenant.user):
-            if not llm_config.encrypted_api_key:
-                continue
-            api_key = decrypt_api_key(llm_config.encrypted_api_key)
-            env_key = ENV_KEY_MAP.get(llm_config.provider)
-            if env_key:
-                config.setdefault("env", {})[env_key] = api_key
-            if llm_config.model_id:
-                all_models[llm_config.model_id] = {"alias": llm_config.provider}
-                if not primary_set:
-                    config["agents"]["defaults"]["model"]["primary"] = llm_config.model_id
-                    primary_set = True
-
-        if all_models:
-            config["agents"]["defaults"]["models"] = all_models
-
     if _active_plugins:
         image_gen_id = str(getattr(settings, "OPENCLAW_IMAGE_GEN_PLUGIN_ID", "") or "").strip()
         plugin_config: dict[str, Any] = {
@@ -751,21 +712,10 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 "/workspace/gws-credentials.json"
             )
 
-            # GWS skills — read-only safe for all tiers
-            gws_read_skills = [
+            # GWS skills — read-only for now
+            gws_skill_names = [
                 "gws-shared", "gws-gmail-triage", "gws-calendar-agenda",
             ]
-            # GWS skills with destructive capabilities — Premium/BYOK only
-            gws_write_skills = [
-                "gws-gmail", "gws-gmail-send",
-                "gws-calendar", "gws-calendar-insert",
-                "gws-drive", "gws-tasks",
-            ]
-
-            if tier == "starter":
-                gws_skill_names = gws_read_skills
-            else:
-                gws_skill_names = gws_read_skills + gws_write_skills
 
             skills_section = config.setdefault("skills", {})
             skills_section["load"] = skills_section.get("load", {})
@@ -775,9 +725,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 if skill_path not in extra_dirs:
                     extra_dirs.append(skill_path)
 
-            # Action gate skill — loaded for all tiers with GWS access
-            # On Starter: returns educational block message
-            # On Premium/BYOK: sends confirmation prompt to user
+            # Action gate skill — loaded for all users with GWS access
             gate_skill_path = "/opt/nbhd/skills/nbhd-action-gate"
             if gate_skill_path not in extra_dirs:
                 extra_dirs.append(gate_skill_path)

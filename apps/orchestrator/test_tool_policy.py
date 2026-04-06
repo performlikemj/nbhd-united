@@ -3,7 +3,6 @@ from django.test import TestCase
 
 from apps.orchestrator.tool_policy import (
     DENIED_TOOLS,
-    PREMIUM_ALLOW,
     STARTER_ALLOW,
     generate_tool_config,
     get_allowed_tools,
@@ -21,15 +20,6 @@ class ToolPolicyTest(TestCase):
         self.assertNotIn("group:memory", allowed)
         self.assertIn("group:plugins", allowed)
 
-    def test_premium_allowlist_extends_starter(self):
-        allowed = get_allowed_tools("premium")
-        self.assertEqual(allowed, list(PREMIUM_ALLOW))
-        self.assertIn("group:ui", allowed)
-        self.assertNotIn("group:runtime", allowed)
-
-    def test_byok_gets_premium_tools(self):
-        self.assertEqual(get_allowed_tools("byok"), list(PREMIUM_ALLOW))
-
     def test_unknown_tier_defaults_to_starter(self):
         self.assertEqual(get_allowed_tools("unknown"), list(STARTER_ALLOW))
 
@@ -40,7 +30,7 @@ class ToolPolicyTest(TestCase):
             self.assertIn(tool, denied)
 
     def test_policy_disables_elevated_tools_for_subscribers(self):
-        config = generate_tool_config("premium")
+        config = generate_tool_config("starter")
         self.assertEqual(config["elevated"], {"enabled": False})
 
     def test_cron_tools_not_denied(self):
@@ -51,7 +41,7 @@ class ToolPolicyTest(TestCase):
         self.assertNotIn("group:automation", denied)
 
     def test_policy_uses_documented_keys_only(self):
-        config = generate_tool_config("premium")
+        config = generate_tool_config("starter")
         self.assertNotIn("agent_tool_policy", config)
         self.assertNotIn("exec", config)
         self.assertIn("allow", config)
