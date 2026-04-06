@@ -74,11 +74,12 @@ class RedactTextIntegrationTest(TestCase):
         self.assertIn("Michael", result)
         self.assertNotIn("David Smith", result)
 
-    def test_country_names_not_redacted_as_person(self):
-        text = "Jordan called me from Georgia about the project."
+    def test_country_names_in_denylist_not_redacted_as_person(self):
+        text = "Jordan called me about the project."
         result = redact_text(text, tier="starter")
+        # "Jordan" is in the country denylist — should NOT be redacted as PERSON
         self.assertIn("Jordan", result)
-        self.assertIn("Georgia", result)
+        self.assertNotIn("[PERSON_", result)
 
     def test_country_as_location_is_redacted_for_starter(self):
         text = "We traveled to France last summer."
