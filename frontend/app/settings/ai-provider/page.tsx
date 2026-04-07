@@ -20,13 +20,16 @@ interface ModelUI {
   intelligence: number;
   input_rate: number;
   output_rate: number;
+  comingSoon?: boolean;
 }
 
 const MODELS: ModelUI[] = [
   { model_id: "openrouter/minimax/minimax-m2.7", name: "MiniMax M2.7", tagline: "Fast and efficient", intelligence: 6, input_rate: 0.3, output_rate: 1.2 },
   { model_id: "openrouter/moonshotai/kimi-k2.5", name: "Kimi 2.5", tagline: "Balanced capability and cost", intelligence: 7, input_rate: 0.38, output_rate: 1.72 },
-  { model_id: "openrouter/google/gemma-4-31b-it", name: "Gemma 4 31B", tagline: "Lightweight and affordable", intelligence: 6, input_rate: 0.14, output_rate: 0.40 },
+  { model_id: "openrouter/google/gemma-4-31b-it", name: "Gemma 4 31B", tagline: "Lightweight and affordable", intelligence: 6, input_rate: 0.14, output_rate: 0.40, comingSoon: true },
 ];
+
+const ACTIVE_MODELS = MODELS.filter((m) => !m.comingSoon);
 
 const DEFAULT_MODEL = "openrouter/minimax/minimax-m2.7";
 
@@ -58,26 +61,32 @@ export default function AIProviderPage() {
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-3">
             {MODELS.map((model) => {
-              const isActive = activeModel === model.model_id;
+              const isActive = !model.comingSoon && activeModel === model.model_id;
               return (
                 <button
                   key={model.model_id}
                   type="button"
-                  onClick={() => handleSelectModel(model.model_id)}
-                  disabled={preferredModelMutation.isPending}
+                  onClick={() => !model.comingSoon && handleSelectModel(model.model_id)}
+                  disabled={model.comingSoon || preferredModelMutation.isPending}
                   className={`rounded-panel border-2 p-4 text-left transition ${
-                    isActive
-                      ? "border-accent bg-accent/5"
-                      : "border-border hover:border-accent/40"
-                  } ${preferredModelMutation.isPending ? "opacity-60" : ""}`}
+                    model.comingSoon
+                      ? "border-border bg-surface-elevated opacity-55 cursor-not-allowed"
+                      : isActive
+                        ? "border-accent bg-accent/5"
+                        : "border-border hover:border-accent/40"
+                  } ${!model.comingSoon && preferredModelMutation.isPending ? "opacity-60" : ""}`}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <p className="font-medium text-ink">{model.name}</p>
-                    {isActive && (
+                    {model.comingSoon ? (
+                      <span className="rounded-full bg-amber-bg border border-amber-border px-2 py-0.5 text-xs font-medium text-amber-text">
+                        Coming Soon
+                      </span>
+                    ) : isActive ? (
                       <span className="rounded-full bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent">
                         Active
                       </span>
-                    )}
+                    ) : null}
                   </div>
                   <div className="mt-2">
                     <IntelligenceMeter level={model.intelligence} compact />
@@ -102,7 +111,7 @@ export default function AIProviderPage() {
         <div className="space-y-3">
           {SCHEDULED_TASKS.map((task) => {
             const currentPref = (tenant?.task_model_preferences as Record<string, string> | undefined)?.[task.slug] || "";
-            const defaultName = MODELS.find((m) => m.model_id === activeModel)?.name ?? "default";
+            const defaultName = ACTIVE_MODELS.find((m) => m.model_id === activeModel)?.name ?? "default";
             return (
               <div key={task.slug} className="flex items-center justify-between gap-3 rounded-panel border border-border p-3">
                 <p className="text-sm font-medium text-ink">{task.label}</p>
@@ -115,7 +124,7 @@ export default function AIProviderPage() {
                   className="rounded-panel border border-border bg-surface px-3 py-1.5 text-sm text-ink focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
                 >
                   <option value="">Use default ({defaultName})</option>
-                  {MODELS.map((m) => (
+                  {ACTIVE_MODELS.map((m) => (
                     <option key={m.model_id} value={m.model_id}>{m.name}</option>
                   ))}
                 </select>
