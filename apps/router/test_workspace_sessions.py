@@ -51,12 +51,22 @@ def test_workspace_session(request):
     url = f"https://{tenant.container_fqdn}/v1/chat/completions"
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
 
-    results = []
-    test_params = [
-        ("8078236299:ws:general", "Session test general workspace. Reply only: WS_GENERAL_OK"),
-        ("8078236299:ws:work", "Session test work workspace. Reply only: WS_WORK_OK"),
-    ]
+    # Phase 1: Seed each session with a unique fact
+    # Phase 2: Ask each session to recall — if isolated, they only know their own fact
+    phase = request.GET.get("phase", "1")
 
+    if phase == "2":
+        test_params = [
+            ("8078236299:ws:general", "What secret word did I tell you in my previous message? Reply with ONLY that word, nothing else."),
+            ("8078236299:ws:work", "What secret word did I tell you in my previous message? Reply with ONLY that word, nothing else."),
+        ]
+    else:
+        test_params = [
+            ("8078236299:ws:general", "Remember this secret word: PINEAPPLE. Reply only: GOT_IT_GENERAL"),
+            ("8078236299:ws:work", "Remember this secret word: TELESCOPE. Reply only: GOT_IT_WORK"),
+        ]
+
+    results = []
     for user_param, msg in test_params:
         try:
             resp = httpx.post(
