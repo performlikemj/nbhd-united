@@ -49,12 +49,12 @@ class ConfigGeneratorTest(TestCase):
         # OpenRouter is built-in; no custom providers block needed
         self.assertNotIn("models", config)
 
-    def test_starter_tier_has_all_three_models(self):
+    def test_starter_tier_has_active_models(self):
         self.tenant.model_tier = "starter"
         config = generate_openclaw_config(self.tenant)
         models = config["agents"]["defaults"]["models"]
         aliases = sorted(v.get("alias") for v in models.values())
-        self.assertEqual(aliases, ["gemma", "kimi", "minimax"])
+        self.assertEqual(aliases, ["kimi", "minimax"])
 
     def test_audio_model_defaults_to_whisper(self):
         self.tenant.model_tier = "starter"

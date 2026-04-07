@@ -318,7 +318,7 @@ TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     "starter": {
         MINIMAX_MODEL: {"alias": "minimax"},
         KIMI_MODEL: {"alias": "kimi"},
-        GEMMA_MODEL: {"alias": "gemma"},
+        # GEMMA_MODEL excluded — not yet in OpenClaw's model registry
     },
 }
 
