@@ -129,6 +129,49 @@ class ConfigGeneratorTest(TestCase):
         endpoints = config["gateway"]["http"]["endpoints"]
         self.assertTrue(endpoints["chatCompletions"]["enabled"])
 
+    # ── OpenClaw v2026.4.5 upgrade compatibility ─────────────────────
+
+    def test_line_channel_has_no_capabilities_key(self):
+        """LINE schema rejects 'capabilities' in OpenClaw >= 2026.4.5."""
+        config = generate_openclaw_config(self.tenant)
+        self.assertNotIn("capabilities", config["channels"]["line"])
+
+    def test_telegram_channel_retains_capabilities(self):
+        """Telegram channel config should still include 'capabilities'."""
+        config = generate_openclaw_config(self.tenant)
+        self.assertIn("capabilities", config["channels"]["telegram"])
+
+    def test_heartbeat_cron_uses_delivery_none(self):
+        """Heartbeat cron uses delivery.mode='none' — sends via plugin, not built-in messaging."""
+        from .config_generator import build_cron_seed_jobs
+        self.tenant.heartbeat_enabled = True
+        self.tenant.heartbeat_start_hour = 8
+        self.tenant.heartbeat_window_hours = 6
+        jobs = build_cron_seed_jobs(self.tenant)
+        hb = next((j for j in jobs if j["name"] == "Heartbeat Check-in"), None)
+        self.assertIsNotNone(hb, "Heartbeat cron job should be generated when enabled")
+        self.assertEqual(hb["delivery"]["mode"], "none")
+
+    def test_silent_cron_jobs_use_delivery_none(self):
+        """Background-only cron jobs should use delivery.mode='none'."""
+        from .config_generator import build_cron_seed_jobs
+        jobs = build_cron_seed_jobs(self.tenant)
+        for job in jobs:
+            if job["name"] in ("Week Ahead Review", "Background Tasks"):
+                self.assertEqual(
+                    job["delivery"]["mode"], "none",
+                    f"{job['name']} should use delivery.mode='none'",
+                )
+
+    def test_interactive_cron_jobs_have_delivery(self):
+        """Interactive cron jobs (main session) have delivery config."""
+        from .config_generator import build_cron_seed_jobs
+        jobs = build_cron_seed_jobs(self.tenant)
+        interactive = ["Morning Briefing", "Evening Check-in", "Weekly Reflection"]
+        for job in jobs:
+            if job["name"] in interactive:
+                self.assertIn("delivery", job, f"{job['name']} should have delivery config")
+
 
 @override_settings()
 class ProvisioningTest(TestCase):
