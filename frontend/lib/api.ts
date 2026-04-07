@@ -642,7 +642,7 @@ function normalizeCronJob(raw: Record<string, unknown>): CronJob {
     jobId: (raw.jobId as string) ?? (raw.id as string) ?? undefined,
     name: (raw.name as string) ?? "Untitled",
     schedule: { kind: schedule.kind ?? "cron", expr: schedule.expr ?? "", tz: schedule.tz ?? "UTC" },
-    sessionTarget: (raw.sessionTarget as string) ?? "isolated",
+    sessionTarget: (raw.sessionTarget as string) ?? "main",
     payload: { kind: payload.kind ?? "agentTurn", message: payload.message ?? String((raw.payload as Record<string, unknown>)?.text ?? "") },
     delivery: { mode: delivery.mode ?? "none", channel: delivery.channel },
     enabled: (raw.enabled as boolean) ?? false,

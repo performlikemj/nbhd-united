@@ -411,6 +411,35 @@ def force_reseed_crons(request):
         except Exception:
             pass  # Non-critical
 
+        # Migrate all non-admin jobs to main session
+        ADMIN_JOBS = {"Background Tasks", "Heartbeat Check-in"}
+        try:
+            all_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+            all_jobs = all_result.get("jobs", []) if isinstance(all_result, dict) else all_result if isinstance(all_result, list) else []
+            migrated = 0
+            for job in all_jobs:
+                if not isinstance(job, dict):
+                    continue
+                if job.get("name") in ADMIN_JOBS:
+                    continue
+                if job.get("sessionTarget") == "main":
+                    continue
+                job_id = job.get("jobId") or job.get("id")
+                if not job_id:
+                    continue
+                try:
+                    invoke_gateway_tool(tenant, "cron.update", {
+                        "jobId": job_id,
+                        "patch": {"sessionTarget": "main", "wakeMode": "now"},
+                    })
+                    migrated += 1
+                except GatewayError:
+                    pass  # Best-effort
+            if migrated > 0:
+                entry["migrated_to_main"] = migrated
+        except Exception:
+            pass  # Non-critical
+
         results.append(entry)
 
     total_created = sum(r["created"] for r in results)

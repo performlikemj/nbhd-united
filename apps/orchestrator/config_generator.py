@@ -422,10 +422,11 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
         {
             "name": "Week Ahead Review",
             "schedule": {"kind": "cron", "expr": "0 8 * * 1", "tz": user_tz},
-            "sessionTarget": "isolated",
+            "sessionTarget": "main",
+            "wakeMode": "now",
             "payload": {
-                "kind": "agentTurn",
-                "message": _prepare_cron_prompt(_WEEK_AHEAD_REVIEW_PROMPT, tenant),
+                "kind": "systemEvent",
+                "text": _prepare_cron_prompt(_WEEK_AHEAD_REVIEW_PROMPT, tenant),
             },
             "delivery": {"mode": "none"},
             "enabled": True,
@@ -619,7 +620,6 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             },
             "line": {
                 "enabled": True,
-                "capabilities": ["inlineButtons"],
             },
         },
 
