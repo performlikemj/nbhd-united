@@ -277,6 +277,16 @@ class Tenant(models.Model):
         help_text="When the container was idle-hibernated. Null = running normally.",
     )
 
+    # Workspace routing
+    active_workspace = models.ForeignKey(
+        "journal.Workspace",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        help_text="Currently active conversation workspace. Null = no workspaces.",
+    )
+
     # Metadata
     last_message_at = models.DateTimeField(null=True, blank=True)
     config_version = models.IntegerField(

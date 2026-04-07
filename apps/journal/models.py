@@ -246,3 +246,44 @@ class DocumentChunk(models.Model):
 
     def __str__(self) -> str:
         return f"{self.tenant_id}:{self.document_id}:chunk{self.chunk_index}"
+
+
+class Workspace(models.Model):
+    """A focused conversation context for a tenant.
+
+    Each workspace maps to a separate OpenClaw session via the `user` param
+    in /v1/chat/completions. Messages are routed to the active workspace's
+    session, giving each domain (work, personal, translation, etc.) its own
+    independent conversation history while sharing the same workspace directory.
+
+    Max 4 per tenant (enforced in application layer).
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="workspaces")
+    name = models.CharField(max_length=60)
+    slug = models.SlugField(max_length=60)
+    description = models.TextField(
+        blank=True,
+        default="",
+        help_text="What topics this workspace covers. Used for routing classification.",
+    )
+    description_embedding = VectorField(
+        dimensions=1536,
+        null=True,
+        blank=True,
+        help_text="Embedding of description for message classification.",
+    )
+    is_default = models.BooleanField(
+        default=False,
+        help_text="The 'General' catch-all workspace. Cannot be deleted.",
+    )
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "journal_workspaces"
+        unique_together = [("tenant", "slug")]
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}:{self.slug}"
