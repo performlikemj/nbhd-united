@@ -1,13 +1,16 @@
 """Tests for orchestrator app."""
 import os
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from django.test import TestCase, override_settings
 
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 from .config_generator import generate_openclaw_config
-from .services import provision_tenant, deprovision_tenant, update_tenant_config
+from .services import (
+    provision_tenant, deprovision_tenant, update_tenant_config,
+    restore_user_cron_jobs,
+)
 
 
 class ConfigGeneratorTest(TestCase):
@@ -171,6 +174,70 @@ class ConfigGeneratorTest(TestCase):
         for job in jobs:
             if job["name"] in interactive:
                 self.assertIn("delivery", job, f"{job['name']} should have delivery config")
+
+
+class RestoreUserCronJobsTest(TestCase):
+    """Tests for user cron job restore deduplication."""
+
+    def setUp(self):
+        self.tenant = create_tenant(
+            display_name="Restore Dedup Test",
+            telegram_chat_id=555666777,
+        )
+
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_snapshot_with_duplicates_restores_only_one_per_name(self, mock_invoke):
+        """If snapshot has 3 copies of a job, only 1 should be restored."""
+        self.tenant.cron_jobs_snapshot = {
+            "jobs": [
+                {"name": "Daily Workout Plan", "schedule": "0 6 * * *"},
+                {"name": "Daily Workout Plan", "schedule": "0 6 * * *"},
+                {"name": "Daily Workout Plan", "schedule": "0 6 * * *"},
+                {"name": "Evening Journal", "schedule": "0 21 * * *"},
+                {"name": "Evening Journal", "schedule": "0 21 * * *"},
+            ],
+            "snapshot_at": "2026-01-01T00:00:00",
+        }
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        result = restore_user_cron_jobs(self.tenant, existing_job_names=set())
+
+        self.assertEqual(result["restored"], 2)  # 1 Workout + 1 Journal
+        self.assertEqual(mock_invoke.call_count, 2)
+
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_snapshot_duplicates_skips_already_existing(self, mock_invoke):
+        """Duplicate snapshot entries for a name already on container are all skipped."""
+        self.tenant.cron_jobs_snapshot = {
+            "jobs": [
+                {"name": "Daily Workout Plan", "schedule": "0 6 * * *"},
+                {"name": "Daily Workout Plan", "schedule": "0 6 * * *"},
+            ],
+            "snapshot_at": "2026-01-01T00:00:00",
+        }
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        result = restore_user_cron_jobs(self.tenant, existing_job_names={"Daily Workout Plan"})
+
+        self.assertEqual(result["restored"], 0)
+        mock_invoke.assert_not_called()
+
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_system_jobs_in_snapshot_are_never_restored(self, mock_invoke):
+        """System job names in the snapshot should be skipped even if missing from container."""
+        self.tenant.cron_jobs_snapshot = {
+            "jobs": [
+                {"name": "Morning Briefing", "schedule": "0 7 * * *"},
+                {"name": "My Custom Job", "schedule": "0 12 * * *"},
+            ],
+            "snapshot_at": "2026-01-01T00:00:00",
+        }
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        result = restore_user_cron_jobs(self.tenant, existing_job_names=set())
+
+        self.assertEqual(result["restored"], 1)  # Only custom job
+        self.assertEqual(mock_invoke.call_count, 1)
 
 
 @override_settings()
