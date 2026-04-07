@@ -64,6 +64,7 @@ const TASK_TEMPLATES: TaskTemplate[] = [
     message:
       "Search for the latest news in tech, AI, and my areas of interest. Summarize the top 5 stories.",
     expr: "0 12 * * *",
+    sessionTarget: "main",
   },
   {
     icon: "🌤️",
@@ -71,6 +72,7 @@ const TASK_TEMPLATES: TaskTemplate[] = [
     message:
       "Check the weather forecast for today and tomorrow. Let me know if I should bring an umbrella or dress warm.",
     expr: "0 6 * * *",
+    sessionTarget: "main",
   },
   {
     icon: "📅",
@@ -78,6 +80,7 @@ const TASK_TEMPLATES: TaskTemplate[] = [
     message:
       "Review my calendar for today and remind me of upcoming events, deadlines, or meetings.",
     expr: "0 8 * * 1-5",
+    sessionTarget: "main",
   },
   {
     icon: "🌙",
@@ -93,6 +96,7 @@ const TASK_TEMPLATES: TaskTemplate[] = [
     message:
       "Give me a weekly review: what got done this week, what's pending, and priorities for next week.",
     expr: "0 10 * * 1",
+    sessionTarget: "main",
   },
 ];
 
@@ -135,7 +139,7 @@ function defaultCreateForm(tz?: string): CreateFormState {
     message: "",
     deliveryMode: "announce",
     deliveryChannel: "telegram",
-    sessionTarget: "isolated",
+    sessionTarget: "main",
   };
 }
 
@@ -232,7 +236,7 @@ export default function SettingsCronJobsPage() {
     message: "",
     deliveryMode: "announce",
     deliveryChannel: "",
-    sessionTarget: "isolated",
+    sessionTarget: "main",
   });
   const [editFeedback, setEditFeedback] = useState<ActionFeedback>({ status: "idle", text: "" });
   const editTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -321,7 +325,7 @@ export default function SettingsCronJobsPage() {
       name: template.name,
       message: template.message,
       expr: template.expr,
-      sessionTarget: template.sessionTarget ?? "isolated",
+      sessionTarget: template.sessionTarget ?? "main",
     }));
   };
 

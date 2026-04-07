@@ -29,7 +29,7 @@ def _fix_payload_kind_for_session_target(data: dict) -> dict:
     The frontend always sends ``agentTurn`` + ``message``, so we correct
     both the kind and the content field name here.
     """
-    session_target = data.get("sessionTarget", "isolated")
+    session_target = data.get("sessionTarget", "main")
     payload = data.get("payload")
     if isinstance(payload, dict) and session_target == "main":
         text = payload.get("text") or payload.get("message", "")
