@@ -525,6 +525,18 @@ def restore_user_cron_jobs(tenant: Tenant, existing_job_names: set[str]) -> dict
         and job["name"].lower() not in existing_lower
     ]
 
+    # Deduplicate within snapshot — only restore one entry per name.
+    # Dirty snapshots (saved before the tenant_views dedup fix) may
+    # contain multiple entries with the same name.
+    seen_names: set[str] = set()
+    unique_jobs: list[dict] = []
+    for job in user_jobs_to_restore:
+        lower_name = job["name"].lower()
+        if lower_name not in seen_names:
+            seen_names.add(lower_name)
+            unique_jobs.append(job)
+    user_jobs_to_restore = unique_jobs
+
     if not user_jobs_to_restore:
         return {"restored": 0, "errors": 0}
 
@@ -715,6 +727,16 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
             "seed_cron_jobs: user job restore failed for tenant %s (non-fatal)",
             tenant_id, exc_info=True,
         )
+
+    # Safety-net dedup after restore — catch any duplicates introduced by restore
+    if user_restore.get("restored", 0) > 0:
+        try:
+            dedup_tenant_cron_jobs(tenant)
+        except Exception:
+            logger.warning(
+                "seed_cron_jobs: post-restore dedup failed for tenant %s (non-fatal)",
+                tenant_id, exc_info=True,
+            )
 
     return {
         "tenant_id": tenant_id,

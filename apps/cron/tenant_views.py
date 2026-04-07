@@ -81,8 +81,21 @@ class CronJobListCreateView(APIView):
         if isinstance(data, dict) and "jobs" in data:
             try:
                 from django.utils import timezone as tz
+                # Deduplicate by name — keep newest per name (by createdAt)
+                # to prevent dirty snapshots from propagating duplicates.
+                raw_jobs = data["jobs"]
+                seen: dict[str, dict] = {}
+                for job in raw_jobs:
+                    if not isinstance(job, dict):
+                        continue
+                    name = job.get("name", "")
+                    if not name:
+                        continue
+                    prev = seen.get(name)
+                    if prev is None or job.get("createdAt", "") > prev.get("createdAt", ""):
+                        seen[name] = job
                 tenant.cron_jobs_snapshot = {
-                    "jobs": data["jobs"],
+                    "jobs": list(seen.values()),
                     "snapshot_at": tz.now().isoformat(),
                 }
                 tenant.save(update_fields=["cron_jobs_snapshot"])
