@@ -11,7 +11,6 @@ were enabled. Non-default workspaces append `:ws:{slug}`.
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from django.utils import timezone

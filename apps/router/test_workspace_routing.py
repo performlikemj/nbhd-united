@@ -198,3 +198,123 @@ class TestUpdateActiveWorkspace(TestCase):
         tenant = _make_tenant()
         # Should not crash
         update_active_workspace(tenant, None)
+
+    def test_no_op_when_already_active_still_bumps_last_used(self):
+        """Calling update with the already-active workspace should still
+        bump last_used_at without redundant active_workspace writes."""
+        tenant = _make_tenant()
+        work = _make_workspace(tenant, "Work", "work")
+        tenant.active_workspace = work
+        tenant.save(update_fields=["active_workspace"])
+
+        update_active_workspace(tenant, work)
+
+        work.refresh_from_db()
+        self.assertIsNotNone(work.last_used_at)
+
+
+class TestBuildUserParam(TestCase):
+    """The user_param format determines OpenClaw session routing.
+    Default workspace must use bare base_user_id to preserve legacy session."""
+
+    def test_none_returns_base(self):
+        self.assertEqual(_build_user_param("8078236299", None), "8078236299")
+
+    def test_default_returns_base(self):
+        tenant = _make_tenant()
+        general = _make_workspace(tenant, "General", "general", is_default=True)
+        self.assertEqual(_build_user_param("8078236299", general), "8078236299")
+
+    def test_non_default_appends_slug(self):
+        tenant = _make_tenant()
+        work = _make_workspace(tenant, "Work", "work")
+        self.assertEqual(_build_user_param("8078236299", work), "8078236299:ws:work")
+
+    def test_line_user_id_format(self):
+        """LINE user IDs are alphanumeric strings, not numeric chat IDs."""
+        tenant = _make_tenant()
+        translation = _make_workspace(tenant, "Translation", "translation")
+        result = _build_user_param("ua7395c8ec8fcaeaadad141b8f0babcee", translation)
+        self.assertEqual(result, "ua7395c8ec8fcaeaadad141b8f0babcee:ws:translation")
+
+
+class TestGetDefaultHelper(TestCase):
+    """_get_default returns the default workspace, or first if none marked default."""
+
+    def test_returns_default_workspace(self):
+        tenant = _make_tenant()
+        _make_workspace(tenant, "Work", "work")
+        general = _make_workspace(tenant, "General", "general", is_default=True)
+        result = _get_default(list(tenant.workspaces.all()))
+        self.assertEqual(result.id, general.id)
+
+    def test_empty_list_returns_none(self):
+        self.assertIsNone(_get_default([]))
+
+
+class TestIsNewSessionHelper(TestCase):
+    """Session-gap detection — must match poller's logic exactly."""
+
+    def test_no_last_message_is_new(self):
+        tenant = _make_tenant()
+        self.assertTrue(_is_new_session(tenant))
+
+    def test_within_30_min_is_not_new(self):
+        tenant = _make_tenant(last_msg_minutes_ago=29)
+        self.assertFalse(_is_new_session(tenant))
+
+    def test_after_30_min_is_new(self):
+        tenant = _make_tenant(last_msg_minutes_ago=31)
+        self.assertTrue(_is_new_session(tenant))
+
+
+class TestTransitionMarker(TestCase):
+    """The transition marker tells the agent when workspace changed."""
+
+    def test_marker_includes_workspace_name(self):
+        from apps.router.workspace_routing import build_transition_marker
+        tenant = _make_tenant()
+        work = _make_workspace(tenant, "Work", "work")
+        marker = build_transition_marker(work)
+        self.assertIn("Work", marker)
+        self.assertIn("chip", marker.lower())  # instructs agent to add chip
+        self.assertTrue(marker.endswith("\n\n"))  # separates from message
+
+
+class TestNewSessionWithLowConfidence(TestCase):
+    """When classification fails or is below threshold, fall back gracefully."""
+
+    def test_low_confidence_falls_back_to_active(self):
+        tenant = _make_tenant(last_msg_minutes_ago=60)
+        _make_workspace(tenant, "General", "general", is_default=True)
+        work = _make_workspace(tenant, "Work", "work")
+        tenant.active_workspace = work
+        tenant.save(update_fields=["active_workspace"])
+
+        with patch("apps.router.workspace_routing._classify_message", return_value=None):
+            user_param, ws, transitioned = resolve_workspace_routing(
+                tenant, "8078236299", "ambiguous"
+            )
+
+        # Stays in work (still active), no transition
+        self.assertEqual(user_param, "8078236299:ws:work")
+        self.assertEqual(ws.id, work.id)
+        self.assertFalse(transitioned)
+
+
+class TestNewSessionStaysInSameWorkspace(TestCase):
+    """When classification picks the same workspace as active, no transition."""
+
+    def test_same_workspace_no_transition(self):
+        tenant = _make_tenant(last_msg_minutes_ago=60)
+        work = _make_workspace(tenant, "Work", "work", description="budget")
+        tenant.active_workspace = work
+        tenant.save(update_fields=["active_workspace"])
+
+        with patch("apps.router.workspace_routing._classify_message", return_value=work):
+            user_param, ws, transitioned = resolve_workspace_routing(
+                tenant, "8078236299", "Q3 budget update"
+            )
+
+        self.assertEqual(user_param, "8078236299:ws:work")
+        self.assertFalse(transitioned)
