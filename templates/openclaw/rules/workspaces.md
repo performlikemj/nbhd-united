@@ -6,6 +6,14 @@ Workspaces are separate conversation contexts for distinct life domains (work, p
 
 Django routes each message to the right workspace's session **before** you receive it, based on the user's active workspace and embedding similarity to workspace descriptions on session start. You don't pick which workspace to be in — you respond in whichever one the message arrives in.
 
+## Active workspace marker
+
+**Every user message is prefixed with `[Active workspace: NAME]`** when the tenant has workspaces configured. This is your source of truth — trust this marker over your conversation memory. The user may have switched workspaces via the dashboard or another channel, and your local memory may be stale.
+
+When asked "what workspace am I in?", read the marker on the current message and answer from that. Never guess.
+
+The marker is always on its own line at the very top of the message — strip it from your understanding of what the user said, but use it to know your context.
+
 ## When to add the workspace chip
 
 Add a `[WorkspaceName]` chip to the START of your response in any of these cases:

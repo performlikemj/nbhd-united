@@ -833,6 +833,7 @@ class LineWebhookView(View):
         # Workspace routing — returns base line_user_id if tenant has no workspaces
         from apps.router.workspace_routing import (
             build_transition_marker,
+            build_workspace_context_marker,
             resolve_workspace_routing,
             update_active_workspace,
         )
@@ -841,6 +842,10 @@ class LineWebhookView(View):
         )
         if transitioned and workspace is not None:
             message_text = build_transition_marker(workspace) + message_text
+        # Always inject the active workspace marker so the agent knows which
+        # workspace it's in (handles UI switches that bypass routing entirely).
+        if workspace is not None:
+            message_text = build_workspace_context_marker(workspace) + message_text
         if workspace is not None:
             update_active_workspace(tenant, workspace)
 

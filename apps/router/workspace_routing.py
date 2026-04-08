@@ -84,6 +84,21 @@ def build_transition_marker(workspace: "Workspace") -> str:
     return f"[Switched to {workspace.name} workspace. Add the chip indicator on your first response.]\n\n"
 
 
+def build_workspace_context_marker(workspace: "Workspace | None") -> str:
+    """Build a lightweight always-on marker that tells the agent which workspace
+    the message is in.
+
+    Injected on EVERY message when the tenant has workspaces (default or not).
+    Without this, the agent's session memory may be stale or empty after a UI
+    switch and it can confabulate the wrong workspace name to the user.
+
+    Returns an empty string when there is no workspace (legacy tenants).
+    """
+    if workspace is None:
+        return ""
+    return f"[Active workspace: {workspace.name}]\n"
+
+
 # ── Internal helpers ─────────────────────────────────────────────────────
 
 

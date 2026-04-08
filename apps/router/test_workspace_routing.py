@@ -281,6 +281,43 @@ class TestTransitionMarker(TestCase):
         self.assertTrue(marker.endswith("\n\n"))  # separates from message
 
 
+class TestWorkspaceContextMarker(TestCase):
+    """The always-on context marker tells the agent which workspace is active.
+
+    Critical for handling UI-triggered workspace switches that bypass the
+    routing flow — without this, the agent's session memory may be stale
+    and it can confabulate the wrong workspace name.
+    """
+
+    def test_marker_includes_workspace_name(self):
+        from apps.router.workspace_routing import build_workspace_context_marker
+        tenant = _make_tenant()
+        work = _make_workspace(tenant, "Work", "work")
+        marker = build_workspace_context_marker(work)
+        self.assertIn("Work", marker)
+        self.assertIn("Active workspace", marker)
+
+    def test_marker_ends_with_newline(self):
+        from apps.router.workspace_routing import build_workspace_context_marker
+        tenant = _make_tenant()
+        work = _make_workspace(tenant, "Work", "work")
+        marker = build_workspace_context_marker(work)
+        self.assertTrue(marker.endswith("\n"))
+
+    def test_marker_empty_for_none_workspace(self):
+        from apps.router.workspace_routing import build_workspace_context_marker
+        self.assertEqual(build_workspace_context_marker(None), "")
+
+    def test_marker_present_for_default_workspace(self):
+        """Even default workspaces get the marker so the agent knows when it's
+        switching back to general from a non-default workspace."""
+        from apps.router.workspace_routing import build_workspace_context_marker
+        tenant = _make_tenant()
+        general = _make_workspace(tenant, "General", "general", is_default=True)
+        marker = build_workspace_context_marker(general)
+        self.assertIn("General", marker)
+
+
 class TestNewSessionWithLowConfidence(TestCase):
     """When classification fails or is below threshold, fall back gracefully."""
 
