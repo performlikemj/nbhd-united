@@ -25,6 +25,11 @@ import {
   WeeklyReview,
   Lesson,
   ConstellationData,
+  WorkspacesResponse,
+  CreateWorkspaceResponse,
+  UpdateWorkspaceResponse,
+  DeleteWorkspaceResponse,
+  SwitchWorkspaceResponse,
 } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -692,6 +697,39 @@ export function bulkDeleteCronJobs(ids: string[]): Promise<BulkDeleteResult> {
   return apiFetch<BulkDeleteResult>("/api/v1/cron-jobs/bulk-delete/", {
     method: "POST",
     body: JSON.stringify({ ids }),
+  });
+}
+
+// ── Workspaces ─────────────────────────────────────────────────────────
+
+export function fetchWorkspaces(): Promise<WorkspacesResponse> {
+  return apiFetch<WorkspacesResponse>("/api/v1/workspaces/");
+}
+
+export function createWorkspace(data: { name: string; description?: string }): Promise<CreateWorkspaceResponse> {
+  return apiFetch<CreateWorkspaceResponse>("/api/v1/workspaces/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateWorkspace(slug: string, data: { name?: string; description?: string }): Promise<UpdateWorkspaceResponse> {
+  return apiFetch<UpdateWorkspaceResponse>(`/api/v1/workspaces/${encodeURIComponent(slug)}/`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteWorkspace(slug: string): Promise<DeleteWorkspaceResponse> {
+  return apiFetch<DeleteWorkspaceResponse>(`/api/v1/workspaces/${encodeURIComponent(slug)}/`, {
+    method: "DELETE",
+  });
+}
+
+export function switchWorkspace(slug: string): Promise<SwitchWorkspaceResponse> {
+  return apiFetch<SwitchWorkspaceResponse>("/api/v1/workspaces/switch/", {
+    method: "POST",
+    body: JSON.stringify({ slug }),
   });
 }
 
