@@ -34,9 +34,14 @@ class CronDeliveryTargetInjectionTests(TestCase):
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_create_injects_telegram_to(self, mock_invoke):
+        # Channel injection only applies to isolated jobs — main-session
+        # crons have delivery.channel/to stripped because OpenClaw rejects
+        # them ("cron channel delivery config is only supported for
+        # sessionTarget=isolated").
         mock_invoke.return_value = {"status": "ok"}
         payload = {
             "name": "Morning Briefing",
+            "sessionTarget": "isolated",
             "delivery": {"mode": "announce", "channel": "telegram"},
             "schedule": {"kind": "cron", "expr": "* * * * *", "tz": "UTC"},
         }
@@ -52,6 +57,7 @@ class CronDeliveryTargetInjectionTests(TestCase):
         mock_invoke.return_value = {"status": "ok"}
         payload = {
             "name": "Morning Briefing",
+            "sessionTarget": "isolated",
             "delivery": {"mode": "none", "channel": "telegram"},
             "schedule": {"kind": "cron", "expr": "* * * * *", "tz": "UTC"},
         }
@@ -69,6 +75,7 @@ class CronDeliveryTargetInjectionTests(TestCase):
         mock_invoke.return_value = {"status": "ok"}
         payload = {
             "name": "Morning Briefing",
+            "sessionTarget": "isolated",
             "delivery": {"mode": "announce", "channel": "telegram"},
             "schedule": {"kind": "cron", "expr": "* * * * *", "tz": "UTC"},
         }
@@ -83,6 +90,7 @@ class CronDeliveryTargetInjectionTests(TestCase):
         mock_invoke.return_value = {"status": "ok"}
         payload = {
             "name": "Morning Briefing",
+            "sessionTarget": "isolated",
             "delivery": {"mode": "announce", "channel": "telegram", "to": "98765"},
             "schedule": {"kind": "cron", "expr": "* * * * *", "tz": "UTC"},
         }
@@ -93,9 +101,26 @@ class CronDeliveryTargetInjectionTests(TestCase):
         self.assertEqual(job_arg["job"]["delivery"], {"mode": "announce", "channel": "telegram", "to": "98765"})
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_create_main_strips_delivery_channel(self, mock_invoke):
+        """Main-session crons must have delivery.channel/to stripped."""
+        mock_invoke.return_value = {"status": "ok"}
+        payload = {
+            "name": "Morning Briefing",
+            "sessionTarget": "main",
+            "delivery": {"mode": "announce", "channel": "telegram"},
+            "schedule": {"kind": "cron", "expr": "* * * * *", "tz": "UTC"},
+        }
+
+        response = self.client.post("/api/v1/cron-jobs/", payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        job_arg = mock_invoke.call_args.args[2]
+        self.assertEqual(job_arg["job"]["delivery"], {"mode": "none"})
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_update_injects_telegram_to(self, mock_invoke):
         mock_invoke.return_value = {"status": "ok"}
         payload = {
+            "sessionTarget": "isolated",
             "delivery": {"mode": "announce", "channel": "telegram"},
         }
 
@@ -105,8 +130,14 @@ class CronDeliveryTargetInjectionTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 200)
-        patch_arg = mock_invoke.call_args.args[2]
-        self.assertEqual(patch_arg["patch"]["delivery"], {"mode": "announce", "channel": "telegram", "to": "12345"})
+        # sessionTarget in patch forces delete+recreate path → cron.add at end
+        last_call = mock_invoke.call_args_list[-1]
+        self.assertEqual(last_call.args[1], "cron.add")
+        created_job = last_call.args[2]["job"]
+        self.assertEqual(
+            created_job["delivery"],
+            {"mode": "announce", "channel": "telegram", "to": "12345"},
+        )
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_update_no_delivery_no_inject(self, mock_invoke):

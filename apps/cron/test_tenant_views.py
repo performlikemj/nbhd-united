@@ -340,6 +340,35 @@ class CronJobUpdateSnapshotFallbackTest(TestCase):
         self.assertNotIn("message", created_job["payload"])
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_session_target_to_main_strips_delivery_channel(self, mock_invoke):
+        """OpenClaw v2026.4.5+ rejects delivery.channel on main jobs — must strip it."""
+        mock_invoke.side_effect = [
+            # cron.list returns existing isolated job with telegram delivery
+            {"jobs": [
+                {"jobId": "abc123", "name": "Daily Workout Plan",
+                 "sessionTarget": "isolated",
+                 "payload": {"kind": "agentTurn", "message": "workout"},
+                 "schedule": {"kind": "cron", "expr": "0 5 * * *", "tz": "Asia/Tokyo"},
+                 "delivery": {"channel": "telegram", "to": "12345", "mode": "auto"},
+                 "enabled": True},
+            ]},
+            {},  # cron.remove
+            {"name": "Daily Workout Plan", "enabled": True},  # cron.add
+        ]
+        resp = self.client.patch(
+            "/api/v1/cron-jobs/abc123/",
+            {"sessionTarget": "main"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        created_job = mock_invoke.call_args_list[2][0][2]["job"]
+        self.assertEqual(created_job["sessionTarget"], "main")
+        # delivery must be stripped down to mode=none — no channel/to
+        self.assertEqual(created_job["delivery"], {"mode": "none"})
+        self.assertNotIn("channel", created_job["delivery"])
+        self.assertNotIn("to", created_job["delivery"])
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_session_target_only_patch_to_isolated_recreates_with_agentTurn(self, mock_invoke):
         """PATCH {sessionTarget: 'isolated'} alone must re-shape the existing payload."""
         mock_invoke.side_effect = [
