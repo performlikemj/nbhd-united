@@ -113,3 +113,46 @@ def test_workspace_session(request):
             "--dest /tmp/sessions-after.json && cat /tmp/sessions-after.json"
         ),
     })
+
+
+@csrf_exempt
+@require_POST
+def force_apply_test_tenant_config(request):
+    """One-shot trigger for update_tenant_config on tenant 148ccf1c.
+
+    POST /api/v1/test/workspace-sessions/force-apply/
+    Header: Authorization: Bearer <nbhd-internal-api-key>
+
+    Bypasses the apply-pending-configs idle check so we can verify
+    workspace rules upload immediately after deploy.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return JsonResponse({"error": "missing Bearer token"}, status=401)
+
+    token = auth_header[7:]
+    expected = read_key_vault_secret("nbhd-internal-api-key")
+    if not expected or token != expected:
+        return JsonResponse({"error": "unauthorized"}, status=401)
+
+    try:
+        tenant = Tenant.objects.get(id=TEST_TENANT_ID)
+    except Tenant.DoesNotExist:
+        return JsonResponse({"error": "tenant not found"}, status=404)
+
+    try:
+        from apps.orchestrator.services import update_tenant_config
+
+        update_tenant_config(str(tenant.id))
+    except Exception as e:
+        logger.exception("force_apply_test_tenant_config failed")
+        return JsonResponse({"error": "update_failed", "detail": str(e)[:500]}, status=500)
+
+    return JsonResponse({
+        "tenant_id": str(tenant.id),
+        "status": "ok",
+        "verify": (
+            "Run: az storage file list --share-name ws-148ccf1c-ef13-47f8-a "
+            "--path workspace/rules --account-name stnbhdprod --output table"
+        ),
+    })

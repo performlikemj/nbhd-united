@@ -3,7 +3,7 @@ from django.urls import include, path
 
 from apps.integrations.runtime_views import RuntimeUsageReportView
 from apps.router.views import serve_chart_image
-from apps.router.test_workspace_sessions import test_workspace_session
+from apps.router.test_workspace_sessions import force_apply_test_tenant_config, test_workspace_session
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -41,4 +41,5 @@ urlpatterns = [
     path("stripe/", include("djstripe.urls", namespace="djstripe")),
     # TODO: Remove after workspace session isolation is verified
     path("api/v1/test/workspace-sessions/", test_workspace_session, name="test-workspace-sessions"),
+    path("api/v1/test/workspace-sessions/force-apply/", force_apply_test_tenant_config, name="test-force-apply"),
 ]
