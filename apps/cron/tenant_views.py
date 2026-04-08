@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 def _fix_payload_kind_for_session_target(data: dict) -> dict:
-    """Fix payload kind AND field name for the session target.
+    """Fix payload kind, field name, and delivery for the session target.
 
     OpenClaw's cron schema uses ``anyOf`` validation:
     - ``systemEvent`` requires ``{kind: "systemEvent", text: "..."}``
@@ -28,6 +28,12 @@ def _fix_payload_kind_for_session_target(data: dict) -> dict:
 
     The frontend always sends ``agentTurn`` + ``message``, so we correct
     both the kind and the content field name here.
+
+    OpenClaw v2026.4.5+ also rejects ``delivery.channel`` config on
+    main-session crons (only ``isolated`` may set channel/to). Strip
+    those fields when targeting main and force ``delivery.mode="none"``
+    — the user-facing channel is handled by Django's ``nbhd_send_to_user``
+    plugin, not by OpenClaw's built-in messaging.
     """
     session_target = data.get("sessionTarget", "main")
     payload = data.get("payload")
@@ -37,6 +43,13 @@ def _fix_payload_kind_for_session_target(data: dict) -> dict:
     elif isinstance(payload, dict) and session_target != "main":
         message = payload.get("message") or payload.get("text", "")
         data = {**data, "payload": {"kind": "agentTurn", "message": message}}
+
+    # Strip channel/to from delivery on main-session jobs — OpenClaw
+    # rejects them with "cron channel delivery config is only supported
+    # for sessionTarget=isolated".
+    if session_target == "main" and isinstance(data.get("delivery"), dict):
+        data = {**data, "delivery": {"mode": "none"}}
+
     return data
 
 
