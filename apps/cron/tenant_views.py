@@ -206,7 +206,13 @@ class CronJobDetailView(APIView):
 
         # If non-patchable fields are present (e.g. payload with message),
         # we must delete+recreate instead of patching in-place.
+        # Also force delete+recreate when sessionTarget is changing —
+        # OpenClaw requires the existing payload to be re-shaped
+        # (kind/text vs kind/message) to match the new session target,
+        # which the simple-patch path can't do.
         has_unpatchable = bool(set(data.keys()) - self._PATCHABLE_FIELDS)
+        if "sessionTarget" in data:
+            has_unpatchable = True
 
         try:
             _require_active_tenant(tenant)

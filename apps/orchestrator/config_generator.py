@@ -58,8 +58,10 @@ def _prepare_cron_prompt(prompt: str, tenant: "Tenant") -> str:
     return date_line + _CRON_CONTEXT_PREAMBLE + prompt
 
 _MORNING_BRIEFING_PROMPT_TEMPLATE = (
-    "Good morning! Create today's morning briefing. This is a cron (isolated) session — "
-    "you cannot have a back-and-forth conversation. You must do everything in ONE turn.\n\n"
+    "Good morning! Create today's morning briefing. This runs as a scheduled task. "
+    "Execute every step below in order. The journal-writing steps (step 10) are MANDATORY "
+    "— you MUST complete them BEFORE sending the user message in step 11. "
+    "Do not skip the daily note section writes.\n\n"
     "⚠️ NEWS DATE RULE: Before including any news item, check its publication date. "
     "Only include articles published in the last 24 hours. "
     "Never say 'yesterday' or 'today' about a story unless you've confirmed the date. "
@@ -88,7 +90,10 @@ _MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "   - Check if the user addressed it in yesterday's evening check-in\n"
     "   - If the user said 'done' or 'drop it' in any conversation, do NOT carry it over\n"
     "   - Only list genuinely open items\n\n"
-    "10. Fill in today's daily note sections:\n\n"
+    "10. REQUIRED: Fill in today's daily note sections by calling "
+    "`nbhd_daily_note_set_section` for EACH of the sections below. This MUST happen "
+    "before step 11 — do not skip these calls. The Journal app reads these sections, "
+    "so if they are empty the user will see nothing in their Journal tomorrow.\n\n"
     "**morning-report section:**\n"
     "### Overnight Summary\n"
     "- What happened since last check-in (completed tasks, messages, events)\n\n"
@@ -155,8 +160,9 @@ def _build_morning_briefing_prompt(tenant) -> str:
 
 
 _EVENING_CHECKIN_PROMPT = (
-    "It's evening check-in time. This is a cron (isolated) session — you cannot have a "
-    "back-and-forth conversation. You must do everything in ONE turn.\n\n"
+    "It's evening check-in time. This runs as a scheduled task. Execute every step "
+    "below in order. The journal-writing step (step 5) is MANDATORY — you MUST complete "
+    "it BEFORE sending the user message in step 6. Do not skip the daily note write.\n\n"
     "Steps:\n"
     "1. Review the daily note, tasks, and goals loaded above. "
     "Note the morning-report 'Top 3 Priorities' and 'Open Tasks'. "
@@ -173,8 +179,10 @@ _EVENING_CHECKIN_PROMPT = (
     "For each notable insight, call `nbhd_lesson_suggest` with the lesson text, context, and "
     "source_type='conversation'. Aim for 1-3 high-quality lessons per day if the conversations "
     "warrant it. Do not force lessons from routine small talk.\n"
-    "5. Fill in the 'evening-check-in' section of today's daily note "
-    "(`nbhd_daily_note_set_section` with section='evening-check-in') using this structure:\n"
+    "5. REQUIRED: Fill in the 'evening-check-in' section of today's daily note by "
+    "calling `nbhd_daily_note_set_section` with section='evening-check-in'. This MUST "
+    "happen before step 6 — the Journal app reads this section, so if it is empty the "
+    "user will see nothing in their Journal tomorrow. Use this structure:\n"
     "### What got done today?\n"
     "- Cross-reference morning priorities with tasks document — note completed items.\n"
     "- ✅ Item (brief description)\n\n"
@@ -202,8 +210,9 @@ _EVENING_CHECKIN_PROMPT = (
 )
 
 _WEEK_AHEAD_REVIEW_PROMPT = (
-    "It's Monday morning. Run the Week Ahead Review. This is a cron (isolated) session — "
-    "you cannot have a back-and-forth conversation. You must do everything in ONE turn.\n\n"
+    "It's Monday morning. Run the Week Ahead Review. This runs as a scheduled task — "
+    "execute every step below in order. Complete all the analysis and memory writes "
+    "before sending the user message in step 10.\n\n"
     "Steps:\n"
     "1. Load journal context (`nbhd_journal_context`) and recent memory files\n"
     "2. Check the calendar for the upcoming 7 days (`nbhd_calendar_list_events`)\n"

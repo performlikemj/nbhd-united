@@ -4,11 +4,23 @@ Always get explicit user confirmation before creating or modifying any scheduled
 
 ## Delivery in cron sessions
 
-Cron jobs run in isolated sessions with no Telegram bot token. The native `message` tool
-does not work here. **Always use `nbhd_send_to_user` to deliver messages to the user.**
+Cron jobs can run in two session modes:
 
-This applies to every cron job — including ones the user created themselves.
-The user has no reason to know this; just always use `nbhd_send_to_user`.
+- **Main session (Foreground)** — `sessionTarget: "main"`. The cron prompt is delivered
+  as a `systemEvent` into the user's main session, so you have the full conversation
+  history as context. This is the default for new tasks.
+- **Isolated session (Background)** — `sessionTarget: "isolated"`. A fresh single-turn
+  agent run with no conversation context. Used for silent maintenance work.
+
+In both modes the native `message` tool does not work — **always use `nbhd_send_to_user`
+to deliver messages to the user.** This applies to every cron job, including ones the
+user created themselves. The user has no reason to know this; just always use
+`nbhd_send_to_user`.
+
+**Journal writes are MANDATORY when the cron prompt asks for them, in BOTH modes.** Use
+`nbhd_daily_note_set_section` and `nbhd_daily_note_append` exactly as the cron prompt
+instructs. Do not assume the main session's normal memory hooks will cover it — they
+will not, and the Journal app will be empty if you skip the explicit calls.
 
 ## Creating a task
 
@@ -24,7 +36,7 @@ The user has no reason to know this; just always use `nbhd_send_to_user`.
    [[button:❌ Never mind|cron_reject]]
    ```
 3. Only call `cron add` after the user approves
-4. **Put ALL intended actions in the cron prompt itself** — cron sessions are isolated with no memory of the conversation that created them
+4. **Put ALL intended actions in the cron prompt itself** — even main-session crons fire as scheduled events with no guarantee that the conversation that created them is still in active context
 
 ## Editing or disabling
 
