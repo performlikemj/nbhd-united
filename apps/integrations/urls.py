@@ -26,6 +26,9 @@ from .runtime_views import (
     RuntimeWeeklyReviewsView,
     RuntimeUsageReportView,
     RuntimeProfileUpdateView,
+    RuntimeWorkspaceListView,
+    RuntimeWorkspaceDetailView,
+    RuntimeWorkspaceSwitchView,
 )
 from .views import ComposioCallbackView, IntegrationViewSet, OAuthAuthorizeView, OAuthCallbackView
 from apps.platform_logs.views import PlatformIssueReportView as _PlatformIssueReportView
@@ -145,6 +148,22 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/profile/",
         RuntimeProfileUpdateView.as_view(),
         name="runtime-profile-update",
+    ),
+    # Workspace runtime endpoints — switch/ MUST come before <slug>/ to avoid catching it
+    path(
+        "runtime/<uuid:tenant_id>/workspaces/",
+        RuntimeWorkspaceListView.as_view(),
+        name="runtime-workspace-list",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/workspaces/switch/",
+        RuntimeWorkspaceSwitchView.as_view(),
+        name="runtime-workspace-switch",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/workspaces/<slug:slug>/",
+        RuntimeWorkspaceDetailView.as_view(),
+        name="runtime-workspace-detail",
     ),
     # Cron delivery — tenant agents send messages to users via Django
     path(

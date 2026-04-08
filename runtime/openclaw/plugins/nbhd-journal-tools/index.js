@@ -808,4 +808,176 @@ export default function register(api) {
       return renderPayload(payload);
     },
   });
+
+  // ── Workspace: List ──────────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_workspace_list",
+      description:
+        "List the user's conversation workspaces. Each workspace is a separate context (e.g. Work, Personal, Translation) with its own conversation history. Returns name, slug, description, is_default, is_active, last_used_at for each.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {},
+      },
+      async execute(_id, _params) {
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/workspaces/"),
+          method: "GET",
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Workspace: Create ────────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_workspace_create",
+      description:
+        "Create a new conversation workspace. Use when the user explicitly asks (e.g. 'create a workspace for translation work') OR when you've detected a recurring topic that deserves its own focused context. The first workspace creation also auto-creates a 'General' default workspace as a catch-all. Maximum 4 workspaces per user. The new workspace becomes active immediately.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          name: {
+            type: "string",
+            description:
+              "Short workspace name (max 60 chars). E.g. 'Work', 'Translation', 'Fitness'.",
+          },
+          description: {
+            type: "string",
+            description:
+              "What topics this workspace covers. Used to route incoming messages to the right workspace. E.g. 'Q3 budget prep, team standups, project deadlines, client communications'.",
+          },
+        },
+        required: ["name"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const name = asTrimmedString(input.name);
+        if (!name) throw new Error("name is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/workspaces/"),
+          method: "POST",
+          body: {
+            name,
+            description: asTrimmedString(input.description),
+          },
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Workspace: Update ────────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_workspace_update",
+      description:
+        "Update a workspace's name or description. Re-embeds the description for routing classification when changed. Use to refine a workspace as the user's needs evolve.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          slug: {
+            type: "string",
+            description: "The workspace slug to update.",
+          },
+          name: {
+            type: "string",
+            description: "New name (optional, max 60 chars).",
+          },
+          description: {
+            type: "string",
+            description: "New description (optional). Empty string clears it.",
+          },
+        },
+        required: ["slug"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const slug = asTrimmedString(input.slug);
+        if (!slug) throw new Error("slug is required");
+        const body = {};
+        if (input.name !== undefined) body.name = asTrimmedString(input.name);
+        if (input.description !== undefined) body.description = asTrimmedString(input.description);
+        if (Object.keys(body).length === 0) {
+          throw new Error("At least one of name or description is required");
+        }
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/workspaces/${encodeURIComponent(slug)}/`),
+          method: "PATCH",
+          body,
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Workspace: Delete ────────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_workspace_delete",
+      description:
+        "Delete a workspace. The default workspace cannot be deleted. If the deleted workspace was active, the active workspace falls back to General. The conversation history in the deleted workspace's session will no longer be reachable. Always confirm with the user before deleting.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          slug: {
+            type: "string",
+            description: "The workspace slug to delete.",
+          },
+        },
+        required: ["slug"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const slug = asTrimmedString(input.slug);
+        if (!slug) throw new Error("slug is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/workspaces/${encodeURIComponent(slug)}/`),
+          method: "DELETE",
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Workspace: Switch ────────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_workspace_switch",
+      description:
+        "Switch the active workspace. Use when the user says something like 'this is work stuff' or 'let's talk about translation' and the topic clearly belongs to a different workspace than the current one. The user's NEXT message will route to the new workspace's session — your current response stays in the existing context. After switching, add the [WorkspaceName] chip indicator on your first response in the new context.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          slug: {
+            type: "string",
+            description: "The workspace slug to switch to.",
+          },
+        },
+        required: ["slug"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const slug = asTrimmedString(input.slug);
+        if (!slug) throw new Error("slug is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/workspaces/switch/"),
+          method: "POST",
+          body: { slug },
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
 }
