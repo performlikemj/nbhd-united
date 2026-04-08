@@ -830,13 +830,27 @@ class LineWebhookView(View):
         user_tz = tenant.user.timezone or "UTC"
         gateway_token = getattr(settings, "NBHD_INTERNAL_API_KEY", "").strip()
 
+        # Workspace routing — returns base line_user_id if tenant has no workspaces
+        from apps.router.workspace_routing import (
+            build_transition_marker,
+            resolve_workspace_routing,
+            update_active_workspace,
+        )
+        user_param, workspace, transitioned = resolve_workspace_routing(
+            tenant, line_user_id, message_text,
+        )
+        if transitioned and workspace is not None:
+            message_text = build_transition_marker(workspace) + message_text
+        if workspace is not None:
+            update_active_workspace(tenant, workspace)
+
         try:
             resp = httpx.post(
                 url,
                 json={
                     "model": "openclaw",
                     "messages": [{"role": "user", "content": message_text}],
-                    "user": line_user_id,
+                    "user": user_param,
                 },
                 headers={
                     "Authorization": f"Bearer {gateway_token}",
@@ -935,7 +949,7 @@ class LineWebhookView(View):
                     json={
                         "model": "openclaw",
                         "messages": [{"role": "user", "content": message_text}],
-                        "user": line_user_id,
+                        "user": user_param,
                     },
                     headers={
                         "Authorization": f"Bearer {gateway_token}",
