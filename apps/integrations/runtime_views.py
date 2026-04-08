@@ -1644,82 +1644,19 @@ class RuntimeProfileUpdateView(APIView):
 # Workspace runtime endpoints
 # ---------------------------------------------------------------------------
 
-WORKSPACE_LIMIT = 4
-DEFAULT_WORKSPACE_NAME = "General"
-DEFAULT_WORKSPACE_SLUG = "general"
-DEFAULT_WORKSPACE_DESCRIPTION = (
-    "Catch-all workspace for everyday conversations and topics that don't "
-    "fit into a more specific workspace."
+# Workspace business logic lives in apps.journal.workspace_services so it can
+# be reused by user-facing CRUD endpoints (apps/journal/workspace_views.py).
+# These aliases preserve the original local names used throughout this file.
+from apps.journal.workspace_services import (
+    DEFAULT_WORKSPACE_DESCRIPTION,
+    DEFAULT_WORKSPACE_NAME,
+    DEFAULT_WORKSPACE_SLUG,
+    WORKSPACE_LIMIT,
+    embed_workspace_description as _embed_workspace_description,
+    ensure_default_workspace as _ensure_default_workspace,
+    generate_unique_slug as _generate_unique_slug,
+    serialize_workspace as _serialize_workspace,
 )
-
-
-def _serialize_workspace(workspace, *, active_workspace_id=None) -> dict:
-    """Serialize a Workspace model to JSON for the runtime API."""
-    return {
-        "id": str(workspace.id),
-        "name": workspace.name,
-        "slug": workspace.slug,
-        "description": workspace.description,
-        "is_default": workspace.is_default,
-        "is_active": (
-            active_workspace_id is not None
-            and str(workspace.id) == str(active_workspace_id)
-        ),
-        "created_at": workspace.created_at.isoformat() if workspace.created_at else None,
-        "last_used_at": (
-            workspace.last_used_at.isoformat() if workspace.last_used_at else None
-        ),
-    }
-
-
-def _generate_unique_slug(tenant, base_slug: str) -> str:
-    """Generate a slug unique within the tenant. Appends -2, -3, ... on collision."""
-    from apps.journal.models import Workspace
-    from django.utils.text import slugify
-
-    base = slugify(base_slug) or "workspace"
-    slug = base
-    suffix = 2
-    while Workspace.objects.filter(tenant=tenant, slug=slug).exists():
-        slug = f"{base}-{suffix}"
-        suffix += 1
-    return slug
-
-
-def _embed_workspace_description(description: str):
-    """Generate an embedding for the description, returning None on failure."""
-    description = (description or "").strip()
-    if not description:
-        return None
-    try:
-        from apps.lessons.services import generate_embedding
-        return generate_embedding(description)
-    except Exception:
-        logger.exception("workspace: failed to embed description")
-        return None
-
-
-def _ensure_default_workspace(tenant):
-    """Create the General default workspace if the tenant has none.
-
-    Called automatically when creating the first workspace for a tenant.
-    Returns the default workspace.
-    """
-    from apps.journal.models import Workspace
-
-    existing_default = Workspace.objects.filter(tenant=tenant, is_default=True).first()
-    if existing_default is not None:
-        return existing_default
-
-    default_workspace = Workspace.objects.create(
-        tenant=tenant,
-        name=DEFAULT_WORKSPACE_NAME,
-        slug=DEFAULT_WORKSPACE_SLUG,
-        description=DEFAULT_WORKSPACE_DESCRIPTION,
-        description_embedding=_embed_workspace_description(DEFAULT_WORKSPACE_DESCRIPTION),
-        is_default=True,
-    )
-    return default_workspace
 
 
 class RuntimeWorkspaceListView(APIView):

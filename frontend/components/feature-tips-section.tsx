@@ -42,7 +42,7 @@ export function FeatureTipsSection() {
       subtitle="Let your assistant suggest features you haven't tried yet"
       delay={200}
     >
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4">
         <p className="text-sm text-ink-muted">
           {enabled
             ? "Your assistant may suggest one new feature per week"
@@ -50,15 +50,20 @@ export function FeatureTipsSection() {
         </p>
         <button
           type="button"
+          role="switch"
+          aria-checked={enabled}
+          aria-label={enabled ? "Disable Feature Tips" : "Enable Feature Tips"}
           onClick={handleToggle}
           disabled={updateWH.isPending}
-          className={`rounded-full px-4 py-1.5 text-sm transition min-h-[44px] ${
-            enabled
-              ? "bg-accent text-white"
-              : "border border-border text-ink-muted hover:border-border-strong hover:text-ink"
-          }`}
+          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+            enabled ? "bg-accent" : "bg-border"
+          } ${updateWH.isPending ? "opacity-50" : ""}`}
         >
-          {updateWH.isPending ? "Saving..." : enabled ? "On" : "Off"}
+          <span
+            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+              enabled ? "translate-x-5" : "translate-x-0"
+            }`}
+          />
         </button>
       </div>
 
