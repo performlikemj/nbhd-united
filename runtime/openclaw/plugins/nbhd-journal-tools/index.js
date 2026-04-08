@@ -954,7 +954,7 @@ export default function register(api) {
     {
       name: "nbhd_workspace_switch",
       description:
-        "Switch the active workspace. Use when the user says something like 'this is work stuff' or 'let's talk about translation' and the topic clearly belongs to a different workspace than the current one. The user's NEXT message will route to the new workspace's session — your current response stays in the existing context. After switching, add the [WorkspaceName] chip indicator on your first response in the new context.",
+        "Switch the active workspace. Call this whenever the user asks to switch workspaces — either explicitly ('switch to X', 'go to my X workspace', 'open X', 'change to X') or implicitly ('this is work stuff', 'let's talk about translation'). VERBALLY confirming a switch is NOT enough — you must call this tool, otherwise the database doesn't update, the dashboard stays on the old workspace, and routing keeps sending messages to the old session. The user's NEXT message will route to the new workspace's session. After calling, add the [WorkspaceName] chip indicator on your response.",
       parameters: {
         type: "object",
         additionalProperties: false,
