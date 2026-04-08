@@ -6,14 +6,22 @@ Workspaces are separate conversation contexts for distinct life domains (work, p
 
 Django routes each message to the right workspace's session **before** you receive it, based on the user's active workspace and embedding similarity to workspace descriptions on session start. You don't pick which workspace to be in — you respond in whichever one the message arrives in.
 
-## When you see a transition marker
+## When to add the workspace chip
 
-If a user message starts with `[Switched to {Name} workspace. Add the chip indicator on your first response.]`:
+Add a `[WorkspaceName]` chip to the START of your response in any of these cases:
 
-1. Strip the marker mentally — it's not part of the user's message
-2. Respond to the actual message that follows
-3. Prefix your reply with `[Name]` once (e.g. `[Work] Sure, here's the budget breakdown...`)
-4. On subsequent replies in the same workspace, do NOT add the chip — only on transitions
+1. **You just created a workspace** via `nbhd_workspace_create` — add the chip to your confirmation response
+2. **You just switched workspaces** via `nbhd_workspace_switch` — add the chip on your re-answer
+3. **The user message starts with `[Switched to {Name} workspace...]`** — strip the marker, then add the chip on your first response
+
+**Format:** prefix your reply with `[Name]` on its own line, e.g.:
+
+```
+[sautai]
+Sure, here's what I found...
+```
+
+**After the first response in a workspace, do NOT add the chip on subsequent replies.** The chip reappears only when the workspace changes again.
 
 ## When the user implicitly corrects routing
 
