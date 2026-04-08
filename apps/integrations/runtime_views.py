@@ -1641,6 +1641,361 @@ class RuntimeProfileUpdateView(APIView):
 
 
 # ---------------------------------------------------------------------------
+# Workspace runtime endpoints
+# ---------------------------------------------------------------------------
+
+WORKSPACE_LIMIT = 4
+DEFAULT_WORKSPACE_NAME = "General"
+DEFAULT_WORKSPACE_SLUG = "general"
+DEFAULT_WORKSPACE_DESCRIPTION = (
+    "Catch-all workspace for everyday conversations and topics that don't "
+    "fit into a more specific workspace."
+)
+
+
+def _serialize_workspace(workspace, *, active_workspace_id=None) -> dict:
+    """Serialize a Workspace model to JSON for the runtime API."""
+    return {
+        "id": str(workspace.id),
+        "name": workspace.name,
+        "slug": workspace.slug,
+        "description": workspace.description,
+        "is_default": workspace.is_default,
+        "is_active": (
+            active_workspace_id is not None
+            and str(workspace.id) == str(active_workspace_id)
+        ),
+        "created_at": workspace.created_at.isoformat() if workspace.created_at else None,
+        "last_used_at": (
+            workspace.last_used_at.isoformat() if workspace.last_used_at else None
+        ),
+    }
+
+
+def _generate_unique_slug(tenant, base_slug: str) -> str:
+    """Generate a slug unique within the tenant. Appends -2, -3, ... on collision."""
+    from apps.journal.models import Workspace
+    from django.utils.text import slugify
+
+    base = slugify(base_slug) or "workspace"
+    slug = base
+    suffix = 2
+    while Workspace.objects.filter(tenant=tenant, slug=slug).exists():
+        slug = f"{base}-{suffix}"
+        suffix += 1
+    return slug
+
+
+def _embed_workspace_description(description: str):
+    """Generate an embedding for the description, returning None on failure."""
+    description = (description or "").strip()
+    if not description:
+        return None
+    try:
+        from apps.lessons.services import generate_embedding
+        return generate_embedding(description)
+    except Exception:
+        logger.exception("workspace: failed to embed description")
+        return None
+
+
+def _ensure_default_workspace(tenant):
+    """Create the General default workspace if the tenant has none.
+
+    Called automatically when creating the first workspace for a tenant.
+    Returns the default workspace.
+    """
+    from apps.journal.models import Workspace
+
+    existing_default = Workspace.objects.filter(tenant=tenant, is_default=True).first()
+    if existing_default is not None:
+        return existing_default
+
+    default_workspace = Workspace.objects.create(
+        tenant=tenant,
+        name=DEFAULT_WORKSPACE_NAME,
+        slug=DEFAULT_WORKSPACE_SLUG,
+        description=DEFAULT_WORKSPACE_DESCRIPTION,
+        description_embedding=_embed_workspace_description(DEFAULT_WORKSPACE_DESCRIPTION),
+        is_default=True,
+    )
+    return default_workspace
+
+
+class RuntimeWorkspaceListView(APIView):
+    """List or create workspaces for a tenant.
+
+    GET  /runtime/<tenant_id>/workspaces/        — List workspaces
+    POST /runtime/<tenant_id>/workspaces/        — Create workspace {name, description}
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        from apps.journal.models import Workspace
+
+        workspaces = Workspace.objects.filter(tenant=tenant).order_by(
+            "-is_default", "-last_used_at", "name"
+        )
+        active_id = tenant.active_workspace_id
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "workspaces": [
+                    _serialize_workspace(ws, active_workspace_id=active_id)
+                    for ws in workspaces
+                ],
+                "active_workspace_id": str(active_id) if active_id else None,
+                "limit": WORKSPACE_LIMIT,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        name = str(request.data.get("name", "")).strip()
+        description = str(request.data.get("description", "")).strip()
+
+        if not name:
+            return Response(
+                {"error": "invalid_request", "detail": "name is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(name) > 60:
+            return Response(
+                {"error": "invalid_request", "detail": "name must be 60 characters or less"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from apps.journal.models import Workspace
+
+        # Auto-create the default workspace on first creation
+        is_first_create = not Workspace.objects.filter(tenant=tenant).exists()
+        if is_first_create:
+            _ensure_default_workspace(tenant)
+
+        # Enforce max workspaces per tenant
+        current_count = Workspace.objects.filter(tenant=tenant).count()
+        if current_count >= WORKSPACE_LIMIT:
+            return Response(
+                {
+                    "error": "workspace_limit_reached",
+                    "detail": f"Maximum {WORKSPACE_LIMIT} workspaces per tenant",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        slug = _generate_unique_slug(tenant, name)
+        workspace = Workspace.objects.create(
+            tenant=tenant,
+            name=name,
+            slug=slug,
+            description=description,
+            description_embedding=_embed_workspace_description(description),
+            is_default=False,
+        )
+
+        # Make the new workspace active
+        tenant.active_workspace = workspace
+        tenant.save(update_fields=["active_workspace"])
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "workspace": _serialize_workspace(
+                    workspace, active_workspace_id=workspace.id
+                ),
+                "default_workspace_created": is_first_create,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class RuntimeWorkspaceDetailView(APIView):
+    """Update or delete a single workspace.
+
+    PATCH  /runtime/<tenant_id>/workspaces/<slug>/   — Update {name?, description?}
+    DELETE /runtime/<tenant_id>/workspaces/<slug>/   — Delete (not default)
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def patch(self, request, tenant_id, slug):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        from apps.journal.models import Workspace
+
+        workspace = Workspace.objects.filter(tenant=tenant, slug=slug).first()
+        if workspace is None:
+            return Response(
+                {"error": "workspace_not_found", "detail": f"No workspace with slug {slug!r}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        updated_fields = []
+
+        if "name" in request.data:
+            new_name = str(request.data.get("name", "")).strip()
+            if not new_name:
+                return Response(
+                    {"error": "invalid_request", "detail": "name cannot be empty"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if len(new_name) > 60:
+                return Response(
+                    {"error": "invalid_request", "detail": "name must be 60 characters or less"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            workspace.name = new_name
+            updated_fields.append("name")
+
+        if "description" in request.data:
+            new_description = str(request.data.get("description", "")).strip()
+            workspace.description = new_description
+            workspace.description_embedding = _embed_workspace_description(new_description)
+            updated_fields.extend(["description", "description_embedding"])
+
+        if updated_fields:
+            workspace.save(update_fields=updated_fields)
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "workspace": _serialize_workspace(
+                    workspace, active_workspace_id=tenant.active_workspace_id
+                ),
+                "updated": updated_fields,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def delete(self, request, tenant_id, slug):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        from apps.journal.models import Workspace
+
+        workspace = Workspace.objects.filter(tenant=tenant, slug=slug).first()
+        if workspace is None:
+            return Response(
+                {"error": "workspace_not_found", "detail": f"No workspace with slug {slug!r}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if workspace.is_default:
+            return Response(
+                {
+                    "error": "cannot_delete_default",
+                    "detail": "Cannot delete the default workspace",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # If deleting the active workspace, fall back to default
+        was_active = tenant.active_workspace_id == workspace.id
+        if was_active:
+            default_ws = Workspace.objects.filter(
+                tenant=tenant, is_default=True
+            ).first()
+            tenant.active_workspace = default_ws
+            tenant.save(update_fields=["active_workspace"])
+
+        deleted_id = str(workspace.id)
+        workspace.delete()
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "deleted_id": deleted_id,
+                "fell_back_to_default": was_active,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class RuntimeWorkspaceSwitchView(APIView):
+    """Switch the active workspace for a tenant.
+
+    POST /runtime/<tenant_id>/workspaces/switch/  — Body: {slug}
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        slug = str(request.data.get("slug", "")).strip()
+        if not slug:
+            return Response(
+                {"error": "invalid_request", "detail": "slug is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from apps.journal.models import Workspace
+
+        workspace = Workspace.objects.filter(tenant=tenant, slug=slug).first()
+        if workspace is None:
+            return Response(
+                {"error": "workspace_not_found", "detail": f"No workspace with slug {slug!r}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        previous_id = tenant.active_workspace_id
+        tenant.active_workspace = workspace
+        tenant.save(update_fields=["active_workspace"])
+
+        workspace.last_used_at = tz.now()
+        workspace.save(update_fields=["last_used_at"])
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "workspace": _serialize_workspace(
+                    workspace, active_workspace_id=workspace.id
+                ),
+                "previous_workspace_id": str(previous_id) if previous_id else None,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Reddit runtime endpoints
 # ---------------------------------------------------------------------------
 
