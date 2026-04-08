@@ -286,6 +286,49 @@ export interface CronJob {
   enabled: boolean;
 }
 
+// Workspaces — separate conversation contexts per topic domain
+export interface Workspace {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  is_default: boolean;
+  is_active: boolean;
+  created_at: string | null;
+  last_used_at: string | null;
+}
+
+export interface WorkspacesResponse {
+  tenant_id: string;
+  workspaces: Workspace[];
+  active_workspace_id: string | null;
+  limit: number;
+}
+
+export interface CreateWorkspaceResponse {
+  tenant_id: string;
+  workspace: Workspace;
+  default_workspace_created: boolean;
+}
+
+export interface UpdateWorkspaceResponse {
+  tenant_id: string;
+  workspace: Workspace;
+  updated: string[];
+}
+
+export interface DeleteWorkspaceResponse {
+  tenant_id: string;
+  deleted_id: string;
+  fell_back_to_default: boolean;
+}
+
+export interface SwitchWorkspaceResponse {
+  tenant_id: string;
+  workspace: Workspace;
+  previous_workspace_id: string | null;
+}
+
 export type AutomationKind = "daily_brief" | "weekly_review";
 export type AutomationStatus = "active" | "paused";
 export type AutomationScheduleType = "daily" | "weekly";

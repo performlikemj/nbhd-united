@@ -79,6 +79,11 @@ import {
   updateWorkingHours,
   fetchFinanceDashboard,
   updateFinanceSettings,
+  fetchWorkspaces,
+  createWorkspace,
+  updateWorkspace,
+  deleteWorkspace,
+  switchWorkspace,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -764,6 +769,66 @@ export function useBulkDeleteCronJobsMutation() {
     mutationFn: (ids: string[]) => bulkDeleteCronJobs(ids),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
+    },
+  });
+}
+
+// Workspaces
+export function useWorkspacesQuery() {
+  return useQuery({
+    queryKey: ["workspaces"],
+    queryFn: fetchWorkspaces,
+    staleTime: 30_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useCreateWorkspaceMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createWorkspace,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+    },
+  });
+}
+
+export function useUpdateWorkspaceMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, data }: { slug: string; data: Parameters<typeof updateWorkspace>[1] }) =>
+      updateWorkspace(slug, data),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+    },
+    onError: () => {
+      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+    },
+  });
+}
+
+export function useDeleteWorkspaceMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) => deleteWorkspace(slug),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+    },
+    onError: () => {
+      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+    },
+  });
+}
+
+export function useSwitchWorkspaceMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) => switchWorkspace(slug),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+    },
+    onError: () => {
+      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
     },
   });
 }
