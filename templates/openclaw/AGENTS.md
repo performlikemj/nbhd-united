@@ -57,6 +57,7 @@ Detailed behavioral rules live in `rules/` — loaded on demand:
 | `rules/memory.md` | Two-layer memory system, search order, when to write |
 | `rules/onboarding.md` | Timezone + location setup for new users |
 | `rules/messaging.md` | Cron delivery, check-in windows, automated routines |
+| `rules/workspaces.md` | Workspace routing, switching, transition markers, chip indicators |
 
 Read the relevant rule file when working in that context.
 

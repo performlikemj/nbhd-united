@@ -35,6 +35,17 @@
 | `nbhd_lessons_pending` | List lessons awaiting approval |
 | `nbhd_lesson_search` | Search approved lessons semantically |
 
+### Workspaces
+| Tool | Purpose |
+|------|---------|
+| `nbhd_workspace_list` | List all workspaces with active marker |
+| `nbhd_workspace_create` | Create a new workspace (auto-creates General default first time, max 4) |
+| `nbhd_workspace_update` | Update a workspace's name or description (re-embeds for routing) |
+| `nbhd_workspace_delete` | Delete a workspace (cannot delete the default; always confirm with user) |
+| `nbhd_workspace_switch` | Switch the active workspace (affects user's NEXT message, not current response) |
+
+See `rules/workspaces.md` for usage patterns.
+
 ### Platform
 | Tool | Purpose |
 |------|---------|

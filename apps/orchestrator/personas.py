@@ -1,8 +1,11 @@
 """Agent persona presets for OpenClaw workspace bootstrapping."""
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 PERSONAS: dict[str, dict[str, Any]] = {
@@ -367,6 +370,42 @@ def _load_doc_template(filename: str) -> str | None:
             return f.read().strip()
     except FileNotFoundError:
         return None
+
+
+def _rules_template_dir() -> str:
+    """Return the absolute path to templates/openclaw/rules/."""
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "templates",
+        "openclaw",
+        "rules",
+    )
+
+
+def render_workspace_rules() -> dict[str, str]:
+    """Discover and load all rule templates from templates/openclaw/rules/.
+
+    Returns a dict mapping filename → content for each .md file found.
+    Used by update_tenant_config to upload rules to workspace/rules/ on the
+    container's file share.
+    """
+    rules_dir = _rules_template_dir()
+    if not os.path.isdir(rules_dir):
+        return {}
+
+    rules: dict[str, str] = {}
+    for filename in sorted(os.listdir(rules_dir)):
+        if not filename.endswith(".md"):
+            continue
+        rule_path = os.path.join(rules_dir, filename)
+        try:
+            with open(rule_path, "r") as f:
+                content = f.read().strip()
+            if content:
+                rules[filename] = content
+        except OSError:
+            logger.warning("Failed to load rule template %s", filename)
+    return rules
 
 
 # Static docs shipped to every tenant workspace under docs/

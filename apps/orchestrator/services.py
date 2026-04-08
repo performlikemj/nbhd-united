@@ -299,7 +299,7 @@ def update_tenant_config(tenant_id: str) -> None:
     # so updates propagate without needing container env var changes.
     try:
         from .azure_client import upload_workspace_file
-        from .personas import render_workspace_files
+        from .personas import render_workspace_files, render_workspace_rules
 
         persona_key = (tenant.user.preferences or {}).get("agent_persona", "neighbor")
         workspace_files = render_workspace_files(persona_key, tenant=tenant)
@@ -328,6 +328,16 @@ def update_tenant_config(tenant_id: str) -> None:
             content = workspace_files.get(env_key, "")
             if content:
                 upload_workspace_file(str(tenant.id), file_path, content)
+
+        # Upload all rule templates to workspace/rules/ — referenced by AGENTS.md
+        # for on-demand loading. Auto-discovers all .md files in templates/openclaw/rules/.
+        rules = render_workspace_rules()
+        for filename, content in rules.items():
+            upload_workspace_file(
+                str(tenant.id),
+                f"workspace/rules/{filename}",
+                content,
+            )
     except Exception:
         logger.exception("Failed to upload workspace files for tenant %s", tenant_id)
 
