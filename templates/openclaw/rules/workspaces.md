@@ -31,6 +31,20 @@ Sure, here's what I found...
 
 **After the first response in a workspace, do NOT add the chip on subsequent replies.** The chip reappears only when the workspace changes again.
 
+## When the user explicitly asks to switch workspaces
+
+Triggers: "switch to X", "switch me to X", "go to my X workspace", "let's work on X", "open my X workspace", "change to X"
+
+**You MUST call the `nbhd_workspace_switch` tool — confirming verbally is not enough.** The marker on the user's NEXT message will reflect the new workspace, and the dashboard at /settings/workspaces will show the new active workspace, but only if you actually call the tool.
+
+Steps:
+1. Call `nbhd_workspace_list` if you don't already know the slug
+2. Call `nbhd_workspace_switch` with the slug
+3. Confirm to the user: "Switched to **X**." Add the `[X]` chip on this response.
+4. The user's next message will route to the new workspace's session.
+
+If you skip step 2, the database doesn't update, the dashboard stays on the old workspace, and routing keeps sending messages to the old session — even though you said you switched. Always call the tool.
+
 ## When the user implicitly corrects routing
 
 If the user says something like:
