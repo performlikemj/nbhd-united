@@ -310,6 +310,63 @@ class CronJobUpdateSnapshotFallbackTest(TestCase):
         self.assertEqual(created_job["name"], "Ghost Task")
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_session_target_only_patch_to_main_recreates_with_systemEvent(self, mock_invoke):
+        """PATCH {sessionTarget: 'main'} alone must re-shape the existing payload."""
+        mock_invoke.side_effect = [
+            # cron.list returns existing isolated job with agentTurn payload
+            {"jobs": [
+                {"jobId": "abc123", "name": "My Task", "sessionTarget": "isolated",
+                 "payload": {"kind": "agentTurn", "message": "do stuff"},
+                 "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"},
+                 "enabled": True},
+            ]},
+            {},  # cron.remove
+            {"name": "My Task", "enabled": True},  # cron.add
+        ]
+        resp = self.client.patch(
+            "/api/v1/cron-jobs/abc123/",
+            {"sessionTarget": "main"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        # Must take delete+recreate path so payload gets re-shaped
+        self.assertEqual(mock_invoke.call_count, 3)
+        self.assertEqual(mock_invoke.call_args_list[1][0][1], "cron.remove")
+        self.assertEqual(mock_invoke.call_args_list[2][0][1], "cron.add")
+        created_job = mock_invoke.call_args_list[2][0][2]["job"]
+        self.assertEqual(created_job["sessionTarget"], "main")
+        self.assertEqual(created_job["payload"]["kind"], "systemEvent")
+        self.assertEqual(created_job["payload"]["text"], "do stuff")
+        self.assertNotIn("message", created_job["payload"])
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_session_target_only_patch_to_isolated_recreates_with_agentTurn(self, mock_invoke):
+        """PATCH {sessionTarget: 'isolated'} alone must re-shape the existing payload."""
+        mock_invoke.side_effect = [
+            # cron.list returns existing main job with systemEvent payload
+            {"jobs": [
+                {"jobId": "abc123", "name": "My Task", "sessionTarget": "main",
+                 "payload": {"kind": "systemEvent", "text": "morning briefing"},
+                 "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": "UTC"},
+                 "enabled": True},
+            ]},
+            {},  # cron.remove
+            {"name": "My Task", "enabled": True},  # cron.add
+        ]
+        resp = self.client.patch(
+            "/api/v1/cron-jobs/abc123/",
+            {"sessionTarget": "isolated"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(mock_invoke.call_count, 3)
+        created_job = mock_invoke.call_args_list[2][0][2]["job"]
+        self.assertEqual(created_job["sessionTarget"], "isolated")
+        self.assertEqual(created_job["payload"]["kind"], "agentTurn")
+        self.assertEqual(created_job["payload"]["message"], "morning briefing")
+        self.assertNotIn("text", created_job["payload"])
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_update_existing_job_still_uses_delete_recreate(self, mock_invoke):
         """Job present in container still goes through normal delete+recreate."""
         mock_invoke.side_effect = [
