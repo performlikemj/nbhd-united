@@ -4,11 +4,18 @@
 /*  Session Mode Selector                                              */
 /*  Two explicit cards replacing the ambiguous toggle.                 */
 /*  Design reference: Stitch "Cerebral Flow" scheduled task panel.     */
+/*                                                                     */
+/*  Under the universal isolation cron model, every task runs          */
+/*  isolated. The choice here is whether the task pushes a Phase 2     */
+/*  summary back into the main session after running:                  */
+/*    foreground=true  → reports back to assistant if it sent the      */
+/*                       user a message                                */
+/*    foreground=false → silent, never reports back                    */
 /* ------------------------------------------------------------------ */
 
 interface SessionModeSelectorProps {
-  value: "main" | "isolated";
-  onChange: (value: "main" | "isolated") => void;
+  value: boolean; // foreground
+  onChange: (foreground: boolean) => void;
 }
 
 function ChatBubbleIcon({ filled }: { filled?: boolean }) {
@@ -35,6 +42,8 @@ export default function SessionModeSelector({
   value,
   onChange,
 }: SessionModeSelectorProps) {
+  const isForeground = value;
+  const isBackground = !value;
   return (
     <div>
       <p className="mb-3 text-sm font-medium text-ink-muted">Session mode</p>
@@ -43,15 +52,15 @@ export default function SessionModeSelector({
         role="radiogroup"
         aria-label="Session mode"
       >
-        {/* ── Foreground (main) ── */}
+        {/* ── Foreground ── */}
         <button
           type="button"
           role="radio"
-          aria-checked={value === "main"}
-          onClick={() => onChange("main")}
+          aria-checked={isForeground}
+          onClick={() => onChange(true)}
           className={[
             "group relative flex items-start gap-4 rounded-xl p-5 text-left transition-all duration-200 min-h-[44px]",
-            value === "main"
+            isForeground
               ? "border-2 border-accent bg-surface-elevated shadow-[0_0_24px_rgba(124,107,240,0.18)]"
               : "border border-border/40 bg-card/40 hover:bg-card/60 hover:border-border/60",
           ].join(" ")}
@@ -59,19 +68,19 @@ export default function SessionModeSelector({
           <span
             className={[
               "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg transition-colors",
-              value === "main"
+              isForeground
                 ? "bg-accent/20 text-accent"
                 : "bg-surface-hover text-ink-faint group-hover:text-accent/60",
             ].join(" ")}
           >
-            <ChatBubbleIcon filled={value === "main"} />
+            <ChatBubbleIcon filled={isForeground} />
           </span>
 
           <div className="min-w-0">
             <h4
               className={[
                 "font-headline font-semibold text-sm",
-                value === "main" ? "text-accent" : "text-ink-muted",
+                isForeground ? "text-accent" : "text-ink-muted",
               ].join(" ")}
             >
               Foreground
@@ -79,15 +88,15 @@ export default function SessionModeSelector({
             <p
               className={[
                 "mt-1 text-xs leading-relaxed",
-                value === "main" ? "text-ink" : "text-ink-faint/70",
+                isForeground ? "text-ink" : "text-ink-faint/70",
               ].join(" ")}
             >
-              Runs visibly. Results ARE shared with your assistant.
+              Reports back to your assistant if it sends you a message.
             </p>
             <p
               className={[
                 "mt-3 text-[10px] tracking-wide",
-                value === "main" ? "text-accent/60" : "text-ink-faint/40",
+                isForeground ? "text-accent/60" : "text-ink-faint/40",
               ].join(" ")}
             >
               Best for: reminders, briefings, daily summaries
@@ -95,15 +104,15 @@ export default function SessionModeSelector({
           </div>
         </button>
 
-        {/* ── Background (isolated) ── */}
+        {/* ── Background ── */}
         <button
           type="button"
           role="radio"
-          aria-checked={value === "isolated"}
-          onClick={() => onChange("isolated")}
+          aria-checked={isBackground}
+          onClick={() => onChange(false)}
           className={[
             "group relative flex items-start gap-4 rounded-xl p-5 text-left transition-all duration-200 min-h-[44px]",
-            value === "isolated"
+            isBackground
               ? "border-2 border-accent bg-surface-elevated shadow-[0_0_24px_rgba(124,107,240,0.18)]"
               : "border border-border/40 bg-card/40 hover:bg-card/60 hover:border-border/60",
           ].join(" ")}
@@ -111,7 +120,7 @@ export default function SessionModeSelector({
           <span
             className={[
               "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg transition-colors",
-              value === "isolated"
+              isBackground
                 ? "bg-accent/20 text-accent"
                 : "bg-surface-hover text-ink-faint group-hover:text-accent/60",
             ].join(" ")}
@@ -123,7 +132,7 @@ export default function SessionModeSelector({
             <h4
               className={[
                 "font-headline font-semibold text-sm",
-                value === "isolated" ? "text-accent" : "text-ink-muted",
+                isBackground ? "text-accent" : "text-ink-muted",
               ].join(" ")}
             >
               Background
@@ -131,15 +140,15 @@ export default function SessionModeSelector({
             <p
               className={[
                 "mt-1 text-xs leading-relaxed",
-                value === "isolated" ? "text-ink" : "text-ink-faint/70",
+                isBackground ? "text-ink" : "text-ink-faint/70",
               ].join(" ")}
             >
-              Runs silently. Results are NOT shared with your assistant.
+              Runs silently. Never reports back to your assistant.
             </p>
             <p
               className={[
                 "mt-3 text-[10px] tracking-wide",
-                value === "isolated" ? "text-accent/60" : "text-ink-faint/40",
+                isBackground ? "text-accent/60" : "text-ink-faint/40",
               ].join(" ")}
             >
               Best for: logging, file updates, data collection

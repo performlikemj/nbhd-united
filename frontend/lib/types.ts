@@ -279,11 +279,19 @@ export interface CronJob {
   jobId?: string;
   name: string;
   schedule: CronJobSchedule;
+  // Always "isolated" under the universal isolation model. Kept on the type
+  // for back-compat with the gateway response shape (legacy jobs may still
+  // report "main" until they are recreated).
   sessionTarget: string;
+  // Deprecated alongside sessionTarget. May still appear on legacy jobs.
   wakeMode?: string;
   payload: CronJobPayload;
   delivery: CronJobDelivery;
   enabled: boolean;
+  // Whether this task pushes a Phase 2 sync into the main session after it
+  // runs (only fires if the run actually sent the user a message). Default
+  // is true. Derived server-side from the message body's Phase 2 marker.
+  foreground?: boolean;
 }
 
 // Workspaces — separate conversation contexts per topic domain

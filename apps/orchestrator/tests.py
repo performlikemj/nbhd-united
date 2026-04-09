@@ -175,6 +175,76 @@ class ConfigGeneratorTest(TestCase):
             if job["name"] in interactive:
                 self.assertIn("delivery", job, f"{job['name']} should have delivery config")
 
+    # ── Universal isolation cron model ───────────────────────────────
+
+    def test_all_seed_jobs_run_isolated(self):
+        """Universal isolation: every cron job has sessionTarget=isolated."""
+        from .config_generator import build_cron_seed_jobs
+        self.tenant.heartbeat_enabled = True
+        jobs = build_cron_seed_jobs(self.tenant)
+        for job in jobs:
+            self.assertEqual(
+                job["sessionTarget"], "isolated",
+                f"{job['name']} must run isolated under universal isolation",
+            )
+            self.assertNotIn(
+                "wakeMode", job,
+                f"{job['name']} should not carry wakeMode (only valid on main jobs)",
+            )
+            self.assertEqual(
+                job["payload"]["kind"], "agentTurn",
+                f"{job['name']} payload kind must be agentTurn",
+            )
+            self.assertIn(
+                "message", job["payload"],
+                f"{job['name']} payload must use 'message' field, not 'text'",
+            )
+
+    def test_foreground_jobs_carry_phase2_sync_block(self):
+        """Foreground seed jobs have the Phase 2 sync wrapper appended."""
+        from .config_generator import build_cron_seed_jobs
+        self.tenant.heartbeat_enabled = True
+        jobs = build_cron_seed_jobs(self.tenant)
+        foreground_names = {
+            "Morning Briefing", "Evening Check-in", "Weekly Reflection",
+            "Week Ahead Review", "Heartbeat Check-in",
+        }
+        for job in jobs:
+            if job["name"] in foreground_names:
+                msg = job["payload"]["message"]
+                self.assertIn(
+                    f"_sync:{job['name']}", msg,
+                    f"{job['name']} should contain its sync cron name in the wrapper",
+                )
+                self.assertIn(
+                    "FINAL STEP — conditional sync", msg,
+                    f"{job['name']} should carry the Phase 2 sync block",
+                )
+                self.assertIn(
+                    "Did you send the user a message", msg,
+                    f"{job['name']} should carry the conditional guard",
+                )
+
+    def test_background_jobs_skip_phase2_sync_block(self):
+        """Background seed jobs (foreground=false) do NOT carry the Phase 2 wrapper."""
+        from .config_generator import build_cron_seed_jobs
+        jobs = build_cron_seed_jobs(self.tenant)
+        bg = next((j for j in jobs if j["name"] == "Background Tasks"), None)
+        self.assertIsNotNone(bg)
+        msg = bg["payload"]["message"]
+        self.assertNotIn("_sync:Background Tasks", msg)
+        self.assertNotIn("FINAL STEP — conditional sync", msg)
+
+    def test_heartbeat_is_foreground_with_conditional_sync(self):
+        """Heartbeat is foreground=true so it can sync on hours that nudged the user."""
+        from .config_generator import build_cron_seed_jobs
+        self.tenant.heartbeat_enabled = True
+        jobs = build_cron_seed_jobs(self.tenant)
+        hb = next((j for j in jobs if j["name"] == "Heartbeat Check-in"), None)
+        self.assertIsNotNone(hb)
+        self.assertIn("_sync:Heartbeat Check-in", hb["payload"]["message"])
+        self.assertIn("HEARTBEAT_OK", hb["payload"]["message"])
+
 
 class RestoreUserCronJobsTest(TestCase):
     """Tests for user cron job restore deduplication."""

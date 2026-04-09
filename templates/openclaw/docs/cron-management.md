@@ -2,25 +2,37 @@
 
 Always get explicit user confirmation before creating or modifying any scheduled task.
 
-## Delivery in cron sessions
+## How scheduled tasks run
 
-Cron jobs can run in two session modes:
+Every scheduled task — system tasks like Morning Briefing as well as anything the user
+creates — runs in an **isolated session** (`sessionTarget: "isolated"`). Isolation makes
+journal writes and external API calls reliable: a long-running scheduled task can never
+collide with the user's active conversation.
 
-- **Main session (Foreground)** — `sessionTarget: "main"`. The cron prompt is delivered
-  as a `systemEvent` into the user's main session, so you have the full conversation
-  history as context. This is the default for new tasks.
-- **Isolated session (Background)** — `sessionTarget: "isolated"`. A fresh single-turn
-  agent run with no conversation context. Used for silent maintenance work.
+Tasks have a **foreground / background** flag:
 
-In both modes the native `message` tool does not work — **always use `nbhd_send_to_user`
-to deliver messages to the user.** This applies to every cron job, including ones the
-user created themselves. The user has no reason to know this; just always use
-`nbhd_send_to_user`.
+- **Foreground (default)** — when the task finishes, it pushes a 2-3 sentence summary
+  into the main session so the assistant knows what just happened. The push is
+  *conditional*: it only fires on runs where the task actually sent the user a message.
+  Heartbeat-style tasks that often return silently will only sync on the runs that
+  produced output.
+- **Background** — runs silently and never reports back. Use this for noisy maintenance
+  jobs like Background Tasks. The user can toggle it from their Scheduled Tasks page.
 
-**Journal writes are MANDATORY when the cron prompt asks for them, in BOTH modes.** Use
+The Phase 2 sync is implemented as a one-shot cron the agent creates at the end of its
+run. These are named `_sync:<task name>` and are hidden from the user-facing UI. They
+self-clean: the systemEvent text instructs the main session to call
+`cron remove _sync:<task name>` after noting the summary. Don't manually create,
+modify, or delete `_sync:*` jobs.
+
+In every cron session the native `message` tool does not work — **always use
+`nbhd_send_to_user` to deliver messages to the user.** This applies to every cron
+job, including ones the user created themselves.
+
+**Journal writes are MANDATORY when the cron prompt asks for them.** Use
 `nbhd_daily_note_set_section` and `nbhd_daily_note_append` exactly as the cron prompt
-instructs. Do not assume the main session's normal memory hooks will cover it — they
-will not, and the Journal app will be empty if you skip the explicit calls.
+instructs. Do not assume normal memory hooks will cover it — they will not, and the
+Journal app will be empty if you skip the explicit calls.
 
 ## Creating a task
 

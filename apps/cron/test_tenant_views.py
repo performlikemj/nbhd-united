@@ -3,9 +3,16 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from rest_framework.test import APIClient
 
+from apps.cron.tenant_views import (
+    _is_hidden_cron,
+    _message_has_phase2_marker,
+    _normalize_job_for_universal_isolation,
+    _strip_phase2_block,
+    _wrap_message_with_phase2,
+)
 from apps.tenants.models import Tenant, User
 
 
@@ -48,18 +55,53 @@ class CronJobListCreateTest(TestCase):
         ]
         resp = self.client.post(
             "/api/v1/cron-jobs/",
-            {"name": "New Job", "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"}},
+            {
+                "name": "New Job",
+                "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"},
+                "payload": {"kind": "agentTurn", "message": "do thing"},
+            },
             format="json",
         )
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(mock_invoke.call_count, 2)
         # First call: cap check
         self.assertEqual(mock_invoke.call_args_list[0][0][1], "cron.list")
-        # Second call: actual create
+        # Second call: actual create — must be normalized to isolated/agentTurn
+        # and message must be wrapped with the Phase 2 sync block (foreground default)
         self.assertEqual(mock_invoke.call_args_list[1][0][1], "cron.add")
-        self.assertEqual(mock_invoke.call_args_list[1][0][2], {
-            "job": {"name": "New Job", "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"}},
-        })
+        created_job = mock_invoke.call_args_list[1][0][2]["job"]
+        self.assertEqual(created_job["name"], "New Job")
+        self.assertEqual(created_job["sessionTarget"], "isolated")
+        self.assertNotIn("wakeMode", created_job)
+        self.assertEqual(created_job["payload"]["kind"], "agentTurn")
+        # Phase 2 sync block should be appended (foreground default = True)
+        self.assertIn("_sync:New Job", created_job["payload"]["message"])
+        self.assertIn("do thing", created_job["payload"]["message"])
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_create_cron_job_background_skips_phase2_wrap(self, mock_invoke):
+        """foreground=false → message is NOT wrapped with the Phase 2 block."""
+        mock_invoke.side_effect = [
+            {"jobs": []},
+            {"name": "Silent Job", "enabled": True},
+        ]
+        resp = self.client.post(
+            "/api/v1/cron-jobs/",
+            {
+                "name": "Silent Job",
+                "schedule": {"kind": "cron", "expr": "0 3 * * *", "tz": "UTC"},
+                "payload": {"kind": "agentTurn", "message": "quiet maintenance"},
+                "foreground": False,
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        created_job = mock_invoke.call_args_list[1][0][2]["job"]
+        self.assertEqual(created_job["sessionTarget"], "isolated")
+        self.assertEqual(created_job["payload"]["message"], "quiet maintenance")
+        self.assertNotIn("_sync:", created_job["payload"]["message"])
+        # foreground is a Django-only field — never sent to OpenClaw
+        self.assertNotIn("foreground", created_job)
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_create_cron_job_rejected_at_cap(self, mock_invoke):
@@ -269,7 +311,6 @@ class CronJobUpdateSnapshotFallbackTest(TestCase):
         resp = self.client.patch(
             "/api/v1/cron-jobs/abc123/",
             {
-                "sessionTarget": "main",
                 "payload": {"kind": "agentTurn", "message": "do stuff"},
             },
             format="json",
@@ -279,11 +320,10 @@ class CronJobUpdateSnapshotFallbackTest(TestCase):
         # Should call cron.list then cron.add (no cron.remove since job vanished)
         self.assertEqual(mock_invoke.call_args_list[0][0][1], "cron.list")
         self.assertEqual(mock_invoke.call_args_list[1][0][1], "cron.add")
-        # The recreated job should have the updated sessionTarget
+        # Universal isolation: every job is sessionTarget=isolated, agentTurn payload
         created_job = mock_invoke.call_args_list[1][0][2]["job"]
-        self.assertEqual(created_job["sessionTarget"], "main")
-        # payload kind should be fixed to systemEvent for main session
-        self.assertEqual(created_job["payload"]["kind"], "systemEvent")
+        self.assertEqual(created_job["sessionTarget"], "isolated")
+        self.assertEqual(created_job["payload"]["kind"], "agentTurn")
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_update_vanished_job_not_in_snapshot_creates_fresh(self, mock_invoke):
@@ -298,7 +338,6 @@ class CronJobUpdateSnapshotFallbackTest(TestCase):
         resp = self.client.patch(
             "/api/v1/cron-jobs/Ghost Task/",
             {
-                "sessionTarget": "main",
                 "payload": {"kind": "agentTurn", "message": "hello"},
             },
             format="json",
@@ -308,46 +347,55 @@ class CronJobUpdateSnapshotFallbackTest(TestCase):
         self.assertEqual(mock_invoke.call_args_list[1][0][1], "cron.add")
         created_job = mock_invoke.call_args_list[1][0][2]["job"]
         self.assertEqual(created_job["name"], "Ghost Task")
+        self.assertEqual(created_job["sessionTarget"], "isolated")
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
-    def test_session_target_only_patch_to_main_recreates_with_systemEvent(self, mock_invoke):
-        """PATCH {sessionTarget: 'main'} alone must re-shape the existing payload."""
+    def test_legacy_main_payload_migrated_to_isolated_on_recreate(self, mock_invoke):
+        """A legacy main-session job in the gateway gets normalized to isolated on edit."""
         mock_invoke.side_effect = [
-            # cron.list returns existing isolated job with agentTurn payload
+            # cron.list returns a legacy main-session job with systemEvent payload
             {"jobs": [
-                {"jobId": "abc123", "name": "My Task", "sessionTarget": "isolated",
-                 "payload": {"kind": "agentTurn", "message": "do stuff"},
-                 "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"},
+                {"jobId": "abc123", "name": "Legacy Task", "sessionTarget": "main",
+                 "wakeMode": "now",
+                 "payload": {"kind": "systemEvent", "text": "morning briefing"},
+                 "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": "UTC"},
                  "enabled": True},
             ]},
             {},  # cron.remove
-            {"name": "My Task", "enabled": True},  # cron.add
+            {"name": "Legacy Task", "enabled": True},  # cron.add
         ]
         resp = self.client.patch(
             "/api/v1/cron-jobs/abc123/",
-            {"sessionTarget": "main"},
+            # Edit just changes the payload — but the recreate path must
+            # also force isolated and drop wakeMode
+            {"payload": {"kind": "agentTurn", "message": "morning briefing"}},
             format="json",
         )
         self.assertEqual(resp.status_code, 200)
-        # Must take delete+recreate path so payload gets re-shaped
         self.assertEqual(mock_invoke.call_count, 3)
-        self.assertEqual(mock_invoke.call_args_list[1][0][1], "cron.remove")
-        self.assertEqual(mock_invoke.call_args_list[2][0][1], "cron.add")
         created_job = mock_invoke.call_args_list[2][0][2]["job"]
-        self.assertEqual(created_job["sessionTarget"], "main")
-        self.assertEqual(created_job["payload"]["kind"], "systemEvent")
-        self.assertEqual(created_job["payload"]["text"], "do stuff")
-        self.assertNotIn("message", created_job["payload"])
+        self.assertEqual(created_job["sessionTarget"], "isolated")
+        self.assertEqual(created_job["payload"]["kind"], "agentTurn")
+        self.assertEqual(
+            created_job["payload"]["message"].split("\n\n---\n")[0],
+            "morning briefing",
+        )
+        self.assertNotIn("text", created_job["payload"])
+        self.assertNotIn("wakeMode", created_job)
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
-    def test_session_target_to_main_strips_delivery_channel(self, mock_invoke):
-        """OpenClaw v2026.4.5+ rejects delivery.channel on main jobs — must strip it."""
+    def test_legacy_delivery_channel_preserved_on_recreate(self, mock_invoke):
+        """delivery.channel/to are preserved under universal isolation.
+
+        OpenClaw allows channel-based delivery on isolated jobs, and the
+        previous main-only restriction is gone now that every job is
+        isolated. User-created channel-based crons should keep working.
+        """
         mock_invoke.side_effect = [
-            # cron.list returns existing isolated job with telegram delivery
             {"jobs": [
                 {"jobId": "abc123", "name": "Daily Workout Plan",
-                 "sessionTarget": "isolated",
-                 "payload": {"kind": "agentTurn", "message": "workout"},
+                 "sessionTarget": "main",
+                 "payload": {"kind": "systemEvent", "text": "workout"},
                  "schedule": {"kind": "cron", "expr": "0 5 * * *", "tz": "Asia/Tokyo"},
                  "delivery": {"channel": "telegram", "to": "12345", "mode": "auto"},
                  "enabled": True},
@@ -357,26 +405,33 @@ class CronJobUpdateSnapshotFallbackTest(TestCase):
         ]
         resp = self.client.patch(
             "/api/v1/cron-jobs/abc123/",
-            {"sessionTarget": "main"},
+            {"payload": {"kind": "agentTurn", "message": "workout"}},
             format="json",
         )
         self.assertEqual(resp.status_code, 200)
         created_job = mock_invoke.call_args_list[2][0][2]["job"]
-        self.assertEqual(created_job["sessionTarget"], "main")
-        # delivery must be stripped down to mode=none — no channel/to
-        self.assertEqual(created_job["delivery"], {"mode": "none"})
-        self.assertNotIn("channel", created_job["delivery"])
-        self.assertNotIn("to", created_job["delivery"])
+        self.assertEqual(created_job["sessionTarget"], "isolated")
+        self.assertEqual(
+            created_job["delivery"],
+            {"channel": "telegram", "to": "12345", "mode": "auto"},
+        )
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
-    def test_session_target_only_patch_to_isolated_recreates_with_agentTurn(self, mock_invoke):
-        """PATCH {sessionTarget: 'isolated'} alone must re-shape the existing payload."""
+    def test_foreground_toggle_off_strips_phase2_block(self, mock_invoke):
+        """PATCH {foreground: false} must strip the Phase 2 sync block."""
         mock_invoke.side_effect = [
-            # cron.list returns existing main job with systemEvent payload
             {"jobs": [
-                {"jobId": "abc123", "name": "My Task", "sessionTarget": "main",
-                 "payload": {"kind": "systemEvent", "text": "morning briefing"},
-                 "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": "UTC"},
+                {"jobId": "abc123", "name": "My Task",
+                 "sessionTarget": "isolated",
+                 "payload": {
+                     "kind": "agentTurn",
+                     # Existing message has the marker (foreground)
+                     "message": (
+                         "do stuff\n\n---\n**FINAL STEP — conditional sync to "
+                         "the main session:**\n... wrapper content ..."
+                     ),
+                 },
+                 "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"},
                  "enabled": True},
             ]},
             {},  # cron.remove
@@ -384,16 +439,45 @@ class CronJobUpdateSnapshotFallbackTest(TestCase):
         ]
         resp = self.client.patch(
             "/api/v1/cron-jobs/abc123/",
-            {"sessionTarget": "isolated"},
+            {"foreground": False},
             format="json",
         )
         self.assertEqual(resp.status_code, 200)
+        # foreground change is not a patchable field → goes through delete+recreate
         self.assertEqual(mock_invoke.call_count, 3)
         created_job = mock_invoke.call_args_list[2][0][2]["job"]
         self.assertEqual(created_job["sessionTarget"], "isolated")
-        self.assertEqual(created_job["payload"]["kind"], "agentTurn")
-        self.assertEqual(created_job["payload"]["message"], "morning briefing")
-        self.assertNotIn("text", created_job["payload"])
+        # Marker must be stripped from the message
+        self.assertNotIn("FINAL STEP", created_job["payload"]["message"])
+        self.assertEqual(created_job["payload"]["message"], "do stuff")
+        # foreground is a Django-only field — never sent to OpenClaw
+        self.assertNotIn("foreground", created_job)
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_foreground_toggle_on_appends_phase2_block(self, mock_invoke):
+        """PATCH {foreground: true} on a background job must append the Phase 2 block."""
+        mock_invoke.side_effect = [
+            {"jobs": [
+                {"jobId": "abc123", "name": "My Task",
+                 "sessionTarget": "isolated",
+                 "payload": {"kind": "agentTurn", "message": "quiet maintenance"},
+                 "schedule": {"kind": "cron", "expr": "0 3 * * *", "tz": "UTC"},
+                 "enabled": True},
+            ]},
+            {},
+            {"name": "My Task", "enabled": True},
+        ]
+        resp = self.client.patch(
+            "/api/v1/cron-jobs/abc123/",
+            {"foreground": True},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        created_job = mock_invoke.call_args_list[2][0][2]["job"]
+        self.assertIn("_sync:My Task", created_job["payload"]["message"])
+        self.assertTrue(
+            created_job["payload"]["message"].startswith("quiet maintenance"),
+        )
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_update_existing_job_still_uses_delete_recreate(self, mock_invoke):
@@ -410,7 +494,6 @@ class CronJobUpdateSnapshotFallbackTest(TestCase):
         resp = self.client.patch(
             "/api/v1/cron-jobs/abc123/",
             {
-                "sessionTarget": "main",
                 "payload": {"kind": "agentTurn", "message": "new"},
             },
             format="json",
@@ -433,3 +516,114 @@ class InactiveTenantTest(TestCase):
         resp = self.client.get("/api/v1/cron-jobs/")
         self.assertEqual(resp.status_code, 502)
         mock_invoke.assert_not_called()
+
+
+class HiddenCronHelperTest(SimpleTestCase):
+    """Unit tests for the _is_hidden_cron helper."""
+
+    def test_named_system_jobs_are_hidden(self):
+        self.assertTrue(_is_hidden_cron("Background Tasks"))
+        self.assertTrue(_is_hidden_cron("Heartbeat Check-in"))
+
+    def test_sync_prefix_jobs_are_hidden(self):
+        self.assertTrue(_is_hidden_cron("_sync:Morning Briefing"))
+        self.assertTrue(_is_hidden_cron("_sync:Anything Goes"))
+        self.assertTrue(_is_hidden_cron("_sync:"))
+
+    def test_normal_jobs_are_visible(self):
+        self.assertFalse(_is_hidden_cron("Morning Briefing"))
+        self.assertFalse(_is_hidden_cron("My Custom Task"))
+        self.assertFalse(_is_hidden_cron("sync:not-prefixed"))
+
+    def test_empty_name_is_visible(self):
+        self.assertFalse(_is_hidden_cron(""))
+        self.assertFalse(_is_hidden_cron(None))  # type: ignore[arg-type]
+
+
+class NormalizationHelperTest(SimpleTestCase):
+    """Unit tests for _normalize_job_for_universal_isolation."""
+
+    def test_full_job_dict_forced_to_isolated(self):
+        out = _normalize_job_for_universal_isolation({
+            "name": "Test",
+            "sessionTarget": "main",
+            "wakeMode": "now",
+            "payload": {"kind": "systemEvent", "text": "hello"},
+            "delivery": {"channel": "telegram", "to": "12345", "mode": "auto"},
+        })
+        self.assertEqual(out["sessionTarget"], "isolated")
+        self.assertNotIn("wakeMode", out)
+        self.assertEqual(out["payload"], {"kind": "agentTurn", "message": "hello"})
+        # Delivery is left untouched — channel-based delivery still works
+        # under universal isolation (the main-only restriction is gone).
+        self.assertEqual(
+            out["delivery"],
+            {"channel": "telegram", "to": "12345", "mode": "auto"},
+        )
+
+    def test_partial_patch_left_alone(self):
+        """If none of the structural fields are in the input, normalization is a no-op."""
+        out = _normalize_job_for_universal_isolation({
+            "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"},
+            "enabled": True,
+        })
+        self.assertEqual(
+            out,
+            {
+                "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"},
+                "enabled": True,
+            },
+        )
+
+    def test_payload_only_triggers_normalization(self):
+        out = _normalize_job_for_universal_isolation({
+            "payload": {"kind": "systemEvent", "text": "hi"},
+        })
+        self.assertEqual(out["sessionTarget"], "isolated")
+        self.assertEqual(out["payload"], {"kind": "agentTurn", "message": "hi"})
+
+    def test_already_isolated_payload_preserved(self):
+        out = _normalize_job_for_universal_isolation({
+            "sessionTarget": "isolated",
+            "payload": {"kind": "agentTurn", "message": "hi"},
+        })
+        self.assertEqual(out["sessionTarget"], "isolated")
+        self.assertEqual(out["payload"], {"kind": "agentTurn", "message": "hi"})
+
+
+class Phase2WrapHelperTest(SimpleTestCase):
+    """Unit tests for _wrap_message_with_phase2 / _strip_phase2_block."""
+
+    def test_foreground_appends_block(self):
+        wrapped = _wrap_message_with_phase2("base prompt", "Test Job", foreground=True)
+        self.assertTrue(wrapped.startswith("base prompt"))
+        self.assertIn("FINAL STEP", wrapped)
+        self.assertIn("_sync:Test Job", wrapped)
+
+    def test_foreground_idempotent(self):
+        once = _wrap_message_with_phase2("base", "Test Job", foreground=True)
+        twice = _wrap_message_with_phase2(once, "Test Job", foreground=True)
+        self.assertEqual(once, twice)
+        # Marker should appear exactly once
+        self.assertEqual(twice.count("FINAL STEP — conditional sync"), 1)
+
+    def test_background_strips_existing_block(self):
+        wrapped = _wrap_message_with_phase2("base", "Test Job", foreground=True)
+        self.assertTrue(_message_has_phase2_marker(wrapped))
+        unwrapped = _wrap_message_with_phase2(wrapped, "Test Job", foreground=False)
+        self.assertEqual(unwrapped, "base")
+        self.assertFalse(_message_has_phase2_marker(unwrapped))
+
+    def test_background_no_marker_passthrough(self):
+        out = _wrap_message_with_phase2("plain", "Test Job", foreground=False)
+        self.assertEqual(out, "plain")
+
+    def test_strip_handles_messages_without_marker(self):
+        self.assertEqual(_strip_phase2_block("just a message"), "just a message")
+        self.assertEqual(_strip_phase2_block(""), "")
+
+    def test_marker_detection(self):
+        wrapped = _wrap_message_with_phase2("base", "Test Job", foreground=True)
+        self.assertTrue(_message_has_phase2_marker(wrapped))
+        self.assertFalse(_message_has_phase2_marker("base"))
+        self.assertFalse(_message_has_phase2_marker(""))

@@ -19,38 +19,89 @@ from .gateway_client import GatewayError, invoke_gateway_tool
 logger = logging.getLogger(__name__)
 
 
-def _fix_payload_kind_for_session_target(data: dict) -> dict:
-    """Fix payload kind, field name, and delivery for the session target.
+def _normalize_job_for_universal_isolation(data: dict) -> dict:
+    """Force every full cron job dict to isolated/agentTurn before sending to OpenClaw.
 
-    OpenClaw's cron schema uses ``anyOf`` validation:
-    - ``systemEvent`` requires ``{kind: "systemEvent", text: "..."}``
-    - ``agentTurn``   requires ``{kind: "agentTurn", message: "..."}``
+    Two-phase cron model: ALL scheduled tasks run isolated. The user-facing
+    API still accepts a ``foreground`` boolean (default ``True``) that
+    controls whether the Phase 2 sync block is appended to the message body
+    by ``_wrap_message_with_phase2`` — this function only handles the
+    structural normalization (sessionTarget, payload kind/field).
 
-    The frontend always sends ``agentTurn`` + ``message``, so we correct
-    both the kind and the content field name here.
+    Delivery is left untouched: OpenClaw allows ``delivery.channel``/``to``
+    on isolated jobs (the previous main-only restriction is gone now that
+    every job is isolated), so user-created channel-based delivery still
+    works.
 
-    OpenClaw v2026.4.5+ also rejects ``delivery.channel`` config on
-    main-session crons (only ``isolated`` may set channel/to). Strip
-    those fields when targeting main and force ``delivery.mode="none"``
-    — the user-facing channel is handled by Django's ``nbhd_send_to_user``
-    plugin, not by OpenClaw's built-in messaging.
+    No-op on partial patches: if none of ``sessionTarget``, ``wakeMode``,
+    or ``payload`` are in the input, returns the data unchanged. This keeps
+    simple `cron.update` patches (e.g. schedule-only edits) flowing through
+    the gateway as plain patches.
     """
-    session_target = data.get("sessionTarget", "main")
-    payload = data.get("payload")
-    if isinstance(payload, dict) and session_target == "main":
-        text = payload.get("text") or payload.get("message", "")
-        data = {**data, "payload": {"kind": "systemEvent", "text": text}}
-    elif isinstance(payload, dict) and session_target != "main":
+    triggering_fields = {"sessionTarget", "wakeMode", "payload"}
+    if not triggering_fields & set(data.keys()):
+        return data
+
+    out = {**data}
+
+    # All cron jobs run isolated
+    out["sessionTarget"] = "isolated"
+    out.pop("wakeMode", None)  # only valid on main-session jobs
+
+    # Normalize payload to agentTurn/message
+    payload = out.get("payload")
+    if isinstance(payload, dict):
         message = payload.get("message") or payload.get("text", "")
-        data = {**data, "payload": {"kind": "agentTurn", "message": message}}
+        out["payload"] = {"kind": "agentTurn", "message": message}
 
-    # Strip channel/to from delivery on main-session jobs — OpenClaw
-    # rejects them with "cron channel delivery config is only supported
-    # for sessionTarget=isolated".
-    if session_target == "main" and isinstance(data.get("delivery"), dict):
-        data = {**data, "delivery": {"mode": "none"}}
+    return out
 
-    return data
+
+def _strip_phase2_block(message: str) -> str:
+    """Remove the Phase 2 sync block from a message if present.
+
+    The block always begins with the wrapper preamble ``\\n\\n---\\n**<MARKER>``,
+    so we slice everything before that. Used when toggling a foreground job
+    to background — we strip the existing wrapper rather than relying on the
+    agent to ignore it.
+    """
+    from apps.orchestrator.config_generator import PHASE2_SYNC_MARKER
+
+    if not isinstance(message, str) or PHASE2_SYNC_MARKER not in message:
+        return message
+    sentinel = "\n\n---\n**" + PHASE2_SYNC_MARKER
+    head, _, _ = message.partition(sentinel)
+    return head
+
+
+def _wrap_message_with_phase2(message: str, job_name: str, foreground: bool) -> str:
+    """Append Phase 2 sync instructions to a job's message if foreground.
+
+    Idempotent: if foreground and the message already contains the Phase 2
+    marker, returns it unchanged. If not foreground, strips any existing
+    block so toggling off the flag actually removes the wrapper text.
+    """
+    from apps.orchestrator.config_generator import (
+        PHASE2_SYNC_MARKER,
+        _phase2_sync_block,
+    )
+
+    if not isinstance(message, str):
+        return message
+
+    has_marker = PHASE2_SYNC_MARKER in message
+    if not foreground:
+        return _strip_phase2_block(message) if has_marker else message
+    if has_marker:
+        return message
+    return message + _phase2_sync_block(job_name)
+
+
+def _message_has_phase2_marker(message: str) -> bool:
+    """Detect whether a job's message already contains the Phase 2 sync block."""
+    from apps.orchestrator.config_generator import PHASE2_SYNC_MARKER
+
+    return isinstance(message, str) and PHASE2_SYNC_MARKER in message
 
 
 # System cron jobs that should be hidden from the user's Scheduled Tasks page.
@@ -59,6 +110,21 @@ HIDDEN_SYSTEM_CRONS = frozenset({
     "Background Tasks",
     "Heartbeat Check-in",
 })
+
+# Job-name prefixes that should be hidden from the user-facing UI. Used by
+# the two-phase cron pattern: foreground tasks create short-lived
+# `_sync:<job name>` crons that fire a summary into the main session and
+# then self-remove. We never want users to see them in the UI.
+HIDDEN_SYSTEM_CRON_PREFIXES: tuple[str, ...] = ("_sync:",)
+
+
+def _is_hidden_cron(name: str) -> bool:
+    """Whether a cron job name should be hidden from the user's UI."""
+    if not name:
+        return False
+    if name in HIDDEN_SYSTEM_CRONS:
+        return True
+    return name.startswith(HIDDEN_SYSTEM_CRON_PREFIXES)
 
 
 def _get_tenant_for_user(user) -> Tenant:
@@ -115,15 +181,25 @@ class CronJobListCreateView(APIView):
             except Exception:
                 logger.warning("Failed to snapshot cron jobs for tenant %s", tenant.id, exc_info=True)
 
-        # Filter out hidden system crons from user-facing list
+        # Filter out hidden system crons from user-facing list, and enrich
+        # each visible job with its `foreground` flag (derived from the
+        # presence of the Phase 2 sync marker in the message body — the
+        # message itself is the source of truth, no separate storage needed).
         if isinstance(data, dict) and "jobs" in data:
-            data = {
-                **data,
-                "jobs": [
-                    j for j in data["jobs"]
-                    if j.get("name") not in HIDDEN_SYSTEM_CRONS
-                ],
-            }
+            visible_jobs = []
+            for j in data["jobs"]:
+                if not isinstance(j, dict):
+                    continue
+                name = j.get("name", "")
+                if _is_hidden_cron(name):
+                    continue
+                message = ""
+                payload = j.get("payload") or {}
+                if isinstance(payload, dict):
+                    message = payload.get("message") or payload.get("text", "") or ""
+                j = {**j, "foreground": _message_has_phase2_marker(message)}
+                visible_jobs.append(j)
+            data = {**data, "jobs": visible_jobs}
         return Response(data)
 
     MAX_CRON_JOBS = 10
@@ -180,7 +256,20 @@ class CronJobListCreateView(APIView):
             if chat_id and not delivery.get("to"):
                 data = {**data, "delivery": {**delivery, "to": str(chat_id)}}
 
-        data = _fix_payload_kind_for_session_target(data)
+        # `foreground` is a Django-only flag — never sent to OpenClaw. We use
+        # it to decide whether to append the Phase 2 sync block to the message.
+        # Default True per the universal isolation model.
+        foreground = bool(data.pop("foreground", True))
+
+        data = _normalize_job_for_universal_isolation(data)
+
+        # Wrap the message after normalization so we know payload.message exists
+        payload = data.get("payload") or {}
+        if isinstance(payload, dict):
+            wrapped = _wrap_message_with_phase2(
+                payload.get("message", ""), data["name"], foreground,
+            )
+            data = {**data, "payload": {**payload, "message": wrapped}}
 
         try:
             result = invoke_gateway_tool(tenant, "cron.add", {"job": data})
@@ -194,11 +283,13 @@ class CronJobDetailView(APIView):
 
     # Fields that the OpenClaw gateway accepts in cron.update patch.
     # "payload" (with message/kind) and arbitrary top-level fields like "id"
-    # are rejected — full edits need a delete+recreate cycle.
-    _PATCHABLE_FIELDS = {"schedule", "sessionTarget", "wakeMode", "delivery", "enabled"}
+    # are rejected — full edits need a delete+recreate cycle. Under the
+    # universal isolation model, sessionTarget and wakeMode are no longer
+    # user-controlled, so they are not in this set.
+    _PATCHABLE_FIELDS = {"schedule", "delivery", "enabled"}
 
     def patch(self, request, job_name: str):
-        if job_name in HIDDEN_SYSTEM_CRONS:
+        if _is_hidden_cron(job_name):
             return Response(
                 {"detail": "System tasks cannot be modified."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -215,16 +306,19 @@ class CronJobDetailView(APIView):
             if chat_id and not delivery.get("to"):
                 data = {**data, "delivery": {**delivery, "to": str(chat_id)}}
 
-        data = _fix_payload_kind_for_session_target(data)
+        # `foreground` is a Django-only flag — never sent to OpenClaw.
+        # If present in the request, we must rebuild the message body and
+        # therefore force the delete+recreate path.
+        foreground_explicit = "foreground" in data
+        foreground_request = bool(data.pop("foreground", True))
+
+        data = _normalize_job_for_universal_isolation(data)
 
         # If non-patchable fields are present (e.g. payload with message),
-        # we must delete+recreate instead of patching in-place.
-        # Also force delete+recreate when sessionTarget is changing —
-        # OpenClaw requires the existing payload to be re-shaped
-        # (kind/text vs kind/message) to match the new session target,
-        # which the simple-patch path can't do.
+        # we must delete+recreate instead of patching in-place. Foreground
+        # toggles also require delete+recreate so we can rewrap the message.
         has_unpatchable = bool(set(data.keys()) - self._PATCHABLE_FIELDS)
-        if "sessionTarget" in data:
+        if foreground_explicit:
             has_unpatchable = True
 
         try:
@@ -272,7 +366,39 @@ class CronJobDetailView(APIView):
                 merged["name"] = existing.get("name", job_name)
                 if "enabled" not in data:
                     merged["enabled"] = existing.get("enabled", True)
-                merged = _fix_payload_kind_for_session_target(merged)
+                merged = _normalize_job_for_universal_isolation(merged)
+
+                # Decide foreground for the rewritten job:
+                # - If the request explicitly set it, honor that.
+                # - Otherwise preserve the existing job's foreground state by
+                #   detecting the marker in its message.
+                if foreground_explicit:
+                    foreground_resolved = foreground_request
+                else:
+                    existing_payload = existing.get("payload") or {}
+                    existing_message = ""
+                    if isinstance(existing_payload, dict):
+                        existing_message = (
+                            existing_payload.get("message")
+                            or existing_payload.get("text", "")
+                            or ""
+                        )
+                    foreground_resolved = _message_has_phase2_marker(existing_message)
+
+                # Wrap the merged message with Phase 2 (or strip it if going background)
+                merged_payload = merged.get("payload") or {}
+                if isinstance(merged_payload, dict):
+                    base_message = merged_payload.get("message", "")
+                    # Strip any existing wrapper before re-wrapping so we never
+                    # double-append the block
+                    base_message = _strip_phase2_block(base_message)
+                    rewrapped = _wrap_message_with_phase2(
+                        base_message, merged.get("name", job_name), foreground_resolved,
+                    )
+                    merged = {
+                        **merged,
+                        "payload": {**merged_payload, "message": rewrapped},
+                    }
 
                 if job_vanished:
                     # Job doesn't exist in container — just create it directly.
@@ -307,7 +433,7 @@ class CronJobDetailView(APIView):
         return Response(result.get("details", result))
 
     def delete(self, request, job_name: str):
-        if job_name in HIDDEN_SYSTEM_CRONS:
+        if _is_hidden_cron(job_name):
             return Response(
                 {"detail": "System tasks cannot be deleted."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -325,7 +451,7 @@ class CronJobToggleView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, job_name: str):
-        if job_name in HIDDEN_SYSTEM_CRONS:
+        if _is_hidden_cron(job_name):
             return Response(
                 {"detail": "System tasks cannot be modified."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -379,7 +505,7 @@ class CronJobBulkDeleteView(APIView):
                 unique_ids.append(job_id)
 
         # Block deletion of hidden system crons
-        blocked = [jid for jid in unique_ids if jid in HIDDEN_SYSTEM_CRONS]
+        blocked = [jid for jid in unique_ids if _is_hidden_cron(jid)]
         if blocked:
             return Response(
                 {"detail": f"System tasks cannot be deleted: {', '.join(blocked)}"},

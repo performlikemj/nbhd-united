@@ -101,8 +101,13 @@ class CronDeliveryTargetInjectionTests(TestCase):
         self.assertEqual(job_arg["job"]["delivery"], {"mode": "announce", "channel": "telegram", "to": "98765"})
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
-    def test_create_main_strips_delivery_channel(self, mock_invoke):
-        """Main-session crons must have delivery.channel/to stripped."""
+    def test_create_legacy_main_target_normalized_to_isolated(self, mock_invoke):
+        """Legacy sessionTarget=main is normalized to isolated, delivery preserved.
+
+        Under universal isolation, every job runs isolated. The previous
+        main-only delivery restriction is gone, so channel/to are kept
+        and (where applicable) the missing 'to' is auto-injected.
+        """
         mock_invoke.return_value = {"status": "ok"}
         payload = {
             "name": "Morning Briefing",
@@ -114,7 +119,11 @@ class CronDeliveryTargetInjectionTests(TestCase):
         response = self.client.post("/api/v1/cron-jobs/", payload, format="json")
         self.assertEqual(response.status_code, 201)
         job_arg = mock_invoke.call_args.args[2]
-        self.assertEqual(job_arg["job"]["delivery"], {"mode": "none"})
+        self.assertEqual(job_arg["job"]["sessionTarget"], "isolated")
+        self.assertEqual(
+            job_arg["job"]["delivery"],
+            {"mode": "announce", "channel": "telegram", "to": "12345"},
+        )
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_update_injects_telegram_to(self, mock_invoke):
