@@ -46,7 +46,7 @@ interface TaskTemplate {
   name: string;
   message: string;
   expr: string;
-  sessionTarget?: "main" | "isolated";
+  foreground?: boolean;
 }
 
 const TASK_TEMPLATES: TaskTemplate[] = [
@@ -56,7 +56,7 @@ const TASK_TEMPLATES: TaskTemplate[] = [
     message:
       "Check my calendar, weather, and any important emails. Give me a quick summary to start my day.",
     expr: "0 7 * * *",
-    sessionTarget: "main",
+    foreground: true,
   },
   {
     icon: "📰",
@@ -64,7 +64,7 @@ const TASK_TEMPLATES: TaskTemplate[] = [
     message:
       "Search for the latest news in tech, AI, and my areas of interest. Summarize the top 5 stories.",
     expr: "0 12 * * *",
-    sessionTarget: "main",
+    foreground: true,
   },
   {
     icon: "🌤️",
@@ -72,7 +72,7 @@ const TASK_TEMPLATES: TaskTemplate[] = [
     message:
       "Check the weather forecast for today and tomorrow. Let me know if I should bring an umbrella or dress warm.",
     expr: "0 6 * * *",
-    sessionTarget: "main",
+    foreground: true,
   },
   {
     icon: "📅",
@@ -80,7 +80,7 @@ const TASK_TEMPLATES: TaskTemplate[] = [
     message:
       "Review my calendar for today and remind me of upcoming events, deadlines, or meetings.",
     expr: "0 8 * * 1-5",
-    sessionTarget: "main",
+    foreground: true,
   },
   {
     icon: "🌙",
@@ -88,7 +88,7 @@ const TASK_TEMPLATES: TaskTemplate[] = [
     message:
       "Summarize what happened today — any messages I missed, tasks completed, and what's coming up tomorrow.",
     expr: "0 21 * * *",
-    sessionTarget: "main",
+    foreground: true,
   },
   {
     icon: "💪",
@@ -96,7 +96,7 @@ const TASK_TEMPLATES: TaskTemplate[] = [
     message:
       "Give me a weekly review: what got done this week, what's pending, and priorities for next week.",
     expr: "0 10 * * 1",
-    sessionTarget: "main",
+    foreground: true,
   },
 ];
 
@@ -126,7 +126,7 @@ type CreateFormState = {
   message: string;
   deliveryMode: string;
   deliveryChannel: string;
-  sessionTarget: "main" | "isolated";
+  foreground: boolean;
 };
 
 function defaultCreateForm(tz?: string): CreateFormState {
@@ -139,7 +139,7 @@ function defaultCreateForm(tz?: string): CreateFormState {
     message: "",
     deliveryMode: "announce",
     deliveryChannel: "telegram",
-    sessionTarget: "main",
+    foreground: true,
   };
 }
 
@@ -149,7 +149,7 @@ type EditFormState = {
   message: string;
   deliveryMode: string;
   deliveryChannel: string;
-  sessionTarget: "main" | "isolated";
+  foreground: boolean;
 };
 
 function toEditForm(job: CronJob): EditFormState {
@@ -159,7 +159,7 @@ function toEditForm(job: CronJob): EditFormState {
     message: stripPromptPrefix(job.payload.message),
     deliveryMode: job.delivery.mode,
     deliveryChannel: job.delivery.channel ?? "",
-    sessionTarget: (job.sessionTarget === "main" ? "main" : "isolated"),
+    foreground: job.foreground ?? true,
   };
 }
 
@@ -236,7 +236,7 @@ export default function SettingsCronJobsPage() {
     message: "",
     deliveryMode: "announce",
     deliveryChannel: "",
-    sessionTarget: "main",
+    foreground: true,
   });
   const [editFeedback, setEditFeedback] = useState<ActionFeedback>({ status: "idle", text: "" });
   const editTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -325,7 +325,7 @@ export default function SettingsCronJobsPage() {
       name: template.name,
       message: template.message,
       expr: template.expr,
-      sessionTarget: template.sessionTarget ?? "main",
+      foreground: template.foreground ?? true,
     }));
   };
 
@@ -339,8 +339,7 @@ export default function SettingsCronJobsPage() {
       await createMutation.mutateAsync({
         name: createForm.name.trim(),
         schedule: { kind: "cron", expr: createForm.expr.trim(), tz: createForm.tz.trim() },
-        sessionTarget: createForm.sessionTarget,
-        ...(createForm.sessionTarget === "main" ? { wakeMode: "now" } : {}),
+        foreground: createForm.foreground,
         payload: {
           kind: "agentTurn",
           message: createForm.message.trim(),
@@ -380,8 +379,7 @@ export default function SettingsCronJobsPage() {
         name: editingName,
         data: {
           schedule: { kind: "cron", expr: editForm.expr.trim(), tz: editForm.tz.trim() },
-          sessionTarget: editForm.sessionTarget,
-          ...(editForm.sessionTarget === "main" ? { wakeMode: "now" } : {}),
+          foreground: editForm.foreground,
           payload: {
             kind: "agentTurn",
             message: editForm.message.trim(),
@@ -602,8 +600,8 @@ export default function SettingsCronJobsPage() {
 
               <div className="md:col-span-2">
                 <SessionModeSelector
-                  value={createForm.sessionTarget}
-                  onChange={(v) => setCreateForm((prev) => ({ ...prev, sessionTarget: v }))}
+                  value={createForm.foreground}
+                  onChange={(v) => setCreateForm((prev) => ({ ...prev, foreground: v }))}
                 />
               </div>
 
@@ -835,7 +833,7 @@ export default function SettingsCronJobsPage() {
                             </span>
                           ) : null}
                           <span className="rounded-full bg-surface-hover px-2.5 py-0.5 text-xs text-ink-muted">
-                            {job.sessionTarget === "main" ? "Main" : "Background"}
+                            {(job.foreground ?? true) ? "Foreground" : "Background"}
                           </span>
                         </div>
                       </div>
@@ -961,8 +959,8 @@ export default function SettingsCronJobsPage() {
                                   </label>
 
                                   <SessionModeSelector
-                                    value={editForm.sessionTarget}
-                                    onChange={(v) => setEditForm((prev) => ({ ...prev, sessionTarget: v }))}
+                                    value={editForm.foreground}
+                                    onChange={(v) => setEditForm((prev) => ({ ...prev, foreground: v }))}
                                   />
 
                                   <div className="text-sm text-ink-muted">
@@ -1030,8 +1028,8 @@ export default function SettingsCronJobsPage() {
 
                           <div className="md:col-span-2">
                             <SessionModeSelector
-                              value={editForm.sessionTarget}
-                              onChange={(v) => setEditForm((prev) => ({ ...prev, sessionTarget: v }))}
+                              value={editForm.foreground}
+                              onChange={(v) => setEditForm((prev) => ({ ...prev, foreground: v }))}
                             />
                           </div>
 

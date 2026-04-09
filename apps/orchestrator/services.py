@@ -813,10 +813,38 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
 
     ]
 
+    # System job names that may need delete+recreate when payload changes
+    # (because OpenClaw rejects payload patches via cron.update). The
+    # universal isolation refactor (2026-04) reshapes payloads from
+    # systemEvent/text → agentTurn/message + Phase 2 sync block, so this
+    # path is the migration channel for existing tenants.
+    _SYSTEM_JOB_NAMES = {
+        "Morning Briefing", "Evening Check-in", "Weekly Reflection",
+        "Week Ahead Review", "Background Tasks", "Heartbeat Check-in",
+    }
+
     def _is_default_prompt(existing_message: str) -> bool:
         """Return True if the existing prompt matches a known default (old or current)."""
         msg = existing_message.strip()
         return any(msg.startswith(prefix) for prefix in _KNOWN_DEFAULT_PREFIXES)
+
+    def _strip_date_line(message: str) -> str:
+        """Strip the leading 'Current date and time:' preamble line.
+
+        ``_prepare_cron_prompt`` injects today's date at the top of every
+        cron message, which means existing-vs-desired comparison would
+        otherwise differ every day and trigger churn. Compare the
+        structural body only.
+        """
+        if not isinstance(message, str):
+            return ""
+        if not message.startswith("Current date and time:"):
+            return message
+        # The date preamble ends at the first blank line (\n\n)
+        idx = message.find("\n\n")
+        if idx == -1:
+            return message
+        return message[idx + 2 :]
 
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
 
@@ -842,7 +870,10 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
         desired_payload = desired.get("payload", {})
         desired_message = desired_payload.get("message", "")
 
-        if existing_message != desired_message:
+        # Compare structural body only — strip the date preamble that
+        # _prepare_cron_prompt injects, otherwise every refresh would
+        # churn even when nothing semantic changed.
+        if _strip_date_line(existing_message) != _strip_date_line(desired_message):
             if _is_default_prompt(existing_message):
                 patch["payload"] = desired_payload
             else:
@@ -864,6 +895,32 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
 
         if not patch:
             continue  # Nothing to update
+
+        # OpenClaw's cron.update rejects payload changes — patching prompts
+        # in-place is silently broken. When a system job needs a new payload,
+        # delete it and re-add the desired version (which already carries the
+        # correct shape and Phase 2 wrapper from build_cron_seed_jobs).
+        if "payload" in patch and name in _SYSTEM_JOB_NAMES:
+            try:
+                gateway_job_id = existing.get("id") or existing.get("jobId") or job_id
+                invoke_gateway_tool(
+                    tenant, "cron.remove", {"jobId": gateway_job_id},
+                )
+                invoke_gateway_tool(tenant, "cron.add", {"job": desired})
+                updated += 1
+                logger.info(
+                    "update_system_cron_prompts: recreated '%s' for tenant %s "
+                    "(payload changed — used delete+create)",
+                    name, tenant_id,
+                )
+                continue
+            except GatewayError:
+                logger.exception(
+                    "update_system_cron_prompts: delete+create failed for '%s' tenant %s",
+                    name, tenant_id,
+                )
+                errors += 1
+                continue
 
         try:
             invoke_gateway_tool(tenant, "cron.update", {"jobId": job_id, "patch": patch})

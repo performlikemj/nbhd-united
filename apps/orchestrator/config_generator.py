@@ -34,6 +34,62 @@ _CRON_CONTEXT_PREAMBLE = (
 )
 
 
+# Marker used by `_wrap_message_with_phase2` and `update_system_cron_prompts` to
+# detect that a job's message already contains the Phase 2 sync block. The
+# wrapper text below MUST contain this exact substring.
+PHASE2_SYNC_MARKER = "FINAL STEP — conditional sync to the main session"
+
+
+def _phase2_sync_block(job_name: str) -> str:
+    """Instructions appended to any foreground cron prompt.
+
+    Tells the agent to create a one-shot cron after Phase 1 finishes — but
+    ONLY if the run actually sent the user a message. Silent runs (e.g.
+    Heartbeat replying HEARTBEAT_OK) skip the sync. The cron uses a
+    date-specific expression so it can only match once per year, and the
+    systemEvent text includes a self-removal instruction so the main session
+    cleans up on receipt.
+    """
+    return (
+        "\n\n---\n"
+        f"**{PHASE2_SYNC_MARKER}:**\n"
+        "**Guard:** Did you send the user a message via `nbhd_send_to_user` during this "
+        "run? If NO (you returned silently, replied HEARTBEAT_OK, or decided nothing was "
+        "new), STOP HERE — do not create any sync cron. The main session only needs to "
+        "know about user-visible activity.\n\n"
+        "If YES, create a one-shot cron that injects a brief summary into the main session "
+        "so the assistant knows what just happened:\n\n"
+        "1. Compose a 2-3 sentence summary: what sections you wrote, what you sent the "
+        "user, anything notable to surface later. This is for the main session's CONTEXT, "
+        "not a user message.\n"
+        "2. Compute a cron expression that fires ~2 minutes from now using the date/time "
+        "from the preamble. Format: `<minute> <hour> <day-of-month> <month> *`. Add 2 to "
+        "the current minute; wrap to next hour if it overflows 59. The expression is "
+        "date-specific so it can only match once.\n"
+        "3. Call `cron add` with:\n"
+        f"   - name: `_sync:{job_name}`\n"
+        "   - schedule: {kind: cron, expr: <computed>, tz: <user timezone>}\n"
+        "   - sessionTarget: main\n"
+        "   - wakeMode: now\n"
+        "   - payload.kind: systemEvent\n"
+        f"   - payload.text: \"[Sync — {job_name}] <your 2-3 sentence summary>. "
+        f"After noting this, run: cron remove _sync:{job_name}\"\n"
+        "4. If `cron add` fails, accept it — Phase 1 work already completed. Do NOT retry "
+        "and do NOT message the user again.\n"
+    )
+
+
+def _build_cron_message(prompt: str, job_name: str, foreground: bool, tenant: "Tenant") -> str:
+    """Compose a cron job's message: date preamble + prompt + (optional) Phase 2 sync.
+
+    Centralizes the message-building so seed jobs and tests stay consistent.
+    """
+    base = _prepare_cron_prompt(prompt, tenant)
+    if foreground:
+        return base + _phase2_sync_block(job_name)
+    return base
+
+
 def _prepare_cron_prompt(prompt: str, tenant: "Tenant") -> str:
     """Prepend date context and shared preamble to a cron prompt.
 
@@ -132,7 +188,8 @@ _MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "Use YYYY-MM-DD in the user's timezone context when passing `date` explicitly (avoid UTC drift).\n\n"
     "Note: These are default sections. The user may customize or remove them — "
     "only fill in sections that exist in their template.\n\n"
-    "**IMPORTANT: Send exactly ONE message. Do not send multiple messages.**\n"
+    "**IMPORTANT: Send exactly ONE user-facing message via `nbhd_send_to_user`. "
+    "After that message is sent, proceed to the FINAL STEP described below.**\n"
 )
 
 def _build_morning_briefing_prompt(tenant) -> str:
@@ -206,7 +263,8 @@ _EVENING_CHECKIN_PROMPT = (
     "- If any active goals saw progress, mention it (one line)\n"
     "- One prompt: 'Anything to add or adjust before tomorrow?'\n"
     "- If you suggested lessons, mention it briefly\n\n"
-    "**IMPORTANT: Send exactly ONE message. Do not send multiple messages.**\n"
+    "**IMPORTANT: Send exactly ONE user-facing message via `nbhd_send_to_user`. "
+    "After that message is sent, proceed to the FINAL STEP described below.**\n"
 )
 
 _WEEK_AHEAD_REVIEW_PROMPT = (
@@ -243,7 +301,8 @@ _WEEK_AHEAD_REVIEW_PROMPT = (
     "   - Active goals status (1-2 lines)\n"
     "   - Any cron adjustments needed (or 'all good, no changes')\n"
     "   - If nothing conflicts, keep it short: 'All good for this week.'\n\n"
-    "**IMPORTANT: Send exactly ONE message. Do not send multiple messages.**\n"
+    "**IMPORTANT: Send exactly ONE user-facing message via `nbhd_send_to_user`. "
+    "After that message is sent, proceed to the FINAL STEP described below.**\n"
 )
 
 _HEARTBEAT_CHECKIN_PROMPT = (
@@ -262,12 +321,14 @@ _HEARTBEAT_CHECKIN_PROMPT = (
     "- Was it marked done or addressed anywhere in the note? → skip it\n"
     "- Is it genuinely new information the user hasn't seen today? → keep it\n\n"
     "**Step 3 — Act.**\n"
-    "If nothing survives the cross-reference: reply `HEARTBEAT_OK`\n\n"
+    "If nothing survives the cross-reference: reply `HEARTBEAT_OK` and STOP. "
+    "Do NOT proceed to the FINAL STEP — silent runs skip the sync.\n\n"
     "If something genuinely new needs attention:\n"
     "a. Send the user exactly ONE brief message via `nbhd_send_to_user`.\n"
     "b. Then append a one-line summary to the daily note under heading 'Heartbeat Log' "
     "via `nbhd_daily_note_append` (format: `- HH:MM — <what you nudged about>`). "
-    "This prevents the next heartbeat from repeating the same nudge.\n\n"
+    "This prevents the next heartbeat from repeating the same nudge.\n"
+    "c. Then proceed to the FINAL STEP described below.\n\n"
     "**IMPORTANT: Do NOT message unless you have something genuinely NEW to say. "
     "Do NOT send multiple messages. Quality over quantity.**\n"
 )
@@ -289,7 +350,9 @@ _WEEKLY_REFLECTION_PROMPT = (
     "combining their input with what you already know from journal data.\n\n"
     "If the user doesn't respond, that's OK — the Monday morning review will "
     "auto-generate a summary from available data.\n\n"
-    "**Send exactly ONE message. Keep it casual and inviting, not a data dump.**\n"
+    "**Send exactly ONE user-facing message via `nbhd_send_to_user`. Keep it casual "
+    "and inviting, not a data dump. After that message is sent, proceed to the "
+    "FINAL STEP described below.**\n"
 )
 
 _BACKGROUND_TASKS_PROMPT = (
@@ -367,7 +430,12 @@ def _build_heartbeat_cron(tenant: Tenant) -> dict | None:
         "model": HEARTBEAT_MODEL,
         "payload": {
             "kind": "agentTurn",
-            "message": _prepare_cron_prompt(_HEARTBEAT_CHECKIN_PROMPT, tenant),
+            # Heartbeat is foreground=true: the Phase 2 sync block contains a
+            # guard that skips the sync on HEARTBEAT_OK runs, so silent hours
+            # stay silent for both user and main session.
+            "message": _build_cron_message(
+                _HEARTBEAT_CHECKIN_PROMPT, "Heartbeat Check-in", foreground=True, tenant=tenant,
+            ),
         },
         "delivery": {"mode": "none"},
         "enabled": True,
@@ -389,16 +457,20 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     # delete+recreate these jobs with the correct tz at that point.
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
 
+    # All scheduled tasks run isolated (sessionTarget=isolated, payload.kind=agentTurn).
+    # The "foreground" flag controls whether the Phase 2 sync block is appended:
+    #   foreground=True  → conditional sync to main session if the run sent a user message
+    #   foreground=False → never sync (used only for guaranteed-silent jobs)
     jobs = [
         {
             "name": "Morning Briefing",
             "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": user_tz},
-            "sessionTarget": "main",
-            "wakeMode": "now",
+            "sessionTarget": "isolated",
             "payload": {
-                "kind": "systemEvent",
-                "text": _prepare_cron_prompt(
-                    _build_morning_briefing_prompt(tenant), tenant
+                "kind": "agentTurn",
+                "message": _build_cron_message(
+                    _build_morning_briefing_prompt(tenant),
+                    "Morning Briefing", foreground=True, tenant=tenant,
                 ),
             },
             "delivery": {"mode": "none"},
@@ -407,11 +479,13 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
         {
             "name": "Evening Check-in",
             "schedule": {"kind": "cron", "expr": "0 21 * * *", "tz": user_tz},
-            "sessionTarget": "main",
-            "wakeMode": "now",
+            "sessionTarget": "isolated",
             "payload": {
-                "kind": "systemEvent",
-                "text": _prepare_cron_prompt(_EVENING_CHECKIN_PROMPT, tenant),
+                "kind": "agentTurn",
+                "message": _build_cron_message(
+                    _EVENING_CHECKIN_PROMPT,
+                    "Evening Check-in", foreground=True, tenant=tenant,
+                ),
             },
             "delivery": {"mode": "none"},
             "enabled": True,
@@ -419,11 +493,13 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
         {
             "name": "Weekly Reflection",
             "schedule": {"kind": "cron", "expr": "0 20 * * 0", "tz": user_tz},
-            "sessionTarget": "main",
-            "wakeMode": "now",
+            "sessionTarget": "isolated",
             "payload": {
-                "kind": "systemEvent",
-                "text": _prepare_cron_prompt(_WEEKLY_REFLECTION_PROMPT, tenant),
+                "kind": "agentTurn",
+                "message": _build_cron_message(
+                    _WEEKLY_REFLECTION_PROMPT,
+                    "Weekly Reflection", foreground=True, tenant=tenant,
+                ),
             },
             "delivery": {"mode": "none"},
             "enabled": True,
@@ -431,11 +507,13 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
         {
             "name": "Week Ahead Review",
             "schedule": {"kind": "cron", "expr": "0 8 * * 1", "tz": user_tz},
-            "sessionTarget": "main",
-            "wakeMode": "now",
+            "sessionTarget": "isolated",
             "payload": {
-                "kind": "systemEvent",
-                "text": _prepare_cron_prompt(_WEEK_AHEAD_REVIEW_PROMPT, tenant),
+                "kind": "agentTurn",
+                "message": _build_cron_message(
+                    _WEEK_AHEAD_REVIEW_PROMPT,
+                    "Week Ahead Review", foreground=True, tenant=tenant,
+                ),
             },
             "delivery": {"mode": "none"},
             "enabled": True,
@@ -446,15 +524,19 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "sessionTarget": "isolated",
             "payload": {
                 "kind": "agentTurn",
-                "message": _prepare_cron_prompt(_BACKGROUND_TASKS_PROMPT, tenant),
+                # foreground=False: prompt explicitly says "do NOT message the user",
+                # so the sync wrapper would be dead text. Skip it to save tokens.
+                "message": _build_cron_message(
+                    _BACKGROUND_TASKS_PROMPT,
+                    "Background Tasks", foreground=False, tenant=tenant,
+                ),
             },
             "delivery": {"mode": "none"},
             "enabled": True,
         },
         # NOTE: Nightly Extraction is NOT an OpenClaw cron job — it's a
         # Django endpoint (/api/v1/journal/extract/) triggered via QStash.
-        # OpenClaw cron payloads: "agentTurn" for isolated sessions,
-        # "systemEvent" for main sessions.  See apps/journal/extraction_views.py.
+        # See apps/journal/extraction_views.py.
     ]
 
     # Heartbeat cron — hourly during user's chosen window, cheap model
