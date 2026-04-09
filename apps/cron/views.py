@@ -342,7 +342,10 @@ def force_reseed_crons(request):
     from apps.cron.gateway_client import invoke_gateway_tool, GatewayError
 
     # Only touch system-managed jobs — preserve user-created crons
-    SYSTEM_JOB_NAMES = {"Morning Briefing", "Evening Check-in", "Week Ahead Review", "Background Tasks"}
+    SYSTEM_JOB_NAMES = {
+        "Morning Briefing", "Evening Check-in", "Weekly Reflection",
+        "Week Ahead Review", "Background Tasks",
+    }
 
     tenants = Tenant.objects.filter(
         status=Tenant.Status.ACTIVE,
@@ -411,18 +414,25 @@ def force_reseed_crons(request):
         except Exception:
             pass  # Non-critical
 
-        # Migrate all non-admin jobs to main session
+        # Universal isolation: all jobs run isolated. The legacy "migrate
+        # to main session" pass that used to live here was removed in the
+        # universal isolation refactor — it would have flipped freshly
+        # seeded jobs (which now intentionally use sessionTarget=isolated)
+        # back to main, undoing the new model.
+        #
+        # Flip any user-created jobs that are still on legacy main back to
+        # isolated, so the universal model holds across the whole system.
         ADMIN_JOBS = {"Background Tasks", "Heartbeat Check-in"}
         try:
             all_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
             all_jobs = all_result.get("jobs", []) if isinstance(all_result, dict) else all_result if isinstance(all_result, list) else []
-            migrated = 0
+            unmigrated = 0
             for job in all_jobs:
                 if not isinstance(job, dict):
                     continue
                 if job.get("name") in ADMIN_JOBS:
                     continue
-                if job.get("sessionTarget") == "main":
+                if job.get("sessionTarget") != "main":
                     continue
                 job_id = job.get("jobId") or job.get("id")
                 if not job_id:
@@ -430,13 +440,13 @@ def force_reseed_crons(request):
                 try:
                     invoke_gateway_tool(tenant, "cron.update", {
                         "jobId": job_id,
-                        "patch": {"sessionTarget": "main", "wakeMode": "now"},
+                        "patch": {"sessionTarget": "isolated"},
                     })
-                    migrated += 1
+                    unmigrated += 1
                 except GatewayError:
                     pass  # Best-effort
-            if migrated > 0:
-                entry["migrated_to_main"] = migrated
+            if unmigrated > 0:
+                entry["migrated_to_isolated"] = unmigrated
         except Exception:
             pass  # Non-critical
 

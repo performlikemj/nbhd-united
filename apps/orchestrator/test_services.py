@@ -387,17 +387,20 @@ class SeedCronJobsTest(TestCase):
         mock_invoke.assert_not_called()
 
     def test_cron_seed_jobs_use_correct_payload_kind(self):
-        """Main-session jobs must use systemEvent; isolated jobs must use agentTurn."""
+        """Universal isolation: every seeded job uses agentTurn payload."""
         from apps.orchestrator.config_generator import build_cron_seed_jobs
 
         jobs = build_cron_seed_jobs(self.tenant)
         for job in jobs:
-            expected = "systemEvent" if job.get("sessionTarget") == "main" else "agentTurn"
+            self.assertEqual(
+                job.get("sessionTarget"),
+                "isolated",
+                f"Job '{job['name']}' must run isolated under universal isolation",
+            )
             self.assertEqual(
                 job["payload"]["kind"],
-                expected,
-                f"Job '{job['name']}' (sessionTarget={job.get('sessionTarget')}) "
-                f"uses payload kind='{job['payload']['kind']}' but should be '{expected}'",
+                "agentTurn",
+                f"Job '{job['name']}' must use agentTurn payload kind",
             )
 
 
