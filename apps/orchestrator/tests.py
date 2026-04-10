@@ -57,7 +57,7 @@ class ConfigGeneratorTest(TestCase):
         config = generate_openclaw_config(self.tenant)
         models = config["agents"]["defaults"]["models"]
         aliases = sorted(v.get("alias") for v in models.values())
-        self.assertEqual(aliases, ["kimi", "minimax"])
+        self.assertEqual(aliases, ["gemma", "kimi", "minimax"])
 
     def test_audio_model_defaults_to_whisper(self):
         self.tenant.model_tier = "starter"

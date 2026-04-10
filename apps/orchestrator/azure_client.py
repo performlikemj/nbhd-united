@@ -654,6 +654,13 @@ def create_container_app(
                         "volumeMounts": [
                             {"volumeName": "workspace", "mountPath": "/home/node/.openclaw"},
                             {"volumeName": "sessions-scratch", "mountPath": "/home/node/.openclaw/agents"},
+                            # tasks/ holds the OpenClaw 2026.4.5 task-run
+                            # registry (runs.sqlite).  Must be on local
+                            # storage because the runtime calls chmod(0o700)
+                            # which Azure File Share rejects with EPERM.
+                            # Cron jobs are NOT stored here (they live in
+                            # cron/jobs.json on the workspace file share).
+                            {"volumeName": "tasks-scratch", "mountPath": "/home/node/.openclaw/tasks"},
                         ],
                     },
                 ],
@@ -665,6 +672,10 @@ def create_container_app(
                     },
                     {
                         "name": "sessions-scratch",
+                        "storageType": "EmptyDir",
+                    },
+                    {
+                        "name": "tasks-scratch",
                         "storageType": "EmptyDir",
                     },
                 ],
