@@ -196,16 +196,35 @@ export default function register(api) {
     {
       name: "nbhd_finance_list_accounts",
       description:
-        "List all active financial accounts with current balances, interest rates, and payment info.",
+        "List financial accounts with current balances, interest rates, and payment info. By default returns only active accounts. Set archived_only=true to see accounts the user has archived (so they can restore one), or include_archived=true to see everything.",
       parameters: {
         type: "object",
         additionalProperties: false,
-        properties: {},
+        properties: {
+          archived_only: {
+            type: "boolean",
+            description:
+              "When true, return only archived accounts instead of active ones. Use this to help the user find an account to restore.",
+          },
+          include_archived: {
+            type: "boolean",
+            description:
+              "When true, return both active and archived accounts. Each row includes an is_active field. Ignored if archived_only is true.",
+          },
+        },
       },
-      async execute() {
+      async execute(_id, params) {
+        const input = asObject(params);
+        const query = {};
+        if (input.archived_only) {
+          query.archived = "true";
+        } else if (input.include_archived) {
+          query.archived = "all";
+        }
         const payload = await callRuntime(api, {
           path: financePath(api, "/accounts/"),
           method: "GET",
+          query,
         });
         return renderPayload(payload);
       },
@@ -297,6 +316,71 @@ export default function register(api) {
           body: {
             account_nickname: asTrimmedString(input.account_nickname),
             new_balance: input.new_balance,
+          },
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Archive Account ──────────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_finance_archive_account",
+      description:
+        "Archive a financial account. Hides it from the Gravity dashboard and removes it from debt totals and payoff calculations, while preserving the record and its transaction history. Use this when the user has a duplicate, stale, consolidated, or paid-off account they want out of their view. This is NOT a delete — the account can be restored later with nbhd_finance_unarchive_account. Fuzzy-matches account by nickname.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          account_nickname: {
+            type: "string",
+            description: "Nickname of the account to archive (fuzzy matched).",
+          },
+        },
+        required: ["account_nickname"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const payload = await callRuntime(api, {
+          path: financePath(api, "/accounts/archive/"),
+          method: "POST",
+          body: {
+            account_nickname: asTrimmedString(input.account_nickname),
+          },
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Unarchive Account ────────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_finance_unarchive_account",
+      description:
+        "Restore a previously archived financial account. It will reappear on the Gravity dashboard and be included in totals and payoff calculations again. If unsure of the exact nickname, call nbhd_finance_list_accounts with archived_only=true first. Returns an error if an active account already exists with the same nickname — in that case, rename the active one first.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          account_nickname: {
+            type: "string",
+            description:
+              "Nickname of the archived account to restore (fuzzy matched).",
+          },
+        },
+        required: ["account_nickname"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const payload = await callRuntime(api, {
+          path: financePath(api, "/accounts/unarchive/"),
+          method: "POST",
+          body: {
+            account_nickname: asTrimmedString(input.account_nickname),
           },
         });
         return renderPayload(payload);

@@ -11,10 +11,12 @@ from .views import (
 )
 from .runtime_views import (
     RuntimeFinanceAccountsView,
+    RuntimeFinanceArchiveAccountView,
     RuntimeFinanceBalanceUpdateView,
     RuntimeFinancePayoffView,
     RuntimeFinanceSummaryView,
     RuntimeFinanceTransactionsView,
+    RuntimeFinanceUnarchiveAccountView,
 )
 
 urlpatterns = [
@@ -35,6 +37,16 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/accounts/",
         RuntimeFinanceAccountsView.as_view(),
         name="runtime-finance-accounts",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/accounts/archive/",
+        RuntimeFinanceArchiveAccountView.as_view(),
+        name="runtime-finance-archive-account",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/accounts/unarchive/",
+        RuntimeFinanceUnarchiveAccountView.as_view(),
+        name="runtime-finance-unarchive-account",
     ),
     path(
         "runtime/<uuid:tenant_id>/transactions/",

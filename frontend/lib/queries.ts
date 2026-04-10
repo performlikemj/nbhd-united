@@ -78,6 +78,9 @@ import {
   fetchWorkingHours,
   updateWorkingHours,
   fetchFinanceDashboard,
+  fetchArchivedFinanceAccounts,
+  deleteFinanceAccount,
+  unarchiveFinanceAccount,
   updateFinanceSettings,
   fetchWorkspaces,
   createWorkspace,
@@ -880,6 +883,37 @@ export function useFinanceDashboardQuery() {
     queryFn: fetchFinanceDashboard,
     staleTime: 30_000,
     enabled: isLoggedIn(),
+  });
+}
+
+export function useArchivedFinanceAccountsQuery(enabled: boolean = false) {
+  return useQuery({
+    queryKey: ["finance-archived-accounts"],
+    queryFn: fetchArchivedFinanceAccounts,
+    staleTime: 30_000,
+    enabled: isLoggedIn() && enabled,
+  });
+}
+
+export function useArchiveFinanceAccountMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => deleteFinanceAccount(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["finance-dashboard"] });
+      void qc.invalidateQueries({ queryKey: ["finance-archived-accounts"] });
+    },
+  });
+}
+
+export function useUnarchiveFinanceAccountMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => unarchiveFinanceAccount(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["finance-dashboard"] });
+      void qc.invalidateQueries({ queryKey: ["finance-archived-accounts"] });
+    },
   });
 }
 

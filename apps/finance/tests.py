@@ -453,6 +453,181 @@ class RuntimeFinanceViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
+    # ── Archive / Unarchive ─────────────────────────────────────────
+
+    def test_archive_account_by_nickname(self):
+        account = FinanceAccount.objects.create(
+            tenant=self.tenant, account_type="student_loan",
+            nickname="Federal Student Loans", current_balance=Decimal("39706.91"),
+        )
+        response = self.client.post(
+            self._url("/accounts/archive/"),
+            data={"account_nickname": "Federal Student Loans"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["archived"])
+        self.assertEqual(body["account_nickname"], "Federal Student Loans")
+        self.assertEqual(body["previous_balance"], "39706.91")
+        account.refresh_from_db()
+        self.assertFalse(account.is_active)
+
+    def test_archive_account_fuzzy_match(self):
+        FinanceAccount.objects.create(
+            tenant=self.tenant, account_type="student_loan",
+            nickname="Federal Student Loans", current_balance=Decimal("1000"),
+        )
+        response = self.client.post(
+            self._url("/accounts/archive/"),
+            data={"account_nickname": "federal student"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["account_nickname"], "Federal Student Loans")
+
+    def test_archive_account_not_found(self):
+        response = self.client.post(
+            self._url("/accounts/archive/"),
+            data={"account_nickname": "Ghost"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_archive_account_tenant_isolation(self):
+        FinanceAccount.objects.create(
+            tenant=self.other_tenant, account_type="credit_card",
+            nickname="Their Card", current_balance=Decimal("500"),
+        )
+        response = self.client.post(
+            self._url("/accounts/archive/"),
+            data={"account_nickname": "Their Card"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_archive_account_requires_nickname(self):
+        response = self.client.post(
+            self._url("/accounts/archive/"),
+            data={},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_archive_excludes_from_payoff_calculation(self):
+        """Archived debts should not appear in payoff calculations."""
+        FinanceAccount.objects.create(
+            tenant=self.tenant, account_type="credit_card",
+            nickname="Active CC", current_balance=Decimal("2000"),
+            interest_rate=Decimal("20"), minimum_payment=Decimal("50"),
+        )
+        FinanceAccount.objects.create(
+            tenant=self.tenant, account_type="student_loan",
+            nickname="Old Loan", current_balance=Decimal("10000"),
+            interest_rate=Decimal("5"), minimum_payment=Decimal("100"),
+            is_active=False,
+        )
+        response = self.client.post(
+            self._url("/payoff/calculate/"),
+            data={"monthly_budget": 400, "strategy": "avalanche"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        schedule = response.json()["results"]["avalanche"]["schedule"]
+        first_month_accounts = {a["nickname"] for a in schedule[0]["accounts"]}
+        self.assertIn("Active CC", first_month_accounts)
+        self.assertNotIn("Old Loan", first_month_accounts)
+
+    def test_unarchive_account(self):
+        account = FinanceAccount.objects.create(
+            tenant=self.tenant, account_type="credit_card",
+            nickname="CC", current_balance=Decimal("1234.56"), is_active=False,
+        )
+        response = self.client.post(
+            self._url("/accounts/unarchive/"),
+            data={"account_nickname": "CC"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["unarchived"])
+        self.assertEqual(body["current_balance"], "1234.56")
+        account.refresh_from_db()
+        self.assertTrue(account.is_active)
+
+    def test_unarchive_name_collision(self):
+        """Cannot unarchive if an active account already has that nickname."""
+        FinanceAccount.objects.create(
+            tenant=self.tenant, account_type="credit_card",
+            nickname="Chase Card", current_balance=Decimal("3000"),
+        )
+        FinanceAccount.objects.create(
+            tenant=self.tenant, account_type="credit_card",
+            nickname="chase card", current_balance=Decimal("500"), is_active=False,
+        )
+        response = self.client.post(
+            self._url("/accounts/unarchive/"),
+            data={"account_nickname": "chase card"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"], "name_collision")
+
+    def test_unarchive_ignores_active_accounts(self):
+        """Unarchive scoped to archived rows — cannot target an active one."""
+        FinanceAccount.objects.create(
+            tenant=self.tenant, account_type="credit_card",
+            nickname="Active", current_balance=Decimal("100"),
+        )
+        response = self.client.post(
+            self._url("/accounts/unarchive/"),
+            data={"account_nickname": "Active"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_list_accounts_archived_only(self):
+        FinanceAccount.objects.create(
+            tenant=self.tenant, account_type="credit_card",
+            nickname="Active CC", current_balance=Decimal("1000"),
+        )
+        FinanceAccount.objects.create(
+            tenant=self.tenant, account_type="student_loan",
+            nickname="Old Loan", current_balance=Decimal("5000"), is_active=False,
+        )
+        response = self.client.get(
+            self._url("/accounts/") + "?archived=true", **self._headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        accounts = response.json()["accounts"]
+        self.assertEqual(len(accounts), 1)
+        self.assertEqual(accounts[0]["nickname"], "Old Loan")
+        self.assertFalse(accounts[0]["is_active"])
+
+    def test_list_accounts_archived_all(self):
+        FinanceAccount.objects.create(
+            tenant=self.tenant, account_type="credit_card",
+            nickname="Active", current_balance=Decimal("100"),
+        )
+        FinanceAccount.objects.create(
+            tenant=self.tenant, account_type="credit_card",
+            nickname="Gone", current_balance=Decimal("200"), is_active=False,
+        )
+        response = self.client.get(
+            self._url("/accounts/") + "?archived=all", **self._headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["accounts"]), 2)
+
     # ── Payoff Calculation ──────────────────────────────────────────
 
     def test_payoff_calculate_all_strategies(self):
@@ -721,6 +896,41 @@ class ConsumerFinanceViewTests(TestCase):
         self.assertEqual(response.status_code, 204)
         account.refresh_from_db()
         self.assertFalse(account.is_active)
+
+    def test_accounts_list_archived_query_param(self):
+        FinanceAccount.objects.create(
+            tenant=self.tenant, account_type="credit_card",
+            nickname="Active", current_balance=Decimal("500"),
+        )
+        FinanceAccount.objects.create(
+            tenant=self.tenant, account_type="student_loan",
+            nickname="Archived", current_balance=Decimal("2000"), is_active=False,
+        )
+        active_response = self.client.get("/api/v1/finance/accounts/")
+        self.assertEqual(len(active_response.json()), 1)
+        self.assertEqual(active_response.json()[0]["nickname"], "Active")
+
+        archived_response = self.client.get("/api/v1/finance/accounts/?archived=true")
+        self.assertEqual(archived_response.status_code, 200)
+        body = archived_response.json()
+        self.assertEqual(len(body), 1)
+        self.assertEqual(body[0]["nickname"], "Archived")
+        self.assertFalse(body[0]["is_active"])
+
+    def test_account_patch_unarchive(self):
+        """PATCH {is_active: true} should restore an archived account."""
+        account = FinanceAccount.objects.create(
+            tenant=self.tenant, account_type="credit_card",
+            nickname="CC", current_balance=Decimal("1000"), is_active=False,
+        )
+        response = self.client.patch(
+            f"/api/v1/finance/accounts/{account.id}/",
+            data={"is_active": True},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        account.refresh_from_db()
+        self.assertTrue(account.is_active)
 
     def test_account_detail_404_for_other_tenant(self):
         account = FinanceAccount.objects.create(
