@@ -390,7 +390,7 @@ TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     "starter": {
         MINIMAX_MODEL: {"alias": "minimax"},
         KIMI_MODEL: {"alias": "kimi"},
-        # GEMMA_MODEL excluded — not yet in OpenClaw's model registry
+        GEMMA_MODEL: {"alias": "gemma"},
     },
 }
 
@@ -683,6 +683,17 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                             "Reply with NO_REPLY when done."
                         ),
                     },
+                },
+                "llm": {
+                    # OpenClaw 2026.4.5 introduced a 60s default idle-token
+                    # watchdog that aborts the LLM stream if no token arrives
+                    # within 60s.  Slower models (minimax-m2.7) on heavy
+                    # prompts routinely exceed that, causing cron runs to
+                    # timeout and cascading into container crashes via the
+                    # chmod EPERM in the task-registry sweep.  Set to 5 min
+                    # so slow cold-starts and heavy tool-calling prompts
+                    # have room.
+                    "idleTimeoutSeconds": 300,
                 },
                 "memorySearch": {
                     "enabled": True,
