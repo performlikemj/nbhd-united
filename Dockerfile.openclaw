@@ -6,9 +6,10 @@ ENV NODE_ENV=production
 # --dns-result-order=ipv4first: Azure Container Apps has unreliable IPv6 to
 # external APIs. Node 22's autoSelectFamily=true tries IPv6 first, causing
 # Telegram setWebhook to fail and trigger crash-loop auto-restarts.
-# --require suppress-chmod-eperm.js: Targeted handler for OpenClaw 2026.4.5's
-# chmod EPERM on root-owned volumes. See runtime/openclaw/suppress-chmod-eperm.js.
-ENV NODE_OPTIONS="--max-old-space-size=1024 --dns-result-order=ipv4first --no-network-family-autoselection --require /opt/nbhd/suppress-chmod-eperm.js"
+# NOTE: --require for suppress-chmod-eperm.js is added AFTER the COPY step
+# below (npm install reads NODE_OPTIONS and would fail if the file isn't
+# present yet).
+ENV NODE_OPTIONS="--max-old-space-size=1024 --dns-result-order=ipv4first --no-network-family-autoselection"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
@@ -36,6 +37,11 @@ RUN chmod +x /usr/local/bin/nbhd-openclaw-entrypoint \
     && chown -R node:node /opt/nbhd /usr/local/bin/nbhd-openclaw-entrypoint
 
 USER node
+
+# Add --require AFTER the COPY so the handler file exists. This targeted
+# handler catches only chmod EPERM from OpenClaw's ensureTaskRegistryPermissions
+# and logs a warning instead of crashing. See runtime/openclaw/suppress-chmod-eperm.js.
+ENV NODE_OPTIONS="${NODE_OPTIONS} --require /opt/nbhd/suppress-chmod-eperm.js"
 
 ENV OPENCLAW_GOOGLE_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-google-tools
 ENV OPENCLAW_USAGE_PLUGIN_ID=nbhd-usage-reporter
