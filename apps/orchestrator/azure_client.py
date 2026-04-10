@@ -646,6 +646,17 @@ def create_container_app(
                             {"name": "NBHD_API_BASE_URL", "value": settings.API_BASE_URL},
                             {"name": "OPENCLAW_CONFIG_JSON", "value": config_json},
                             {"name": "AZURE_CLIENT_ID", "value": identity_client_id},
+                            # NODE_OPTIONS must be set explicitly here because
+                            # Container Apps caches Dockerfile ENV on first
+                            # provisioning and never re-reads it on image
+                            # updates. The --require loads a targeted handler
+                            # for OpenClaw's chmod EPERM on root-owned volumes.
+                            {"name": "NODE_OPTIONS", "value": (
+                                "--max-old-space-size=1024 "
+                                "--dns-result-order=ipv4first "
+                                "--no-network-family-autoselection "
+                                "--require /opt/nbhd/suppress-chmod-eperm.js"
+                            )},
                             *[
                                 {"name": k, "value": v}
                                 for k, v in (workspace_env or {}).items()
@@ -654,13 +665,6 @@ def create_container_app(
                         "volumeMounts": [
                             {"volumeName": "workspace", "mountPath": "/home/node/.openclaw"},
                             {"volumeName": "sessions-scratch", "mountPath": "/home/node/.openclaw/agents"},
-                            # tasks/ holds the OpenClaw 2026.4.5 task-run
-                            # registry (runs.sqlite).  Must be on local
-                            # storage because the runtime calls chmod(0o700)
-                            # which Azure File Share rejects with EPERM.
-                            # Cron jobs are NOT stored here (they live in
-                            # cron/jobs.json on the workspace file share).
-                            {"volumeName": "tasks-scratch", "mountPath": "/home/node/.openclaw/tasks"},
                         ],
                     },
                 ],
@@ -672,10 +676,6 @@ def create_container_app(
                     },
                     {
                         "name": "sessions-scratch",
-                        "storageType": "EmptyDir",
-                    },
-                    {
-                        "name": "tasks-scratch",
                         "storageType": "EmptyDir",
                     },
                 ],
