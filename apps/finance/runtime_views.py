@@ -68,7 +68,13 @@ class RuntimeFinanceAccountsView(APIView):
         if isinstance(tenant, Response):
             return tenant
 
-        accounts = FinanceAccount.objects.filter(tenant=tenant, is_active=True)
+        archived_param = (request.query_params.get("archived") or "").strip().lower()
+        qs = FinanceAccount.objects.filter(tenant=tenant)
+        if archived_param == "true":
+            qs = qs.filter(is_active=False)
+        elif archived_param != "all":
+            qs = qs.filter(is_active=True)
+
         data = [
             {
                 "id": str(a.id),
@@ -80,9 +86,10 @@ class RuntimeFinanceAccountsView(APIView):
                 "credit_limit": str(a.credit_limit) if a.credit_limit else None,
                 "due_day": a.due_day,
                 "is_debt": a.is_debt,
+                "is_active": a.is_active,
                 "payoff_progress": a.payoff_progress,
             }
-            for a in accounts
+            for a in qs
         ]
         return Response({"accounts": data})
 
@@ -261,6 +268,113 @@ class RuntimeFinanceBalanceUpdateView(APIView):
             "account_nickname": account.nickname,
             "old_balance": str(old_balance),
             "new_balance": str(account.current_balance.quantize(Decimal("0.01"))),
+        })
+
+
+class RuntimeFinanceArchiveAccountView(APIView):
+    """POST: archive an account (soft-delete, hides from totals/calculations)."""
+    permission_classes = [AllowAny]
+
+    def post(self, request, tenant_id):
+        auth_error = _internal_auth_or_401(request, tenant_id)
+        if auth_error:
+            return auth_error
+        tenant = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant, Response):
+            return tenant
+
+        body = request.data
+        nickname = (body.get("account_nickname") or body.get("nickname") or "").strip()
+        if not nickname:
+            return Response(
+                {"error": "account_nickname is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        account = FinanceAccount.objects.filter(
+            tenant=tenant, is_active=True, nickname__iexact=nickname
+        ).first()
+        if not account:
+            account = FinanceAccount.objects.filter(
+                tenant=tenant, is_active=True, nickname__icontains=nickname
+            ).first()
+
+        if not account:
+            return Response(
+                {"error": f"No active account found matching '{nickname}'"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        previous_balance = account.current_balance
+        account.is_active = False
+        account.save(update_fields=["is_active", "updated_at"])
+
+        return Response({
+            "account_nickname": account.nickname,
+            "archived": True,
+            "previous_balance": str(previous_balance.quantize(Decimal("0.01"))),
+        })
+
+
+class RuntimeFinanceUnarchiveAccountView(APIView):
+    """POST: restore a previously archived account."""
+    permission_classes = [AllowAny]
+
+    def post(self, request, tenant_id):
+        auth_error = _internal_auth_or_401(request, tenant_id)
+        if auth_error:
+            return auth_error
+        tenant = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant, Response):
+            return tenant
+
+        body = request.data
+        nickname = (body.get("account_nickname") or body.get("nickname") or "").strip()
+        if not nickname:
+            return Response(
+                {"error": "account_nickname is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        account = FinanceAccount.objects.filter(
+            tenant=tenant, is_active=False, nickname__iexact=nickname
+        ).first()
+        if not account:
+            account = FinanceAccount.objects.filter(
+                tenant=tenant, is_active=False, nickname__icontains=nickname
+            ).first()
+
+        if not account:
+            return Response(
+                {"error": f"No archived account found matching '{nickname}'"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Collision check: the upsert in RuntimeFinanceAccountsView.post() matches
+        # by (tenant, nickname__iexact, is_active=True), so letting two active rows
+        # share a nickname would break that path.
+        collision = FinanceAccount.objects.filter(
+            tenant=tenant, is_active=True, nickname__iexact=account.nickname
+        ).exists()
+        if collision:
+            return Response(
+                {
+                    "error": "name_collision",
+                    "detail": (
+                        f"An active account named '{account.nickname}' already exists; "
+                        "rename it first before restoring this one."
+                    ),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        account.is_active = True
+        account.save(update_fields=["is_active", "updated_at"])
+
+        return Response({
+            "account_nickname": account.nickname,
+            "unarchived": True,
+            "current_balance": str(account.current_balance.quantize(Decimal("0.01"))),
         })
 
 

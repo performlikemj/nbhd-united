@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 import { AccountCard } from "@/components/account-card";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton, StatCardSkeleton } from "@/components/skeleton";
@@ -7,7 +9,13 @@ import { StatCard } from "@/components/stat-card";
 import { PayoffChart } from "@/components/finance/payoff-chart";
 import { ProgressChart } from "@/components/finance/progress-chart";
 import { StrategyComparison } from "@/components/finance/strategy-comparison";
-import { useFinanceDashboardQuery } from "@/lib/queries";
+import {
+  useArchiveFinanceAccountMutation,
+  useArchivedFinanceAccountsQuery,
+  useFinanceDashboardQuery,
+  useUnarchiveFinanceAccountMutation,
+} from "@/lib/queries";
+import type { FinanceAccount } from "@/lib/types";
 
 function formatCurrency(value: string | number): string {
   const num = typeof value === "string" ? parseFloat(value) : value;
@@ -42,6 +50,11 @@ function PageHeader() {
 
 export default function FinancePage() {
   const { data, isLoading, error } = useFinanceDashboardQuery();
+  const [confirmArchive, setConfirmArchive] = useState<FinanceAccount | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+  const archiveMutation = useArchiveFinanceAccountMutation();
+  const unarchiveMutation = useUnarchiveFinanceAccountMutation();
+  const archivedQuery = useArchivedFinanceAccountsQuery(showArchived);
 
   if (isLoading) {
     return (
@@ -167,7 +180,7 @@ export default function FinancePage() {
             <div className="divide-y divide-white/5 space-y-6">
               {debtAccounts.map((account) => (
                 <div key={account.id} className="pt-6 first:pt-0">
-                  <AccountCard account={account} />
+                  <AccountCard account={account} onArchive={setConfirmArchive} />
                 </div>
               ))}
             </div>
@@ -183,7 +196,7 @@ export default function FinancePage() {
             <div className="divide-y divide-white/5 space-y-6">
               {savingsAccounts.map((account) => (
                 <div key={account.id} className="pt-6 first:pt-0">
-                  <AccountCard account={account} />
+                  <AccountCard account={account} onArchive={setConfirmArchive} />
                 </div>
               ))}
             </div>
@@ -218,6 +231,189 @@ export default function FinancePage() {
           </div>
         </div>
       )}
+
+      {/* Archived Accounts */}
+      <ArchivedAccountsSection
+        expanded={showArchived}
+        onToggle={() => setShowArchived((v) => !v)}
+        isLoading={archivedQuery.isLoading}
+        accounts={archivedQuery.data ?? []}
+        onRestore={(account) => unarchiveMutation.mutate(account.id)}
+        restoringId={
+          unarchiveMutation.isPending
+            ? (unarchiveMutation.variables as string | undefined)
+            : undefined
+        }
+      />
+
+      {/* Confirm Archive Dialog */}
+      {confirmArchive && (
+        <ConfirmArchiveDialog
+          account={confirmArchive}
+          onCancel={() => setConfirmArchive(null)}
+          onConfirm={() => {
+            const target = confirmArchive;
+            archiveMutation.mutate(target.id, {
+              onSuccess: () => setConfirmArchive(null),
+            });
+          }}
+          isPending={archiveMutation.isPending}
+          errorMessage={
+            archiveMutation.isError
+              ? archiveMutation.error instanceof Error
+                ? archiveMutation.error.message
+                : "Failed to archive. Please try again."
+              : null
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+function ArchivedAccountsSection({
+  expanded,
+  onToggle,
+  isLoading,
+  accounts,
+  onRestore,
+  restoringId,
+}: {
+  expanded: boolean;
+  onToggle: () => void;
+  isLoading: boolean;
+  accounts: FinanceAccount[];
+  onRestore: (account: FinanceAccount) => void;
+  restoringId: string | undefined;
+}) {
+  // Hide the whole section once we've loaded and there's nothing archived.
+  if (expanded && !isLoading && accounts.length === 0) {
+    return (
+      <div className="mt-10 sm:mt-16">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex w-full items-center justify-between text-left text-xs font-bold uppercase tracking-[0.2em] text-ink-faint transition hover:text-ink"
+        >
+          <span>Archived Accounts</span>
+          <span aria-hidden="true">▴</span>
+        </button>
+        <p className="mt-3 text-sm text-ink-muted">No archived accounts.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-10 sm:mt-16">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        className="flex w-full items-center justify-between text-left text-xs font-bold uppercase tracking-[0.2em] text-ink-faint transition hover:text-ink"
+      >
+        <span>Archived Accounts</span>
+        <span aria-hidden="true">{expanded ? "▴" : "▾"}</span>
+      </button>
+      {expanded && (
+        <div className="mt-4 glass-card rounded-xl border border-white/5 p-4 sm:p-6">
+          {isLoading ? (
+            <p className="text-sm text-ink-muted">Loading…</p>
+          ) : (
+            <ul className="divide-y divide-white/5">
+              {accounts.map((account) => (
+                <li
+                  key={account.id}
+                  className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div>
+                    <p className="font-bold text-ink">{account.nickname}</p>
+                    <p className="text-xs text-ink-faint">
+                      Last balance {formatCurrency(account.current_balance)}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onRestore(account)}
+                    disabled={restoringId === account.id}
+                    className="inline-flex h-11 items-center justify-center rounded-lg border border-white/10 px-4 text-xs font-bold uppercase tracking-wide text-ink transition hover:border-accent/60 hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
+                  >
+                    {restoringId === account.id ? "Restoring…" : "Restore"}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConfirmArchiveDialog({
+  account,
+  onCancel,
+  onConfirm,
+  isPending,
+  errorMessage,
+}: {
+  account: FinanceAccount;
+  onCancel: () => void;
+  onConfirm: () => void;
+  isPending: boolean;
+  errorMessage: string | null;
+}) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onCancel]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-overlay p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="archive-account-title"
+    >
+      <div className="w-full max-w-md rounded-panel border border-border bg-surface-elevated p-6 shadow-panel">
+        <h2
+          id="archive-account-title"
+          className="font-headline text-xl font-bold text-ink"
+        >
+          Archive {account.nickname}?
+        </h2>
+        <p className="mt-2 text-sm text-ink-muted">
+          It will be removed from your Gravity totals and payoff calculations but
+          kept for your records. You can restore it later from the Archived
+          section below.
+        </p>
+        {errorMessage && (
+          <p className="mt-3 text-xs text-rose-400">{errorMessage}</p>
+        )}
+        <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isPending}
+            className="inline-flex h-11 items-center justify-center rounded-lg border border-white/10 px-4 text-sm font-medium text-ink transition hover:border-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={isPending}
+            className="inline-flex h-11 items-center justify-center rounded-lg bg-accent px-4 text-sm font-bold text-white transition hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
+          >
+            {isPending ? "Archiving…" : "Archive"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

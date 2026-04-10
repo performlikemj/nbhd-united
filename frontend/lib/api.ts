@@ -775,6 +775,26 @@ export function fetchFinanceAccounts(): Promise<import("@/lib/types").FinanceAcc
   return apiFetch<import("@/lib/types").FinanceAccount[]>("/api/v1/finance/accounts/");
 }
 
+export function fetchArchivedFinanceAccounts(): Promise<
+  import("@/lib/types").FinanceAccount[]
+> {
+  return apiFetch<import("@/lib/types").FinanceAccount[]>(
+    "/api/v1/finance/accounts/?archived=true",
+  );
+}
+
+export function unarchiveFinanceAccount(
+  id: string,
+): Promise<import("@/lib/types").FinanceAccount> {
+  return apiFetch<import("@/lib/types").FinanceAccount>(
+    `/api/v1/finance/accounts/${id}/`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ is_active: true }),
+    },
+  );
+}
+
 export function createFinanceAccount(data: {
   nickname: string;
   account_type: string;

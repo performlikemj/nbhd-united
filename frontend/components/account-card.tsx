@@ -36,7 +36,13 @@ function formatCurrency(value: string | number): string {
   });
 }
 
-export function AccountCard({ account }: { account: FinanceAccount }) {
+export function AccountCard({
+  account,
+  onArchive,
+}: {
+  account: FinanceAccount;
+  onArchive?: (account: FinanceAccount) => void;
+}) {
   const typeLabel = TYPE_LABELS[account.account_type] ?? account.account_type;
   const emoji = TYPE_EMOJI[account.account_type] ?? "📄";
   const progress = account.payoff_progress;
@@ -72,6 +78,29 @@ export function AccountCard({ account }: { account: FinanceAccount }) {
             <p className="text-[10px] text-ink-faint uppercase font-bold mb-0.5">Balance</p>
             <p className="font-bold text-ink text-sm sm:text-base">{formatCurrency(account.current_balance)}</p>
           </div>
+          {onArchive && (
+            <button
+              type="button"
+              onClick={() => onArchive(account)}
+              aria-label={`Archive ${account.nickname}`}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-white/5 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-5 w-5"
+                aria-hidden="true"
+              >
+                <path d="M20.54 5.23 19.15 3.55A1.99 1.99 0 0 0 17.62 3H6.38c-.62 0-1.18.28-1.54.75L3.46 5.23A2 2 0 0 0 3 6.5V19a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6.5c0-.45-.17-.88-.46-1.27Z" />
+                <path d="M3 7h18" />
+                <path d="M10 12h4" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 

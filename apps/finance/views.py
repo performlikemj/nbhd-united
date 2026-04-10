@@ -25,7 +25,11 @@ class FinanceAccountListView(APIView):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
-        accounts = FinanceAccount.objects.filter(tenant=tenant, is_active=True)
+        archived_param = (request.query_params.get("archived") or "").strip().lower()
+        if archived_param == "true":
+            accounts = FinanceAccount.objects.filter(tenant=tenant, is_active=False)
+        else:
+            accounts = FinanceAccount.objects.filter(tenant=tenant, is_active=True)
         serializer = FinanceAccountSerializer(accounts, many=True)
         return Response(serializer.data)
 
