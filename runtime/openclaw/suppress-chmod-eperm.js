@@ -22,7 +22,13 @@
 //
 // Remove when OpenClaw wraps chmodSync in try/catch upstream.
 
-import('openclaw/dist/plugin-sdk/runtime.js').then(({ registerUnhandledRejectionHandler }) => {
+// OpenClaw is installed globally (npm install --global) so bare 'openclaw'
+// isn't resolvable from /opt/nbhd/. Use require.resolve with the global path.
+const sdkPath = require.resolve('openclaw/dist/plugin-sdk/runtime.js', {
+  paths: ['/usr/local/lib/node_modules'],
+});
+
+import(sdkPath).then(({ registerUnhandledRejectionHandler }) => {
   registerUnhandledRejectionHandler((reason) => {
     if (reason && reason.code === 'EPERM' && reason.syscall === 'chmod') {
       const p = reason.path || '(unknown)';
