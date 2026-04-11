@@ -5,25 +5,38 @@
 // both Azure File Share and EmptyDir volumes are root-owned — non-root
 // chmod returns EPERM. The underlying read/write operations work fine (0777).
 //
-// Without this handler, the EPERM becomes an unhandled promise rejection that
-// crashes the Node process. This handler catches ONLY that specific error and
-// logs it as a warning. All other unhandled rejections still crash normally.
+// The EPERM propagates as both an unhandled rejection AND (after OpenClaw's
+// own handler re-throws it) an uncaught exception. We must catch BOTH to
+// prevent the crash. Only the specific chmod EPERM is suppressed — all other
+// errors still crash the process normally.
 //
 // Remove this handler when OpenClaw wraps the chmodSync in try/catch upstream.
 
-process.on('unhandledRejection', (reason) => {
-  if (
-    reason &&
-    reason.code === 'EPERM' &&
-    reason.syscall === 'chmod'
-  ) {
-    const path = reason.path || '(unknown)';
-    console.warn(
-      `[nbhd] chmod EPERM suppressed (expected on Azure Container Apps): ${path}`
-    );
-    return; // Suppress — don't crash
-  }
+function isChmodEperm(reason) {
+  return reason && reason.code === 'EPERM' && reason.syscall === 'chmod';
+}
 
-  // Everything else: re-throw as uncaughtException to preserve fail-fast behavior
+function logSuppressed(reason, eventType) {
+  const path = reason.path || '(unknown)';
+  console.warn(
+    `[nbhd] chmod EPERM suppressed via ${eventType} (expected on Azure Container Apps): ${path}`
+  );
+}
+
+process.on('unhandledRejection', (reason) => {
+  if (isChmodEperm(reason)) {
+    logSuppressed(reason, 'unhandledRejection');
+    return;
+  }
   throw reason;
+});
+
+process.on('uncaughtException', (err) => {
+  if (isChmodEperm(err)) {
+    logSuppressed(err, 'uncaughtException');
+    return;
+  }
+  // For non-chmod errors: log and exit (default Node behavior for uncaughtException)
+  console.error('Uncaught exception:', err);
+  process.exit(1);
 });
