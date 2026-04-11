@@ -38,10 +38,15 @@ RUN chmod +x /usr/local/bin/nbhd-openclaw-entrypoint \
 
 USER node
 
-# Add --require AFTER the COPY so the handler file exists. This targeted
-# handler catches only chmod EPERM from OpenClaw's ensureTaskRegistryPermissions
-# and logs a warning instead of crashing. See runtime/openclaw/suppress-chmod-eperm.js.
+# --require: load chmod EPERM handler before OpenClaw starts. Uses OpenClaw's
+# public plugin SDK API (registerUnhandledRejectionHandler) to suppress the
+# crash. See runtime/openclaw/suppress-chmod-eperm.js.
 ENV NODE_OPTIONS="${NODE_OPTIONS} --require /opt/nbhd/suppress-chmod-eperm.js"
+
+# Disable mDNS/bonjour — useless on Azure Container Apps (containers are
+# accessed via FQDN, not local network discovery) and causes intermittent
+# CIAO ANNOUNCEMENT CANCELLED crashes on startup.
+ENV OPENCLAW_DISABLE_BONJOUR=1
 
 ENV OPENCLAW_GOOGLE_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-google-tools
 ENV OPENCLAW_USAGE_PLUGIN_ID=nbhd-usage-reporter

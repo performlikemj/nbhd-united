@@ -657,6 +657,10 @@ def create_container_app(
                                 "--no-network-family-autoselection "
                                 "--require /opt/nbhd/suppress-chmod-eperm.js"
                             )},
+                            # Disable mDNS/bonjour — useless on Container Apps
+                            # and causes intermittent CIAO ANNOUNCEMENT CANCELLED
+                            # crashes on startup.
+                            {"name": "OPENCLAW_DISABLE_BONJOUR", "value": "1"},
                             *[
                                 {"name": k, "value": v}
                                 for k, v in (workspace_env or {}).items()
