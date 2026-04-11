@@ -30,11 +30,12 @@ class ConfigGeneratorTest(TestCase):
         # Auth is intentionally present — token from env var for Django→OC calls
         self.assertEqual(config["gateway"]["auth"]["mode"], "token")
 
-    def test_telegram_channel_absent_for_central_poller(self):
-        """No Telegram channel — central Django poller handles all inbound."""
+    def test_telegram_channel_enabled_for_central_poller(self):
+        """Telegram channel enabled — central Django poller handles all inbound."""
         config = generate_openclaw_config(self.tenant)
         self.assertIn("telegram", config["channels"])
-        self.assertIn("inlineButtons", config["channels"]["telegram"]["capabilities"])
+        # Capabilities are auto-detected by OpenClaw, not set in config
+        self.assertNotIn("capabilities", config["channels"]["telegram"])
 
     def test_starter_tier_model(self):
         self.tenant.model_tier = "starter"
@@ -132,11 +133,12 @@ class ConfigGeneratorTest(TestCase):
         self.assertNotIn("group:runtime", tools["allow"])
         self.assertEqual(tools["elevated"], {"enabled": False})
 
-    def test_channels_empty_no_telegram(self):
-        """No Telegram channel — central Django poller handles all Telegram."""
+    def test_channels_have_no_explicit_capabilities(self):
+        """Capabilities are auto-detected by OpenClaw — not set in config."""
         config = generate_openclaw_config(self.tenant)
         self.assertIn("telegram", config["channels"])
-        self.assertIn("inlineButtons", config["channels"]["telegram"]["capabilities"])
+        self.assertNotIn("capabilities", config["channels"]["telegram"])
+        self.assertNotIn("capabilities", config["channels"]["line"])
 
     def test_chat_completions_endpoint_enabled(self):
         """Gateway exposes /v1/chat/completions for central poller forwarding."""
