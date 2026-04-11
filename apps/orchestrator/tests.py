@@ -139,10 +139,10 @@ class ConfigGeneratorTest(TestCase):
         config = generate_openclaw_config(self.tenant)
         self.assertNotIn("capabilities", config["channels"]["line"])
 
-    def test_telegram_channel_retains_capabilities(self):
-        """Telegram channel config should still include 'capabilities'."""
+    def test_telegram_channel_has_no_capabilities_key(self):
+        """Telegram schema also rejects 'capabilities' in OpenClaw >= 2026.4.5."""
         config = generate_openclaw_config(self.tenant)
-        self.assertIn("capabilities", config["channels"]["telegram"])
+        self.assertNotIn("capabilities", config["channels"]["telegram"])
 
     def test_heartbeat_cron_uses_delivery_none(self):
         """Heartbeat cron uses delivery.mode='none' — sends via plugin, not built-in messaging."""
