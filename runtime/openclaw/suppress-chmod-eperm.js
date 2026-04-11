@@ -36,7 +36,8 @@ process.on('uncaughtException', (err) => {
     logSuppressed(err, 'uncaughtException');
     return;
   }
-  // For non-chmod errors: log and exit (default Node behavior for uncaughtException)
-  console.error('Uncaught exception:', err);
-  process.exit(1);
+  // For non-chmod errors: pass through to OpenClaw's own handler.
+  // We do NOT call process.exit here — OpenClaw handles certain uncaught
+  // exceptions (like CIAO announcements) gracefully and calling exit would
+  // kill those too. OpenClaw's handler will decide per-error whether to crash.
 });
