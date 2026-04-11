@@ -715,10 +715,10 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         # Telegram/LINE I/O, but we declare the channels here so the agent
         # knows its surface capabilities (inline buttons, etc.).
         # No bot tokens are set — the container never connects directly.
+        # Note: no 'capabilities' key — OpenClaw 2026.4.5 rejects it.
         "channels": {
             "telegram": {
                 "enabled": True,
-                "capabilities": ["inlineButtons"],
             },
             "line": {
                 "enabled": True,
