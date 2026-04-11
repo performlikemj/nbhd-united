@@ -24,9 +24,21 @@
 
 // OpenClaw is installed globally (npm install --global) so bare 'openclaw'
 // isn't resolvable from /opt/nbhd/. Use require.resolve with the global path.
-const sdkPath = require.resolve('openclaw/dist/plugin-sdk/runtime.js', {
-  paths: ['/usr/local/lib/node_modules'],
-});
+// Wrapped in try/catch because this file loads via --require for EVERY node
+// command — including the entrypoint's `node -e "JSON.parse(...)"` config
+// validation. An uncaught throw here would crash that validation and prevent
+// the container from starting.
+let sdkPath;
+try {
+  sdkPath = require.resolve('openclaw/dist/plugin-sdk/runtime.js', {
+    paths: ['/usr/local/lib/node_modules'],
+  });
+} catch (err) {
+  // Not found — probably running outside the OpenClaw container (e.g., tests,
+  // entrypoint validation). Silently skip.
+}
+
+if (!sdkPath) return;
 
 import(sdkPath).then(({ registerUnhandledRejectionHandler }) => {
   registerUnhandledRejectionHandler((reason) => {
