@@ -17,6 +17,7 @@ import { WorkingHoursSection } from "@/components/working-hours-section";
 import { CronJob } from "@/lib/types";
 import {
   useBulkDeleteCronJobsMutation,
+  useBulkUpdateForegroundMutation,
   useCronJobsQuery,
   useCreateCronJobMutation,
   useDeleteCronJobMutation,
@@ -208,6 +209,7 @@ export default function SettingsCronJobsPage() {
   const createMutation = useCreateCronJobMutation();
   const deleteMutation = useDeleteCronJobMutation();
   const bulkDeleteMutation = useBulkDeleteCronJobsMutation();
+  const bulkForegroundMutation = useBulkUpdateForegroundMutation();
   const toggleMutation = useToggleCronJobMutation();
   const updateMutation = useUpdateCronJobMutation();
 
@@ -504,6 +506,19 @@ export default function SettingsCronJobsPage() {
     }
   };
 
+  /* ── Bulk foreground/background ── */
+  const handleBulkSetForeground = async (foreground: boolean) => {
+    const ids = Array.from(selectedIds);
+    try {
+      const result = await bulkForegroundMutation.mutateAsync({ ids, foreground });
+      const label = foreground ? "foreground" : "background";
+      setSelectedIds(new Set());
+      showToast(`${result.updated} task${result.updated === 1 ? "" : "s"} set to ${label}`, "success");
+    } catch (err) {
+      showToast(getErrorMessage(err), "error");
+    }
+  };
+
   /* ---------------------------------------------------------------- */
 
   return (
@@ -707,7 +722,7 @@ export default function SettingsCronJobsPage() {
           <div
             className={[
               "overflow-hidden transition-all duration-300",
-              someSelected ? "max-h-24 mb-3" : "max-h-0",
+              someSelected ? "max-h-32 mb-3" : "max-h-0",
             ].join(" ")}
             aria-live="polite"
           >
@@ -717,6 +732,22 @@ export default function SettingsCronJobsPage() {
                   <span className="text-sm font-medium text-ink">
                     {selectedIds.size} task{selectedIds.size === 1 ? "" : "s"} selected
                   </span>
+                  <button
+                    type="button"
+                    onClick={() => handleBulkSetForeground(true)}
+                    disabled={bulkForegroundMutation.isPending}
+                    className="rounded-full border border-border-strong px-3 py-1.5 text-sm text-ink-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {bulkForegroundMutation.isPending ? "Updating…" : "Set foreground"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleBulkSetForeground(false)}
+                    disabled={bulkForegroundMutation.isPending}
+                    className="rounded-full border border-border-strong px-3 py-1.5 text-sm text-ink-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {bulkForegroundMutation.isPending ? "Updating…" : "Set background"}
+                  </button>
                   <button
                     type="button"
                     onClick={handleBulkDeleteClick}

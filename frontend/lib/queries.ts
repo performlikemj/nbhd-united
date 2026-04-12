@@ -7,6 +7,7 @@ import { ProvisioningStatus, RefreshConfigStatus, Tenant } from "@/lib/types";
 import {
   appendToDocument,
   bulkDeleteCronJobs,
+  bulkUpdateForeground,
   createAutomation,
   createCronJob,
   createDocument,
@@ -771,6 +772,20 @@ export function useBulkDeleteCronJobsMutation() {
   return useMutation({
     mutationFn: (ids: string[]) => bulkDeleteCronJobs(ids),
     onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
+    },
+  });
+}
+
+export function useBulkUpdateForegroundMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ids, foreground }: { ids: string[]; foreground: boolean }) =>
+      bulkUpdateForeground(ids, foreground),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
+    },
+    onError: () => {
       void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
     },
   });
