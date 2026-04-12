@@ -570,7 +570,7 @@ class LineWebhookView(View):
                 # Re-show loading — Whisper may have consumed most of the first one
                 _show_loading(line_user_id)
                 # Process the transcribed text as if it were a text message
-                text = transcript
+                text = f'🎤 Voice message: "{transcript}"'
                 # Fall through to normal text processing below
             else:
                 _send_line_flex(

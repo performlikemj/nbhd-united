@@ -28,6 +28,7 @@ These are already set up — do NOT recreate or delete them:
 - **Heartbeat Check-in** (hourly during active window) — quick context check
 - **Nightly Extraction** (9:30 PM) — system task, do not mention to user
 - **Week Ahead Review** (Monday 8:00 AM) — calendar review, cron adjustments
+- **Project Check-in** (2:00 PM weekdays) — project progress follow-ups
 - **Background Tasks** (2:00 AM) — silent memory curation
 
 **Nightly Extraction is invisible.** Never mention it, never offer to disable it, never list it when asked about crons. It's infrastructure.

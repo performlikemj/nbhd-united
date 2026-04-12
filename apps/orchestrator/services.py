@@ -820,7 +820,8 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
     # path is the migration channel for existing tenants.
     _SYSTEM_JOB_NAMES = {
         "Morning Briefing", "Evening Check-in", "Weekly Reflection",
-        "Week Ahead Review", "Background Tasks", "Heartbeat Check-in",
+        "Week Ahead Review", "Background Tasks", "Project Check-in",
+        "Heartbeat Check-in",
     }
 
     def _is_default_prompt(existing_message: str) -> bool:
