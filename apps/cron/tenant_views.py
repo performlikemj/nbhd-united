@@ -556,3 +556,149 @@ class CronJobBulkDeleteView(APIView):
             },
             status=response_status,
         )
+
+
+class CronJobBulkUpdateForegroundView(APIView):
+    """Bulk-update foreground/background mode for multiple cron jobs.
+
+    Accepts: POST {"ids": ["name-or-id-1", ...], "foreground": true|false}
+    Returns 200 with per-job results, or 400 if the payload is invalid.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    _STRIP_FIELDS = {"id", "jobId", "createdAt", "state", "createdAtMs", "updatedAtMs", "nextRunAtMs", "runningAtMs"}
+
+    def post(self, request):
+        tenant = _get_tenant_for_user(request.user)
+
+        ids = request.data.get("ids")
+        if not ids or not isinstance(ids, list):
+            return Response(
+                {"detail": "'ids' must be a non-empty list of job names/IDs."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        foreground = request.data.get("foreground")
+        if foreground is None or not isinstance(foreground, bool):
+            return Response(
+                {"detail": "'foreground' must be a boolean."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        unique_ids: list[str] = []
+        for job_id in ids:
+            if isinstance(job_id, str) and job_id not in seen:
+                seen.add(job_id)
+                unique_ids.append(job_id)
+
+        blocked = [jid for jid in unique_ids if _is_hidden_cron(jid)]
+        if blocked:
+            return Response(
+                {"detail": f"System tasks cannot be modified: {', '.join(blocked)}"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not unique_ids:
+            return Response(
+                {"detail": "No valid job IDs provided."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            _require_active_tenant(tenant)
+        except GatewayError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        # Fetch all jobs from gateway once
+        try:
+            list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+            if isinstance(list_result, dict):
+                list_result = list_result.get("details", list_result)
+            all_jobs = list_result.get("jobs", []) if isinstance(list_result, dict) else list_result
+        except GatewayError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        # Build lookup
+        job_lookup: dict[str, dict] = {}
+        for j in all_jobs:
+            for key in (j.get("jobId"), j.get("id"), j.get("name")):
+                if key:
+                    job_lookup[key] = j
+
+        results: list[dict] = []
+        errors: list[dict] = []
+
+        for job_id in unique_ids:
+            existing = job_lookup.get(job_id)
+            if not existing:
+                # Try snapshot fallback
+                snapshot = tenant.cron_jobs_snapshot or {}
+                snapshot_jobs = snapshot.get("jobs", [])
+                existing = next(
+                    (j for j in snapshot_jobs if j.get("jobId") == job_id or j.get("name") == job_id),
+                    None,
+                )
+                if not existing:
+                    errors.append({"id": job_id, "updated": False, "error": "Job not found"})
+                    continue
+
+            # Check if already in desired state
+            existing_payload = existing.get("payload") or {}
+            existing_message = ""
+            if isinstance(existing_payload, dict):
+                existing_message = existing_payload.get("message") or existing_payload.get("text", "") or ""
+            current_fg = _message_has_phase2_marker(existing_message)
+            if current_fg == foreground:
+                results.append({"id": job_id, "updated": True, "skipped": True})
+                continue
+
+            # Build merged job for recreate
+            merged = {k: v for k, v in existing.items() if k not in self._STRIP_FIELDS}
+            merged = _normalize_job_for_universal_isolation(merged)
+
+            # Rewrap message
+            merged_payload = merged.get("payload") or {}
+            if isinstance(merged_payload, dict):
+                base_message = _strip_phase2_block(
+                    merged_payload.get("message") or merged_payload.get("text", "") or ""
+                )
+                job_name = merged.get("name") or job_id
+                rewrapped = _wrap_message_with_phase2(base_message, job_name, foreground)
+                merged = {**merged, "payload": {**merged_payload, "message": rewrapped}}
+
+            gateway_job_id = existing.get("jobId") or existing.get("id") or job_id
+            try:
+                backup_job = {k: v for k, v in existing.items() if k not in self._STRIP_FIELDS}
+                invoke_gateway_tool(tenant, "cron.remove", {"jobId": gateway_job_id})
+                try:
+                    invoke_gateway_tool(tenant, "cron.add", {"job": merged})
+                except GatewayError:
+                    logger.error("cron.bulk_foreground: recreate failed for %s, rolling back", job_id)
+                    try:
+                        invoke_gateway_tool(tenant, "cron.add", {"job": backup_job})
+                    except GatewayError:
+                        logger.exception("cron.bulk_foreground: rollback ALSO failed for %s", job_id)
+                    raise
+                results.append({"id": job_id, "updated": True})
+                logger.info("cron.bulk_foreground: updated job_id=%s foreground=%s tenant=%s", job_id, foreground, tenant.id)
+            except GatewayError as exc:
+                errors.append({"id": job_id, "updated": False, "error": str(exc)})
+                logger.warning("cron.bulk_foreground: failed job_id=%s tenant=%s error=%s", job_id, tenant.id, exc)
+
+        response_status_code = status.HTTP_200_OK
+        if errors and not results:
+            response_status_code = status.HTTP_502_BAD_GATEWAY
+        elif errors:
+            response_status_code = status.HTTP_207_MULTI_STATUS
+
+        return Response(
+            {
+                "updated": len([r for r in results if r.get("updated")]),
+                "errors": len(errors),
+                "results": results + errors,
+            },
+            status=response_status_code,
+        )

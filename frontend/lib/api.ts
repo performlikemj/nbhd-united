@@ -701,6 +701,19 @@ export function bulkDeleteCronJobs(ids: string[]): Promise<BulkDeleteResult> {
   });
 }
 
+export interface BulkUpdateForegroundResult {
+  updated: number;
+  errors: number;
+  results: Array<{ id: string; updated: boolean; skipped?: boolean; error?: string }>;
+}
+
+export function bulkUpdateForeground(ids: string[], foreground: boolean): Promise<BulkUpdateForegroundResult> {
+  return apiFetch<BulkUpdateForegroundResult>("/api/v1/cron-jobs/bulk-update-foreground/", {
+    method: "POST",
+    body: JSON.stringify({ ids, foreground }),
+  });
+}
+
 // ── Workspaces ─────────────────────────────────────────────────────────
 
 export function fetchWorkspaces(): Promise<WorkspacesResponse> {
