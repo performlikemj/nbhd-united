@@ -235,6 +235,7 @@ class SeedCronJobsTest(TestCase):
             {"name": "Evening Check-in", "enabled": True},
             {"name": "Weekly Reflection", "enabled": True},
             {"name": "Week Ahead Review", "enabled": True},
+            {"name": "Project Check-in", "enabled": True},
             {"name": "Background Tasks", "enabled": True},
             {"name": "Heartbeat Check-in", "enabled": True},
             {"jobs": []},  # dedup pass cron.list (no dupes)
@@ -243,10 +244,10 @@ class SeedCronJobsTest(TestCase):
 
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 6)
+        self.assertEqual(result["created"], 7)
         self.assertEqual(result["errors"], 0)
         self.assertEqual(mock_invoke.call_args_list[0].args[1], "cron.list")
-        for i in range(1, 7):
+        for i in range(1, 8):
             self.assertEqual(mock_invoke.call_args_list[i].args[1], "cron.add")
         mock_sleep.assert_not_called()
 
