@@ -160,6 +160,15 @@ def handle_checkout_completed(session_data: dict) -> None:
             scale_container_app(tenant.container_id, min_replicas=1, max_replicas=1)
             logger.info("Woke container %s for reactivated tenant %s", tenant.container_id, tenant.id)
 
+            # Apply pending config updates missed during hibernation
+            try:
+                tenant.refresh_from_db(fields=["config_version", "pending_config_version"])
+                if tenant.pending_config_version > tenant.config_version:
+                    publish_task("apply_single_tenant_config", str(tenant.id))
+                    logger.info("Queued config apply for reactivated tenant %s", tenant.id)
+            except Exception:
+                logger.exception("Failed to queue config apply for tenant %s", tenant.id)
+
             # Re-enable cron jobs that were disabled during suspension
             try:
                 from apps.cron.suspension import resume_tenant_crons
