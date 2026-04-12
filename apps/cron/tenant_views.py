@@ -229,7 +229,11 @@ class CronJobListCreateView(APIView):
         elif isinstance(list_result, list):
             existing_jobs = list_result
 
-        if len(existing_jobs) >= self.MAX_CRON_JOBS:
+        visible_jobs = [
+            j for j in existing_jobs
+            if isinstance(j, dict) and not _is_hidden_cron(j.get("name", ""))
+        ]
+        if len(visible_jobs) >= self.MAX_CRON_JOBS:
             return Response(
                 {"detail": f"Maximum of {self.MAX_CRON_JOBS} scheduled tasks reached. "
                            "Please delete an existing task before adding a new one."},
