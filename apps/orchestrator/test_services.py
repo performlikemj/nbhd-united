@@ -262,6 +262,7 @@ class SeedCronJobsTest(TestCase):
             {"name": "Evening Check-in"},
             {"name": "Weekly Reflection"},
             {"name": "Week Ahead Review"},
+            {"name": "Project Check-in"},
             {"name": "Background Tasks"},
             {"name": "Heartbeat Check-in"},
         ]}
@@ -287,14 +288,15 @@ class SeedCronJobsTest(TestCase):
     ):
         """When some jobs already exist, only the missing ones are created."""
         mock_invoke.side_effect = [
-            # initial cron.list — 3 of 6 already exist
+            # initial cron.list — 3 of 7 already exist
             {"jobs": [
                 {"name": "Morning Briefing"},
                 {"name": "Evening Check-in"},
                 {"name": "Week Ahead Review"},
             ]},
-            # cron.add for the 3 missing jobs
+            # cron.add for the 4 missing jobs
             {"name": "Weekly Reflection", "enabled": True},
+            {"name": "Project Check-in", "enabled": True},
             {"name": "Background Tasks", "enabled": True},
             {"name": "Heartbeat Check-in", "enabled": True},
             # dedup pass cron.list
@@ -305,13 +307,13 @@ class SeedCronJobsTest(TestCase):
 
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 3)
+        self.assertEqual(result["created"], 4)
         self.assertEqual(result["errors"], 0)
         self.assertEqual(result["skipped_existing"], 3)
-        # 1 list + 3 adds + 1 dedup list + 1 restore list = 6
-        self.assertEqual(mock_invoke.call_count, 6)
+        # 1 list + 4 adds + 1 dedup list + 1 restore list = 7
+        self.assertEqual(mock_invoke.call_count, 7)
         # Verify the add calls are for the right tool
-        for i in range(1, 4):
+        for i in range(1, 5):
             self.assertEqual(mock_invoke.call_args_list[i].args[1], "cron.add")
         mock_sleep.assert_not_called()
 
@@ -330,6 +332,7 @@ class SeedCronJobsTest(TestCase):
             GatewayError("temporary API error"),
             {"name": "Weekly Reflection", "enabled": True},
             {"name": "Week Ahead Review", "enabled": True},
+            {"name": "Project Check-in", "enabled": True},
             {"name": "Background Tasks", "enabled": True},
             {"name": "Heartbeat Check-in", "enabled": True},
             {"jobs": []},  # dedup pass
@@ -338,7 +341,7 @@ class SeedCronJobsTest(TestCase):
 
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 5)
+        self.assertEqual(result["created"], 6)
         self.assertEqual(result["errors"], 1)
         mock_sleep.assert_not_called()
 
@@ -358,6 +361,7 @@ class SeedCronJobsTest(TestCase):
             {"name": "Evening Check-in", "enabled": True},
             {"name": "Weekly Reflection", "enabled": True},
             {"name": "Week Ahead Review", "enabled": True},
+            {"name": "Project Check-in", "enabled": True},
             {"name": "Background Tasks", "enabled": True},
             {"name": "Heartbeat Check-in", "enabled": True},
             {"jobs": []},  # dedup pass
@@ -366,7 +370,7 @@ class SeedCronJobsTest(TestCase):
 
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 6)
+        self.assertEqual(result["created"], 7)
         self.assertEqual(result["errors"], 0)
         mock_sleep.assert_called_once_with(5)
 
@@ -381,7 +385,7 @@ class SeedCronJobsTest(TestCase):
     ):
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 6)
+        self.assertEqual(result["created"], 7)
         self.assertEqual(result["errors"], 0)
         self.assertFalse(result.get("skipped", False))
         mock_invoke.assert_not_called()
