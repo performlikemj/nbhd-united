@@ -58,6 +58,7 @@ Detailed behavioral rules live in `rules/` — loaded on demand:
 | `rules/onboarding.md` | Timezone + location setup for new users |
 | `rules/messaging.md` | Cron delivery, check-in windows, automated routines |
 | `rules/week-ahead.md` | Weekly cron review pass, mid-week plan changes |
+| `rules/voice-journal.md` | Voice recording processing, project cross-referencing, follow-up questions |
 | `rules/workspaces.md` | Workspace routing, switching, transition markers, chip indicators |
 
 Read the relevant rule file when working in that context.

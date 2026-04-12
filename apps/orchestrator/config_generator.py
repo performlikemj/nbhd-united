@@ -355,6 +355,28 @@ _WEEKLY_REFLECTION_PROMPT = (
     "FINAL STEP described below.**\n"
 )
 
+_PROJECT_CHECKIN_PROMPT = (
+    "Project check-in. This is a cron (isolated) session — but you CAN have a "
+    "back-and-forth with the user via `nbhd_send_to_user`.\n\n"
+    "Read `rules/voice-journal.md` for the full journal routing protocol.\n\n"
+    "Steps:\n"
+    "1. Load today's daily note (`nbhd_daily_note_get`) — check what's already been logged today\n"
+    "2. Load ALL project documents (`nbhd_document_get` with kind='project') to see what's being tracked\n"
+    "3. Load the tasks document (`nbhd_document_get` with kind='tasks', slug='tasks')\n"
+    "4. Load the goals document (`nbhd_document_get` with kind='goal', slug='goals')\n"
+    "5. Compare: which tracked projects have updates today vs which have nothing logged\n"
+    "6. If the daily note already has comprehensive updates for all tracked projects "
+    "(e.g. from a voice journal earlier), skip the check-in entirely — do NOT message the user.\n"
+    "7. For projects with no update today, message the user casually via `nbhd_send_to_user`:\n"
+    "   - \"Hey, haven't heard about [project] today — anything happening or taking a break from it?\"\n"
+    "   - Group questions naturally, don't send one message per project\n"
+    "8. If the user responds with updates, route them to the right journal locations:\n"
+    "   - Project-specific updates → the project's document (`nbhd_document_set` kind='project')\n"
+    "   - Tasks → tasks document\n"
+    "   - General notes → daily note via `nbhd_daily_note_append`\n"
+    "9. Keep the tone casual and supportive — this is a friend checking in, not a standup meeting\n"
+)
+
 _BACKGROUND_TASKS_PROMPT = (
     "Background maintenance run. This is a cron (isolated) session — "
     "you cannot have a back-and-forth conversation. You must do everything in ONE turn.\n\n"
@@ -519,6 +541,26 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "enabled": True,
         },
         {
+            "name": "Project Check-in",
+            "schedule": {
+                "kind": "cron",
+                "expr": "0 {} * * 1-5".format(
+                    (tenant.heartbeat_start_hour + tenant.heartbeat_window_hours // 2) % 24
+                ),
+                "tz": user_tz,
+            },
+            "sessionTarget": "isolated",
+            "payload": {
+                "kind": "agentTurn",
+                "message": _build_cron_message(
+                    _PROJECT_CHECKIN_PROMPT,
+                    "Project Check-in", foreground=True, tenant=tenant,
+                ),
+            },
+            "delivery": {"mode": "none"},
+            "enabled": True,
+        },
+        {
             "name": "Background Tasks",
             "schedule": {"kind": "cron", "expr": "0 2 * * *", "tz": user_tz},
             "sessionTarget": "isolated",
@@ -551,6 +593,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
         "Weekly Reflection": "weekly_reflection",
         "Week Ahead Review": "week_review",
         "Background Tasks": "background_tasks",
+        "Project Check-in": "project_checkin",
         "Heartbeat Check-in": "heartbeat",
     }
     prefs = getattr(tenant, "task_model_preferences", None) or {}

@@ -109,6 +109,7 @@ def _message_has_phase2_marker(message: str) -> bool:
 HIDDEN_SYSTEM_CRONS = frozenset({
     "Background Tasks",
     "Heartbeat Check-in",
+    "Project Check-in",
 })
 
 # Job-name prefixes that should be hidden from the user-facing UI. Used by
