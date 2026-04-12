@@ -79,7 +79,17 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
     # 2. Clear hibernation flag
     Tenant.objects.filter(id=tenant.id).update(hibernated_at=None)
 
-    # 3. Schedule buffered message delivery (45s delay for container startup)
+    # 3. Apply pending config (writes to file share before container finishes booting)
+    if tenant.pending_config_version > tenant.config_version:
+        try:
+            from apps.cron.publish import publish_task
+
+            publish_task("apply_single_tenant_config", str(tenant.id))
+            logger.info("idle_wake: queued config apply for %s (v%d→v%d)", tid, tenant.config_version, tenant.pending_config_version)
+        except Exception:
+            logger.exception("idle_wake: failed to queue config apply for %s", tid)
+
+    # 4. Schedule buffered message delivery (45s delay for container startup)
     try:
         from apps.cron.publish import publish_task
 
@@ -91,7 +101,7 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
     except Exception:
         logger.exception("idle_wake: failed to schedule buffer delivery for %s", tid)
 
-    # 4. Schedule cron resumption (60s delay — container must be ready)
+    # 5. Schedule cron resumption (60s delay — container must be ready)
     try:
         from apps.cron.publish import publish_task
 
