@@ -13,8 +13,21 @@
 | Tool | Purpose |
 |------|---------|
 | `nbhd_daily_note_get` | Get today's (or any date's) daily note |
-| `nbhd_daily_note_set_section` | Write a specific section (morning-report, weather, news, focus, evening-check-in) |
-| `nbhd_daily_note_append` | Append a timestamped log entry (marks author=agent) |
+| `nbhd_daily_note_set_section` | Write a specific section by slug (see routing below) |
+| `nbhd_daily_note_append` | Append a timestamped log entry — **only for unstructured notes that don't fit a section** |
+
+**Section routing — always use `set_section` with the right slug:**
+
+| User shares... | Slug |
+|----------------|------|
+| Mood, energy, how they feel | `energy-mood` |
+| What got done, accomplishments | `evening-check-in` |
+| Blockers, what didn't happen | `evening-check-in` |
+| Plans for tomorrow | `evening-check-in` |
+| Morning report content | `morning-report` |
+| Weather info | `weather` |
+| News & interests | `news` |
+| Priorities & quick wins | `focus` |
 
 ### Memory
 | Tool | Purpose |
