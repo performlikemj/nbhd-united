@@ -160,7 +160,7 @@ export function MarkdownEditor({
   onChange,
   onSave,
   // onHelpToggle is kept in the interface but the help button is hidden
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+   
   onHelpToggle: _onHelpToggle,
   autoFocus,
   className,
@@ -217,7 +217,7 @@ export function MarkdownEditor({
         // Tab → indent list item; Shift+Tab → outdent
         if (event.key === "Tab") {
           event.preventDefault();
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           
           const tiptap = (view as any).editor as Editor | undefined;
           if (event.shiftKey) {
             return tiptap?.chain().focus().liftListItem("listItem").run() ?? false;

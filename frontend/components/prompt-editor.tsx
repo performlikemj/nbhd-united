@@ -37,7 +37,7 @@ const CHIP_TAGS: Record<string, ChipTagMeta> = {
 /*  ChipNodeView — React component rendered per chip                   */
 /* ------------------------------------------------------------------ */
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 function ChipNodeView({ node }: { node: any }) {
   const tag = node.attrs.tag as string;
   const meta = CHIP_TAGS[tag];
@@ -219,7 +219,7 @@ export const PromptEditor = forwardRef<PromptEditorHandle, PromptEditorProps>(
             if (lastIndex < text.length) {
               nodes.push({ type: "text", text: text.slice(lastIndex) });
             }
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+             
             const ed = (view as any).editor as Editor | undefined;
             if (ed) {
               ed.chain().focus().insertContent(nodes).run();

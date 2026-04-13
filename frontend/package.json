@@ -6,11 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint .",
     "generate-icons": "node scripts/generate-icons.js"
   },
   "dependencies": {
-    "@eslint/eslintrc": "^3.3.5",
     "@tailwindcss/typography": "^0.5.19",
     "@tanstack/react-query": "^5.97.0",
     "@tiptap/extension-placeholder": "^3.22.3",
@@ -31,7 +30,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "autoprefixer": "^10.4.20",
-    "eslint": "^10.2.0",
+    "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.3",
     "postcss": "^8.5.9",
     "sharp": "^0.34.5",
