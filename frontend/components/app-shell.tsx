@@ -107,7 +107,7 @@ function TrialBadge() {
   );
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
+ 
 function PlatformBudgetBanner() {
   const { data: tenant } = useTenantQuery();
 

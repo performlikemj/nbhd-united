@@ -273,7 +273,7 @@ export default function ScheduleBuilder({ expr, onChange }: ScheduleBuilderProps
     initialParsed ? "" : "This expression uses a custom pattern not supported by the schedule builder.",
   );
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   useEffect(() => {
     // In easy mode, treat builder state as source of truth to avoid easy-mode <-> parent ping-pong.
     if (mode === "easy") {

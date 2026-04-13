@@ -211,8 +211,8 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
       <div className="space-y-4 p-4 lg:p-6">
         <div className="h-8 w-48 animate-pulse rounded bg-border" />
         <div className="space-y-2">
-          {[1, 2, 3, 4, 5].map((i) => (
-            <div key={i} className="h-4 animate-pulse rounded bg-border" style={{ width: `${60 + Math.random() * 30}%` }} />
+          {[85, 72, 90, 65, 78].map((w, i) => (
+            <div key={i} className="h-4 animate-pulse rounded bg-border" style={{ width: `${w}%` }} />
           ))}
         </div>
       </div>
