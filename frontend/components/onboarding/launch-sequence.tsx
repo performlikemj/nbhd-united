@@ -20,7 +20,7 @@ export function LaunchSequence() {
   const retryMutation = useRetryProvisioningMutation();
   const [elapsed, setElapsed] = useState(0);
   const [tipIndex, setTipIndex] = useState(0);
-  const [isReady, setIsReady] = useState(false);
+  const isReady = provisioningStatus?.status === "active" && Boolean(provisioningStatus?.container_id);
 
   // Timer
   useEffect(() => {
@@ -35,13 +35,6 @@ export function LaunchSequence() {
     }, 8000);
     return () => clearInterval(interval);
   }, []);
-
-  // Check provisioning status
-  useEffect(() => {
-    if (provisioningStatus?.status === "active" && provisioningStatus?.container_id) {
-      setIsReady(true);
-    }
-  }, [provisioningStatus]);
 
   // Calculate visual progress based on elapsed time
   const timedSteps = STEP_TIMINGS.filter((t) => elapsed >= t).length;

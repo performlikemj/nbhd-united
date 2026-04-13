@@ -33,16 +33,15 @@ function Row({ syntax, result }: { syntax: React.ReactNode; result: string }) {
 }
 
 export function MarkdownHelpSheet({ open, onClose }: MarkdownHelpSheetProps) {
-  const [isMac, setIsMac] = useState(false);
-  const [visible, setVisible] = useState(false);
+  const [isMac] = useState(() =>
+    typeof navigator !== "undefined" && /(Mac|iPhone|iPod|iPad)/i.test(navigator.userAgent),
+  );
+  const [visible, setVisible] = useState(open);
   const [animating, setAnimating] = useState(false);
 
   useEffect(() => {
-    setIsMac(/(Mac|iPhone|iPod|iPad)/i.test(navigator.userAgent));
-  }, []);
-
-  useEffect(() => {
     if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- animation mount/unmount sequence
       setVisible(true);
       requestAnimationFrame(() => requestAnimationFrame(() => setAnimating(true)));
     } else {

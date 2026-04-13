@@ -20,8 +20,11 @@ export function MessagingScene() {
 
   const [telegramLink, setTelegramLink] = useState<TelegramLinkResponse | null>(null);
   const [lineLink, setLineLink] = useState<LineLinkResponse | null>(null);
-  const [telegramSeconds, setTelegramSeconds] = useState(0);
-  const [lineSeconds, setLineSeconds] = useState(0);
+  const [telegramSecondsRaw, setTelegramSeconds] = useState(0);
+  const [lineSecondsRaw, setLineSeconds] = useState(0);
+  // Reset to 0 when link is cleared
+  const telegramSeconds = telegramLink ? telegramSecondsRaw : 0;
+  const lineSeconds = lineLink ? lineSecondsRaw : 0;
 
   const telegramLinked = Boolean(me?.tenant?.user.telegram_chat_id) || Boolean(telegramStatus?.linked);
   const lineLinked = Boolean(lineStatus?.linked);
@@ -29,11 +32,11 @@ export function MessagingScene() {
 
   // Telegram countdown
   useEffect(() => {
-    if (!telegramLink) { setTelegramSeconds(0); return; }
+    if (!telegramLink) return;
     const expiresAt = new Date(telegramLink.expires_at).getTime();
     const tick = () => {
       const ms = expiresAt - Date.now();
-      if (ms <= 0) { setTelegramLink(null); setTelegramSeconds(0); }
+      if (ms <= 0) { setTelegramLink(null); }
       else setTelegramSeconds(Math.ceil(ms / 1000));
     };
     tick();
@@ -43,11 +46,11 @@ export function MessagingScene() {
 
   // LINE countdown
   useEffect(() => {
-    if (!lineLink) { setLineSeconds(0); return; }
+    if (!lineLink) return;
     const expiresAt = new Date(lineLink.expires_at).getTime();
     const tick = () => {
       const ms = expiresAt - Date.now();
-      if (ms <= 0) { setLineLink(null); setLineSeconds(0); }
+      if (ms <= 0) { setLineLink(null); }
       else setLineSeconds(Math.ceil(ms / 1000));
     };
     tick();

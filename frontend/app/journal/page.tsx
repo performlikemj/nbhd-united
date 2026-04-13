@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useRef, useCallback } from "react";
 import clsx from "clsx";
 import { Sidebar } from "@/components/journal/sidebar";
 import { DocumentView } from "@/components/journal/document-view";
@@ -17,8 +17,25 @@ function formatEntryDate(dateStr: string): string {
 }
 
 export default function JournalPage() {
-  const [activeKind, setActiveKind] = useState("daily");
-  const [activeSlug, setActiveSlug] = useState(todayISO());
+  const [activeKind, setActiveKind] = useState(() => {
+    if (typeof window === "undefined") return "daily";
+    const hash = window.location.hash.slice(1);
+    if (hash) {
+      const parts = hash.split("/");
+      if (parts.length >= 1) return parts[0];
+    }
+    return "daily";
+  });
+  const [activeSlug, setActiveSlug] = useState(() => {
+    if (typeof window === "undefined") return todayISO();
+    const hash = window.location.hash.slice(1);
+    if (hash) {
+      const parts = hash.split("/");
+      if (parts.length >= 2) return parts.slice(1).join("/");
+      if (parts.length === 1) return parts[0];
+    }
+    return todayISO();
+  });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
@@ -28,13 +45,12 @@ export default function JournalPage() {
 
   // Draggable sidebar FAB — persists Y position in localStorage
   const SIDEBAR_FAB_KEY = "sidebar-fab-y";
-  const [fabY, setFabY] = useState<number | null>(null);
-  const fabDrag = useRef<{ startTouchY: number; startBtnY: number; moved: boolean } | null>(null);
-
-  useEffect(() => {
+  const [fabY, setFabY] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
     const saved = localStorage.getItem(SIDEBAR_FAB_KEY);
-    setFabY(saved ? parseInt(saved, 10) : window.innerHeight - 120);
-  }, []);
+    return saved ? parseInt(saved, 10) : window.innerHeight - 120;
+  });
+  const fabDrag = useRef<{ startTouchY: number; startBtnY: number; moved: boolean } | null>(null);
 
   const handleFabTouchStart = useCallback((e: React.TouchEvent) => {
     const touch = e.touches[0];
@@ -58,21 +74,6 @@ export default function JournalPage() {
     fabDrag.current = null;
     return wasDrag;
   }, [fabY]);
-
-  // Parse hash on mount for deep linking: #daily/2026-02-16
-  useEffect(() => {
-    const hash = window.location.hash.slice(1);
-    if (hash) {
-      const parts = hash.split("/");
-      if (parts.length >= 2) {
-        setActiveKind(parts[0]);
-        setActiveSlug(parts.slice(1).join("/"));
-      } else if (parts.length === 1) {
-        setActiveKind(parts[0]);
-        setActiveSlug(parts[0]);
-      }
-    }
-  }, []);
 
   const handleNavigate = (kind: string, slug: string) => {
     setActiveKind(kind);
