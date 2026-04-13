@@ -1,6 +1,6 @@
 "use client";
 
-import { type MouseEvent, type TouchEvent as ReactTouchEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type MouseEvent, type TouchEvent as ReactTouchEvent, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownEditor, EditorToolbar } from "@/components/journal/markdown-editor";
@@ -54,27 +54,35 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [helpOpen, setHelpOpen] = useState(false);
-  // null = not yet measured (avoids SSR/hydration mismatch)
-  const [isMobile, setIsMobile] = useState<boolean | null>(null);
+  // null on server, measured on client via useSyncExternalStore
+  const isMobile = useSyncExternalStore(
+    (cb) => {
+      const mq = window.matchMedia("(max-width: 767px)");
+      mq.addEventListener("change", cb);
+      return () => mq.removeEventListener("change", cb);
+    },
+    () => window.matchMedia("(max-width: 767px)").matches,
+    () => null as boolean | null,
+  );
 
   // Draggable pencil FAB — Y position stored in localStorage
   const FAB_KEY = "pencil-fab-y";
-  const [fabY, setFabY] = useState<number | null>(null);
+  const [fabY, setFabY] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
+    const saved = localStorage.getItem(FAB_KEY);
+    return saved ? parseInt(saved, 10) : window.innerHeight - 80 - 28;
+  });
   const mobileEditorRef = useRef<Editor | null>(null);
   const [mobileEditor, setMobileEditor] = useState<Editor | null>(null);
   const fabDrag = useRef<{ startTouchY: number; startBtnY: number } | null>(null);
 
-  // Exit edit mode when navigating to a different document
+  // Reset edit state when navigating to a different document
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset when props change
     setEditing(false);
     setMobileEditor(null);
     mobileEditorRef.current = null;
   }, [kind, slug]);
-
-  useEffect(() => {
-    const saved = localStorage.getItem(FAB_KEY);
-    setFabY(saved ? parseInt(saved, 10) : window.innerHeight - 80 - 28);
-  }, []);
 
   const handleFabTouchStart = useCallback((e: ReactTouchEvent) => {
     const touch = e.touches[0];
@@ -95,15 +103,6 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
   }, [fabY]);
 
   const queryClient = useQueryClient();
-
-  // Detect mobile viewport — runs client-side only
-  useEffect(() => {
-    const mq = window.matchMedia("(max-width: 767px)");
-    setIsMobile(mq.matches);
-    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
 
   // Lock body scroll + hide app shell header when mobile overlay is open.
   // iOS Safari's backdrop-filter creates a compositing layer that paints
@@ -185,20 +184,20 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
       const line = lines[lineIndex];
       if (!line) return;
 
-      if (checked) {
-        lines[lineIndex] = line.replace(/\[([ ])\]/, "[x]");
-      } else {
-        lines[lineIndex] = line.replace(/\[([xX])\]/, "[ ]");
-      }
+      const newLine = checked
+        ? line.replace(/\[([ ])\]/, "[x]")
+        : line.replace(/\[([xX])\]/, "[ ]");
 
-      const newMarkdown = lines.join("\n");
+      const newMarkdown = lines
+        .map((l, i) => (i === lineIndex ? newLine : l))
+        .join("\n");
       updateMutation.mutate({
         kind,
         slug: effectiveSlug,
         data: { markdown: newMarkdown },
       });
     },
-    [doc?.markdown, kind, effectiveSlug, updateMutation],
+    [doc, kind, effectiveSlug, updateMutation],
   );
 
   const handleDateNav = (days: number) => {

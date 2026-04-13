@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useState } from "react";
 
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
@@ -86,22 +86,6 @@ export default function TemplatesPage() {
     is_default: false,
     sections: cloneSections(sectionSeed),
   });
-
-  useEffect(() => {
-    if (!data) {
-      return;
-    }
-    const editingTemplate = data.find((template) => template.id === editingId);
-    if (!editingTemplate) {
-      return;
-    }
-    setFormState({
-      name: editingTemplate.name,
-      slug: editingTemplate.slug,
-      is_default: editingTemplate.is_default,
-      sections: cloneSections(editingTemplate.sections),
-    });
-  }, [data, editingId]);
 
   const handleStartCreate = () => {
     setEditingId(null);

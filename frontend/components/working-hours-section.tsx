@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
@@ -30,12 +30,13 @@ export function WorkingHoursSection({ timezone }: { timezone?: string }) {
   const [startHour, setStartHour] = useState(6);
   const [message, setMessage] = useState("");
 
-  useEffect(() => {
-    if (!editing && wh) {
+  const handleStartEdit = () => {
+    if (wh) {
       setEnabled(wh.enabled);
       setStartHour(wh.start_hour);
     }
-  }, [wh, editing]);
+    setEditing(true);
+  };
 
   const handleSave = async () => {
     setMessage("");
@@ -81,7 +82,7 @@ export function WorkingHoursSection({ timezone }: { timezone?: string }) {
           </div>
           <button
             type="button"
-            onClick={() => setEditing(true)}
+            onClick={handleStartEdit}
             className="rounded-full border border-border px-4 py-1.5 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink min-h-[44px]"
           >
             Edit

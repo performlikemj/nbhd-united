@@ -80,13 +80,15 @@ const colorMap: Record<string, { bg: string; text: string; hoverBg: string }> = 
 
 export default function LandingPage() {
   const router = useRouter();
-  const [ready, setReady] = useState(false);
+  const [ready] = useState(() => {
+    if (typeof window === "undefined") return false;
+    if (isLoggedIn()) return false;
+    return true;
+  });
 
   useEffect(() => {
     if (isLoggedIn()) {
       router.replace("/journal");
-    } else {
-      setReady(true);
     }
   }, [router]);
 
