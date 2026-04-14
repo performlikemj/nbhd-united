@@ -3,11 +3,11 @@
 Renders Document content as markdown files and uploads them to the tenant's
 Azure File Share so OpenClaw's built-in memory_search can index them.
 """
+
 from __future__ import annotations
 
 import logging
 from datetime import timedelta
-from typing import Any
 
 from django.utils import timezone
 
@@ -30,10 +30,14 @@ def render_memory_files(tenant) -> dict[str, str]:
     cutoff = (timezone.now() - timedelta(days=30)).date()
 
     # All non-daily docs + recent dailies
-    documents = Document.objects.filter(tenant=tenant).exclude(
-        kind="daily",
-        slug__lt=str(cutoff),
-    ).order_by("kind", "slug")
+    documents = (
+        Document.objects.filter(tenant=tenant)
+        .exclude(
+            kind="daily",
+            slug__lt=str(cutoff),
+        )
+        .order_by("kind", "slug")
+    )
 
     from apps.pii.redactor import RedactionSession
 
@@ -49,9 +53,7 @@ def render_memory_files(tenant) -> dict[str, str]:
     # Merge workspace entity mapping with any message-originated entities
     if session.entity_map:
         existing_map = (
-            type(tenant).objects.filter(pk=tenant.pk)
-            .values_list("pii_entity_map", flat=True)
-            .first()
+            type(tenant).objects.filter(pk=tenant.pk).values_list("pii_entity_map", flat=True).first()
         ) or {}
         # Workspace entities override, message entities preserved
         merged = {**existing_map, **session.entity_map}
@@ -70,7 +72,6 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
 
     In mock mode (``AZURE_MOCK=true``), logs but does not write.
     """
-    import os
 
     from django.conf import settings
 
@@ -86,9 +87,7 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
         )
         return len(files)
 
-    account_name = str(
-        getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or ""
-    ).strip()
+    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
     if not account_name:
         raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
 
@@ -145,12 +144,16 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
                 except ResourceNotFoundError:
                     logger.warning(
                         "memory_sync: share or parent dir not found creating %s/%s",
-                        share_name, dir_path, exc_info=True,
+                        share_name,
+                        dir_path,
+                        exc_info=True,
                     )
                 except Exception:
                     logger.warning(
                         "memory_sync: failed to create directory %s/%s",
-                        share_name, dir_path, exc_info=True,
+                        share_name,
+                        dir_path,
+                        exc_info=True,
                     )
                 created_dirs.add(dir_path)
 
@@ -175,7 +178,9 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
         except Exception:
             logger.warning(
                 "memory_sync: failed to check file %s/%s",
-                share_name, rel_path, exc_info=True,
+                share_name,
+                rel_path,
+                exc_info=True,
             )
 
         try:
@@ -184,7 +189,8 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
         except ResourceNotFoundError:
             logger.warning(
                 "memory_sync: parent directory missing for %s/%s — skipping file",
-                share_name, rel_path,
+                share_name,
+                rel_path,
             )
 
     logger.info(

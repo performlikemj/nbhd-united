@@ -1,4 +1,5 @@
 """Router models — message buffering for idle-hibernated tenants."""
+
 import uuid
 
 from django.db import models

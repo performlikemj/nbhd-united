@@ -1,5 +1,7 @@
 import uuid
+
 from django.db import models
+
 from apps.tenants.models import Tenant
 
 
@@ -19,22 +21,19 @@ class PlatformIssueLog(models.Model):
         CRITICAL = "critical", "Critical"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    tenant = models.ForeignKey(
-        Tenant, on_delete=models.CASCADE, related_name="platform_issues"
-    )
-    category = models.CharField(
-        max_length=30, choices=Category.choices, default=Category.OTHER
-    )
-    severity = models.CharField(
-        max_length=10, choices=Severity.choices, default=Severity.LOW
-    )
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="platform_issues")
+    category = models.CharField(max_length=30, choices=Category.choices, default=Category.OTHER)
+    severity = models.CharField(max_length=10, choices=Severity.choices, default=Severity.LOW)
     tool_name = models.CharField(
-        max_length=100, blank=True, default="",
+        max_length=100,
+        blank=True,
+        default="",
         help_text="Name of the tool that failed or was missing",
     )
     summary = models.CharField(max_length=500)
     detail = models.TextField(
-        blank=True, default="",
+        blank=True,
+        default="",
         help_text="Additional context (no user PII)",
     )
     resolved = models.BooleanField(default=False)

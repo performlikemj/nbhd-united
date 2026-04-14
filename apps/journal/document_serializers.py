@@ -1,4 +1,5 @@
 """Serializers for the v2 Document model."""
+
 from __future__ import annotations
 
 from rest_framework import serializers
@@ -36,6 +37,7 @@ class DocumentCreateSerializer(serializers.Serializer):
 
 class SidebarTreeSerializer(serializers.Serializer):
     """Represents a tree node for the sidebar."""
+
     kind = serializers.CharField()
     slug = serializers.CharField()
     title = serializers.CharField()

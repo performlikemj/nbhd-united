@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.core.management.base import BaseCommand, CommandError

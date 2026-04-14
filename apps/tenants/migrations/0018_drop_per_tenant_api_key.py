@@ -4,18 +4,17 @@ from django.db import migrations
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0017_heartbeat_window'),
+        ("tenants", "0017_heartbeat_window"),
     ]
 
     operations = [
         migrations.RemoveField(
-            model_name='tenant',
-            name='internal_api_key_hash',
+            model_name="tenant",
+            name="internal_api_key_hash",
         ),
         migrations.RemoveField(
-            model_name='tenant',
-            name='internal_api_key_set_at',
+            model_name="tenant",
+            name="internal_api_key_set_at",
         ),
     ]

@@ -1,10 +1,9 @@
 """Tests for the Telegram onboarding flow."""
+
 from unittest.mock import patch
 
 from django.test import TestCase
 
-from apps.tenants.models import Tenant
-from apps.tenants.services import create_tenant
 from apps.router.onboarding import (
     get_onboarding_response,
     needs_reintroduction,
@@ -12,6 +11,7 @@ from apps.router.onboarding import (
     parse_name,
     parse_timezone,
 )
+from apps.tenants.services import create_tenant
 
 
 class ParseNameTest(TestCase):
@@ -103,9 +103,7 @@ class ParseTimezoneTest(TestCase):
 
 class OnboardingFlowTest(TestCase):
     def setUp(self):
-        self.tenant = create_tenant(
-            display_name="New User", telegram_chat_id=999999
-        )
+        self.tenant = create_tenant(display_name="New User", telegram_chat_id=999999)
         self.tenant.onboarding_complete = False
         self.tenant.onboarding_step = 0
         self.tenant.save(update_fields=["onboarding_complete", "onboarding_step"])
@@ -309,9 +307,7 @@ class CallbackTest(TestCase):
     """Tests for inline button callback handling."""
 
     def setUp(self):
-        self.tenant = create_tenant(
-            display_name="Test", telegram_chat_id=777777
-        )
+        self.tenant = create_tenant(display_name="Test", telegram_chat_id=777777)
         self.tenant.onboarding_complete = False
         self.tenant.onboarding_step = 3  # Waiting for country
         self.tenant.save(update_fields=["onboarding_complete", "onboarding_step"])
@@ -319,6 +315,7 @@ class CallbackTest(TestCase):
     def test_single_tz_country_callback(self):
         """Tapping a single-tz country resolves timezone immediately."""
         from apps.router.onboarding import handle_onboarding_callback
+
         reply = handle_onboarding_callback(self.tenant, "tz_country:Japan")
         self.assertIsNotNone(reply)
         self.tenant.user.refresh_from_db()
@@ -329,6 +326,7 @@ class CallbackTest(TestCase):
     def test_multi_tz_country_callback(self):
         """Tapping a multi-tz country shows zone buttons."""
         from apps.router.onboarding import handle_onboarding_callback
+
         reply = handle_onboarding_callback(self.tenant, "tz_country:United States")
         self.assertIsNotNone(reply)
         self.assertIsNotNone(reply.keyboard)
@@ -341,6 +339,7 @@ class CallbackTest(TestCase):
         self.tenant.save(update_fields=["onboarding_step"])
 
         from apps.router.onboarding import handle_onboarding_callback
+
         reply = handle_onboarding_callback(self.tenant, "tz_zone:America/New_York")
         self.assertIsNotNone(reply)
         self.tenant.user.refresh_from_db()
@@ -351,6 +350,7 @@ class CallbackTest(TestCase):
     def test_other_country_callback(self):
         """Tapping 'Other' asks user to type country name."""
         from apps.router.onboarding import handle_onboarding_callback
+
         reply = handle_onboarding_callback(self.tenant, "tz_country:OTHER")
         self.assertIsNotNone(reply)
         self.assertIn("type", reply.text.lower())
@@ -358,9 +358,7 @@ class CallbackTest(TestCase):
 
 class ReintroductionTest(TestCase):
     def setUp(self):
-        self.tenant = create_tenant(
-            display_name="Friend", telegram_chat_id=888888
-        )
+        self.tenant = create_tenant(display_name="Friend", telegram_chat_id=888888)
         # Simulate a backfilled user
         self.tenant.onboarding_complete = True
         self.tenant.onboarding_step = 4

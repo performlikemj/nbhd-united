@@ -2,6 +2,7 @@
 
 Based on actual OpenClaw config schema — see openclaw.json reference.
 """
+
 from __future__ import annotations
 
 import json
@@ -14,7 +15,6 @@ from django.conf import settings
 from apps.billing.constants import GEMMA_MODEL, KIMI_MODEL, MINIMAX_MODEL
 from apps.orchestrator.tool_policy import generate_tool_config
 from apps.tenants.models import Tenant
-
 
 _CRON_CONTEXT_PREAMBLE = (
     "**MANDATORY — do this BEFORE following the instructions below:**\n"
@@ -72,14 +72,14 @@ def _phase2_sync_block(job_name: str) -> str:
         "   - sessionTarget: main\n"
         "   - wakeMode: now\n"
         "   - payload.kind: systemEvent\n"
-        f"   - payload.text: \"[Sync — {job_name}] <your 2-3 sentence summary>. "
-        f"After noting this, run: cron remove _sync:{job_name}\"\n"
+        f'   - payload.text: "[Sync — {job_name}] <your 2-3 sentence summary>. '
+        f'After noting this, run: cron remove _sync:{job_name}"\n'
         "4. If `cron add` fails, accept it — Phase 1 work already completed. Do NOT retry "
         "and do NOT message the user again.\n"
     )
 
 
-def _build_cron_message(prompt: str, job_name: str, foreground: bool, tenant: "Tenant") -> str:
+def _build_cron_message(prompt: str, job_name: str, foreground: bool, tenant: Tenant) -> str:
     """Compose a cron job's message: date preamble + prompt + (optional) Phase 2 sync.
 
     Centralizes the message-building so seed jobs and tests stay consistent.
@@ -90,7 +90,7 @@ def _build_cron_message(prompt: str, job_name: str, foreground: bool, tenant: "T
     return base
 
 
-def _prepare_cron_prompt(prompt: str, tenant: "Tenant") -> str:
+def _prepare_cron_prompt(prompt: str, tenant: Tenant) -> str:
     """Prepend date context and shared preamble to a cron prompt.
 
     Every cron job gets:
@@ -112,6 +112,7 @@ def _prepare_cron_prompt(prompt: str, tenant: "Tenant") -> str:
         f"Never say 'tomorrow' unless the math confirms exactly 1 day away.\n\n"
     )
     return date_line + _CRON_CONTEXT_PREAMBLE + prompt
+
 
 _MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "Good morning! Create today's morning briefing. This runs as a scheduled task. "
@@ -192,6 +193,7 @@ _MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "After that message is sent, proceed to the FINAL STEP described below.**\n"
 )
 
+
 def _build_morning_briefing_prompt(tenant) -> str:
     """Build the morning briefing prompt with a pre-resolved weather URL.
 
@@ -199,6 +201,7 @@ def _build_morning_briefing_prompt(tenant) -> str:
     approximate coordinates.
     """
     from apps.orchestrator.weather import build_weather_url, build_weather_url_from_coords
+
     user = tenant.user
     user_tz = str(getattr(user, "timezone", "") or "UTC")
 
@@ -368,7 +371,7 @@ _PROJECT_CHECKIN_PROMPT = (
     "6. If the daily note already has comprehensive updates for all tracked projects "
     "(e.g. from a voice journal earlier), skip the check-in entirely — do NOT message the user.\n"
     "7. For projects with no update today, message the user casually via `nbhd_send_to_user`:\n"
-    "   - \"Hey, haven't heard about [project] today — anything happening or taking a break from it?\"\n"
+    '   - "Hey, haven\'t heard about [project] today — anything happening or taking a break from it?"\n'
     "   - Group questions naturally, don't send one message per project\n"
     "8. If the user responds with updates, route them to the right journal locations:\n"
     "   - Project-specific updates → the project's document (`nbhd_document_set` kind='project')\n"
@@ -456,13 +459,15 @@ def _build_heartbeat_cron(tenant: Tenant) -> dict | None:
             # guard that skips the sync on HEARTBEAT_OK runs, so silent hours
             # stay silent for both user and main session.
             "message": _build_cron_message(
-                _HEARTBEAT_CHECKIN_PROMPT, "Heartbeat Check-in", foreground=True, tenant=tenant,
+                _HEARTBEAT_CHECKIN_PROMPT,
+                "Heartbeat Check-in",
+                foreground=True,
+                tenant=tenant,
             ),
         },
         "delivery": {"mode": "none"},
         "enabled": True,
     }
-
 
 
 def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
@@ -492,7 +497,9 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
                 "kind": "agentTurn",
                 "message": _build_cron_message(
                     _build_morning_briefing_prompt(tenant),
-                    "Morning Briefing", foreground=True, tenant=tenant,
+                    "Morning Briefing",
+                    foreground=True,
+                    tenant=tenant,
                 ),
             },
             "delivery": {"mode": "none"},
@@ -506,7 +513,9 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
                 "kind": "agentTurn",
                 "message": _build_cron_message(
                     _EVENING_CHECKIN_PROMPT,
-                    "Evening Check-in", foreground=True, tenant=tenant,
+                    "Evening Check-in",
+                    foreground=True,
+                    tenant=tenant,
                 ),
             },
             "delivery": {"mode": "none"},
@@ -520,7 +529,9 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
                 "kind": "agentTurn",
                 "message": _build_cron_message(
                     _WEEKLY_REFLECTION_PROMPT,
-                    "Weekly Reflection", foreground=True, tenant=tenant,
+                    "Weekly Reflection",
+                    foreground=True,
+                    tenant=tenant,
                 ),
             },
             "delivery": {"mode": "none"},
@@ -534,7 +545,9 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
                 "kind": "agentTurn",
                 "message": _build_cron_message(
                     _WEEK_AHEAD_REVIEW_PROMPT,
-                    "Week Ahead Review", foreground=True, tenant=tenant,
+                    "Week Ahead Review",
+                    foreground=True,
+                    tenant=tenant,
                 ),
             },
             "delivery": {"mode": "none"},
@@ -544,9 +557,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "name": "Project Check-in",
             "schedule": {
                 "kind": "cron",
-                "expr": "0 {} * * 1-5".format(
-                    (tenant.heartbeat_start_hour + tenant.heartbeat_window_hours // 2) % 24
-                ),
+                "expr": f"0 {(tenant.heartbeat_start_hour + tenant.heartbeat_window_hours // 2) % 24} * * 1-5",
                 "tz": user_tz,
             },
             "sessionTarget": "isolated",
@@ -554,7 +565,9 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
                 "kind": "agentTurn",
                 "message": _build_cron_message(
                     _PROJECT_CHECKIN_PROMPT,
-                    "Project Check-in", foreground=True, tenant=tenant,
+                    "Project Check-in",
+                    foreground=True,
+                    tenant=tenant,
                 ),
             },
             "delivery": {"mode": "none"},
@@ -570,7 +583,9 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
                 # so the sync wrapper would be dead text. Skip it to save tokens.
                 "message": _build_cron_message(
                     _BACKGROUND_TASKS_PROMPT,
-                    "Background Tasks", foreground=False, tenant=tenant,
+                    "Background Tasks",
+                    foreground=False,
+                    tenant=tenant,
                 ),
             },
             "delivery": {"mode": "none"},
@@ -605,7 +620,6 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
                 job["model"] = model
 
     return jobs
-
 
 
 def _build_tools_section(tier: str) -> dict[str, Any]:
@@ -659,23 +673,32 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     ]
     # Reddit plugin — conditionally loaded only when tenant has an active Reddit connection
     from apps.integrations.models import Integration as _Integration
+
     _reddit_connected = _Integration.objects.filter(
         tenant=tenant,
         provider="reddit",
         status=_Integration.Status.ACTIVE,
     ).exists()
     if _reddit_connected:
-        _plugin_defs.append((
-            str(getattr(settings, "OPENCLAW_REDDIT_PLUGIN_ID", "nbhd-reddit-tools") or "").strip(),
-            str(getattr(settings, "OPENCLAW_REDDIT_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-reddit-tools") or "").strip(),
-        ))
+        _plugin_defs.append(
+            (
+                str(getattr(settings, "OPENCLAW_REDDIT_PLUGIN_ID", "nbhd-reddit-tools") or "").strip(),
+                str(
+                    getattr(settings, "OPENCLAW_REDDIT_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-reddit-tools") or ""
+                ).strip(),
+            )
+        )
 
     # Finance plugin — conditionally loaded when tenant has finance enabled
     if getattr(tenant, "finance_enabled", False):
-        _plugin_defs.append((
-            str(getattr(settings, "OPENCLAW_FINANCE_PLUGIN_ID", "nbhd-finance-tools") or "").strip(),
-            str(getattr(settings, "OPENCLAW_FINANCE_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-finance-tools") or "").strip(),
-        ))
+        _plugin_defs.append(
+            (
+                str(getattr(settings, "OPENCLAW_FINANCE_PLUGIN_ID", "nbhd-finance-tools") or "").strip(),
+                str(
+                    getattr(settings, "OPENCLAW_FINANCE_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-finance-tools") or ""
+                ).strip(),
+            )
+        )
 
     _active_plugins = [(pid, ppath) for pid, ppath in _plugin_defs if pid]
 
@@ -697,7 +720,6 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 },
             },
         },
-
         # Agent defaults
         "agents": {
             "defaults": {
@@ -753,7 +775,6 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 },
             },
         },
-
         # Messaging channels — the central Django router handles actual
         # Telegram/LINE I/O, but we declare the channels here so the agent
         # knows its surface capabilities (inline buttons, etc.).
@@ -767,7 +788,6 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 "enabled": True,
             },
         },
-
         # Gateway — local mode; bind to loopback so internal tool calls
         # (cron, etc.) auto-pair via localhost.  The OpenClaw proxy sidecar
         # (listening on 0.0.0.0:8080) handles external traffic forwarding.
@@ -796,15 +816,12 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 "allow": ["cron", "gateway"],
             },
         },
-
         # Tools
         "tools": _build_tools_section(tier),
-
         # Messages
         "messages": {
             "ackReactionScope": "group-mentions",
         },
-
         # Cron runtime settings (job definitions seeded via Gateway API)
         "cron": {"enabled": True},
     }
@@ -821,11 +838,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         plugin_config: dict[str, Any] = {
             "allow": [pid for pid, _ in _active_plugins],
             "entries": {
-                pid: (
-                    {"enabled": True, "config": {"tier": tier}}
-                    if pid == image_gen_id
-                    else {"enabled": True}
-                )
+                pid: ({"enabled": True, "config": {"tier": tier}} if pid == image_gen_id else {"enabled": True})
                 for pid, _ in _active_plugins
             },
         }
@@ -853,13 +866,13 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
 
         if has_google:
             # Set env var pointing to gws credentials on the file share
-            config.setdefault("env", {})["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = (
-                "/workspace/gws-credentials.json"
-            )
+            config.setdefault("env", {})["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = "/workspace/gws-credentials.json"
 
             # GWS skills — read-only for now
             gws_skill_names = [
-                "gws-shared", "gws-gmail-triage", "gws-calendar-agenda",
+                "gws-shared",
+                "gws-gmail-triage",
+                "gws-calendar-agenda",
             ]
 
             skills_section = config.setdefault("skills", {})

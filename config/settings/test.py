@@ -1,4 +1,5 @@
 """Test settings — SQLite-compatible by stubbing out pgvector migrations."""
+
 from .base import *  # noqa: F401,F403
 
 DEBUG = True

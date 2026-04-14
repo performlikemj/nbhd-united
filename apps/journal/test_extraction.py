@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
 
-from apps.journal.models import Document, DailyNote, PendingExtraction
 from apps.journal.extraction import (
-    run_extraction_for_tenant,
     _get_daily_note_content,
     _is_duplicate,
+    run_extraction_for_tenant,
 )
+from apps.journal.models import DailyNote, Document, PendingExtraction
 from apps.lessons.models import Lesson
 from apps.tenants.models import Tenant, User
 
@@ -58,16 +58,14 @@ class TestDailyNoteResolution(TestCase):
 
     def test_returns_none_for_short_note(self):
         Document.objects.create(
-            tenant=self.tenant, kind=Document.Kind.DAILY, slug=str(date.today()),
-            title="Today", markdown="Short."
+            tenant=self.tenant, kind=Document.Kind.DAILY, slug=str(date.today()), title="Today", markdown="Short."
         )
         result = _get_daily_note_content(self.tenant, date.today())
         self.assertIsNone(result)
 
     def test_returns_v2_document(self):
         Document.objects.create(
-            tenant=self.tenant, kind=Document.Kind.DAILY, slug=str(date.today()),
-            title="Today", markdown=RICH_NOTE
+            tenant=self.tenant, kind=Document.Kind.DAILY, slug=str(date.today()), title="Today", markdown=RICH_NOTE
         )
         result = _get_daily_note_content(self.tenant, date.today())
         self.assertIsNotNone(result)
@@ -107,7 +105,13 @@ class TestDeduplication(TestCase):
 
 
 MOCK_EXTRACTION_RESPONSE = {
-    "lessons": [{"text": "QStash retries indefinitely on 5xx — always return 200 for background tasks.", "confidence": "high", "tags": ["infra"]}],
+    "lessons": [
+        {
+            "text": "QStash retries indefinitely on 5xx — always return 200 for background tasks.",
+            "confidence": "high",
+            "tags": ["infra"],
+        }
+    ],
     "goals": [{"text": "Get the first paying NBHD United subscriber by March 31.", "confidence": "high"}],
     "tasks": [{"text": "Create GitHub issue for the IFSI compliance requirement.", "confidence": "high"}],
 }
@@ -117,11 +121,13 @@ class TestRunExtractionForTenant(TestCase):
     def setUp(self):
         self.tenant = make_tenant(chat_id=99999)
         Document.objects.create(
-            tenant=self.tenant, kind=Document.Kind.DAILY, slug=str(date.today()),
-            title="Today", markdown=RICH_NOTE
+            tenant=self.tenant, kind=Document.Kind.DAILY, slug=str(date.today()), title="Today", markdown=RICH_NOTE
         )
 
-    @patch("apps.journal.extraction._call_extraction_llm", return_value=(MOCK_EXTRACTION_RESPONSE, {"prompt_tokens": 100, "completion_tokens": 50}))
+    @patch(
+        "apps.journal.extraction._call_extraction_llm",
+        return_value=(MOCK_EXTRACTION_RESPONSE, {"prompt_tokens": 100, "completion_tokens": 50}),
+    )
     @patch("apps.journal.extraction._deliver_summary_telegram")
     @patch("django.conf.settings.TELEGRAM_BOT_TOKEN", "test-token", create=True)
     def test_auto_adds_items(self, mock_summary, mock_llm):
@@ -144,7 +150,10 @@ class TestRunExtractionForTenant(TestCase):
         doc = Document.objects.get(tenant=self.tenant, kind=Document.Kind.TASKS, slug="tasks")
         self.assertIn("IFSI compliance", doc.markdown)
 
-    @patch("apps.journal.extraction._call_extraction_llm", return_value=(MOCK_EXTRACTION_RESPONSE, {"prompt_tokens": 100, "completion_tokens": 50}))
+    @patch(
+        "apps.journal.extraction._call_extraction_llm",
+        return_value=(MOCK_EXTRACTION_RESPONSE, {"prompt_tokens": 100, "completion_tokens": 50}),
+    )
     @patch("apps.journal.extraction._deliver_summary_telegram")
     @patch("django.conf.settings.TELEGRAM_BOT_TOKEN", "test-token", create=True)
     def test_sends_one_summary_message(self, mock_summary, mock_llm):
@@ -154,7 +163,10 @@ class TestRunExtractionForTenant(TestCase):
         items = mock_summary.call_args[0][2]
         self.assertEqual(len(items), 3)
 
-    @patch("apps.journal.extraction._call_extraction_llm", return_value=(MOCK_EXTRACTION_RESPONSE, {"prompt_tokens": 100, "completion_tokens": 50}))
+    @patch(
+        "apps.journal.extraction._call_extraction_llm",
+        return_value=(MOCK_EXTRACTION_RESPONSE, {"prompt_tokens": 100, "completion_tokens": 50}),
+    )
     @patch("apps.journal.extraction._deliver_summary_telegram")
     @patch("django.conf.settings.TELEGRAM_BOT_TOKEN", "test-token", create=True)
     def test_deduplicates_on_second_run(self, mock_summary, mock_llm):
@@ -213,6 +225,7 @@ class TestExtractionCallbacks(TestCase):
     @patch("apps.router.extraction_callbacks._edit_message")
     def test_approve_goal_creates_document(self, mock_edit):
         from apps.router.extraction_callbacks import handle_extraction_callback
+
         update = self._make_update(f"extract:approve_goal:{self.pending_goal.id}")
         handle_extraction_callback(update, self.tenant)
         self.pending_goal.refresh_from_db()
@@ -223,6 +236,7 @@ class TestExtractionCallbacks(TestCase):
     @patch("apps.router.extraction_callbacks._edit_message")
     def test_approve_task_creates_document(self, mock_edit):
         from apps.router.extraction_callbacks import handle_extraction_callback
+
         update = self._make_update(f"extract:approve_task:{self.pending_task.id}")
         handle_extraction_callback(update, self.tenant)
         self.pending_task.refresh_from_db()
@@ -233,6 +247,7 @@ class TestExtractionCallbacks(TestCase):
     @patch("apps.router.extraction_callbacks._edit_message")
     def test_approve_lesson_creates_lesson(self, mock_edit):
         from apps.router.extraction_callbacks import handle_extraction_callback
+
         update = self._make_update(f"extract:approve_lesson:{self.pending_lesson.id}")
         handle_extraction_callback(update, self.tenant)
         self.pending_lesson.refresh_from_db()
@@ -244,6 +259,7 @@ class TestExtractionCallbacks(TestCase):
     @patch("apps.router.extraction_callbacks._edit_message")
     def test_dismiss(self, mock_edit):
         from apps.router.extraction_callbacks import handle_extraction_callback
+
         update = self._make_update(f"extract:dismiss:{self.pending_goal.id}")
         handle_extraction_callback(update, self.tenant)
         self.pending_goal.refresh_from_db()
@@ -267,7 +283,7 @@ class TestExtractionUndo(TestCase):
 
     @patch("apps.router.extraction_callbacks._edit_message")
     def test_undo_lesson_deletes_lesson(self, mock_edit):
-        from apps.router.extraction_callbacks import handle_extraction_callback, _approve_lesson
+        from apps.router.extraction_callbacks import _approve_lesson, handle_extraction_callback
 
         pending = PendingExtraction.objects.create(
             tenant=self.tenant,
@@ -292,7 +308,7 @@ class TestExtractionUndo(TestCase):
 
     @patch("apps.router.extraction_callbacks._edit_message")
     def test_undo_goal_removes_from_document(self, mock_edit):
-        from apps.router.extraction_callbacks import handle_extraction_callback, _approve_goal
+        from apps.router.extraction_callbacks import _approve_goal, handle_extraction_callback
 
         pending = PendingExtraction.objects.create(
             tenant=self.tenant,
@@ -315,7 +331,7 @@ class TestExtractionUndo(TestCase):
 
     @patch("apps.router.extraction_callbacks._edit_message")
     def test_undo_task_removes_from_document(self, mock_edit):
-        from apps.router.extraction_callbacks import handle_extraction_callback, _approve_task
+        from apps.router.extraction_callbacks import _approve_task, handle_extraction_callback
 
         pending = PendingExtraction.objects.create(
             tenant=self.tenant,

@@ -3,6 +3,7 @@
 Structured as: country → timezone (single) or country → {zone_label: timezone} (multi).
 Only countries with multiple timezones need drill-down.
 """
+
 from __future__ import annotations
 
 # Countries with a single timezone: country_name → IANA timezone
@@ -165,20 +166,55 @@ def get_country_display(country: str, lang: str = "en") -> str:
 
 # Country flag emojis
 COUNTRY_FLAGS: dict[str, str] = {
-    "Japan": "🇯🇵", "South Korea": "🇰🇷", "China": "🇨🇳", "Taiwan": "🇹🇼",
-    "India": "🇮🇳", "Thailand": "🇹🇭", "Vietnam": "🇻🇳", "Philippines": "🇵🇭",
-    "Singapore": "🇸🇬", "Malaysia": "🇲🇾", "Indonesia": "🇮🇩", "Hong Kong": "🇭🇰",
-    "United States": "🇺🇸", "Canada": "🇨🇦", "Mexico": "🇲🇽",
-    "United Kingdom": "🇬🇧", "France": "🇫🇷", "Germany": "🇩🇪", "Italy": "🇮🇹",
-    "Spain": "🇪🇸", "Netherlands": "🇳🇱", "Belgium": "🇧🇪", "Switzerland": "🇨🇭",
-    "Sweden": "🇸🇪", "Norway": "🇳🇴", "Denmark": "🇩🇰", "Finland": "🇫🇮",
-    "Poland": "🇵🇱", "Ireland": "🇮🇪", "Greece": "🇬🇷", "Turkey": "🇹🇷",
-    "Australia": "🇦🇺", "New Zealand": "🇳🇿",
-    "Brazil": "🇧🇷", "Argentina": "🇦🇷", "Colombia": "🇨🇴", "Chile": "🇨🇱",
-    "Jamaica": "🇯🇲", "Trinidad": "🇹🇹",
-    "Nigeria": "🇳🇬", "Kenya": "🇰🇪", "South Africa": "🇿🇦", "Egypt": "🇪🇬",
-    "UAE": "🇦🇪", "Saudi Arabia": "🇸🇦", "Israel": "🇮🇱",
-    "Russia": "🇷🇺", "Pakistan": "🇵🇰", "Bangladesh": "🇧🇩",
+    "Japan": "🇯🇵",
+    "South Korea": "🇰🇷",
+    "China": "🇨🇳",
+    "Taiwan": "🇹🇼",
+    "India": "🇮🇳",
+    "Thailand": "🇹🇭",
+    "Vietnam": "🇻🇳",
+    "Philippines": "🇵🇭",
+    "Singapore": "🇸🇬",
+    "Malaysia": "🇲🇾",
+    "Indonesia": "🇮🇩",
+    "Hong Kong": "🇭🇰",
+    "United States": "🇺🇸",
+    "Canada": "🇨🇦",
+    "Mexico": "🇲🇽",
+    "United Kingdom": "🇬🇧",
+    "France": "🇫🇷",
+    "Germany": "🇩🇪",
+    "Italy": "🇮🇹",
+    "Spain": "🇪🇸",
+    "Netherlands": "🇳🇱",
+    "Belgium": "🇧🇪",
+    "Switzerland": "🇨🇭",
+    "Sweden": "🇸🇪",
+    "Norway": "🇳🇴",
+    "Denmark": "🇩🇰",
+    "Finland": "🇫🇮",
+    "Poland": "🇵🇱",
+    "Ireland": "🇮🇪",
+    "Greece": "🇬🇷",
+    "Turkey": "🇹🇷",
+    "Australia": "🇦🇺",
+    "New Zealand": "🇳🇿",
+    "Brazil": "🇧🇷",
+    "Argentina": "🇦🇷",
+    "Colombia": "🇨🇴",
+    "Chile": "🇨🇱",
+    "Jamaica": "🇯🇲",
+    "Trinidad": "🇹🇹",
+    "Nigeria": "🇳🇬",
+    "Kenya": "🇰🇪",
+    "South Africa": "🇿🇦",
+    "Egypt": "🇪🇬",
+    "UAE": "🇦🇪",
+    "Saudi Arabia": "🇸🇦",
+    "Israel": "🇮🇱",
+    "Russia": "🇷🇺",
+    "Pakistan": "🇵🇰",
+    "Bangladesh": "🇧🇩",
 }
 
 
@@ -186,14 +222,44 @@ def get_popular_countries(lang: str = "en") -> list[str]:
     """Return popular countries ordered by likely relevance for a language."""
     # Language-specific ordering
     if lang == "ja":
-        return ["Japan", "United States", "South Korea", "China", "Taiwan",
-                "Thailand", "Australia", "United Kingdom", "Canada", "Philippines"]
+        return [
+            "Japan",
+            "United States",
+            "South Korea",
+            "China",
+            "Taiwan",
+            "Thailand",
+            "Australia",
+            "United Kingdom",
+            "Canada",
+            "Philippines",
+        ]
     if lang == "es":
-        return ["Mexico", "Spain", "Colombia", "Argentina", "United States",
-                "Chile", "Peru", "Venezuela", "Cuba", "Dominican Republic"]
+        return [
+            "Mexico",
+            "Spain",
+            "Colombia",
+            "Argentina",
+            "United States",
+            "Chile",
+            "Peru",
+            "Venezuela",
+            "Cuba",
+            "Dominican Republic",
+        ]
     # Default (English / global)
-    return ["United States", "United Kingdom", "Canada", "Australia", "India",
-            "Japan", "Germany", "France", "Brazil", "Philippines"]
+    return [
+        "United States",
+        "United Kingdom",
+        "Canada",
+        "Australia",
+        "India",
+        "Japan",
+        "Germany",
+        "France",
+        "Brazil",
+        "Philippines",
+    ]
 
 
 def build_country_keyboard(lang: str = "en") -> list[list[dict[str, str]]]:
@@ -204,7 +270,7 @@ def build_country_keyboard(lang: str = "en") -> list[list[dict[str, str]]]:
     # 2 buttons per row
     for i in range(0, len(popular), 2):
         row = []
-        for country in popular[i:i + 2]:
+        for country in popular[i : i + 2]:
             display = get_country_display(country, lang)
             row.append({"text": display, "callback_data": f"tz_country:{country}"})
         rows.append(row)

@@ -1,4 +1,5 @@
 """Tasks for journal memory sync (executed via QStash, not Celery)."""
+
 from __future__ import annotations
 
 import logging
@@ -21,9 +22,7 @@ def sync_documents_to_workspace(tenant_id: str):
     try:
         tenant = Tenant.objects.get(id=tenant_id)
     except Tenant.DoesNotExist:
-        logger.warning(
-            "sync_documents_to_workspace: tenant %s not found", tenant_id
-        )
+        logger.warning("sync_documents_to_workspace: tenant %s not found", tenant_id)
         return None
 
     if tenant.status != Tenant.Status.ACTIVE:
@@ -52,7 +51,5 @@ def sync_documents_to_workspace(tenant_id: str):
         return {"synced": written, "total": len(files)}
 
     except Exception:
-        logger.exception(
-            "sync_documents_to_workspace failed for tenant %s", tenant_id
-        )
+        logger.exception("sync_documents_to_workspace failed for tenant %s", tenant_id)
         raise

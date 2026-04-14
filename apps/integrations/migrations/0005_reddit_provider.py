@@ -3,12 +3,11 @@
 Choices-only migration — no DB schema change required, but included for
 completeness so the migration history reflects the model state.
 """
+
 from django.db import migrations
-import django.db.models.deletion
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("integrations", "0004_composio_connected_account_id"),
     ]

@@ -5,25 +5,32 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0016_add_pending_deletion_fields'),
+        ("tenants", "0016_add_pending_deletion_fields"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='tenant',
-            name='heartbeat_enabled',
-            field=models.BooleanField(default=True, help_text='Whether the hourly heartbeat check-in is active'),
+            model_name="tenant",
+            name="heartbeat_enabled",
+            field=models.BooleanField(default=True, help_text="Whether the hourly heartbeat check-in is active"),
         ),
         migrations.AddField(
-            model_name='tenant',
-            name='heartbeat_start_hour',
-            field=models.IntegerField(default=8, help_text="Start hour of the heartbeat window (0-23, in user's timezone)", validators=[django.core.validators.MinValueValidator(0), django.core.validators.MaxValueValidator(23)]),
+            model_name="tenant",
+            name="heartbeat_start_hour",
+            field=models.IntegerField(
+                default=8,
+                help_text="Start hour of the heartbeat window (0-23, in user's timezone)",
+                validators=[django.core.validators.MinValueValidator(0), django.core.validators.MaxValueValidator(23)],
+            ),
         ),
         migrations.AddField(
-            model_name='tenant',
-            name='heartbeat_window_hours',
-            field=models.IntegerField(default=6, help_text='Duration of the heartbeat window in hours (1-6)', validators=[django.core.validators.MinValueValidator(1), django.core.validators.MaxValueValidator(6)]),
+            model_name="tenant",
+            name="heartbeat_window_hours",
+            field=models.IntegerField(
+                default=6,
+                help_text="Duration of the heartbeat window in hours (1-6)",
+                validators=[django.core.validators.MinValueValidator(1), django.core.validators.MaxValueValidator(6)],
+            ),
         ),
     ]

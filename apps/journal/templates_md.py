@@ -2,10 +2,10 @@
 
 Templates use {{variable}} placeholders that get substituted on creation.
 """
+
 from __future__ import annotations
 
 from datetime import date, timedelta
-
 
 DAILY_NOTE_TEMPLATE = """\
 # {{date}} ({{weekday}})

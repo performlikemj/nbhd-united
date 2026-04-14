@@ -2,8 +2,8 @@ from django.contrib import admin
 from django.urls import include, path
 
 from apps.integrations.runtime_views import RuntimeUsageReportView
-from apps.router.views import serve_chart_image
 from apps.router.test_workspace_sessions import force_apply_test_tenant_config, test_workspace_session
+from apps.router.views import serve_chart_image
 
 urlpatterns = [
     path("admin/", admin.site.urls),

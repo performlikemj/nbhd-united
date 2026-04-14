@@ -1,4 +1,5 @@
 """Tests for internal runtime usage reporting."""
+
 from __future__ import annotations
 
 from django.test import TestCase

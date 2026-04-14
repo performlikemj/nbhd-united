@@ -1,9 +1,12 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
+from apps.platform_logs.views import PlatformIssueReportView as _PlatformIssueReportView
+from apps.router.cron_delivery import CronDeliveryView as _CronDeliveryView
+
 from .runtime_views import (
-    RedditConnectView,
     RedditCompleteView,
+    RedditConnectView,
     RedditDisconnectView,
     RedditStatusView,
     RedditToolView,
@@ -16,23 +19,21 @@ from .runtime_views import (
     RuntimeGmailMessageDetailView,
     RuntimeGmailMessagesView,
     RuntimeJournalContextView,
+    RuntimeJournalEntriesView,
+    RuntimeJournalSearchView,
     RuntimeLessonCreateView,
     RuntimeLessonPendingView,
     RuntimeLessonSearchView,
-    RuntimeJournalEntriesView,
-    RuntimeJournalSearchView,
     RuntimeMemorySyncView,
+    RuntimeProfileUpdateView,
+    RuntimeUsageReportView,
     RuntimeUserMemoryView,
     RuntimeWeeklyReviewsView,
-    RuntimeUsageReportView,
-    RuntimeProfileUpdateView,
-    RuntimeWorkspaceListView,
     RuntimeWorkspaceDetailView,
+    RuntimeWorkspaceListView,
     RuntimeWorkspaceSwitchView,
 )
 from .views import ComposioCallbackView, IntegrationViewSet, OAuthAuthorizeView, OAuthCallbackView
-from apps.platform_logs.views import PlatformIssueReportView as _PlatformIssueReportView
-from apps.router.cron_delivery import CronDeliveryView as _CronDeliveryView
 
 router = DefaultRouter()
 router.register("", IntegrationViewSet, basename="integration")

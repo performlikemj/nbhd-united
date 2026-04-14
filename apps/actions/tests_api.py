@@ -1,6 +1,6 @@
 """Tests for action gating API endpoints."""
+
 from datetime import timedelta
-from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -11,11 +11,9 @@ from apps.actions.models import (
     ActionAuditLog,
     ActionStatus,
     ActionType,
-    GatePreference,
     PendingAction,
 )
 from apps.tenants.models import Tenant
-
 
 INTERNAL_KEY = "test-internal-key-12345"
 DEPLOY_SECRET = "test-deploy-secret-67890"
@@ -44,10 +42,9 @@ def _internal_headers(tenant_id):
 class GateRequestViewTests(TestCase):
     def setUp(self):
         from django.contrib.auth import get_user_model
+
         User = get_user_model()
-        self.user = User.objects.create_user(
-            username="gate_req_user", email="gate_req@test.com", password="pass"
-        )
+        self.user = User.objects.create_user(username="gate_req_user", email="gate_req@test.com", password="pass")
         self.tenant = _make_tenant(self.user)
         self.client = APIClient()
         self.url = reverse("gate-request", kwargs={"tenant_id": self.tenant.id})
@@ -157,10 +154,9 @@ class GateRequestViewTests(TestCase):
 class GatePollViewTests(TestCase):
     def setUp(self):
         from django.contrib.auth import get_user_model
+
         User = get_user_model()
-        self.user = User.objects.create_user(
-            username="gate_poll_user", email="gate_poll@test.com", password="pass"
-        )
+        self.user = User.objects.create_user(username="gate_poll_user", email="gate_poll@test.com", password="pass")
         self.tenant = _make_tenant(self.user, container_id="oc-poll-test")
         self.client = APIClient()
 
@@ -226,10 +222,9 @@ class GatePollViewTests(TestCase):
 class GateRespondViewTests(TestCase):
     def setUp(self):
         from django.contrib.auth import get_user_model
+
         User = get_user_model()
-        self.user = User.objects.create_user(
-            username="gate_resp_user", email="gate_resp@test.com", password="pass"
-        )
+        self.user = User.objects.create_user(username="gate_resp_user", email="gate_resp@test.com", password="pass")
         self.tenant = _make_tenant(self.user, container_id="oc-resp-test")
         self.client = APIClient()
 
@@ -259,9 +254,7 @@ class GateRespondViewTests(TestCase):
         self.assertIsNotNone(action.responded_at)
         # Audit log created
         self.assertEqual(ActionAuditLog.objects.count(), 1)
-        self.assertEqual(
-            ActionAuditLog.objects.first().result, ActionStatus.APPROVED
-        )
+        self.assertEqual(ActionAuditLog.objects.first().result, ActionStatus.APPROVED)
 
     def test_deny_action(self):
         action = self._make_pending()

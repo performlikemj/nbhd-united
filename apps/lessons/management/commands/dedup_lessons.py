@@ -4,9 +4,11 @@ Computes pairwise cosine similarity between all approved lessons for each
 tenant, groups duplicates (similarity >= threshold), keeps the longest
 lesson in each group, and deletes the rest.
 """
+
 from __future__ import annotations
 
 import logging
+
 import numpy as np
 from django.core.management.base import BaseCommand
 
@@ -24,7 +26,9 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--tenant", type=str, help="Only process this tenant ID")
         parser.add_argument("--dry-run", action="store_true", help="Show duplicates without deleting")
-        parser.add_argument("--threshold", type=float, default=DEDUP_THRESHOLD, help="Similarity threshold (default 0.75)")
+        parser.add_argument(
+            "--threshold", type=float, default=DEDUP_THRESHOLD, help="Similarity threshold (default 0.75)"
+        )
 
     def handle(self, *args, **options):
         dry_run = options.get("dry_run", False)
@@ -42,6 +46,7 @@ class Command(BaseCommand):
 
         # ── Remove goals from constellation (they don't belong here) ──
         from django.db.models import Q
+
         goal_qs = Lesson.objects.filter(tenant=tenant).filter(
             Q(tags__contains=["goal"]) | Q(context__startswith="Goal")
         )
@@ -51,10 +56,7 @@ class Command(BaseCommand):
                 goal_qs.delete()
             self.stdout.write(f"  [{tid}] Removed {goal_count} goal nodes from constellation")
 
-        lessons = list(
-            Lesson.objects.filter(tenant=tenant, status="approved", embedding__isnull=False)
-            .order_by("id")
-        )
+        lessons = list(Lesson.objects.filter(tenant=tenant, status="approved", embedding__isnull=False).order_by("id"))
         if len(lessons) < 2:
             self.stdout.write(f"  [{tid}] {len(lessons)} lessons — nothing to dedup")
             return
@@ -120,6 +122,7 @@ class Command(BaseCommand):
 
             # Re-cluster
             from apps.lessons.clustering import refresh_constellation
+
             try:
                 result = refresh_constellation(tenant)
                 self.stdout.write(f"  [{tid}] Re-clustered: {result}")

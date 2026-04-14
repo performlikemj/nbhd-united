@@ -1,4 +1,5 @@
 """Celery tasks for action gating."""
+
 from __future__ import annotations
 
 import logging
@@ -15,8 +16,8 @@ def expire_stale_pending_actions():
 
     Run every 60 seconds via Celery Beat (or QStash cron).
     """
-    from .models import ActionAuditLog, ActionStatus, PendingAction
     from .messaging import update_gate_message
+    from .models import ActionAuditLog, ActionStatus, PendingAction
 
     stale = PendingAction.objects.filter(
         status=ActionStatus.PENDING,

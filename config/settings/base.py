@@ -1,9 +1,10 @@
 """
 Base Django settings for NBHD United — OpenClaw Control Plane.
 """
+
 import os
-from pathlib import Path
 from datetime import timedelta
+from pathlib import Path
 
 import environ
 
@@ -119,12 +120,8 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Django REST Framework
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": (
-        "apps.tenants.authentication.JWTAuthenticationWithRLS",
-    ),
-    "DEFAULT_PERMISSION_CLASSES": (
-        "rest_framework.permissions.IsAuthenticated",
-    ),
+    "DEFAULT_AUTHENTICATION_CLASSES": ("apps.tenants.authentication.JWTAuthenticationWithRLS",),
+    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
 }
@@ -140,6 +137,7 @@ SIMPLE_JWT = {
 # CORS
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
 from corsheaders.defaults import default_headers  # noqa: E402
+
 CORS_ALLOW_HEADERS = (*default_headers,)
 
 # QStash (replaces Celery — scheduled & on-demand tasks via webhooks)
@@ -181,6 +179,8 @@ DJSTRIPE_FOREIGN_KEY_TO_FIELD = "id"
 TELEGRAM_BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", default="")
 TELEGRAM_BOT_USERNAME = env("TELEGRAM_BOT_USERNAME", default="NbhdUnitedBot")
 TELEGRAM_WEBHOOK_SECRET = env("TELEGRAM_WEBHOOK_SECRET", default="")
+# Admin Telegram chat ID for health alerts (operator notifications)
+ADMIN_TELEGRAM_CHAT_ID = env.int("ADMIN_TELEGRAM_CHAT_ID", default=0)
 ROUTER_RATE_LIMIT_PER_MINUTE = env.int("ROUTER_RATE_LIMIT_PER_MINUTE", default=30)
 # Shared internal API key for runtime auth between Django and tenant containers.
 # All containers use the same key (stored in Azure Key Vault). This is safe

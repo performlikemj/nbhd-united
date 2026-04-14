@@ -4,15 +4,16 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0034_pii_entity_map'),
+        ("tenants", "0034_pii_entity_map"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='tenant',
-            name='feature_tips_enabled',
-            field=models.BooleanField(default=True, help_text='Whether the assistant proactively suggests platform features'),
+            model_name="tenant",
+            name="feature_tips_enabled",
+            field=models.BooleanField(
+                default=True, help_text="Whether the assistant proactively suggests platform features"
+            ),
         ),
     ]

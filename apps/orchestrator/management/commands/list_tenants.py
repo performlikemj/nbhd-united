@@ -1,4 +1,5 @@
 """List all tenants and their status."""
+
 from django.core.management.base import BaseCommand
 
 from apps.tenants.models import Tenant

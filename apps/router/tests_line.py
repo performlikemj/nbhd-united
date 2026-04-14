@@ -1,4 +1,5 @@
 """Tests for the LINE integration — webhook view, linking flow, channel-aware delivery."""
+
 from __future__ import annotations
 
 import base64
@@ -13,8 +14,8 @@ from unittest.mock import MagicMock, patch
 from django.test import RequestFactory, TestCase, override_settings
 from django.utils import timezone
 
-from apps.tenants.models import Tenant, User
 from apps.tenants.line_models import LineLinkToken
+from apps.tenants.models import Tenant, User
 
 
 def _make_signature(body: bytes, secret: str = "test-secret") -> str:
@@ -52,6 +53,7 @@ class LineWebhookSignatureTest(TestCase):
 
     def setUp(self):
         from apps.router.line_webhook import LineWebhookView
+
         self.factory = RequestFactory()
         self.view = LineWebhookView.as_view()
 
@@ -104,6 +106,7 @@ class LineWebhookEventTest(TestCase):
 
     def setUp(self):
         from apps.router.line_webhook import LineWebhookView
+
         self.factory = RequestFactory()
         self.view = LineWebhookView.as_view()
 
@@ -375,6 +378,7 @@ class CronDeliveryChannelRoutingTest(TestCase):
 
     def _get_view(self):
         from apps.router.cron_delivery import CronDeliveryView
+
         return CronDeliveryView()
 
     def test_resolve_channel_prefers_telegram_when_linked(self):
@@ -510,6 +514,7 @@ class LineWebhookEdgeCaseTest(TestCase):
 
     def setUp(self):
         from apps.router.line_webhook import LineWebhookView
+
         self.factory = RequestFactory()
         self.view = LineWebhookView.as_view()
 
@@ -553,6 +558,7 @@ class LineWebhookEdgeCaseTest(TestCase):
     def test_empty_message_text_ignored(self):
         """Message event with empty text does not forward or error."""
         from apps.router.line_webhook import LineWebhookView
+
         user = _make_user(line_user_id="U_empty_msg")
         _make_tenant(user)
 
@@ -569,6 +575,7 @@ class LineWebhookEdgeCaseTest(TestCase):
     def test_non_text_message_sends_fallback(self, mock_push):
         """Non-text message (image, sticker) sends an unsupported notice."""
         from apps.router.line_webhook import LineWebhookView
+
         mock_push.return_value = True
 
         event = {
@@ -588,6 +595,7 @@ class LineWebhookEdgeCaseTest(TestCase):
     def test_follow_already_linked_user_sends_welcome_back(self, mock_push):
         """Follow from an already-linked user sends a different welcome."""
         from apps.router.line_webhook import LineWebhookView
+
         mock_push.return_value = True
         user = _make_user(line_user_id="U_already_linked")
         _make_tenant(user)
@@ -607,6 +615,7 @@ class LineWebhookEdgeCaseTest(TestCase):
     def test_unfollow_unknown_user_no_error(self):
         """Unfollow from an unknown user doesn't raise."""
         from apps.router.line_webhook import LineWebhookView
+
         view = LineWebhookView()
         event = {"type": "unfollow", "source": {"userId": "U_never_existed"}}
         # Should not raise
@@ -615,6 +624,7 @@ class LineWebhookEdgeCaseTest(TestCase):
     def test_unfollow_resets_preferred_channel(self):
         """Unfollow resets preferred_channel if it was LINE."""
         from apps.router.line_webhook import LineWebhookView
+
         user = _make_user(
             line_user_id="U_pref_reset",
             preferred_channel="line",
@@ -630,6 +640,7 @@ class LineWebhookEdgeCaseTest(TestCase):
     def test_suspended_no_subscription_sends_paused_message(self, mock_push):
         """Suspended user without subscription gets paused message."""
         from apps.router.line_webhook import LineWebhookView
+
         mock_push.return_value = True
 
         user = _make_user(line_user_id="U_suspended")
@@ -657,6 +668,7 @@ class LineWebhookEdgeCaseTest(TestCase):
     def test_provisioning_tenant_sends_waking_up(self, mock_push):
         """Provisioning tenant gets a 'waking up' message."""
         from apps.router.line_webhook import LineWebhookView
+
         mock_push.return_value = True
 
         user = _make_user(line_user_id="U_provisioning")
@@ -678,8 +690,9 @@ class LineWebhookEdgeCaseTest(TestCase):
     @patch("httpx.post")
     def test_container_timeout_sends_retry_message(self, mock_httpx_post):
         """Container timeout sends a user-friendly retry message."""
-        from apps.router.line_webhook import LineWebhookView
         import httpx
+
+        from apps.router.line_webhook import LineWebhookView
 
         user = _make_user(line_user_id="U_timeout")
         _make_tenant(user)
@@ -700,8 +713,9 @@ class LineWebhookEdgeCaseTest(TestCase):
     @patch("httpx.post")
     def test_container_503_sends_restarting_message(self, mock_httpx_post):
         """503 from container sends 'restarting' message."""
-        from apps.router.line_webhook import LineWebhookView
         import httpx
+
+        from apps.router.line_webhook import LineWebhookView
 
         user = _make_user(line_user_id="U_503")
         _make_tenant(user)
@@ -709,9 +723,7 @@ class LineWebhookEdgeCaseTest(TestCase):
         mock_resp = MagicMock()
         mock_resp.status_code = 503
         mock_resp.is_success = False
-        mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "503", request=MagicMock(), response=mock_resp
-        )
+        mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError("503", request=MagicMock(), response=mock_resp)
         mock_httpx_post.return_value = mock_resp
 
         event = {
@@ -782,6 +794,7 @@ class LineWebhookEdgeCaseTest(TestCase):
     def test_postback_unknown_user_ignored(self):
         """Postback from unknown user is silently ignored."""
         from apps.router.line_webhook import LineWebhookView
+
         view = LineWebhookView()
         event = {
             "type": "postback",
@@ -795,11 +808,14 @@ class LineWebhookEdgeCaseTest(TestCase):
     def test_no_container_fqdn_sends_setup_message(self, mock_push):
         """Active tenant with no container_fqdn sends setup message."""
         from apps.router.line_webhook import LineWebhookView
+
         mock_push.return_value = True
 
         user = _make_user(
-            line_user_id="U_no_fqdn", display_name="Test",
-            timezone="Asia/Tokyo", language="ja",
+            line_user_id="U_no_fqdn",
+            display_name="Test",
+            timezone="Asia/Tokyo",
+            language="ja",
         )
         _make_tenant(user, container_fqdn="", onboarding_complete=True, onboarding_step=5)
 
@@ -823,15 +839,18 @@ class LineStripMarkdownTest(TestCase):
 
     def test_bold_stripped(self):
         from apps.router.line_webhook import _strip_markdown
+
         self.assertEqual(_strip_markdown("**bold text**"), "bold text")
         self.assertEqual(_strip_markdown("__also bold__"), "also bold")
 
     def test_italic_stripped(self):
         from apps.router.line_webhook import _strip_markdown
+
         self.assertEqual(_strip_markdown("*italic text*"), "italic text")
 
     def test_links_converted(self):
         from apps.router.line_webhook import _strip_markdown
+
         self.assertEqual(
             _strip_markdown("[click here](https://example.com)"),
             "click here: https://example.com",
@@ -839,19 +858,23 @@ class LineStripMarkdownTest(TestCase):
 
     def test_inline_code_stripped(self):
         from apps.router.line_webhook import _strip_markdown
+
         self.assertEqual(_strip_markdown("`code`"), "code")
 
     def test_mixed_markdown(self):
         from apps.router.line_webhook import _strip_markdown
+
         result = _strip_markdown("**Hello** *world* [link](https://x.com) `code`")
         self.assertEqual(result, "Hello world link: https://x.com code")
 
     def test_plain_text_unchanged(self):
         from apps.router.line_webhook import _strip_markdown
+
         self.assertEqual(_strip_markdown("no markdown here"), "no markdown here")
 
     def test_nested_bold_italic(self):
         from apps.router.line_webhook import _strip_markdown
+
         # Double markers removed first, then single
         result = _strip_markdown("***bold italic***")
         # After removing **, we get *bold italic* → then * removed
@@ -864,10 +887,12 @@ class LineMissingConfigTest(TestCase):
 
     def test_verify_signature_fails_without_secret(self):
         from apps.router.line_webhook import _verify_signature
+
         self.assertFalse(_verify_signature(b"body", "sig"))
 
     def test_send_push_fails_without_token(self):
         from apps.router.line_webhook import _send_line_push
+
         self.assertFalse(_send_line_push("U123", [{"type": "text", "text": "hi"}]))
 
 
@@ -881,6 +906,7 @@ class LineLinkViewsTest(TestCase):
         self.user = _make_user()
         _make_tenant(self.user)
         from rest_framework_simplejwt.tokens import RefreshToken
+
         self.token = str(RefreshToken.for_user(self.user).access_token)
         self.auth_header = {"HTTP_AUTHORIZATION": f"Bearer {self.token}"}
 

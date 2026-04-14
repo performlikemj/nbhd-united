@@ -1,4 +1,5 @@
 """Tenant models — core of the control plane."""
+
 import uuid
 from decimal import Decimal
 
@@ -7,9 +8,10 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
+from .line_models import LineLinkToken  # noqa: F401
+
 # Import so Django discovers the models for migrations
 from .telegram_models import TelegramLinkToken  # noqa: F401
-from .line_models import LineLinkToken  # noqa: F401
 
 
 class User(AbstractUser):
@@ -93,34 +95,40 @@ class Tenant(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="tenant")
-    status = models.CharField(
-        max_length=20, choices=Status.choices, default=Status.PENDING
-    )
-    model_tier = models.CharField(
-        max_length=20, choices=ModelTier.choices, default=ModelTier.STARTER
-    )
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    model_tier = models.CharField(max_length=20, choices=ModelTier.choices, default=ModelTier.STARTER)
 
     # OpenClaw container
     container_id = models.CharField(
-        max_length=255, blank=True, default="",
+        max_length=255,
+        blank=True,
+        default="",
         help_text="Azure Container App name (e.g. oc-usr-abc123)",
     )
     container_fqdn = models.CharField(
-        max_length=512, blank=True, default="",
+        max_length=512,
+        blank=True,
+        default="",
         help_text="Internal FQDN of the container",
     )
     container_image_tag = models.CharField(
-        max_length=255, blank=True, default="",
+        max_length=255,
+        blank=True,
+        default="",
         help_text="Current OpenClaw container image tag (git SHA)",
     )
 
     # Azure Key Vault
     key_vault_prefix = models.CharField(
-        max_length=255, blank=True, default="",
+        max_length=255,
+        blank=True,
+        default="",
         help_text="Key Vault secret prefix (e.g. tenants-<uuid>)",
     )
     managed_identity_id = models.CharField(
-        max_length=512, blank=True, default="",
+        max_length=512,
+        blank=True,
+        default="",
         help_text="Azure User-Assigned Managed Identity resource ID",
     )
 
@@ -159,15 +167,15 @@ class Tenant(models.Model):
     messages_today = models.IntegerField(default=0)
     messages_this_month = models.IntegerField(default=0)
     tokens_this_month = models.IntegerField(default=0)
-    estimated_cost_this_month = models.DecimalField(
-        max_digits=10, decimal_places=4, default=0
-    )
+    estimated_cost_this_month = models.DecimalField(max_digits=10, decimal_places=4, default=0)
     monthly_token_budget = models.IntegerField(
         default=0,
         help_text="Per-user monthly token budget (0 = use tier default)",
     )
     monthly_cost_budget = models.DecimalField(
-        max_digits=10, decimal_places=2, default=0,
+        max_digits=10,
+        decimal_places=2,
+        default=0,
         help_text="Monthly API cost cap in USD. 0 = use tier default.",
     )
 
@@ -227,7 +235,7 @@ class Tenant(models.Model):
         default=dict,
         blank=True,
         help_text="Maps PII placeholders to original values, e.g. "
-                  '{"[PERSON_1]": "Sarah Chen", "[EMAIL_ADDRESS_1]": "sarah@example.com"}',
+        '{"[PERSON_1]": "Sarah Chen", "[EMAIL_ADDRESS_1]": "sarah@example.com"}',
     )
 
     # Model preference
@@ -235,16 +243,15 @@ class Tenant(models.Model):
         default=dict,
         blank=True,
         help_text="Per-task model overrides. Keys: heartbeat, morning_briefing, "
-                  "evening_checkin, week_review, background_tasks. "
-                  "Values: model IDs.",
+        "evening_checkin, week_review, background_tasks. "
+        "Values: model IDs.",
     )
     # Cron job backup — snapshot of the last-known cron.list response.
     # Used to restore user-created jobs after container restarts.
     cron_jobs_snapshot = models.JSONField(
         default=dict,
         blank=True,
-        help_text='Last-known cron job list from gateway. '
-                  'Format: {"jobs": [...], "snapshot_at": "ISO8601"}',
+        help_text='Last-known cron job list from gateway. Format: {"jobs": [...], "snapshot_at": "ISO8601"}',
     )
 
     preferred_model = models.CharField(
@@ -311,9 +318,7 @@ class Tenant(models.Model):
     def clean(self):
         super().clean()
         if self.heartbeat_window_hours is not None and self.heartbeat_window_hours > 6:
-            raise ValidationError(
-                {"heartbeat_window_hours": "Heartbeat window cannot exceed 6 hours."}
-            )
+            raise ValidationError({"heartbeat_window_hours": "Heartbeat window cannot exceed 6 hours."})
 
     @property
     def is_active(self) -> bool:
@@ -349,5 +354,3 @@ class Tenant(models.Model):
         """Signal that agent config needs refreshing."""
         self.pending_config_version = (self.pending_config_version or 0) + 1
         self.save(update_fields=["pending_config_version"])
-
-

@@ -1,4 +1,5 @@
 """Orchestrator services — provision/deprovision OpenClaw instances."""
+
 from __future__ import annotations
 
 import logging
@@ -8,7 +9,9 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
 from apps.tenants.models import Tenant
+
 from .azure_client import (
     _is_mock,
     assign_acr_pull_role,
@@ -22,8 +25,8 @@ from .azure_client import (
     register_environment_storage,
     upload_config_to_file_share,
 )
-from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
 from .config_generator import build_cron_seed_jobs, config_to_json, generate_openclaw_config
+from .config_security import audit_config_security
 from .personas import render_workspace_files
 
 logger = logging.getLogger(__name__)
@@ -37,6 +40,45 @@ def _log_provisioning_event(*, tenant_id: str, user_id: str | None, stage: str, 
         stage,
         error,
     )
+
+
+def _audit_and_log(tenant: Tenant, config: dict, *, stage: str) -> None:
+    """Run security audit on config and log findings to PlatformIssueLog.
+
+    Warnings are logged but don't block. Errors are logged and raise.
+    """
+    findings = audit_config_security(config)
+    if not findings:
+        return
+
+    from apps.platform_logs.models import PlatformIssueLog
+
+    for finding in findings:
+        severity_map = {"error": PlatformIssueLog.Severity.HIGH, "warning": PlatformIssueLog.Severity.MEDIUM}
+        PlatformIssueLog.objects.create(
+            tenant=tenant,
+            category=PlatformIssueLog.Category.CONFIG_ISSUE,
+            severity=severity_map.get(finding.severity, PlatformIssueLog.Severity.LOW),
+            summary=f"[{stage}] {finding.check}: {finding.message}"[:500],
+            tool_name="config_security_audit",
+        )
+
+    errors = [f for f in findings if f.severity == "error"]
+    if errors:
+        msg = f"Config security audit failed for tenant {tenant.id} ({stage}): {len(errors)} error(s)"
+        logger.error(msg)
+        for e in errors:
+            logger.error("  %s: %s", e.check, e.message)
+        raise ValueError(msg)
+
+    warnings = [f for f in findings if f.severity == "warning"]
+    if warnings:
+        logger.warning(
+            "Config security audit warnings for tenant %s (%s): %d warning(s)",
+            tenant.id,
+            stage,
+            len(warnings),
+        )
 
 
 def _stale_provisioning_tenants_queryset(*, tenant_id: str | None = None):
@@ -87,13 +129,15 @@ def repair_stale_tenant_provisioning(
                 error=",".join(missing),
             )
             summary["skipped"] += 1
-            summary["results"].append({
-                "tenant_id": tenant_id_str,
-                "user_id": user_id_str,
-                "status": tenant.status,
-                "result": "dry_run",
-                "missing": missing,
-            })
+            summary["results"].append(
+                {
+                    "tenant_id": tenant_id_str,
+                    "user_id": user_id_str,
+                    "status": tenant.status,
+                    "result": "dry_run",
+                    "missing": missing,
+                }
+            )
             continue
 
         try:
@@ -113,17 +157,22 @@ def repair_stale_tenant_provisioning(
                 summary["failed"] += 1
                 outcome = "incomplete"
 
-            summary["results"].append({
-                "tenant_id": tenant_id_str,
-                "user_id": user_id_str,
-                "status": tenant.status,
-                "result": outcome,
-                "missing": [
-                    field
-                    for field, value in (("container_id", tenant.container_id), ("container_fqdn", tenant.container_fqdn))
-                    if not value
-                ],
-            })
+            summary["results"].append(
+                {
+                    "tenant_id": tenant_id_str,
+                    "user_id": user_id_str,
+                    "status": tenant.status,
+                    "result": outcome,
+                    "missing": [
+                        field
+                        for field, value in (
+                            ("container_id", tenant.container_id),
+                            ("container_fqdn", tenant.container_fqdn),
+                        )
+                        if not value
+                    ],
+                }
+            )
         except Exception as exc:
             summary["failed"] += 1
             _log_provisioning_event(
@@ -132,14 +181,16 @@ def repair_stale_tenant_provisioning(
                 stage="repair_failed",
                 error=str(exc),
             )
-            summary["results"].append({
-                "tenant_id": tenant_id_str,
-                "user_id": user_id_str,
-                "status": tenant.status,
-                "result": "failed",
-                "error": str(exc),
-                "missing": missing,
-            })
+            summary["results"].append(
+                {
+                    "tenant_id": tenant_id_str,
+                    "user_id": user_id_str,
+                    "status": tenant.status,
+                    "result": "failed",
+                    "error": str(exc),
+                    "missing": missing,
+                }
+            )
 
     return summary
 
@@ -149,9 +200,9 @@ def provision_tenant(tenant_id: str) -> None:
     tenant = Tenant.objects.select_related("user").get(id=tenant_id)
     user_id = str(tenant.user_id)
     _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="provision_start")
-    secret_backend = str(
-        getattr(settings, "OPENCLAW_CONTAINER_SECRET_BACKEND", "keyvault") or "keyvault"
-    ).strip().lower()
+    secret_backend = (
+        str(getattr(settings, "OPENCLAW_CONTAINER_SECRET_BACKEND", "keyvault") or "keyvault").strip().lower()
+    )
 
     if tenant.status not in (Tenant.Status.PENDING, Tenant.Status.PROVISIONING):
         _log_provisioning_event(
@@ -171,6 +222,9 @@ def provision_tenant(tenant_id: str) -> None:
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="generate_config")
         config = generate_openclaw_config(tenant)
         config_json = config_to_json(config)
+
+        # 1b. Security audit — log findings, block on errors
+        _audit_and_log(tenant, config, stage="provision")
 
         # 2. Create Managed Identity
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="create_managed_identity")
@@ -218,10 +272,17 @@ def provision_tenant(tenant_id: str) -> None:
         tenant.container_image_tag = getattr(settings, "OPENCLAW_IMAGE_TAG", "latest") or "latest"
         tenant.status = Tenant.Status.ACTIVE
         tenant.provisioned_at = timezone.now()
-        tenant.save(update_fields=[
-            "container_id", "container_fqdn", "managed_identity_id",
-            "container_image_tag", "status", "provisioned_at", "updated_at",
-        ])
+        tenant.save(
+            update_fields=[
+                "container_id",
+                "container_fqdn",
+                "managed_identity_id",
+                "container_image_tag",
+                "status",
+                "provisioned_at",
+                "updated_at",
+            ]
+        )
 
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="provision_success")
         logger.info("Provisioned tenant %s → container %s", tenant_id, result["name"])
@@ -285,12 +346,17 @@ def update_tenant_config(tenant_id: str) -> None:
     if tenant.status != Tenant.Status.ACTIVE or not tenant.container_id:
         logger.warning(
             "Cannot update config for tenant %s (status=%s, container=%s)",
-            tenant_id, tenant.status, tenant.container_id,
+            tenant_id,
+            tenant.status,
+            tenant.container_id,
         )
         return
 
     config = generate_openclaw_config(tenant)
     config_json = config_to_json(config)
+
+    # Security audit — log findings before pushing config
+    _audit_and_log(tenant, config, stage="config_update")
 
     # Write to file share (source of truth — OpenClaw reads from file after first boot)
     upload_config_to_file_share(str(tenant.id), config_json)
@@ -317,11 +383,7 @@ def update_tenant_config(tenant_id: str) -> None:
         }
 
         # Deploy full or silent platform guide based on feature_tips_enabled
-        guide_key = (
-            "NBHD_DOC_PLATFORM_GUIDE"
-            if tenant.feature_tips_enabled
-            else "NBHD_DOC_PLATFORM_GUIDE_SILENT"
-        )
+        guide_key = "NBHD_DOC_PLATFORM_GUIDE" if tenant.feature_tips_enabled else "NBHD_DOC_PLATFORM_GUIDE_SILENT"
         file_map[guide_key] = "workspace/docs/platform-guide.md"
 
         for env_key, file_path in file_map.items():
@@ -375,10 +437,15 @@ def deprovision_tenant(tenant_id: str) -> None:
         tenant.container_id = ""
         tenant.container_fqdn = ""
         tenant.managed_identity_id = ""
-        tenant.save(update_fields=[
-            "status", "container_id", "container_fqdn",
-            "managed_identity_id", "updated_at",
-        ])
+        tenant.save(
+            update_fields=[
+                "status",
+                "container_id",
+                "container_fqdn",
+                "managed_identity_id",
+                "updated_at",
+            ]
+        )
 
         logger.info("Deprovisioned tenant %s", tenant_id)
 
@@ -410,7 +477,9 @@ def dedup_tenant_cron_jobs(
     if jobs is None:
         try:
             list_result = invoke_gateway_tool(
-                tenant, "cron.list", {"includeDisabled": True},
+                tenant,
+                "cron.list",
+                {"includeDisabled": True},
             )
         except GatewayError:
             logger.exception("dedup: failed to list crons for tenant %s", str(tenant.id)[:8])
@@ -419,8 +488,7 @@ def dedup_tenant_cron_jobs(
         jobs = _extract_cron_jobs(list_result)
         if jobs is None:
             logger.warning(
-                "dedup: tenant %s — could not parse cron.list response, skipping. "
-                "Raw response: %s",
+                "dedup: tenant %s — could not parse cron.list response, skipping. Raw response: %s",
                 str(tenant.id)[:8],
                 repr(list_result)[:300],
             )
@@ -428,7 +496,8 @@ def dedup_tenant_cron_jobs(
 
         logger.info(
             "dedup: tenant %s — found %d jobs to check",
-            str(tenant.id)[:8], len(jobs),
+            str(tenant.id)[:8],
+            len(jobs),
         )
 
     # Group by name
@@ -471,13 +540,17 @@ def dedup_tenant_cron_jobs(
         except GatewayError:
             logger.warning(
                 "dedup: failed to delete job %s for tenant %s",
-                job_id[:12], str(tenant.id)[:8],
+                job_id[:12],
+                str(tenant.id)[:8],
             )
             errors += 1
 
     logger.info(
         "dedup: tenant %s — kept %d unique, deleted %d duplicates, %d errors",
-        str(tenant.id)[:8], len(by_name), deleted, errors,
+        str(tenant.id)[:8],
+        len(by_name),
+        deleted,
+        errors,
     )
     return {"kept": len(by_name), "deleted": deleted, "errors": errors, "duplicates": to_delete}
 
@@ -504,10 +577,16 @@ def _extract_cron_jobs(list_result) -> list | None:
     return None  # Unrecognizable — do NOT assume empty
 
 
-SYSTEM_JOB_NAMES = frozenset({
-    "Morning Briefing", "Evening Check-in", "Week Ahead Review",
-    "Background Tasks", "Weekly Reflection", "Heartbeat Check-in",
-})
+SYSTEM_JOB_NAMES = frozenset(
+    {
+        "Morning Briefing",
+        "Evening Check-in",
+        "Week Ahead Review",
+        "Background Tasks",
+        "Weekly Reflection",
+        "Heartbeat Check-in",
+    }
+)
 
 
 def restore_user_cron_jobs(tenant: Tenant, existing_job_names: set[str]) -> dict:
@@ -528,7 +607,8 @@ def restore_user_cron_jobs(tenant: Tenant, existing_job_names: set[str]) -> dict
 
     existing_lower = {n.lower() for n in existing_job_names}
     user_jobs_to_restore = [
-        job for job in snapshot_jobs
+        job
+        for job in snapshot_jobs
         if isinstance(job, dict)
         and job.get("name")
         and job["name"] not in SYSTEM_JOB_NAMES
@@ -553,14 +633,25 @@ def restore_user_cron_jobs(tenant: Tenant, existing_job_names: set[str]) -> dict
     snapshot_at = snapshot.get("snapshot_at", "unknown")
     logger.info(
         "Restoring %d user cron jobs for tenant %s from snapshot at %s",
-        len(user_jobs_to_restore), str(tenant.id)[:8], snapshot_at,
+        len(user_jobs_to_restore),
+        str(tenant.id)[:8],
+        snapshot_at,
     )
 
     restored = 0
     errors = 0
     for job in user_jobs_to_restore:
         # Strip gateway-internal fields that cron.add rejects
-        _STRIP_FIELDS = {"id", "jobId", "createdAt", "state", "createdAtMs", "updatedAtMs", "nextRunAtMs", "runningAtMs"}
+        _STRIP_FIELDS = {
+            "id",
+            "jobId",
+            "createdAt",
+            "state",
+            "createdAtMs",
+            "updatedAtMs",
+            "nextRunAtMs",
+            "runningAtMs",
+        }
         clean_job = {k: v for k, v in job.items() if k not in _STRIP_FIELDS}
         try:
             invoke_gateway_tool(tenant, "cron.add", {"job": clean_job})
@@ -568,7 +659,9 @@ def restore_user_cron_jobs(tenant: Tenant, existing_job_names: set[str]) -> dict
         except GatewayError as exc:
             logger.warning(
                 "Failed to restore cron job '%s' for tenant %s: %s",
-                job.get("name"), str(tenant.id)[:8], exc,
+                job.get("name"),
+                str(tenant.id)[:8],
+                exc,
             )
             errors += 1
 
@@ -640,11 +733,7 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
         }
 
     # Diff by name — only create jobs that don't already exist
-    existing_names = {
-        j.get("name", "").lower()
-        for j in existing_jobs
-        if isinstance(j, dict) and j.get("name")
-    }
+    existing_names = {j.get("name", "").lower() for j in existing_jobs if isinstance(j, dict) and j.get("name")}
     jobs_to_create = [j for j in jobs if j.get("name", "").lower() not in existing_names]
 
     if not jobs_to_create:
@@ -730,12 +819,14 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
         if user_restore["restored"] > 0:
             logger.info(
                 "seed_cron_jobs: restored %d user jobs for tenant %s",
-                user_restore["restored"], tenant_id,
+                user_restore["restored"],
+                tenant_id,
             )
     except Exception:
         logger.warning(
             "seed_cron_jobs: user job restore failed for tenant %s (non-fatal)",
-            tenant_id, exc_info=True,
+            tenant_id,
+            exc_info=True,
         )
 
     # Safety-net dedup after restore — catch any duplicates introduced by restore
@@ -745,7 +836,8 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
         except Exception:
             logger.warning(
                 "seed_cron_jobs: post-restore dedup failed for tenant %s (non-fatal)",
-                tenant_id, exc_info=True,
+                tenant_id,
+                exc_info=True,
             )
 
     return {
@@ -810,7 +902,6 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
         "You received a scheduled check-in.",
         # Date-injected variants (added 2026-03-08):
         "Current date and time:",
-
     ]
 
     # System job names that may need delete+recreate when payload changes
@@ -819,8 +910,12 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
     # systemEvent/text → agentTurn/message + Phase 2 sync block, so this
     # path is the migration channel for existing tenants.
     _SYSTEM_JOB_NAMES = {
-        "Morning Briefing", "Evening Check-in", "Weekly Reflection",
-        "Week Ahead Review", "Background Tasks", "Project Check-in",
+        "Morning Briefing",
+        "Evening Check-in",
+        "Weekly Reflection",
+        "Week Ahead Review",
+        "Background Tasks",
+        "Project Check-in",
         "Heartbeat Check-in",
     }
 
@@ -880,7 +975,8 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
             else:
                 logger.info(
                     "update_system_cron_prompts: skipping '%s' for tenant %s (user-customized)",
-                    name, tenant_id,
+                    name,
+                    tenant_id,
                 )
                 skipped += 1
 
@@ -891,7 +987,10 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
             patch["schedule"] = desired.get("schedule", {})
             logger.info(
                 "update_system_cron_prompts: fixing tz '%s' -> '%s' for '%s' tenant %s",
-                existing_tz, user_tz, name, tenant_id,
+                existing_tz,
+                user_tz,
+                name,
+                tenant_id,
             )
 
         if not patch:
@@ -905,20 +1004,23 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
             try:
                 gateway_job_id = existing.get("id") or existing.get("jobId") or job_id
                 invoke_gateway_tool(
-                    tenant, "cron.remove", {"jobId": gateway_job_id},
+                    tenant,
+                    "cron.remove",
+                    {"jobId": gateway_job_id},
                 )
                 invoke_gateway_tool(tenant, "cron.add", {"job": desired})
                 updated += 1
                 logger.info(
-                    "update_system_cron_prompts: recreated '%s' for tenant %s "
-                    "(payload changed — used delete+create)",
-                    name, tenant_id,
+                    "update_system_cron_prompts: recreated '%s' for tenant %s (payload changed — used delete+create)",
+                    name,
+                    tenant_id,
                 )
                 continue
             except GatewayError:
                 logger.exception(
                     "update_system_cron_prompts: delete+create failed for '%s' tenant %s",
-                    name, tenant_id,
+                    name,
+                    tenant_id,
                 )
                 errors += 1
                 continue
@@ -961,9 +1063,7 @@ def sync_heartbeat_cron(
     # Fetch existing jobs if not provided
     if existing_by_name is None:
         try:
-            list_result = invoke_gateway_tool(
-                tenant, "cron.list", {"includeDisabled": True}
-            )
+            list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
         except GatewayError:
             logger.exception("sync_heartbeat_cron: cannot list jobs for %s", tenant.id)
             return "error"
@@ -1011,12 +1111,15 @@ def sync_heartbeat_cron(
             if existing_expr != desired_expr or existing_tz != desired_tz:
                 job_id = existing_hb.get("id") or existing_hb.get("jobId", HEARTBEAT_NAME)
                 invoke_gateway_tool(
-                    tenant, "cron.update",
+                    tenant,
+                    "cron.update",
                     {"jobId": job_id, "patch": {"schedule": desired_hb["schedule"]}},
                 )
                 logger.info(
                     "sync_heartbeat_cron: updated schedule for tenant %s (%s → %s)",
-                    tenant.id, existing_expr, desired_expr,
+                    tenant.id,
+                    existing_expr,
+                    desired_expr,
                 )
                 return "updated"
 
@@ -1028,17 +1131,76 @@ def sync_heartbeat_cron(
 
 
 def check_tenant_health(tenant_id: str) -> dict:
-    """Check if a tenant's OpenClaw instance is healthy."""
-    tenant = Tenant.objects.get(id=tenant_id)
+    """Check if a tenant's OpenClaw instance is healthy.
 
-    if not tenant.container_fqdn:
-        return {"tenant_id": str(tenant.id), "healthy": False, "reason": "no container"}
+    Pings the container's gateway health endpoint and returns structured
+    results including response time and config version drift.
+    """
+    import httpx
 
-    # TODO: Actually ping the OpenClaw gateway health endpoint
-    # For now, return based on status
-    return {
+    tenant = Tenant.objects.select_related("user").get(id=tenant_id)
+    result = {
         "tenant_id": str(tenant.id),
-        "healthy": tenant.status == Tenant.Status.ACTIVE,
+        "display_name": tenant.user.display_name,
         "status": tenant.status,
         "container": tenant.container_id,
+        "healthy": False,
+        "checks": {},
     }
+
+    if tenant.status != Tenant.Status.ACTIVE:
+        result["checks"]["status"] = {"ok": False, "detail": f"tenant is {tenant.status}"}
+        return result
+
+    if not tenant.container_fqdn:
+        result["checks"]["container"] = {"ok": False, "detail": "no container FQDN"}
+        return result
+
+    # Config version drift
+    pending = tenant.pending_config_version or 0
+    current = tenant.config_version or 0
+    config_drift = pending > current
+    result["checks"]["config_drift"] = {
+        "ok": not config_drift,
+        "detail": f"current={current} pending={pending}" if config_drift else "up to date",
+    }
+
+    # Ping gateway health endpoint
+    health_url = f"https://{tenant.container_fqdn}/health"
+    try:
+        resp = httpx.get(health_url, timeout=10)
+        response_time_ms = int(resp.elapsed.total_seconds() * 1000)
+        is_healthy = resp.status_code == 200
+        result["checks"]["gateway"] = {
+            "ok": is_healthy,
+            "status_code": resp.status_code,
+            "response_time_ms": response_time_ms,
+        }
+    except httpx.TimeoutException:
+        result["checks"]["gateway"] = {"ok": False, "detail": "timeout (10s)"}
+    except httpx.ConnectError:
+        result["checks"]["gateway"] = {"ok": False, "detail": "connection refused"}
+    except Exception as exc:
+        result["checks"]["gateway"] = {"ok": False, "detail": str(exc)[:200]}
+
+    result["healthy"] = all(c["ok"] for c in result["checks"].values())
+    return result
+
+
+def check_all_tenants_health() -> list[dict]:
+    """Run health checks on all active tenants. Returns list of results."""
+    results = []
+    for tenant in Tenant.objects.filter(status=Tenant.Status.ACTIVE).select_related("user"):
+        try:
+            result = check_tenant_health(str(tenant.id))
+            results.append(result)
+        except Exception as exc:
+            results.append(
+                {
+                    "tenant_id": str(tenant.id),
+                    "display_name": tenant.user.display_name,
+                    "healthy": False,
+                    "error": str(exc)[:200],
+                }
+            )
+    return results

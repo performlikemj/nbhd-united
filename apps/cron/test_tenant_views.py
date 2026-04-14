@@ -1,4 +1,5 @@
 """Tests for tenant-facing cron job API."""
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -211,7 +212,9 @@ class CronJobToggleTest(TestCase):
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_toggle_requires_enabled_field(self, mock_invoke):
         resp = self.client.post(
-            "/api/v1/cron-jobs/Morning Briefing/toggle/", {}, format="json",
+            "/api/v1/cron-jobs/Morning Briefing/toggle/",
+            {},
+            format="json",
         )
         self.assertEqual(resp.status_code, 400)
         mock_invoke.assert_not_called()
@@ -354,13 +357,19 @@ class CronJobUpdateSnapshotFallbackTest(TestCase):
         """A legacy main-session job in the gateway gets normalized to isolated on edit."""
         mock_invoke.side_effect = [
             # cron.list returns a legacy main-session job with systemEvent payload
-            {"jobs": [
-                {"jobId": "abc123", "name": "Legacy Task", "sessionTarget": "main",
-                 "wakeMode": "now",
-                 "payload": {"kind": "systemEvent", "text": "morning briefing"},
-                 "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": "UTC"},
-                 "enabled": True},
-            ]},
+            {
+                "jobs": [
+                    {
+                        "jobId": "abc123",
+                        "name": "Legacy Task",
+                        "sessionTarget": "main",
+                        "wakeMode": "now",
+                        "payload": {"kind": "systemEvent", "text": "morning briefing"},
+                        "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": "UTC"},
+                        "enabled": True,
+                    },
+                ]
+            },
             {},  # cron.remove
             {"name": "Legacy Task", "enabled": True},  # cron.add
         ]
@@ -392,14 +401,19 @@ class CronJobUpdateSnapshotFallbackTest(TestCase):
         isolated. User-created channel-based crons should keep working.
         """
         mock_invoke.side_effect = [
-            {"jobs": [
-                {"jobId": "abc123", "name": "Daily Workout Plan",
-                 "sessionTarget": "main",
-                 "payload": {"kind": "systemEvent", "text": "workout"},
-                 "schedule": {"kind": "cron", "expr": "0 5 * * *", "tz": "Asia/Tokyo"},
-                 "delivery": {"channel": "telegram", "to": "12345", "mode": "auto"},
-                 "enabled": True},
-            ]},
+            {
+                "jobs": [
+                    {
+                        "jobId": "abc123",
+                        "name": "Daily Workout Plan",
+                        "sessionTarget": "main",
+                        "payload": {"kind": "systemEvent", "text": "workout"},
+                        "schedule": {"kind": "cron", "expr": "0 5 * * *", "tz": "Asia/Tokyo"},
+                        "delivery": {"channel": "telegram", "to": "12345", "mode": "auto"},
+                        "enabled": True,
+                    },
+                ]
+            },
             {},  # cron.remove
             {"name": "Daily Workout Plan", "enabled": True},  # cron.add
         ]
@@ -420,20 +434,25 @@ class CronJobUpdateSnapshotFallbackTest(TestCase):
     def test_foreground_toggle_off_strips_phase2_block(self, mock_invoke):
         """PATCH {foreground: false} must strip the Phase 2 sync block."""
         mock_invoke.side_effect = [
-            {"jobs": [
-                {"jobId": "abc123", "name": "My Task",
-                 "sessionTarget": "isolated",
-                 "payload": {
-                     "kind": "agentTurn",
-                     # Existing message has the marker (foreground)
-                     "message": (
-                         "do stuff\n\n---\n**FINAL STEP — conditional sync to "
-                         "the main session:**\n... wrapper content ..."
-                     ),
-                 },
-                 "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"},
-                 "enabled": True},
-            ]},
+            {
+                "jobs": [
+                    {
+                        "jobId": "abc123",
+                        "name": "My Task",
+                        "sessionTarget": "isolated",
+                        "payload": {
+                            "kind": "agentTurn",
+                            # Existing message has the marker (foreground)
+                            "message": (
+                                "do stuff\n\n---\n**FINAL STEP — conditional sync to "
+                                "the main session:**\n... wrapper content ..."
+                            ),
+                        },
+                        "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"},
+                        "enabled": True,
+                    },
+                ]
+            },
             {},  # cron.remove
             {"name": "My Task", "enabled": True},  # cron.add
         ]
@@ -457,13 +476,18 @@ class CronJobUpdateSnapshotFallbackTest(TestCase):
     def test_foreground_toggle_on_appends_phase2_block(self, mock_invoke):
         """PATCH {foreground: true} on a background job must append the Phase 2 block."""
         mock_invoke.side_effect = [
-            {"jobs": [
-                {"jobId": "abc123", "name": "My Task",
-                 "sessionTarget": "isolated",
-                 "payload": {"kind": "agentTurn", "message": "quiet maintenance"},
-                 "schedule": {"kind": "cron", "expr": "0 3 * * *", "tz": "UTC"},
-                 "enabled": True},
-            ]},
+            {
+                "jobs": [
+                    {
+                        "jobId": "abc123",
+                        "name": "My Task",
+                        "sessionTarget": "isolated",
+                        "payload": {"kind": "agentTurn", "message": "quiet maintenance"},
+                        "schedule": {"kind": "cron", "expr": "0 3 * * *", "tz": "UTC"},
+                        "enabled": True,
+                    },
+                ]
+            },
             {},
             {"name": "My Task", "enabled": True},
         ]
@@ -484,10 +508,17 @@ class CronJobUpdateSnapshotFallbackTest(TestCase):
         """Job present in container still goes through normal delete+recreate."""
         mock_invoke.side_effect = [
             # cron.list returns the job
-            {"jobs": [
-                {"jobId": "abc123", "name": "My Task", "sessionTarget": "isolated",
-                 "payload": {"kind": "agentTurn", "message": "old"}, "enabled": True},
-            ]},
+            {
+                "jobs": [
+                    {
+                        "jobId": "abc123",
+                        "name": "My Task",
+                        "sessionTarget": "isolated",
+                        "payload": {"kind": "agentTurn", "message": "old"},
+                        "enabled": True,
+                    },
+                ]
+            },
             {},  # cron.remove succeeds
             {"name": "My Task", "enabled": True},  # cron.add succeeds
         ]
@@ -544,13 +575,15 @@ class NormalizationHelperTest(SimpleTestCase):
     """Unit tests for _normalize_job_for_universal_isolation."""
 
     def test_full_job_dict_forced_to_isolated(self):
-        out = _normalize_job_for_universal_isolation({
-            "name": "Test",
-            "sessionTarget": "main",
-            "wakeMode": "now",
-            "payload": {"kind": "systemEvent", "text": "hello"},
-            "delivery": {"channel": "telegram", "to": "12345", "mode": "auto"},
-        })
+        out = _normalize_job_for_universal_isolation(
+            {
+                "name": "Test",
+                "sessionTarget": "main",
+                "wakeMode": "now",
+                "payload": {"kind": "systemEvent", "text": "hello"},
+                "delivery": {"channel": "telegram", "to": "12345", "mode": "auto"},
+            }
+        )
         self.assertEqual(out["sessionTarget"], "isolated")
         self.assertNotIn("wakeMode", out)
         self.assertEqual(out["payload"], {"kind": "agentTurn", "message": "hello"})
@@ -563,10 +596,12 @@ class NormalizationHelperTest(SimpleTestCase):
 
     def test_partial_patch_left_alone(self):
         """If none of the structural fields are in the input, normalization is a no-op."""
-        out = _normalize_job_for_universal_isolation({
-            "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"},
-            "enabled": True,
-        })
+        out = _normalize_job_for_universal_isolation(
+            {
+                "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "UTC"},
+                "enabled": True,
+            }
+        )
         self.assertEqual(
             out,
             {
@@ -576,17 +611,21 @@ class NormalizationHelperTest(SimpleTestCase):
         )
 
     def test_payload_only_triggers_normalization(self):
-        out = _normalize_job_for_universal_isolation({
-            "payload": {"kind": "systemEvent", "text": "hi"},
-        })
+        out = _normalize_job_for_universal_isolation(
+            {
+                "payload": {"kind": "systemEvent", "text": "hi"},
+            }
+        )
         self.assertEqual(out["sessionTarget"], "isolated")
         self.assertEqual(out["payload"], {"kind": "agentTurn", "message": "hi"})
 
     def test_already_isolated_payload_preserved(self):
-        out = _normalize_job_for_universal_isolation({
-            "sessionTarget": "isolated",
-            "payload": {"kind": "agentTurn", "message": "hi"},
-        })
+        out = _normalize_job_for_universal_isolation(
+            {
+                "sessionTarget": "isolated",
+                "payload": {"kind": "agentTurn", "message": "hi"},
+            }
+        )
         self.assertEqual(out["sessionTarget"], "isolated")
         self.assertEqual(out["payload"], {"kind": "agentTurn", "message": "hi"})
 

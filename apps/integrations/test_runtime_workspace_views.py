@@ -11,6 +11,7 @@ via plugin tools. Critical behaviors:
 - Deleting the active workspace falls back to the default
 - Description embedding generated/updated whenever description changes
 """
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -128,16 +129,8 @@ class RuntimeWorkspaceViewsTest(TestCase):
 
         # Two workspaces now exist: General + Translation
         self.assertEqual(Workspace.objects.filter(tenant=self.tenant).count(), 2)
-        self.assertTrue(
-            Workspace.objects.filter(
-                tenant=self.tenant, slug="general", is_default=True
-            ).exists()
-        )
-        self.assertTrue(
-            Workspace.objects.filter(
-                tenant=self.tenant, slug="translation"
-            ).exists()
-        )
+        self.assertTrue(Workspace.objects.filter(tenant=self.tenant, slug="general", is_default=True).exists())
+        self.assertTrue(Workspace.objects.filter(tenant=self.tenant, slug="translation").exists())
 
     def test_create_second_workspace_does_not_recreate_default(self, _embed_mock):
         self._create(name="Work")
@@ -226,17 +219,13 @@ class RuntimeWorkspaceViewsTest(TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["error"], "cannot_delete_default")
         # General still exists
-        self.assertTrue(
-            Workspace.objects.filter(tenant=self.tenant, slug="general").exists()
-        )
+        self.assertTrue(Workspace.objects.filter(tenant=self.tenant, slug="general").exists())
 
     def test_delete_nondefault_workspace_succeeds(self, _embed_mock):
         self._create(name="Work")
         response = self._delete("work")
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(
-            Workspace.objects.filter(tenant=self.tenant, slug="work").exists()
-        )
+        self.assertFalse(Workspace.objects.filter(tenant=self.tenant, slug="work").exists())
 
     def test_delete_active_workspace_falls_back_to_default(self, _embed_mock):
         self._create(name="Work")  # Now active
@@ -296,6 +285,4 @@ class RuntimeWorkspaceViewsTest(TestCase):
     def test_workspaces_are_tenant_scoped(self, _embed_mock):
         self._create(name="Work")
         # Other tenant should see no workspaces
-        self.assertEqual(
-            Workspace.objects.filter(tenant=self.other_tenant).count(), 0
-        )
+        self.assertEqual(Workspace.objects.filter(tenant=self.other_tenant).count(), 0)

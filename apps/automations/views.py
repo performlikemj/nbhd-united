@@ -1,4 +1,5 @@
 """Automation API views."""
+
 from __future__ import annotations
 
 from uuid import UUID
@@ -16,9 +17,9 @@ from .models import Automation, AutomationRun
 from .serializers import AutomationRunSerializer, AutomationSerializer
 from .services import (
     AutomationLimitError,
+    execute_automation,
     pause_automation,
     resume_automation,
-    execute_automation,
 )
 
 

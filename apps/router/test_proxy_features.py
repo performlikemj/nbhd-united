@@ -1,5 +1,6 @@
 """Tests for proxy features: message splitting, photo forwarding, location passthrough."""
-from unittest.mock import MagicMock, patch
+
+from unittest.mock import MagicMock
 
 from django.test import TestCase
 
@@ -66,10 +67,12 @@ class PhotoDownloadTest(TestCase):
         self.poller._http.post.return_value = get_file_resp
         self.poller._http.get.return_value = dl_resp
 
-        message = {"photo": [
-            {"file_id": "small", "file_size": 1000},
-            {"file_id": "large", "file_size": 50000},
-        ]}
+        message = {
+            "photo": [
+                {"file_id": "small", "file_size": 1000},
+                {"file_id": "large", "file_size": 50000},
+            ]
+        }
         result = self.poller._download_photo(message)
         self.assertIsNotNone(result)
         self.assertTrue(result.startswith("data:image/jpg;base64,"))
@@ -79,9 +82,11 @@ class PhotoDownloadTest(TestCase):
         self.assertIsNone(result)
 
     def test_photo_too_large(self):
-        message = {"photo": [
-            {"file_id": "huge", "file_size": 10 * 1024 * 1024},
-        ]}
+        message = {
+            "photo": [
+                {"file_id": "huge", "file_size": 10 * 1024 * 1024},
+            ]
+        }
         result = self.poller._download_photo(message)
         self.assertIsNone(result)
 
@@ -112,10 +117,12 @@ class LocationPassthroughTest(TestCase):
         self.assertIn("📍", result)
 
     def test_venue(self):
-        update = {"message": {
-            "location": {"latitude": 34.6937, "longitude": 135.5023},
-            "venue": {"title": "Osaka Castle", "address": "1-1 Osakajo, Chuo-ku"},
-        }}
+        update = {
+            "message": {
+                "location": {"latitude": 34.6937, "longitude": 135.5023},
+                "venue": {"title": "Osaka Castle", "address": "1-1 Osakajo, Chuo-ku"},
+            }
+        }
         result = self.poller._extract_message_text(update)
         self.assertIn("Osaka Castle", result)
         self.assertIn("1-1 Osakajo", result)
@@ -131,16 +138,20 @@ class PhotoExtractionTest(TestCase):
         self.poller._http = MagicMock()
 
     def test_photo_with_caption(self):
-        update = {"message": {
-            "photo": [{"file_id": "abc", "file_size": 1000}],
-            "caption": "Check this out!",
-        }}
+        update = {
+            "message": {
+                "photo": [{"file_id": "abc", "file_size": 1000}],
+                "caption": "Check this out!",
+            }
+        }
         result = self.poller._extract_message_text(update)
         self.assertEqual(result, "Check this out!")
 
     def test_photo_without_caption(self):
-        update = {"message": {
-            "photo": [{"file_id": "abc", "file_size": 1000}],
-        }}
+        update = {
+            "message": {
+                "photo": [{"file_id": "abc", "file_size": 1000}],
+            }
+        }
         result = self.poller._extract_message_text(update)
         self.assertEqual(result, "User sent a photo")

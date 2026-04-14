@@ -5,6 +5,7 @@ process_approved_lesson() fix had no embedding generated.  This command
 retroactively processes those lessons so they appear in the constellation
 and are discoverable via semantic search.
 """
+
 from django.core.management.base import BaseCommand
 
 from apps.lessons.models import Lesson

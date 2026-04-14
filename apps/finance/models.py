@@ -1,4 +1,5 @@
 """Finance models — budget tracking, debt payoff, and progress snapshots."""
+
 import uuid
 
 from django.db import models
@@ -32,31 +33,37 @@ class FinanceAccount(models.Model):
     }
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    tenant = models.ForeignKey(
-        Tenant, on_delete=models.CASCADE, related_name="finance_accounts"
-    )
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="finance_accounts")
     account_type = models.CharField(max_length=32, choices=AccountType.choices)
-    nickname = models.CharField(
-        max_length=128, help_text="User-chosen label, e.g. 'Big CC' or 'Car Loan'"
-    )
+    nickname = models.CharField(max_length=128, help_text="User-chosen label, e.g. 'Big CC' or 'Car Loan'")
     current_balance = models.DecimalField(max_digits=12, decimal_places=2)
     original_balance = models.DecimalField(
-        max_digits=12, decimal_places=2, null=True, blank=True,
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
         help_text="Starting balance when first tracked (for progress %)",
     )
     interest_rate = models.DecimalField(
-        max_digits=5, decimal_places=2, null=True, blank=True,
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
         help_text="Annual percentage rate",
     )
     minimum_payment = models.DecimalField(
-        max_digits=10, decimal_places=2, null=True, blank=True,
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
     )
     credit_limit = models.DecimalField(
-        max_digits=12, decimal_places=2, null=True, blank=True,
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
     )
-    due_day = models.IntegerField(
-        null=True, blank=True, help_text="Day of month payment is due (1-31)"
-    )
+    due_day = models.IntegerField(null=True, blank=True, help_text="Day of month payment is due (1-31)")
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -95,15 +102,9 @@ class FinanceTransaction(models.Model):
         INTEREST = "interest", "Interest Charge"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    tenant = models.ForeignKey(
-        Tenant, on_delete=models.CASCADE, related_name="finance_transactions"
-    )
-    account = models.ForeignKey(
-        FinanceAccount, on_delete=models.CASCADE, related_name="transactions"
-    )
-    transaction_type = models.CharField(
-        max_length=16, choices=TransactionType.choices
-    )
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="finance_transactions")
+    account = models.ForeignKey(FinanceAccount, on_delete=models.CASCADE, related_name="transactions")
+    transaction_type = models.CharField(max_length=16, choices=TransactionType.choices)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     description = models.CharField(max_length=256, blank=True, default="")
     date = models.DateField()
@@ -130,12 +131,11 @@ class PayoffPlan(models.Model):
         HYBRID = "hybrid", "Hybrid (balanced approach)"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    tenant = models.ForeignKey(
-        Tenant, on_delete=models.CASCADE, related_name="payoff_plans"
-    )
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="payoff_plans")
     strategy = models.CharField(max_length=16, choices=Strategy.choices)
     monthly_budget = models.DecimalField(
-        max_digits=10, decimal_places=2,
+        max_digits=10,
+        decimal_places=2,
         help_text="Total monthly amount available for all debt payments",
     )
     total_debt = models.DecimalField(max_digits=12, decimal_places=2)
@@ -162,15 +162,11 @@ class FinanceSnapshot(models.Model):
     """Monthly point-in-time snapshot for progress tracking."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    tenant = models.ForeignKey(
-        Tenant, on_delete=models.CASCADE, related_name="finance_snapshots"
-    )
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="finance_snapshots")
     date = models.DateField(help_text="First of the month for this snapshot")
     total_debt = models.DecimalField(max_digits=12, decimal_places=2)
     total_savings = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    total_payments_this_month = models.DecimalField(
-        max_digits=12, decimal_places=2, default=0
-    )
+    total_payments_this_month = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     accounts_json = models.JSONField(
         default=list,
         help_text="Snapshot of all account balances: [{nickname, type, balance}]",

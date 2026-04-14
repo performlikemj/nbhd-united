@@ -1,4 +1,5 @@
 """Tests for journal models, markdown parser, and API endpoints."""
+
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -19,7 +20,6 @@ from .services import (
     seed_default_templates_for_tenant,
     set_daily_note_section,
 )
-
 
 # ---------------------------------------------------------------------------
 # Markdown parser/serializer tests
@@ -184,9 +184,15 @@ class DefaultTemplateSectionsTest(TestCase):
     def test_default_template_has_five_sections(self):
         self.assertEqual(len(DEFAULT_TEMPLATE_SECTIONS), 4)
         slugs = [s["slug"] for s in DEFAULT_TEMPLATE_SECTIONS]
-        self.assertEqual(slugs, [
-            "morning-report", "weather", "news", "focus",
-        ])
+        self.assertEqual(
+            slugs,
+            [
+                "morning-report",
+                "weather",
+                "news",
+                "focus",
+            ],
+        )
 
     def test_seed_creates_template_with_five_sections(self):
         user = User.objects.create_user(username="seeduser", password="pass")
@@ -204,7 +210,9 @@ class SetSectionTest(TestCase):
     def test_set_known_section(self):
         note = DailyNote.objects.create(tenant=self.tenant, date=date(2026, 2, 16))
         note, sections = set_daily_note_section(
-            note=note, section_slug="morning-report", content="Hello morning",
+            note=note,
+            section_slug="morning-report",
+            content="Hello morning",
         )
         mr = next(s for s in sections if s["slug"] == "morning-report")
         self.assertEqual(mr["content"], "Hello morning")
@@ -213,7 +221,9 @@ class SetSectionTest(TestCase):
     def test_set_unknown_slug_auto_creates(self):
         note = DailyNote.objects.create(tenant=self.tenant, date=date(2026, 2, 16))
         note, sections = set_daily_note_section(
-            note=note, section_slug="tweet-drafts", content="Some tweet ideas",
+            note=note,
+            section_slug="tweet-drafts",
+            content="Some tweet ideas",
         )
         slugs = [s["slug"] for s in sections]
         self.assertIn("tweet-drafts", slugs)
@@ -236,7 +246,9 @@ class SetSectionTest(TestCase):
         note.template = template
         note.save()
         note, sections = set_daily_note_section(
-            note=note, section_slug="new-section", content="New content",
+            note=note,
+            section_slug="new-section",
+            content="New content",
         )
         self.assertEqual(sections[-1]["slug"], "new-section")
 
@@ -254,7 +266,10 @@ class AppendLogTest(TestCase):
             markdown="# 2026-02-16\n\n## Morning Report\nHello\n",
         )
         note = append_log_to_note(
-            note=note, content="Quick note", author="human", time_str="14:00",
+            note=note,
+            content="Quick note",
+            author="human",
+            time_str="14:00",
         )
         self.assertIn("14:00", note.markdown)
         self.assertIn("Quick note", note.markdown)
@@ -278,7 +293,10 @@ class AppendLogTest(TestCase):
         note.template = template
         note.save()
         note = append_log_to_note(
-            note=note, content="Logged this", author="agent", time_str="10:30",
+            note=note,
+            content="Logged this",
+            author="agent",
+            time_str="10:30",
         )
         self.assertIn("Logged this", note.markdown)
         self.assertIn("10:30", note.markdown)
@@ -546,14 +564,14 @@ class TenantIsolationTest(TestCase):
         self.tenant2 = Tenant.objects.create(user=self.user2, status="active")
 
         # Create notes for both tenants
-        DailyNote.objects.create(
-            tenant=self.tenant1, date=date(2026, 2, 15), markdown="# T1 note"
+        DailyNote.objects.create(tenant=self.tenant1, date=date(2026, 2, 15), markdown="# T1 note")
+        DailyNote.objects.create(tenant=self.tenant2, date=date(2026, 2, 15), markdown="# T2 note")
+        Document.objects.create(
+            tenant=self.tenant1, kind="memory", slug="long-term", title="Memory", markdown="# T1 mem"
         )
-        DailyNote.objects.create(
-            tenant=self.tenant2, date=date(2026, 2, 15), markdown="# T2 note"
+        Document.objects.create(
+            tenant=self.tenant2, kind="memory", slug="long-term", title="Memory", markdown="# T2 mem"
         )
-        Document.objects.create(tenant=self.tenant1, kind="memory", slug="long-term", title="Memory", markdown="# T1 mem")
-        Document.objects.create(tenant=self.tenant2, kind="memory", slug="long-term", title="Memory", markdown="# T2 mem")
 
     def test_user1_sees_only_own_daily_note(self):
         client = APIClient()
@@ -638,8 +656,11 @@ class RuntimeDailyNoteAPITest(TestCase):
 
     def test_get_daily_note_raw_markdown(self):
         Document.objects.create(
-            tenant=self.tenant, kind="daily", slug="2026-02-15",
-            title="2026-02-15", markdown=SAMPLE_MARKDOWN,
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-02-15",
+            title="2026-02-15",
+            markdown=SAMPLE_MARKDOWN,
         )
         resp = self.client.get(
             f"/api/v1/integrations/runtime/{self.tenant.id}/daily-note/",
@@ -766,13 +787,14 @@ class RuntimeJournalContextAPITest(TestCase):
         }
 
     def test_journal_context(self):
-        from datetime import timedelta
 
         from django.utils import timezone as tz
 
         today = tz.now().date()
         Document.objects.create(tenant=self.tenant, kind="daily", slug=str(today), title=str(today), markdown="# Today")
-        Document.objects.create(tenant=self.tenant, kind="memory", slug="long-term", title="Memory", markdown="# Memory")
+        Document.objects.create(
+            tenant=self.tenant, kind="memory", slug="long-term", title="Memory", markdown="# Memory"
+        )
 
         resp = self.client.get(
             f"/api/v1/integrations/runtime/{self.tenant.id}/journal-context/",
@@ -796,8 +818,11 @@ class DocumentModelTest(TestCase):
 
     def test_create_daily_document(self):
         doc = Document.objects.create(
-            tenant=self.tenant, kind="daily", slug="2026-02-16",
-            title="2026-02-16", markdown="# Hello",
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-02-16",
+            title="2026-02-16",
+            markdown="# Hello",
         )
         self.assertEqual(doc.kind, "daily")
         self.assertEqual(doc.slug, "2026-02-16")
@@ -805,30 +830,45 @@ class DocumentModelTest(TestCase):
     def test_create_each_kind(self):
         for kind_val, _label in Document.Kind.choices:
             doc = Document.objects.create(
-                tenant=self.tenant, kind=kind_val, slug=f"test-{kind_val}",
-                title=f"Test {kind_val}", markdown="",
+                tenant=self.tenant,
+                kind=kind_val,
+                slug=f"test-{kind_val}",
+                title=f"Test {kind_val}",
+                markdown="",
             )
             self.assertEqual(doc.kind, kind_val)
 
     def test_unique_constraint(self):
         Document.objects.create(
-            tenant=self.tenant, kind="daily", slug="2026-02-16",
-            title="Day", markdown="",
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-02-16",
+            title="Day",
+            markdown="",
         )
         with self.assertRaises(Exception):
             Document.objects.create(
-                tenant=self.tenant, kind="daily", slug="2026-02-16",
-                title="Dupe", markdown="",
+                tenant=self.tenant,
+                kind="daily",
+                slug="2026-02-16",
+                title="Dupe",
+                markdown="",
             )
 
     def test_same_slug_different_kind_ok(self):
         Document.objects.create(
-            tenant=self.tenant, kind="daily", slug="2026-02-16",
-            title="Daily", markdown="",
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-02-16",
+            title="Daily",
+            markdown="",
         )
         Document.objects.create(
-            tenant=self.tenant, kind="weekly", slug="2026-02-16",
-            title="Weekly", markdown="",
+            tenant=self.tenant,
+            kind="weekly",
+            slug="2026-02-16",
+            title="Weekly",
+            markdown="",
         )
         self.assertEqual(Document.objects.filter(tenant=self.tenant).count(), 2)
 
@@ -854,16 +894,25 @@ class DocumentAPITest(TestCase):
 
     def test_list_documents_by_kind(self):
         Document.objects.create(
-            tenant=self.tenant, kind="daily", slug="2026-02-15",
-            title="Feb 15", markdown="# 15",
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-02-15",
+            title="Feb 15",
+            markdown="# 15",
         )
         Document.objects.create(
-            tenant=self.tenant, kind="daily", slug="2026-02-16",
-            title="Feb 16", markdown="# 16",
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-02-16",
+            title="Feb 16",
+            markdown="# 16",
         )
         Document.objects.create(
-            tenant=self.tenant, kind="goal", slug="fitness",
-            title="Fitness", markdown="# Fitness",
+            tenant=self.tenant,
+            kind="goal",
+            slug="fitness",
+            title="Fitness",
+            markdown="# Fitness",
         )
         resp = self.client.get("/api/v1/journal/documents/", {"kind": "daily"})
         self.assertEqual(resp.status_code, 200)
@@ -875,15 +924,22 @@ class DocumentAPITest(TestCase):
         """GET for a non-existent non-singleton document returns 404 (no auto-create)."""
         resp = self.client.get("/api/v1/journal/documents/daily/2026-02-16/")
         self.assertEqual(resp.status_code, 404)
-        self.assertFalse(Document.objects.filter(
-            tenant=self.tenant, kind="daily", slug="2026-02-16",
-        ).exists())
+        self.assertFalse(
+            Document.objects.filter(
+                tenant=self.tenant,
+                kind="daily",
+                slug="2026-02-16",
+            ).exists()
+        )
 
     def test_get_existing_document(self):
         """GET for an existing document returns 200."""
         Document.objects.create(
-            tenant=self.tenant, kind="daily", slug="2026-02-16",
-            title="Feb 16", markdown="# 2026-02-16\n\n## Morning Report\n",
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-02-16",
+            title="Feb 16",
+            markdown="# 2026-02-16\n\n## Morning Report\n",
         )
         resp = self.client.get("/api/v1/journal/documents/daily/2026-02-16/")
         self.assertEqual(resp.status_code, 200)
@@ -895,14 +951,21 @@ class DocumentAPITest(TestCase):
         """GET for singleton kinds (tasks, ideas, memory) still auto-creates."""
         resp = self.client.get("/api/v1/journal/documents/tasks/tasks/")
         self.assertEqual(resp.status_code, 200)
-        self.assertTrue(Document.objects.filter(
-            tenant=self.tenant, kind="tasks", slug="tasks",
-        ).exists())
+        self.assertTrue(
+            Document.objects.filter(
+                tenant=self.tenant,
+                kind="tasks",
+                slug="tasks",
+            ).exists()
+        )
 
     def test_patch_document(self):
         Document.objects.create(
-            tenant=self.tenant, kind="daily", slug="2026-02-16",
-            title="Feb 16", markdown="# Original",
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-02-16",
+            title="Feb 16",
+            markdown="# Original",
         )
         resp = self.client.patch(
             "/api/v1/journal/documents/daily/2026-02-16/",
@@ -914,8 +977,11 @@ class DocumentAPITest(TestCase):
 
     def test_append_to_document(self):
         Document.objects.create(
-            tenant=self.tenant, kind="daily", slug="2026-02-16",
-            title="Feb 16", markdown="# 2026-02-16",
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-02-16",
+            title="Feb 16",
+            markdown="# 2026-02-16",
         )
         resp = self.client.post(
             "/api/v1/journal/documents/daily/2026-02-16/append/",
@@ -927,12 +993,18 @@ class DocumentAPITest(TestCase):
 
     def test_sidebar_tree(self):
         Document.objects.create(
-            tenant=self.tenant, kind="daily", slug="2026-02-16",
-            title="Feb 16", markdown="",
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-02-16",
+            title="Feb 16",
+            markdown="",
         )
         Document.objects.create(
-            tenant=self.tenant, kind="goal", slug="fitness",
-            title="Fitness", markdown="",
+            tenant=self.tenant,
+            kind="goal",
+            slug="fitness",
+            title="Fitness",
+            markdown="",
         )
         resp = self.client.get("/api/v1/journal/tree/")
         self.assertEqual(resp.status_code, 200)
@@ -950,27 +1022,41 @@ class DocumentAPITest(TestCase):
     def test_delete_daily_document_forbidden(self):
         """Daily notes cannot be deleted — protected by design."""
         Document.objects.create(
-            tenant=self.tenant, kind="daily", slug="2026-02-16",
-            title="Feb 16", markdown="# 2026-02-16",
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-02-16",
+            title="Feb 16",
+            markdown="# 2026-02-16",
         )
         resp = self.client.delete("/api/v1/journal/documents/daily/2026-02-16/")
         self.assertEqual(resp.status_code, 403)
         # Document should still exist
-        self.assertTrue(Document.objects.filter(
-            tenant=self.tenant, kind="daily", slug="2026-02-16",
-        ).exists())
+        self.assertTrue(
+            Document.objects.filter(
+                tenant=self.tenant,
+                kind="daily",
+                slug="2026-02-16",
+            ).exists()
+        )
 
     def test_delete_document(self):
         """Non-daily documents can be deleted."""
         Document.objects.create(
-            tenant=self.tenant, kind="note", slug="my-note",
-            title="My Note", markdown="# My Note",
+            tenant=self.tenant,
+            kind="note",
+            slug="my-note",
+            title="My Note",
+            markdown="# My Note",
         )
         resp = self.client.delete("/api/v1/journal/documents/note/my-note/")
         self.assertEqual(resp.status_code, 204)
-        self.assertFalse(Document.objects.filter(
-            tenant=self.tenant, kind="note", slug="my-note",
-        ).exists())
+        self.assertFalse(
+            Document.objects.filter(
+                tenant=self.tenant,
+                kind="note",
+                slug="my-note",
+            ).exists()
+        )
 
     def test_today_endpoint(self):
         resp = self.client.get("/api/v1/journal/today/")

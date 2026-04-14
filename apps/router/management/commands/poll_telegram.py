@@ -1,4 +1,5 @@
 """Django management command to run the central Telegram poller."""
+
 from django.core.management.base import BaseCommand
 
 

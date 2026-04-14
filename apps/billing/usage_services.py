@@ -1,4 +1,5 @@
 """Usage aggregation and transparency services."""
+
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -9,6 +10,7 @@ from django.db.models.functions import TruncDate
 from django.utils import timezone
 
 from apps.tenants.models import Tenant
+
 from .constants import (
     DEFAULT_RATE,
     MODEL_RATES,
@@ -103,10 +105,7 @@ def _get_budget_info(tenant: Tenant, first_of_month: date) -> dict:
         # Cost-based budget (drives enforcement)
         "tenant_cost_used": cost_used,
         "tenant_cost_budget": cost_budget,
-        "budget_percentage": (
-            round(cost_used / cost_budget * 100, 1)
-            if cost_budget > 0 else 0
-        ),
+        "budget_percentage": (round(cost_used / cost_budget * 100, 1) if cost_budget > 0 else 0),
         "global_spent": global_spent,
         "global_remaining": float(global_remaining) if global_remaining is not None else None,
     }
@@ -136,21 +135,25 @@ def get_daily_usage(tenant: Tenant, days: int = 30) -> list[dict]:
     while current <= today:
         if current in results_by_day:
             r = results_by_day[current]
-            daily.append({
-                "date": current.isoformat(),
-                "input_tokens": r["input_tokens"],
-                "output_tokens": r["output_tokens"],
-                "cost": float(r["cost"]),
-                "message_count": r["count"],
-            })
+            daily.append(
+                {
+                    "date": current.isoformat(),
+                    "input_tokens": r["input_tokens"],
+                    "output_tokens": r["output_tokens"],
+                    "cost": float(r["cost"]),
+                    "message_count": r["count"],
+                }
+            )
         else:
-            daily.append({
-                "date": current.isoformat(),
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "cost": 0.0,
-                "message_count": 0,
-            })
+            daily.append(
+                {
+                    "date": current.isoformat(),
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cost": 0.0,
+                    "message_count": 0,
+                }
+            )
         current += timedelta(days=1)
 
     return daily
@@ -209,12 +212,14 @@ def get_transparency_data(tenant: Tenant) -> dict:
         if tier_model_keys and key not in tier_model_keys:
             continue
         seen.add(name)
-        rate_card.append({
-            "model": key,
-            "display_name": name,
-            "input_per_million": rate["input"],
-            "output_per_million": rate["output"],
-        })
+        rate_card.append(
+            {
+                "model": key,
+                "display_name": name,
+                "input_per_million": rate["input"],
+                "output_per_million": rate["output"],
+            }
+        )
     # BYOK or empty tier: show all models
     if not rate_card:
         seen_fallback = set()
@@ -223,12 +228,14 @@ def get_transparency_data(tenant: Tenant) -> dict:
             if name in seen_fallback:
                 continue
             seen_fallback.add(name)
-            rate_card.append({
-                "model": key,
-                "display_name": name,
-                "input_per_million": rate["input"],
-                "output_per_million": rate["output"],
-            })
+            rate_card.append(
+                {
+                    "model": key,
+                    "display_name": name,
+                    "input_per_million": rate["input"],
+                    "output_per_million": rate["output"],
+                }
+            )
 
     infra_breakdown = _get_infra_breakdown(tenant, first)
 

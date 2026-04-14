@@ -1,7 +1,8 @@
 """URLs for container → Django gate endpoints (scoped under tenant_id)."""
+
 from django.urls import path
 
-from .views import GateRequestView, GatePollView
+from .views import GatePollView, GateRequestView
 
 urlpatterns = [
     path("request/", GateRequestView.as_view(), name="gate-request"),

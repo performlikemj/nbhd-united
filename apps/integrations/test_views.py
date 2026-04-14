@@ -1,15 +1,17 @@
 """Integration OAuth view tests."""
+
 from __future__ import annotations
 
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlparse
 
-from django.core.cache import cache
 from django.core import signing
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from apps.tenants.services import create_tenant
+
 from .views import OAUTH_STATE_MAX_AGE_SECONDS, _state_nonce_cache_key
 
 
@@ -93,9 +95,7 @@ class OAuthCallbackViewTest(TestCase):
             {"user_id": str(self.tenant.user.id), "provider": "reddit", "nonce": nonce},
             salt="oauth",
         )
-        response = self.client.get(
-            f"/api/v1/integrations/callback/google/?state={state}&code=auth-code"
-        )
+        response = self.client.get(f"/api/v1/integrations/callback/google/?state={state}&code=auth-code")
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
             response["Location"],
@@ -123,9 +123,7 @@ class OAuthCallbackViewTest(TestCase):
         mock_post.return_value = mock_response
 
         state = self._state(provider="google")
-        response = self.client.get(
-            f"/api/v1/integrations/callback/google/?state={state}&code=auth-code"
-        )
+        response = self.client.get(f"/api/v1/integrations/callback/google/?state={state}&code=auth-code")
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
@@ -146,9 +144,7 @@ class OAuthCallbackViewTest(TestCase):
             {"user_id": str(self.tenant.user.id), "provider": "google", "nonce": nonce},
             salt="oauth",
         )
-        response = self.client.get(
-            f"/api/v1/integrations/callback/google/?state={state}&code=auth-code"
-        )
+        response = self.client.get(f"/api/v1/integrations/callback/google/?state={state}&code=auth-code")
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
             response["Location"],
@@ -170,12 +166,8 @@ class OAuthCallbackViewTest(TestCase):
         mock_post.return_value = mock_response
 
         state = self._state(provider="google")
-        first = self.client.get(
-            f"/api/v1/integrations/callback/google/?state={state}&code=auth-code"
-        )
-        second = self.client.get(
-            f"/api/v1/integrations/callback/google/?state={state}&code=auth-code"
-        )
+        first = self.client.get(f"/api/v1/integrations/callback/google/?state={state}&code=auth-code")
+        second = self.client.get(f"/api/v1/integrations/callback/google/?state={state}&code=auth-code")
 
         self.assertEqual(first.status_code, 302)
         self.assertEqual(first["Location"], "http://localhost:3000/settings/integrations?connected=google")
@@ -209,12 +201,8 @@ class OAuthCallbackViewTest(TestCase):
             patch("apps.integrations.views.cache.get", side_effect=RuntimeError("cache down")),
             patch("apps.integrations.views.cache.delete", side_effect=RuntimeError("cache down")),
         ):
-            first = self.client.get(
-                f"/api/v1/integrations/callback/google/?state={state}&code=auth-code"
-            )
-            second = self.client.get(
-                f"/api/v1/integrations/callback/google/?state={state}&code=auth-code"
-            )
+            first = self.client.get(f"/api/v1/integrations/callback/google/?state={state}&code=auth-code")
+            second = self.client.get(f"/api/v1/integrations/callback/google/?state={state}&code=auth-code")
 
         self.assertEqual(first.status_code, 302)
         self.assertEqual(first["Location"], "http://localhost:3000/settings/integrations?connected=google")

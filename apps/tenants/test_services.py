@@ -1,9 +1,11 @@
 """Additional tenant service coverage."""
+
 from django.test import TestCase
 
 from apps.journal.models import Document
-from .services import create_tenant
 from apps.journal.services import seed_default_documents_for_tenant
+
+from .services import create_tenant
 
 
 class TenantServiceTest(TestCase):

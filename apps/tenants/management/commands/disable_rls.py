@@ -36,6 +36,4 @@ class Command(BaseCommand):
                 cursor.execute(f"ALTER TABLE {fqn} DISABLE ROW LEVEL SECURITY;")
                 self.stdout.write(f"  Disabled RLS on {fqn}")
 
-            self.stdout.write(
-                self.style.SUCCESS(f"Disabled RLS on {len(tables)} table(s).")
-            )
+            self.stdout.write(self.style.SUCCESS(f"Disabled RLS on {len(tables)} table(s)."))

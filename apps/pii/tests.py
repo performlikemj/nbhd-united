@@ -1,4 +1,5 @@
 """Tests for PII redaction and rehydration."""
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -34,6 +35,7 @@ class RedactTextIntegrationTest(TestCase):
         super().setUpClass()
         try:
             import spacy
+
             spacy.load("en_core_web_sm")
             cls.has_spacy = True
         except (ImportError, OSError):
@@ -127,6 +129,7 @@ class RedactionSessionTest(TestCase):
         super().setUpClass()
         try:
             import spacy
+
             spacy.load("en_core_web_sm")
             cls.has_spacy = True
         except (ImportError, OSError):
@@ -159,7 +162,6 @@ class RedactionSessionTest(TestCase):
 
         self.assertEqual(session.entity_map["[EMAIL_ADDRESS_1]"], "alice@test.com")
         self.assertEqual(session.entity_map["[EMAIL_ADDRESS_2]"], "bob@test.com")
-
 
 
 class RehydrateTextTest(TestCase):
@@ -224,6 +226,7 @@ class RedactUserMessageTest(TestCase):
         super().setUpClass()
         try:
             import spacy
+
             spacy.load("en_core_web_sm")
             cls.has_spacy = True
         except (ImportError, OSError):
@@ -236,12 +239,14 @@ class RedactUserMessageTest(TestCase):
 
     def test_redacts_email_in_user_message(self):
         from apps.pii.redactor import redact_user_message
+
         result = redact_user_message("Send it to alice@test.com", self.tenant)
         self.assertNotIn("alice@test.com", result)
         self.assertIn("[EMAIL_ADDRESS_", result)
 
     def test_reuses_known_entities(self):
         from apps.pii.redactor import redact_user_message
+
         # Pre-populate entity map (as if Phase 1 workspace sync ran)
         self.tenant.pii_entity_map = {"[EMAIL_ADDRESS_1]": "alice@test.com"}
         self.tenant.save(update_fields=["pii_entity_map"])
@@ -253,6 +258,7 @@ class RedactUserMessageTest(TestCase):
 
     def test_new_entities_get_next_number(self):
         from apps.pii.redactor import redact_user_message
+
         # Pre-populate with one entity
         self.tenant.pii_entity_map = {"[EMAIL_ADDRESS_1]": "alice@test.com"}
         self.tenant.save(update_fields=["pii_entity_map"])
@@ -264,6 +270,7 @@ class RedactUserMessageTest(TestCase):
 
     def test_new_entities_persisted_to_db(self):
         from apps.pii.redactor import redact_user_message
+
         self.tenant.pii_entity_map = {}
         self.tenant.save(update_fields=["pii_entity_map"])
 
@@ -275,9 +282,9 @@ class RedactUserMessageTest(TestCase):
         # Should contain the new email
         self.assertIn("bob@test.com", self.tenant.pii_entity_map.values())
 
-
     def test_empty_message_unchanged(self):
         from apps.pii.redactor import redact_user_message
+
         self.assertEqual(redact_user_message("", self.tenant), "")
         self.assertEqual(redact_user_message("  ", self.tenant), "  ")
 
@@ -290,6 +297,7 @@ class RedactTelegramUpdateTest(TestCase):
         super().setUpClass()
         try:
             import spacy
+
             spacy.load("en_core_web_sm")
             cls.has_spacy = True
         except (ImportError, OSError):
@@ -302,6 +310,7 @@ class RedactTelegramUpdateTest(TestCase):
 
     def test_redacts_message_text(self):
         from apps.pii.redactor import redact_telegram_update
+
         update = {
             "update_id": 12345,
             "message": {
@@ -315,6 +324,7 @@ class RedactTelegramUpdateTest(TestCase):
 
     def test_redacts_edited_message(self):
         from apps.pii.redactor import redact_telegram_update
+
         update = {
             "update_id": 12345,
             "edited_message": {
@@ -328,6 +338,7 @@ class RedactTelegramUpdateTest(TestCase):
 
     def test_preserves_non_text_fields(self):
         from apps.pii.redactor import redact_telegram_update
+
         update = {
             "update_id": 12345,
             "message": {
@@ -350,6 +361,7 @@ class RedactToolResponseTest(TestCase):
         super().setUpClass()
         try:
             import spacy
+
             spacy.load("en_core_web_sm")
             cls.has_spacy = True
         except (ImportError, OSError):
@@ -362,6 +374,7 @@ class RedactToolResponseTest(TestCase):
 
     def test_redacts_gmail_from_field(self):
         from apps.pii.redactor import redact_tool_response
+
         data = {
             "messages": [
                 {
@@ -388,6 +401,7 @@ class RedactToolResponseTest(TestCase):
 
     def test_redacts_gmail_detail_body(self):
         from apps.pii.redactor import redact_tool_response
+
         data = {
             "id": "msg123",
             "thread_id": "thread456",
@@ -408,6 +422,7 @@ class RedactToolResponseTest(TestCase):
 
     def test_redacts_calendar_summary(self):
         from apps.pii.redactor import redact_tool_response
+
         data = {
             "events": [
                 {
@@ -428,9 +443,9 @@ class RedactToolResponseTest(TestCase):
         self.assertEqual(result["events"][0]["id"], "evt123")
         self.assertEqual(result["events"][0]["status"], "confirmed")
 
-
     def test_handles_nested_lists(self):
         from apps.pii.redactor import redact_tool_response
+
         data = {
             "thread_context": [
                 {"id": "t1", "from": "alice@test.com", "snippet": "test"},
@@ -445,6 +460,7 @@ class RedactToolResponseTest(TestCase):
 
     def test_reuses_known_entities_from_map(self):
         from apps.pii.redactor import redact_tool_response
+
         self.tenant.pii_entity_map = {"[EMAIL_ADDRESS_1]": "alice@test.com"}
         self.tenant.save(update_fields=["pii_entity_map"])
 
@@ -457,6 +473,7 @@ class RedactToolResponseTest(TestCase):
     def test_user_own_name_redacted_in_tool_response(self):
         """User's own name should be redacted in tool responses to prevent name mixing."""
         from apps.pii.redactor import redact_tool_response
+
         self.tenant = create_tenant(display_name="Michael Jones", telegram_chat_id=555556)
         data = {
             "from": "Michael Jones <mj@example.com>",
@@ -481,6 +498,7 @@ class AllowNameLastNameTest(TestCase):
         super().setUpClass()
         try:
             import spacy
+
             spacy.load("en_core_web_sm")
             cls.has_spacy = True
         except (ImportError, OSError):
@@ -532,4 +550,3 @@ class PrivacyRedactionDocTest(TestCase):
         files = render_workspace_files("neighbor", tenant=tenant)
         self.assertIn("NBHD_DOC_PRIVACY_REDACTION", files)
         self.assertIn("Privacy Placeholders", files["NBHD_DOC_PRIVACY_REDACTION"])
-

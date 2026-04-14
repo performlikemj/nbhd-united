@@ -1,4 +1,4 @@
-.PHONY: setup migrate run test lint compile-deps sync-deps docker-up docker-down superuser tenants health
+.PHONY: setup migrate run test lint harness compile-deps sync-deps docker-up docker-down superuser tenants health
 
 setup:
 	python -m venv .venv
@@ -17,6 +17,9 @@ test:
 
 lint:
 	ruff check .
+
+harness:
+	./scripts/harness-check --project . --scope staged
 
 compile-deps:
 	pip-compile requirements.in

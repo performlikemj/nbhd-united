@@ -1,4 +1,5 @@
 """Scheduler utilities for processing due automations."""
+
 from __future__ import annotations
 
 import logging

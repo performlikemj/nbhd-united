@@ -4,6 +4,7 @@ JWT-authed endpoints for the subscriber console. Mirrors the runtime API tests
 but uses Django's APIClient with force_authenticate instead of internal-key
 headers.
 """
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -142,11 +143,7 @@ class WorkspaceViewsTest(TestCase):
         self.assertTrue(body["default_workspace_created"])
 
         self.assertEqual(Workspace.objects.filter(tenant=self.tenant).count(), 2)
-        self.assertTrue(
-            Workspace.objects.filter(
-                tenant=self.tenant, slug="general", is_default=True
-            ).exists()
-        )
+        self.assertTrue(Workspace.objects.filter(tenant=self.tenant, slug="general", is_default=True).exists())
 
     def test_create_at_limit_returns_409(self, _embed):
         self._create(name="Work")  # → general + work = 2
@@ -229,17 +226,13 @@ class WorkspaceViewsTest(TestCase):
         response = self._delete("general")
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["error"], "cannot_delete_default")
-        self.assertTrue(
-            Workspace.objects.filter(tenant=self.tenant, slug="general").exists()
-        )
+        self.assertTrue(Workspace.objects.filter(tenant=self.tenant, slug="general").exists())
 
     def test_delete_nondefault_workspace_succeeds(self, _embed):
         self._create(name="Work")
         response = self._delete("work")
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(
-            Workspace.objects.filter(tenant=self.tenant, slug="work").exists()
-        )
+        self.assertFalse(Workspace.objects.filter(tenant=self.tenant, slug="work").exists())
 
     def test_delete_active_workspace_falls_back_to_default(self, _embed):
         self._create(name="Work")

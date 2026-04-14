@@ -4,20 +4,25 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0015_backfill_onboarding_complete'),
+        ("tenants", "0015_backfill_onboarding_complete"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='tenant',
-            name='deletion_scheduled_at',
-            field=models.DateTimeField(blank=True, help_text='When the account will be hard-deleted (end of paid period, or immediate if no subscription).', null=True),
+            model_name="tenant",
+            name="deletion_scheduled_at",
+            field=models.DateTimeField(
+                blank=True,
+                help_text="When the account will be hard-deleted (end of paid period, or immediate if no subscription).",
+                null=True,
+            ),
         ),
         migrations.AddField(
-            model_name='tenant',
-            name='pending_deletion',
-            field=models.BooleanField(default=False, help_text='Account is queued for deletion. Kept alive until deletion_scheduled_at.'),
+            model_name="tenant",
+            name="pending_deletion",
+            field=models.BooleanField(
+                default=False, help_text="Account is queued for deletion. Kept alive until deletion_scheduled_at."
+            ),
         ),
     ]

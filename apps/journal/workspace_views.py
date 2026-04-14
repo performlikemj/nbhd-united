@@ -6,6 +6,7 @@ data via internal-key auth for the OpenClaw agent.
 
 Both APIs share business logic from apps/journal/workspace_services.py.
 """
+
 from __future__ import annotations
 
 import logging
@@ -49,18 +50,13 @@ class WorkspaceListCreateView(APIView):
     def get(self, request):
         tenant = _get_tenant_for_user(request.user)
 
-        workspaces = Workspace.objects.filter(tenant=tenant).order_by(
-            "-is_default", "-last_used_at", "name"
-        )
+        workspaces = Workspace.objects.filter(tenant=tenant).order_by("-is_default", "-last_used_at", "name")
         active_id = tenant.active_workspace_id
 
         return Response(
             {
                 "tenant_id": str(tenant.id),
-                "workspaces": [
-                    serialize_workspace(ws, active_workspace_id=active_id)
-                    for ws in workspaces
-                ],
+                "workspaces": [serialize_workspace(ws, active_workspace_id=active_id) for ws in workspaces],
                 "active_workspace_id": str(active_id) if active_id else None,
                 "limit": WORKSPACE_LIMIT,
             },
@@ -116,9 +112,7 @@ class WorkspaceListCreateView(APIView):
         return Response(
             {
                 "tenant_id": str(tenant.id),
-                "workspace": serialize_workspace(
-                    workspace, active_workspace_id=workspace.id
-                ),
+                "workspace": serialize_workspace(workspace, active_workspace_id=workspace.id),
                 "default_workspace_created": is_first_create,
             },
             status=status.HTTP_201_CREATED,
@@ -173,9 +167,7 @@ class WorkspaceDetailView(APIView):
         return Response(
             {
                 "tenant_id": str(tenant.id),
-                "workspace": serialize_workspace(
-                    workspace, active_workspace_id=tenant.active_workspace_id
-                ),
+                "workspace": serialize_workspace(workspace, active_workspace_id=tenant.active_workspace_id),
                 "updated": updated_fields,
             },
             status=status.HTTP_200_OK,
@@ -203,9 +195,7 @@ class WorkspaceDetailView(APIView):
         # If deleting the active workspace, fall back to default
         was_active = tenant.active_workspace_id == workspace.id
         if was_active:
-            default_ws = Workspace.objects.filter(
-                tenant=tenant, is_default=True
-            ).first()
+            default_ws = Workspace.objects.filter(tenant=tenant, is_default=True).first()
             tenant.active_workspace = default_ws
             tenant.save(update_fields=["active_workspace"])
 
@@ -257,9 +247,7 @@ class WorkspaceSwitchView(APIView):
         return Response(
             {
                 "tenant_id": str(tenant.id),
-                "workspace": serialize_workspace(
-                    workspace, active_workspace_id=workspace.id
-                ),
+                "workspace": serialize_workspace(workspace, active_workspace_id=workspace.id),
                 "previous_workspace_id": str(previous_id) if previous_id else None,
             },
             status=status.HTTP_200_OK,

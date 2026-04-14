@@ -5,7 +5,15 @@ from .models import MonthlyBudget, UsageRecord
 
 @admin.register(UsageRecord)
 class UsageRecordAdmin(admin.ModelAdmin):
-    list_display = ("event_type", "tenant", "input_tokens", "output_tokens", "model_used", "cost_estimate", "created_at")
+    list_display = (
+        "event_type",
+        "tenant",
+        "input_tokens",
+        "output_tokens",
+        "model_used",
+        "cost_estimate",
+        "created_at",
+    )
     list_filter = ("event_type",)
     date_hierarchy = "created_at"
 

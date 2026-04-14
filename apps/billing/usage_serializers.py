@@ -1,4 +1,5 @@
 """Serializers for usage dashboard endpoints."""
+
 from rest_framework import serializers
 
 

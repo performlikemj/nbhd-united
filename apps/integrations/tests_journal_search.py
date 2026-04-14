@@ -1,4 +1,5 @@
 """Tests for the RuntimeJournalSearchView endpoint."""
+
 from __future__ import annotations
 
 from django.test import TestCase
@@ -56,9 +57,7 @@ class RuntimeJournalSearchViewTest(TestCase):
         self.assertIn("2026-02-10", slugs)
 
     def test_search_respects_kind_filter(self):
-        response = self.client.get(
-            self._url(), {"q": "marathon", "kind": "goal"}, **self._headers()
-        )
+        response = self.client.get(self._url(), {"q": "marathon", "kind": "goal"}, **self._headers())
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertGreaterEqual(body["count"], 1)
@@ -66,9 +65,7 @@ class RuntimeJournalSearchViewTest(TestCase):
             self.assertEqual(result["kind"], "goal")
 
     def test_search_kind_filter_excludes_other_kinds(self):
-        response = self.client.get(
-            self._url(), {"q": "garden", "kind": "goal"}, **self._headers()
-        )
+        response = self.client.get(self._url(), {"q": "garden", "kind": "goal"}, **self._headers())
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["count"], 0)
@@ -94,9 +91,7 @@ class RuntimeJournalSearchViewTest(TestCase):
         self.assertEqual(response.status_code, 401)
 
     def test_respects_limit_parameter(self):
-        response = self.client.get(
-            self._url(), {"q": "garden", "limit": "1"}, **self._headers()
-        )
+        response = self.client.get(self._url(), {"q": "garden", "limit": "1"}, **self._headers())
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertLessEqual(body["count"], 1)

@@ -1,6 +1,8 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
+from .line_views import line_generate_link, line_set_preferred_channel, line_status, line_unlink
+from .telegram_views import telegram_generate_link, telegram_status, telegram_unlink
 from .views import (
     CancelDeletionView,
     DeleteAccountView,
@@ -16,8 +18,7 @@ from .views import (
     TenantViewSet,
     UpdatePreferencesView,
 )
-from .telegram_views import telegram_generate_link, telegram_status, telegram_unlink
-from .line_views import line_generate_link, line_status, line_unlink, line_set_preferred_channel
+
 router = DefaultRouter()
 router.register("", TenantViewSet, basename="tenant")
 

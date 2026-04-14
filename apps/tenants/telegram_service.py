@@ -7,6 +7,7 @@ Handles:
 - Processing /start commands to complete account linking
 - Unlinking Telegram accounts
 """
+
 from __future__ import annotations
 
 import base64
@@ -108,9 +109,14 @@ def process_start_token(
     user.telegram_username = telegram_username or ""
     if telegram_first_name and user.display_name == "Friend":
         user.display_name = telegram_first_name
-    user.save(update_fields=[
-        "telegram_user_id", "telegram_chat_id", "telegram_username", "display_name",
-    ])
+    user.save(
+        update_fields=[
+            "telegram_user_id",
+            "telegram_chat_id",
+            "telegram_username",
+            "display_name",
+        ]
+    )
 
     # Mark token as used
     link_token.used = True
@@ -135,6 +141,7 @@ def _trigger_config_update_if_active(user: User) -> None:
 
     if tenant.status == Tenant.Status.ACTIVE and tenant.container_id:
         from apps.cron.publish import publish_task
+
         publish_task("update_tenant_config", str(tenant.id))
 
 

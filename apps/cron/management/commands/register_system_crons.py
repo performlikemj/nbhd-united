@@ -6,6 +6,7 @@ Idempotent — existing schedules with the same cron+destination are left alone.
 Usage:
     python manage.py register_system_crons [--base-url https://your-app.azurecontainerapps.io]
 """
+
 import logging
 
 from django.conf import settings

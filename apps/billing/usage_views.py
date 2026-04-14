@@ -1,4 +1,5 @@
 """Usage dashboard API views."""
+
 import logging
 
 from rest_framework import serializers, status
@@ -7,6 +8,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.tenants.models import Tenant
+
 from .usage_serializers import DailyUsageSerializer, TransparencySerializer, UsageSummarySerializer
 from .usage_services import get_daily_usage, get_transparency_data, get_usage_summary
 
@@ -75,7 +77,9 @@ class TransparencyView(_TenantMixin, APIView):
 class _DonationPreferenceSerializer(serializers.Serializer):
     donation_enabled = serializers.BooleanField(required=False)
     donation_percentage = serializers.IntegerField(
-        required=False, min_value=0, max_value=100,
+        required=False,
+        min_value=0,
+        max_value=100,
     )
 
 
@@ -97,7 +101,9 @@ class DonationPreferenceView(_TenantMixin, APIView):
             updated = True
         if updated:
             tenant.save(update_fields=["donation_enabled", "donation_percentage"])
-        return Response({
-            "donation_enabled": tenant.donation_enabled,
-            "donation_percentage": tenant.donation_percentage,
-        })
+        return Response(
+            {
+                "donation_enabled": tenant.donation_enabled,
+                "donation_percentage": tenant.donation_percentage,
+            }
+        )

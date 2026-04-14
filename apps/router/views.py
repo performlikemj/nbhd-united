@@ -1,4 +1,5 @@
 """Telegram webhook endpoint — routes to correct OpenClaw instance."""
+
 import asyncio
 import hmac
 import json
@@ -12,16 +13,17 @@ from django.views.decorators.http import require_POST
 
 from apps.billing.services import check_budget, record_usage
 from apps.tenants.models import Tenant
+
 from .error_messages import error_msg
+from .lesson_callbacks import handle_lesson_callback
 from .services import (
-    resolve_tenant_by_chat_id,
     extract_chat_id,
     forward_to_openclaw,
     handle_start_command,
     is_rate_limited,
+    resolve_tenant_by_chat_id,
     send_onboarding_link,
 )
-from .lesson_callbacks import handle_lesson_callback
 
 logger = logging.getLogger(__name__)
 
@@ -75,18 +77,14 @@ def _record_usage_from_openclaw_result(tenant: Tenant, result: object) -> None:
     usage = _extract_usage_payload(result)
     if not usage:
         logger.warning(
-            "USAGE_MISSING tenant=%s result_keys=%s — "
-            "OpenClaw response has no usage payload",
-            tenant.id, list(result.keys()),
+            "USAGE_MISSING tenant=%s result_keys=%s — OpenClaw response has no usage payload",
+            tenant.id,
+            list(result.keys()),
         )
         return
 
-    input_tokens = _coerce_non_negative_int(
-        usage.get("input_tokens", usage.get("input"))
-    )
-    output_tokens = _coerce_non_negative_int(
-        usage.get("output_tokens", usage.get("output"))
-    )
+    input_tokens = _coerce_non_negative_int(usage.get("input_tokens", usage.get("input")))
+    output_tokens = _coerce_non_negative_int(usage.get("output_tokens", usage.get("output")))
     model_used = ""
     if isinstance(usage.get("model_used"), str):
         model_used = usage.get("model_used") or ""
@@ -98,9 +96,10 @@ def _record_usage_from_openclaw_result(tenant: Tenant, result: object) -> None:
 
     if not (input_tokens or output_tokens):
         logger.warning(
-            "USAGE_ZERO tenant=%s model=%s usage_keys=%s — "
-            "usage payload present but token counts are zero",
-            tenant.id, model_used, list(usage.keys()),
+            "USAGE_ZERO tenant=%s model=%s usage_keys=%s — usage payload present but token counts are zero",
+            tenant.id,
+            model_used,
+            list(usage.keys()),
         )
 
     try:
@@ -112,9 +111,7 @@ def _record_usage_from_openclaw_result(tenant: Tenant, result: object) -> None:
             model_used=model_used,
         )
     except Exception:
-        logger.exception(
-            "Failed to record usage for tenant=%s after OpenClaw callback", tenant.id
-        )
+        logger.exception("Failed to record usage for tenant=%s after OpenClaw callback", tenant.id)
 
 
 def _build_budget_exhausted_message(chat_id: int, tenant: Tenant, reason: str) -> dict:
@@ -186,6 +183,7 @@ def telegram_webhook(request):
             return handle_lesson_callback(update, tenant)
         if callback_data.startswith("extract:"):
             from apps.router.extraction_callbacks import handle_extraction_callback
+
             return handle_extraction_callback(update, tenant)
 
     # Unknown/inactive users are guided through onboarding.
@@ -198,42 +196,48 @@ def telegram_webhook(request):
     # Provisioning tenant — assistant is still waking up
     if tenant.status in (Tenant.Status.PENDING, Tenant.Status.PROVISIONING):
         lang = tenant.user.language or "en"
-        return JsonResponse({
-            "method": "sendMessage",
-            "chat_id": chat_id,
-            "text": error_msg(lang, "waking_up"),
-        })
+        return JsonResponse(
+            {
+                "method": "sendMessage",
+                "chat_id": chat_id,
+                "text": error_msg(lang, "waking_up"),
+            }
+        )
 
     frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
-    if (
-        tenant.status == Tenant.Status.SUSPENDED
-        and not tenant.is_trial
-        and not bool(tenant.stripe_subscription_id)
-    ):
+    if tenant.status == Tenant.Status.SUSPENDED and not tenant.is_trial and not bool(tenant.stripe_subscription_id):
         lang = tenant.user.language or "en"
-        return JsonResponse({
-            "method": "sendMessage",
-            "chat_id": chat_id,
-            "text": error_msg(
-                lang, "suspended",
-                billing_url=f"{frontend_url}/settings/billing",
-            ),
-        })
+        return JsonResponse(
+            {
+                "method": "sendMessage",
+                "chat_id": chat_id,
+                "text": error_msg(
+                    lang,
+                    "suspended",
+                    billing_url=f"{frontend_url}/settings/billing",
+                ),
+            }
+        )
 
     # Hibernated tenant — buffer message and wake container
     from apps.router.wake_on_message import handle_hibernated_message
 
     msg_text = (update.get("message") or {}).get("text", "")
     wake_result = handle_hibernated_message(
-        tenant, "telegram", update, msg_text,
+        tenant,
+        "telegram",
+        update,
+        msg_text,
     )
     if wake_result is True:
         lang = tenant.user.language or "en"
-        return JsonResponse({
-            "method": "sendMessage",
-            "chat_id": chat_id,
-            "text": error_msg(lang, "hibernation_waking"),
-        })
+        return JsonResponse(
+            {
+                "method": "sendMessage",
+                "chat_id": chat_id,
+                "text": error_msg(lang, "hibernation_waking"),
+            }
+        )
     elif wake_result is False:
         return HttpResponse("ok")
 
@@ -272,6 +276,7 @@ def telegram_webhook(request):
 
 # ── Chart image serving (for LINE image messages) ─────────────────────────
 
+
 @csrf_exempt
 def serve_chart_image(request, tenant_id, filename):
     """Serve a chart PNG from a tenant's Azure File Share.
@@ -280,11 +285,12 @@ def serve_chart_image(request, tenant_id, filename):
     (UUID-based).  LINE's servers fetch this URL to deliver image messages.
     """
     import re
+
     if request.method != "GET":
         return HttpResponseBadRequest("GET only")
 
     # Validate filename to prevent path traversal
-    if not re.match(r'^[\w-]+\.png$', filename):
+    if not re.match(r"^[\w-]+\.png$", filename):
         return HttpResponseNotFound("Not found")
 
     try:
@@ -298,11 +304,13 @@ def serve_chart_image(request, tenant_id, filename):
             return HttpResponseNotFound("Not found")
 
         from azure.storage.fileshare import ShareFileClient
+
         from apps.orchestrator.azure_client import get_storage_client
 
         storage_client = get_storage_client()
         keys = storage_client.storage_accounts.list_keys(
-            settings.AZURE_RESOURCE_GROUP, account_name,
+            settings.AZURE_RESOURCE_GROUP,
+            account_name,
         )
         account_key = keys.keys[0].value
         share_name = f"ws-{str(tenant_id)[:20]}"

@@ -7,6 +7,7 @@ wakes and buffered messages are auto-forwarded via QStash.
 This is distinct from billing-based SUSPENDED status — hibernated tenants
 remain status=ACTIVE with a non-null ``hibernated_at`` timestamp.
 """
+
 from __future__ import annotations
 
 import logging
@@ -85,7 +86,12 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
             from apps.cron.publish import publish_task
 
             publish_task("apply_single_tenant_config", str(tenant.id))
-            logger.info("idle_wake: queued config apply for %s (v%d→v%d)", tid, tenant.config_version, tenant.pending_config_version)
+            logger.info(
+                "idle_wake: queued config apply for %s (v%d→v%d)",
+                tid,
+                tenant.config_version,
+                tenant.pending_config_version,
+            )
         except Exception:
             logger.exception("idle_wake: failed to queue config apply for %s", tid)
 
@@ -136,7 +142,8 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
         return {"delivered": 0, "failed": 0}
 
     messages = BufferedMessage.objects.filter(
-        tenant=tenant, delivered=False,
+        tenant=tenant,
+        delivered=False,
     ).order_by("created_at")
 
     delivered = 0
@@ -185,11 +192,7 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
 
                 # Send response back via LINE
                 result = resp.json()
-                ai_text = (
-                    result.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                )
+                ai_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
                 if ai_text and line_user_id:
                     from apps.router.line_webhook import _send_line_text
 
@@ -203,14 +206,17 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
         except Exception:
             logger.exception(
                 "deliver_buffered: failed to deliver msg %s for tenant %s",
-                msg.id, tenant_id[:8],
+                msg.id,
+                tenant_id[:8],
             )
             failed += 1
             raise  # Let QStash retry
 
     logger.info(
         "deliver_buffered: tenant %s — delivered=%d failed=%d",
-        tenant_id[:8], delivered, failed,
+        tenant_id[:8],
+        delivered,
+        failed,
     )
     return {"delivered": delivered, "failed": failed}
 
@@ -227,7 +233,8 @@ def resume_hibernated_crons_task(tenant_id: str) -> None:
         result = resume_tenant_crons(tenant)
         logger.info(
             "resume_hibernated_crons: tenant %s — enabled=%d",
-            tenant_id[:8], result.get("enabled", 0),
+            tenant_id[:8],
+            result.get("enabled", 0),
         )
     except Exception:
         logger.exception("resume_hibernated_crons: failed for tenant %s", tenant_id[:8])

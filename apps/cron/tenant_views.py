@@ -2,6 +2,7 @@
 
 Proxies requests to the tenant's OpenClaw Gateway via ``/tools/invoke``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -106,11 +107,13 @@ def _message_has_phase2_marker(message: str) -> bool:
 
 # System cron jobs that should be hidden from the user's Scheduled Tasks page.
 # These are infrastructure tasks — the user gains nothing from seeing them.
-HIDDEN_SYSTEM_CRONS = frozenset({
-    "Background Tasks",
-    "Heartbeat Check-in",
-    "Project Check-in",
-})
+HIDDEN_SYSTEM_CRONS = frozenset(
+    {
+        "Background Tasks",
+        "Heartbeat Check-in",
+        "Project Check-in",
+    }
+)
 
 # Job-name prefixes that should be hidden from the user-facing UI. Used by
 # the two-phase cron pattern: foreground tasks create short-lived
@@ -161,6 +164,7 @@ class CronJobListCreateView(APIView):
         if isinstance(data, dict) and "jobs" in data:
             try:
                 from django.utils import timezone as tz
+
                 # Deduplicate by name — keep newest per name (by createdAt)
                 # to prevent dirty snapshots from propagating duplicates.
                 raw_jobs = data["jobs"]
@@ -230,14 +234,13 @@ class CronJobListCreateView(APIView):
         elif isinstance(list_result, list):
             existing_jobs = list_result
 
-        visible_jobs = [
-            j for j in existing_jobs
-            if isinstance(j, dict) and not _is_hidden_cron(j.get("name", ""))
-        ]
+        visible_jobs = [j for j in existing_jobs if isinstance(j, dict) and not _is_hidden_cron(j.get("name", ""))]
         if len(visible_jobs) >= self.MAX_CRON_JOBS:
             return Response(
-                {"detail": f"Maximum of {self.MAX_CRON_JOBS} scheduled tasks reached. "
-                           "Please delete an existing task before adding a new one."},
+                {
+                    "detail": f"Maximum of {self.MAX_CRON_JOBS} scheduled tasks reached. "
+                    "Please delete an existing task before adding a new one."
+                },
                 status=status.HTTP_409_CONFLICT,
             )
 
@@ -246,17 +249,15 @@ class CronJobListCreateView(APIView):
         new_name = data["name"].strip().lower()
         if new_name in existing_names:
             return Response(
-                {"detail": f"A scheduled task named '{data['name'].strip()}' already exists. "
-                           "Please use a different name or edit the existing task."},
+                {
+                    "detail": f"A scheduled task named '{data['name'].strip()}' already exists. "
+                    "Please use a different name or edit the existing task."
+                },
                 status=status.HTTP_409_CONFLICT,
             )
 
         delivery = data.get("delivery", {})
-        if (
-            isinstance(delivery, dict)
-            and delivery.get("channel") == "telegram"
-            and delivery.get("mode") != "none"
-        ):
+        if isinstance(delivery, dict) and delivery.get("channel") == "telegram" and delivery.get("mode") != "none":
             chat_id = _tenant_telegram_chat_id(tenant)
             if chat_id and not delivery.get("to"):
                 data = {**data, "delivery": {**delivery, "to": str(chat_id)}}
@@ -272,7 +273,9 @@ class CronJobListCreateView(APIView):
         payload = data.get("payload") or {}
         if isinstance(payload, dict):
             wrapped = _wrap_message_with_phase2(
-                payload.get("message", ""), data["name"], foreground,
+                payload.get("message", ""),
+                data["name"],
+                foreground,
             )
             data = {**data, "payload": {**payload, "message": wrapped}}
 
@@ -302,11 +305,7 @@ class CronJobDetailView(APIView):
         tenant = _get_tenant_for_user(request.user)
         data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
         delivery = data.get("delivery")
-        if (
-            isinstance(delivery, dict)
-            and delivery.get("channel") == "telegram"
-            and delivery.get("mode") != "none"
-        ):
+        if isinstance(delivery, dict) and delivery.get("channel") == "telegram" and delivery.get("mode") != "none":
             chat_id = _tenant_telegram_chat_id(tenant)
             if chat_id and not delivery.get("to"):
                 data = {**data, "delivery": {**delivery, "to": str(chat_id)}}
@@ -337,23 +336,29 @@ class CronJobDetailView(APIView):
                 if isinstance(list_result, dict):
                     list_result = list_result.get("details", list_result)
                 jobs = list_result.get("jobs", []) if isinstance(list_result, dict) else list_result
-                existing = next((j for j in jobs if j.get("jobId") == job_name or j.get("id") == job_name or j.get("name") == job_name), None)
+                existing = next(
+                    (
+                        j
+                        for j in jobs
+                        if j.get("jobId") == job_name or j.get("id") == job_name or j.get("name") == job_name
+                    ),
+                    None,
+                )
 
                 # If job not in container, fall back to PostgreSQL snapshot
                 # (container restart may have wiped SQLite state).
                 job_vanished = False
                 if not existing:
                     logger.warning(
-                        "cron.update: job '%s' not found in container for tenant %s. "
-                        "Available: %s",
-                        job_name, tenant.id,
+                        "cron.update: job '%s' not found in container for tenant %s. Available: %s",
+                        job_name,
+                        tenant.id,
                         [(j.get("jobId"), j.get("name")) for j in jobs],
                     )
                     snapshot = tenant.cron_jobs_snapshot or {}
                     snapshot_jobs = snapshot.get("jobs", [])
                     existing = next(
-                        (j for j in snapshot_jobs
-                         if j.get("jobId") == job_name or j.get("name") == job_name),
+                        (j for j in snapshot_jobs if j.get("jobId") == job_name or j.get("name") == job_name),
                         None,
                     )
                     if existing:
@@ -365,7 +370,16 @@ class CronJobDetailView(APIView):
 
                 # Merge existing job with new data, preserving name and enabled state
                 merged = {**existing, **data}
-                _STRIP = {"id", "jobId", "createdAt", "state", "createdAtMs", "updatedAtMs", "nextRunAtMs", "runningAtMs"}
+                _STRIP = {
+                    "id",
+                    "jobId",
+                    "createdAt",
+                    "state",
+                    "createdAtMs",
+                    "updatedAtMs",
+                    "nextRunAtMs",
+                    "runningAtMs",
+                }
                 for _f in _STRIP:
                     merged.pop(_f, None)
                 merged["name"] = existing.get("name", job_name)
@@ -383,11 +397,7 @@ class CronJobDetailView(APIView):
                     existing_payload = existing.get("payload") or {}
                     existing_message = ""
                     if isinstance(existing_payload, dict):
-                        existing_message = (
-                            existing_payload.get("message")
-                            or existing_payload.get("text", "")
-                            or ""
-                        )
+                        existing_message = existing_payload.get("message") or existing_payload.get("text", "") or ""
                     foreground_resolved = _message_has_phase2_marker(existing_message)
 
                 # Wrap the merged message with Phase 2 (or strip it if going background)
@@ -398,7 +408,9 @@ class CronJobDetailView(APIView):
                     # double-append the block
                     base_message = _strip_phase2_block(base_message)
                     rewrapped = _wrap_message_with_phase2(
-                        base_message, merged.get("name", job_name), foreground_resolved,
+                        base_message,
+                        merged.get("name", job_name),
+                        foreground_resolved,
                     )
                     merged = {
                         **merged,
@@ -429,7 +441,9 @@ class CronJobDetailView(APIView):
             else:
                 logger.info("cron.update job_name=%s patch_keys=%s", job_name, list(data.keys()))
                 result = invoke_gateway_tool(
-                    tenant, "cron.update", {"jobId": job_name, "patch": data},
+                    tenant,
+                    "cron.update",
+                    {"jobId": job_name, "patch": data},
                 )
 
             logger.info("cron.update success job_name=%s", job_name)
@@ -540,7 +554,9 @@ class CronJobBulkDeleteView(APIView):
                 errors.append({"id": job_id, "deleted": False, "error": str(exc)})
                 logger.warning(
                     "cron.bulk_delete: failed to delete job_id=%s tenant=%s error=%s",
-                    job_id, tenant.id, exc,
+                    job_id,
+                    tenant.id,
+                    exc,
                 )
 
         response_status = status.HTTP_200_OK
@@ -684,7 +700,9 @@ class CronJobBulkUpdateForegroundView(APIView):
                         logger.exception("cron.bulk_foreground: rollback ALSO failed for %s", job_id)
                     raise
                 results.append({"id": job_id, "updated": True})
-                logger.info("cron.bulk_foreground: updated job_id=%s foreground=%s tenant=%s", job_id, foreground, tenant.id)
+                logger.info(
+                    "cron.bulk_foreground: updated job_id=%s foreground=%s tenant=%s", job_id, foreground, tenant.id
+                )
             except GatewayError as exc:
                 errors.append({"id": job_id, "updated": False, "error": str(exc)})
                 logger.warning("cron.bulk_foreground: failed job_id=%s tenant=%s error=%s", job_id, tenant.id, exc)

@@ -98,7 +98,8 @@ def handle_lesson_callback(update: dict, tenant: Tenant) -> JsonResponse:
             from apps.lessons.clustering import refresh_constellation
 
             approved_count = Lesson.objects.filter(
-                tenant=tenant, status="approved",
+                tenant=tenant,
+                status="approved",
             ).count()
             if approved_count >= 5:
                 refresh_constellation(tenant)

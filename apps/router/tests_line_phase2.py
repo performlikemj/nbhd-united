@@ -1,4 +1,5 @@
 """Tests for LINE Phase 2: loading animation, Reply API, Flex Messages, quick replies."""
+
 from __future__ import annotations
 
 import json
@@ -8,6 +9,11 @@ from django.test import TestCase, override_settings
 
 from apps.router.line_flex import (
     COLORS,
+    _extract_links,
+    _link_component,
+    _parse_list_items,
+    _parse_sections,
+    _strip_md_inline,
     attach_quick_reply,
     build_flex_bubble,
     build_flex_carousel,
@@ -16,13 +22,7 @@ from apps.router.line_flex import (
     classify_content,
     extract_quick_reply_buttons,
     should_use_flex,
-    _extract_links,
-    _link_component,
-    _parse_sections,
-    _strip_md_inline,
-    _parse_list_items,
 )
-
 
 # ────────────────────────────────────────────────────────────────────────────
 # Content Classification Tests
@@ -30,7 +30,6 @@ from apps.router.line_flex import (
 
 
 class ClassifyContentTest(TestCase):
-
     def test_empty_string(self):
         self.assertEqual(classify_content(""), "short")
 
@@ -109,7 +108,6 @@ class ShouldUseFlexTest(TestCase):
 
 
 class ParseSectionsTest(TestCase):
-
     def test_single_header_with_content(self):
         text = "## Weather\nSunny and 25\u00b0C"
         sections = _parse_sections(text)
@@ -146,7 +144,6 @@ class ParseSectionsTest(TestCase):
 
 
 class StripMdInlineTest(TestCase):
-
     def test_bold(self):
         self.assertEqual(_strip_md_inline("**bold**"), "bold")
 
@@ -168,7 +165,6 @@ class StripMdInlineTest(TestCase):
 
 
 class ParseListItemsTest(TestCase):
-
     def test_bullet_list(self):
         content = "- First item\n- Second item\n- Third item"
         items = _parse_list_items(content)
@@ -200,7 +196,6 @@ class ParseListItemsTest(TestCase):
 
 
 class ExtractLinksTest(TestCase):
-
     def test_markdown_link(self):
         links = _extract_links("Check [Google](https://google.com) for info")
         self.assertEqual(len(links), 1)
@@ -232,7 +227,6 @@ class ExtractLinksTest(TestCase):
 
 
 class LinkComponentTest(TestCase):
-
     def test_has_uri_action(self):
         comp = _link_component("Google", "https://google.com")
         self.assertEqual(comp["action"]["type"], "uri")
@@ -245,7 +239,6 @@ class LinkComponentTest(TestCase):
 
 
 class FlexBubbleLinksTest(TestCase):
-
     def test_structured_bubble_includes_link_rows(self):
         text = "## Info\nCheck [docs](https://docs.example.com) for details."
         result = build_flex_bubble(text)
@@ -278,7 +271,6 @@ class FlexBubbleLinksTest(TestCase):
 
 
 class BuildFlexBubbleTest(TestCase):
-
     def test_simple_structured_text(self):
         text = "## Weather\nSunny and warm.\n\n## Tasks\n- Buy groceries\n- Clean house"
         result = build_flex_bubble(text)
@@ -357,7 +349,6 @@ class BuildFlexBubbleTest(TestCase):
 
 
 class BuildShortBubbleTest(TestCase):
-
     def test_produces_flex_message(self):
         result = build_short_bubble("Hello!")
         self.assertEqual(result["type"], "flex")
@@ -380,7 +371,6 @@ class BuildShortBubbleTest(TestCase):
 
 
 class BuildStatusBubbleTest(TestCase):
-
     def test_success_tone(self):
         result = build_status_bubble("Done!", tone="success")
         self.assertEqual(result["type"], "flex")
@@ -407,7 +397,6 @@ class BuildStatusBubbleTest(TestCase):
 
 
 class BuildFlexCarouselTest(TestCase):
-
     def test_basic_carousel(self):
         items = [
             {"title": "Item 1", "content": "Description 1"},
@@ -424,12 +413,14 @@ class BuildFlexCarouselTest(TestCase):
         self.assertEqual(len(result["contents"]["contents"]), 12)
 
     def test_carousel_with_action_buttons(self):
-        items = [{
-            "title": "Approve",
-            "content": "Lesson content",
-            "action_label": "Approve",
-            "action_data": "approve:lesson:123",
-        }]
+        items = [
+            {
+                "title": "Approve",
+                "content": "Lesson content",
+                "action_label": "Approve",
+                "action_data": "approve:lesson:123",
+            }
+        ]
         result = build_flex_carousel(items)
         bubble = result["contents"]["contents"][0]
         self.assertIn("footer", bubble)
@@ -438,11 +429,13 @@ class BuildFlexCarouselTest(TestCase):
         self.assertEqual(button["action"]["data"], "approve:lesson:123")
 
     def test_carousel_uses_branded_button_color(self):
-        items = [{
-            "title": "Test",
-            "action_label": "Go",
-            "action_data": "test",
-        }]
+        items = [
+            {
+                "title": "Test",
+                "action_label": "Go",
+                "action_data": "test",
+            }
+        ]
         result = build_flex_carousel(items)
         button = result["contents"]["contents"][0]["footer"]["contents"][0]
         self.assertEqual(button["color"], COLORS["signal_text"])
@@ -454,11 +447,13 @@ class BuildFlexCarouselTest(TestCase):
         self.assertEqual(bubble["styles"]["body"]["backgroundColor"], COLORS["mist"])
 
     def test_label_truncated_to_20(self):
-        items = [{
-            "title": "Test",
-            "action_label": "A very long label that exceeds twenty characters",
-            "action_data": "test",
-        }]
+        items = [
+            {
+                "title": "Test",
+                "action_label": "A very long label that exceeds twenty characters",
+                "action_data": "test",
+            }
+        ]
         result = build_flex_carousel(items)
         button = result["contents"]["contents"][0]["footer"]["contents"][0]
         self.assertTrue(len(button["action"]["label"]) <= 20)
@@ -470,16 +465,13 @@ class BuildFlexCarouselTest(TestCase):
 
 
 class ExtractQuickReplyButtonsTest(TestCase):
-
     def test_no_buttons(self):
         text, items = extract_quick_reply_buttons("Just regular text")
         self.assertEqual(text, "Just regular text")
         self.assertIsNone(items)
 
     def test_single_button(self):
-        text, items = extract_quick_reply_buttons(
-            "Choose one: [[button:Yes|confirm_yes]]"
-        )
+        text, items = extract_quick_reply_buttons("Choose one: [[button:Yes|confirm_yes]]")
         self.assertNotIn("[[button:", text)
         self.assertIsNotNone(items)
         self.assertEqual(len(items), 1)
@@ -499,9 +491,7 @@ class ExtractQuickReplyButtonsTest(TestCase):
         self.assertEqual(items[1]["action"]["data"], "mood:ok")
 
     def test_max_13_buttons(self):
-        buttons = "".join(
-            f"[[button:Btn{i}|data{i}]]" for i in range(20)
-        )
+        buttons = "".join(f"[[button:Btn{i}|data{i}]]" for i in range(20))
         text, items = extract_quick_reply_buttons(f"Pick one: {buttons}")
         self.assertIsNotNone(items)
         self.assertEqual(len(items), 13)
@@ -511,20 +501,15 @@ class ExtractQuickReplyButtonsTest(TestCase):
         self.assertEqual(items[0]["action"]["displayText"], "Approve")
 
     def test_label_truncated(self):
-        _, items = extract_quick_reply_buttons(
-            "[[button:This is a very long label exceeding twenty chars|data]]"
-        )
+        _, items = extract_quick_reply_buttons("[[button:This is a very long label exceeding twenty chars|data]]")
         self.assertTrue(len(items[0]["action"]["label"]) <= 20)
 
     def test_cleaned_text_no_extra_newlines(self):
-        text, _ = extract_quick_reply_buttons(
-            "Question?\n\n\n\n[[button:Yes|yes]]\n\n\n"
-        )
+        text, _ = extract_quick_reply_buttons("Question?\n\n\n\n[[button:Yes|yes]]\n\n\n")
         self.assertNotIn("\n\n\n", text)
 
 
 class AttachQuickReplyTest(TestCase):
-
     def test_attaches_to_text_message(self):
         msg = {"type": "text", "text": "Choose one:"}
         items = [{"type": "action", "action": {"type": "message", "label": "Yes", "text": "Yes"}}]
@@ -546,10 +531,10 @@ class AttachQuickReplyTest(TestCase):
 
 @override_settings(LINE_CHANNEL_ACCESS_TOKEN="test-token", LINE_CHANNEL_SECRET="test-secret")
 class LoadingAnimationTest(TestCase):
-
     @patch("apps.router.line_webhook.httpx.post")
     def test_show_loading_calls_api(self, mock_post):
         from apps.router.line_webhook import _show_loading
+
         mock_post.return_value = MagicMock(status_code=200)
         _show_loading("U1234")
         mock_post.assert_called_once()
@@ -560,6 +545,7 @@ class LoadingAnimationTest(TestCase):
     @patch("apps.router.line_webhook.httpx.post")
     def test_show_loading_silent_on_failure(self, mock_post):
         from apps.router.line_webhook import _show_loading
+
         mock_post.side_effect = Exception("network error")
         # Should not raise
         _show_loading("U1234")
@@ -567,6 +553,7 @@ class LoadingAnimationTest(TestCase):
     @override_settings(LINE_CHANNEL_ACCESS_TOKEN="")
     def test_show_loading_noop_without_token(self):
         from apps.router.line_webhook import _show_loading
+
         # Should not raise
         _show_loading("U1234")
 
@@ -578,10 +565,10 @@ class LoadingAnimationTest(TestCase):
 
 @override_settings(LINE_CHANNEL_ACCESS_TOKEN="test-token", LINE_CHANNEL_SECRET="test-secret")
 class ReplyAPITest(TestCase):
-
     @patch("apps.router.line_webhook.httpx.post")
     def test_reply_api_success(self, mock_post):
         from apps.router.line_webhook import _send_line_reply
+
         mock_resp = MagicMock()
         mock_resp.is_success = True
         mock_post.return_value = mock_resp
@@ -593,6 +580,7 @@ class ReplyAPITest(TestCase):
     @patch("apps.router.line_webhook.httpx.post")
     def test_reply_api_expired_token(self, mock_post):
         from apps.router.line_webhook import _send_line_reply
+
         mock_resp = MagicMock()
         mock_resp.is_success = False
         mock_resp.status_code = 400
@@ -605,6 +593,7 @@ class ReplyAPITest(TestCase):
     def test_send_messages_prefers_reply(self, mock_post):
         """_send_line_messages tries Reply API first."""
         from apps.router.line_webhook import _send_line_messages
+
         mock_resp = MagicMock()
         mock_resp.is_success = True
         mock_post.return_value = mock_resp
@@ -619,6 +608,7 @@ class ReplyAPITest(TestCase):
     def test_send_messages_falls_back_to_push(self, mock_reply, mock_push):
         """Falls back to Push when Reply fails."""
         from apps.router.line_webhook import _send_line_messages
+
         mock_reply.return_value = False
         mock_push.return_value = True
         result = _send_line_messages("U123", [{"type": "text", "text": "hi"}], reply_token="tok")
@@ -629,6 +619,7 @@ class ReplyAPITest(TestCase):
     def test_send_messages_push_only_when_no_token(self, mock_push):
         """Uses Push directly when no reply_token."""
         from apps.router.line_webhook import _send_line_messages
+
         mock_push.return_value = True
         result = _send_line_messages("U123", [{"type": "text", "text": "hi"}], reply_token=None)
         self.assertTrue(result)
@@ -636,6 +627,7 @@ class ReplyAPITest(TestCase):
 
     def test_reply_returns_false_without_token(self):
         from apps.router.line_webhook import _send_line_reply
+
         self.assertFalse(_send_line_reply("", [{"type": "text", "text": "hi"}]))
         self.assertFalse(_send_line_reply(None, [{"type": "text", "text": "hi"}]))
 
@@ -671,10 +663,16 @@ class WebhookFlexIntegrationTest(TestCase):
 
         # Mock container response with structured content
         ai_response = {
-            "choices": [{"message": {"content": (
-                "## Weather\nSunny and 25\u00b0C in Osaka.\n\n"
-                "## Tasks\n- Review PR\n- Deploy LINE integration\n- Test Flex messages"
-            )}}],
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "## Weather\nSunny and 25\u00b0C in Osaka.\n\n"
+                            "## Tasks\n- Review PR\n- Deploy LINE integration\n- Test Flex messages"
+                        )
+                    }
+                }
+            ],
             "usage": {"prompt_tokens": 100, "completion_tokens": 50},
             "model": "test",
         }
@@ -754,12 +752,18 @@ class WebhookFlexIntegrationTest(TestCase):
         )
 
         ai_response = {
-            "choices": [{"message": {"content": (
-                "How was your day?\n"
-                "[[button:Great \U0001f60a|mood:great]]"
-                "[[button:OK \U0001f610|mood:ok]]"
-                "[[button:Rough \U0001f61e|mood:rough]]"
-            )}}],
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "How was your day?\n"
+                            "[[button:Great \U0001f60a|mood:great]]"
+                            "[[button:OK \U0001f610|mood:ok]]"
+                            "[[button:Rough \U0001f61e|mood:rough]]"
+                        )
+                    }
+                }
+            ],
             "usage": {},
             "model": "test",
         }
@@ -786,7 +790,6 @@ class WebhookFlexIntegrationTest(TestCase):
 
 
 class FlexEdgeCaseTest(TestCase):
-
     def test_empty_text(self):
         result = build_flex_bubble("")
         self.assertEqual(result["type"], "flex")
@@ -856,6 +859,7 @@ class MarkdownTableConversionTest(TestCase):
 
     def test_basic_table(self):
         from apps.router.line_webhook import _strip_markdown
+
         text = (
             "| Exercise | Sets \u00d7 Reps | Rest |\n"
             "|----------|-------------|------|\n"
@@ -870,6 +874,7 @@ class MarkdownTableConversionTest(TestCase):
 
     def test_table_with_surrounding_text(self):
         from apps.router.line_webhook import _strip_markdown
+
         text = (
             "Here's your workout:\n\n"
             "| Exercise | Sets |\n"
@@ -884,19 +889,15 @@ class MarkdownTableConversionTest(TestCase):
 
     def test_no_table_unchanged(self):
         from apps.router.line_webhook import _strip_markdown
+
         text = "Just regular text with a | pipe character"
         result = _strip_markdown(text)
         self.assertIn("pipe character", result)
 
     def test_multiple_data_rows(self):
         from apps.router.line_webhook import _strip_markdown
-        text = (
-            "| Name | Score |\n"
-            "|------|-------|\n"
-            "| Alice | 95 |\n"
-            "| Bob | 87 |\n"
-            "| Charlie | 92 |"
-        )
+
+        text = "| Name | Score |\n|------|-------|\n| Alice | 95 |\n| Bob | 87 |\n| Charlie | 92 |"
         result = _strip_markdown(text)
         self.assertIn("Name: Alice", result)
         self.assertIn("Name: Bob", result)
@@ -904,16 +905,14 @@ class MarkdownTableConversionTest(TestCase):
 
     def test_table_separator_stripped(self):
         from apps.router.line_webhook import _strip_markdown
-        text = (
-            "| A | B |\n"
-            "|---|---|\n"
-            "| 1 | 2 |"
-        )
+
+        text = "| A | B |\n|---|---|\n| 1 | 2 |"
         result = _strip_markdown(text)
         self.assertNotIn("---", result)
 
     def test_japanese_table(self):
         from apps.router.line_webhook import _strip_markdown
+
         text = (
             "| \u7a2e\u76ee | \u30bb\u30c3\u30c8 | \u4f11\u61a9 |\n"
             "|------|--------|------|\n"

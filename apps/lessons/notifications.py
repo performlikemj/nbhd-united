@@ -4,6 +4,7 @@ Sends lesson approval prompts with inline buttons to the user's preferred
 platform (Telegram or LINE). Follows the same pattern as
 apps/actions/messaging.py for gate confirmations.
 """
+
 from __future__ import annotations
 
 import logging
@@ -24,6 +25,7 @@ LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 # Telegram
 # ---------------------------------------------------------------------------
 
+
 def _send_telegram_lesson(tenant: Tenant, lesson: Lesson) -> bool:
     """Send a Telegram message with approve/dismiss inline buttons."""
     import httpx
@@ -38,10 +40,12 @@ def _send_telegram_lesson(tenant: Tenant, lesson: Lesson) -> bool:
 
     text = f'\U0001f4a1 *Something worth remembering:*\n\n"{lesson.text}"'
     keyboard = {
-        "inline_keyboard": [[
-            {"text": "\u2705 Add to constellation", "callback_data": f"lesson:approve:{lesson.id}"},
-            {"text": "\u274c Skip", "callback_data": f"lesson:dismiss:{lesson.id}"},
-        ]]
+        "inline_keyboard": [
+            [
+                {"text": "\u2705 Add to constellation", "callback_data": f"lesson:approve:{lesson.id}"},
+                {"text": "\u274c Skip", "callback_data": f"lesson:dismiss:{lesson.id}"},
+            ]
+        ]
     }
 
     try:
@@ -76,6 +80,7 @@ def _send_telegram_lesson(tenant: Tenant, lesson: Lesson) -> bool:
 # ---------------------------------------------------------------------------
 # LINE
 # ---------------------------------------------------------------------------
+
 
 def _send_line_lesson(tenant: Tenant, lesson: Lesson) -> bool:
     """Send a LINE Flex Message with approve/dismiss postback buttons."""
@@ -142,11 +147,13 @@ def _send_line_lesson(tenant: Tenant, lesson: Lesson) -> bool:
             LINE_PUSH_URL,
             json={
                 "to": line_user_id,
-                "messages": [{
-                    "type": "flex",
-                    "altText": f'Lesson: "{lesson.text[:40]}..."',
-                    "contents": flex_content,
-                }],
+                "messages": [
+                    {
+                        "type": "flex",
+                        "altText": f'Lesson: "{lesson.text[:40]}..."',
+                        "contents": flex_content,
+                    }
+                ],
             },
             headers={
                 "Authorization": f"Bearer {channel_token}",

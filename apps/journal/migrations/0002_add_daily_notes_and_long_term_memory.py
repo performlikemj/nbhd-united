@@ -5,7 +5,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("journal", "0001_initial"),
         ("tenants", "0001_initial"),

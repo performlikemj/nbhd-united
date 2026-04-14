@@ -5,13 +5,13 @@ QStash sends HTTP POST requests on a schedule (or on-demand via publish),
 which this endpoint executes synchronously. This eliminates the need for
 Celery workers polling Redis continuously.
 """
+
 import json
 import logging
 import traceback
 import uuid
-from importlib import import_module
-
 from datetime import timedelta
+from importlib import import_module
 
 from django.conf import settings
 from django.db import models
@@ -20,11 +20,9 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from apps.orchestrator.azure_client import restart_container_app, update_container_image
-from apps.orchestrator.services import update_tenant_config
-from apps.tenants.models import Tenant
 from apps.cron.qstash_verify import verify_qstash_signature
-
+from apps.orchestrator.azure_client import restart_container_app
+from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
 
@@ -138,21 +136,26 @@ def trigger_task(request, task_name):
         result = execute_task_sync(task_path, *task_args, **task_kwargs)
         logger.info("[%s] Task %s completed successfully", execution_id, task_name)
 
-        return JsonResponse({
-            "status": "completed",
-            "task_name": task_name,
-            "execution_id": execution_id,
-            "result": str(result) if result else None,
-        })
+        return JsonResponse(
+            {
+                "status": "completed",
+                "task_name": task_name,
+                "execution_id": execution_id,
+                "result": str(result) if result else None,
+            }
+        )
     except Exception as e:
         logger.error("[%s] Task %s failed: %s", execution_id, task_name, e)
         logger.error(traceback.format_exc())
-        return JsonResponse({
-            "status": "error",
-            "task_name": task_name,
-            "execution_id": execution_id,
-            "error": str(e),
-        }, status=500)
+        return JsonResponse(
+            {
+                "status": "error",
+                "task_name": task_name,
+                "execution_id": execution_id,
+                "error": str(e),
+            },
+            status=500,
+        )
 
 
 @csrf_exempt
@@ -194,21 +197,26 @@ def trigger_task_debug(request, task_name):
         result = execute_task_sync(task_path, *task_args, **task_kwargs)
         logger.info("[%s] DEBUG task %s completed", execution_id, task_name)
 
-        return JsonResponse({
-            "status": "completed",
-            "task_name": task_name,
-            "execution_id": execution_id,
-            "result": str(result) if result else None,
-        })
+        return JsonResponse(
+            {
+                "status": "completed",
+                "task_name": task_name,
+                "execution_id": execution_id,
+                "result": str(result) if result else None,
+            }
+        )
     except Exception as e:
         logger.error("[%s] DEBUG task %s failed: %s", execution_id, task_name, e)
-        return JsonResponse({
-            "status": "error",
-            "task_name": task_name,
-            "execution_id": execution_id,
-            "error": str(e),
-            "traceback": traceback.format_exc(),
-        }, status=500)
+        return JsonResponse(
+            {
+                "status": "error",
+                "task_name": task_name,
+                "execution_id": execution_id,
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            },
+            status=500,
+        )
 
 
 def list_tasks(request):
@@ -265,14 +273,18 @@ def apply_pending_configs(request):
     desired_tag = getattr(settings, "OPENCLAW_IMAGE_TAG", "latest")
     image_count = 0
     if desired_tag and desired_tag != "latest":
-        stale_image_tenants = Tenant.objects.filter(
-            status=Tenant.Status.ACTIVE,
-            container_id__gt="",
-            hibernated_at__isnull=True,
-        ).exclude(
-            container_image_tag=desired_tag,
-        ).filter(
-            models.Q(last_message_at__isnull=True) | models.Q(last_message_at__lt=cutoff),
+        stale_image_tenants = (
+            Tenant.objects.filter(
+                status=Tenant.Status.ACTIVE,
+                container_id__gt="",
+                hibernated_at__isnull=True,
+            )
+            .exclude(
+                container_image_tag=desired_tag,
+            )
+            .filter(
+                models.Q(last_message_at__isnull=True) | models.Q(last_message_at__lt=cutoff),
+            )
         )
 
         for tenant in stale_image_tenants:
@@ -309,17 +321,19 @@ def apply_pending_configs(request):
     all_tasks = config_tasks + image_tasks
     success = enqueued == len(all_tasks) if all_tasks else True
 
-    return JsonResponse({
-        "config_enqueued": config_count if success else 0,
-        "config_failed": 0 if success else config_count,
-        "evaluated": evaluated,
-        "image_enqueued": image_count if success else 0,
-        "image_failed": 0 if success else image_count,
-        "cron_seed_enqueued": cron_seed_count if success else 0,
-        "cron_seed_failed": 0 if success else cron_seed_count,
-        "batch_total": len(all_tasks),
-        "batch_enqueued": enqueued,
-    })
+    return JsonResponse(
+        {
+            "config_enqueued": config_count if success else 0,
+            "config_failed": 0 if success else config_count,
+            "evaluated": evaluated,
+            "image_enqueued": image_count if success else 0,
+            "image_failed": 0 if success else image_count,
+            "cron_seed_enqueued": cron_seed_count if success else 0,
+            "cron_seed_failed": 0 if success else cron_seed_count,
+            "batch_total": len(all_tasks),
+            "batch_enqueued": enqueued,
+        }
+    )
 
 
 @csrf_exempt
@@ -338,13 +352,16 @@ def force_reseed_crons(request):
         logger.warning("Unauthorized force-reseed-crons attempt")
         return JsonResponse({"error": "Invalid signature"}, status=401)
 
+    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
     from apps.orchestrator.config_generator import build_cron_seed_jobs
-    from apps.cron.gateway_client import invoke_gateway_tool, GatewayError
 
     # Only touch system-managed jobs — preserve user-created crons
     SYSTEM_JOB_NAMES = {
-        "Morning Briefing", "Evening Check-in", "Weekly Reflection",
-        "Week Ahead Review", "Background Tasks",
+        "Morning Briefing",
+        "Evening Check-in",
+        "Weekly Reflection",
+        "Week Ahead Review",
+        "Background Tasks",
     }
 
     tenants = Tenant.objects.filter(
@@ -365,7 +382,9 @@ def force_reseed_crons(request):
         # List existing jobs
         try:
             result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-            existing = result.get("jobs", []) if isinstance(result, dict) else result if isinstance(result, list) else []
+            existing = (
+                result.get("jobs", []) if isinstance(result, dict) else result if isinstance(result, list) else []
+            )
         except GatewayError as e:
             entry["errors"].append(f"list: {str(e)[:100]}")
             results.append(entry)
@@ -396,6 +415,7 @@ def force_reseed_crons(request):
         # Safety net: dedup in case partial deletion left orphaned jobs
         try:
             from apps.orchestrator.services import dedup_tenant_cron_jobs
+
             dedup_result = dedup_tenant_cron_jobs(tenant)
             if dedup_result.get("deleted", 0) > 0:
                 entry["deduped"] = dedup_result["deleted"]
@@ -405,8 +425,15 @@ def force_reseed_crons(request):
         # Restore user-created jobs from snapshot if any were lost
         try:
             from apps.orchestrator.services import restore_user_cron_jobs
+
             post_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-            post_jobs = post_result.get("jobs", []) if isinstance(post_result, dict) else post_result if isinstance(post_result, list) else []
+            post_jobs = (
+                post_result.get("jobs", [])
+                if isinstance(post_result, dict)
+                else post_result
+                if isinstance(post_result, list)
+                else []
+            )
             post_names = {j.get("name", "") for j in post_jobs if isinstance(j, dict)}
             restore = restore_user_cron_jobs(tenant, post_names)
             if restore["restored"] > 0:
@@ -425,7 +452,13 @@ def force_reseed_crons(request):
         ADMIN_JOBS = {"Background Tasks", "Heartbeat Check-in"}
         try:
             all_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-            all_jobs = all_result.get("jobs", []) if isinstance(all_result, dict) else all_result if isinstance(all_result, list) else []
+            all_jobs = (
+                all_result.get("jobs", [])
+                if isinstance(all_result, dict)
+                else all_result
+                if isinstance(all_result, list)
+                else []
+            )
             unmigrated = 0
             for job in all_jobs:
                 if not isinstance(job, dict):
@@ -438,10 +471,14 @@ def force_reseed_crons(request):
                 if not job_id:
                     continue
                 try:
-                    invoke_gateway_tool(tenant, "cron.update", {
-                        "jobId": job_id,
-                        "patch": {"sessionTarget": "isolated"},
-                    })
+                    invoke_gateway_tool(
+                        tenant,
+                        "cron.update",
+                        {
+                            "jobId": job_id,
+                            "patch": {"sessionTarget": "isolated"},
+                        },
+                    )
                     unmigrated += 1
                 except GatewayError:
                     pass  # Best-effort
@@ -454,12 +491,14 @@ def force_reseed_crons(request):
 
     total_created = sum(r["created"] for r in results)
     total_errors = sum(len(r["errors"]) for r in results)
-    return JsonResponse({
-        "tenants": len(results),
-        "total_created": total_created,
-        "total_errors": total_errors,
-        "details": results,
-    })
+    return JsonResponse(
+        {
+            "tenants": len(results),
+            "total_created": total_created,
+            "total_errors": total_errors,
+            "details": results,
+        }
+    )
 
 
 @csrf_exempt
@@ -527,9 +566,7 @@ def expire_trials(request):
                 cron_result = suspend_tenant_crons(tenant)
                 crons_disabled += cron_result.get("disabled", 0)
             except Exception:
-                logger.exception(
-                    "expire_trials: failed to suspend crons for tenant %s", tenant.id
-                )
+                logger.exception("expire_trials: failed to suspend crons for tenant %s", tenant.id)
 
         # 2. Mark as suspended
         tenant.is_trial = False
@@ -545,14 +582,17 @@ def expire_trials(request):
             except Exception:
                 logger.exception(
                     "expire_trials: failed to hibernate container %s for tenant %s",
-                    tenant.container_id, tenant.id,
+                    tenant.container_id,
+                    tenant.id,
                 )
 
-    return JsonResponse({
-        "updated": updated,
-        "crons_disabled": crons_disabled,
-        "hibernated": hibernated,
-    })
+    return JsonResponse(
+        {
+            "updated": updated,
+            "crons_disabled": crons_disabled,
+            "hibernated": hibernated,
+        }
+    )
 
 
 @csrf_exempt
@@ -577,31 +617,40 @@ def bump_all_pending_configs(request):
         logger.warning("Unauthorized bump_all_pending_configs attempt")
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
-    from django.db.models import F as DbF, Q
+    from django.db.models import F as DbF
+    from django.db.models import Q
 
     has_channel = Q(user__telegram_chat_id__isnull=False) | Q(user__line_user_id__isnull=False)
     grace_cutoff = timezone.now() - timedelta(days=1)
 
     # Reset no-channel tenants created >1 day ago to version 0
     # (new tenants get a 24h grace period to link Telegram/LINE)
-    no_channel_reset = Tenant.objects.filter(
-        status=Tenant.Status.ACTIVE,
-        container_id__gt="",
-        created_at__lt=grace_cutoff,
-    ).exclude(has_channel).exclude(
-        config_version=0, pending_config_version=0,
-    ).update(config_version=0, pending_config_version=0)
+    no_channel_reset = (
+        Tenant.objects.filter(
+            status=Tenant.Status.ACTIVE,
+            container_id__gt="",
+            created_at__lt=grace_cutoff,
+        )
+        .exclude(has_channel)
+        .exclude(
+            config_version=0,
+            pending_config_version=0,
+        )
+        .update(config_version=0, pending_config_version=0)
+    )
 
     if no_channel_reset:
         logger.info("bump_all: reset %d no-channel tenant(s) to version 0", no_channel_reset)
 
     # Only bump tenants that have a delivery channel (or were created <1 day ago)
-    count = Tenant.objects.filter(
-        status=Tenant.Status.ACTIVE,
-        container_id__gt="",
-    ).filter(
-        has_channel | Q(created_at__gte=grace_cutoff)
-    ).update(pending_config_version=DbF("config_version") + 1)
+    count = (
+        Tenant.objects.filter(
+            status=Tenant.Status.ACTIVE,
+            container_id__gt="",
+        )
+        .filter(has_channel | Q(created_at__gte=grace_cutoff))
+        .update(pending_config_version=DbF("config_version") + 1)
+    )
 
     logger.info("bump_all_pending_configs: marked %d tenant(s) for config update", count)
     return JsonResponse({"queued": count})
@@ -628,6 +677,7 @@ def register_system_crons(request):
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
     import json as _json
+
     try:
         body = _json.loads(request.body) if request.body else {}
     except Exception:
@@ -702,18 +752,22 @@ def resync_cron_timezones(request):
         logger.warning("Unauthorized resync_cron_timezones attempt")
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
+    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
     from apps.orchestrator.config_generator import build_cron_seed_jobs
-    from apps.cron.gateway_client import invoke_gateway_tool, GatewayError
 
     SYSTEM_JOB_NAMES = {"Morning Briefing", "Evening Check-in", "Week Ahead Review", "Background Tasks"}
 
     # All tenants with a running container, not just ACTIVE — trial/pending
     # tenants still have containers with potentially wrong UTC crons.
-    tenants = Tenant.objects.filter(
-        container_id__gt="",
-    ).exclude(
-        status=Tenant.Status.DEPROVISIONING,
-    ).select_related("user")
+    tenants = (
+        Tenant.objects.filter(
+            container_id__gt="",
+        )
+        .exclude(
+            status=Tenant.Status.DEPROVISIONING,
+        )
+        .select_related("user")
+    )
 
     results = []
     for tenant in tenants:
@@ -724,7 +778,11 @@ def resync_cron_timezones(request):
             continue
         try:
             list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-            existing = list_result.get("jobs", []) if isinstance(list_result, dict) else (list_result if isinstance(list_result, list) else [])
+            existing = (
+                list_result.get("jobs", [])
+                if isinstance(list_result, dict)
+                else (list_result if isinstance(list_result, list) else [])
+            )
 
             deleted = 0
             for job in existing:
@@ -745,7 +803,9 @@ def resync_cron_timezones(request):
                 except GatewayError as e:
                     logger.error("resync_cron_timezones: add %s for %s failed: %s", job.get("name"), tid[:8], e)
 
-            logger.info("resync_cron_timezones: tenant %s tz=%s deleted=%d created=%d", tid[:8], user_tz, deleted, created)
+            logger.info(
+                "resync_cron_timezones: tenant %s tz=%s deleted=%d created=%d", tid[:8], user_tz, deleted, created
+            )
             results.append({"tenant": tid[:8], "tz": user_tz, "deleted": deleted, "created": created})
         except GatewayError as e:
             logger.error("resync_cron_timezones: tenant %s failed: %s", tid[:8], e)
@@ -769,6 +829,7 @@ def run_update_cron_prompts(request):
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
     from apps.tenants.middleware import set_rls_context
+
     set_rls_context(service_role=True)
 
     from apps.orchestrator.services import update_system_cron_prompts
@@ -805,6 +866,7 @@ def run_backfill_lesson_embeddings(request):
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
     from apps.tenants.middleware import set_rls_context
+
     set_rls_context(service_role=True)
 
     from apps.lessons.models import Lesson
@@ -886,10 +948,12 @@ def run_rewrite_lessons_actionable(request):
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
     from apps.tenants.middleware import set_rls_context
+
     set_rls_context(service_role=True)
 
-    from django.core.management import call_command
     from io import StringIO
+
+    from django.core.management import call_command
 
     out = StringIO()
     call_command("rewrite_lessons_actionable", stdout=out)
@@ -914,10 +978,12 @@ def run_reseed_lessons(request):
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
     from apps.tenants.middleware import set_rls_context
+
     set_rls_context(service_role=True)
 
-    from django.core.management import call_command
     from io import StringIO
+
+    from django.core.management import call_command
 
     out = StringIO()
     call_command("reseed_lessons", stdout=out)
@@ -944,6 +1010,7 @@ def broadcast_message(request):
             return JsonResponse({"error": "Invalid signature"}, status=401)
 
     import json as _json
+
     try:
         body = _json.loads(request.body)
     except (ValueError, _json.JSONDecodeError):
@@ -956,6 +1023,7 @@ def broadcast_message(request):
     # Idempotency key: caller can supply one, or we generate from message hash.
     # QStash deduplicates messages with the same key within ~5 minutes.
     import hashlib
+
     broadcast_key = body.get("idempotency_key") or hashlib.sha256(message.encode()).hexdigest()[:16]
 
     from apps.cron.publish import publish_batch
@@ -971,12 +1039,14 @@ def broadcast_message(request):
         # Per-tenant deduplication key prevents double-delivery if endpoint is
         # called multiple times with the same message (e.g. QStash retries).
         tenant_key = f"{broadcast_key}-{str(tenant.id)[:8]}"
-        batch_tasks.append((
-            "broadcast_single_tenant",
-            (str(tenant.id), message),
-            {},
-            tenant_key,
-        ))
+        batch_tasks.append(
+            (
+                "broadcast_single_tenant",
+                (str(tenant.id), message),
+                {},
+                tenant_key,
+            )
+        )
 
     try:
         enqueued = publish_batch(batch_tasks)
@@ -1017,13 +1087,15 @@ def dedup_crons(request):
             return JsonResponse({"error": f"Tenant {tenant_id} not found or inactive"}, status=404)
 
         result = dedup_tenant_cron_jobs(tenant)
-        return JsonResponse({
-            "tenant": str(tenant.id),
-            "kept": result["kept"],
-            "deleted": result["deleted"],
-            "errors": result["errors"],
-            "duplicates_found": len(result["duplicates"]),
-        })
+        return JsonResponse(
+            {
+                "tenant": str(tenant.id),
+                "kept": result["kept"],
+                "deleted": result["deleted"],
+                "errors": result["errors"],
+                "duplicates_found": len(result["duplicates"]),
+            }
+        )
 
     # Fan out to all active tenants via QStash
     from apps.cron.publish import publish_batch
@@ -1034,10 +1106,7 @@ def dedup_crons(request):
         container_fqdn__gt="",
     )
 
-    batch_tasks = [
-        ("dedup_cron_jobs", (str(tenant.id),), {})
-        for tenant in tenants
-    ]
+    batch_tasks = [("dedup_cron_jobs", (str(tenant.id),), {}) for tenant in tenants]
 
     try:
         enqueued = publish_batch(batch_tasks)
@@ -1046,3 +1115,57 @@ def dedup_crons(request):
         enqueued = 0
 
     return JsonResponse({"enqueued": enqueued, "failed": 0})
+
+
+@csrf_exempt
+@require_POST
+def run_health_check(request):
+    """Run health checks on all active tenants and alert on failures.
+
+    URL: /api/cron/run-health-check/
+    Auth: QStash signature or X-Deploy-Secret header.
+
+    Sends a Telegram alert to ADMIN_TELEGRAM_CHAT_ID when any tenant
+    is unhealthy. The message is routed through the admin's OpenClaw
+    agent, giving it context to investigate.
+    """
+    if not verify_qstash_signature(request):
+        deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+        provided = request.headers.get("X-Deploy-Secret", "")
+        if not (provided and deploy_secret and provided == deploy_secret):
+            return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    from apps.orchestrator.services import check_all_tenants_health
+    from apps.router.services import send_telegram_message
+
+    results = check_all_tenants_health()
+    unhealthy = [r for r in results if not r["healthy"]]
+
+    summary = {
+        "total": len(results),
+        "healthy": len(results) - len(unhealthy),
+        "unhealthy": len(unhealthy),
+    }
+
+    if unhealthy:
+        admin_chat_id = getattr(settings, "ADMIN_TELEGRAM_CHAT_ID", 0)
+        if admin_chat_id:
+            lines = [f"⚠️ NBHD Health Alert — {len(unhealthy)}/{len(results)} tenant(s) unhealthy:"]
+            for r in unhealthy:
+                name = r.get("display_name", "?")
+                container = r.get("container", "?")
+                checks = r.get("checks", {})
+                failed = [k for k, v in checks.items() if not v.get("ok")]
+                detail = ", ".join(failed) if failed else r.get("error", "unknown")
+                lines.append(f"  • {name} ({container}): {detail}")
+            lines.append("")
+            lines.append("Run `make health` or check Azure logs for details.")
+            send_telegram_message(admin_chat_id, "\n".join(lines))
+            logger.warning("Health check: %d unhealthy, alert sent to admin", len(unhealthy))
+        else:
+            logger.warning("Health check: %d unhealthy, no ADMIN_TELEGRAM_CHAT_ID configured", len(unhealthy))
+
+        summary["alerted"] = bool(admin_chat_id)
+        summary["details"] = unhealthy
+
+    return JsonResponse(summary)

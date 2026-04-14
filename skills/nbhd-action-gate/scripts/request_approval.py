@@ -15,14 +15,15 @@ Arguments (via stdin JSON or positional):
     display_summary — human-readable description
     payload         — (optional) JSON object with action-specific IDs
 """
+
 from __future__ import annotations
 
 import json
 import os
 import sys
 import time
-from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 API_BASE = os.environ.get("NBHD_API_BASE_URL", "").rstrip("/")
 API_KEY = os.environ.get("NBHD_INTERNAL_API_KEY", "")
@@ -58,10 +59,14 @@ def _api_call(method: str, path: str, body: dict | None = None) -> dict:
 
 def main():
     if not all([API_BASE, API_KEY, TENANT_ID]):
-        print(json.dumps({
-            "status": "error",
-            "message": "Missing required environment variables (NBHD_API_BASE_URL, NBHD_INTERNAL_API_KEY, NBHD_TENANT_ID)",
-        }))
+        print(
+            json.dumps(
+                {
+                    "status": "error",
+                    "message": "Missing required environment variables (NBHD_API_BASE_URL, NBHD_INTERNAL_API_KEY, NBHD_TENANT_ID)",
+                }
+            )
+        )
         return
 
     # Parse arguments from stdin (OpenClaw passes tool args as JSON)
@@ -79,50 +84,74 @@ def main():
     payload = args.get("payload", {})
 
     if not action_type or not display_summary:
-        print(json.dumps({
-            "status": "error",
-            "message": "action_type and display_summary are required",
-        }))
+        print(
+            json.dumps(
+                {
+                    "status": "error",
+                    "message": "action_type and display_summary are required",
+                }
+            )
+        )
         return
 
     # Step 1: Create the gate request
-    result = _api_call("POST", f"/api/v1/internal/runtime/{TENANT_ID}/gate/request/", {
-        "action_type": action_type,
-        "payload": payload,
-        "display_summary": display_summary,
-    })
+    result = _api_call(
+        "POST",
+        f"/api/v1/internal/runtime/{TENANT_ID}/gate/request/",
+        {
+            "action_type": action_type,
+            "payload": payload,
+            "display_summary": display_summary,
+        },
+    )
 
     status = result.get("status", "")
 
     # Immediate resolution (blocked, auto-approved, or error)
     if status == "blocked":
-        print(json.dumps({
-            "status": "blocked",
-            "tier": result.get("tier", "starter"),
-            "message": result.get("message", "This action is not available on your current plan."),
-        }))
+        print(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "tier": result.get("tier", "starter"),
+                    "message": result.get("message", "This action is not available on your current plan."),
+                }
+            )
+        )
         return
 
     if status == "approved" and result.get("auto_approved"):
-        print(json.dumps({
-            "status": "approved",
-            "auto_approved": True,
-            "message": "Action auto-approved (user has disabled confirmation for this action type).",
-        }))
+        print(
+            json.dumps(
+                {
+                    "status": "approved",
+                    "auto_approved": True,
+                    "message": "Action auto-approved (user has disabled confirmation for this action type).",
+                }
+            )
+        )
         return
 
     if status == "error" or "error" in result:
-        print(json.dumps({
-            "status": "error",
-            "message": result.get("error", result.get("message", "Unknown error")),
-        }))
+        print(
+            json.dumps(
+                {
+                    "status": "error",
+                    "message": result.get("error", result.get("message", "Unknown error")),
+                }
+            )
+        )
         return
 
     if status != "pending":
-        print(json.dumps({
-            "status": "error",
-            "message": f"Unexpected status: {status}",
-        }))
+        print(
+            json.dumps(
+                {
+                    "status": "error",
+                    "message": f"Unexpected status: {status}",
+                }
+            )
+        )
         return
 
     # Step 2: Poll for user's response
@@ -141,37 +170,53 @@ def main():
         poll_status = poll_result.get("status", "")
 
         if poll_status == "approved":
-            print(json.dumps({
-                "status": "approved",
-                "action_id": action_id,
-                "message": "User approved this action. You may proceed.",
-            }))
+            print(
+                json.dumps(
+                    {
+                        "status": "approved",
+                        "action_id": action_id,
+                        "message": "User approved this action. You may proceed.",
+                    }
+                )
+            )
             return
 
         if poll_status == "denied":
-            print(json.dumps({
-                "status": "denied",
-                "action_id": action_id,
-                "message": "User denied this action. Do not proceed.",
-            }))
+            print(
+                json.dumps(
+                    {
+                        "status": "denied",
+                        "action_id": action_id,
+                        "message": "User denied this action. Do not proceed.",
+                    }
+                )
+            )
             return
 
         if poll_status == "expired":
-            print(json.dumps({
-                "status": "expired",
-                "action_id": action_id,
-                "message": "Confirmation timed out (5 minutes). The user did not respond.",
-            }))
+            print(
+                json.dumps(
+                    {
+                        "status": "expired",
+                        "action_id": action_id,
+                        "message": "Confirmation timed out (5 minutes). The user did not respond.",
+                    }
+                )
+            )
             return
 
         # Still pending — keep polling
 
     # Timed out on our side
-    print(json.dumps({
-        "status": "expired",
-        "action_id": action_id,
-        "message": "Confirmation timed out.",
-    }))
+    print(
+        json.dumps(
+            {
+                "status": "expired",
+                "action_id": action_id,
+                "message": "Confirmation timed out.",
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

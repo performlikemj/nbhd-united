@@ -2,7 +2,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("tenants", "0032_update_starter_tier_label"),
     ]

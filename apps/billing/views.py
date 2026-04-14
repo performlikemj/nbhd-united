@@ -1,4 +1,5 @@
 """Stripe webhook handler and billing views."""
+
 import logging
 
 import stripe
@@ -12,6 +13,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.tenants.models import Tenant
+
 from .services import (
     handle_checkout_completed,
     handle_invoice_payment_failed,
@@ -51,7 +53,9 @@ def stripe_webhook(request):
 
     try:
         event = stripe.Webhook.construct_event(
-            payload, sig_header, settings.DJSTRIPE_WEBHOOK_SECRET,
+            payload,
+            sig_header,
+            settings.DJSTRIPE_WEBHOOK_SECRET,
         )
     except (ValueError, stripe.error.SignatureVerificationError) as e:
         logger.warning("Stripe webhook verification failed: %s", e)

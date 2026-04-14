@@ -1,14 +1,15 @@
 """Tests for Telegram QR code / deep link onboarding flow."""
+
 from datetime import timedelta
 from unittest.mock import patch
 
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.tenants.models import User, Tenant
-from apps.tenants.telegram_models import TelegramLinkToken
 from apps.tenants import telegram_service as svc
+from apps.tenants.models import User
+from apps.tenants.telegram_models import TelegramLinkToken
 
 
 class TelegramLinkTokenModelTest(TestCase):
@@ -101,9 +102,7 @@ class TelegramServiceTest(TestCase):
         self.assertFalse(success)
 
     def test_process_start_token_already_linked_to_other(self):
-        other_user = User.objects.create_user(
-            username="other", password="pass", telegram_user_id=12345
-        )
+        other_user = User.objects.create_user(username="other", password="pass", telegram_user_id=12345)
         token = svc.generate_link_token(self.user)
         success, msg = svc.process_start_token(
             telegram_user_id=12345,

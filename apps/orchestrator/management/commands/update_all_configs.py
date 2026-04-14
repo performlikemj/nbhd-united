@@ -1,4 +1,5 @@
 """Regenerate OpenClaw configs for all active tenants (or a single tenant)."""
+
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.orchestrator.services import update_tenant_config
@@ -52,7 +53,7 @@ class Command(BaseCommand):
             self.stdout.write(f"  Updating: {label} ...")
             try:
                 update_tenant_config(str(tenant.id))
-                self.stdout.write(self.style.SUCCESS(f"    OK"))
+                self.stdout.write(self.style.SUCCESS("    OK"))
             except Exception as exc:
                 self.stderr.write(self.style.ERROR(f"    FAILED: {exc}"))
 

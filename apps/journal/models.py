@@ -1,4 +1,5 @@
 """Journal and weekly review persistence models."""
+
 from __future__ import annotations
 
 import uuid
@@ -199,7 +200,7 @@ class PendingExtraction(models.Model):
     text = models.TextField()
     tags = models.JSONField(default=list)
     confidence = models.CharField(max_length=8, default="medium")  # high | medium
-    source_date = models.DateField(null=True, blank=True)          # date of daily note extracted from
+    source_date = models.DateField(null=True, blank=True)  # date of daily note extracted from
     expires_at = models.DateTimeField()
     telegram_message_id = models.CharField(max_length=64, blank=True)
     lesson_id = models.BigIntegerField(null=True, blank=True)

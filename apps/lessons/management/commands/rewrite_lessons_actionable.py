@@ -4,7 +4,6 @@ Calls an LLM to transform observation-style lessons ("photo was wrong size")
 into actionable lessons ("always verify photo dimensions before proceeding").
 Then regenerates embeddings and re-clusters.
 """
-import json
 
 import requests
 from django.conf import settings
@@ -89,9 +88,9 @@ class Command(BaseCommand):
             except Exception as e:
                 self.stdout.write(self.style.ERROR(f"  Failed lesson {lesson.id}: {e}"))
 
-        self.stdout.write(self.style.SUCCESS(
-            f"Done: {success} rewritten, {skipped} unchanged, {total - success - skipped} failed"
-        ))
+        self.stdout.write(
+            self.style.SUCCESS(f"Done: {success} rewritten, {skipped} unchanged, {total - success - skipped} failed")
+        )
 
         # Re-cluster affected tenants
         if affected_tenants and not dry_run:

@@ -5,6 +5,7 @@ Telegram linking API endpoints.
 - POST /api/v1/tenants/telegram/unlink/         → Remove Telegram link
 - GET  /api/v1/tenants/telegram/status/         → Link status
 """
+
 import logging
 
 from rest_framework.decorators import api_view, permission_classes
@@ -12,6 +13,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.router.services import invalidate_cache
+
 from . import telegram_service as svc
 
 logger = logging.getLogger(__name__)
@@ -32,11 +34,13 @@ def telegram_generate_link(request):
 
     try:
         token = svc.generate_link_token(user)
-        return Response({
-            "deep_link": svc.get_deep_link(token.token),
-            "qr_code": svc.get_qr_code_data_url(token.token),
-            "expires_at": token.expires_at.isoformat(),
-        })
+        return Response(
+            {
+                "deep_link": svc.get_deep_link(token.token),
+                "qr_code": svc.get_qr_code_data_url(token.token),
+                "expires_at": token.expires_at.isoformat(),
+            }
+        )
     except Exception as e:
         logger.exception("Error generating Telegram link for user %s: %s", user.id, e)
         return Response({"error": "Failed to generate link."}, status=500)

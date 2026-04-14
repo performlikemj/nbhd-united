@@ -6,6 +6,7 @@ LINE linking API endpoints.
 - GET  /api/v1/tenants/line/status/         → Link status
 - PATCH /api/v1/tenants/preferred-channel/  → Set preferred channel
 """
+
 import logging
 
 from rest_framework.decorators import api_view, permission_classes
@@ -32,11 +33,13 @@ def line_generate_link(request):
 
     try:
         token = svc.generate_link_token(user)
-        return Response({
-            "deep_link": svc.get_deep_link(token.token),
-            "qr_code": svc.get_qr_code_data_url(token.token),
-            "expires_at": token.expires_at.isoformat(),
-        })
+        return Response(
+            {
+                "deep_link": svc.get_deep_link(token.token),
+                "qr_code": svc.get_qr_code_data_url(token.token),
+                "expires_at": token.expires_at.isoformat(),
+            }
+        )
     except Exception as e:
         logger.exception("Error generating LINE link for user %s: %s", user.id, e)
         return Response({"error": "Failed to generate link."}, status=500)
@@ -87,7 +90,9 @@ def line_set_preferred_channel(request):
     user.preferred_channel = channel
     user.save(update_fields=["preferred_channel"])
 
-    return Response({
-        "preferred_channel": channel,
-        "message": f"Preferred channel set to {channel.title()}.",
-    })
+    return Response(
+        {
+            "preferred_channel": channel,
+            "message": f"Preferred channel set to {channel.title()}.",
+        }
+    )

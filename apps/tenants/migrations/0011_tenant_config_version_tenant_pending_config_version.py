@@ -4,20 +4,21 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0010_add_config_refreshed_at'),
+        ("tenants", "0010_add_config_refreshed_at"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='tenant',
-            name='config_version',
-            field=models.IntegerField(default=0, help_text='Current applied config version'),
+            model_name="tenant",
+            name="config_version",
+            field=models.IntegerField(default=0, help_text="Current applied config version"),
         ),
         migrations.AddField(
-            model_name='tenant',
-            name='pending_config_version',
-            field=models.IntegerField(default=0, help_text='Latest available config version; > config_version means update pending'),
+            model_name="tenant",
+            name="pending_config_version",
+            field=models.IntegerField(
+                default=0, help_text="Latest available config version; > config_version means update pending"
+            ),
         ),
     ]
