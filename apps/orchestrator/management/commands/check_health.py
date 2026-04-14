@@ -40,5 +40,8 @@ class Command(BaseCommand):
                 detail = check_result.get("detail", "")
                 rt = check_result.get("response_time_ms")
                 status = "\u2705" if check_result["ok"] else "\u274c"
-                extra = f" ({rt}ms)" if rt else f" — {detail}" if detail else ""
+                extra = f" ({rt}ms)" if rt else f" \u2014 {detail}" if detail else ""
                 self.stdout.write(f"    {status} {check_name}{extra}")
+
+            if result.get("config_drift"):
+                self.stdout.write(f"    \u26a0\ufe0f  config_drift \u2014 {result.get('config_drift_detail', '')}")
