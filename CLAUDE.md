@@ -105,10 +105,17 @@ Keep messages concise, focused on the "why". Examples:
 - **Frontend is static export**: No SSR. `npm run build` creates `out/` directory
 - **QStash, not Celery**: Do NOT add `django_celery_beat` — project uses QStash for all scheduling
 
+## Git Workflow
+
+- **`main` is protected** — all changes go through PR branches. Direct push to main is rejected.
+- Create a feature branch (`feat/`, `fix/`, `refactor/`), push it, then `gh pr create`.
+- CI must pass before merge. Merge via `gh pr merge <number> --merge --delete-branch`.
+
 ## Don'ts
 
+- Do NOT push directly to main — branch protection requires a PR
 - Do NOT use `git add -A` or `git add .` — stage specific files to avoid committing `.env`
-- Do NOT skip pre-commit hooks (`--no-verify`)
+- Do NOT skip pre-commit hooks (`--no-verify`) unless the block is a false positive in scanner code
 - Do NOT force push to main
 - Do NOT delete Azure resources without explicit confirmation
 - Do NOT modify env var names in `config/settings/production.py` without updating Azure Container App env vars
