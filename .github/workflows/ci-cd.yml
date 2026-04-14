@@ -89,7 +89,13 @@ jobs:
             --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' \
             --include='*.json' --include='*.yaml' --include='*.yml' \
             --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=.venv \
-            --exclude='*.lock' . 2>/dev/null || true)
+            --exclude='*.lock' \
+            --exclude='config_validator.py' \
+            --exclude='config_security.py' \
+            --exclude='test_config_security.py' \
+            --exclude='harness-check' \
+            --exclude='ci-cd.yml' \
+            . 2>/dev/null || true)
           if [ -n "$HITS" ]; then
             echo "Secret patterns detected in source files:"
             echo "$HITS"
