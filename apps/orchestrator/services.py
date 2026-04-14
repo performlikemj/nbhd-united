@@ -1156,16 +1156,16 @@ def check_tenant_health(tenant_id: str) -> dict:
         result["checks"]["container"] = {"ok": False, "detail": "no container FQDN"}
         return result
 
-    # Config version drift
+    # Config version drift — informational only, does NOT affect healthy status.
+    # Drift is expected after deploys and resolves on the next idle cycle.
     pending = tenant.pending_config_version or 0
     current = tenant.config_version or 0
     config_drift = pending > current
-    result["checks"]["config_drift"] = {
-        "ok": not config_drift,
-        "detail": f"current={current} pending={pending}" if config_drift else "up to date",
-    }
+    result["config_drift"] = config_drift
+    if config_drift:
+        result["config_drift_detail"] = f"current={current} pending={pending}"
 
-    # Ping gateway health endpoint
+    # Ping gateway health endpoint — this IS a health signal
     health_url = f"https://{tenant.container_fqdn}/health"
     try:
         resp = httpx.get(health_url, timeout=10)

@@ -1117,6 +1117,10 @@ def dedup_crons(request):
     return JsonResponse({"enqueued": enqueued, "failed": 0})
 
 
+# Cooldown: don't send duplicate alerts within this window
+_HEALTH_ALERT_COOLDOWN_SECONDS = 30 * 60  # 30 minutes
+
+
 @csrf_exempt
 @require_POST
 def run_health_check(request):
@@ -1126,14 +1130,16 @@ def run_health_check(request):
     Auth: QStash signature or X-Deploy-Secret header.
 
     Sends a Telegram alert to ADMIN_TELEGRAM_CHAT_ID when any tenant
-    is unhealthy. The message is routed through the admin's OpenClaw
-    agent, giving it context to investigate.
+    has a gateway failure. Config drift is informational only — expected
+    after deploys. Alerts are rate-limited to one per 30 minutes.
     """
     if not verify_qstash_signature(request):
         deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
         provided = request.headers.get("X-Deploy-Secret", "")
         if not (provided and deploy_secret and provided == deploy_secret):
             return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    from django.core.cache import cache
 
     from apps.orchestrator.services import check_all_tenants_health
     from apps.router.services import send_telegram_message
@@ -1149,23 +1155,36 @@ def run_health_check(request):
 
     if unhealthy:
         admin_chat_id = getattr(settings, "ADMIN_TELEGRAM_CHAT_ID", 0)
-        if admin_chat_id:
+
+        # Rate-limit alerts — skip if we already alerted recently
+        cache_key = "health_alert_sent"
+        already_alerted = cache.get(cache_key)
+
+        if admin_chat_id and not already_alerted:
             lines = [f"⚠️ NBHD Health Alert — {len(unhealthy)}/{len(results)} tenant(s) unhealthy:"]
-            for r in unhealthy:
+            for r in unhealthy[:10]:  # Cap at 10 to avoid message overflow
                 name = r.get("display_name", "?")
                 container = r.get("container", "?")
                 checks = r.get("checks", {})
                 failed = [k for k, v in checks.items() if not v.get("ok")]
                 detail = ", ".join(failed) if failed else r.get("error", "unknown")
-                lines.append(f"  • {name} ({container}): {detail}")
+                lines.append(f"  \u2022 {name} ({container}): {detail}")
+            if len(unhealthy) > 10:
+                lines.append(f"  ... and {len(unhealthy) - 10} more")
             lines.append("")
             lines.append("Run `make health` or check Azure logs for details.")
             send_telegram_message(admin_chat_id, "\n".join(lines))
+            cache.set(cache_key, True, _HEALTH_ALERT_COOLDOWN_SECONDS)
             logger.warning("Health check: %d unhealthy, alert sent to admin", len(unhealthy))
+            summary["alerted"] = True
+        elif already_alerted:
+            logger.info("Health check: %d unhealthy, alert suppressed (cooldown)", len(unhealthy))
+            summary["alerted"] = False
+            summary["cooldown"] = True
         else:
             logger.warning("Health check: %d unhealthy, no ADMIN_TELEGRAM_CHAT_ID configured", len(unhealthy))
+            summary["alerted"] = False
 
-        summary["alerted"] = bool(admin_chat_id)
         summary["details"] = unhealthy
 
     return JsonResponse(summary)
