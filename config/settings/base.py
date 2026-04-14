@@ -181,6 +181,11 @@ TELEGRAM_BOT_USERNAME = env("TELEGRAM_BOT_USERNAME", default="NbhdUnitedBot")
 TELEGRAM_WEBHOOK_SECRET = env("TELEGRAM_WEBHOOK_SECRET", default="")
 # Admin Telegram chat ID for health alerts (operator notifications)
 ADMIN_TELEGRAM_CHAT_ID = env.int("ADMIN_TELEGRAM_CHAT_ID", default=0)
+# Personal OpenClaw gateway for admin alerts (Cloudflare tunnel)
+ADMIN_OPENCLAW_GATEWAY_URL = env("ADMIN_OPENCLAW_GATEWAY_URL", default="")
+ADMIN_OPENCLAW_GATEWAY_TOKEN = env("ADMIN_OPENCLAW_GATEWAY_TOKEN", default="")
+CF_ACCESS_CLIENT_ID = env("CF_ACCESS_CLIENT_ID", default="")
+CF_ACCESS_CLIENT_SECRET = env("CF_ACCESS_CLIENT_SECRET", default="")
 ROUTER_RATE_LIMIT_PER_MINUTE = env.int("ROUTER_RATE_LIMIT_PER_MINUTE", default=30)
 # Shared internal API key for runtime auth between Django and tenant containers.
 # All containers use the same key (stored in Azure Key Vault). This is safe

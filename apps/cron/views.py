@@ -1121,6 +1121,64 @@ def dedup_crons(request):
 _HEALTH_ALERT_COOLDOWN_SECONDS = 30 * 60  # 30 minutes
 
 
+def _send_alert_to_personal_openclaw(message: str) -> bool:
+    """Send a health alert to MJ's personal OpenClaw agent.
+
+    Routes through the Cloudflare tunnel to the personal gateway.
+    The agent receives the alert and can propose fixes without acting.
+    Returns True on success.
+    """
+    import httpx
+
+    gateway_url = getattr(settings, "ADMIN_OPENCLAW_GATEWAY_URL", "").strip()
+    gateway_token = getattr(settings, "ADMIN_OPENCLAW_GATEWAY_TOKEN", "").strip()
+    cf_client_id = getattr(settings, "CF_ACCESS_CLIENT_ID", "").strip()
+    cf_client_secret = getattr(settings, "CF_ACCESS_CLIENT_SECRET", "").strip()
+
+    if not gateway_url or not gateway_token:
+        logger.warning("ADMIN_OPENCLAW_GATEWAY_URL or TOKEN not configured")
+        return False
+
+    headers = {
+        "Authorization": f"Bearer {gateway_token}",
+        "Content-Type": "application/json",
+    }
+    if cf_client_id and cf_client_secret:
+        headers["CF-Access-Client-Id"] = cf_client_id
+        headers["CF-Access-Client-Secret"] = cf_client_secret
+
+    url = f"{gateway_url.rstrip('/')}/v1/chat/completions"
+
+    try:
+        resp = httpx.post(
+            url,
+            headers=headers,
+            json={
+                "model": "openclaw",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are receiving an automated NBHD United platform health alert. "
+                            "Review the issue, propose fixes, but do NOT take any action. "
+                            "Summarize what happened and what MJ should consider doing."
+                        ),
+                    },
+                    {"role": "user", "content": message},
+                ],
+            },
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            logger.info("Health alert delivered to personal OpenClaw")
+            return True
+        logger.warning("Personal OpenClaw returned %d: %s", resp.status_code, resp.text[:200])
+        return False
+    except Exception:
+        logger.exception("Failed to send alert to personal OpenClaw")
+        return False
+
+
 @csrf_exempt
 @require_POST
 def run_health_check(request):
@@ -1129,9 +1187,9 @@ def run_health_check(request):
     URL: /api/cron/run-health-check/
     Auth: QStash signature or X-Deploy-Secret header.
 
-    Sends a Telegram alert to ADMIN_TELEGRAM_CHAT_ID when any tenant
-    has a gateway failure. Config drift is informational only — expected
-    after deploys. Alerts are rate-limited to one per 30 minutes.
+    Sends alerts to MJ's personal OpenClaw agent (via Cloudflare tunnel)
+    when any tenant has a gateway failure. Config drift is informational
+    only. Alerts are rate-limited to one per 30 minutes.
     """
     if not verify_qstash_signature(request):
         deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
@@ -1142,7 +1200,6 @@ def run_health_check(request):
     from django.core.cache import cache
 
     from apps.orchestrator.services import check_all_tenants_health
-    from apps.router.services import send_telegram_message
 
     results = check_all_tenants_health()
     unhealthy = [r for r in results if not r["healthy"]]
@@ -1154,36 +1211,30 @@ def run_health_check(request):
     }
 
     if unhealthy:
-        admin_chat_id = getattr(settings, "ADMIN_TELEGRAM_CHAT_ID", 0)
-
         # Rate-limit alerts — skip if we already alerted recently
         cache_key = "health_alert_sent"
         already_alerted = cache.get(cache_key)
 
-        if admin_chat_id and not already_alerted:
-            lines = [f"⚠️ NBHD Health Alert — {len(unhealthy)}/{len(results)} tenant(s) unhealthy:"]
-            for r in unhealthy[:10]:  # Cap at 10 to avoid message overflow
+        if not already_alerted:
+            lines = [f"NBHD Health Alert — {len(unhealthy)}/{len(results)} tenant(s) unhealthy:"]
+            for r in unhealthy[:10]:
                 name = r.get("display_name", "?")
                 container = r.get("container", "?")
                 checks = r.get("checks", {})
                 failed = [k for k, v in checks.items() if not v.get("ok")]
                 detail = ", ".join(failed) if failed else r.get("error", "unknown")
-                lines.append(f"  \u2022 {name} ({container}): {detail}")
+                lines.append(f"  - {name} ({container}): {detail}")
             if len(unhealthy) > 10:
                 lines.append(f"  ... and {len(unhealthy) - 10} more")
-            lines.append("")
-            lines.append("Run `make health` or check Azure logs for details.")
-            send_telegram_message(admin_chat_id, "\n".join(lines))
-            cache.set(cache_key, True, _HEALTH_ALERT_COOLDOWN_SECONDS)
-            logger.warning("Health check: %d unhealthy, alert sent to admin", len(unhealthy))
-            summary["alerted"] = True
-        elif already_alerted:
+
+            sent = _send_alert_to_personal_openclaw("\n".join(lines))
+            if sent:
+                cache.set(cache_key, True, _HEALTH_ALERT_COOLDOWN_SECONDS)
+            summary["alerted"] = sent
+        else:
             logger.info("Health check: %d unhealthy, alert suppressed (cooldown)", len(unhealthy))
             summary["alerted"] = False
             summary["cooldown"] = True
-        else:
-            logger.warning("Health check: %d unhealthy, no ADMIN_TELEGRAM_CHAT_ID configured", len(unhealthy))
-            summary["alerted"] = False
 
         summary["details"] = unhealthy
 
