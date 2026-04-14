@@ -22,14 +22,30 @@ export AZURE_MOCK="true"
 export OPENCLAW_USAGE_PLUGIN_ID=""
 
 $PYTHON_BIN manage.py migrate --noinput >/dev/null
+
+# Generate config and run Python validator
 $PYTHON_BIN manage.py shell -c "
 import json
 import pathlib
 from apps.tenants.services import create_tenant
 from apps.orchestrator.config_generator import generate_openclaw_config
+from apps.orchestrator.config_validator import validate_openclaw_config
 
 tenant = create_tenant(display_name='OpenClaw Doctor Smoke', telegram_chat_id=999001)
-pathlib.Path('$CONFIG_PATH').write_text(json.dumps(generate_openclaw_config(tenant)))
+config = generate_openclaw_config(tenant)
+
+# Run Python validator — catches semantic issues (plugin wiring, gateway security, etc.)
+issues = validate_openclaw_config(config)
+errors = [i for i in issues if i.severity == 'error']
+if errors:
+    print(f'FAIL: config has {len(errors)} validation error(s):')
+    for e in errors:
+        print(f'  {e.path}: {e.message}')
+    raise SystemExit(1)
+warnings = [i for i in issues if i.severity == 'warning']
+print(f'PASS: config validator ({len(warnings)} warnings)')
+
+pathlib.Path('$CONFIG_PATH').write_text(json.dumps(config))
 "
 
 chmod 600 "$CONFIG_PATH"

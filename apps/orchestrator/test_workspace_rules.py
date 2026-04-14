@@ -6,9 +6,10 @@ the upload mechanism was never wired. This test ensures:
 1. render_workspace_rules() discovers all .md files in the rules dir
 2. update_tenant_config() uploads each rule to workspace/rules/<filename>
 """
+
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -66,12 +67,14 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
     @patch("apps.orchestrator.services.upload_config_to_file_share")
     @patch("apps.orchestrator.services.config_to_json", return_value="{}")
     @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
+    @patch("apps.orchestrator.services._audit_and_log")
     @patch("apps.orchestrator.services.update_system_cron_prompts", return_value={"updated": 0})
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
     def test_update_tenant_config_uploads_rules(
         self,
         mock_upload_workspace_file,
         _mock_update_crons,
+        _mock_audit,
         _mock_generate_config,
         _mock_config_to_json,
         _mock_upload_config,
@@ -89,7 +92,8 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
         # Verify at least the new workspaces.md rule was uploaded
         rules_paths = [p for p in uploaded_paths if "workspace/rules/" in p]
         self.assertGreater(
-            len(rules_paths), 0,
+            len(rules_paths),
+            0,
             f"No rules uploaded. All paths: {uploaded_paths}",
         )
         self.assertTrue(

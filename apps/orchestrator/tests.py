@@ -1,15 +1,27 @@
 """Tests for orchestrator app."""
+
+import json
 import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
-from .config_generator import generate_openclaw_config
+
+from .config_generator import (
+    _build_heartbeat_cron,
+    _heartbeat_cron_expr,
+    build_cron_seed_jobs,
+    config_to_json,
+    generate_openclaw_config,
+)
+from .config_validator import validate_openclaw_config
 from .services import (
-    provision_tenant, deprovision_tenant, update_tenant_config,
+    deprovision_tenant,
+    provision_tenant,
     restore_user_cron_jobs,
+    update_tenant_config,
 )
 
 
@@ -91,7 +103,9 @@ class ConfigGeneratorTest(TestCase):
         self.assertIn("group:plugins", config["tools"]["allow"])
 
     def test_plugin_wiring_omitted_when_no_plugins_configured(self):
-        with override_settings(OPENCLAW_GOOGLE_PLUGIN_ID="", OPENCLAW_JOURNAL_PLUGIN_ID="", OPENCLAW_USAGE_PLUGIN_ID=""):
+        with override_settings(
+            OPENCLAW_GOOGLE_PLUGIN_ID="", OPENCLAW_JOURNAL_PLUGIN_ID="", OPENCLAW_USAGE_PLUGIN_ID=""
+        ):
             config = generate_openclaw_config(self.tenant)
 
         self.assertNotIn("plugins", config)
@@ -118,7 +132,6 @@ class ConfigGeneratorTest(TestCase):
         self.assertIn("gateway", tools["deny"])
         self.assertNotIn("group:automation", tools["deny"])
         self.assertNotIn("group:ui", tools["allow"])
-
 
     def test_channels_empty_no_telegram(self):
         """No Telegram channel — central Django poller handles all Telegram."""
@@ -147,6 +160,7 @@ class ConfigGeneratorTest(TestCase):
     def test_heartbeat_cron_uses_delivery_none(self):
         """Heartbeat cron uses delivery.mode='none' — sends via plugin, not built-in messaging."""
         from .config_generator import build_cron_seed_jobs
+
         self.tenant.heartbeat_enabled = True
         self.tenant.heartbeat_start_hour = 8
         self.tenant.heartbeat_window_hours = 6
@@ -158,17 +172,20 @@ class ConfigGeneratorTest(TestCase):
     def test_silent_cron_jobs_use_delivery_none(self):
         """Background-only cron jobs should use delivery.mode='none'."""
         from .config_generator import build_cron_seed_jobs
+
         jobs = build_cron_seed_jobs(self.tenant)
         for job in jobs:
             if job["name"] in ("Week Ahead Review", "Background Tasks"):
                 self.assertEqual(
-                    job["delivery"]["mode"], "none",
+                    job["delivery"]["mode"],
+                    "none",
                     f"{job['name']} should use delivery.mode='none'",
                 )
 
     def test_interactive_cron_jobs_have_delivery(self):
         """Interactive cron jobs (main session) have delivery config."""
         from .config_generator import build_cron_seed_jobs
+
         jobs = build_cron_seed_jobs(self.tenant)
         interactive = ["Morning Briefing", "Evening Check-in", "Weekly Reflection"]
         for job in jobs:
@@ -180,54 +197,67 @@ class ConfigGeneratorTest(TestCase):
     def test_all_seed_jobs_run_isolated(self):
         """Universal isolation: every cron job has sessionTarget=isolated."""
         from .config_generator import build_cron_seed_jobs
+
         self.tenant.heartbeat_enabled = True
         jobs = build_cron_seed_jobs(self.tenant)
         for job in jobs:
             self.assertEqual(
-                job["sessionTarget"], "isolated",
+                job["sessionTarget"],
+                "isolated",
                 f"{job['name']} must run isolated under universal isolation",
             )
             self.assertNotIn(
-                "wakeMode", job,
+                "wakeMode",
+                job,
                 f"{job['name']} should not carry wakeMode (only valid on main jobs)",
             )
             self.assertEqual(
-                job["payload"]["kind"], "agentTurn",
+                job["payload"]["kind"],
+                "agentTurn",
                 f"{job['name']} payload kind must be agentTurn",
             )
             self.assertIn(
-                "message", job["payload"],
+                "message",
+                job["payload"],
                 f"{job['name']} payload must use 'message' field, not 'text'",
             )
 
     def test_foreground_jobs_carry_phase2_sync_block(self):
         """Foreground seed jobs have the Phase 2 sync wrapper appended."""
         from .config_generator import build_cron_seed_jobs
+
         self.tenant.heartbeat_enabled = True
         jobs = build_cron_seed_jobs(self.tenant)
         foreground_names = {
-            "Morning Briefing", "Evening Check-in", "Weekly Reflection",
-            "Week Ahead Review", "Heartbeat Check-in",
+            "Morning Briefing",
+            "Evening Check-in",
+            "Weekly Reflection",
+            "Week Ahead Review",
+            "Heartbeat Check-in",
         }
         for job in jobs:
             if job["name"] in foreground_names:
                 msg = job["payload"]["message"]
                 self.assertIn(
-                    f"_sync:{job['name']}", msg,
+                    f"_sync:{job['name']}",
+                    msg,
                     f"{job['name']} should contain its sync cron name in the wrapper",
                 )
                 self.assertIn(
-                    "FINAL STEP — conditional sync", msg,
+                    "FINAL STEP — conditional sync",
+                    msg,
                     f"{job['name']} should carry the Phase 2 sync block",
                 )
                 self.assertIn(
-                    "Did you send the user a message", msg,
+                    "Did you send the user a message",
+                    msg,
                     f"{job['name']} should carry the conditional guard",
                 )
 
     def test_background_jobs_skip_phase2_sync_block(self):
         """Background seed jobs (foreground=false) do NOT carry the Phase 2 wrapper."""
         from .config_generator import build_cron_seed_jobs
+
         jobs = build_cron_seed_jobs(self.tenant)
         bg = next((j for j in jobs if j["name"] == "Background Tasks"), None)
         self.assertIsNotNone(bg)
@@ -238,12 +268,177 @@ class ConfigGeneratorTest(TestCase):
     def test_heartbeat_is_foreground_with_conditional_sync(self):
         """Heartbeat is foreground=true so it can sync on hours that nudged the user."""
         from .config_generator import build_cron_seed_jobs
+
         self.tenant.heartbeat_enabled = True
         jobs = build_cron_seed_jobs(self.tenant)
         hb = next((j for j in jobs if j["name"] == "Heartbeat Check-in"), None)
         self.assertIsNotNone(hb)
         self.assertIn("_sync:Heartbeat Check-in", hb["payload"]["message"])
         self.assertIn("HEARTBEAT_OK", hb["payload"]["message"])
+
+    # ── Config validator integration ────────────────────────────────
+
+    def test_validator_passes_for_generated_config(self):
+        """Generated config must pass validation with zero errors."""
+        config = generate_openclaw_config(self.tenant)
+        issues = validate_openclaw_config(config)
+        errors = [i for i in issues if i.severity == "error"]
+        self.assertEqual(errors, [], f"Config has validation errors: {errors}")
+
+    def test_config_round_trip_produces_valid_json(self):
+        """config_to_json(generate_openclaw_config(...)) must produce parseable JSON."""
+        config = generate_openclaw_config(self.tenant)
+        json_str = config_to_json(config)
+        parsed = json.loads(json_str)
+        self.assertEqual(parsed, config)
+
+    # ── Reddit plugin ───────────────────────────────────────────────
+
+    def test_reddit_plugin_loaded_when_integration_active(self):
+        from apps.integrations.models import Integration
+
+        Integration.objects.create(
+            tenant=self.tenant,
+            provider="reddit",
+            status=Integration.Status.ACTIVE,
+        )
+        config = generate_openclaw_config(self.tenant)
+        self.assertIn("plugins", config)
+        self.assertIn("nbhd-reddit-tools", config["plugins"]["allow"])
+        self.assertIn("nbhd-reddit-tools", config["plugins"]["entries"])
+
+    def test_reddit_plugin_not_loaded_without_integration(self):
+        with override_settings(
+            OPENCLAW_GOOGLE_PLUGIN_ID="",
+            OPENCLAW_JOURNAL_PLUGIN_ID="",
+            OPENCLAW_USAGE_PLUGIN_ID="",
+        ):
+            config = generate_openclaw_config(self.tenant)
+        self.assertNotIn("plugins", config)
+
+    # ── Finance plugin ──────────────────────────────────────────────
+
+    def test_finance_plugin_loaded_when_enabled(self):
+        self.tenant.finance_enabled = True
+        self.tenant.save()
+        config = generate_openclaw_config(self.tenant)
+        self.assertIn("plugins", config)
+        self.assertIn("nbhd-finance-tools", config["plugins"]["allow"])
+
+    def test_finance_plugin_not_loaded_when_disabled(self):
+        self.tenant.finance_enabled = False
+        self.tenant.save()
+        with override_settings(
+            OPENCLAW_GOOGLE_PLUGIN_ID="",
+            OPENCLAW_JOURNAL_PLUGIN_ID="",
+            OPENCLAW_USAGE_PLUGIN_ID="",
+        ):
+            config = generate_openclaw_config(self.tenant)
+        self.assertNotIn("plugins", config)
+
+    # ── Heartbeat cron ──────────────────────────────────────────────
+
+    def test_heartbeat_cron_expr_default(self):
+        """Default: start_hour=8, window=6 -> hours 8-13."""
+        expr = _heartbeat_cron_expr(8, 6)
+        self.assertEqual(expr, "0 8,9,10,11,12,13 * * *")
+
+    def test_heartbeat_cron_expr_midnight_wrapping(self):
+        """start_hour=22, window=6 -> wraps: 22,23,0,1,2,3."""
+        expr = _heartbeat_cron_expr(22, 6)
+        self.assertEqual(expr, "0 0,1,2,3,22,23 * * *")
+
+    def test_heartbeat_cron_disabled(self):
+        self.tenant.heartbeat_enabled = False
+        self.tenant.save()
+        result = _build_heartbeat_cron(self.tenant)
+        self.assertIsNone(result)
+
+    def test_heartbeat_cron_enabled_custom_window(self):
+        self.tenant.heartbeat_enabled = True
+        self.tenant.heartbeat_start_hour = 9
+        self.tenant.heartbeat_window_hours = 4
+        self.tenant.save()
+        result = _build_heartbeat_cron(self.tenant)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["name"], "Heartbeat Check-in")
+        self.assertIn("9,10,11,12", result["schedule"]["expr"])
+
+    # ── Task model preferences ──────────────────────────────────────
+
+    def test_task_model_preferences_override_cron_jobs(self):
+        self.tenant.task_model_preferences = {
+            "morning_briefing": "openrouter/qwen/qwen3-30b-a3b",
+        }
+        self.tenant.save()
+        jobs = build_cron_seed_jobs(self.tenant)
+        morning = next(j for j in jobs if j["name"] == "Morning Briefing")
+        self.assertEqual(morning["model"], "openrouter/qwen/qwen3-30b-a3b")
+
+    def test_task_model_preferences_no_override_leaves_default(self):
+        self.tenant.task_model_preferences = {}
+        self.tenant.save()
+        jobs = build_cron_seed_jobs(self.tenant)
+        morning = next(j for j in jobs if j["name"] == "Morning Briefing")
+        self.assertNotIn("model", morning)
+
+    # ── GWS skills ──────────────────────────────────────────────────
+
+    def test_gws_skills_loaded_when_google_active(self):
+        from apps.integrations.models import Integration
+
+        Integration.objects.create(
+            tenant=self.tenant,
+            provider="google",
+            status=Integration.Status.ACTIVE,
+        )
+        config = generate_openclaw_config(self.tenant)
+        extra_dirs = config.get("skills", {}).get("load", {}).get("extraDirs", [])
+        skill_names = [d.rstrip("/").rsplit("/", 1)[-1] for d in extra_dirs]
+        self.assertIn("gws-shared", skill_names)
+        self.assertIn("gws-gmail-triage", skill_names)
+        self.assertIn("nbhd-action-gate", skill_names)
+        # Validator should pass
+        issues = validate_openclaw_config(config)
+        errors = [i for i in issues if i.severity == "error"]
+        self.assertEqual(errors, [])
+
+    def test_gws_env_vars_set_when_google_active(self):
+        from apps.integrations.models import Integration
+
+        Integration.objects.create(
+            tenant=self.tenant,
+            provider="google",
+            status=Integration.Status.ACTIVE,
+        )
+        config = generate_openclaw_config(self.tenant)
+        env = config.get("env", {})
+        self.assertIn("NBHD_TENANT_ID", env)
+        self.assertEqual(env["NBHD_TENANT_ID"], str(self.tenant.id))
+
+    def test_gws_env_vars_absent_without_google(self):
+        config = generate_openclaw_config(self.tenant)
+        env = config.get("env", {})
+        self.assertNotIn("NBHD_TENANT_ID", env)
+
+    # ── Cron seed jobs ──────────────────────────────────────────────
+
+    def test_cron_seed_jobs_count_with_heartbeat(self):
+        self.tenant.heartbeat_enabled = True
+        self.tenant.save()
+        jobs = build_cron_seed_jobs(self.tenant)
+        names = [j["name"] for j in jobs]
+        self.assertIn("Morning Briefing", names)
+        self.assertIn("Evening Check-in", names)
+        self.assertIn("Background Tasks", names)
+        self.assertIn("Heartbeat Check-in", names)
+
+    def test_cron_seed_jobs_without_heartbeat(self):
+        self.tenant.heartbeat_enabled = False
+        self.tenant.save()
+        jobs = build_cron_seed_jobs(self.tenant)
+        names = [j["name"] for j in jobs]
+        self.assertNotIn("Heartbeat Check-in", names)
 
 
 class RestoreUserCronJobsTest(TestCase):

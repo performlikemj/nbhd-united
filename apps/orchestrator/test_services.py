@@ -1,4 +1,5 @@
 """Additional orchestrator service coverage."""
+
 from io import StringIO
 from unittest.mock import patch
 
@@ -6,9 +7,9 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 from apps.cron.gateway_client import GatewayError
+from apps.orchestrator.services import dedup_tenant_cron_jobs, deprovision_tenant, provision_tenant, seed_cron_jobs
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
-from apps.orchestrator.services import dedup_tenant_cron_jobs, deprovision_tenant, provision_tenant, seed_cron_jobs
 
 
 class OrchestratorServiceTest(TestCase):
@@ -24,7 +25,10 @@ class OrchestratorServiceTest(TestCase):
     )
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch("apps.orchestrator.services.assign_acr_pull_role")
-    @patch("apps.orchestrator.services.seed_cron_jobs", return_value={"tenant_id": "seed", "jobs_total": 5, "created": 5, "errors": 0})
+    @patch(
+        "apps.orchestrator.services.seed_cron_jobs",
+        return_value={"tenant_id": "seed", "jobs_total": 5, "created": 5, "errors": 0},
+    )
     @patch("apps.cron.views._schedule_qstash_task", create=True, return_value=None)
     @patch("apps.orchestrator.services.create_tenant_file_share")
     @patch("apps.orchestrator.services.register_environment_storage")
@@ -33,8 +37,10 @@ class OrchestratorServiceTest(TestCase):
         "apps.orchestrator.services.create_container_app",
         return_value={"name": "oc-tenant", "fqdn": "oc-tenant.internal.azurecontainerapps.io"},
     )
+    @patch("apps.orchestrator.services._audit_and_log")
     def test_provision_happy_path(
         self,
+        _mock_audit,
         _mock_create_container,
         _mock_upload_config,
         _mock_register_storage,
@@ -70,7 +76,10 @@ class OrchestratorServiceTest(TestCase):
     )
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch("apps.orchestrator.services.assign_acr_pull_role")
-    @patch("apps.orchestrator.services.seed_cron_jobs", return_value={"tenant_id": "seed", "jobs_total": 5, "created": 5, "errors": 0})
+    @patch(
+        "apps.orchestrator.services.seed_cron_jobs",
+        return_value={"tenant_id": "seed", "jobs_total": 5, "created": 5, "errors": 0},
+    )
     @patch("apps.cron.views._schedule_qstash_task", create=True, return_value=None)
     @patch("apps.orchestrator.services.create_tenant_file_share")
     @patch("apps.orchestrator.services.register_environment_storage")
@@ -79,8 +88,10 @@ class OrchestratorServiceTest(TestCase):
         "apps.orchestrator.services.create_container_app",
         return_value={"name": "oc-tenant", "fqdn": "oc-tenant.internal.azurecontainerapps.io"},
     )
+    @patch("apps.orchestrator.services._audit_and_log")
     def test_provision_skips_kv_role_assignment_for_env_backend(
         self,
+        _mock_audit,
         _mock_create_container,
         _mock_upload_config,
         _mock_register_storage,
@@ -97,6 +108,7 @@ class OrchestratorServiceTest(TestCase):
         _mock_assign_kv_role.assert_not_called()
 
     @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="keyvault")
+    @patch("apps.orchestrator.services._audit_and_log")
     @patch("apps.orchestrator.services.create_container_app", side_effect=RuntimeError("azure error"))
     @patch("apps.orchestrator.services.upload_config_to_file_share")
     @patch("apps.orchestrator.services.register_environment_storage")
@@ -120,6 +132,7 @@ class OrchestratorServiceTest(TestCase):
         _mock_register_storage,
         _mock_upload_config,
         _mock_create_container,
+        _mock_audit,
     ):
         with self.assertRaises(RuntimeError):
             provision_tenant(str(self.tenant.id))
@@ -146,8 +159,10 @@ class OrchestratorServiceTest(TestCase):
         "apps.orchestrator.services.create_container_app",
         return_value={"name": "oc-tenant", "fqdn": "oc-tenant.internal.azurecontainerapps.io"},
     )
+    @patch("apps.orchestrator.services._audit_and_log")
     def test_post_provision_failure_preserves_active_status(
         self,
+        _mock_audit,
         _mock_create_container,
         _mock_upload_config,
         _mock_register_storage,
@@ -183,7 +198,9 @@ class OrchestratorServiceTest(TestCase):
     @patch("apps.orchestrator.services.delete_managed_identity")
     @patch("apps.orchestrator.services.delete_tenant_file_share")
     @patch("apps.orchestrator.services.delete_container_app")
-    def test_deprovision_clears_container_fields(self, mock_delete_container, mock_delete_file_share, mock_delete_identity):
+    def test_deprovision_clears_container_fields(
+        self, mock_delete_container, mock_delete_file_share, mock_delete_identity
+    ):
         self.tenant.status = Tenant.Status.ACTIVE
         self.tenant.container_id = "oc-tenant"
         self.tenant.container_fqdn = "oc-tenant.internal.azurecontainerapps.io"
@@ -258,15 +275,17 @@ class SeedCronJobsTest(TestCase):
         mock_invoke,
         _mock_is_mock,
     ):
-        mock_invoke.return_value = {"jobs": [
-            {"name": "Morning Briefing"},
-            {"name": "Evening Check-in"},
-            {"name": "Weekly Reflection"},
-            {"name": "Week Ahead Review"},
-            {"name": "Project Check-in"},
-            {"name": "Background Tasks"},
-            {"name": "Heartbeat Check-in"},
-        ]}
+        mock_invoke.return_value = {
+            "jobs": [
+                {"name": "Morning Briefing"},
+                {"name": "Evening Check-in"},
+                {"name": "Weekly Reflection"},
+                {"name": "Week Ahead Review"},
+                {"name": "Project Check-in"},
+                {"name": "Background Tasks"},
+                {"name": "Heartbeat Check-in"},
+            ]
+        }
 
         result = seed_cron_jobs(self.tenant)
 
@@ -290,11 +309,13 @@ class SeedCronJobsTest(TestCase):
         """When some jobs already exist, only the missing ones are created."""
         mock_invoke.side_effect = [
             # initial cron.list — 3 of 7 already exist
-            {"jobs": [
-                {"name": "Morning Briefing"},
-                {"name": "Evening Check-in"},
-                {"name": "Week Ahead Review"},
-            ]},
+            {
+                "jobs": [
+                    {"name": "Morning Briefing"},
+                    {"name": "Evening Check-in"},
+                    {"name": "Week Ahead Review"},
+                ]
+            },
             # cron.add for the 4 missing jobs
             {"name": "Weekly Reflection", "enabled": True},
             {"name": "Project Check-in", "enabled": True},
@@ -434,10 +455,7 @@ class DedupTenantCronJobsTest(TestCase):
         self.assertEqual(result["deleted"], 2)
         self.assertEqual(result["errors"], 0)
         # Verify the right jobs were deleted (old and mid, not new)
-        remove_calls = [
-            c for c in mock_invoke.call_args_list
-            if c.args[1] == "cron.remove"
-        ]
+        remove_calls = [c for c in mock_invoke.call_args_list if c.args[1] == "cron.remove"]
         deleted_ids = {c.kwargs.get("jobId") or c.args[2].get("jobId") for c in remove_calls}
         self.assertIn("mid-1", deleted_ids)
         self.assertIn("old-1", deleted_ids)
@@ -446,10 +464,12 @@ class DedupTenantCronJobsTest(TestCase):
     @patch("apps.orchestrator.services.invoke_gateway_tool")
     def test_dedup_no_duplicates(self, mock_invoke):
         """When no duplicates exist, nothing is deleted."""
-        mock_invoke.return_value = {"jobs": [
-            {"name": "Morning Briefing", "id": "1"},
-            {"name": "Evening Check-in", "id": "2"},
-        ]}
+        mock_invoke.return_value = {
+            "jobs": [
+                {"name": "Morning Briefing", "id": "1"},
+                {"name": "Evening Check-in", "id": "2"},
+            ]
+        }
 
         result = dedup_tenant_cron_jobs(self.tenant)
 
