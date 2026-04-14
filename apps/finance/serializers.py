@@ -1,4 +1,5 @@
 """Finance serializers for consumer API and runtime endpoints."""
+
 from rest_framework import serializers
 
 from .models import FinanceAccount, FinanceSnapshot, FinanceTransaction, PayoffPlan
@@ -11,10 +12,20 @@ class FinanceAccountSerializer(serializers.ModelSerializer):
     class Meta:
         model = FinanceAccount
         fields = [
-            "id", "account_type", "nickname", "current_balance",
-            "original_balance", "interest_rate", "minimum_payment",
-            "credit_limit", "due_day", "is_active", "is_debt",
-            "payoff_progress", "created_at", "updated_at",
+            "id",
+            "account_type",
+            "nickname",
+            "current_balance",
+            "original_balance",
+            "interest_rate",
+            "minimum_payment",
+            "credit_limit",
+            "due_day",
+            "is_active",
+            "is_debt",
+            "payoff_progress",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
@@ -32,8 +43,14 @@ class FinanceTransactionSerializer(serializers.ModelSerializer):
     class Meta:
         model = FinanceTransaction
         fields = [
-            "id", "account", "account_nickname", "transaction_type",
-            "amount", "description", "date", "created_at",
+            "id",
+            "account",
+            "account_nickname",
+            "transaction_type",
+            "amount",
+            "description",
+            "date",
+            "created_at",
         ]
         read_only_fields = ["id", "created_at"]
 
@@ -46,9 +63,17 @@ class PayoffPlanSerializer(serializers.ModelSerializer):
     class Meta:
         model = PayoffPlan
         fields = [
-            "id", "strategy", "monthly_budget", "total_debt",
-            "total_interest", "payoff_months", "payoff_date",
-            "schedule_json", "is_active", "created_at", "updated_at",
+            "id",
+            "strategy",
+            "monthly_budget",
+            "total_debt",
+            "total_interest",
+            "payoff_months",
+            "payoff_date",
+            "schedule_json",
+            "is_active",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
@@ -57,8 +82,13 @@ class FinanceSnapshotSerializer(serializers.ModelSerializer):
     class Meta:
         model = FinanceSnapshot
         fields = [
-            "id", "date", "total_debt", "total_savings",
-            "total_payments_this_month", "accounts_json", "created_at",
+            "id",
+            "date",
+            "total_debt",
+            "total_savings",
+            "total_payments_this_month",
+            "accounts_json",
+            "created_at",
         ]
         read_only_fields = ["id", "created_at"]
 

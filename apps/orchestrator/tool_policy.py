@@ -5,6 +5,7 @@ Policy intentionally uses documented config keys:
 - tools.deny
 - tools.elevated
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -44,6 +45,7 @@ STARTER_ALLOW: tuple[str, ...] = (
     "tts",
     "image",
 )
+
 
 def get_allowed_tools(tier: str = "starter") -> list[str]:
     """Return documented allow-list entries for a subscriber tier."""

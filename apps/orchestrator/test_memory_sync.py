@@ -1,4 +1,5 @@
 """Tests for memory_sync module."""
+
 from __future__ import annotations
 
 from datetime import timedelta

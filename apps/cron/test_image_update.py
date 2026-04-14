@@ -1,4 +1,5 @@
 """Tests for image auto-update behavior in apply_pending_configs."""
+
 from __future__ import annotations
 
 from datetime import timedelta

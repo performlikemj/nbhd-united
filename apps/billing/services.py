@@ -1,4 +1,5 @@
 """Billing services — Stripe webhook handling and usage tracking."""
+
 from __future__ import annotations
 
 import logging
@@ -8,15 +9,16 @@ from decimal import Decimal
 from django.db.models import F
 
 from apps.tenants.models import Tenant
+
+from .constants import DEFAULT_RATE as MODELS_DEFAULT_RATE
+from .constants import MODEL_RATES
 from .models import MonthlyBudget, UsageRecord
-from .constants import DEFAULT_RATE as MODELS_DEFAULT_RATE, MODEL_RATES
 
 logger = logging.getLogger(__name__)
 
 # Cost per 1M tokens (approximate, for budget tracking)
 MODEL_COSTS: dict[str, dict[str, float]] = {
-    key: {"input": value["input"], "output": value["output"]}
-    for key, value in MODEL_RATES.items()
+    key: {"input": value["input"], "output": value["output"]} for key, value in MODEL_RATES.items()
 }
 DEFAULT_COST = {"input": MODELS_DEFAULT_RATE["input"], "output": MODELS_DEFAULT_RATE["output"]}
 
@@ -60,9 +62,7 @@ def record_usage(
 ) -> UsageRecord:
     """Record a usage event and update tenant counters."""
     costs = MODEL_COSTS.get(model_used, DEFAULT_COST)
-    cost = Decimal(str(
-        (input_tokens * costs["input"] + output_tokens * costs["output"]) / 1_000_000
-    ))
+    cost = Decimal(str((input_tokens * costs["input"] + output_tokens * costs["output"]) / 1_000_000))
 
     record = UsageRecord.objects.create(
         tenant=tenant,
@@ -144,11 +144,19 @@ def handle_checkout_completed(session_data: dict) -> None:
         should_provision = True
         should_wake = False
 
-    tenant.save(update_fields=[
-        "stripe_customer_id", "stripe_subscription_id",
-        "model_tier", "is_trial", "status", "monthly_token_budget",
-        "monthly_cost_budget", "hibernated_at", "updated_at",
-    ])
+    tenant.save(
+        update_fields=[
+            "stripe_customer_id",
+            "stripe_subscription_id",
+            "model_tier",
+            "is_trial",
+            "status",
+            "monthly_token_budget",
+            "monthly_cost_budget",
+            "hibernated_at",
+            "updated_at",
+        ]
+    )
 
     if was_provisioning and same_subscription:
         logger.info("Tenant %s already provisioning for current subscription", tenant.id)
@@ -157,6 +165,7 @@ def handle_checkout_completed(session_data: dict) -> None:
     if should_wake and tenant.container_id:
         try:
             from apps.orchestrator.azure_client import scale_container_app
+
             scale_container_app(tenant.container_id, min_replicas=1, max_replicas=1)
             logger.info("Woke container %s for reactivated tenant %s", tenant.container_id, tenant.id)
 
@@ -172,12 +181,14 @@ def handle_checkout_completed(session_data: dict) -> None:
             # Re-enable cron jobs that were disabled during suspension
             try:
                 from apps.cron.suspension import resume_tenant_crons
+
                 # Refresh tenant to get updated status
                 tenant.refresh_from_db()
                 cron_result = resume_tenant_crons(tenant)
                 logger.info(
                     "Re-enabled %d cron jobs for reactivated tenant %s",
-                    cron_result.get("enabled", 0), tenant.id,
+                    cron_result.get("enabled", 0),
+                    tenant.id,
                 )
             except Exception:
                 logger.exception(
@@ -185,7 +196,9 @@ def handle_checkout_completed(session_data: dict) -> None:
                     tenant.id,
                 )
         except Exception:
-            logger.exception("Failed to wake container %s for tenant %s — may need re-provisioning", tenant.container_id, tenant.id)
+            logger.exception(
+                "Failed to wake container %s for tenant %s — may need re-provisioning", tenant.container_id, tenant.id
+            )
 
     if should_provision:
         publish_task("provision_tenant", str(tenant.id))
@@ -218,12 +231,11 @@ def handle_subscription_deleted(subscription_data: dict) -> None:
         )
         try:
             from apps.tenants.views import _do_hard_delete
+
             user = tenant.user
             _do_hard_delete(user)
         except Exception:
-            logger.exception(
-                "Hard-delete failed for tenant %s after subscription ended", tenant.id
-            )
+            logger.exception("Hard-delete failed for tenant %s after subscription ended", tenant.id)
         return
 
     # Normal cancellation — deprovision container but keep user record.
@@ -254,10 +266,12 @@ def handle_invoice_payment_failed(invoice_data: dict) -> None:
     if tenant.container_fqdn:
         try:
             from apps.cron.suspension import suspend_tenant_crons
+
             cron_result = suspend_tenant_crons(tenant)
             logger.info(
                 "Disabled %d cron jobs for tenant %s before suspension",
-                cron_result.get("disabled", 0), tenant.id,
+                cron_result.get("disabled", 0),
+                tenant.id,
             )
         except Exception:
             logger.exception("Failed to suspend crons for tenant %s", tenant.id)
@@ -271,6 +285,7 @@ def handle_invoice_payment_failed(invoice_data: dict) -> None:
     if tenant.container_id:
         try:
             from apps.orchestrator.azure_client import scale_container_app
+
             scale_container_app(tenant.container_id, min_replicas=0, max_replicas=0)
             logger.info("Hibernated container %s for suspended tenant %s", tenant.container_id, tenant.id)
         except Exception:

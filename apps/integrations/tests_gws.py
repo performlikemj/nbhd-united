@@ -1,17 +1,18 @@
 """Tests for Google Workspace (gws) integration."""
+
 from __future__ import annotations
 
-import json
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 
-from apps.tenants.models import Tenant, User
+from apps.tenants.models import Tenant
 
 
 def _make_user(**kwargs):
     from django.contrib.auth import get_user_model
+
     User = get_user_model()
     defaults = {"username": f"gws_test_{User.objects.count()}", "password": "test123"}
     defaults.update(kwargs)
@@ -60,9 +61,7 @@ class GWSCredentialWriteTest(TestCase):
             "token_type": "Bearer",
         }
 
-        with patch(
-            "apps.integrations.services._write_gws_credentials_to_file_share"
-        ) as mock_write:
+        with patch("apps.integrations.services._write_gws_credentials_to_file_share") as mock_write:
             connect_integration(tenant, "google", tokens, provider_email="test@gmail.com")
             mock_write.assert_called_once_with(tenant, tokens)
 
@@ -79,12 +78,8 @@ class GWSCredentialWriteTest(TestCase):
             "expires_in": 3600,
         }
 
-        with patch(
-            "apps.integrations.services._write_gws_credentials_to_file_share"
-        ):
-            integration = connect_integration(
-                tenant, "google", tokens, provider_email="user@gmail.com"
-            )
+        with patch("apps.integrations.services._write_gws_credentials_to_file_share"):
+            integration = connect_integration(tenant, "google", tokens, provider_email="user@gmail.com")
             self.assertEqual(integration.provider_email, "user@gmail.com")
 
     def test_connect_non_google_does_not_write_gws(self, _mock_kv):
@@ -96,9 +91,7 @@ class GWSCredentialWriteTest(TestCase):
 
         tokens = {"access_token": "test", "refresh_token": "test"}
 
-        with patch(
-            "apps.integrations.services._write_gws_credentials_to_file_share"
-        ) as mock_write:
+        with patch("apps.integrations.services._write_gws_credentials_to_file_share") as mock_write:
             connect_integration(tenant, "sautai", tokens)
             mock_write.assert_not_called()
 
@@ -139,7 +132,6 @@ class GWSCredentialWriteTest(TestCase):
 
 
 class GWSDisconnectTest(TestCase):
-
     def test_disconnect_gmail_deletes_gws_creds(self):
         """Disconnecting Gmail also deletes gws-credentials.json."""
         from apps.integrations.models import Integration
@@ -155,9 +147,7 @@ class GWSDisconnectTest(TestCase):
             key_vault_secret_name="test-secret",
         )
 
-        with patch(
-            "apps.integrations.services._delete_gws_credentials_from_file_share"
-        ) as mock_delete:
+        with patch("apps.integrations.services._delete_gws_credentials_from_file_share") as mock_delete:
             with patch("apps.integrations.services.delete_tokens_from_key_vault"):
                 disconnect_integration(tenant, "google")
             mock_delete.assert_called_once_with(tenant)
@@ -177,9 +167,7 @@ class GWSDisconnectTest(TestCase):
             key_vault_secret_name="test-secret",
         )
 
-        with patch(
-            "apps.integrations.services._delete_gws_credentials_from_file_share"
-        ) as mock_delete:
+        with patch("apps.integrations.services._delete_gws_credentials_from_file_share") as mock_delete:
             with patch("apps.integrations.services.delete_tokens_from_key_vault"):
                 disconnect_integration(tenant, "sautai")
             mock_delete.assert_not_called()

@@ -3,6 +3,7 @@
 This module wraps the Azure SDK calls. In development/testing, set
 AZURE_MOCK=true to skip real Azure calls.
 """
+
 from __future__ import annotations
 
 import logging
@@ -60,9 +61,7 @@ def _build_container_secret(
     identity_id: str,
 ) -> dict[str, str]:
     """Build Container Apps secret payload using Key Vault by default."""
-    backend = str(
-        getattr(settings, "OPENCLAW_CONTAINER_SECRET_BACKEND", "keyvault") or "keyvault"
-    ).strip().lower()
+    backend = str(getattr(settings, "OPENCLAW_CONTAINER_SECRET_BACKEND", "keyvault") or "keyvault").strip().lower()
     if backend == "keyvault":
         vault_name = str(getattr(settings, "AZURE_KEY_VAULT_NAME", "") or "").strip()
         kv_secret_name = str(key_vault_secret_name or "").strip()
@@ -146,9 +145,12 @@ def assign_key_vault_role(principal_id: str) -> None:
     role_def_id = f"{scope}/providers/Microsoft.Authorization/roleDefinitions/{KV_SECRETS_USER_ROLE}"
 
     # Deterministic UUID → idempotent (same identity + role + scope = same assignment name)
-    assignment_name = str(uuid.uuid5(
-        uuid.NAMESPACE_URL, f"{principal_id}:{KV_SECRETS_USER_ROLE}:{scope}",
-    ))
+    assignment_name = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"{principal_id}:{KV_SECRETS_USER_ROLE}:{scope}",
+        )
+    )
 
     from azure.mgmt.authorization.models import RoleAssignmentCreateParameters
 
@@ -196,9 +198,12 @@ def assign_acr_pull_role(principal_id: str) -> None:
     )
     role_def_id = f"{scope}/providers/Microsoft.Authorization/roleDefinitions/{ACR_PULL_ROLE}"
 
-    assignment_name = str(uuid.uuid5(
-        uuid.NAMESPACE_URL, f"{principal_id}:{ACR_PULL_ROLE}:{scope}",
-    ))
+    assignment_name = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"{principal_id}:{ACR_PULL_ROLE}:{scope}",
+        )
+    )
 
     from azure.mgmt.authorization.models import RoleAssignmentCreateParameters
 
@@ -329,7 +334,8 @@ def upload_config_to_file_share(tenant_id: str, config_json: str) -> None:
 
     storage_client = get_storage_client()
     keys = storage_client.storage_accounts.list_keys(
-        settings.AZURE_RESOURCE_GROUP, account_name,
+        settings.AZURE_RESOURCE_GROUP,
+        account_name,
     )
     account_key = keys.keys[0].value
     account_url = f"https://{account_name}.file.core.windows.net"
@@ -369,7 +375,8 @@ def upload_workspace_file(tenant_id: str, file_path: str, content: str) -> None:
 
     storage_client = get_storage_client()
     keys = storage_client.storage_accounts.list_keys(
-        settings.AZURE_RESOURCE_GROUP, account_name,
+        settings.AZURE_RESOURCE_GROUP,
+        account_name,
     )
     account_key = keys.keys[0].value
 
@@ -417,11 +424,12 @@ def upload_workspace_file_binary(tenant_id: str, file_path: str, data: bytes) ->
     if not account_name:
         raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
 
-    from azure.storage.fileshare import ShareFileClient, ShareDirectoryClient
+    from azure.storage.fileshare import ShareDirectoryClient, ShareFileClient
 
     storage_client = get_storage_client()
     keys = storage_client.storage_accounts.list_keys(
-        settings.AZURE_RESOURCE_GROUP, account_name,
+        settings.AZURE_RESOURCE_GROUP,
+        account_name,
     )
     account_key = keys.keys[0].value
 
@@ -476,7 +484,8 @@ def register_environment_storage(tenant_id: str) -> None:
     # Get storage account key programmatically
     storage_client = get_storage_client()
     keys = storage_client.storage_accounts.list_keys(
-        settings.AZURE_RESOURCE_GROUP, account_name,
+        settings.AZURE_RESOURCE_GROUP,
+        account_name,
     )
     account_key = keys.keys[0].value
 
@@ -651,20 +660,20 @@ def create_container_app(
                             # provisioning and never re-reads it on image
                             # updates. The --require loads a targeted handler
                             # for OpenClaw's chmod EPERM on root-owned volumes.
-                            {"name": "NODE_OPTIONS", "value": (
-                                "--max-old-space-size=1024 "
-                                "--dns-result-order=ipv4first "
-                                "--no-network-family-autoselection "
-                                "--require /opt/nbhd/suppress-chmod-eperm.js"
-                            )},
+                            {
+                                "name": "NODE_OPTIONS",
+                                "value": (
+                                    "--max-old-space-size=1024 "
+                                    "--dns-result-order=ipv4first "
+                                    "--no-network-family-autoselection "
+                                    "--require /opt/nbhd/suppress-chmod-eperm.js"
+                                ),
+                            },
                             # Disable mDNS/bonjour — useless on Container Apps
                             # and causes intermittent CIAO ANNOUNCEMENT CANCELLED
                             # crashes on startup.
                             {"name": "OPENCLAW_DISABLE_BONJOUR", "value": "1"},
-                            *[
-                                {"name": k, "value": v}
-                                for k, v in (workspace_env or {}).items()
-                            ],
+                            *[{"name": k, "value": v} for k, v in (workspace_env or {}).items()],
                         ],
                         "volumeMounts": [
                             {"volumeName": "workspace", "mountPath": "/home/node/.openclaw"},
@@ -695,7 +704,9 @@ def create_container_app(
     }
 
     result = client.container_apps.begin_create_or_update(
-        settings.AZURE_RESOURCE_GROUP, container_name, container_app,
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+        container_app,
     ).result()
 
     # SDK v4 flattens the model — try direct attributes first, then nested .properties
@@ -718,7 +729,8 @@ def update_container_env_var(
 
     client = get_container_client()
     app = client.container_apps.get(
-        settings.AZURE_RESOURCE_GROUP, container_name,
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
     )
 
     for container in app.template.containers:
@@ -732,7 +744,9 @@ def update_container_env_var(
         container.env = env_list
 
     client.container_apps.begin_create_or_update(
-        settings.AZURE_RESOURCE_GROUP, container_name, app,
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+        app,
     ).result()
     logger.info("Updated env var %s on container %s", env_name, container_name)
 
@@ -778,7 +792,8 @@ def update_container_image(container_name: str, image: str) -> None:
 
     client = get_container_client()
     app = client.container_apps.get(
-        settings.AZURE_RESOURCE_GROUP, container_name,
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
     )
 
     for container in app.template.containers:
@@ -794,7 +809,9 @@ def update_container_image(container_name: str, image: str) -> None:
     app.template.revision_suffix = f"u{suffix}"
 
     client.container_apps.begin_create_or_update(
-        settings.AZURE_RESOURCE_GROUP, container_name, app,
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+        app,
     ).result()
     logger.info("Updated image to %s on %s (revision suffix: u%s)", image, container_name, suffix)
 
@@ -883,7 +900,8 @@ def delete_container_app(container_name: str) -> None:
     client = get_container_client()
     try:
         client.container_apps.begin_delete(
-            settings.AZURE_RESOURCE_GROUP, container_name,
+            settings.AZURE_RESOURCE_GROUP,
+            container_name,
         ).result()
     except Exception:
         logger.exception("Failed to delete container %s", container_name)

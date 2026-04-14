@@ -1,14 +1,14 @@
 """Router webhook view tests."""
+
 import json
 from unittest.mock import AsyncMock, patch
 
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from django.test import TestCase, override_settings
-
+from apps.router.services import clear_cache, clear_rate_limits
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
-from apps.router.services import clear_cache, clear_rate_limits
 
 
 @override_settings(TELEGRAM_WEBHOOK_SECRET="test-secret", ROUTER_RATE_LIMIT_PER_MINUTE=10)
@@ -68,7 +68,7 @@ class TelegramWebhookViewTest(TestCase):
         tenant.status = Tenant.Status.SUSPENDED
         tenant.is_trial = False
         tenant.container_fqdn = "oc-inactive.internal.azurecontainerapps.io"
-        tenant.save(update_fields=["status", "is_trial", "container_fqdn", "updated_at"] )
+        tenant.save(update_fields=["status", "is_trial", "container_fqdn", "updated_at"])
 
         response = self._post_update({"message": {"chat": {"id": 777222}}})
 
@@ -144,9 +144,7 @@ class TelegramWebhookViewTest(TestCase):
 
     @patch("apps.router.views.record_usage")
     @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
-    def test_active_tenant_records_usage_with_raw_token_fields_and_string_values(
-        self, mock_forward, mock_record_usage
-    ):
+    def test_active_tenant_records_usage_with_raw_token_fields_and_string_values(self, mock_forward, mock_record_usage):
         tenant = create_tenant(display_name="ActiveAliasedUsage", telegram_chat_id=123459)
         tenant.status = Tenant.Status.ACTIVE
         tenant.container_fqdn = "oc-active.internal.azurecontainerapps.io"
@@ -185,8 +183,11 @@ class TelegramWebhookViewTest(TestCase):
         tenant.container_fqdn = "oc-active.internal.azurecontainerapps.io"
         tenant.save(
             update_fields=[
-                "status", "monthly_cost_budget", "estimated_cost_this_month",
-                "container_fqdn", "updated_at",
+                "status",
+                "monthly_cost_budget",
+                "estimated_cost_this_month",
+                "container_fqdn",
+                "updated_at",
             ]
         )
 

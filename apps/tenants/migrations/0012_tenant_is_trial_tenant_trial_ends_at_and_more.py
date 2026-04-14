@@ -4,25 +4,24 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0011_tenant_config_version_tenant_pending_config_version'),
+        ("tenants", "0011_tenant_config_version_tenant_pending_config_version"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='tenant',
-            name='is_trial',
-            field=models.BooleanField(default=False, help_text='Currently on free trial'),
+            model_name="tenant",
+            name="is_trial",
+            field=models.BooleanField(default=False, help_text="Currently on free trial"),
         ),
         migrations.AddField(
-            model_name='tenant',
-            name='trial_ends_at',
-            field=models.DateTimeField(blank=True, help_text='When free trial expires', null=True),
+            model_name="tenant",
+            name="trial_ends_at",
+            field=models.DateTimeField(blank=True, help_text="When free trial expires", null=True),
         ),
         migrations.AddField(
-            model_name='tenant',
-            name='trial_started_at',
-            field=models.DateTimeField(blank=True, help_text='When free trial began', null=True),
+            model_name="tenant",
+            name="trial_started_at",
+            field=models.DateTimeField(blank=True, help_text="When free trial began", null=True),
         ),
     ]

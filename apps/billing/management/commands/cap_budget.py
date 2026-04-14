@@ -19,11 +19,13 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         group = parser.add_mutually_exclusive_group()
         group.add_argument(
-            "--uncap", action="store_true",
+            "--uncap",
+            action="store_true",
             help="Uncap the budget (resume service).",
         )
         group.add_argument(
-            "--status", action="store_true",
+            "--status",
+            action="store_true",
             help="Show current budget status without changing anything.",
         )
 
@@ -47,14 +49,14 @@ class Command(BaseCommand):
             # Set spent to 0 to uncap
             budget.spent_dollars = 0
             budget.save(update_fields=["spent_dollars"])
-            self.stdout.write(self.style.SUCCESS(
-                f"Budget uncapped. Spent reset to $0 / ${budget.budget_dollars}."
-            ))
+            self.stdout.write(self.style.SUCCESS(f"Budget uncapped. Spent reset to $0 / ${budget.budget_dollars}."))
         else:
             # Set spent = budget to cap
             budget.spent_dollars = budget.budget_dollars
             budget.save(update_fields=["spent_dollars"])
-            self.stdout.write(self.style.WARNING(
-                f"Budget capped. Spent set to ${budget.spent_dollars} / ${budget.budget_dollars}. "
-                "All messages will show the platform budget exceeded notice."
-            ))
+            self.stdout.write(
+                self.style.WARNING(
+                    f"Budget capped. Spent set to ${budget.spent_dollars} / ${budget.budget_dollars}. "
+                    "All messages will show the platform budget exceeded notice."
+                )
+            )

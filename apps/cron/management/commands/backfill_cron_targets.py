@@ -1,4 +1,5 @@
 """Management command to backfill Telegram delivery targets for cron jobs."""
+
 from __future__ import annotations
 
 from django.core.management.base import BaseCommand
@@ -27,19 +28,13 @@ class Command(BaseCommand):
             try:
                 jobs_result = invoke_gateway_tool(tenant, "cron.list", {})
             except GatewayError as exc:
-                self.stderr.write(
-                    self.style.WARNING(
-                        f"Skipping tenant {tenant.id} (container unavailable): {exc}"
-                    )
-                )
+                self.stderr.write(self.style.WARNING(f"Skipping tenant {tenant.id} (container unavailable): {exc}"))
                 continue
 
             jobs = jobs_result.get("jobs", [])
             if not isinstance(jobs, list):
                 self.stderr.write(
-                    self.style.WARNING(
-                        f"Skipping tenant {tenant.id}: unexpected cron.list response shape"
-                    )
+                    self.style.WARNING(f"Skipping tenant {tenant.id}: unexpected cron.list response shape")
                 )
                 continue
 
@@ -62,9 +57,7 @@ class Command(BaseCommand):
                 job_id = job.get("jobId") or job.get("name") or job.get("id")
                 if not job_id:
                     self.stderr.write(
-                        self.style.WARNING(
-                            f"Tenant {tenant.id}: job missing identifier, skipping: {job}"
-                        )
+                        self.style.WARNING(f"Tenant {tenant.id}: job missing identifier, skipping: {job}")
                     )
                     continue
 
@@ -88,23 +81,11 @@ class Command(BaseCommand):
                         f"Updated tenant {tenant.id}: job {job_id} delivery.to = {tenant.user.telegram_chat_id}"
                     )
                 except GatewayError as exc:
-                    self.stderr.write(
-                        self.style.WARNING(
-                            f"Failed tenant {tenant.id} job {job_id}: {exc}"
-                        )
-                    )
+                    self.stderr.write(self.style.WARNING(f"Failed tenant {tenant.id} job {job_id}: {exc}"))
 
             if tenant_updates:
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f"Tenant {tenant.id}: updated {tenant_updates} jobs."
-                    )
-                )
+                self.stdout.write(self.style.SUCCESS(f"Tenant {tenant.id}: updated {tenant_updates} jobs."))
             else:
-                self.stdout.write(
-                    f"Tenant {tenant.id}: no updates needed."
-                )
+                self.stdout.write(f"Tenant {tenant.id}: no updates needed.")
 
-        self.stdout.write(
-            self.style.SUCCESS(f"Backfill complete. Total updated jobs: {updated_total}")
-        )
+        self.stdout.write(self.style.SUCCESS(f"Backfill complete. Total updated jobs: {updated_total}"))

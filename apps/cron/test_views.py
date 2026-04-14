@@ -1,20 +1,30 @@
 """Tests for QStash cron trigger endpoints."""
+
 from __future__ import annotations
 
 import json
-
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
-from unittest.mock import patch
 
 from apps.tenants.models import Tenant, User
 
 
-def _create_tenant_with_config_state(*, active: bool = True, config_version: int = 0, pending_config_version: int = 0, last_message_at=None, has_container: bool = True, suffix: int = 0):
-    user = User.objects.create_user(username=f"user-{pending_config_version}-{config_version}-{suffix}", password="testpass123")
+def _create_tenant_with_config_state(
+    *,
+    active: bool = True,
+    config_version: int = 0,
+    pending_config_version: int = 0,
+    last_message_at=None,
+    has_container: bool = True,
+    suffix: int = 0,
+):
+    user = User.objects.create_user(
+        username=f"user-{pending_config_version}-{config_version}-{suffix}", password="testpass123"
+    )
     tenant = Tenant.objects.create(
         user=user,
         status=Tenant.Status.ACTIVE if active else Tenant.Status.PENDING,

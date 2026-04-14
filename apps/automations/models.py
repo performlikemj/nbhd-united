@@ -1,4 +1,5 @@
 """Automation models for proactive assistant workflows."""
+
 from __future__ import annotations
 
 import uuid
@@ -62,9 +63,7 @@ class AutomationRun(models.Model):
     automation = models.ForeignKey(Automation, on_delete=models.CASCADE, related_name="runs")
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="automation_runs")
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
-    trigger_source = models.CharField(
-        max_length=16, choices=TriggerSource.choices, default=TriggerSource.SCHEDULE
-    )
+    trigger_source = models.CharField(max_length=16, choices=TriggerSource.choices, default=TriggerSource.SCHEDULE)
     scheduled_for = models.DateTimeField()
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)

@@ -1,4 +1,5 @@
 """Tenant context middleware and RLS helpers."""
+
 import logging
 import threading
 import zoneinfo
@@ -26,17 +27,11 @@ def set_rls_context(*, tenant_id=None, user_id=None, service_role=False):
     """
     with connection.cursor() as cursor:
         if tenant_id:
-            cursor.execute(
-                "SELECT set_config('app.tenant_id', %s, false)", [str(tenant_id)]
-            )
+            cursor.execute("SELECT set_config('app.tenant_id', %s, false)", [str(tenant_id)])
         if user_id:
-            cursor.execute(
-                "SELECT set_config('app.user_id', %s, false)", [str(user_id)]
-            )
+            cursor.execute("SELECT set_config('app.user_id', %s, false)", [str(user_id)])
         if service_role:
-            cursor.execute(
-                "SELECT set_config('app.service_role', 'true', false)"
-            )
+            cursor.execute("SELECT set_config('app.service_role', 'true', false)")
 
 
 def reset_rls_context():

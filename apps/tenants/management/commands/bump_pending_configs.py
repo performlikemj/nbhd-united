@@ -15,8 +15,4 @@ class Command(BaseCommand):
             container_id__gt="",
         ).update(pending_config_version=F("config_version") + 1)
 
-        self.stdout.write(
-            self.style.SUCCESS(
-                f"Bumped pending_config_version for {count} tenant(s)."
-            )
-        )
+        self.stdout.write(self.style.SUCCESS(f"Bumped pending_config_version for {count} tenant(s)."))

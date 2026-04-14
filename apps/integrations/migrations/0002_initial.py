@@ -6,42 +6,49 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies = [
-        ('integrations', '0001_initial'),
-        ('tenants', '0001_initial'),
+        ("integrations", "0001_initial"),
+        ("tenants", "0001_initial"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='integration',
-            name='tenant',
-            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='integrations', to='tenants.tenant'),
+            model_name="integration",
+            name="tenant",
+            field=models.ForeignKey(
+                on_delete=django.db.models.deletion.CASCADE, related_name="integrations", to="tenants.tenant"
+            ),
         ),
         migrations.AddField(
-            model_name='integration',
-            name='user',
-            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='integrations', to=settings.AUTH_USER_MODEL),
+            model_name="integration",
+            name="user",
+            field=models.ForeignKey(
+                on_delete=django.db.models.deletion.CASCADE, related_name="integrations", to=settings.AUTH_USER_MODEL
+            ),
         ),
         migrations.AddField(
-            model_name='usersecret',
-            name='tenant',
-            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='secrets', to='tenants.tenant'),
+            model_name="usersecret",
+            name="tenant",
+            field=models.ForeignKey(
+                on_delete=django.db.models.deletion.CASCADE, related_name="secrets", to="tenants.tenant"
+            ),
         ),
         migrations.AddField(
-            model_name='usersecret',
-            name='user',
-            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='secrets', to=settings.AUTH_USER_MODEL),
+            model_name="usersecret",
+            name="user",
+            field=models.ForeignKey(
+                on_delete=django.db.models.deletion.CASCADE, related_name="secrets", to=settings.AUTH_USER_MODEL
+            ),
         ),
         migrations.AlterUniqueTogether(
-            name='integration',
-            unique_together={('tenant', 'provider')},
+            name="integration",
+            unique_together={("tenant", "provider")},
         ),
         migrations.AlterUniqueTogether(
-            name='usersecret',
-            unique_together={('tenant', 'name')},
+            name="usersecret",
+            unique_together={("tenant", "name")},
         ),
     ]

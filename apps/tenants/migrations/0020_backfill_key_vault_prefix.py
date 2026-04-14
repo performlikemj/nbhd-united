@@ -11,7 +11,6 @@ def backfill(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("tenants", "0019_line_fields_and_link_token"),
     ]

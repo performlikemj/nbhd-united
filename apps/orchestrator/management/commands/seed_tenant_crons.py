@@ -18,12 +18,8 @@ class Command(BaseCommand):
 
         self.stdout.write(f"Result: {result}")
         if result.get("skipped"):
-            self.stdout.write(self.style.WARNING(
-                f"Tenant already has cron jobs — skipped (found existing jobs)"
-            ))
+            self.stdout.write(self.style.WARNING("Tenant already has cron jobs — skipped (found existing jobs)"))
         elif result.get("created", 0) > 0:
-            self.stdout.write(self.style.SUCCESS(
-                f"Created {result['created']} cron jobs for tenant {tenant_id}"
-            ))
+            self.stdout.write(self.style.SUCCESS(f"Created {result['created']} cron jobs for tenant {tenant_id}"))
         else:
             self.stdout.write(self.style.WARNING("No jobs created"))

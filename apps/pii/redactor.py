@@ -4,6 +4,7 @@ Detects and replaces PII in text before it's sent to model providers.
 Uses tier-based policies: starter tier gets full redaction (OpenRouter),
 premium gets financial-only (Anthropic direct), BYOK is off.
 """
+
 from __future__ import annotations
 
 import logging
@@ -55,9 +56,13 @@ def redact_text(
 
     try:
         result, _ = _redact(
-            text, entities, policy["score_threshold"],
-            allow_names or set(), tenant,
-            type_counters={}, entity_map={},
+            text,
+            entities,
+            policy["score_threshold"],
+            allow_names or set(),
+            tenant,
+            type_counters={},
+            entity_map={},
         )
         return result
     except Exception:
@@ -111,8 +116,11 @@ class RedactionSession:
 
         try:
             result, _ = _redact(
-                text, self.entities, self.score_threshold,
-                self.allow_names, self.tenant,
+                text,
+                self.entities,
+                self.score_threshold,
+                self.allow_names,
+                self.tenant,
                 type_counters=self._type_counters,
                 entity_map=self.entity_map,
             )
@@ -225,7 +233,7 @@ def _redact_user_message(
                 allow_names.add(display_name)
                 parts = display_name.split()
                 if len(parts) > 1:
-                    allow_names.add(parts[0])   # first name
+                    allow_names.add(parts[0])  # first name
                     allow_names.add(parts[-1])  # last name
                 elif parts:
                     allow_names.add(parts[0])
@@ -240,7 +248,7 @@ def _redact_user_message(
     results = _filter_results(results, out, allow_names)
 
     # Filter out results that overlap with already-replaced placeholders
-    results = [r for r in results if not _PLACEHOLDER_RE.match(out[r.start:r.end])]
+    results = [r for r in results if not _PLACEHOLDER_RE.match(out[r.start : r.end])]
 
     if not results:
         return out
@@ -251,7 +259,7 @@ def _redact_user_message(
 
     for result in sorted_results:
         etype = result.entity_type
-        original = out[result.start:result.end]
+        original = out[result.start : result.end]
 
         # Skip if this text is already a placeholder
         if _PLACEHOLDER_RE.match(original):
@@ -324,12 +332,25 @@ def redact_tool_response(data: Any, tenant: Tenant) -> Any:
 
 
 # Keys whose values should NOT be redacted (IDs, URLs, timestamps, etc.)
-_TOOL_SKIP_KEYS = frozenset({
-    "id", "thread_id", "html_link", "internal_date", "date",
-    "status", "next_page_token", "result_size_estimate",
-    "provider", "tenant_id", "label_ids", "start", "end",
-    "message_id", "update_id",
-})
+_TOOL_SKIP_KEYS = frozenset(
+    {
+        "id",
+        "thread_id",
+        "html_link",
+        "internal_date",
+        "date",
+        "status",
+        "next_page_token",
+        "result_size_estimate",
+        "provider",
+        "tenant_id",
+        "label_ids",
+        "start",
+        "end",
+        "message_id",
+        "update_id",
+    }
+)
 
 
 def _redact_tool_value(
@@ -348,8 +369,7 @@ def _redact_tool_value(
         return redact_user_message(value, tenant, allow_user_name=False)
     elif isinstance(value, dict):
         return {
-            k: (v if k in skip_keys else _redact_tool_value(v, tenant, policy, skip_keys))
-            for k, v in value.items()
+            k: (v if k in skip_keys else _redact_tool_value(v, tenant, policy, skip_keys)) for k, v in value.items()
         }
     elif isinstance(value, list):
         return [_redact_tool_value(item, tenant, policy, skip_keys) for item in value]
@@ -408,7 +428,7 @@ def _redact(
     replacements: list[tuple[int, int, str]] = []
     for result in sorted_results:
         etype = result.entity_type
-        original = text[result.start:result.end]
+        original = text[result.start : result.end]
         count = type_counters.get(etype, 0) + 1
         type_counters[etype] = count
         placeholder = f"[{etype}_{count}]"
@@ -431,7 +451,7 @@ def _filter_results(
     """Remove false positives and deduplicate overlapping spans."""
     filtered = []
     for result in results:
-        matched_text = text[result.start:result.end].strip()
+        matched_text = text[result.start : result.end].strip()
         matched_lower = matched_text.lower()
 
         # Skip country/city names misidentified as PERSON
@@ -440,8 +460,7 @@ def _filter_results(
 
         # Skip allowed names (user's own name)
         if result.entity_type == "PERSON" and any(
-            matched_lower == name.lower() or matched_text == name
-            for name in allow_names
+            matched_lower == name.lower() or matched_text == name for name in allow_names
         ):
             continue
 
@@ -477,8 +496,7 @@ def _deduplicate_overlapping(results: list) -> list:
         if result.start < prev.end:
             # Keep the higher-scoring one; on tie, prefer shorter (more specific)
             if result.score > prev.score or (
-                result.score == prev.score
-                and (result.end - result.start) < (prev.end - prev.start)
+                result.score == prev.score and (result.end - result.start) < (prev.end - prev.start)
             ):
                 deduplicated[-1] = result
             # Otherwise skip this result

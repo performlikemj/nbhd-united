@@ -5,18 +5,19 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies = [
-        ('telegram_bot', '0001_initial'),
-        ('tenants', '0001_initial'),
+        ("telegram_bot", "0001_initial"),
+        ("tenants", "0001_initial"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='telegrambinding',
-            name='tenant',
-            field=models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, related_name='telegram_binding', to='tenants.tenant'),
+            model_name="telegrambinding",
+            name="tenant",
+            field=models.OneToOneField(
+                on_delete=django.db.models.deletion.CASCADE, related_name="telegram_binding", to="tenants.tenant"
+            ),
         ),
     ]

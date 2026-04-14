@@ -1,4 +1,5 @@
 """Platform issue report tests."""
+
 from __future__ import annotations
 
 import uuid
@@ -8,6 +9,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from apps.tenants.models import Tenant, User
+
 from .models import PlatformIssueLog
 
 # Shared internal key used across all tests (mirrors production architecture)

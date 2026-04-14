@@ -4,6 +4,7 @@ Usage:
     python manage.py bump_config_version
     python manage.py bump_config_version --tenant <tenant-uuid>
 """
+
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import F
 

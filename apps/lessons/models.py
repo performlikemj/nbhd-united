@@ -35,7 +35,9 @@ class Lesson(models.Model):
             ("experience", "Life Experience"),
         ],
     )
-    source_ref = models.CharField(max_length=500, blank=True, help_text="Reference to source (daily note date, URL, etc.)")
+    source_ref = models.CharField(
+        max_length=500, blank=True, help_text="Reference to source (daily note date, URL, etc.)"
+    )
 
     # Approval flow
     status = models.CharField(

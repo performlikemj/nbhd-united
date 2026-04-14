@@ -4,7 +4,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("tenants", "0030_tenant_task_model_preferences"),
     ]

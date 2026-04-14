@@ -1,4 +1,5 @@
 """Integration views — list, connect (OAuth callback), disconnect."""
+
 import logging
 import secrets
 import time
@@ -6,8 +7,8 @@ from urllib.parse import urlencode
 
 import httpx
 from django.conf import settings
-from django.core.cache import cache
 from django.core import signing
+from django.core.cache import cache
 from django.http import HttpResponse
 from django.shortcuts import redirect
 from rest_framework import status, viewsets
@@ -17,16 +18,16 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.tenants.models import User
+
 from .models import Integration
 from .serializers import IntegrationSerializer
 from .services import (
-    connect_integration,
     complete_composio_connection,
+    connect_integration,
     disconnect_integration,
     get_provider_config,
     initiate_composio_connection,
     is_composio_provider,
-    IntegrationAccessError,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,11 +58,7 @@ def _state_nonce_cache_key(nonce: str) -> str:
 
 def _prune_fallback_state_nonces(now: float | None = None) -> None:
     current = now if now is not None else time.time()
-    expired = [
-        nonce
-        for nonce, expires_at in _OAUTH_STATE_NONCE_FALLBACK.items()
-        if expires_at <= current
-    ]
+    expired = [nonce for nonce, expires_at in _OAUTH_STATE_NONCE_FALLBACK.items() if expires_at <= current]
     for nonce in expired:
         _OAUTH_STATE_NONCE_FALLBACK.pop(nonce, None)
 
@@ -86,17 +83,13 @@ def _consume_state_nonce(nonce: str) -> bool:
     try:
         cache_hit = cache.get(key) is not None
     except Exception:
-        logger.warning(
-            "OAuth state nonce cache read failed; attempting process-local fallback."
-        )
+        logger.warning("OAuth state nonce cache read failed; attempting process-local fallback.")
 
     if cache_hit:
         try:
             cache.delete(key)
         except Exception:
-            logger.warning(
-                "OAuth state nonce cache delete failed; clearing process-local fallback only."
-            )
+            logger.warning("OAuth state nonce cache delete failed; clearing process-local fallback only.")
         _consume_fallback_state_nonce(nonce)
         return True
 
@@ -115,9 +108,7 @@ def _build_oauth_state(user_id: str, provider: str) -> str:
     try:
         cache.set(_state_nonce_cache_key(nonce), "1", timeout=OAUTH_STATE_MAX_AGE_SECONDS)
     except Exception:
-        logger.warning(
-            "OAuth state nonce cache write failed; using process-local fallback store."
-        )
+        logger.warning("OAuth state nonce cache write failed; using process-local fallback store.")
     return signing.dumps(
         {"user_id": user_id, "provider": provider, "nonce": nonce},
         salt="oauth",
@@ -179,6 +170,7 @@ def fetch_provider_email(provider: str, tokens: dict) -> str | None:
 
 class IntegrationViewSet(viewsets.ReadOnlyModelViewSet):
     """List and manage integrations for the current tenant."""
+
     serializer_class = IntegrationSerializer
     permission_classes = [IsAuthenticated]
 
@@ -197,6 +189,7 @@ class IntegrationViewSet(viewsets.ReadOnlyModelViewSet):
         # Regenerate config to remove skills/env vars
         try:
             from apps.orchestrator.services import update_tenant_config
+
             update_tenant_config(str(tenant.id))
         except Exception:
             logger.warning(
@@ -345,6 +338,7 @@ class OAuthCallbackView(APIView):
             # Regenerate container config so new skills/env vars take effect
             try:
                 from apps.orchestrator.services import update_tenant_config
+
                 update_tenant_config(str(user.tenant.id))
             except Exception:
                 logger.warning(

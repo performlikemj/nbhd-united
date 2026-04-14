@@ -1,7 +1,9 @@
 """Migrate existing DailyNote, UserMemory, WeeklyReview data into Document model."""
+
 from __future__ import annotations
 
 import uuid
+
 from django.db import migrations
 
 
@@ -81,7 +83,6 @@ def migrate_data_forward(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("journal", "0004_document"),
     ]

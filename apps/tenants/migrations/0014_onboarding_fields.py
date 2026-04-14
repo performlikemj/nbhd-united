@@ -4,20 +4,19 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0013_tenant_container_image_tag'),
+        ("tenants", "0013_tenant_container_image_tag"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='tenant',
-            name='onboarding_complete',
-            field=models.BooleanField(default=False, help_text='Whether Telegram onboarding has been completed'),
+            model_name="tenant",
+            name="onboarding_complete",
+            field=models.BooleanField(default=False, help_text="Whether Telegram onboarding has been completed"),
         ),
         migrations.AddField(
-            model_name='tenant',
-            name='onboarding_step',
-            field=models.IntegerField(default=0, help_text='Current onboarding question index (0 = not started)'),
+            model_name="tenant",
+            name="onboarding_step",
+            field=models.IntegerField(default=0, help_text="Current onboarding question index (0 = not started)"),
         ),
     ]

@@ -1,7 +1,8 @@
 """Additional integration service coverage."""
-from datetime import timedelta
+
 import json
 import os
+from datetime import timedelta
 from unittest.mock import Mock, patch
 
 import httpx
@@ -21,11 +22,11 @@ from .services import (
     IntegrationTokenDataError,
     _extract_composio_email,
     _get_composio_client,
-    initiate_composio_connection,
     connect_integration,
     disconnect_integration,
-    get_valid_provider_access_token,
     get_key_vault_secret_name,
+    get_valid_provider_access_token,
+    initiate_composio_connection,
     load_tokens_from_key_vault,
     refresh_integration_tokens,
 )
@@ -471,9 +472,7 @@ class ComposioConnectedAccountsAPITest(TestCase):
 
     @patch("apps.integrations.services._get_composio_client")
     def test_get_composio_access_token_raises_on_api_failure(self, mock_get_client):
-        mock_get_client.return_value.connected_accounts.get.side_effect = RuntimeError(
-            "API down"
-        )
+        mock_get_client.return_value.connected_accounts.get.side_effect = RuntimeError("API down")
 
         Integration.objects.create(
             tenant=self.tenant,

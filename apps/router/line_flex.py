@@ -3,12 +3,12 @@
 Converts structured agent responses (markdown-like) into branded LINE Flex Messages.
 Falls back to plain text only for content that exceeds Flex size limits.
 """
+
 from __future__ import annotations
 
 import re
 import unicodedata
 from typing import Any
-
 
 # ── Brand Palette ───────────────────────────────────────────────────────────
 
@@ -105,6 +105,7 @@ def _parse_list_items_with_depth(content: str) -> list[tuple[int, str]]:
 
 # ── Detection ───────────────────────────────────────────────────────────────
 
+
 def classify_content(text: str) -> str:
     """Classify content type for template selection.
 
@@ -150,6 +151,7 @@ def should_use_flex(text: str) -> bool:
 
 # ── Parsing ─────────────────────────────────────────────────────────────────
 
+
 def _is_header_line(stripped: str) -> bool:
     """Check if a non-markdown line looks like a section header.
 
@@ -164,19 +166,19 @@ def _is_header_line(stripped: str) -> bool:
         return False
 
     # Emoji-prefixed (Unicode category So = Symbol, Other)
-    if (not stripped[0].isascii()
-            and unicodedata.category(stripped[0]) == "So"
-            and re.match(r"^\S+\s+.+$", stripped)):
+    if not stripped[0].isascii() and unicodedata.category(stripped[0]) == "So" and re.match(r"^\S+\s+.+$", stripped):
         return True
 
     # Plain text header: short, starts uppercase, looks like a label
     # Must be short (< 40 chars), few words (< 6), and not a full sentence
-    if (stripped[0].isascii()
-            and stripped[0].isupper()
-            and len(stripped) < 40
-            and len(stripped.split()) < 6
-            and not stripped.endswith(".")
-            and not stripped.endswith("!")):
+    if (
+        stripped[0].isascii()
+        and stripped[0].isupper()
+        and len(stripped) < 40
+        and len(stripped.split()) < 6
+        and not stripped.endswith(".")
+        and not stripped.endswith("!")
+    ):
         return True
 
     return False
@@ -200,8 +202,7 @@ def _parse_sections(text: str) -> list[dict]:
     emoji_line_indices: set[int] = set()
     for i, line in enumerate(lines):
         s = line.strip()
-        if (s and _is_emoji_char(s[0])
-                and len(s) > 2 and s[1] == " "):
+        if s and _is_emoji_char(s[0]) and len(s) > 2 and s[1] == " ":
             emoji_line_indices.add(i)
 
     def _is_emoji_list_item(idx: int) -> bool:
@@ -241,15 +242,16 @@ def _parse_sections(text: str) -> list[dict]:
             continue
 
         # Markdown headers (## Title) — always a header
-        if re.match(r"^#{1,3}\s+", stripped):
-            header_indices.add(i)
-        # Emoji headers (🔴 Title) — only when NOT part of an emoji bullet list
-        elif (not stripped[0].isascii()
+        if (
+            re.match(r"^#{1,3}\s+", stripped)
+            or (
+                not stripped[0].isascii()
                 and unicodedata.category(stripped[0]) == "So"
-                and re.match(r"^\S+\s+.+$", stripped)):
-            header_indices.add(i)
-        # Plain text headers — only after a blank line (to avoid false positives)
-        elif prev_blank and _is_header_line(stripped):
+                and re.match(r"^\S+\s+.+$", stripped)
+            )
+            or prev_blank
+            and _is_header_line(stripped)
+        ):
             header_indices.add(i)
 
         prev_blank = False
@@ -269,10 +271,12 @@ def _parse_sections(text: str) -> list[dict]:
         if i in header_indices:
             # Save previous section
             if current_lines or current_title:
-                sections.append({
-                    "title": current_title,
-                    "content": "\n".join(current_lines).strip(),
-                })
+                sections.append(
+                    {
+                        "title": current_title,
+                        "content": "\n".join(current_lines).strip(),
+                    }
+                )
             # Extract title text (strip markdown # prefix if present)
             md_match = re.match(r"^#{1,3}\s+(.+)", stripped)
             current_title = md_match.group(1).strip() if md_match else stripped
@@ -282,10 +286,12 @@ def _parse_sections(text: str) -> list[dict]:
 
     # Save last section
     if current_lines or current_title:
-        sections.append({
-            "title": current_title,
-            "content": "\n".join(current_lines).strip(),
-        })
+        sections.append(
+            {
+                "title": current_title,
+                "content": "\n".join(current_lines).strip(),
+            }
+        )
 
     return [s for s in sections if s.get("title") or s.get("content")]
 
@@ -343,11 +349,16 @@ def _link_component(label: str, url: str) -> dict:
         },
         "contents": [
             _text_component(
-                "\U0001f517", size="xs", color=COLORS["signal_text"],
-                wrap=False, flex=0,
+                "\U0001f517",
+                size="xs",
+                color=COLORS["signal_text"],
+                wrap=False,
+                flex=0,
             ),
             _text_component(
-                label[:80], size="sm", color=COLORS["signal_text"],
+                label[:80],
+                size="sm",
+                color=COLORS["signal_text"],
                 flex=1,
             ),
         ],
@@ -360,6 +371,7 @@ def _parse_list_items(content: str) -> list[str]:
 
 
 # ── Flex Components ─────────────────────────────────────────────────────────
+
 
 def _text_component(
     text: str,
@@ -431,12 +443,14 @@ def _section_box(title: str | None, content: str, is_first: bool = False) -> lis
     components: list[dict] = []
 
     if title:
-        components.append(_text_component(
-            _strip_md_inline(title),
-            size="md",
-            color=COLORS["ink"],
-            weight="bold",
-        ))
+        components.append(
+            _text_component(
+                _strip_md_inline(title),
+                size="md",
+                color=COLORS["ink"],
+                weight="bold",
+            )
+        )
 
     if not content:
         return components
@@ -448,18 +462,17 @@ def _section_box(title: str | None, content: str, is_first: bool = False) -> lis
     list_items_with_depth = _parse_list_items_with_depth(content)
     if list_items_with_depth:
         # Non-list content before the list
-        non_list_lines = [
-            line for line in content.split("\n")
-            if line.strip() and not _is_bullet_line(line)
-        ]
+        non_list_lines = [line for line in content.split("\n") if line.strip() and not _is_bullet_line(line)]
         non_list = "\n".join(non_list_lines).strip()
         if non_list:
-            components.append(_text_component(
-                _strip_md_inline(non_list),
-                color=COLORS["ink_muted"],
-                margin="sm",
-                line_spacing="4px",
-            ))
+            components.append(
+                _text_component(
+                    _strip_md_inline(non_list),
+                    color=COLORS["ink_muted"],
+                    margin="sm",
+                    line_spacing="4px",
+                )
+            )
 
         for depth, item in list_items_with_depth:
             bullet_box: dict[str, Any] = {
@@ -469,14 +482,18 @@ def _section_box(title: str | None, content: str, is_first: bool = False) -> lis
                 "spacing": "sm",
                 "contents": [
                     _text_component(
-                        "\u2022", size="xs" if depth > 0 else "sm",
+                        "\u2022",
+                        size="xs" if depth > 0 else "sm",
                         color=COLORS["ink_faint"] if depth > 0 else COLORS["signal"],
-                        wrap=False, flex=0,
+                        wrap=False,
+                        flex=0,
                     ),
                     _text_component(
-                        item, size="xs" if depth > 0 else "sm",
+                        item,
+                        size="xs" if depth > 0 else "sm",
                         color=COLORS["ink_muted"],
-                        flex=1, line_spacing="4px",
+                        flex=1,
+                        line_spacing="4px",
                     ),
                 ],
             }
@@ -491,12 +508,14 @@ def _section_box(title: str | None, content: str, is_first: bool = False) -> lis
             display_text = re.sub(r"https?://[^\s]+", "", display_text)
             display_text = re.sub(r"\n{2,}", "\n", display_text).strip()
         if display_text:
-            components.append(_text_component(
-                display_text,
-                color=COLORS["ink_muted"],
-                margin="sm" if title else None,
-                line_spacing="4px",
-            ))
+            components.append(
+                _text_component(
+                    display_text,
+                    color=COLORS["ink_muted"],
+                    margin="sm" if title else None,
+                    line_spacing="4px",
+                )
+            )
 
     # Add tappable link rows
     for label, url in links:
@@ -506,6 +525,7 @@ def _section_box(title: str | None, content: str, is_first: bool = False) -> lis
 
 
 # ── Bubble Builders ─────────────────────────────────────────────────────────
+
 
 def build_short_bubble(text: str, alt_text: str = "Message from your assistant") -> dict:
     """Build a compact bubble with accent bar for short messages."""
@@ -590,13 +610,18 @@ def build_status_bubble(
                 "spacing": "md",
                 "contents": [
                     _text_component(
-                        style["icon"], size="lg", color=style["fg"],
-                        wrap=False, flex=0,
+                        style["icon"],
+                        size="lg",
+                        color=style["fg"],
+                        wrap=False,
+                        flex=0,
                     ),
                     _text_component(
                         _strip_md_inline(text.strip()),
-                        size="sm", color=style["fg"],
-                        flex=1, line_spacing="4px",
+                        size="sm",
+                        color=style["fg"],
+                        flex=1,
+                        line_spacing="4px",
                     ),
                 ],
             },
@@ -714,19 +739,23 @@ def build_flex_carousel(
     for item in items[:12]:  # LINE carousel max
         body_contents = []
         if item.get("title"):
-            body_contents.append(_text_component(
-                item["title"],
-                size="md",
-                color=COLORS["ink"],
-                weight="bold",
-            ))
+            body_contents.append(
+                _text_component(
+                    item["title"],
+                    size="md",
+                    color=COLORS["ink"],
+                    weight="bold",
+                )
+            )
         if item.get("content"):
-            body_contents.append(_text_component(
-                item["content"],
-                size="sm",
-                color=COLORS["ink_muted"],
-                margin="sm",
-            ))
+            body_contents.append(
+                _text_component(
+                    item["content"],
+                    size="sm",
+                    color=COLORS["ink_muted"],
+                    margin="sm",
+                )
+            )
 
         bubble: dict[str, Any] = {
             "type": "bubble",
@@ -747,17 +776,19 @@ def build_flex_carousel(
             bubble["footer"] = {
                 "type": "box",
                 "layout": "vertical",
-                "contents": [{
-                    "type": "button",
-                    "style": "primary",
-                    "color": COLORS["signal_text"],
-                    "action": {
-                        "type": "postback",
-                        "label": item["action_label"][:20],
-                        "data": item["action_data"],
-                        "displayText": item["action_label"],
-                    },
-                }],
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "color": COLORS["signal_text"],
+                        "action": {
+                            "type": "postback",
+                            "label": item["action_label"][:20],
+                            "data": item["action_data"],
+                            "displayText": item["action_label"],
+                        },
+                    }
+                ],
             }
 
         bubbles.append(bubble)
@@ -773,6 +804,7 @@ def build_flex_carousel(
 
 
 # ── Quick Reply ─────────────────────────────────────────────────────────────
+
 
 def extract_quick_reply_buttons(text: str) -> tuple[str, list[dict] | None]:
     """Extract inline button markers from text, return cleaned text + quick reply items.
@@ -792,15 +824,17 @@ def extract_quick_reply_buttons(text: str) -> tuple[str, list[dict] | None]:
 
     items = []
     for label, data in matches[:13]:  # LINE max 13 quick reply buttons
-        items.append({
-            "type": "action",
-            "action": {
-                "type": "postback",
-                "label": label.strip()[:20],  # LINE label max 20 chars
-                "data": data.strip(),
-                "displayText": label.strip(),
-            },
-        })
+        items.append(
+            {
+                "type": "action",
+                "action": {
+                    "type": "postback",
+                    "label": label.strip()[:20],  # LINE label max 20 chars
+                    "data": data.strip(),
+                    "displayText": label.strip(),
+                },
+            }
+        )
 
     return cleaned, items if items else None
 
@@ -825,15 +859,17 @@ def telegram_keyboard_to_quick_reply(
         for btn in row:
             label = btn.get("text", "")[:20]
             data = btn.get("callback_data", "")
-            items.append({
-                "type": "action",
-                "action": {
-                    "type": "postback",
-                    "label": label,
-                    "data": data,
-                    "displayText": btn.get("text", ""),
-                },
-            })
+            items.append(
+                {
+                    "type": "action",
+                    "action": {
+                        "type": "postback",
+                        "label": label,
+                        "data": data,
+                        "displayText": btn.get("text", ""),
+                    },
+                }
+            )
             if len(items) >= 13:
                 return items
     return items

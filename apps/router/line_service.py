@@ -9,6 +9,7 @@ Handles:
 - Processing link tokens sent via LINE message
 - Unlinking LINE accounts
 """
+
 from __future__ import annotations
 
 import logging
@@ -18,8 +19,8 @@ from datetime import timedelta
 from django.conf import settings
 from django.utils import timezone
 
-from apps.tenants.models import User
 from apps.tenants.line_models import LineLinkToken
+from apps.tenants.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -114,9 +115,13 @@ def process_line_link_token(
     user.line_display_name = line_display_name or ""
     if line_display_name and user.display_name == "Friend":
         user.display_name = line_display_name
-    user.save(update_fields=[
-        "line_user_id", "line_display_name", "display_name",
-    ])
+    user.save(
+        update_fields=[
+            "line_user_id",
+            "line_display_name",
+            "display_name",
+        ]
+    )
 
     # Mark token as used
     link_token.used = True
@@ -141,6 +146,7 @@ def _trigger_config_update_if_active(user: User) -> None:
 
     if tenant.status == Tenant.Status.ACTIVE and tenant.container_id:
         from apps.cron.publish import publish_task
+
         publish_task("update_tenant_config", str(tenant.id))
 
 

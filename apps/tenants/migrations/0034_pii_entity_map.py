@@ -4,15 +4,18 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0033_tenant_finance_enabled'),
+        ("tenants", "0033_tenant_finance_enabled"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='tenant',
-            name='pii_entity_map',
-            field=models.JSONField(blank=True, default=dict, help_text='Maps PII placeholders to original values, e.g. {"[PERSON_1]": "Sarah Chen", "[EMAIL_ADDRESS_1]": "sarah@example.com"}'),
+            model_name="tenant",
+            name="pii_entity_map",
+            field=models.JSONField(
+                blank=True,
+                default=dict,
+                help_text='Maps PII placeholders to original values, e.g. {"[PERSON_1]": "Sarah Chen", "[EMAIL_ADDRESS_1]": "sarah@example.com"}',
+            ),
         ),
     ]

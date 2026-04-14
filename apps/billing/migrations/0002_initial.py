@@ -5,26 +5,27 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies = [
-        ('billing', '0001_initial'),
-        ('tenants', '0001_initial'),
+        ("billing", "0001_initial"),
+        ("tenants", "0001_initial"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='usageevent',
-            name='tenant',
-            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='usage_events', to='tenants.tenant'),
+            model_name="usageevent",
+            name="tenant",
+            field=models.ForeignKey(
+                on_delete=django.db.models.deletion.CASCADE, related_name="usage_events", to="tenants.tenant"
+            ),
         ),
         migrations.AddIndex(
-            model_name='usageevent',
-            index=models.Index(fields=['tenant', 'created_at'], name='usage_event_tenant__eaf2d8_idx'),
+            model_name="usageevent",
+            index=models.Index(fields=["tenant", "created_at"], name="usage_event_tenant__eaf2d8_idx"),
         ),
         migrations.AddIndex(
-            model_name='usageevent',
-            index=models.Index(fields=['event_type', 'created_at'], name='usage_event_event_t_7b4d76_idx'),
+            model_name="usageevent",
+            index=models.Index(fields=["event_type", "created_at"], name="usage_event_event_t_7b4d76_idx"),
         ),
     ]

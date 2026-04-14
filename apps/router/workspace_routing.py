@@ -8,6 +8,7 @@ Default workspace uses the bare base_user_id (no suffix), preserving the
 existing session for users who had conversation history before workspaces
 were enabled. Non-default workspaces append `:ws:{slug}`.
 """
+
 from __future__ import annotations
 
 import logging
@@ -26,10 +27,10 @@ CLASSIFICATION_THRESHOLD = 0.5  # Minimum cosine similarity to switch workspaces
 
 
 def resolve_workspace_routing(
-    tenant: "Tenant",
+    tenant: Tenant,
     base_user_id: str,
     message_text: str,
-) -> tuple[str, "Workspace | None", bool]:
+) -> tuple[str, Workspace | None, bool]:
     """Decide which workspace this message belongs to and return the user_param.
 
     Returns:
@@ -59,7 +60,7 @@ def resolve_workspace_routing(
     return _build_user_param(base_user_id, target), target, transitioned
 
 
-def update_active_workspace(tenant: "Tenant", workspace: "Workspace | None") -> None:
+def update_active_workspace(tenant: Tenant, workspace: Workspace | None) -> None:
     """Persist the routing decision to the tenant and workspace."""
     if workspace is None:
         return
@@ -79,12 +80,12 @@ def update_active_workspace(tenant: "Tenant", workspace: "Workspace | None") -> 
     workspace.save(update_fields=["last_used_at"])
 
 
-def build_transition_marker(workspace: "Workspace") -> str:
+def build_transition_marker(workspace: Workspace) -> str:
     """Build the prefix that tells the agent it just switched workspaces."""
     return f"[Switched to {workspace.name} workspace. Add the chip indicator on your first response.]\n\n"
 
 
-def build_workspace_context_marker(workspace: "Workspace | None") -> str:
+def build_workspace_context_marker(workspace: Workspace | None) -> str:
     """Build a lightweight always-on marker that tells the agent which workspace
     the message is in.
 
@@ -102,7 +103,7 @@ def build_workspace_context_marker(workspace: "Workspace | None") -> str:
 # ── Internal helpers ─────────────────────────────────────────────────────
 
 
-def _is_new_session(tenant: "Tenant") -> bool:
+def _is_new_session(tenant: Tenant) -> bool:
     """Match the poller's session-gap logic."""
     if not tenant.last_message_at:
         return True
@@ -110,7 +111,7 @@ def _is_new_session(tenant: "Tenant") -> bool:
     return elapsed > SESSION_GAP_SECONDS
 
 
-def _get_default(workspaces: list["Workspace"]) -> "Workspace | None":
+def _get_default(workspaces: list[Workspace]) -> Workspace | None:
     """Return the default workspace, falling back to the first one."""
     for ws in workspaces:
         if ws.is_default:
@@ -118,7 +119,7 @@ def _get_default(workspaces: list["Workspace"]) -> "Workspace | None":
     return workspaces[0] if workspaces else None
 
 
-def _build_user_param(base_user_id: str, workspace: "Workspace | None") -> str:
+def _build_user_param(base_user_id: str, workspace: Workspace | None) -> str:
     """Default workspace = bare base_user_id; non-default = with suffix."""
     if workspace is None or workspace.is_default:
         return base_user_id
@@ -127,8 +128,8 @@ def _build_user_param(base_user_id: str, workspace: "Workspace | None") -> str:
 
 def _classify_message(
     message_text: str,
-    workspaces: list["Workspace"],
-) -> "Workspace | None":
+    workspaces: list[Workspace],
+) -> Workspace | None:
     """Find the workspace whose description best matches the message.
 
     Returns None if no workspace is confident enough or if classification fails.
@@ -139,9 +140,10 @@ def _classify_message(
         return None
 
     try:
-        from apps.lessons.services import generate_embedding
         from pgvector.django import CosineDistance
+
         from apps.journal.models import Workspace
+        from apps.lessons.services import generate_embedding
 
         query_embedding = generate_embedding(message_text[:500])
         if query_embedding is None:
@@ -153,8 +155,7 @@ def _classify_message(
 
         # Re-query to use pgvector's distance ordering on the DB side
         scored = (
-            Workspace.objects
-            .filter(id__in=[ws.id for ws in candidates])
+            Workspace.objects.filter(id__in=[ws.id for ws in candidates])
             .annotate(distance=CosineDistance("description_embedding", query_embedding))
             .order_by("distance")
         )

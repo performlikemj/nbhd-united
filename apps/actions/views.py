@@ -5,6 +5,7 @@ Container → Django endpoints for the confirmation flow:
 - GET  /api/v1/internal/runtime/<tenant_id>/gate/<action_id>/poll — poll for result
 - POST /api/v1/gate/<action_id>/respond — callback from button press (internal)
 """
+
 from __future__ import annotations
 
 import logging
@@ -39,9 +40,7 @@ def _get_tenant_or_error(tenant_id: str):
         tenant = Tenant.objects.get(id=tenant_id)
         return tenant, None
     except Tenant.DoesNotExist:
-        return None, Response(
-            {"error": "Tenant not found"}, status=status.HTTP_404_NOT_FOUND
-        )
+        return None, Response({"error": "Tenant not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
 def _validate_internal_auth(request, tenant_id: str):
@@ -54,9 +53,7 @@ def _validate_internal_auth(request, tenant_id: str):
         )
         return None
     except InternalAuthError as e:
-        return Response(
-            {"error": str(e)}, status=status.HTTP_403_FORBIDDEN
-        )
+        return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
 
 
 def _should_auto_approve(tenant: Tenant, action_type: str) -> bool:
@@ -67,9 +64,7 @@ def _should_auto_approve(tenant: Tenant, action_type: str) -> bool:
 
     # Check per-action-type preference
     try:
-        pref = GatePreference.objects.get(
-            tenant=tenant, action_type=action_type
-        )
+        pref = GatePreference.objects.get(tenant=tenant, action_type=action_type)
         return not pref.require_confirmation
     except GatePreference.DoesNotExist:
         # Default: require confirmation
@@ -102,6 +97,7 @@ class GateRequestView(APIView):
 
     Called by the agent container to request approval for a destructive action.
     """
+
     permission_classes = [AllowAny]
 
     def post(self, request, tenant_id: UUID):
@@ -172,11 +168,14 @@ class GateRequestView(APIView):
 
         # Send confirmation message via user's platform
         from .messaging import send_gate_confirmation
+
         send_gate_confirmation(tenant, action)
 
         logger.info(
             "Gate request created: %s | %s | %s",
-            tenant.id, action_type, display_summary[:60],
+            tenant.id,
+            action_type,
+            display_summary[:60],
         )
 
         return Response(
@@ -194,6 +193,7 @@ class GatePollView(APIView):
 
     Called by the agent container to check if the user has responded.
     """
+
     permission_classes = [AllowAny]
 
     def get(self, request, tenant_id: UUID, action_id: int):
@@ -202,9 +202,7 @@ class GatePollView(APIView):
             return auth_error
 
         try:
-            action = PendingAction.objects.get(
-                id=action_id, tenant_id=tenant_id
-            )
+            action = PendingAction.objects.get(id=action_id, tenant_id=tenant_id)
         except PendingAction.DoesNotExist:
             return Response(
                 {"error": "Action not found"},
@@ -239,6 +237,7 @@ class GateRespondView(APIView):
     Called internally by the button callback handler (Telegram/LINE).
     Uses deploy-secret auth since it's triggered by the Django poller itself.
     """
+
     permission_classes = [AllowAny]
 
     def post(self, request, action_id: int):
@@ -319,12 +318,15 @@ class GateRespondView(APIView):
 
         logger.info(
             "Gate response: %s | %s | %s | %s",
-            action.tenant_id, action.action_type,
-            action.status, action.display_summary[:60],
+            action.tenant_id,
+            action.action_type,
+            action.status,
+            action.display_summary[:60],
         )
 
         # Edit the confirmation message to show result
         from .messaging import update_gate_message
+
         update_gate_message(action)
 
         return Response(

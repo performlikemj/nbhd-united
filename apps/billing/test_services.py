@@ -1,10 +1,12 @@
 """Additional billing service coverage."""
+
 from unittest.mock import patch
 
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
+
 from .services import handle_checkout_completed, handle_invoice_payment_failed, handle_subscription_deleted
 
 
@@ -63,9 +65,7 @@ class BillingWebhookServiceTest(TestCase):
         self.tenant.container_id = "oc-tenant"
         self.tenant.model_tier = Tenant.ModelTier.STARTER
         self.tenant.stripe_subscription_id = "sub_same"
-        self.tenant.save(
-            update_fields=["status", "container_id", "model_tier", "stripe_subscription_id", "updated_at"]
-        )
+        self.tenant.save(update_fields=["status", "container_id", "model_tier", "stripe_subscription_id", "updated_at"])
 
         handle_checkout_completed(
             {

@@ -4,25 +4,26 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0021_tenant_gate_acknowledged_risk_and_more'),
+        ("tenants", "0021_tenant_gate_acknowledged_risk_and_more"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='user',
-            name='location_city',
-            field=models.CharField(blank=True, default='', help_text="User's city name, e.g. 'Osaka', 'Brooklyn'", max_length=255),
+            model_name="user",
+            name="location_city",
+            field=models.CharField(
+                blank=True, default="", help_text="User's city name, e.g. 'Osaka', 'Brooklyn'", max_length=255
+            ),
         ),
         migrations.AddField(
-            model_name='user',
-            name='location_lat',
-            field=models.FloatField(blank=True, help_text='Latitude for weather/location services', null=True),
+            model_name="user",
+            name="location_lat",
+            field=models.FloatField(blank=True, help_text="Latitude for weather/location services", null=True),
         ),
         migrations.AddField(
-            model_name='user',
-            name='location_lon',
-            field=models.FloatField(blank=True, help_text='Longitude for weather/location services', null=True),
+            model_name="user",
+            name="location_lon",
+            field=models.FloatField(blank=True, help_text="Longitude for weather/location services", null=True),
         ),
     ]

@@ -5,7 +5,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies = [
@@ -76,15 +75,11 @@ class Migration(migrations.Migration):
                 ),
                 (
                     "minimum_payment",
-                    models.DecimalField(
-                        blank=True, decimal_places=2, max_digits=10, null=True
-                    ),
+                    models.DecimalField(blank=True, decimal_places=2, max_digits=10, null=True),
                 ),
                 (
                     "credit_limit",
-                    models.DecimalField(
-                        blank=True, decimal_places=2, max_digits=12, null=True
-                    ),
+                    models.DecimalField(blank=True, decimal_places=2, max_digits=12, null=True),
                 ),
                 (
                     "due_day",
@@ -260,9 +255,7 @@ class Migration(migrations.Migration):
                 ),
                 (
                     "date",
-                    models.DateField(
-                        help_text="First of the month for this snapshot"
-                    ),
+                    models.DateField(help_text="First of the month for this snapshot"),
                 ),
                 (
                     "total_debt",
@@ -270,15 +263,11 @@ class Migration(migrations.Migration):
                 ),
                 (
                     "total_savings",
-                    models.DecimalField(
-                        decimal_places=2, default=0, max_digits=12
-                    ),
+                    models.DecimalField(decimal_places=2, default=0, max_digits=12),
                 ),
                 (
                     "total_payments_this_month",
-                    models.DecimalField(
-                        decimal_places=2, default=0, max_digits=12
-                    ),
+                    models.DecimalField(decimal_places=2, default=0, max_digits=12),
                 ),
                 (
                     "accounts_json",

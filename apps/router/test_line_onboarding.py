@@ -1,5 +1,6 @@
 """Tests for the LINE onboarding gate."""
-from unittest.mock import MagicMock, patch
+
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -75,6 +76,7 @@ class LineOnboardingGateTest(TestCase):
         mock_push.return_value = True
 
         from apps.router.line_webhook import LineWebhookView
+
         view = LineWebhookView()
 
         event = {
@@ -113,6 +115,7 @@ class LineOnboardingGateTest(TestCase):
         mock_push.return_value = True
 
         from apps.router.line_webhook import LineWebhookView
+
         view = LineWebhookView()
 
         event = {
@@ -135,6 +138,7 @@ class LineOnboardingGateTest(TestCase):
         mock_flex.return_value = True
 
         from apps.router.line_webhook import LineWebhookView
+
         view = LineWebhookView()
 
         event = {
@@ -182,6 +186,7 @@ class LineOnboardingPostbackTest(TestCase):
         mock_push.return_value = True
 
         from apps.router.line_webhook import LineWebhookView
+
         view = LineWebhookView()
 
         event = {

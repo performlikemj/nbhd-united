@@ -1,7 +1,7 @@
 """Consumer-facing finance API views (JWT auth, frontend)."""
+
 from decimal import Decimal
 
-from django.db.models import Sum
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -19,6 +19,7 @@ from .serializers import (
 
 class FinanceAccountListView(APIView):
     """GET: list accounts. POST: create account."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -37,9 +38,7 @@ class FinanceAccountListView(APIView):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
-        serializer = FinanceAccountSerializer(
-            data=request.data, context={"tenant": tenant}
-        )
+        serializer = FinanceAccountSerializer(data=request.data, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -47,6 +46,7 @@ class FinanceAccountListView(APIView):
 
 class FinanceAccountDetailView(APIView):
     """PATCH: update account. DELETE: soft-delete account."""
+
     permission_classes = [IsAuthenticated]
 
     def _get_account(self, request, account_id):
@@ -64,7 +64,9 @@ class FinanceAccountDetailView(APIView):
         if error:
             return error
         serializer = FinanceAccountSerializer(
-            account, data=request.data, partial=True,
+            account,
+            data=request.data,
+            partial=True,
             context={"tenant": account.tenant},
         )
         serializer.is_valid(raise_exception=True)
@@ -82,21 +84,21 @@ class FinanceAccountDetailView(APIView):
 
 class FinanceTransactionListView(APIView):
     """GET: list recent transactions."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
-        transactions = FinanceTransaction.objects.filter(
-            tenant=tenant
-        ).select_related("account")[:50]
+        transactions = FinanceTransaction.objects.filter(tenant=tenant).select_related("account")[:50]
         serializer = FinanceTransactionSerializer(transactions, many=True)
         return Response(serializer.data)
 
 
 class PayoffPlanListView(APIView):
     """GET: list payoff plans."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -110,6 +112,7 @@ class PayoffPlanListView(APIView):
 
 class FinanceSnapshotListView(APIView):
     """GET: list monthly snapshots."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -123,6 +126,7 @@ class FinanceSnapshotListView(APIView):
 
 class FinanceDashboardView(APIView):
     """GET: aggregated finance summary for the dashboard tab."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -137,20 +141,13 @@ class FinanceDashboardView(APIView):
 
         total_debt = sum(a.current_balance for a in debt_accounts) or Decimal("0")
         total_savings = sum(a.current_balance for a in savings_accounts) or Decimal("0")
-        total_minimums = sum(
-            a.minimum_payment for a in debt_accounts if a.minimum_payment
-        ) or Decimal("0")
+        total_minimums = sum(a.minimum_payment for a in debt_accounts if a.minimum_payment) or Decimal("0")
 
-        active_plan = PayoffPlan.objects.filter(
-            tenant=tenant, is_active=True
-        ).first()
+        active_plan = PayoffPlan.objects.filter(tenant=tenant, is_active=True).first()
 
         snapshots = list(FinanceSnapshot.objects.filter(tenant=tenant)[:12])
 
-        recent_transactions = list(
-            FinanceTransaction.objects.filter(tenant=tenant)
-            .select_related("account")[:10]
-        )
+        recent_transactions = list(FinanceTransaction.objects.filter(tenant=tenant).select_related("account")[:10])
 
         data = {
             "total_debt": total_debt,
@@ -169,6 +166,7 @@ class FinanceDashboardView(APIView):
 
 class FinanceSettingsView(APIView):
     """PATCH: toggle finance_enabled for the tenant."""
+
     permission_classes = [IsAuthenticated]
 
     def patch(self, request):

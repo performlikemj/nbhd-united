@@ -1,16 +1,19 @@
 """Internal endpoint for agents to report platform issues."""
+
 from __future__ import annotations
 
 import logging
 from datetime import timedelta
 
 from django.utils import timezone
-from rest_framework import serializers, status as http_status
+from rest_framework import serializers
+from rest_framework import status as http_status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
 from apps.tenants.models import Tenant
+
 from .models import PlatformIssueLog
 
 logger = logging.getLogger(__name__)
@@ -111,7 +114,10 @@ class PlatformIssueReportView(APIView):
 
         logger.info(
             "Platform issue reported: tenant=%s category=%s tool=%s summary=%s",
-            tenant.id, data["category"], data.get("tool_name", ""), data["summary"][:100],
+            tenant.id,
+            data["category"],
+            data.get("tool_name", ""),
+            data["summary"][:100],
         )
 
         return Response(

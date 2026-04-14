@@ -4,7 +4,21 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["E501"]
+ignore = [
+    "E501",   # line too long — handled by line-length=120
+    "E402",   # module-import-not-at-top — Django views use deferred imports
+    "E741",   # ambiguous variable name — false positives on l, O, I
+    "F841",   # unused variable — many are intentional in tests (mock captures)
+    "B007",   # unused loop variable — use _name convention, not blocking
+    "B017",   # assert-raises too broad — test style preference
+    "B904",   # raise-without-from — incremental cleanup
+    "B905",   # zip-without-strict — incremental cleanup
+    "SIM102", # collapsible-if — readability preference
+    "SIM103", # needless-bool — readability preference
+    "SIM105", # suppressible-exception — contextlib.suppress not always clearer
+    "SIM108", # ternary operator — readability preference
+    "SIM118", # dict.keys() — readability preference
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["apps", "config"]

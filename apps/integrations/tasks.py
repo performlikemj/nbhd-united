@@ -1,4 +1,5 @@
 """Scheduled integration maintenance tasks."""
+
 from __future__ import annotations
 
 import logging
@@ -26,10 +27,12 @@ def refresh_expiring_integrations_task() -> dict[str, int]:
     Intended to be triggered by QStash on a recurring cadence.
     """
     threshold = timezone.now() + timedelta(minutes=REFRESH_LEAD_MINUTES)
-    integrations = Integration.objects.select_related("tenant").filter(
-        status=Integration.Status.ACTIVE,
-    ).filter(
-        Q(token_expires_at__isnull=True) | Q(token_expires_at__lte=threshold)
+    integrations = (
+        Integration.objects.select_related("tenant")
+        .filter(
+            status=Integration.Status.ACTIVE,
+        )
+        .filter(Q(token_expires_at__isnull=True) | Q(token_expires_at__lte=threshold))
     )
 
     checked = refreshed = expired = errored = 0
@@ -73,11 +76,7 @@ def refresh_expiring_integrations_task() -> dict[str, int]:
             refreshed += 1
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code if exc.response is not None else 0
-            integration.status = (
-                Integration.Status.EXPIRED
-                if status_code in (400, 401)
-                else Integration.Status.ERROR
-            )
+            integration.status = Integration.Status.EXPIRED if status_code in (400, 401) else Integration.Status.ERROR
             integration.save(update_fields=["status", "updated_at"])
             if integration.status == Integration.Status.EXPIRED:
                 expired += 1

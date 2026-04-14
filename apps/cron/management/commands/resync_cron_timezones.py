@@ -9,6 +9,7 @@ Usage:
     python manage.py resync_cron_timezones --dry-run
     python manage.py resync_cron_timezones --tenant <uuid>
 """
+
 from __future__ import annotations
 
 import logging
@@ -46,10 +47,7 @@ class Command(BaseCommand):
             qs = qs.filter(id=tenant_filter)
 
         tenants = list(qs)
-        self.stdout.write(
-            f"Processing {len(tenants)} tenant(s)"
-            + (" [DRY RUN]" if dry_run else "")
-        )
+        self.stdout.write(f"Processing {len(tenants)} tenant(s)" + (" [DRY RUN]" if dry_run else ""))
 
         total_ok = total_skip = total_err = 0
 
@@ -73,9 +71,7 @@ class Command(BaseCommand):
 
             try:
                 # Fetch existing jobs
-                list_result = invoke_gateway_tool(
-                    tenant, "cron.list", {"includeDisabled": True}
-                )
+                list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
                 jobs = []
                 if isinstance(list_result, dict):
                     jobs = list_result.get("jobs", [])
@@ -91,9 +87,7 @@ class Command(BaseCommand):
                             invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
                             deleted += 1
                         except GatewayError as e:
-                            self.stderr.write(
-                                f"    warn: could not delete {job_id}: {e}"
-                            )
+                            self.stderr.write(f"    warn: could not delete {job_id}: {e}")
 
                 # Recreate with correct timezone
                 created = 0
@@ -102,13 +96,9 @@ class Command(BaseCommand):
                         invoke_gateway_tool(tenant, "cron.add", {"job": job})
                         created += 1
                     except GatewayError as e:
-                        self.stderr.write(
-                            f"    warn: could not create {job['name']}: {e}"
-                        )
+                        self.stderr.write(f"    warn: could not create {job['name']}: {e}")
 
-                self.stdout.write(
-                    f"    deleted={deleted} recreated={created}"
-                )
+                self.stdout.write(f"    deleted={deleted} recreated={created}")
                 total_ok += 1
 
             except Exception as e:
@@ -116,8 +106,4 @@ class Command(BaseCommand):
                 logger.exception("resync_cron_timezones failed for tenant %s", tenant.id)
                 total_err += 1
 
-        self.stdout.write(
-            self.style.SUCCESS(
-                f"\nDone — ok={total_ok} skipped={total_skip} errors={total_err}"
-            )
-        )
+        self.stdout.write(self.style.SUCCESS(f"\nDone — ok={total_ok} skipped={total_skip} errors={total_err}"))

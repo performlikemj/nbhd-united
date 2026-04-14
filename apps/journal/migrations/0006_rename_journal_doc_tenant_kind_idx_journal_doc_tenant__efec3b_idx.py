@@ -4,15 +4,14 @@ from django.db import migrations
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('journal', '0005_migrate_to_documents'),
+        ("journal", "0005_migrate_to_documents"),
     ]
 
     operations = [
         migrations.RenameIndex(
-            model_name='document',
-            new_name='journal_doc_tenant__efec3b_idx',
-            old_name='journal_doc_tenant_kind_idx',
+            model_name="document",
+            new_name="journal_doc_tenant__efec3b_idx",
+            old_name="journal_doc_tenant_kind_idx",
         ),
     ]

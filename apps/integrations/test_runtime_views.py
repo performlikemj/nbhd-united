@@ -1,4 +1,5 @@
 """Internal runtime integration endpoint tests."""
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -421,7 +422,6 @@ class RuntimeMemorySyncViewTest(TestCase):
         self.assertEqual(body["count"], 1)
         self.assertIn("memory/journal/memory/long-term.md", body["files"])
         self.assertIn("# Long-Term Memory", body["files"]["memory/journal/memory/long-term.md"])
-
 
     def test_runtime_lessons_create_endpoint_creates_pending_lesson(self):
         response = self.client.post(

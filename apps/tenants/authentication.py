@@ -1,4 +1,5 @@
 """DRF authentication class that sets RLS context after JWT auth."""
+
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from .middleware import _tenant_context, set_rls_context

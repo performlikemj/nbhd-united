@@ -1,11 +1,12 @@
 """Tests for tenants app."""
+
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
-from unittest.mock import patch
 
 from .models import Tenant, User
 from .serializers import TenantSerializer
@@ -49,7 +50,9 @@ class AuthLoginTest(TestCase):
         self.email = "login@example.com"
         self.password = "testpass123"
         User.objects.create_user(
-            username=self.email, email=self.email, password=self.password,
+            username=self.email,
+            email=self.email,
+            password=self.password,
         )
 
     def test_login_with_email_returns_tokens(self):

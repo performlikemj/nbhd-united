@@ -4,6 +4,7 @@ All tenant containers use a shared internal API key. Per-tenant keys were
 removed 2026-02-22 (caused mass auth failures, unnecessary given network
 isolation — tenant containers are internal-only in Azure).
 """
+
 from __future__ import annotations
 
 from django.test import TestCase

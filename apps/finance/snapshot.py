@@ -1,4 +1,5 @@
 """Monthly finance snapshot service — creates point-in-time balance records."""
+
 from __future__ import annotations
 
 import logging
@@ -8,6 +9,7 @@ from decimal import Decimal
 from django.db.models import Sum
 
 from apps.tenants.models import Tenant
+
 from .models import FinanceAccount, FinanceSnapshot, FinanceTransaction
 
 logger = logging.getLogger(__name__)
@@ -49,15 +51,12 @@ def _create_snapshot_for_tenant(tenant: Tenant, snapshot_date: date) -> FinanceS
         return None
 
     debt_types = FinanceAccount.DEBT_TYPES
-    total_debt = sum(
-        a.current_balance for a in accounts if a.account_type in debt_types
-    ) or Decimal("0")
-    total_savings = sum(
-        a.current_balance for a in accounts if a.account_type not in debt_types
-    ) or Decimal("0")
+    total_debt = sum(a.current_balance for a in accounts if a.account_type in debt_types) or Decimal("0")
+    total_savings = sum(a.current_balance for a in accounts if a.account_type not in debt_types) or Decimal("0")
 
     # Sum payments made in the previous month
     from dateutil.relativedelta import relativedelta
+
     prev_month_start = snapshot_date - relativedelta(months=1)
     total_payments = FinanceTransaction.objects.filter(
         tenant=tenant,

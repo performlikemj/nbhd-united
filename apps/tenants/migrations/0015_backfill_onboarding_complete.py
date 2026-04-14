@@ -2,6 +2,7 @@
 
 Prevents existing users from being funneled through onboarding again.
 """
+
 from django.db import migrations
 
 

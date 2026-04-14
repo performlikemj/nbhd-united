@@ -1,17 +1,17 @@
 """Tests for the heartbeat window feature."""
+
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from apps.tenants.models import Tenant
-from apps.tenants.serializers import HeartbeatConfigSerializer
-from apps.tenants.services import create_tenant
 from apps.orchestrator.config_generator import (
+    HEARTBEAT_MODEL,
     _build_heartbeat_cron,
     _heartbeat_cron_expr,
     build_cron_seed_jobs,
-    HEARTBEAT_MODEL,
 )
+from apps.tenants.serializers import HeartbeatConfigSerializer
+from apps.tenants.services import create_tenant
 
 
 class HeartbeatCronExprTest(TestCase):
@@ -135,11 +135,13 @@ class HeartbeatSerializerTest(TestCase):
     """Test HeartbeatConfigSerializer validation."""
 
     def test_valid_data(self):
-        s = HeartbeatConfigSerializer(data={
-            "enabled": True,
-            "start_hour": 7,
-            "window_hours": 5,
-        })
+        s = HeartbeatConfigSerializer(
+            data={
+                "enabled": True,
+                "start_hour": 7,
+                "window_hours": 5,
+            }
+        )
         self.assertTrue(s.is_valid())
 
     def test_window_hours_max_6(self):
@@ -241,6 +243,7 @@ class HeartbeatAPITest(TestCase):
 
     def test_no_tenant_returns_404(self):
         from apps.tenants.models import User
+
         user_no_tenant = User.objects.create_user(
             username="no_tenant_user",
             display_name="No Tenant",

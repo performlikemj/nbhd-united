@@ -4,6 +4,7 @@ Maps IANA timezones to approximate coordinates for Open-Meteo API.
 These are capital/major city coordinates — good enough for weather
 since weather doesn't change dramatically within a timezone.
 """
+
 from __future__ import annotations
 
 from urllib.parse import urlencode
@@ -28,7 +29,6 @@ TIMEZONE_COORDS: dict[str, tuple[float, float]] = {
     "America/Santiago": (-33.45, -70.67),
     "America/Jamaica": (18.11, -76.79),
     "America/Puerto_Rico": (18.47, -66.11),
-
     # Europe
     "Europe/London": (51.51, -0.13),
     "Europe/Paris": (48.86, 2.35),
@@ -39,7 +39,6 @@ TIMEZONE_COORDS: dict[str, tuple[float, float]] = {
     "Europe/Moscow": (55.76, 37.62),
     "Europe/Istanbul": (41.01, 28.98),
     "Europe/Warsaw": (52.23, 21.01),
-
     # Asia
     "Asia/Tokyo": (34.69, 135.50),  # Osaka (common for Japan users)
     "Asia/Seoul": (37.57, 126.98),
@@ -53,18 +52,15 @@ TIMEZONE_COORDS: dict[str, tuple[float, float]] = {
     "Asia/Kuala_Lumpur": (3.14, 101.69),
     "Asia/Kolkata": (28.61, 77.21),  # Delhi
     "Asia/Dubai": (25.20, 55.27),
-
     # Oceania
     "Australia/Sydney": (-33.87, 151.21),
     "Australia/Melbourne": (-37.81, 144.96),
     "Pacific/Auckland": (-36.85, 174.76),
-
     # Africa
     "Africa/Cairo": (30.04, 31.24),
     "Africa/Lagos": (6.52, 3.38),
     "Africa/Nairobi": (-1.29, 36.82),
     "Africa/Johannesburg": (-26.20, 28.04),
-
     # UTC offset fallbacks (Etc/GMT±N)
     "UTC": (51.51, -0.13),  # London as default
 }
@@ -85,10 +81,10 @@ def get_coords_for_timezone(tz: str) -> tuple[float, float]:
     # Fuzzy match: try the timezone's region prefix
     region = tz.split("/")[0] if "/" in tz else ""
     region_defaults = {
-        "America": (40.71, -74.01),   # NYC
-        "Europe": (51.51, -0.13),     # London
-        "Asia": (34.69, 135.50),      # Osaka
-        "Africa": (6.52, 3.38),       # Lagos
+        "America": (40.71, -74.01),  # NYC
+        "Europe": (51.51, -0.13),  # London
+        "Asia": (34.69, 135.50),  # Osaka
+        "Africa": (6.52, 3.38),  # Lagos
         "Australia": (-33.87, 151.21),  # Sydney
         "Pacific": (-36.85, 174.76),  # Auckland
     }

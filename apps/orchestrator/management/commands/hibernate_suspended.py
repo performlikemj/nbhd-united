@@ -6,6 +6,7 @@ costs while keeping the container available for fast reactivation.
 
 Usage: python manage.py hibernate_suspended [--dry-run]
 """
+
 from django.core.management.base import BaseCommand
 
 from apps.orchestrator.azure_client import hibernate_container_app
@@ -40,18 +41,12 @@ class Command(BaseCommand):
             try:
                 hibernate_container_app(tenant.container_id)
                 hibernated += 1
-                self.stdout.write(self.style.SUCCESS(
-                    f"  ✅ {tenant.container_id} ({tenant.user.email})"
-                ))
+                self.stdout.write(self.style.SUCCESS(f"  ✅ {tenant.container_id} ({tenant.user.email})"))
             except Exception as e:
                 failed += 1
-                self.stdout.write(self.style.ERROR(
-                    f"  ❌ {tenant.container_id}: {e}"
-                ))
+                self.stdout.write(self.style.ERROR(f"  ❌ {tenant.container_id}: {e}"))
 
         if dry_run:
             self.stdout.write(f"\nDry run: {total} would be hibernated")
         else:
-            self.stdout.write(self.style.SUCCESS(
-                f"\nDone: {hibernated} hibernated, {failed} failed"
-            ))
+            self.stdout.write(self.style.SUCCESS(f"\nDone: {hibernated} hibernated, {failed} failed"))

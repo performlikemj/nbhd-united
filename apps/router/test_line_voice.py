@@ -1,5 +1,5 @@
 """Tests for LINE voice/audio message transcription."""
-import os
+
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase, override_settings
@@ -195,15 +195,14 @@ class HandleAudioMessageTest(TestCase):
     @patch("apps.router.line_webhook._show_loading")
     @patch("apps.router.line_webhook._resolve_tenant_by_line_user_id")
     @patch("apps.router.line_webhook._send_line_flex")
-    def test_audio_message_transcribed_and_forwarded(
-        self, mock_flex, mock_resolve, mock_loading, mock_transcribe
-    ):
+    def test_audio_message_transcribed_and_forwarded(self, mock_flex, mock_resolve, mock_loading, mock_transcribe):
         """Audio message is transcribed and processed like text."""
         # Return None tenant to hit the "unrecognized account" path,
         # which proves the transcribed text path was entered
         mock_resolve.return_value = None
 
         from apps.router.line_webhook import LineWebhookView
+
         view = LineWebhookView()
         view._handle_message(self._make_event())
 
@@ -222,11 +221,10 @@ class HandleAudioMessageTest(TestCase):
     @patch("apps.router.line_webhook._transcribe_line_audio", return_value=None)
     @patch("apps.router.line_webhook._show_loading")
     @patch("apps.router.line_webhook._send_line_flex")
-    def test_audio_transcription_failure_sends_error(
-        self, mock_flex, mock_loading, mock_transcribe
-    ):
+    def test_audio_transcription_failure_sends_error(self, mock_flex, mock_loading, mock_transcribe):
         """Failed transcription sends error message to user."""
         from apps.router.line_webhook import LineWebhookView
+
         view = LineWebhookView()
         view._handle_message(self._make_event())
 
@@ -244,6 +242,7 @@ class HandleAudioMessageTest(TestCase):
     def test_unsupported_type_sends_updated_message(self, mock_flex):
         """Unsupported message type mentions voice support."""
         from apps.router.line_webhook import LineWebhookView
+
         view = LineWebhookView()
         event = self._make_event(msg_type="image")
         view._handle_message(event)

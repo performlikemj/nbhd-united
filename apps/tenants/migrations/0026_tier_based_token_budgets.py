@@ -14,7 +14,6 @@ def revert_to_flat(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("tenants", "0025_alter_tenant_onboarding_complete"),
     ]

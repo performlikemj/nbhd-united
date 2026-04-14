@@ -4,6 +4,7 @@ Runs daily via QStash cron. Stores per-tenant cost snapshots in
 InfraCostSnapshot so the transparency endpoint never hits Azure at
 request time.
 """
+
 from __future__ import annotations
 
 import logging
@@ -81,11 +82,7 @@ def _query_resource_costs(month_start: date, month_end: date) -> dict[str, Decim
 
 def fetch_all_container_costs(resource_costs: dict[str, Decimal]) -> dict[str, Decimal]:
     """Filter resource costs to oc-* container apps."""
-    return {
-        name: cost
-        for name, cost in resource_costs.items()
-        if name.startswith("oc-")
-    }
+    return {name: cost for name, cost in resource_costs.items() if name.startswith("oc-")}
 
 
 def fetch_all_storage_costs(resource_costs: dict[str, Decimal]) -> dict[str, Decimal]:
@@ -94,18 +91,12 @@ def fetch_all_storage_costs(resource_costs: dict[str, Decimal]) -> dict[str, Dec
     Note: Azure may report at storage account level. If individual shares
     aren't in the results, we fall back to estimate per tenant.
     """
-    return {
-        name: cost
-        for name, cost in resource_costs.items()
-        if name.startswith("ws-")
-    }
+    return {name: cost for name, cost in resource_costs.items() if name.startswith("ws-")}
 
 
 def calculate_database_share(active_tenant_count: int) -> Decimal:
     """Even split of Supabase monthly cost across active tenants."""
-    supabase_cost = Decimal(
-        str(getattr(settings, "SUPABASE_MONTHLY_COST", 25.0))
-    )
+    supabase_cost = Decimal(str(getattr(settings, "SUPABASE_MONTHLY_COST", 25.0)))
     if active_tenant_count <= 0:
         return supabase_cost
     return (supabase_cost / active_tenant_count).quantize(Decimal("0.0001"))
@@ -195,8 +186,12 @@ def refresh_infra_costs() -> dict:
         )
         updated += 1
 
-    logger.info("Refreshed infra costs for %d tenants (azure data: %d containers, %d shares)",
-                updated, len(container_costs), len(storage_costs))
+    logger.info(
+        "Refreshed infra costs for %d tenants (azure data: %d containers, %d shares)",
+        updated,
+        len(container_costs),
+        len(storage_costs),
+    )
 
     return {
         "updated": updated,

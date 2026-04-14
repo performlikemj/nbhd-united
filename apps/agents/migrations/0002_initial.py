@@ -5,32 +5,37 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies = [
-        ('agents', '0001_initial'),
-        ('tenants', '0001_initial'),
+        ("agents", "0001_initial"),
+        ("tenants", "0001_initial"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='agentsession',
-            name='tenant',
-            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='sessions', to='tenants.tenant'),
+            model_name="agentsession",
+            name="tenant",
+            field=models.ForeignKey(
+                on_delete=django.db.models.deletion.CASCADE, related_name="sessions", to="tenants.tenant"
+            ),
         ),
         migrations.AddField(
-            model_name='memoryitem',
-            name='tenant',
-            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='memory_items', to='tenants.tenant'),
+            model_name="memoryitem",
+            name="tenant",
+            field=models.ForeignKey(
+                on_delete=django.db.models.deletion.CASCADE, related_name="memory_items", to="tenants.tenant"
+            ),
         ),
         migrations.AddField(
-            model_name='message',
-            name='session',
-            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='messages', to='agents.agentsession'),
+            model_name="message",
+            name="session",
+            field=models.ForeignKey(
+                on_delete=django.db.models.deletion.CASCADE, related_name="messages", to="agents.agentsession"
+            ),
         ),
         migrations.AlterUniqueTogether(
-            name='memoryitem',
-            unique_together={('tenant', 'key')},
+            name="memoryitem",
+            unique_together={("tenant", "key")},
         ),
     ]

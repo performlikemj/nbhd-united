@@ -95,6 +95,7 @@ def _call_extraction_llm(content: str) -> tuple[dict, dict]:
 
 # ── Source-of-truth resolution ───────────────────────────────────────────────
 
+
 def _get_daily_note_content(tenant: Tenant, for_date: date) -> str | None:
     """Return today's daily note markdown if substantial enough."""
     # Try v2 Document first
@@ -117,9 +118,14 @@ def _get_fallback_content(tenant: Tenant) -> str | None:
     for delta in (0, 1):
         d = today - timedelta(days=delta)
         # Skip dates that already had successful extraction
-        if PendingExtraction.objects.filter(
-            tenant=tenant, source_date=d,
-        ).exclude(status="expired").exists():
+        if (
+            PendingExtraction.objects.filter(
+                tenant=tenant,
+                source_date=d,
+            )
+            .exclude(status="expired")
+            .exists()
+        ):
             continue
         content = _get_daily_note_content(tenant, d)
         if content:
@@ -129,6 +135,7 @@ def _get_fallback_content(tenant: Tenant) -> str | None:
 
 
 # ── Deduplication ─────────────────────────────────────────────────────────────
+
 
 def _is_duplicate(tenant: Tenant, kind: str, text: str) -> bool:
     """Return True if a very similar pending/approved item exists within 30 days."""
@@ -180,6 +187,7 @@ def _embedding_duplicate(tenant: Tenant, text: str) -> bool:
 
 # ── Telegram delivery ─────────────────────────────────────────────────────────
 
+
 def _send_telegram_with_buttons(
     bot_token: str,
     chat_id: int,
@@ -204,7 +212,9 @@ def _send_telegram_with_buttons(
 
 
 def _deliver_summary_telegram(
-    bot_token: str, chat_id: int, items: list[PendingExtraction],
+    bot_token: str,
+    chat_id: int,
+    items: list[PendingExtraction],
 ) -> None:
     """Send ONE summary message with per-item Remove buttons."""
     kind_emoji = {"lesson": "💡", "goal": "🎯", "task": "✅"}
@@ -216,10 +226,14 @@ def _deliver_summary_telegram(
         lines.append(f"{emoji} {p.text}")
         undo_action = f"undo_{p.kind}"
         # Telegram callback_data max is 64 bytes
-        buttons.append([{
-            "text": f"Remove: {p.text[:30]}",
-            "callback_data": f"extract:{undo_action}:{p.id}",
-        }])
+        buttons.append(
+            [
+                {
+                    "text": f"Remove: {p.text[:30]}",
+                    "callback_data": f"extract:{undo_action}:{p.id}",
+                }
+            ]
+        )
 
     lines.append("\nTap Remove to undo any item.")
     text = "\n".join(lines)
@@ -234,8 +248,11 @@ def _deliver_summary_telegram(
 
 # ── LINE delivery ────────────────────────────────────────────────────────────
 
+
 def _deliver_summary_line(
-    channel_token: str, line_user_id: str, items: list[PendingExtraction],
+    channel_token: str,
+    line_user_id: str,
+    items: list[PendingExtraction],
 ) -> bool:
     """Send a Flex Message carousel — one bubble per item with a Remove button.
 
@@ -248,44 +265,50 @@ def _deliver_summary_line(
         emoji = kind_emoji.get(p.kind, "•")
         undo_action = f"undo_{p.kind}"
         label = re.sub(r"^[^\w]*", "", "Remove").strip()[:20]
-        bubbles.append({
-            "type": "bubble",
-            "size": "kilo",
-            "styles": {
-                "body": {"backgroundColor": "#f6f4ee"},
-                "footer": {"backgroundColor": "#f6f4ee"},
-            },
-            "body": {
-                "type": "box",
-                "layout": "vertical",
-                "paddingAll": "16px",
-                "contents": [{
-                    "type": "text",
-                    "text": f"{emoji} {p.text[:120]}",
-                    "wrap": True,
-                    "size": "sm",
-                    "color": "#12232c",
-                }],
-            },
-            "footer": {
-                "type": "box",
-                "layout": "horizontal",
-                "spacing": "sm",
-                "paddingAll": "12px",
-                "paddingTop": "0px",
-                "contents": [{
-                    "type": "button",
-                    "style": "secondary",
-                    "height": "sm",
-                    "action": {
-                        "type": "postback",
-                        "label": label,
-                        "data": f"extract:{undo_action}:{p.id}",
-                        "displayText": f"Remove: {p.text[:30]}",
-                    },
-                }],
-            },
-        })
+        bubbles.append(
+            {
+                "type": "bubble",
+                "size": "kilo",
+                "styles": {
+                    "body": {"backgroundColor": "#f6f4ee"},
+                    "footer": {"backgroundColor": "#f6f4ee"},
+                },
+                "body": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "paddingAll": "16px",
+                    "contents": [
+                        {
+                            "type": "text",
+                            "text": f"{emoji} {p.text[:120]}",
+                            "wrap": True,
+                            "size": "sm",
+                            "color": "#12232c",
+                        }
+                    ],
+                },
+                "footer": {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "spacing": "sm",
+                    "paddingAll": "12px",
+                    "paddingTop": "0px",
+                    "contents": [
+                        {
+                            "type": "button",
+                            "style": "secondary",
+                            "height": "sm",
+                            "action": {
+                                "type": "postback",
+                                "label": label,
+                                "data": f"extract:{undo_action}:{p.id}",
+                                "displayText": f"Remove: {p.text[:30]}",
+                            },
+                        }
+                    ],
+                },
+            }
+        )
 
     if not bubbles:
         return True
@@ -295,11 +318,13 @@ def _deliver_summary_line(
             LINE_PUSH_URL,
             json={
                 "to": line_user_id,
-                "messages": [{
-                    "type": "flex",
-                    "altText": "From today's notes, I added some items. Tap to undo.",
-                    "contents": {"type": "carousel", "contents": bubbles},
-                }],
+                "messages": [
+                    {
+                        "type": "flex",
+                        "altText": "From today's notes, I added some items. Tap to undo.",
+                        "contents": {"type": "carousel", "contents": bubbles},
+                    }
+                ],
             },
             headers={
                 "Authorization": f"Bearer {channel_token}",
@@ -321,6 +346,7 @@ def _deliver_summary_line(
 
 
 # ── Channel resolution ───────────────────────────────────────────────────────
+
 
 def _resolve_delivery_channel(tenant: Tenant) -> tuple[str, str | int | None, str | None]:
     """Determine delivery channel and credentials.
@@ -348,6 +374,7 @@ def _resolve_delivery_channel(tenant: Tenant) -> tuple[str, str | int | None, st
 
 
 # ── Core extraction runner ────────────────────────────────────────────────────
+
 
 def run_extraction_for_tenant(tenant: Tenant) -> dict:
     """Run end-of-day extraction for a single tenant.
@@ -487,7 +514,9 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
                 chat_id = getattr(tenant.user, "telegram_chat_id", None)
                 bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
                 if chat_id and bot_token:
-                    logger.warning("extraction: LINE failed, falling back to Telegram for tenant %s", str(tenant.id)[:8])
+                    logger.warning(
+                        "extraction: LINE failed, falling back to Telegram for tenant %s", str(tenant.id)[:8]
+                    )
                     _deliver_summary_telegram(bot_token, chat_id, added_items)
     else:
         logger.warning(
@@ -500,12 +529,17 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
 
     logger.info(
         "extraction: tenant=%s added lessons=%d goals=%d tasks=%d channel=%s",
-        str(tenant.id)[:8], counts["lessons"], counts["goals"], counts["tasks"], channel,
+        str(tenant.id)[:8],
+        counts["lessons"],
+        counts["goals"],
+        counts["tasks"],
+        channel,
     )
 
     # Embed today's daily note for contextual recall (best-effort)
     try:
         from apps.journal.embedding import embed_daily_note
+
         chunks_created = embed_daily_note(tenant, today)
         logger.info("extraction: embedded %d chunks for tenant %s", chunks_created, str(tenant.id)[:8])
     except Exception:

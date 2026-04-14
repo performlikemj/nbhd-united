@@ -1,10 +1,11 @@
 """Automation model, service, scheduler, and API tests."""
+
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta, timezone as dt_timezone
+import uuid
+from datetime import UTC, datetime, time, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-import uuid
 
 from django.test import TestCase
 from django.utils import timezone
@@ -25,7 +26,7 @@ from .services import (
 
 class AutomationScheduleComputationTest(TestCase):
     def test_compute_next_run_daily_respects_timezone(self):
-        reference = datetime(2026, 2, 12, 16, 30, tzinfo=dt_timezone.utc)  # 08:30 in Los Angeles
+        reference = datetime(2026, 2, 12, 16, 30, tzinfo=UTC)  # 08:30 in Los Angeles
         next_run = compute_next_run_at(
             timezone_name="America/Los_Angeles",
             schedule_type=Automation.ScheduleType.DAILY,
@@ -33,10 +34,10 @@ class AutomationScheduleComputationTest(TestCase):
             schedule_days=[],
             reference_utc=reference,
         )
-        self.assertEqual(next_run, datetime(2026, 2, 12, 17, 0, tzinfo=dt_timezone.utc))
+        self.assertEqual(next_run, datetime(2026, 2, 12, 17, 0, tzinfo=UTC))
 
     def test_compute_next_run_weekly_uses_days(self):
-        reference = datetime(2026, 2, 12, 16, 30, tzinfo=dt_timezone.utc)  # Thursday
+        reference = datetime(2026, 2, 12, 16, 30, tzinfo=UTC)  # Thursday
         next_run = compute_next_run_at(
             timezone_name="UTC",
             schedule_type=Automation.ScheduleType.WEEKLY,
@@ -44,7 +45,7 @@ class AutomationScheduleComputationTest(TestCase):
             schedule_days=[0],  # Monday
             reference_utc=reference,
         )
-        self.assertEqual(next_run, datetime(2026, 2, 16, 9, 0, tzinfo=dt_timezone.utc))
+        self.assertEqual(next_run, datetime(2026, 2, 16, 9, 0, tzinfo=UTC))
 
 
 class AutomationApiTest(TestCase):

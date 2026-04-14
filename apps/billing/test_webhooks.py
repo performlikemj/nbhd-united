@@ -1,4 +1,5 @@
 """Billing webhook view tests."""
+
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase, override_settings
@@ -141,7 +142,6 @@ class StripePortalGatingTest(TestCase):
         self.assertEqual(response.status_code, 503)
         mock_portal_create.assert_not_called()
         self.assertIn("temporarily disabled", response.json()["detail"])
-
 
 
 @override_settings(

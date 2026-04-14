@@ -8,6 +8,7 @@ POST /api/v1/line/webhook/
 - Processes AI forwarding asynchronously (LINE requires 200 within 1 second)
 - Uses LINE Push Message API for responses (reply_token expires too fast)
 """
+
 from __future__ import annotations
 
 import base64
@@ -18,7 +19,6 @@ import logging
 import os
 import re
 import threading
-from typing import Any
 
 import httpx
 from django.conf import settings
@@ -36,7 +36,6 @@ from apps.router.line_flex import (
     build_short_bubble,
     build_status_bubble,
     extract_quick_reply_buttons,
-    should_use_flex,
     telegram_keyboard_to_quick_reply,
 )
 from apps.tenants.models import Tenant, User
@@ -99,9 +98,7 @@ def _transcribe_line_audio(message_id: str) -> str | None:
 
     Returns transcribed text, or None on failure.
     """
-    openai_key = getattr(settings, "OPENAI_API_KEY", "") or os.environ.get(
-        "OPENAI_API_KEY", ""
-    )
+    openai_key = getattr(settings, "OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
     if not openai_key:
         logger.warning("Cannot transcribe LINE audio: no OPENAI_API_KEY configured")
         return None
@@ -262,7 +259,7 @@ def _send_line_text(line_user_id: str, text: str) -> bool:
         chunks = _split_message(text, max_len=5000)
         # LINE allows max 5 messages per push
         for i in range(0, len(chunks), 5):
-            batch = [{"type": "text", "text": c} for c in chunks[i:i + 5]]
+            batch = [{"type": "text", "text": c} for c in chunks[i : i + 5]]
             if not _send_line_push(line_user_id, batch):
                 return False
         return True
@@ -307,19 +304,19 @@ def _strip_markdown(text: str) -> str:
     # Convert markdown tables to readable format
     text = _convert_tables(text)
     # Remove code blocks (``` ... ```)
-    text = re.sub(r'```[^\n]*\n(.*?)```', r'\1', text, flags=re.DOTALL)
+    text = re.sub(r"```[^\n]*\n(.*?)```", r"\1", text, flags=re.DOTALL)
     # Remove bold markers
-    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-    text = re.sub(r'__(.+?)__', r'\1', text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"__(.+?)__", r"\1", text)
     # Remove italic markers
-    text = re.sub(r'\*(.+?)\*', r'\1', text)
-    text = re.sub(r'_(.+?)_', r'\1', text)
+    text = re.sub(r"\*(.+?)\*", r"\1", text)
+    text = re.sub(r"_(.+?)_", r"\1", text)
     # Convert markdown links to plain URLs
-    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1: \2', text)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1: \2", text)
     # Remove inline code markers
-    text = re.sub(r'`(.+?)`', r'\1', text)
+    text = re.sub(r"`(.+?)`", r"\1", text)
     # Remove heading markers
-    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
     return text
 
 
@@ -376,7 +373,7 @@ def _parse_table(table_lines: list[str]) -> str | None:
     for row_line in table_lines[1:]:
         cells = split_row(row_line)
         # Skip separator rows
-        if cells and all(re.match(r'^[-:]+$', c) for c in cells):
+        if cells and all(re.match(r"^[-:]+$", c) for c in cells):
             continue
         if cells:
             data_rows.append(cells)
@@ -472,6 +469,7 @@ class LineWebhookView(View):
         # Set service-role RLS context for DB access (safe no-op on SQLite)
         try:
             from apps.tenants.middleware import set_rls_context
+
             set_rls_context(service_role=True)
         except Exception:
             pass
@@ -497,9 +495,7 @@ class LineWebhookView(View):
         if not line_user_id:
             return
 
-        frontend_url = getattr(
-            settings, "FRONTEND_URL", "https://neighborhoodunited.org"
-        ).rstrip("/")
+        frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
 
         # Check if already linked
         tenant = _resolve_tenant_by_line_user_id(line_user_id)
@@ -558,14 +554,16 @@ class LineWebhookView(View):
                 return
             logger.info(
                 "LINE audio received: message_id=%s from %s",
-                message_id, line_user_id,
+                message_id,
+                line_user_id,
             )
             _show_loading(line_user_id)
             transcript = _transcribe_line_audio(message_id)
             if transcript:
                 logger.info(
                     "LINE audio transcribed: %d chars from message_id=%s",
-                    len(transcript), message_id,
+                    len(transcript),
+                    message_id,
                 )
                 # Re-show loading — Whisper may have consumed most of the first one
                 _show_loading(line_user_id)
@@ -576,8 +574,7 @@ class LineWebhookView(View):
                 _send_line_flex(
                     line_user_id,
                     build_status_bubble(
-                        "Sorry, I couldn't transcribe that audio. "
-                        "Please try again or send a text message.",
+                        "Sorry, I couldn't transcribe that audio. Please try again or send a text message.",
                         tone="warning",
                     ),
                 )
@@ -603,7 +600,10 @@ class LineWebhookView(View):
                 )
             logger.info(
                 "LINE sticker: pkg=%s id=%s type=%s keywords=%s",
-                package_id, sticker_id, sticker_resource, keywords,
+                package_id,
+                sticker_id,
+                sticker_resource,
+                keywords,
             )
         elif msg_type == "text":
             text = message.get("text", "").strip()
@@ -613,8 +613,7 @@ class LineWebhookView(View):
                 _send_line_flex(
                     line_user_id,
                     build_status_bubble(
-                        "I can process text, voice, and stickers. "
-                        "Please send one of those!",
+                        "I can process text, voice, and stickers. Please send one of those!",
                         tone="warning",
                     ),
                 )
@@ -633,9 +632,7 @@ class LineWebhookView(View):
         tenant = _resolve_tenant_by_line_user_id(line_user_id)
 
         if not tenant:
-            frontend_url = getattr(
-                settings, "FRONTEND_URL", "https://neighborhoodunited.org"
-            ).rstrip("/")
+            frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
             _send_line_flex(
                 line_user_id,
                 build_status_bubble(
@@ -657,20 +654,15 @@ class LineWebhookView(View):
             return
 
         # Paused tenant — trial ended or payment lapsed
-        frontend_url = getattr(
-            settings, "FRONTEND_URL", "https://neighborhoodunited.org"
-        ).rstrip("/")
-        if (
-            tenant.status == Tenant.Status.SUSPENDED
-            and not tenant.is_trial
-            and not bool(tenant.stripe_subscription_id)
-        ):
+        frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
+        if tenant.status == Tenant.Status.SUSPENDED and not tenant.is_trial and not bool(tenant.stripe_subscription_id):
             lang = tenant.user.language or "en"
             _send_line_flex(
                 line_user_id,
                 build_status_bubble(
                     error_msg(
-                        lang, "suspended",
+                        lang,
+                        "suspended",
                         billing_url=f"{frontend_url}/settings/billing",
                     ),
                     tone="warning",
@@ -704,16 +696,11 @@ class LineWebhookView(View):
             if msg_type != "text":
                 _send_line_flex(
                     line_user_id,
-                    build_short_bubble(
-                        "I'll be ready for stickers and voice soon! "
-                        "For now, please type your answer."
-                    ),
+                    build_short_bubble("I'll be ready for stickers and voice soon! For now, please type your answer."),
                 )
                 return
             # LINE has no language_code — always ask language question
-            onboarding_reply = get_onboarding_response(
-                tenant, text, telegram_lang=""
-            )
+            onboarding_reply = get_onboarding_response(tenant, text, telegram_lang="")
             if onboarding_reply is not None:
                 self._send_onboarding_reply(line_user_id, onboarding_reply)
                 return
@@ -726,9 +713,7 @@ class LineWebhookView(View):
                 msg_key = "budget_unavailable"
                 kwargs: dict[str, str] = {}
             else:
-                msg_key = (
-                    "budget_exhausted_trial" if tenant.is_trial else "budget_exhausted_paid"
-                )
+                msg_key = "budget_exhausted_trial" if tenant.is_trial else "budget_exhausted_paid"
                 kwargs = {
                     "plus_message": "",
                     "billing_url": f"{frontend_url}/billing",
@@ -747,7 +732,9 @@ class LineWebhookView(View):
 
         # Forward to container (pass reply_token for free Reply API)
         self._forward_to_container(
-            line_user_id, tenant, text,
+            line_user_id,
+            tenant,
+            text,
             reply_token=reply_token,
             is_voice=msg_type == "audio",
         )
@@ -760,9 +747,7 @@ class LineWebhookView(View):
             msg = attach_quick_reply(msg, items)
         _send_line_push(line_user_id, [msg])
 
-    def _handle_onboarding_postback(
-        self, tenant: Tenant, line_user_id: str, data: str
-    ) -> None:
+    def _handle_onboarding_postback(self, tenant: Tenant, line_user_id: str, data: str) -> None:
         """Handle onboarding button callbacks (tz_country:*, tz_zone:*)."""
         from apps.router.onboarding import handle_onboarding_callback
 
@@ -837,8 +822,11 @@ class LineWebhookView(View):
             resolve_workspace_routing,
             update_active_workspace,
         )
+
         user_param, workspace, transitioned = resolve_workspace_routing(
-            tenant, line_user_id, message_text,
+            tenant,
+            line_user_id,
+            message_text,
         )
         if transitioned and workspace is not None:
             message_text = build_transition_marker(workspace) + message_text
@@ -883,9 +871,7 @@ class LineWebhookView(View):
             return
         except httpx.HTTPStatusError as e:
             status_code = e.response.status_code if e.response else 0
-            logger.error(
-                "LINE FWD_FAIL %s HTTP %s", tenant.container_fqdn, status_code
-            )
+            logger.error("LINE FWD_FAIL %s HTTP %s", tenant.container_fqdn, status_code)
             if status_code in (502, 503):
                 # Check if this is a brand new tenant still starting up
                 tenant.refresh_from_db(fields=["status"])
@@ -893,8 +879,7 @@ class LineWebhookView(View):
                     _send_line_flex(
                         line_user_id,
                         build_short_bubble(
-                            "Your assistant is almost ready — just finishing setup. "
-                            "Try again in about a minute! 🌱",
+                            "Your assistant is almost ready — just finishing setup. Try again in about a minute! 🌱",
                         ),
                     )
                 else:
@@ -921,8 +906,7 @@ class LineWebhookView(View):
                 _send_line_flex(
                     line_user_id,
                     build_short_bubble(
-                        "Your assistant is almost ready — just finishing setup. "
-                        "Try again in about a minute! 🌱",
+                        "Your assistant is almost ready — just finishing setup. Try again in about a minute! 🌱",
                     ),
                 )
             else:
@@ -972,8 +956,7 @@ class LineWebhookView(View):
 
         if not ai_text:
             logger.error(
-                "No response after retry from container %s for line_user_id=%s: "
-                "keys=%s, choices=%r",
+                "No response after retry from container %s for line_user_id=%s: keys=%s, choices=%r",
                 tenant.container_fqdn,
                 line_user_id,
                 list(result.keys()),
@@ -982,8 +965,7 @@ class LineWebhookView(View):
             _send_line_flex(
                 line_user_id,
                 build_short_bubble(
-                    "Sorry, I couldn't come up with a response. "
-                    "Could you try saying that again?",
+                    "Sorry, I couldn't come up with a response. Could you try saying that again?",
                 ),
             )
             self._record_usage(tenant, result)
@@ -994,31 +976,37 @@ class LineWebhookView(View):
             entity_map = getattr(tenant, "pii_entity_map", None)
             if entity_map:
                 from apps.pii.redactor import rehydrate_text
+
                 ai_text = rehydrate_text(ai_text, entity_map)
 
             try:
                 # Render [[chart:type]] markers into images
                 image_messages: list[dict] = []
-                chart_pattern = re.compile(r'\[\[chart:(\w+)(?:\|(.+?))?\]\]')
+                chart_pattern = re.compile(r"\[\[chart:(\w+)(?:\|(.+?))?\]\]")
                 for match in chart_pattern.finditer(ai_text):
                     chart_type = match.group(1)
                     raw_params = match.group(2) or ""
                     params = dict(p.split("=", 1) for p in raw_params.split(",") if "=" in p)
                     try:
                         from apps.router.charts import render_chart
+
                         png_bytes = render_chart(chart_type, tenant, params)
                         if png_bytes:
                             import uuid as _uuid
+
                             fname = f"charts/{chart_type}_{_uuid.uuid4().hex[:8]}.png"
                             fpath = f"workspace/{fname}"
                             from apps.orchestrator.azure_client import upload_workspace_file_binary
+
                             upload_workspace_file_binary(str(tenant.id), fpath, png_bytes)
                             chart_url = f"{settings.API_BASE_URL}/api/v1/charts/{tenant.id}/{fname.split('/')[-1]}"
-                            image_messages.append({
-                                "type": "image",
-                                "originalContentUrl": chart_url,
-                                "previewImageUrl": chart_url,
-                            })
+                            image_messages.append(
+                                {
+                                    "type": "image",
+                                    "originalContentUrl": chart_url,
+                                    "previewImageUrl": chart_url,
+                                }
+                            )
                     except Exception:
                         logger.exception("Chart rendering failed for %s (LINE)", chart_type)
                 ai_text = chart_pattern.sub("", ai_text)
@@ -1065,14 +1053,16 @@ class LineWebhookView(View):
                     if not sent:
                         logger.error(
                             "LINE response delivery failed for %s (container=%s)",
-                            line_user_id, tenant.container_fqdn,
+                            line_user_id,
+                            tenant.container_fqdn,
                         )
                         # Retry with plain text as emergency fallback
                         fallback_text = _strip_markdown(ai_text)
                         _send_line_text(line_user_id, fallback_text[:5000])
             except Exception:
                 logger.exception(
-                    "Error building LINE response for %s", line_user_id,
+                    "Error building LINE response for %s",
+                    line_user_id,
                 )
                 # Emergency fallback — strip markdown before sending
                 fallback_text = _strip_markdown(ai_text)
@@ -1126,9 +1116,10 @@ class LineWebhookView(View):
     @staticmethod
     def _handle_gate_postback(tenant, data: str) -> None:
         """Handle action gate approve/deny from LINE postback."""
-        from apps.actions.models import ActionStatus, PendingAction, ActionAuditLog
-        from apps.actions.messaging import update_gate_message
         from django.utils import timezone
+
+        from apps.actions.messaging import update_gate_message
+        from apps.actions.models import ActionAuditLog, ActionStatus, PendingAction
 
         try:
             parts = data.split(":")
@@ -1183,16 +1174,17 @@ class LineWebhookView(View):
 
         Data format: extract:<action>:<pending_id>
         """
+        from django.utils import timezone as tz
+
         from apps.journal.models import PendingExtraction
         from apps.router.extraction_callbacks import (
-            _approve_lesson,
             _approve_goal,
+            _approve_lesson,
             _approve_task,
-            _undo_lesson,
             _undo_goal,
+            _undo_lesson,
             _undo_task,
         )
-        from django.utils import timezone as tz
 
         try:
             parts = data.split(":")
@@ -1233,7 +1225,9 @@ class LineWebhookView(View):
 
             # Already resolved — send friendly acknowledgment instead of silence
             if pending.status != PendingExtraction.Status.PENDING:
-                status_text = "already added" if pending.status == PendingExtraction.Status.APPROVED else "already skipped"
+                status_text = (
+                    "already added" if pending.status == PendingExtraction.Status.APPROVED else "already skipped"
+                )
                 _send_line_follow_up(tenant, f"👍 That one's {status_text}!")
                 return
 
@@ -1261,7 +1255,9 @@ class LineWebhookView(View):
             else:
                 pending.save(update_fields=["status", "resolved_at"])
 
-            kind_label = {"lesson": "Saved to constellation", "goal": "Added to goals", "task": "Added to tasks"}.get(pending.kind, "Added")
+            kind_label = {"lesson": "Saved to constellation", "goal": "Added to goals", "task": "Added to tasks"}.get(
+                pending.kind, "Added"
+            )
             _send_line_status_bubble(tenant, f"{kind_label}: {pending.text[:80]}", tone="success")
 
         except Exception:
@@ -1273,9 +1269,10 @@ class LineWebhookView(View):
 
         Data format: lesson:<action>:<lesson_id>
         """
+        from django.utils import timezone as tz
+
         from apps.lessons.models import Lesson
         from apps.lessons.services import process_approved_lesson
-        from django.utils import timezone as tz
 
         try:
             parts = data.split(":")
@@ -1285,9 +1282,7 @@ class LineWebhookView(View):
             action = parts[1]
             lesson_id = int(parts[2])
 
-            lesson = Lesson.objects.filter(
-                id=lesson_id, tenant=tenant, status="pending"
-            ).first()
+            lesson = Lesson.objects.filter(id=lesson_id, tenant=tenant, status="pending").first()
             if not lesson:
                 return
 
@@ -1312,10 +1307,12 @@ class LineWebhookView(View):
             logger.exception("Error handling lesson postback: %s", data)
 
     # Gateway error strings that should be treated as empty responses
-    _GATEWAY_ERROR_STRINGS = frozenset({
-        "No response from OpenClaw.",
-        "No response from OpenClaw",
-    })
+    _GATEWAY_ERROR_STRINGS = frozenset(
+        {
+            "No response from OpenClaw.",
+            "No response from OpenClaw",
+        }
+    )
 
     @staticmethod
     def _extract_ai_response(result: dict) -> str | None:
@@ -1341,14 +1338,8 @@ class LineWebhookView(View):
         if not isinstance(usage, dict):
             return
 
-        input_tokens = (
-            usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0) or 0
-        )
-        output_tokens = (
-            usage.get("completion_tokens", 0)
-            or usage.get("output_tokens", 0)
-            or 0
-        )
+        input_tokens = usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0) or 0
+        output_tokens = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0) or 0
         model_used = result.get("model", "")
 
         if input_tokens or output_tokens:
@@ -1361,6 +1352,4 @@ class LineWebhookView(View):
                     model_used=model_used or "",
                 )
             except Exception:
-                logger.exception(
-                    "Failed to record usage for tenant %s", tenant.id
-                )
+                logger.exception("Failed to record usage for tenant %s", tenant.id)

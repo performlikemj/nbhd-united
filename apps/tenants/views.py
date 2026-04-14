@@ -1,7 +1,7 @@
 """Tenant views."""
-import logging
 
-from datetime import datetime, timedelta, timezone as dt_tz
+import logging
+from datetime import UTC, datetime, timedelta
 
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -10,17 +10,19 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Tenant
-from .serializers import HeartbeatConfigSerializer, TenantRegistrationSerializer, TenantSerializer, UserSerializer
 from apps.cron.publish import publish_task
 from apps.journal.services import seed_default_templates_for_tenant
 from apps.orchestrator.config_generator import TIER_MODEL_CONFIGS
+
+from .models import Tenant
+from .serializers import HeartbeatConfigSerializer, TenantRegistrationSerializer, TenantSerializer, UserSerializer
 
 logger = logging.getLogger(__name__)
 
 
 class TenantViewSet(viewsets.ReadOnlyModelViewSet):
     """Tenant detail — users can only see their own tenant."""
+
     serializer_class = TenantSerializer
     permission_classes = [IsAuthenticated]
 
@@ -44,6 +46,7 @@ class TenantViewSet(viewsets.ReadOnlyModelViewSet):
 
 class OnboardTenantView(APIView):
     """Create tenant during onboarding — Telegram linking happens later via QR flow."""
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -79,7 +82,7 @@ class OnboardTenantView(APIView):
         # Create tenant and provision immediately for free trial
         # TODO: revert to timedelta(days=7) after March 2026 promotion ends
         now = timezone.now()
-        trial_end = datetime(2026, 3, 31, 23, 59, 59, tzinfo=dt_tz.utc)
+        trial_end = datetime(2026, 3, 31, 23, 59, 59, tzinfo=UTC)
         tenant = Tenant.objects.create(
             user=user,
             is_trial=True,
@@ -124,6 +127,7 @@ class OnboardTenantView(APIView):
 
 class ProvisioningStatusView(APIView):
     """Return tenant provisioning readiness for the authenticated user."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -134,29 +138,28 @@ class ProvisioningStatusView(APIView):
 
         has_container_id = bool(tenant.container_id)
         has_container_fqdn = bool(tenant.container_fqdn)
-        ready = bool(
-            tenant.status == Tenant.Status.ACTIVE
-            and has_container_id
-            and has_container_fqdn
-        )
+        ready = bool(tenant.status == Tenant.Status.ACTIVE and has_container_id and has_container_fqdn)
 
-        return Response({
-            "tenant_id": str(tenant.id),
-            "user_id": str(request.user.id),
-            "status": tenant.status,
-            "container_id": tenant.container_id,
-            "container_fqdn": tenant.container_fqdn,
-            "has_container_id": has_container_id,
-            "has_container_fqdn": has_container_fqdn,
-            "provisioned_at": tenant.provisioned_at,
-            "created_at": tenant.created_at,
-            "updated_at": tenant.updated_at,
-            "ready": ready,
-        })
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "user_id": str(request.user.id),
+                "status": tenant.status,
+                "container_id": tenant.container_id,
+                "container_fqdn": tenant.container_fqdn,
+                "has_container_id": has_container_id,
+                "has_container_fqdn": has_container_fqdn,
+                "provisioned_at": tenant.provisioned_at,
+                "created_at": tenant.created_at,
+                "updated_at": tenant.updated_at,
+                "ready": ready,
+            }
+        )
 
 
 class RetryProvisioningView(APIView):
     """Allow authenticated users to re-trigger tenant provisioning safely."""
+
     permission_classes = [IsAuthenticated]
     RETRY_COOLDOWN_SECONDS = 90
 
@@ -168,11 +171,7 @@ class RetryProvisioningView(APIView):
 
         has_container_id = bool(tenant.container_id)
         has_container_fqdn = bool(tenant.container_fqdn)
-        is_ready = bool(
-            tenant.status == Tenant.Status.ACTIVE
-            and has_container_id
-            and has_container_fqdn
-        )
+        is_ready = bool(tenant.status == Tenant.Status.ACTIVE and has_container_id and has_container_fqdn)
         if is_ready:
             return Response(
                 {
@@ -243,15 +242,18 @@ class RetryProvisioningView(APIView):
 
 class PersonaListView(APIView):
     """List available agent personas."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         from apps.orchestrator.personas import list_personas
+
         return Response(list_personas())
 
 
 class RefreshConfigView(APIView):
     """Allow users to refresh their OpenClaw agent configuration."""
+
     permission_classes = [IsAuthenticated]
 
     # 5 minute cooldown
@@ -265,21 +267,22 @@ class RefreshConfigView(APIView):
             return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
 
         from django.conf import settings as django_settings
+
         latest_tag = getattr(django_settings, "OPENCLAW_IMAGE_TAG", None)
         running_tag = tenant.container_image_tag or None
-        image_outdated = bool(
-            latest_tag and running_tag and latest_tag != "latest" and latest_tag != running_tag
+        image_outdated = bool(latest_tag and running_tag and latest_tag != "latest" and latest_tag != running_tag)
+        return Response(
+            {
+                "can_refresh": self._can_refresh(tenant),
+                "last_refreshed": tenant.config_refreshed_at,
+                "cooldown_seconds": self.COOLDOWN_SECONDS,
+                "status": tenant.status,
+                "has_pending_update": tenant.pending_config_version > tenant.config_version,
+                "container_image_tag": running_tag,
+                "latest_image_tag": latest_tag,
+                "image_outdated": image_outdated,
+            }
         )
-        return Response({
-            "can_refresh": self._can_refresh(tenant),
-            "last_refreshed": tenant.config_refreshed_at,
-            "cooldown_seconds": self.COOLDOWN_SECONDS,
-            "status": tenant.status,
-            "has_pending_update": tenant.pending_config_version > tenant.config_version,
-            "container_image_tag": running_tag,
-            "latest_image_tag": latest_tag,
-            "image_outdated": image_outdated,
-        })
 
     def post(self, request):
         """Trigger a config refresh."""
@@ -310,6 +313,7 @@ class RefreshConfigView(APIView):
 
         try:
             from apps.orchestrator.services import update_tenant_config
+
             update_tenant_config(str(tenant.id))
 
             now = timezone.now()
@@ -317,10 +321,12 @@ class RefreshConfigView(APIView):
             tenant.config_version = tenant.pending_config_version
             tenant.save(update_fields=["config_refreshed_at", "config_version"])
 
-            return Response({
-                "detail": "Configuration refreshed. Your assistant will restart momentarily.",
-                "last_refreshed": now,
-            })
+            return Response(
+                {
+                    "detail": "Configuration refreshed. Your assistant will restart momentarily.",
+                    "last_refreshed": now,
+                }
+            )
         except Exception:
             logger.exception("Config refresh failed for tenant %s", tenant.id)
             return Response(
@@ -337,6 +343,7 @@ class RefreshConfigView(APIView):
 
 class HeartbeatConfigView(APIView):
     """Get/update heartbeat window and proactive assistant settings."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -347,12 +354,14 @@ class HeartbeatConfigView(APIView):
                 {"detail": "No tenant found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        return Response({
-            "enabled": tenant.heartbeat_enabled,
-            "start_hour": tenant.heartbeat_start_hour,
-            "window_hours": tenant.heartbeat_window_hours,
-            "feature_tips": tenant.feature_tips_enabled,
-        })
+        return Response(
+            {
+                "enabled": tenant.heartbeat_enabled,
+                "start_hour": tenant.heartbeat_start_hour,
+                "window_hours": tenant.heartbeat_window_hours,
+                "feature_tips": tenant.feature_tips_enabled,
+            }
+        )
 
     def patch(self, request):
         try:
@@ -387,6 +396,7 @@ class HeartbeatConfigView(APIView):
                 tenant.bump_pending_config()
                 try:
                     from apps.orchestrator.services import update_tenant_config
+
                     update_tenant_config(str(tenant.id))
                 except Exception:
                     logger.exception(
@@ -398,6 +408,7 @@ class HeartbeatConfigView(APIView):
                 if any(f in ("heartbeat_enabled", "heartbeat_start_hour") for f in update_fields):
                     try:
                         from apps.orchestrator.services import sync_heartbeat_cron
+
                         sync_heartbeat_cron(tenant)
                     except Exception:
                         logger.exception(
@@ -405,22 +416,27 @@ class HeartbeatConfigView(APIView):
                             tenant.id,
                         )
 
-        return Response({
-            "enabled": tenant.heartbeat_enabled,
-            "start_hour": tenant.heartbeat_start_hour,
-            "window_hours": tenant.heartbeat_window_hours,
-            "feature_tips": tenant.feature_tips_enabled,
-        })
+        return Response(
+            {
+                "enabled": tenant.heartbeat_enabled,
+                "start_hour": tenant.heartbeat_start_hour,
+                "window_hours": tenant.heartbeat_window_hours,
+                "feature_tips": tenant.feature_tips_enabled,
+            }
+        )
 
 
 class UpdatePreferencesView(APIView):
     """Update user preferences (e.g. agent persona)."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response({
-            "agent_persona": request.user.preferences.get("agent_persona", "neighbor"),
-        })
+        return Response(
+            {
+                "agent_persona": request.user.preferences.get("agent_persona", "neighbor"),
+            }
+        )
 
     def patch(self, request):
         from apps.orchestrator.personas import PERSONAS
@@ -445,13 +461,16 @@ class UpdatePreferencesView(APIView):
             except Tenant.DoesNotExist:
                 pass
 
-        return Response({
-            "agent_persona": request.user.preferences.get("agent_persona", "neighbor"),
-        })
+        return Response(
+            {
+                "agent_persona": request.user.preferences.get("agent_persona", "neighbor"),
+            }
+        )
 
 
 class ProfileView(APIView):
     """Get/update current user's profile fields."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -465,8 +484,7 @@ class ProfileView(APIView):
 
         # If location changed, trigger config refresh so weather URL updates
         location_changed = any(
-            k in serializer.validated_data
-            for k in ("location_city", "location_lat", "location_lon")
+            k in serializer.validated_data for k in ("location_city", "location_lat", "location_lon")
         )
         if location_changed:
             try:
@@ -475,6 +493,7 @@ class ProfileView(APIView):
                     tenant.bump_pending_config()
                     if tenant.container_id:
                         from apps.orchestrator.services import update_tenant_config
+
                         try:
                             update_tenant_config(str(tenant.id))
                         except Exception:
@@ -492,6 +511,7 @@ class ProfileView(APIView):
                     tenant.bump_pending_config()
                     if tenant.container_id:
                         from apps.orchestrator.services import update_tenant_config
+
                         try:
                             update_tenant_config(str(tenant.id))
                         except Exception:
@@ -501,11 +521,10 @@ class ProfileView(APIView):
                             )
                         # Sync timezone on all existing cron jobs
                         try:
-                            from apps.cron.gateway_client import invoke_gateway_tool, GatewayError
+                            from apps.cron.gateway_client import invoke_gateway_tool
+
                             new_tz = request.user.timezone
-                            list_result = invoke_gateway_tool(
-                                tenant, "cron.list", {"includeDisabled": True}
-                            )
+                            list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
                             jobs = []
                             if isinstance(list_result, dict):
                                 jobs = list_result.get("jobs", [])
@@ -516,14 +535,15 @@ class ProfileView(APIView):
                                 schedule = job.get("schedule", {})
                                 if schedule.get("tz") != new_tz:
                                     invoke_gateway_tool(
-                                        tenant, "cron.update",
-                                        {"jobId": job_id, "patch": {
-                                            "schedule": {**schedule, "tz": new_tz}
-                                        }}
+                                        tenant,
+                                        "cron.update",
+                                        {"jobId": job_id, "patch": {"schedule": {**schedule, "tz": new_tz}}},
                                     )
                             logger.info(
                                 "Synced %d cron job timezone(s) to %s for tenant %s",
-                                len(jobs), new_tz, tenant.id,
+                                len(jobs),
+                                new_tz,
+                                tenant.id,
                             )
                         except Exception:
                             logger.exception(
@@ -540,12 +560,14 @@ def _do_hard_delete(user) -> None:
     """Deprovision tenant and hard-delete the user. Called immediately (no
     subscription) or from the Stripe webhook when the subscription ends."""
     import logging as _logging
+
     _log = _logging.getLogger(__name__)
 
     tenant = getattr(user, "tenant", None)
     if tenant and tenant.status not in ("deleted", "deprovisioning"):
         try:
             from apps.orchestrator.services import deprovision_tenant
+
             deprovision_tenant(str(tenant.id))
             _log.info("Deprovisioned tenant %s for user %s", tenant.id, user.id)
         except Exception:
@@ -614,9 +636,8 @@ class DeleteAccountView(APIView):
                     cancel_at_period_end=True,
                 )
                 import datetime
-                period_end = datetime.datetime.fromtimestamp(
-                    sub["current_period_end"], tz=datetime.timezone.utc
-                )
+
+                period_end = datetime.datetime.fromtimestamp(sub["current_period_end"], tz=datetime.UTC)
                 logger.info(
                     "Subscription %s set to cancel at period end %s for user %s",
                     tenant.stripe_subscription_id,
@@ -663,6 +684,7 @@ class DeleteAccountView(APIView):
 
 class PreferredModelView(APIView):
     """Set the user's preferred primary model within their tier."""
+
     permission_classes = [IsAuthenticated]
 
     def patch(self, request):
@@ -680,10 +702,12 @@ class PreferredModelView(APIView):
         tenant.save(update_fields=["preferred_model"])
         tenant.bump_pending_config()
 
-        return Response({
-            "preferred_model": model_id,
-            "model_tier": tenant.model_tier,
-        })
+        return Response(
+            {
+                "preferred_model": model_id,
+                "model_tier": tenant.model_tier,
+            }
+        )
 
 
 def _get_allowed_models(tenant: Tenant) -> dict:
@@ -692,13 +716,17 @@ def _get_allowed_models(tenant: Tenant) -> dict:
 
 
 _VALID_TASK_SLUGS = {
-    "heartbeat", "morning_briefing", "evening_checkin",
-    "week_review", "background_tasks",
+    "heartbeat",
+    "morning_briefing",
+    "evening_checkin",
+    "week_review",
+    "background_tasks",
 }
 
 
 class TaskModelPreferencesView(APIView):
     """Set per-task model overrides for scheduled jobs."""
+
     permission_classes = [IsAuthenticated]
 
     def patch(self, request):

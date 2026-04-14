@@ -1,4 +1,5 @@
 """Diagnostic command to check every link in the Gateway chain for a tenant."""
+
 from __future__ import annotations
 
 import socket
@@ -163,7 +164,8 @@ class Command(BaseCommand):
 
             storage_client = get_storage_client()
             keys = storage_client.storage_accounts.list_keys(
-                settings.AZURE_RESOURCE_GROUP, account_name,
+                settings.AZURE_RESOURCE_GROUP,
+                account_name,
             )
             account_key = keys.keys[0].value
 
@@ -204,10 +206,7 @@ class Command(BaseCommand):
 
         # Use the container FQDN to hit the runtime endpoint on the Gateway,
         # which proxies back to Django. This tests the full round-trip.
-        url = (
-            f"https://{tenant.container_fqdn}"
-            f"/api/v1/integrations/runtime/{tenant.id}/daily-note/append/"
-        )
+        url = f"https://{tenant.container_fqdn}/api/v1/integrations/runtime/{tenant.id}/daily-note/append/"
         self.stdout.write(f"   POST {url}")
         try:
             resp = requests.post(
@@ -228,9 +227,9 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.SUCCESS("   PASS"))
                 return True
             else:
-                self.stderr.write(self.style.ERROR(
-                    f"   FAIL — expected 200/201, got {resp.status_code}: {resp.text[:300]}"
-                ))
+                self.stderr.write(
+                    self.style.ERROR(f"   FAIL — expected 200/201, got {resp.status_code}: {resp.text[:300]}")
+                )
                 return False
         except requests.RequestException as exc:
             self.stderr.write(self.style.ERROR(f"   FAIL — {exc}"))

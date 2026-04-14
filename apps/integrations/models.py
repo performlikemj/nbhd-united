@@ -3,6 +3,7 @@
 Actual tokens are stored in Azure Key Vault, not in the database.
 This model tracks metadata about connections.
 """
+
 import uuid
 
 from django.db import models
@@ -31,11 +32,15 @@ class Integration(models.Model):
     scopes = models.JSONField(default=list, blank=True)
     provider_email = models.CharField(max_length=255, blank=True, default="")
     key_vault_secret_name = models.CharField(
-        max_length=255, blank=True, default="",
+        max_length=255,
+        blank=True,
+        default="",
         help_text="Key Vault secret name where tokens are stored",
     )
     composio_connected_account_id = models.CharField(
-        max_length=255, blank=True, default="",
+        max_length=255,
+        blank=True,
+        default="",
         help_text="Composio connected account ID (for Composio-managed providers)",
     )
     token_expires_at = models.DateTimeField(null=True, blank=True)

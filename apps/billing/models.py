@@ -1,4 +1,5 @@
 """Billing models — usage tracking alongside dj-stripe."""
+
 import uuid
 
 from django.db import models
@@ -44,11 +45,15 @@ class DonationLedger(models.Model):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="donation_ledger")
     month = models.DateField(help_text="First day of the month")
     surplus_amount = models.DecimalField(
-        max_digits=10, decimal_places=4, default=0,
+        max_digits=10,
+        decimal_places=4,
+        default=0,
         help_text="Total surplus for the month",
     )
     donation_amount = models.DecimalField(
-        max_digits=10, decimal_places=4, default=0,
+        max_digits=10,
+        decimal_places=4,
+        default=0,
         help_text="Amount allocated to donation (surplus * percentage)",
     )
     donation_percentage = models.IntegerField(
@@ -56,10 +61,14 @@ class DonationLedger(models.Model):
         help_text="Snapshot of tenant's donation_percentage at calculation time",
     )
     status = models.CharField(
-        max_length=20, choices=Status.choices, default=Status.PENDING,
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
     )
     receipt_reference = models.CharField(
-        max_length=255, blank=True, default="",
+        max_length=255,
+        blank=True,
+        default="",
         help_text="External receipt or transaction reference",
     )
     created_at = models.DateTimeField(auto_now_add=True)
@@ -87,7 +96,8 @@ class InfraCostSnapshot(models.Model):
     database_share = models.DecimalField(max_digits=10, decimal_places=4, default=0)
     total_cost = models.DecimalField(max_digits=10, decimal_places=4, default=0)
     source = models.CharField(
-        max_length=20, default="estimate",
+        max_length=20,
+        default="estimate",
         help_text="'azure' for real billing data, 'estimate' for fallback",
     )
     fetched_at = models.DateTimeField(auto_now=True)

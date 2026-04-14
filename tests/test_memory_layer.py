@@ -1,7 +1,6 @@
 """Tests for the agent memory integration layer."""
+
 import os
-import subprocess
-import tempfile
 
 from django.test import TestCase
 
@@ -11,9 +10,7 @@ from apps.orchestrator.tool_policy import generate_tool_config, get_allowed_tool
 class AgentsMemoryInstructionsTest(TestCase):
     """Verify AGENTS.md template includes memory system instructions."""
 
-    AGENTS_PATH = os.path.join(
-        os.path.dirname(__file__), "..", "templates", "openclaw", "AGENTS.md"
-    )
+    AGENTS_PATH = os.path.join(os.path.dirname(__file__), "..", "templates", "openclaw", "AGENTS.md")
 
     def _read_agents(self):
         with open(self.AGENTS_PATH) as f:
@@ -58,9 +55,7 @@ class AgentsMemoryInstructionsTest(TestCase):
 class MemoryTemplateTest(TestCase):
     """Verify MEMORY.md template exists and has expected structure."""
 
-    MEMORY_PATH = os.path.join(
-        os.path.dirname(__file__), "..", "templates", "openclaw", "MEMORY.md"
-    )
+    MEMORY_PATH = os.path.join(os.path.dirname(__file__), "..", "templates", "openclaw", "MEMORY.md")
 
     def test_memory_template_exists(self):
         self.assertTrue(os.path.exists(self.MEMORY_PATH))
@@ -77,9 +72,7 @@ class MemoryTemplateTest(TestCase):
 class HeartbeatTemplateTest(TestCase):
     """Verify HEARTBEAT.md template exists."""
 
-    HEARTBEAT_PATH = os.path.join(
-        os.path.dirname(__file__), "..", "templates", "openclaw", "HEARTBEAT.md"
-    )
+    HEARTBEAT_PATH = os.path.join(os.path.dirname(__file__), "..", "templates", "openclaw", "HEARTBEAT.md")
 
     def test_heartbeat_template_exists(self):
         self.assertTrue(os.path.exists(self.HEARTBEAT_PATH))
@@ -93,9 +86,7 @@ class HeartbeatTemplateTest(TestCase):
 class EntrypointMemorySeedingTest(TestCase):
     """Verify entrypoint.sh seeds memory files correctly."""
 
-    ENTRYPOINT_PATH = os.path.join(
-        os.path.dirname(__file__), "..", "runtime", "openclaw", "entrypoint.sh"
-    )
+    ENTRYPOINT_PATH = os.path.join(os.path.dirname(__file__), "..", "runtime", "openclaw", "entrypoint.sh")
 
     def _read_entrypoint(self):
         with open(self.ENTRYPOINT_PATH) as f:

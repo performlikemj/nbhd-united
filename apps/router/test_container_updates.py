@@ -1,24 +1,27 @@
 """Tests for smart container update logic."""
+
 from datetime import timedelta
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from apps.tenants.models import Tenant
 from apps.router.container_updates import (
-    is_container_outdated,
-    is_idle_enough_for_silent_update,
+    build_update_prompt,
     check_and_maybe_update,
     handle_update_callback,
-    build_update_prompt,
+    is_container_outdated,
+    is_idle_enough_for_silent_update,
 )
+from apps.tenants.models import Tenant
 
 
 def create_tenant(**kwargs):
     from django.contrib.auth import get_user_model
+
     User = get_user_model()
     import uuid
+
     uid = uuid.uuid4().hex[:8]
     user = User.objects.create_user(
         username=f"test-{uid}",

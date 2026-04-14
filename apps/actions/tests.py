@@ -24,7 +24,9 @@ class PendingActionModelTests(TestCase):
         self.user = User.objects.create_user(
             username="action_test1", email="action_test1@example.com", password="testpass"
         )
-        self.tenant = Tenant.objects.create(user=self.user, status="active", container_fqdn="test.example.com", container_id="oc-test-1")
+        self.tenant = Tenant.objects.create(
+            user=self.user, status="active", container_fqdn="test.example.com", container_id="oc-test-1"
+        )
 
     def test_create_with_defaults(self):
         action = PendingAction.objects.create(
@@ -111,7 +113,9 @@ class GatePreferenceModelTests(TestCase):
         self.user = User.objects.create_user(
             username="action_test2", email="action_test2@example.com", password="testpass"
         )
-        self.tenant = Tenant.objects.create(user=self.user, status="active", container_fqdn="test.example.com", container_id="oc-test-2")
+        self.tenant = Tenant.objects.create(
+            user=self.user, status="active", container_fqdn="test.example.com", container_id="oc-test-2"
+        )
 
     def test_default_requires_confirmation(self):
         pref = GatePreference.objects.create(
@@ -159,7 +163,9 @@ class ActionAuditLogModelTests(TestCase):
         self.user = User.objects.create_user(
             username="action_test3", email="action_test3@example.com", password="testpass"
         )
-        self.tenant = Tenant.objects.create(user=self.user, status="active", container_fqdn="test.example.com", container_id="oc-test-3")
+        self.tenant = Tenant.objects.create(
+            user=self.user, status="active", container_fqdn="test.example.com", container_id="oc-test-3"
+        )
 
     def test_create_approved_log(self):
         log = ActionAuditLog.objects.create(
@@ -224,11 +230,15 @@ class TenantGateFieldTests(TestCase):
         )
 
     def test_default_gate_all_actions_true(self):
-        tenant = Tenant.objects.create(user=self.user, status="active", container_fqdn="test.example.com", container_id="oc-test-4")
+        tenant = Tenant.objects.create(
+            user=self.user, status="active", container_fqdn="test.example.com", container_id="oc-test-4"
+        )
         self.assertTrue(tenant.gate_all_actions)
 
     def test_default_gate_acknowledged_risk_false(self):
-        tenant = Tenant.objects.create(user=self.user, status="active", container_fqdn="test.example.com", container_id="oc-test-5")
+        tenant = Tenant.objects.create(
+            user=self.user, status="active", container_fqdn="test.example.com", container_id="oc-test-5"
+        )
         self.assertFalse(tenant.gate_acknowledged_risk)
 
     def test_can_disable_gating_with_acknowledgment(self):

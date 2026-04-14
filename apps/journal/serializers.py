@@ -1,9 +1,10 @@
 """Serializers for journal artifacts."""
+
 from __future__ import annotations
 
 from rest_framework import serializers
 
-from .models import DailyNote, JournalEntry, NoteTemplate, UserMemory, WeeklyReview
+from .models import JournalEntry, NoteTemplate, WeeklyReview
 from .services import _validate_template_sections
 
 MAX_LIST_ITEMS = 10
@@ -318,9 +319,17 @@ class WeeklyReviewSerializer(serializers.ModelSerializer):
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.raw_text = _build_weekly_review_raw_text(
-            {f: getattr(instance, f) for f in (
-                "mood_summary", "week_rating", "top_wins", "top_challenges", "lessons", "intentions_next_week",
-            )}
+            {
+                f: getattr(instance, f)
+                for f in (
+                    "mood_summary",
+                    "week_rating",
+                    "top_wins",
+                    "top_challenges",
+                    "lessons",
+                    "intentions_next_week",
+                )
+            }
         )
         instance.save()
         return instance

@@ -1,4 +1,5 @@
 """Serializers for automations and automation run history."""
+
 from __future__ import annotations
 
 from rest_framework import serializers

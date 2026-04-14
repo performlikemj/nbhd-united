@@ -1,10 +1,10 @@
-import django.db.models.deletion
 import uuid
+
+import django.db.models.deletion
 from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("tenants", "0024_tenant_donation_fields"),
         ("billing", "0003_reconcile_refactor"),

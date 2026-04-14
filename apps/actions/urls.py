@@ -1,6 +1,6 @@
 from django.urls import path
 
-from .views import GateRequestView, GatePollView, GateRespondView
+from .views import GatePollView, GateRequestView, GateRespondView
 
 urlpatterns = [
     path(

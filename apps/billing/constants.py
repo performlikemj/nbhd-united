@@ -55,5 +55,5 @@ TIER_TOKEN_BUDGETS: dict[str, int] = {
 # Monthly cost budget in USD.  Enforcement compares
 # estimated_cost_this_month against this cap.
 TIER_COST_BUDGETS: dict[str, float] = {
-    "starter": 5.00,     # ~16M tokens of MiniMax
+    "starter": 5.00,  # ~16M tokens of MiniMax
 }

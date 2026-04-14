@@ -33,9 +33,7 @@ class Command(BaseCommand):
 
         if all_active:
             with connection.cursor() as cur:
-                cur.execute(
-                    "SELECT id, container_id FROM tenants WHERE status='active' AND container_id <> ''"
-                )
+                cur.execute("SELECT id, container_id FROM tenants WHERE status='active' AND container_id <> ''")
                 tenant_containers.extend(cur.fetchall())
         elif tenant_ids:
             with connection.cursor() as cur:
@@ -48,13 +46,9 @@ class Command(BaseCommand):
                     if row:
                         tenant_containers.append(row)
                     else:
-                        self.stdout.write(
-                            self.style.WARNING(f"Tenant {tenant_id} not active or has no container_id")
-                        )
+                        self.stdout.write(self.style.WARNING(f"Tenant {tenant_id} not active or has no container_id"))
         else:
-            self.stdout.write(
-                self.style.ERROR("Specify either --tenant-id (repeatable) or --all-active")
-            )
+            self.stdout.write(self.style.ERROR("Specify either --tenant-id (repeatable) or --all-active"))
             return
 
         if not tenant_containers:
@@ -71,9 +65,7 @@ class Command(BaseCommand):
                 self.stdout.write(f"✅ patched tenant={tenant_id} container={container_id}")
                 patched += 1
             except Exception as exc:
-                self.stdout.write(
-                    self.style.ERROR(f"❌ failed tenant={tenant_id} container={container_id}: {exc}")
-                )
+                self.stdout.write(self.style.ERROR(f"❌ failed tenant={tenant_id} container={container_id}: {exc}"))
                 failed += 1
 
         self.stdout.write(self.style.SUCCESS(f"Done: patched={patched}, failed={failed}"))

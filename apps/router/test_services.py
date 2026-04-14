@@ -1,12 +1,11 @@
 """Additional router service coverage."""
+
 import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 from django.test import TestCase, override_settings
 
-from apps.tenants.models import Tenant
-from apps.tenants.services import create_tenant
 from apps.router.services import (
     ROUTE_CACHE_TTL,
     clear_cache,
@@ -18,6 +17,8 @@ from apps.router.services import (
     resolve_user_timezone,
     send_temporary_error,
 )
+from apps.tenants.models import Tenant
+from apps.tenants.services import create_tenant
 
 
 class ResolveContainerEdgeCaseTest(TestCase):
@@ -93,8 +94,10 @@ class RouteCacheTTLTest(TestCase):
         self.assertEqual(fqdn, "oc-ttl.internal.azurecontainerapps.io")
 
         # Simulate TTL expiry by backdating the cached timestamp
-        from apps.router.services import _route_cache
         from time import monotonic
+
+        from apps.router.services import _route_cache
+
         _route_cache[222888] = ("old-stale.internal.azurecontainerapps.io", monotonic() - ROUTE_CACHE_TTL - 1)
 
         # Should ignore the stale entry and get the fresh value from DB
@@ -218,9 +221,7 @@ class ForwardingBehaviorTest(TestCase):
         mock_client.post.return_value = mock_response
         mock_async_client.return_value.__aenter__.return_value = mock_client
 
-        asyncio.run(
-            forward_to_openclaw("oc-test.internal.azurecontainerapps.io", {})
-        )
+        asyncio.run(forward_to_openclaw("oc-test.internal.azurecontainerapps.io", {}))
 
         url = mock_client.post.call_args[0][0]
         self.assertNotIn(":18789", url)
@@ -233,9 +234,7 @@ class ForwardingBehaviorTest(TestCase):
         mock_client.post.side_effect = httpx.TimeoutException("cold start")
         mock_async_client.return_value.__aenter__.return_value = mock_client
 
-        result = asyncio.run(
-            forward_to_openclaw("oc-test.internal.azurecontainerapps.io", {})
-        )
+        result = asyncio.run(forward_to_openclaw("oc-test.internal.azurecontainerapps.io", {}))
         self.assertIsNone(result)
         self.assertEqual(mock_client.post.call_count, 1)
 

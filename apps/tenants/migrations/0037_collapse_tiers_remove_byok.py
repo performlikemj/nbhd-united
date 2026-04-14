@@ -12,24 +12,20 @@ def collapse_tiers(apps, schema_editor):
         print(f"  Migrated {updated} tenant(s) to starter tier")
 
     # Clear preferred_model where it references non-OpenRouter models
-    Tenant.objects.exclude(preferred_model="").exclude(
-        preferred_model__startswith="openrouter/"
-    ).update(preferred_model="")
+    Tenant.objects.exclude(preferred_model="").exclude(preferred_model__startswith="openrouter/").update(
+        preferred_model=""
+    )
 
     # Clear task_model_preferences entries referencing non-OpenRouter models
     for tenant in Tenant.objects.exclude(task_model_preferences={}):
         prefs = tenant.task_model_preferences or {}
-        cleaned = {
-            k: v for k, v in prefs.items()
-            if v.startswith("openrouter/")
-        }
+        cleaned = {k: v for k, v in prefs.items() if v.startswith("openrouter/")}
         if cleaned != prefs:
             tenant.task_model_preferences = cleaned
             tenant.save(update_fields=["task_model_preferences"])
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("tenants", "0036_cron_jobs_snapshot"),
     ]

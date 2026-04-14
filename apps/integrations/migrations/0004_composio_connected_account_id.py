@@ -4,15 +4,19 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('integrations', '0003_reconcile_refactor'),
+        ("integrations", "0003_reconcile_refactor"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='integration',
-            name='composio_connected_account_id',
-            field=models.CharField(blank=True, default='', help_text='Composio connected account ID (for Composio-managed providers)', max_length=255),
+            model_name="integration",
+            name="composio_connected_account_id",
+            field=models.CharField(
+                blank=True,
+                default="",
+                help_text="Composio connected account ID (for Composio-managed providers)",
+                max_length=255,
+            ),
         ),
     ]

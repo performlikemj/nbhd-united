@@ -1,8 +1,9 @@
 """Background tasks for the router app."""
+
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from django.conf import settings
 
@@ -26,7 +27,7 @@ def cleanup_inbound_media_task() -> None:
         logger.warning("AZURE_STORAGE_ACCOUNT_NAME not configured, skipping media cleanup")
         return
 
-    from apps.orchestrator.azure_client import get_storage_client, _is_mock
+    from apps.orchestrator.azure_client import _is_mock, get_storage_client
 
     if _is_mock():
         logger.info("[MOCK] Would clean up inbound media for all tenants")
@@ -34,11 +35,12 @@ def cleanup_inbound_media_task() -> None:
 
     storage_client = get_storage_client()
     keys = storage_client.storage_accounts.list_keys(
-        settings.AZURE_RESOURCE_GROUP, account_name,
+        settings.AZURE_RESOURCE_GROUP,
+        account_name,
     )
     account_key = keys.keys[0].value
 
-    cutoff = datetime.now(timezone.utc) - MAX_AGE
+    cutoff = datetime.now(UTC) - MAX_AGE
     total_deleted = 0
 
     tenants = Tenant.objects.filter(status=Tenant.Status.ACTIVE).exclude(container_id="")

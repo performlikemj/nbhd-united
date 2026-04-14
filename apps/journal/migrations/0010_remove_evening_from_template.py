@@ -4,6 +4,7 @@ The evening section was appearing in daily notes at creation time (morning),
 confusing users who saw it before evening. The evening cron now creates
 the section on-demand when it actually runs.
 """
+
 from django.db import migrations
 
 
@@ -51,7 +52,6 @@ def add_evening_section_back(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("journal", "0009_bootstrap_goals"),
     ]

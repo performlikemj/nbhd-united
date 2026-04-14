@@ -1,15 +1,17 @@
 """Tenant lifecycle services."""
+
 from __future__ import annotations
 
 import logging
 
 from django.db import IntegrityError, transaction
 
-from .models import Tenant, User
 from apps.journal.services import (
     seed_default_documents_for_tenant,
     seed_default_templates_for_tenant,
 )
+
+from .models import Tenant, User
 
 logger = logging.getLogger(__name__)
 

@@ -5,6 +5,7 @@ full daily note history through the (improved) extraction prompt with
 embedding-based deduplication.  Intended to be run once after fixing the
 extraction prompt framing and dedup logic.
 """
+
 from __future__ import annotations
 
 import time
@@ -54,14 +55,15 @@ class Command(BaseCommand):
 
     def _process_tenant(self, tenant: Tenant, *, dry_run: bool, since: date | None) -> None:
         tid = str(tenant.id)[:8]
-        self.stdout.write(f"\n{'='*60}")
+        self.stdout.write(f"\n{'=' * 60}")
         self.stdout.write(f"Tenant {tid}")
 
         # ── Delete ALL existing lessons for a clean slate ──
         if not dry_run:
             deleted_lessons, _ = Lesson.objects.filter(tenant=tenant).delete()
             deleted_pending, _ = PendingExtraction.objects.filter(
-                tenant=tenant, kind=PendingExtraction.Kind.LESSON,
+                tenant=tenant,
+                kind=PendingExtraction.Kind.LESSON,
             ).delete()
             self.stdout.write(f"  Cleared {deleted_lessons} lessons, {deleted_pending} pending extractions")
         else:
@@ -127,9 +129,7 @@ class Command(BaseCommand):
             # Rate limit between batches
             time.sleep(1)
 
-        self.stdout.write(
-            f"  Result: {total_extracted} extracted, {total_deduped} deduped, {total_added} added"
-        )
+        self.stdout.write(f"  Result: {total_extracted} extracted, {total_deduped} deduped, {total_added} added")
 
         # ── Re-cluster ──
         if not dry_run and total_added > 0:
