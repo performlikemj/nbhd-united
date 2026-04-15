@@ -29,4 +29,5 @@ urlpatterns = [
     path("broadcast-message/", views.broadcast_message, name="cron-broadcast-message"),
     path("dedup-crons/", views.dedup_crons, name="cron-dedup-crons"),
     path("run-health-check/", views.run_health_check, name="cron-run-health-check"),
+    path("admin-health/", views.admin_health_status, name="cron-admin-health"),
 ]

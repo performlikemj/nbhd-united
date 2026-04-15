@@ -1239,3 +1239,40 @@ def run_health_check(request):
         summary["details"] = unhealthy
 
     return JsonResponse(summary)
+
+
+@csrf_exempt
+def admin_health_status(request):
+    """On-demand tenant health query for admin / personal agent.
+
+    URL: /api/v1/cron/admin-health/
+    Auth: X-Deploy-Secret header.
+    Methods: GET or POST (both return the same data).
+
+    Unlike run-health-check, this endpoint does NOT send alerts. It's a pull
+    mechanism for MJ's personal OpenClaw to query status on demand
+    (e.g. "how's NBHD?").
+
+    Returns JSON summary + per-tenant details so the agent can format
+    a natural-language response.
+    """
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not deploy_secret or not provided or provided != deploy_secret:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    from apps.orchestrator.services import check_all_tenants_health
+
+    results = check_all_tenants_health()
+    unhealthy = [r for r in results if not r["healthy"]]
+    with_drift = [r for r in results if r.get("config_drift")]
+
+    return JsonResponse(
+        {
+            "total": len(results),
+            "healthy": len(results) - len(unhealthy),
+            "unhealthy": len(unhealthy),
+            "config_drift": len(with_drift),
+            "results": results,
+        }
+    )
