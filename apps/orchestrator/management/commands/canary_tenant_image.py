@@ -21,6 +21,7 @@ Usage:
 
 See `docs/runbooks/canary.md` for the full procedure.
 """
+
 from __future__ import annotations
 
 from django.conf import settings
@@ -62,7 +63,7 @@ class Command(BaseCommand):
 
         self.stdout.write(f"Deploying canary image to {container}")
         self.stdout.write(f"  image:  {image}")
-        self.stdout.write(f"  db tag: (unchanged — canary)")
+        self.stdout.write("  db tag: (unchanged — canary)")
 
         try:
             update_container_image(container, image)
