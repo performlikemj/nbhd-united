@@ -43,7 +43,7 @@ azure-core==1.39.0
     #   msrest
 azure-identity==1.25.3
     # via -r requirements.in
-azure-keyvault-secrets==4.10.0
+azure-keyvault-secrets==4.11.0
     # via -r requirements.in
 azure-mgmt-appcontainers==4.0.0
     # via -r requirements.in
