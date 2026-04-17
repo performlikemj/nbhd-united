@@ -130,8 +130,52 @@ class ConfigGeneratorTest(TestCase):
         self.assertIn("allow", tools)
         self.assertIn("deny", tools)
         self.assertIn("gateway", tools["deny"])
-        self.assertNotIn("group:automation", tools["deny"])
         self.assertNotIn("group:ui", tools["allow"])
+
+    # ── OpenClaw v2026.4.15 tool-policy migration ──────────────────────
+
+    def test_tool_policy_allows_memory_tools(self):
+        """memory_search and memory_get are required for the agent's recall
+        path introduced in OpenClaw 2026.4.9+'s built-in memory engine.
+        They live under group:openclaw in 2026.4.15.
+        Originally deferred ('decide after a week of live data') — now
+        deliberately included because the version bump delivers tangible
+        recall value via group:openclaw."""
+        config = generate_openclaw_config(self.tenant)
+        self.assertIn("group:openclaw", config["tools"]["allow"])
+
+    def test_tool_policy_keeps_subscriber_invariants(self):
+        """Even with the wider group:openclaw allow, these MUST remain
+        denied:
+        - message: tenant has no Telegram bot token; outbound goes via
+          nbhd_send_to_user plugin
+        - sessions_*, agents_list, gateway: cross-session / infra controls
+          not for subscribers
+        - browser, canvas, nodes, code_execution: surfaces with no
+          representation in Telegram-only containers
+        """
+        config = generate_openclaw_config(self.tenant)
+        deny = set(config["tools"]["deny"])
+        must_deny = {
+            "message", "sessions_spawn", "sessions_send", "sessions_list",
+            "sessions_history", "session_status", "agents_list", "gateway",
+            "browser", "canvas", "nodes", "code_execution",
+        }
+        missing = must_deny - deny
+        self.assertEqual(missing, set(), f"Required deny entries missing: {missing}")
+
+    def test_tool_policy_uses_only_valid_groups(self):
+        """Only group:openclaw and group:plugins exist as group:* names
+        in OpenClaw 2026.4.15. Older entries (group:web, group:automation,
+        group:fs, group:memory) parse but match nothing — caused cron
+        access loss before this fix."""
+        config = generate_openclaw_config(self.tenant)
+        group_entries = {
+            e for e in config["tools"]["allow"] if e.startswith("group:")
+        }
+        valid_groups = {"group:openclaw", "group:plugins"}
+        invalid = group_entries - valid_groups
+        self.assertEqual(invalid, set(), f"Invalid group names: {invalid}")
 
     def test_channels_empty_no_telegram(self):
         """No Telegram channel — central Django poller handles all Telegram."""
