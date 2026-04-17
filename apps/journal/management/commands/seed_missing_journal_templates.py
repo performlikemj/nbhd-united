@@ -44,10 +44,13 @@ class Command(BaseCommand):
 
             if dry_run:
                 template = get_default_template(tenant=tenant)
-                if template and DailyNote.objects.filter(
-                    tenant=tenant,
-                    template_id__isnull=True,
-                ).exists():
+                if (
+                    template
+                    and DailyNote.objects.filter(
+                        tenant=tenant,
+                        template_id__isnull=True,
+                    ).exists()
+                ):
                     notes = DailyNote.objects.filter(tenant=tenant, template_id__isnull=True).count()
                     notes_linked_count += notes
                     self.stdout.write(

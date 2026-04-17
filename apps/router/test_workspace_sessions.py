@@ -9,6 +9,7 @@ check the file share sessions.json for new entries.
 
 TODO: DELETE THIS FILE after workspace session isolation is verified.
 """
+
 from __future__ import annotations
 
 import logging
@@ -57,8 +58,14 @@ def test_workspace_session(request):
 
     if phase == "2":
         test_params = [
-            ("8078236299:ws:general", "What secret word did I tell you in my previous message? Reply with ONLY that word, nothing else."),
-            ("8078236299:ws:work", "What secret word did I tell you in my previous message? Reply with ONLY that word, nothing else."),
+            (
+                "8078236299:ws:general",
+                "What secret word did I tell you in my previous message? Reply with ONLY that word, nothing else.",
+            ),
+            (
+                "8078236299:ws:work",
+                "What secret word did I tell you in my previous message? Reply with ONLY that word, nothing else.",
+            ),
         ]
     else:
         test_params = [
@@ -88,31 +95,37 @@ def test_workspace_session(request):
             reply = ""
             if data.get("choices"):
                 reply = data["choices"][0].get("message", {}).get("content", "")[:300]
-            results.append({
-                "user_param": user_param,
-                "http_status": resp.status_code,
-                "reply": reply,
-            })
+            results.append(
+                {
+                    "user_param": user_param,
+                    "http_status": resp.status_code,
+                    "reply": reply,
+                }
+            )
         except Exception as e:
-            results.append({
-                "user_param": user_param,
-                "http_status": "error",
-                "error": str(e)[:500],
-            })
+            results.append(
+                {
+                    "user_param": user_param,
+                    "http_status": "error",
+                    "error": str(e)[:500],
+                }
+            )
 
         # Respect concurrency=1 — wait between requests
         time.sleep(3)
 
-    return JsonResponse({
-        "tenant_id": str(tenant.id),
-        "container_fqdn": tenant.container_fqdn,
-        "test_results": results,
-        "verify": (
-            "Run: az storage file download --share-name ws-148ccf1c-ef13-47f8-a "
-            "--path agents/main/sessions/sessions.json --account-name stnbhdprod "
-            "--dest /tmp/sessions-after.json && cat /tmp/sessions-after.json"
-        ),
-    })
+    return JsonResponse(
+        {
+            "tenant_id": str(tenant.id),
+            "container_fqdn": tenant.container_fqdn,
+            "test_results": results,
+            "verify": (
+                "Run: az storage file download --share-name ws-148ccf1c-ef13-47f8-a "
+                "--path agents/main/sessions/sessions.json --account-name stnbhdprod "
+                "--dest /tmp/sessions-after.json && cat /tmp/sessions-after.json"
+            ),
+        }
+    )
 
 
 @csrf_exempt
@@ -148,11 +161,13 @@ def force_apply_test_tenant_config(request):
         logger.exception("force_apply_test_tenant_config failed")
         return JsonResponse({"error": "update_failed", "detail": str(e)[:500]}, status=500)
 
-    return JsonResponse({
-        "tenant_id": str(tenant.id),
-        "status": "ok",
-        "verify": (
-            "Run: az storage file list --share-name ws-148ccf1c-ef13-47f8-a "
-            "--path workspace/rules --account-name stnbhdprod --output table"
-        ),
-    })
+    return JsonResponse(
+        {
+            "tenant_id": str(tenant.id),
+            "status": "ok",
+            "verify": (
+                "Run: az storage file list --share-name ws-148ccf1c-ef13-47f8-a "
+                "--path workspace/rules --account-name stnbhdprod --output table"
+            ),
+        }
+    )

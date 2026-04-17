@@ -1,22 +1,5 @@
 from django.urls import path
 
-from .extraction_views import NightlyExtractionView
-from .views import (
-    DailyNoteEntryDetailView,
-    DailyNoteEntryListView,
-    DailyNoteSectionView,
-    DailyNoteView,
-    ExtractionApproveView,
-    ExtractionDismissView,
-    JournalEntryDetailView,
-    JournalEntryListCreateView,
-    MemoryView,
-    DailyNoteTemplateView,
-    TemplateDetailView,
-    TemplateListCreateView,
-    WeeklyReviewDetailView,
-    WeeklyReviewListCreateView,
-)
 from .document_views import (
     DocumentAppendView,
     DocumentClearView,
@@ -24,6 +7,23 @@ from .document_views import (
     DocumentListCreateView,
     SidebarTreeView,
     TodayView,
+)
+from .extraction_views import NightlyExtractionView
+from .views import (
+    DailyNoteEntryDetailView,
+    DailyNoteEntryListView,
+    DailyNoteSectionView,
+    DailyNoteTemplateView,
+    DailyNoteView,
+    ExtractionApproveView,
+    ExtractionDismissView,
+    JournalEntryDetailView,
+    JournalEntryListCreateView,
+    MemoryView,
+    TemplateDetailView,
+    TemplateListCreateView,
+    WeeklyReviewDetailView,
+    WeeklyReviewListCreateView,
 )
 
 urlpatterns = [
@@ -34,7 +34,6 @@ urlpatterns = [
     path("documents/<str:kind>/<path:slug>/", DocumentDetailView.as_view(), name="document-detail"),
     path("today/", TodayView.as_view(), name="today"),
     path("tree/", SidebarTreeView.as_view(), name="sidebar-tree"),
-
     # ── Legacy endpoints (kept for backward compatibility) ───────────────
     path("", JournalEntryListCreateView.as_view(), name="journal-list-create"),
     path("<uuid:entry_id>/", JournalEntryDetailView.as_view(), name="journal-detail"),
@@ -48,10 +47,8 @@ urlpatterns = [
     path("templates/<str:template_id>/", TemplateDetailView.as_view(), name="template-detail"),
     path("reviews/", WeeklyReviewListCreateView.as_view(), name="weekly-review-list-create"),
     path("reviews/<uuid:review_id>/", WeeklyReviewDetailView.as_view(), name="weekly-review-detail"),
-
     # Nightly extraction — called by QStash tenant cron
     path("extract/", NightlyExtractionView.as_view(), name="nightly-extract"),
-
     # Extraction approval (web)
     path("extractions/<uuid:extraction_id>/approve/", ExtractionApproveView.as_view(), name="extraction-approve"),
     path("extractions/<uuid:extraction_id>/dismiss/", ExtractionDismissView.as_view(), name="extraction-dismiss"),

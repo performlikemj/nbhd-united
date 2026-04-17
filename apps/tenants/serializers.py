@@ -1,4 +1,5 @@
 """Tenant serializers."""
+
 from zoneinfo import available_timezones
 
 from django.contrib.auth import authenticate
@@ -22,14 +23,29 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = (
-            "id", "username", "email", "display_name", "language",
-            "timezone", "telegram_chat_id", "telegram_username",
-            "line_user_id", "line_display_name", "preferred_channel",
-            "location_city", "location_lat", "location_lon",
+            "id",
+            "username",
+            "email",
+            "display_name",
+            "language",
+            "timezone",
+            "telegram_chat_id",
+            "telegram_username",
+            "line_user_id",
+            "line_display_name",
+            "preferred_channel",
+            "location_city",
+            "location_lat",
+            "location_lon",
         )
         read_only_fields = (
-            "id", "username", "email", "telegram_chat_id", "telegram_username",
-            "line_user_id", "line_display_name",
+            "id",
+            "username",
+            "email",
+            "telegram_chat_id",
+            "telegram_username",
+            "line_user_id",
+            "line_display_name",
         )
 
     def validate_timezone(self, value):
@@ -55,17 +71,31 @@ class TenantSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tenant
         fields = (
-            "id", "user", "status", "model_tier",
-            "has_active_subscription", "trial_days_remaining",
-            "trial_started_at", "trial_ends_at", "is_trial",
-            "container_id", "container_fqdn",
-            "messages_today", "messages_this_month",
-            "tokens_this_month", "estimated_cost_this_month",
-            "monthly_token_budget", "monthly_cost_budget",
+            "id",
+            "user",
+            "status",
+            "model_tier",
+            "has_active_subscription",
+            "trial_days_remaining",
+            "trial_started_at",
+            "trial_ends_at",
+            "is_trial",
+            "container_id",
+            "container_fqdn",
+            "messages_today",
+            "messages_this_month",
+            "tokens_this_month",
+            "estimated_cost_this_month",
+            "monthly_token_budget",
+            "monthly_cost_budget",
             "last_message_at",
-            "provisioned_at", "config_refreshed_at", "created_at",
-            "pending_deletion", "deletion_scheduled_at",
-            "preferred_model", "task_model_preferences",
+            "provisioned_at",
+            "config_refreshed_at",
+            "created_at",
+            "pending_deletion",
+            "deletion_scheduled_at",
+            "preferred_model",
+            "task_model_preferences",
             "platform_budget_exceeded",
             "finance_enabled",
         )
@@ -84,8 +114,9 @@ class TenantSerializer(serializers.ModelSerializer):
         return max(0, days)
 
     def get_platform_budget_exceeded(self, obj):
-        from apps.billing.models import MonthlyBudget
         from datetime import date
+
+        from apps.billing.models import MonthlyBudget
 
         first_of_month = date.today().replace(day=1)
         try:
@@ -97,6 +128,7 @@ class TenantSerializer(serializers.ModelSerializer):
 
 class TenantRegistrationSerializer(serializers.Serializer):
     """Used during onboarding — Telegram linking happens later via QR flow."""
+
     display_name = serializers.CharField(max_length=255, required=False, default="Friend")
     language = serializers.CharField(max_length=10, required=False, default="en")
     timezone = serializers.CharField(max_length=63, required=False, default="UTC")
@@ -107,6 +139,7 @@ class TenantRegistrationSerializer(serializers.Serializer):
 
     def validate_agent_persona(self, value):
         from apps.orchestrator.personas import PERSONAS
+
         if value not in PERSONAS:
             raise serializers.ValidationError(f"Unknown persona: {value}")
         return value
@@ -114,20 +147,19 @@ class TenantRegistrationSerializer(serializers.Serializer):
 
 class HeartbeatConfigSerializer(serializers.Serializer):
     """Serializer for heartbeat window and proactive assistant settings."""
+
     enabled = serializers.BooleanField(required=False)
-    start_hour = serializers.IntegerField(
-        required=False, min_value=0, max_value=23
-    )
+    start_hour = serializers.IntegerField(required=False, min_value=0, max_value=23)
     window_hours = serializers.IntegerField(
-        required=False, min_value=1, max_value=6,
+        required=False,
+        min_value=1,
+        max_value=6,
     )
     feature_tips = serializers.BooleanField(required=False)
 
     def validate_window_hours(self, value):
         if value > 6:
-            raise serializers.ValidationError(
-                "Heartbeat window cannot exceed 6 hours."
-            )
+            raise serializers.ValidationError("Heartbeat window cannot exceed 6 hours.")
         return value
 
 
@@ -142,7 +174,8 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
         )
         if self.user is None or not self.user.is_active:
             raise AuthenticationFailed(
-                self.error_messages["no_active_account"], "no_active_account",
+                self.error_messages["no_active_account"],
+                "no_active_account",
             )
         refresh = self.get_token(self.user)
         return {"refresh": str(refresh), "access": str(refresh.access_token)}

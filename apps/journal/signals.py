@@ -1,4 +1,5 @@
 """Post-save signals for journal models."""
+
 from __future__ import annotations
 
 import logging

@@ -11,7 +11,6 @@ from apps.journal.embedding import chunk_markdown, embed_daily_note
 from apps.journal.models import Document, DocumentChunk
 from apps.tenants.models import Tenant, User
 
-
 SAMPLE_NOTE = """# Daily Note 2026-03-02
 
 ## Morning
@@ -40,13 +39,18 @@ background tasks that might fail due to missing resources.
 
 SHORT_NOTE = "Just a quick note."
 
-LONG_SECTION = """## Research
+LONG_SECTION = (
+    """## Research
 
-""" + "This is a very long paragraph about research. " * 100 + """
+"""
+    + "This is a very long paragraph about research. " * 100
+    + """
 
 Another paragraph about different research topics that should be split into a separate chunk because the first one is too long.
 
-""" + "More detailed analysis follows. " * 80
+"""
+    + "More detailed analysis follows. " * 80
+)
 
 
 class TestChunkMarkdown(TestCase):

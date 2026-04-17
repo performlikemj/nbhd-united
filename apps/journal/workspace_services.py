@@ -5,6 +5,7 @@ Phase 3 (agent-facing runtime API). Phase 5 adds user-facing endpoints in
 apps/journal/workspace_views.py that need the same logic, so they're extracted
 here for clean reuse.
 """
+
 from __future__ import annotations
 
 import logging
@@ -20,12 +21,11 @@ WORKSPACE_LIMIT = 4
 DEFAULT_WORKSPACE_NAME = "General"
 DEFAULT_WORKSPACE_SLUG = "general"
 DEFAULT_WORKSPACE_DESCRIPTION = (
-    "Catch-all workspace for everyday conversations and topics that don't "
-    "fit into a more specific workspace."
+    "Catch-all workspace for everyday conversations and topics that don't fit into a more specific workspace."
 )
 
 
-def serialize_workspace(workspace: "Workspace", *, active_workspace_id=None) -> dict:
+def serialize_workspace(workspace: Workspace, *, active_workspace_id=None) -> dict:
     """Serialize a Workspace model to JSON for API responses."""
     return {
         "id": str(workspace.id),
@@ -33,24 +33,20 @@ def serialize_workspace(workspace: "Workspace", *, active_workspace_id=None) -> 
         "slug": workspace.slug,
         "description": workspace.description,
         "is_default": workspace.is_default,
-        "is_active": (
-            active_workspace_id is not None
-            and str(workspace.id) == str(active_workspace_id)
-        ),
+        "is_active": (active_workspace_id is not None and str(workspace.id) == str(active_workspace_id)),
         "created_at": workspace.created_at.isoformat() if workspace.created_at else None,
-        "last_used_at": (
-            workspace.last_used_at.isoformat() if workspace.last_used_at else None
-        ),
+        "last_used_at": (workspace.last_used_at.isoformat() if workspace.last_used_at else None),
     }
 
 
-def generate_unique_slug(tenant: "Tenant", base_slug: str) -> str:
+def generate_unique_slug(tenant: Tenant, base_slug: str) -> str:
     """Generate a slug unique within the tenant.
 
     Uses Django's slugify and appends -2, -3, ... on collision.
     """
-    from apps.journal.models import Workspace
     from django.utils.text import slugify
+
+    from apps.journal.models import Workspace
 
     base = slugify(base_slug) or "workspace"
     slug = base
@@ -73,13 +69,14 @@ def embed_workspace_description(description: str):
         return None
     try:
         from apps.lessons.services import generate_embedding
+
         return generate_embedding(description)
     except Exception:
         logger.exception("workspace: failed to embed description")
         return None
 
 
-def ensure_default_workspace(tenant: "Tenant") -> "Workspace":
+def ensure_default_workspace(tenant: Tenant) -> Workspace:
     """Create the General default workspace if the tenant has none.
 
     Called automatically when creating a tenant's first workspace so they

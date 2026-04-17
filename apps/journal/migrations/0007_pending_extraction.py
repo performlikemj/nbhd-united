@@ -8,7 +8,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("journal", "0006_rename_journal_doc_tenant_kind_idx_journal_doc_tenant__efec3b_idx"),
         ("tenants", "0008_add_userllmconfig"),

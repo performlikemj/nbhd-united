@@ -1,8 +1,10 @@
 """Tests for router app."""
+
 from django.test import TestCase
 
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
+
 from .services import clear_cache, extract_chat_id, resolve_container
 
 

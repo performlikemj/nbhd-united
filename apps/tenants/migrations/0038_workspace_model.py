@@ -5,16 +5,22 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('journal', '0012_workspace_model'),
-        ('tenants', '0037_collapse_tiers_remove_byok'),
+        ("journal", "0012_workspace_model"),
+        ("tenants", "0037_collapse_tiers_remove_byok"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='tenant',
-            name='active_workspace',
-            field=models.ForeignKey(blank=True, help_text='Currently active conversation workspace. Null = no workspaces.', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to='journal.workspace'),
+            model_name="tenant",
+            name="active_workspace",
+            field=models.ForeignKey(
+                blank=True,
+                help_text="Currently active conversation workspace. Null = no workspaces.",
+                null=True,
+                on_delete=django.db.models.deletion.SET_NULL,
+                related_name="+",
+                to="journal.workspace",
+            ),
         ),
     ]

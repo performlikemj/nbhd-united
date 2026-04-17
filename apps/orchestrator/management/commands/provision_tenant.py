@@ -1,4 +1,5 @@
 """Manually provision a tenant's OpenClaw instance."""
+
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.orchestrator.services import provision_tenant
@@ -21,6 +22,4 @@ class Command(BaseCommand):
         self.stdout.write(f"Provisioning tenant {tenant_id} ({tenant.user.display_name})...")
         provision_tenant(tenant_id)
         tenant.refresh_from_db()
-        self.stdout.write(self.style.SUCCESS(
-            f"Done! Status: {tenant.status}, Container: {tenant.container_id}"
-        ))
+        self.stdout.write(self.style.SUCCESS(f"Done! Status: {tenant.status}, Container: {tenant.container_id}"))

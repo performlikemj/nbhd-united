@@ -1,11 +1,12 @@
 """Tests for cron delivery endpoint."""
-from unittest.mock import patch, MagicMock
+
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
+from apps.router.cron_delivery import _rate_counts, _split_message
 from apps.tenants.models import Tenant
-from apps.router.cron_delivery import _split_message, _rate_counts
 
 
 class SplitMessageTest(TestCase):
@@ -30,6 +31,7 @@ class SplitMessageTest(TestCase):
 class CronDeliveryViewTest(TestCase):
     def setUp(self):
         from django.contrib.auth import get_user_model
+
         User = get_user_model()
         self.user = User.objects.create_user(username="crontest", password="pass")
         self.user.telegram_chat_id = 12345
@@ -67,19 +69,16 @@ class CronDeliveryViewTest(TestCase):
         mock_http.__exit__ = MagicMock(return_value=False)
         mock_client_cls.return_value = mock_http
 
-        resp = self.client.post(
-            self.url, {"message": "Good morning!"}, format="json", **self._headers()
-        )
+        resp = self.client.post(self.url, {"message": "Good morning!"}, format="json", **self._headers())
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["status"], "sent")
         self.assertEqual(resp.json()["chunks"], 1)
 
     def test_rate_limit(self):
         import time
+
         tid = str(self.tenant.id)
         _rate_counts[tid] = [time.time()] * 20  # Fill to limit
 
-        resp = self.client.post(
-            self.url, {"message": "hello"}, format="json", **self._headers()
-        )
+        resp = self.client.post(self.url, {"message": "hello"}, format="json", **self._headers())
         self.assertEqual(resp.status_code, 429)

@@ -5,11 +5,12 @@ Use when you need configs pushed NOW (e.g., switching to central poller).
 
 Usage: python manage.py force_apply_configs
 """
+
 from django.core.management.base import BaseCommand
 from django.db import models
 
-from apps.tenants.models import Tenant
 from apps.orchestrator.services import update_tenant_config
+from apps.tenants.models import Tenant
 
 
 class Command(BaseCommand):
@@ -30,6 +31,7 @@ class Command(BaseCommand):
             try:
                 update_tenant_config(str(tenant.id))
                 from django.utils import timezone
+
                 Tenant.objects.filter(id=tenant.id).update(
                     config_version=models.F("pending_config_version"),
                     config_refreshed_at=timezone.now(),
@@ -40,6 +42,6 @@ class Command(BaseCommand):
                 failed += 1
                 self.stdout.write(self.style.ERROR(f"  ❌ {tenant.container_id}: {e}"))
 
-        self.stdout.write(self.style.SUCCESS(
-            f"Done: {updated} updated, {failed} failed, {total - updated - failed} skipped"
-        ))
+        self.stdout.write(
+            self.style.SUCCESS(f"Done: {updated} updated, {failed} failed, {total - updated - failed} skipped")
+        )

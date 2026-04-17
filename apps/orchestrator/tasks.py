@@ -1,4 +1,5 @@
 """Tasks for async provisioning/deprovisioning (executed via QStash)."""
+
 from .services import (
     deprovision_tenant,
     provision_tenant,
@@ -48,7 +49,7 @@ def hibernate_suspended_task() -> dict:
         try:
             hibernate_container_app(tenant.container_id)
             hibernated += 1
-        except Exception as e:
+        except Exception:
             failed += 1
 
     return {"hibernated": hibernated, "failed": failed, "total": tenants.count()}
@@ -60,8 +61,10 @@ def apply_single_tenant_config_task(tenant_id: str) -> None:
     Updates the tenant's OpenClaw config and bumps config_version.
     """
     import logging
+
     from django.db import models as db_models
     from django.utils import timezone as tz
+
     from apps.tenants.models import Tenant
 
     logger = logging.getLogger(__name__)
@@ -90,6 +93,7 @@ def apply_single_tenant_config_task(tenant_id: str) -> None:
     # gateway.reload reads the updated file and applies it without restart.
     try:
         from apps.cron.gateway_client import invoke_gateway_tool
+
         tenant.refresh_from_db()
         invoke_gateway_tool(tenant, "gateway.reload", {})
         logger.info("Config hot-reloaded for tenant %s", str(tenant_id)[:8])
@@ -100,9 +104,11 @@ def apply_single_tenant_config_task(tenant_id: str) -> None:
 def apply_single_tenant_image_task(tenant_id: str, desired_tag: str) -> None:
     """Update a single tenant's container image (enqueued by apply-pending-configs)."""
     import logging
+
     from django.conf import settings as django_settings
-    from apps.tenants.models import Tenant
+
     from apps.orchestrator.azure_client import update_container_image
+    from apps.tenants.models import Tenant
 
     logger = logging.getLogger(__name__)
 
@@ -126,15 +132,22 @@ def force_reseed_crons_task() -> dict:
     Use when cron job definitions have changed and need to be pushed everywhere.
     """
     import logging
-    from apps.tenants.models import Tenant
+
+    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
     from apps.orchestrator.config_generator import build_cron_seed_jobs
-    from apps.cron.gateway_client import invoke_gateway_tool, GatewayError
+    from apps.tenants.models import Tenant
 
     logger = logging.getLogger(__name__)
 
     # Only touch system-managed cron jobs (by name).
     # User-created crons (reminders, custom schedules) are left untouched.
-    SYSTEM_JOB_NAMES = {"Morning Briefing", "Evening Check-in", "Weekly Reflection", "Week Ahead Review", "Background Tasks"}
+    SYSTEM_JOB_NAMES = {
+        "Morning Briefing",
+        "Evening Check-in",
+        "Weekly Reflection",
+        "Week Ahead Review",
+        "Background Tasks",
+    }
 
     tenants = Tenant.objects.filter(
         status=Tenant.Status.ACTIVE,
@@ -154,7 +167,9 @@ def force_reseed_crons_task() -> dict:
         try:
             # List existing
             result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-            existing = result.get("jobs", []) if isinstance(result, dict) else result if isinstance(result, list) else []
+            existing = (
+                result.get("jobs", []) if isinstance(result, dict) else result if isinstance(result, list) else []
+            )
 
             # Delete only system-managed jobs
             deleted = 0
@@ -180,7 +195,12 @@ def force_reseed_crons_task() -> dict:
                     total_errors += 1
 
             total_updated += created
-            logger.info("force_reseed: tenant %s — %d system jobs deleted, %d created (user jobs preserved)", tid, deleted, created)
+            logger.info(
+                "force_reseed: tenant %s — %d system jobs deleted, %d created (user jobs preserved)",
+                tid,
+                deleted,
+                created,
+            )
 
         except GatewayError as e:
             logger.error("force_reseed: tenant %s failed: %s", tid, e)
@@ -198,8 +218,10 @@ def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
     nbhd_send_to_user.
     """
     import logging
+
     import httpx
     from django.conf import settings
+
     from apps.tenants.models import Tenant
 
     logger = logging.getLogger(__name__)
@@ -212,6 +234,7 @@ def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
     gateway_token = getattr(settings, "NBHD_INTERNAL_API_KEY", "").strip()
     if not gateway_token:
         from apps.orchestrator.azure_client import read_key_vault_secret
+
         gateway_token = read_key_vault_secret("nbhd-internal-api-key") or ""
 
     user_tz = getattr(tenant.user, "timezone", None) or "UTC"
@@ -234,7 +257,9 @@ def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
     except httpx.TimeoutException:
         logger.error("Broadcast timeout for tenant %s", tenant_id[:8])
     except httpx.HTTPStatusError as e:
-        logger.error("Broadcast failed for tenant %s: %s %s", tenant_id[:8], e.response.status_code, e.response.text[:200])
+        logger.error(
+            "Broadcast failed for tenant %s: %s %s", tenant_id[:8], e.response.status_code, e.response.text[:200]
+        )
     except Exception as e:
         logger.error("Broadcast failed for tenant %s: %s", tenant_id[:8], e)
 
@@ -259,14 +284,15 @@ def hibernate_idle_tenants_task() -> dict:
     hibernated = 0
     failed = 0
     with transaction.atomic():
-        idle_tenants = Tenant.objects.filter(
-            status=Tenant.Status.ACTIVE,
-            container_id__gt="",
-            hibernated_at__isnull=True,
-        ).filter(
-            Q(last_message_at__lt=cutoff)
-            | Q(last_message_at__isnull=True, provisioned_at__lt=cutoff)
-        ).select_for_update(skip_locked=True)
+        idle_tenants = (
+            Tenant.objects.filter(
+                status=Tenant.Status.ACTIVE,
+                container_id__gt="",
+                hibernated_at__isnull=True,
+            )
+            .filter(Q(last_message_at__lt=cutoff) | Q(last_message_at__isnull=True, provisioned_at__lt=cutoff))
+            .select_for_update(skip_locked=True)
+        )
 
         for tenant in idle_tenants:
             # Re-check last_message_at to avoid TOCTOU race
@@ -283,7 +309,8 @@ def hibernate_idle_tenants_task() -> dict:
 
     logger.info(
         "hibernate_idle_tenants: hibernated=%d failed=%d",
-        hibernated, failed,
+        hibernated,
+        failed,
     )
     return {"hibernated": hibernated, "failed": failed}
 
@@ -358,8 +385,9 @@ def dedup_cron_jobs_task(tenant_id: str) -> None:
     Groups by name, keeps newest (by createdAt), deletes rest.
     """
     import logging
-    from apps.tenants.models import Tenant
+
     from apps.orchestrator.services import dedup_tenant_cron_jobs
+    from apps.tenants.models import Tenant
 
     logger = logging.getLogger(__name__)
 
@@ -370,7 +398,10 @@ def dedup_cron_jobs_task(tenant_id: str) -> None:
     result = dedup_tenant_cron_jobs(tenant)
     logger.info(
         "dedup_task: tenant %s — kept %d, deleted %d, errors %d",
-        tenant_id[:8], result["kept"], result["deleted"], result["errors"],
+        tenant_id[:8],
+        result["kept"],
+        result["deleted"],
+        result["errors"],
     )
 
 
@@ -378,8 +409,9 @@ def remove_zombie_heartbeats_task() -> dict:
     """Remove Heartbeat Check-in cron jobs from tenants with heartbeat disabled."""
     import logging
     import time
+
+    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
     from apps.tenants.models import Tenant
-    from apps.cron.gateway_client import invoke_gateway_tool, GatewayError
 
     logger = logging.getLogger(__name__)
 
@@ -400,9 +432,7 @@ def remove_zombie_heartbeats_task() -> dict:
             continue
 
         try:
-            list_result = invoke_gateway_tool(
-                tenant, "cron.list", {"includeDisabled": True}
-            )
+            list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
         except GatewayError:
             logger.warning("zombie_heartbeats: tenant %s — cannot list jobs", tid)
             errors += 1

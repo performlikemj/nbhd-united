@@ -1,4 +1,5 @@
 """User-facing Document API views (Journal v2)."""
+
 from __future__ import annotations
 
 import datetime
@@ -22,13 +23,17 @@ from .document_serializers import (
 from .models import Document
 from .services import (
     get_default_template as get_tenant_template,
+)
+from .services import (
     materialize_sections_markdown,
     seed_default_templates_for_tenant,
 )
 from .templates_md import (
     daily_note_context,
-    get_default_template as get_static_template,
     render_template,
+)
+from .templates_md import (
+    get_default_template as get_static_template,
 )
 
 
@@ -318,11 +323,13 @@ class SidebarTreeView(APIView):
             # Hide future daily notes from sidebar
             if doc["kind"] == "daily" and doc["slug"] > today:
                 continue
-            tree[doc["kind"]].append({
-                "slug": doc["slug"],
-                "title": doc["title"],
-                "updated_at": doc["updated_at"].isoformat() if doc["updated_at"] else None,
-            })
+            tree[doc["kind"]].append(
+                {
+                    "slug": doc["slug"],
+                    "title": doc["title"],
+                    "updated_at": doc["updated_at"].isoformat() if doc["updated_at"] else None,
+                }
+            )
 
         # Sort daily notes by slug (date) descending
         if "daily" in tree:

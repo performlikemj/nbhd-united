@@ -9,6 +9,7 @@ Guarantees capture of name, language, timezone before handing off to the agent.
 Also handles re-introduction for existing users who were backfilled
 (onboarding_complete=True but onboarding_step=4 with no real data).
 """
+
 from __future__ import annotations
 
 import logging
@@ -179,9 +180,7 @@ TIMEZONE_ALIASES: dict[str, str] = {
     "バンコク": "Asia/Bangkok",
 }
 
-UTC_OFFSET_RE = re.compile(
-    r"(?:utc|gmt)\s*([+-])\s*(\d{1,2})(?::(\d{2}))?", re.IGNORECASE
-)
+UTC_OFFSET_RE = re.compile(r"(?:utc|gmt)\s*([+-])\s*(\d{1,2})(?::(\d{2}))?", re.IGNORECASE)
 
 
 def parse_timezone(text: str) -> str:
@@ -214,7 +213,7 @@ def parse_name(text: str) -> str:
     name = text.strip()
     for prefix in ("my name is", "i'm", "im", "call me", "it's", "its", "i am"):
         if name.lower().startswith(prefix):
-            name = name[len(prefix):].strip()
+            name = name[len(prefix) :].strip()
     name = name.rstrip("!.,")
     if name:
         name = name.strip()
@@ -235,12 +234,41 @@ def parse_name(text: str) -> str:
 
 # Telegram language_code → our language code mapping
 TELEGRAM_LANG_MAP: dict[str, str] = {
-    "en": "en", "es": "es", "fr": "fr", "de": "de", "pt": "pt", "pt-br": "pt",
-    "ja": "ja", "zh-hans": "zh", "zh-hant": "zh", "ko": "ko", "it": "it",
-    "nl": "nl", "ru": "ru", "ar": "ar", "hi": "hi", "tr": "tr", "th": "th",
-    "vi": "vi", "pl": "pl", "id": "id", "ms": "ms", "tl": "tl", "sw": "sw",
-    "uk": "uk", "cs": "cs", "ro": "ro", "el": "el", "hu": "hu", "sv": "sv",
-    "da": "da", "fi": "fi", "nb": "nb", "no": "nb", "he": "he", "fa": "fa",
+    "en": "en",
+    "es": "es",
+    "fr": "fr",
+    "de": "de",
+    "pt": "pt",
+    "pt-br": "pt",
+    "ja": "ja",
+    "zh-hans": "zh",
+    "zh-hant": "zh",
+    "ko": "ko",
+    "it": "it",
+    "nl": "nl",
+    "ru": "ru",
+    "ar": "ar",
+    "hi": "hi",
+    "tr": "tr",
+    "th": "th",
+    "vi": "vi",
+    "pl": "pl",
+    "id": "id",
+    "ms": "ms",
+    "tl": "tl",
+    "sw": "sw",
+    "uk": "uk",
+    "cs": "cs",
+    "ro": "ro",
+    "el": "el",
+    "hu": "hu",
+    "sv": "sv",
+    "da": "da",
+    "fi": "fi",
+    "nb": "nb",
+    "no": "nb",
+    "he": "he",
+    "fa": "fa",
 }
 
 # Localized onboarding messages
@@ -353,9 +381,7 @@ class OnboardingReply:
         return {}
 
 
-def get_onboarding_response(
-    tenant: Tenant, message_text: str, *, telegram_lang: str = ""
-) -> OnboardingReply | None:
+def get_onboarding_response(tenant: Tenant, message_text: str, *, telegram_lang: str = "") -> OnboardingReply | None:
     """Process an onboarding message and return the response.
 
     Args:
@@ -467,11 +493,9 @@ def get_onboarding_response(
     return None
 
 
-def _handle_country_input(
-    tenant: Tenant, country_text: str, lang: str
-) -> OnboardingReply:
+def _handle_country_input(tenant: Tenant, country_text: str, lang: str) -> OnboardingReply:
     """Handle country selection (from text input or callback data)."""
-    from .timezone_data import resolve_country_timezone, build_zone_keyboard
+    from .timezone_data import build_zone_keyboard, resolve_country_timezone
 
     result = resolve_country_timezone(country_text)
 
@@ -507,9 +531,7 @@ def _handle_country_input(
     return OnboardingReply(_msg(lang, "ask_interests"))
 
 
-def handle_onboarding_callback(
-    tenant: Tenant, callback_data: str
-) -> OnboardingReply | None:
+def handle_onboarding_callback(tenant: Tenant, callback_data: str) -> OnboardingReply | None:
     """Handle inline button callback during onboarding.
 
     Args:

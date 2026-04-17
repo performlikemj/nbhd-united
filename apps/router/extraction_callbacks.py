@@ -36,6 +36,7 @@ TELEGRAM_TIMEOUT = 5
 
 # ── Telegram helpers ──────────────────────────────────────────────────────────
 
+
 def _answer_callback(callback_id: str, text: str) -> JsonResponse:
     return JsonResponse({"method": "answerCallbackQuery", "callback_query_id": callback_id, "text": text})
 
@@ -56,12 +57,15 @@ def _edit_message(chat_id: int, message_id: int, text: str) -> None:
 
 # ── Approval actions ──────────────────────────────────────────────────────────
 
+
 def _approve_lesson(pending: PendingExtraction) -> tuple[str, str | None]:
     """Create a Lesson from the pending extraction and process its embedding.
 
     Returns (user_message, lesson_id_str).
     """
-    context = f"Extracted from daily note — {pending.source_date.isoformat() if pending.source_date else 'recent entries'}"
+    context = (
+        f"Extracted from daily note — {pending.source_date.isoformat() if pending.source_date else 'recent entries'}"
+    )
     lesson = Lesson.objects.create(
         tenant=pending.tenant,
         text=pending.text,
@@ -134,6 +138,7 @@ def _approve_task(pending: PendingExtraction) -> tuple[str, None]:
 
 # ── Undo actions ─────────────────────────────────────────────────────────────
 
+
 def _undo_lesson(pending: PendingExtraction) -> None:
     """Delete the Lesson created by this extraction."""
     if pending.lesson_id:
@@ -142,9 +147,7 @@ def _undo_lesson(pending: PendingExtraction) -> None:
 
 def _undo_goal(pending: PendingExtraction) -> None:
     """Remove the goal block from the tenant's goals Document."""
-    doc = Document.objects.filter(
-        tenant=pending.tenant, kind=Document.Kind.GOAL, slug="goals"
-    ).first()
+    doc = Document.objects.filter(tenant=pending.tenant, kind=Document.Kind.GOAL, slug="goals").first()
     if doc:
         pattern = r"\n" + re.escape(f"### {pending.text}") + r"\n- Added: \d{4}-\d{2}-\d{2}\n- Status: active\n"
         doc.markdown = re.sub(pattern, "", doc.markdown)
@@ -153,9 +156,7 @@ def _undo_goal(pending: PendingExtraction) -> None:
 
 def _undo_task(pending: PendingExtraction) -> None:
     """Remove the task line from the tenant's tasks Document."""
-    doc = Document.objects.filter(
-        tenant=pending.tenant, kind=Document.Kind.TASKS, slug="tasks"
-    ).first()
+    doc = Document.objects.filter(tenant=pending.tenant, kind=Document.Kind.TASKS, slug="tasks").first()
     if doc:
         pattern = re.escape(f"- [ ] {pending.text}") + r"  _\(added \d{4}-\d{2}-\d{2}\)_\n"
         doc.markdown = re.sub(pattern, "", doc.markdown)
@@ -163,6 +164,7 @@ def _undo_task(pending: PendingExtraction) -> None:
 
 
 # ── Main handler ──────────────────────────────────────────────────────────────
+
 
 def handle_extraction_callback(update: dict, tenant: Tenant) -> JsonResponse:
     """Handle inline button presses for PendingExtraction approval/dismissal."""
@@ -192,7 +194,9 @@ def handle_extraction_callback(update: dict, tenant: Tenant) -> JsonResponse:
         if not pending:
             # May already be undone
             already = PendingExtraction.objects.filter(
-                id=pending_id, tenant=tenant, status=PendingExtraction.Status.UNDONE,
+                id=pending_id,
+                tenant=tenant,
+                status=PendingExtraction.Status.UNDONE,
             ).exists()
             if already:
                 return _answer_callback(callback_id, "Already removed")

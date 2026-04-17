@@ -1,4 +1,5 @@
 """Manually deprovision a tenant's OpenClaw instance."""
+
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.orchestrator.services import deprovision_tenant

@@ -1,10 +1,11 @@
 """Integration services — OAuth flows, Key Vault writes, and Composio managed auth."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -13,6 +14,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from apps.tenants.models import Tenant
+
 from .models import Integration
 
 logger = logging.getLogger(__name__)
@@ -30,9 +32,7 @@ _composio_client = None
 
 def is_composio_provider(provider: str) -> bool:
     """Return True if provider auth is managed through Composio."""
-    return provider in COMPOSIO_MANAGED_PROVIDERS and bool(
-        getattr(settings, "COMPOSIO_API_KEY", "")
-    )
+    return provider in COMPOSIO_MANAGED_PROVIDERS and bool(getattr(settings, "COMPOSIO_API_KEY", ""))
 
 
 def _get_composio_client():
@@ -54,8 +54,7 @@ def _get_composio_client():
             )
         except Exception:
             logger.warning(
-                "Failed to disable Composio credential masking; "
-                "tokens may be masked",
+                "Failed to disable Composio credential masking; tokens may be masked",
                 exc_info=True,
             )
 
@@ -69,9 +68,7 @@ def _get_composio_auth_config_id(provider: str) -> str:
     }
     config_id = mapping.get(provider, "")
     if not config_id:
-        raise IntegrationProviderConfigError(
-            f"No Composio auth_config_id configured for provider={provider}"
-        )
+        raise IntegrationProviderConfigError(f"No Composio auth_config_id configured for provider={provider}")
     return config_id
 
 
@@ -115,9 +112,7 @@ def complete_composio_connection(
     )
 
     if connected_account.status != "ACTIVE":
-        raise IntegrationAccessError(
-            f"Composio connection not active: {connected_account.status}"
-        )
+        raise IntegrationAccessError(f"Composio connection not active: {connected_account.status}")
 
     # Try to extract provider email from auth params
     provider_email = _extract_composio_email(connected_account.id)
@@ -183,9 +178,7 @@ def _get_composio_access_token(
 ) -> ProviderAccessToken:
     """Retrieve access token from Composio connected account."""
     if not integration.composio_connected_account_id:
-        raise IntegrationTokenDataError(
-            f"No Composio connected_account_id for provider={provider}"
-        )
+        raise IntegrationTokenDataError(f"No Composio connected_account_id for provider={provider}")
 
     client = _get_composio_client()
 
@@ -195,15 +188,12 @@ def _get_composio_access_token(
         )
     except Exception as exc:
         logger.exception(
-            "Composio connected_accounts.get failed for provider=%s "
-            "connected_account_id=%s tenant=%s",
+            "Composio connected_accounts.get failed for provider=%s connected_account_id=%s tenant=%s",
             provider,
             integration.composio_connected_account_id,
             tenant.id,
         )
-        raise IntegrationRefreshError(
-            f"Failed to retrieve Composio auth params for provider={provider}"
-        ) from exc
+        raise IntegrationRefreshError(f"Failed to retrieve Composio auth params for provider={provider}") from exc
 
     # Extract access_token from the connected account state
     credentials = _composio_val_to_dict(account)
@@ -233,9 +223,10 @@ def _get_composio_access_token(
     # Auto-recover: if we successfully got a token, clear any error status.
     if integration.status != Integration.Status.ACTIVE:
         logger.info(
-            "Composio integration recovered for provider=%s tenant=%s "
-            "(was status=%s)",
-            provider, tenant.id, integration.status,
+            "Composio integration recovered for provider=%s tenant=%s (was status=%s)",
+            provider,
+            tenant.id,
+            integration.status,
         )
         _mark_integration_status(integration, Integration.Status.ACTIVE)
 
@@ -283,6 +274,7 @@ class ProviderAccessToken:
     expires_at: datetime | None
     provider: str
     tenant_id: str
+
 
 # OAuth provider configs
 OAUTH_PROVIDERS: dict[str, dict[str, Any]] = {
@@ -356,8 +348,7 @@ def get_key_vault_secret_name(tenant: Tenant, provider: str) -> str:
     """Get the Key Vault secret name for a tenant's integration."""
     if not tenant.key_vault_prefix:
         raise ValueError(
-            f"Tenant {tenant.id} has no key_vault_prefix — "
-            f"cannot build Key Vault secret name for {provider}"
+            f"Tenant {tenant.id} has no key_vault_prefix — cannot build Key Vault secret name for {provider}"
         )
     return f"{tenant.key_vault_prefix}-{provider}-token"
 
@@ -474,14 +465,10 @@ def _is_access_token_expiring(
 def _get_integration_or_raise(tenant: Tenant, provider: str) -> Integration:
     integration = Integration.objects.filter(tenant=tenant, provider=provider).first()
     if integration is None:
-        raise IntegrationNotConnectedError(
-            f"No integration configured for provider={provider}"
-        )
+        raise IntegrationNotConnectedError(f"No integration configured for provider={provider}")
 
     if integration.status != Integration.Status.ACTIVE:
-        raise IntegrationInactiveError(
-            f"Integration status is {integration.status} for provider={provider}"
-        )
+        raise IntegrationInactiveError(f"Integration status is {integration.status} for provider={provider}")
 
     return integration
 
@@ -496,11 +483,7 @@ def _has_read_compatible_scope(integration: Integration) -> bool:
         # Older rows may have empty scope metadata. Allow and rely on provider response.
         return True
 
-    granted_scopes = {
-        str(scope).strip()
-        for scope in raw_scopes
-        if isinstance(scope, str) and str(scope).strip()
-    }
+    granted_scopes = {str(scope).strip() for scope in raw_scopes if isinstance(scope, str) and str(scope).strip()}
     return bool(granted_scopes.intersection(acceptable_scopes))
 
 
@@ -518,13 +501,9 @@ def get_valid_provider_access_token(
     # manages token refresh internally and transient failures should not
     # permanently block the integration.
     if is_composio_provider(provider):
-        integration = Integration.objects.filter(
-            tenant=tenant, provider=provider
-        ).first()
+        integration = Integration.objects.filter(tenant=tenant, provider=provider).first()
         if integration is None:
-            raise IntegrationNotConnectedError(
-                f"No integration configured for provider={provider}"
-            )
+            raise IntegrationNotConnectedError(f"No integration configured for provider={provider}")
         if integration.composio_connected_account_id:
             return _get_composio_access_token(integration, tenant, provider)
         # Fall through to Key Vault path for legacy integrations without
@@ -535,32 +514,23 @@ def get_valid_provider_access_token(
 
     # Existing Key Vault path (Sautai + legacy Google integrations)
     if not _has_read_compatible_scope(integration):
-        raise IntegrationScopeError(
-            f"Integration lacks read scope for provider={provider}; reconnect required"
-        )
+        raise IntegrationScopeError(f"Integration lacks read scope for provider={provider}; reconnect required")
 
     raw_tokens = load_tokens_from_key_vault(tenant, provider)
     tokens = raw_tokens if isinstance(raw_tokens, dict) else {}
     access_token = tokens.get("access_token")
     refresh_token = tokens.get("refresh_token")
-    needs_refresh = (
-        not access_token
-        or _is_access_token_expiring(integration.token_expires_at, refresh_leeway_seconds)
-    )
+    needs_refresh = not access_token or _is_access_token_expiring(integration.token_expires_at, refresh_leeway_seconds)
 
     if needs_refresh:
         if not refresh_token:
             _mark_integration_status(integration, Integration.Status.EXPIRED)
-            raise IntegrationTokenDataError(
-                f"Missing refresh_token for provider={provider}"
-            )
+            raise IntegrationTokenDataError(f"Missing refresh_token for provider={provider}")
 
         client_id, client_secret = get_provider_client_credentials(provider)
         if not client_id or not client_secret:
             _mark_integration_status(integration, Integration.Status.ERROR)
-            raise IntegrationProviderConfigError(
-                f"Missing OAuth credentials for provider={provider}"
-            )
+            raise IntegrationProviderConfigError(f"Missing OAuth credentials for provider={provider}")
 
         try:
             integration = refresh_integration_tokens(
@@ -572,20 +542,12 @@ def get_valid_provider_access_token(
             )
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code if exc.response is not None else 0
-            new_status = (
-                Integration.Status.EXPIRED
-                if status_code in (400, 401)
-                else Integration.Status.ERROR
-            )
+            new_status = Integration.Status.EXPIRED if status_code in (400, 401) else Integration.Status.ERROR
             _mark_integration_status(integration, new_status)
-            raise IntegrationRefreshError(
-                f"OAuth refresh failed for provider={provider} status={status_code}"
-            ) from exc
+            raise IntegrationRefreshError(f"OAuth refresh failed for provider={provider} status={status_code}") from exc
         except Exception as exc:
             _mark_integration_status(integration, Integration.Status.ERROR)
-            raise IntegrationRefreshError(
-                f"OAuth refresh failed for provider={provider}"
-            ) from exc
+            raise IntegrationRefreshError(f"OAuth refresh failed for provider={provider}") from exc
 
         raw_tokens = load_tokens_from_key_vault(tenant, provider)
         tokens = raw_tokens if isinstance(raw_tokens, dict) else {}
@@ -593,9 +555,7 @@ def get_valid_provider_access_token(
 
     if not access_token:
         _mark_integration_status(integration, Integration.Status.ERROR)
-        raise IntegrationTokenDataError(
-            f"Missing access_token for provider={provider}"
-        )
+        raise IntegrationTokenDataError(f"Missing access_token for provider={provider}")
 
     return ProviderAccessToken(
         access_token=access_token,
@@ -605,9 +565,8 @@ def get_valid_provider_access_token(
     )
 
 
-
 _REDDIT_ACTION_MAP: dict[str, str] = {
-    "digest": "REDDIT_GET_R_TOP",              # top posts (can pass subreddit)
+    "digest": "REDDIT_GET_R_TOP",  # top posts (can pass subreddit)
     "search": "REDDIT_SEARCH_ACROSS_SUBREDDITS",
     "my_activity": "REDDIT_GET_REDDIT_USER_ABOUT",  # user profile/activity
     "comments": "REDDIT_RETRIEVE_POST_COMMENTS",
@@ -616,7 +575,7 @@ _REDDIT_ACTION_MAP: dict[str, str] = {
     "edit": "REDDIT_EDIT_REDDIT_COMMENT_OR_POST",
     "delete_post": "REDDIT_DELETE_REDDIT_POST",
     "delete_comment": "REDDIT_DELETE_REDDIT_COMMENT",
-    "new": "REDDIT_GET_NEW",                   # new posts in subreddit
+    "new": "REDDIT_GET_NEW",  # new posts in subreddit
     "controversial": "REDDIT_GET_CONTROVERSIAL",
 }
 
@@ -627,6 +586,7 @@ def execute_reddit_tool(tenant: Tenant, action: str, params: dict) -> dict:
     Returns the result dict from Composio.
     """
     import logging as _logging
+
     _log = _logging.getLogger(__name__)
 
     tool_slug = _REDDIT_ACTION_MAP.get(action)
@@ -634,6 +594,7 @@ def execute_reddit_tool(tenant: Tenant, action: str, params: dict) -> dict:
         raise ValueError(f"Unknown Reddit action: {action!r}. Valid actions: {sorted(_REDDIT_ACTION_MAP)}")
 
     from apps.integrations.models import Integration as _Integration
+
     integration = _Integration.objects.filter(
         tenant=tenant,
         provider="reddit",
@@ -705,9 +666,7 @@ def _write_gws_credentials_to_file_share(
         logger.info("[MOCK] Wrote gws credentials to file share %s", share_name)
         return
 
-    account_name = str(
-        getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or ""
-    ).strip()
+    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
     if not account_name:
         raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
 
@@ -741,9 +700,7 @@ def _delete_gws_credentials_from_file_share(tenant: Tenant) -> None:
         logger.info("[MOCK] Deleted gws credentials from file share %s", share_name)
         return
 
-    account_name = str(
-        getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or ""
-    ).strip()
+    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
     if not account_name:
         return
 

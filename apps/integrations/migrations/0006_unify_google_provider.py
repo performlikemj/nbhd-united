@@ -2,6 +2,7 @@
 
 Migrates existing Integration records and updates the Provider choices.
 """
+
 from django.db import migrations, models
 
 
@@ -14,9 +15,7 @@ def merge_google_providers(apps, schema_editor):
     Integration = apps.get_model("integrations", "Integration")
 
     # First, delete google-calendar records where tenant also has gmail
-    gmail_tenant_ids = set(
-        Integration.objects.filter(provider="gmail").values_list("tenant_id", flat=True)
-    )
+    gmail_tenant_ids = set(Integration.objects.filter(provider="gmail").values_list("tenant_id", flat=True))
     Integration.objects.filter(
         provider="google-calendar",
         tenant_id__in=gmail_tenant_ids,
@@ -36,7 +35,6 @@ def reverse_merge(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("integrations", "0005_reddit_provider"),
     ]

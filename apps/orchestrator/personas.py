@@ -1,4 +1,5 @@
 """Agent persona presets for OpenClaw workspace bootstrapping."""
+
 from __future__ import annotations
 
 import logging
@@ -139,9 +140,7 @@ def _load_soul_from_key_vault() -> str | None:
     from django.conf import settings as django_settings
 
     logger = logging.getLogger(__name__)
-    secret_name = str(
-        getattr(django_settings, "AZURE_KV_SECRET_SOUL_MD", "") or ""
-    ).strip()
+    secret_name = str(getattr(django_settings, "AZURE_KV_SECRET_SOUL_MD", "") or "").strip()
     if not secret_name:
         _load_soul_from_key_vault._cached = None
         return None
@@ -213,9 +212,7 @@ def _load_agents_md_from_key_vault() -> str | None:
     from django.conf import settings as django_settings
 
     logger = logging.getLogger(__name__)
-    secret_name = str(
-        getattr(django_settings, "AZURE_KV_SECRET_AGENTS_MD", "") or ""
-    ).strip()
+    secret_name = str(getattr(django_settings, "AZURE_KV_SECRET_AGENTS_MD", "") or "").strip()
     if not secret_name:
         _load_agents_md_from_key_vault._cached = None
         return None
@@ -244,7 +241,7 @@ def _load_agents_md_from_template_file() -> str | None:
         "AGENTS.md",
     )
     try:
-        with open(template_path, "r") as f:
+        with open(template_path) as f:
             return f.read().strip()
     except FileNotFoundError:
         return None
@@ -369,7 +366,7 @@ def _load_doc_template(filename: str) -> str | None:
         filename,
     )
     try:
-        with open(doc_path, "r") as f:
+        with open(doc_path) as f:
             return f.read().strip()
     except FileNotFoundError:
         return None
@@ -402,7 +399,7 @@ def render_workspace_rules() -> dict[str, str]:
             continue
         rule_path = os.path.join(rules_dir, filename)
         try:
-            with open(rule_path, "r") as f:
+            with open(rule_path) as f:
                 content = f.read().strip()
             if content:
                 rules[filename] = content

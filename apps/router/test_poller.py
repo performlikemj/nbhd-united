@@ -1,11 +1,11 @@
 """Tests for the central Telegram poller."""
-from unittest.mock import MagicMock, patch, call
-import json as _json
+
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase, override_settings
 
-from apps.tenants.models import Tenant
 from apps.router.poller import TelegramPoller
+from apps.tenants.models import Tenant
 
 
 @override_settings(
@@ -19,6 +19,7 @@ class TelegramPollerInitTest(TestCase):
 
     def test_init_sets_token(self):
         from apps.router.poller import TelegramPoller
+
         poller = TelegramPoller()
         self.assertEqual(poller.bot_token, "TEST-BOT-TOKEN")
         self.assertEqual(poller.offset, 0)
@@ -27,6 +28,7 @@ class TelegramPollerInitTest(TestCase):
     @patch("apps.router.poller.httpx.post")
     def test_delete_webhook_on_startup(self, mock_post):
         from apps.router.poller import TelegramPoller
+
         mock_post.return_value = MagicMock(
             json=MagicMock(return_value={"ok": True, "description": "Webhook was deleted"})
         )
@@ -48,17 +50,17 @@ class TelegramPollerDispatchTest(TestCase):
     def setUp(self):
         from apps.router.poller import TelegramPoller
         from apps.router.services import clear_cache, clear_rate_limits
+
         clear_cache()
         clear_rate_limits()
         self.poller = TelegramPoller()
         # Give it a mock http client
         self.poller._http = MagicMock()
-        self.poller._http.post.return_value = MagicMock(
-            is_success=True, json=MagicMock(return_value={"ok": True})
-        )
+        self.poller._http.post.return_value = MagicMock(is_success=True, json=MagicMock(return_value={"ok": True}))
 
     def tearDown(self):
         from apps.router.services import clear_cache, clear_rate_limits
+
         clear_cache()
         clear_rate_limits()
 
@@ -131,6 +133,7 @@ class TelegramPollerDispatchTest(TestCase):
         self, mock_start, mock_rate, mock_resolve, mock_budget, mock_http_post, mock_usage
     ):
         import uuid
+
         tenant = MagicMock(spec=Tenant)
         tenant.id = uuid.uuid4()
         tenant.status = Tenant.Status.ACTIVE
@@ -215,6 +218,7 @@ class TelegramPollerForwardTest(TestCase):
 
     def setUp(self):
         from apps.router.poller import TelegramPoller
+
         self.poller = TelegramPoller()
         self.poller._http = MagicMock()
 
@@ -251,6 +255,7 @@ class TelegramPollerForwardTest(TestCase):
     @patch("apps.router.poller.httpx.post")
     def test_forward_timeout_handled_gracefully(self, mock_post):
         import httpx
+
         mock_post.side_effect = httpx.TimeoutException("timed out")
 
         tenant = MagicMock()
@@ -263,6 +268,7 @@ class TelegramPollerForwardTest(TestCase):
     @patch("apps.router.poller.httpx.post")
     def test_forward_error_sends_sorry_message(self, mock_post):
         import httpx
+
         mock_post.side_effect = httpx.HTTPError("server error")
 
         tenant = MagicMock()
@@ -282,6 +288,7 @@ class TelegramPollerSendMessageTest(TestCase):
 
     def setUp(self):
         from apps.router.poller import TelegramPoller
+
         self.poller = TelegramPoller()
         self.poller._http = MagicMock()
         self.poller._http.post.return_value = MagicMock(is_success=True)
@@ -298,6 +305,7 @@ class TelegramPollerSendMessageTest(TestCase):
 
     def test_send_message_handles_failure(self):
         import httpx
+
         self.poller._http.post.side_effect = httpx.HTTPError("API down")
         # Should not raise
         self.poller._send_message(12345, "Hello there!")
@@ -308,6 +316,7 @@ class TelegramPollerExtractTextTest(TestCase):
 
     def setUp(self):
         from apps.router.poller import TelegramPoller
+
         self.poller = TelegramPoller.__new__(TelegramPoller)
 
     def test_text_message(self):

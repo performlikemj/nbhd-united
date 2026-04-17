@@ -1,4 +1,5 @@
 """Tests for usage/cost transparency dashboard."""
+
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -7,8 +8,9 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.tenants.services import create_tenant
+
 from .constants import MINIMAX_DISPLAY, MODEL_RATES
-from .models import MonthlyBudget, UsageRecord
+from .models import UsageRecord
 from .usage_services import get_daily_usage, get_month_boundaries, get_transparency_data, get_usage_summary
 
 
@@ -35,22 +37,28 @@ class UsageSummaryServiceTest(TestCase):
         today = timezone.now()
         # Create usage records for current month
         UsageRecord.objects.create(
-            tenant=self.tenant, event_type="message",
-            input_tokens=1000, output_tokens=2000,
+            tenant=self.tenant,
+            event_type="message",
+            input_tokens=1000,
+            output_tokens=2000,
             model_used="anthropic/claude-sonnet-4-20250514",
             cost_estimate=Decimal("0.033000"),
             created_at=today,
         )
         UsageRecord.objects.create(
-            tenant=self.tenant, event_type="message",
-            input_tokens=500, output_tokens=1000,
+            tenant=self.tenant,
+            event_type="message",
+            input_tokens=500,
+            output_tokens=1000,
             model_used="anthropic/claude-opus-4-20250514",
             cost_estimate=Decimal("0.027500"),
             created_at=today,
         )
         UsageRecord.objects.create(
-            tenant=self.tenant, event_type="tool_call",
-            input_tokens=200, output_tokens=100,
+            tenant=self.tenant,
+            event_type="tool_call",
+            input_tokens=200,
+            output_tokens=100,
             model_used="anthropic/claude-sonnet-4-20250514",
             cost_estimate=Decimal("0.002100"),
             created_at=today,
@@ -97,14 +105,18 @@ class DailyUsageServiceTest(TestCase):
         # Create 2 today, 1 yesterday (use update to bypass auto_now_add)
         for _ in range(2):
             UsageRecord.objects.create(
-                tenant=self.tenant, event_type="message",
-                input_tokens=100, output_tokens=200,
+                tenant=self.tenant,
+                event_type="message",
+                input_tokens=100,
+                output_tokens=200,
                 model_used="anthropic/claude-sonnet-4-20250514",
                 cost_estimate=Decimal("0.003300"),
             )
         rec = UsageRecord.objects.create(
-            tenant=self.tenant, event_type="message",
-            input_tokens=100, output_tokens=200,
+            tenant=self.tenant,
+            event_type="message",
+            input_tokens=100,
+            output_tokens=200,
             model_used="anthropic/claude-sonnet-4-20250514",
             cost_estimate=Decimal("0.003300"),
         )
@@ -137,8 +149,10 @@ class TransparencyServiceTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Transparency", telegram_chat_id=999555)
         UsageRecord.objects.create(
-            tenant=self.tenant, event_type="message",
-            input_tokens=10000, output_tokens=20000,
+            tenant=self.tenant,
+            event_type="message",
+            input_tokens=10000,
+            output_tokens=20000,
             model_used="anthropic/claude-sonnet-4-20250514",
             cost_estimate=Decimal("0.330000"),
         )
@@ -162,13 +176,16 @@ class TransparencyServiceTest(TestCase):
 
     def test_transparency_infra_breakdown(self):
         data = get_transparency_data(self.tenant)
-        self.assertEqual(data["infra_breakdown"], {
-            "container": 4.00,
-            "database_share": 0.5,
-            "storage_share": 0.25,
-            "total": 4.75,
-            "source": "estimate",
-        })
+        self.assertEqual(
+            data["infra_breakdown"],
+            {
+                "container": 4.00,
+                "database_share": 0.5,
+                "storage_share": 0.25,
+                "total": 4.75,
+                "source": "estimate",
+            },
+        )
 
     def test_transparency_explanation_mentions_infra(self):
         data = get_transparency_data(self.tenant)
@@ -207,7 +224,6 @@ class TransparencyServiceTest(TestCase):
         self.assertAlmostEqual(data["donation_amount"], expected, places=4)
         self.assertTrue(data["donation_enabled"])
         self.assertEqual(data["donation_percentage"], 50)
-
 
 
 class DonationPreferenceAPITest(TestCase):
@@ -258,8 +274,10 @@ class UsageAPITest(TestCase):
         self.client = APIClient()
         self.tenant = create_tenant(display_name="API Test", telegram_chat_id=999777)
         UsageRecord.objects.create(
-            tenant=self.tenant, event_type="message",
-            input_tokens=500, output_tokens=1000,
+            tenant=self.tenant,
+            event_type="message",
+            input_tokens=500,
+            output_tokens=1000,
             model_used="anthropic/claude-sonnet-4-20250514",
             cost_estimate=Decimal("0.016500"),
         )
@@ -319,8 +337,10 @@ class UsageAPITest(TestCase):
         """Ensure one tenant can't see another's usage."""
         other = create_tenant(display_name="Other", telegram_chat_id=999888)
         UsageRecord.objects.create(
-            tenant=other, event_type="message",
-            input_tokens=9999, output_tokens=9999,
+            tenant=other,
+            event_type="message",
+            input_tokens=9999,
+            output_tokens=9999,
             model_used="anthropic/claude-opus-4-20250514",
             cost_estimate=Decimal("0.500000"),
         )

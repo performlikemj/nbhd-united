@@ -1,9 +1,9 @@
 """Tests for billing app."""
-import os
+
 from django.test import TestCase
 
 from apps.tenants.services import create_tenant
-from .models import UsageRecord
+
 from .services import check_budget, record_usage
 
 

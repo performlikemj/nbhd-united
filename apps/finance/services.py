@@ -1,10 +1,11 @@
 """Payoff calculation service — snowball, avalanche, and hybrid strategies."""
+
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Sequence
+from decimal import ROUND_HALF_UP, Decimal
 
 from dateutil.relativedelta import relativedelta
 
@@ -122,9 +123,7 @@ def calculate_payoff(
 
         # Step 3: allocate extra payment based on strategy
         if remaining_budget > 0:
-            target_order = _get_priority_order(
-                strategy, balances, rates, nicknames
-            )
+            target_order = _get_priority_order(strategy, balances, rates, nicknames)
             for idx in target_order:
                 if balances[idx] <= 0 or remaining_budget <= 0:
                     continue
@@ -200,8 +199,7 @@ def _get_priority_order(
             active,
             key=lambda i: (
                 # Higher score = higher priority
-                float(rates[i] / max_rate) * 0.6
-                + float(1 - balances[i] / max_balance) * 0.4
+                float(rates[i] / max_rate) * 0.6 + float(1 - balances[i] / max_balance) * 0.4
             ),
             reverse=True,
         )
@@ -217,9 +215,7 @@ def compare_strategies(
     """Run all three strategies and return results keyed by strategy name."""
     results = {}
     for strategy in ("snowball", "avalanche", "hybrid"):
-        results[strategy] = calculate_payoff(
-            debts, monthly_budget, strategy, start_date
-        )
+        results[strategy] = calculate_payoff(debts, monthly_budget, strategy, start_date)
     return results
 
 

@@ -1,11 +1,12 @@
 """Google provider API helpers for internal runtime endpoints."""
+
 from __future__ import annotations
 
 import base64
 import binascii
-from datetime import datetime, timedelta, timezone
 import html as html_lib
 import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -192,7 +193,7 @@ def list_calendar_events(
         "singleEvents": "true",
         "orderBy": "startTime",
         "maxResults": safe_max_results,
-        "timeMin": time_min or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "timeMin": time_min or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
     if time_max:
         params["timeMax"] = time_max
@@ -314,7 +315,7 @@ def get_calendar_freebusy(
     time_max: str | None = None,
 ) -> dict[str, Any]:
     """Return busy windows for the primary Google calendar."""
-    now_utc = datetime.now(timezone.utc)
+    now_utc = datetime.now(UTC)
     start = time_min or now_utc.isoformat().replace("+00:00", "Z")
     end = time_max or (now_utc + timedelta(hours=24)).isoformat().replace("+00:00", "Z")
 

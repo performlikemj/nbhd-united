@@ -7,9 +7,9 @@ from django.db import connection
 from django.test import TestCase, override_settings
 
 from apps.tenants.services import create_tenant
+
 from .models import Lesson, LessonConnection
 from .services import create_connections, find_similar_lessons, generate_embedding, search_lessons
-
 
 
 def _vector_with_dims(first: float = 0.0, second: float = 0.0, third: float = 0.0) -> list[float]:

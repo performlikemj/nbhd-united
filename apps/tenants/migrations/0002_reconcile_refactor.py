@@ -20,7 +20,6 @@ def backfill_tenant_user(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("tenants", "0001_initial"),
     ]
@@ -103,9 +102,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name="tenant",
             name="monthly_token_budget",
-            field=models.IntegerField(
-                default=500000, help_text="Per-user monthly token budget"
-            ),
+            field=models.IntegerField(default=500000, help_text="Per-user monthly token budget"),
         ),
         migrations.AddField(
             model_name="tenant",

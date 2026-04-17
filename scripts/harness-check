@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+# harness-check — Core computational sensor for the harness framework
+# Runs lint, format, secret scan, and optional tests against a project.
+#
+# Usage: harness-check [--project PATH] [--scope full|staged|pr] [--ref REF] [--fix] [--json]
+set -euo pipefail
+
+PROJECT=""
+SCOPE="staged"
+REF=""
+FIX=false
+JSON_OUTPUT=false
+CHECKS_RUN=0
+CHECKS_PASSED=0
+CHECKS_FAILED=0
+FAILURES=""
+
+usage() {
+  echo "Usage: harness-check [--project PATH] [--scope full|staged|pr] [--ref REF] [--fix] [--json]"
+  echo ""
+  echo "  --project PATH   Project directory (default: current directory)"
+  echo "  --scope SCOPE    'staged' = only git-staged files, 'full' = entire project,"
+  echo "                   'pr' = files changed between main and REF (requires --ref)"
+  echo "  --ref REF        Git ref to compare against main (used with --scope pr)"
+  echo "  --fix            Auto-fix where possible (ruff --fix)"
+  echo "  --json           Output JSON summary"
+  exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project) PROJECT="$2"; shift 2 ;;
+    --scope) SCOPE="$2"; shift 2 ;;
+    --ref) REF="$2"; shift 2 ;;
+    --fix) FIX=true; shift ;;
+    --json) JSON_OUTPUT=true; shift ;;
+    -h|--help) usage ;;
+    *) echo "Unknown option: $1"; usage ;;
+  esac
+done
+
+if [[ "$SCOPE" == "pr" ]] && [[ -z "$REF" ]]; then
+  echo "ERROR: --scope pr requires --ref <branch>" >&2
+  exit 1
+fi
+
+PROJECT="${PROJECT:-.}"
+PROJECT="$(cd "$PROJECT" && pwd)"
+
+record_pass() {
+  CHECKS_RUN=$((CHECKS_RUN + 1))
+  CHECKS_PASSED=$((CHECKS_PASSED + 1))
+  if ! $JSON_OUTPUT; then echo "  PASS  $1"; fi
+}
+
+record_fail() {
+  CHECKS_RUN=$((CHECKS_RUN + 1))
+  CHECKS_FAILED=$((CHECKS_FAILED + 1))
+  FAILURES="${FAILURES}${1}\n"
+  if ! $JSON_OUTPUT; then echo "  FAIL  $1"; fi
+}
+
+record_skip() {
+  if ! $JSON_OUTPUT; then echo "  SKIP  $1"; fi
+}
+
+# Collect files based on scope
+get_py_files() {
+  if [[ "$SCOPE" == "staged" ]]; then
+    git -C "$PROJECT" diff --cached --name-only --diff-filter=ACM -- '*.py' 2>/dev/null || true
+  elif [[ "$SCOPE" == "pr" ]]; then
+    git -C "$PROJECT" diff --name-only "main...$REF" -- '*.py' 2>/dev/null || true
+  else
+    find "$PROJECT" -name '*.py' -not -path '*/node_modules/*' -not -path '*/.venv/*' -not -path '*/venv/*' -not -path '*/__pycache__/*' -not -path '*/migrations/*' 2>/dev/null || true
+  fi
+}
+
+get_js_files() {
+  if [[ "$SCOPE" == "staged" ]]; then
+    git -C "$PROJECT" diff --cached --name-only --diff-filter=ACM -- '*.js' '*.jsx' '*.ts' '*.tsx' 2>/dev/null || true
+  elif [[ "$SCOPE" == "pr" ]]; then
+    git -C "$PROJECT" diff --name-only "main...$REF" -- '*.js' '*.jsx' '*.ts' '*.tsx' 2>/dev/null || true
+  else
+    find "$PROJECT" -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' | grep -v node_modules | grep -v '.next' | grep -v dist 2>/dev/null || true
+  fi
+}
+
+get_all_staged_files() {
+  if [[ "$SCOPE" == "staged" ]]; then
+    git -C "$PROJECT" diff --cached --name-only --diff-filter=ACM 2>/dev/null || true
+  elif [[ "$SCOPE" == "pr" ]]; then
+    git -C "$PROJECT" diff --name-only "main...$REF" 2>/dev/null || true
+  else
+    find "$PROJECT" -type f -not -path '*/node_modules/*' -not -path '*/.venv/*' -not -path '*/.git/*' -not -path '*/__pycache__/*' -not -path '*/dist/*' -not -path '*/.next/*' 2>/dev/null || true
+  fi
+}
+
+if ! $JSON_OUTPUT; then
+  echo "harness-check — $PROJECT ($SCOPE)"
+  echo "─────────────────────────────────"
+fi
+
+# ── Check 1: ruff lint ──
+PY_FILES=$(get_py_files)
+if [[ -n "$PY_FILES" ]] && command -v ruff &>/dev/null; then
+  if [[ "$SCOPE" == "staged" ]] || [[ "$SCOPE" == "pr" ]]; then
+    # For staged/pr scope, run ruff on specific files
+    FILES_ARR=()
+    while IFS= read -r f; do
+      [[ -f "$PROJECT/$f" ]] && FILES_ARR+=("$PROJECT/$f")
+    done <<< "$PY_FILES"
+    if [[ ${#FILES_ARR[@]} -gt 0 ]]; then
+      if $FIX; then
+        ruff check --fix --config "$PROJECT/pyproject.toml" "${FILES_ARR[@]}" 2>/dev/null && record_pass "ruff-lint" || record_fail "ruff-lint"
+      else
+        ruff check --config "$PROJECT/pyproject.toml" "${FILES_ARR[@]}" 2>/dev/null && record_pass "ruff-lint" || record_fail "ruff-lint"
+      fi
+    else
+      record_skip "ruff-lint (no files)"
+    fi
+  else
+    if $FIX; then
+      ruff check --fix "$PROJECT" 2>/dev/null && record_pass "ruff-lint" || record_fail "ruff-lint"
+    else
+      ruff check "$PROJECT" 2>/dev/null && record_pass "ruff-lint" || record_fail "ruff-lint"
+    fi
+  fi
+else
+  record_skip "ruff-lint (no Python files or ruff not installed)"
+fi
+
+# ── Check 2: ruff format ──
+if [[ -n "$PY_FILES" ]] && command -v ruff &>/dev/null; then
+  if [[ "$SCOPE" == "staged" ]] || [[ "$SCOPE" == "pr" ]]; then
+    FILES_ARR=()
+    while IFS= read -r f; do
+      [[ -f "$PROJECT/$f" ]] && FILES_ARR+=("$PROJECT/$f")
+    done <<< "$PY_FILES"
+    if [[ ${#FILES_ARR[@]} -gt 0 ]]; then
+      if $FIX; then
+        ruff format --config "$PROJECT/pyproject.toml" "${FILES_ARR[@]}" 2>/dev/null && record_pass "ruff-format" || record_fail "ruff-format"
+      else
+        ruff format --check --config "$PROJECT/pyproject.toml" "${FILES_ARR[@]}" 2>/dev/null && record_pass "ruff-format" || record_fail "ruff-format"
+      fi
+    else
+      record_skip "ruff-format (no files)"
+    fi
+  else
+    if $FIX; then
+      ruff format "$PROJECT" 2>/dev/null && record_pass "ruff-format" || record_fail "ruff-format"
+    else
+      ruff format --check "$PROJECT" 2>/dev/null && record_pass "ruff-format" || record_fail "ruff-format"
+    fi
+  fi
+else
+  record_skip "ruff-format (no Python files or ruff not installed)"
+fi
+
+# ── Check 3: eslint ──
+JS_FILES=$(get_js_files)
+if [[ -n "$JS_FILES" ]]; then
+  # Find eslint config in project or frontend subdir
+  ESLINT_DIR=""
+  for candidate in "$PROJECT" "$PROJECT/frontend" "$PROJECT/academy-watch-frontend"; do
+    if [[ -f "$candidate/.eslintrc.json" ]] || [[ -f "$candidate/.eslintrc.js" ]] || [[ -f "$candidate/eslint.config.js" ]] || [[ -f "$candidate/eslint.config.mjs" ]]; then
+      ESLINT_DIR="$candidate"
+      break
+    fi
+  done
+  if [[ -n "$ESLINT_DIR" ]] && command -v npx &>/dev/null; then
+    if $FIX; then
+      (cd "$ESLINT_DIR" && npx --no-install eslint --fix . 2>/dev/null) && record_pass "eslint" || record_fail "eslint"
+    else
+      (cd "$ESLINT_DIR" && npx --no-install eslint . 2>/dev/null) && record_pass "eslint" || record_fail "eslint"
+    fi
+  else
+    record_skip "eslint (no config found or npx unavailable)"
+  fi
+else
+  record_skip "eslint (no JS/TS files)"
+fi
+
+# ── Check 4: secret scan ──
+SECRET_PATTERNS='(sk-ant-|sk-or-v1-|sk-proj-|AAAAAAAAAAAAA|tvly-dev-|API_KEY\s*=\s*["\x27][a-zA-Z0-9_-]{20,}|BOT_TOKEN\s*=\s*["\x27]?[0-9]+:[a-zA-Z0-9_-]+)'
+ALL_FILES=$(get_all_staged_files)
+if [[ -n "$ALL_FILES" ]]; then
+  SECRET_HITS=""
+  while IFS= read -r f; do
+    FULL_PATH="$f"
+    [[ "$SCOPE" == "staged" || "$SCOPE" == "pr" ]] && FULL_PATH="$PROJECT/$f"
+    # Skip binary files, .env files (they're supposed to have secrets), and lock files
+    [[ ! -f "$FULL_PATH" ]] && continue
+    [[ "$FULL_PATH" == *.env* ]] && continue
+    [[ "$FULL_PATH" == *lock* ]] && continue
+    [[ "$FULL_PATH" == *.png ]] || [[ "$FULL_PATH" == *.jpg ]] || [[ "$FULL_PATH" == *.woff* ]] && continue
+    MATCH=$(grep -Pn "$SECRET_PATTERNS" "$FULL_PATH" 2>/dev/null || true)
+    if [[ -n "$MATCH" ]]; then
+      SECRET_HITS="${SECRET_HITS}${FULL_PATH}:\n${MATCH}\n\n"
+    fi
+  done <<< "$ALL_FILES"
+
+  if [[ -n "$SECRET_HITS" ]]; then
+    if ! $JSON_OUTPUT; then
+      echo "  Secret patterns found:"
+      echo -e "$SECRET_HITS" | head -20
+    fi
+    record_fail "secret-scan"
+  else
+    record_pass "secret-scan"
+  fi
+else
+  record_skip "secret-scan (no files)"
+fi
+
+# ── Check 5: django check ──
+if [[ -f "$PROJECT/manage.py" ]] && [[ "$SCOPE" == "full" ]]; then
+  (cd "$PROJECT" && python3 manage.py check --no-color 2>/dev/null) && record_pass "django-check" || record_fail "django-check"
+elif [[ -f "$PROJECT/manage.py" ]]; then
+  record_skip "django-check (staged scope only)"
+else
+  record_skip "django-check (no manage.py)"
+fi
+
+# ── Summary ──
+if ! $JSON_OUTPUT; then
+  echo "─────────────────────────────────"
+  echo "Ran $CHECKS_RUN checks: $CHECKS_PASSED passed, $CHECKS_FAILED failed"
+  if [[ $CHECKS_FAILED -gt 0 ]]; then
+    echo "Failed: $(echo -e "$FAILURES" | tr '\n' ', ' | sed 's/, $//')"
+  fi
+fi
+
+if $JSON_OUTPUT; then
+  PROJ_NAME=$(basename "$PROJECT")
+  TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  echo "{\"project\":\"$PROJ_NAME\",\"scope\":\"$SCOPE\",\"checks_run\":$CHECKS_RUN,\"passed\":$CHECKS_PASSED,\"failed\":$CHECKS_FAILED,\"timestamp\":\"$TIMESTAMP\"}"
+fi
+
+exit $CHECKS_FAILED

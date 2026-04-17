@@ -15,18 +15,18 @@ Daily notes follow this format:
     ### Decisions
     - Journaling module will mirror OpenClaw model
 """
+
 from __future__ import annotations
 
 import re
 from typing import Any
 
-
 # Pattern for ## HH:MM — Author or ## HH:MM — Section Title (Author)
 _ENTRY_HEADER_RE = re.compile(
     r"^##\s+"
-    r"(?P<time>\d{1,2}:\d{2})"           # required time
-    r"(?:\s*—\s*|\s+)"                    # separator
-    r"(?P<title>.+?)"                     # author or "Section Title (Author)"
+    r"(?P<time>\d{1,2}:\d{2})"  # required time
+    r"(?:\s*—\s*|\s+)"  # separator
+    r"(?P<title>.+?)"  # author or "Section Title (Author)"
     r"\s*$"
 )
 
@@ -118,9 +118,7 @@ def parse_daily_note(markdown: str) -> list[dict[str, Any]]:
 def _finalise_entry(entry: dict[str, Any], lines: list[str]):
     """Extract mood, energy, subsections from raw body lines."""
     # Check for subsections (### headers)
-    subsection_indices = [
-        i for i, ln in enumerate(lines) if _SUBSECTION_RE.match(ln)
-    ]
+    subsection_indices = [i for i, ln in enumerate(lines) if _SUBSECTION_RE.match(ln)]
 
     if subsection_indices:
         # Content before first subsection

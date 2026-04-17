@@ -1,10 +1,11 @@
 """Telegram message router — forwards messages to correct OpenClaw instance."""
+
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from collections import deque
-import logging
 from time import monotonic
 from typing import Any
 
@@ -175,12 +176,17 @@ async def forward_to_openclaw(
             if attempt <= max_retries:
                 logger.info(
                     "Timeout forwarding to %s (attempt %d/%d), retrying in %.0fs",
-                    container_fqdn, attempt, max_retries + 1, retry_delay,
+                    container_fqdn,
+                    attempt,
+                    max_retries + 1,
+                    retry_delay,
                 )
                 await asyncio.sleep(retry_delay)
                 continue
             logger.warning(
-                "Timeout forwarding to %s after %d attempts", container_fqdn, attempt,
+                "Timeout forwarding to %s after %d attempts",
+                container_fqdn,
+                attempt,
             )
             return None
         except httpx.HTTPError as e:

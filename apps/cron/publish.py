@@ -9,6 +9,7 @@ For fan-out patterns (e.g. apply-pending-configs iterating all tenants),
 use ``publish_batch()`` to send all tasks in a single HTTP call instead
 of N serial calls that block the Django worker.
 """
+
 from __future__ import annotations
 
 import logging

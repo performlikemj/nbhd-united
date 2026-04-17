@@ -162,7 +162,10 @@ class CronDeliveryTargetInjectionTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         patch_arg = mock_invoke.call_args.args[2]
-        self.assertEqual(patch_arg, {
-            "jobId": "Morning Briefing",
-            "patch": payload,
-        })
+        self.assertEqual(
+            patch_arg,
+            {
+                "jobId": "Morning Briefing",
+                "patch": payload,
+            },
+        )

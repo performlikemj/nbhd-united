@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Rough token estimate: 1 token ≈ 4 chars for English text
 MAX_CHUNK_CHARS = 2000  # ~500 tokens
-MIN_CHUNK_CHARS = 80    # skip trivially small chunks
+MIN_CHUNK_CHARS = 80  # skip trivially small chunks
 
 
 def chunk_markdown(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list[str]:
@@ -65,9 +65,7 @@ def embed_daily_note(tenant: Tenant, for_date: date) -> int:
     from apps.lessons.services import generate_embedding
 
     # Find the daily note document
-    doc = Document.objects.filter(
-        tenant=tenant, kind=Document.Kind.DAILY, slug=str(for_date)
-    ).first()
+    doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.DAILY, slug=str(for_date)).first()
 
     if not doc or not doc.markdown.strip():
         logger.info("embed: no daily note for tenant %s date %s", str(tenant.id)[:8], for_date)

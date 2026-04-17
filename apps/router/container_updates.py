@@ -3,6 +3,7 @@
 Checks if a tenant's container is running an outdated image and either
 auto-updates (if idle 2+ hours) or asks the user with inline buttons.
 """
+
 from __future__ import annotations
 
 import logging
@@ -79,7 +80,8 @@ def update_container(tenant: Tenant) -> bool:
         tenant.save(update_fields=["container_image_tag", "updated_at"])
         logger.info(
             "Updated container %s to image tag %s",
-            tenant.container_id, latest_tag,
+            tenant.container_id,
+            latest_tag,
         )
         return True
     except Exception:

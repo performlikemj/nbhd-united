@@ -1,4 +1,5 @@
 """Data migration: rename basic→starter, plus→premium in existing rows."""
+
 from django.db import migrations
 
 
@@ -15,7 +16,6 @@ def rename_tiers_reverse(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("tenants", "0008_add_userllmconfig"),
     ]

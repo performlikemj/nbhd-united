@@ -4,7 +4,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("tenants", "0002_reconcile_refactor"),
         ("integrations", "0002_initial"),

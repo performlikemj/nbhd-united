@@ -1,11 +1,11 @@
 """Client for invoking tools on a tenant's OpenClaw Gateway."""
+
 from __future__ import annotations
 
 import logging
 from typing import Any
 
 import requests
-from django.conf import settings
 
 from apps.orchestrator.azure_client import read_key_vault_secret
 from apps.tenants.models import Tenant
@@ -78,7 +78,10 @@ def invoke_gateway_tool(tenant: Tenant, tool: str, args: dict[str, Any]) -> dict
     if resp.status_code != 200:
         logger.error(
             "Gateway %s.%s returned %s: %s",
-            tool_name, action or "", resp.status_code, resp.text[:500],
+            tool_name,
+            action or "",
+            resp.status_code,
+            resp.text[:500],
         )
         raise GatewayError(
             f"Gateway returned {resp.status_code}: {resp.text[:500]}",

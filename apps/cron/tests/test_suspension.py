@@ -1,10 +1,11 @@
 """Tests for cron job suspension and resumption lifecycle."""
-from unittest.mock import MagicMock, patch
+
+from unittest.mock import patch
 
 from django.test import TestCase
 
-from apps.tenants.models import Tenant, User
 from apps.cron.suspension import resume_tenant_crons, suspend_tenant_crons
+from apps.tenants.models import Tenant, User
 
 
 class CronSuspensionTestBase(TestCase):
@@ -69,6 +70,7 @@ class SuspendTenantCronsTest(CronSuspensionTestBase):
     @patch("apps.cron.suspension.invoke_gateway_tool")
     def test_handles_gateway_list_error(self, mock_invoke):
         from apps.cron.gateway_client import GatewayError
+
         mock_invoke.side_effect = GatewayError("Container unreachable")
 
         result = suspend_tenant_crons(self.tenant)
@@ -79,6 +81,7 @@ class SuspendTenantCronsTest(CronSuspensionTestBase):
     @patch("apps.cron.suspension.invoke_gateway_tool")
     def test_handles_individual_disable_error(self, mock_invoke):
         from apps.cron.gateway_client import GatewayError
+
         mock_invoke.side_effect = [
             {"jobs": [{"jobId": "job-1", "name": "Test Job", "enabled": True}]},
             GatewayError("timeout"),
@@ -140,6 +143,7 @@ class ResumeTenantCronsTest(CronSuspensionTestBase):
     @patch("apps.cron.suspension.invoke_gateway_tool")
     def test_handles_gateway_error(self, mock_invoke):
         from apps.cron.gateway_client import GatewayError
+
         mock_invoke.side_effect = GatewayError("Container still starting")
 
         result = resume_tenant_crons(self.tenant)
@@ -162,11 +166,10 @@ class ExpireTrialsCronIntegrationTest(CronSuspensionTestBase):
     @patch("apps.orchestrator.azure_client.hibernate_container_app")
     @patch("apps.cron.suspension.suspend_tenant_crons")
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    def test_expire_trials_disables_crons_and_hibernates(
-        self, mock_verify, mock_suspend, mock_hibernate
-    ):
+    def test_expire_trials_disables_crons_and_hibernates(self, mock_verify, mock_suspend, mock_hibernate):
         from django.test import RequestFactory
         from django.utils import timezone as tz
+
         from apps.cron.views import expire_trials
 
         self.tenant.is_trial = True
@@ -182,6 +185,7 @@ class ExpireTrialsCronIntegrationTest(CronSuspensionTestBase):
 
         self.assertEqual(response.status_code, 200)
         import json
+
         data = json.loads(response.content)
         self.assertEqual(data["updated"], 1)
         self.assertEqual(data["crons_disabled"], 3)
@@ -201,6 +205,7 @@ class CronDeliveryBlockTest(CronSuspensionTestBase):
     @patch("apps.router.cron_delivery.validate_internal_runtime_request")
     def test_blocks_suspended_tenant(self, mock_auth):
         from rest_framework.test import APIRequestFactory
+
         from apps.router.cron_delivery import CronDeliveryView
 
         self.tenant.status = Tenant.Status.SUSPENDED
@@ -225,6 +230,7 @@ class CronDeliveryBlockTest(CronSuspensionTestBase):
     @patch("apps.router.cron_delivery.validate_internal_runtime_request")
     def test_allows_active_tenant(self, mock_auth):
         from rest_framework.test import APIRequestFactory
+
         from apps.router.cron_delivery import CronDeliveryView
 
         # Active tenant should proceed past the status check
@@ -242,5 +248,5 @@ class CronDeliveryBlockTest(CronSuspensionTestBase):
         response = view(request, tenant_id=self.tenant.id)
 
         # Should NOT be blocked — may fail on telegram/rate limit, but not "blocked"
-        if hasattr(response, 'data') and isinstance(response.data, dict):
+        if hasattr(response, "data") and isinstance(response.data, dict):
             self.assertNotEqual(response.data.get("status"), "blocked")

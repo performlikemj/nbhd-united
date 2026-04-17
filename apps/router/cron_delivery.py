@@ -3,13 +3,15 @@
 Used by cron jobs and proactive agent actions. Routes messages through
 the central Telegram bot or LINE Push API, depending on user preference.
 """
+
 from __future__ import annotations
 
 import logging
 
 import httpx
 from django.conf import settings
-from rest_framework import serializers, status as http_status
+from rest_framework import serializers
+from rest_framework import status as http_status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -88,14 +90,17 @@ class CronDeliveryView(APIView):
         if tenant.status != Tenant.Status.ACTIVE:
             logger.info(
                 "Cron delivery blocked: tenant %s status=%s (not active)",
-                tenant_id, tenant.status,
+                tenant_id,
+                tenant.status,
             )
             # Return 200 to prevent QStash/cron retries — this is expected, not an error
-            return Response({
-                "status": "blocked",
-                "reason": "tenant_not_active",
-                "tenant_status": tenant.status,
-            })
+            return Response(
+                {
+                    "status": "blocked",
+                    "reason": "tenant_not_active",
+                    "tenant_status": tenant.status,
+                }
+            )
 
         # Determine channel
         channel = self._resolve_channel(tenant.user)
@@ -128,6 +133,7 @@ class CronDeliveryView(APIView):
         entity_map = tenant.pii_entity_map
         if entity_map:
             from apps.pii.redactor import rehydrate_text
+
             message_text = rehydrate_text(message_text, entity_map)
 
         # Route to appropriate channel
@@ -227,7 +233,9 @@ class CronDeliveryView(APIView):
         _record_send(tenant_id)
         logger.info(
             "Cron delivery (telegram): tenant=%s chat_id=%s chunks=%d",
-            tenant_id, chat_id, sent_count,
+            tenant_id,
+            chat_id,
+            sent_count,
         )
         return Response({"status": "sent", "channel": "telegram", "chunks": sent_count})
 
@@ -248,6 +256,7 @@ class CronDeliveryView(APIView):
             )
 
         import re
+
         from apps.router.line_flex import (
             attach_quick_reply,
             build_flex_bubble,
@@ -293,7 +302,8 @@ class CronDeliveryView(APIView):
                     if not resp.is_success:
                         logger.warning(
                             "Cron delivery LINE push failed (%s): %s",
-                            resp.status_code, resp.text[:200],
+                            resp.status_code,
+                            resp.text[:200],
                         )
                         return Response(
                             {"error": "line_send_failed", "detail": resp.text[:200]},
@@ -311,7 +321,9 @@ class CronDeliveryView(APIView):
         _record_send(tenant_id)
         logger.info(
             "Cron delivery (line): tenant=%s line_user=%s chunks=%d",
-            tenant_id, line_user_id[:8] if line_user_id else "?", sent_count,
+            tenant_id,
+            line_user_id[:8] if line_user_id else "?",
+            sent_count,
         )
         return Response({"status": "sent", "channel": "line", "chunks": sent_count})
 

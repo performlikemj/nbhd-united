@@ -3,6 +3,7 @@
 Shared by both Telegram and LINE webhook handlers. Buffers the message,
 triggers container wake, and returns whether to send the "waking up" ack.
 """
+
 from __future__ import annotations
 
 import logging
@@ -33,7 +34,8 @@ def handle_hibernated_message(
 
     # Check if we're already in the process of waking
     already_waking = BufferedMessage.objects.filter(
-        tenant=tenant, delivered=False,
+        tenant=tenant,
+        delivered=False,
     ).exists()
 
     # Buffer the incoming message

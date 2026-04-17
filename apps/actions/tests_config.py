@@ -1,5 +1,4 @@
 """Tests for tier-based GWS skill loading and gate tool config."""
-from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -8,6 +7,7 @@ from apps.tenants.models import Tenant
 
 def _make_user(**kwargs):
     from django.contrib.auth import get_user_model
+
     User = get_user_model()
     defaults = {
         "username": f"cfgtest_{Tenant.objects.count()}",
@@ -32,6 +32,7 @@ def _make_tenant(user, **kwargs):
 
 def _make_google_integration(tenant):
     from apps.integrations.models import Integration
+
     return Integration.objects.create(
         tenant=tenant,
         provider="google",
@@ -75,8 +76,6 @@ class StarterTierGWSConfigTest(TestCase):
         extra_dirs = config.get("skills", {}).get("load", {}).get("extraDirs", [])
 
         self.assertIn("/opt/nbhd/skills/nbhd-action-gate", extra_dirs)
-
-
 
 
 class GateEnvVarsConfigTest(TestCase):

@@ -74,7 +74,34 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install ruff
           python -m spacy download en_core_web_sm
+
+      - name: Run ruff lint
+        run: ruff check .
+
+      - name: Run ruff format check
+        run: ruff format --check .
+
+      - name: Secret scan
+        run: |
+          HITS=$(grep -rPn '(sk-ant-|sk-or-v1-|sk-proj-|AAAAAAAAAAAAA|tvly-dev-)' \
+            --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' \
+            --include='*.json' --include='*.yaml' --include='*.yml' \
+            --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=.venv \
+            --exclude='*.lock' \
+            --exclude='config_validator.py' \
+            --exclude='config_security.py' \
+            --exclude='test_config_security.py' \
+            --exclude='harness-check' \
+            --exclude='ci-cd.yml' \
+            . 2>/dev/null || true)
+          if [ -n "$HITS" ]; then
+            echo "Secret patterns detected in source files:"
+            echo "$HITS"
+            exit 1
+          fi
+          echo "No secret patterns found"
 
       - name: Run Django checks and tests
         env:
@@ -88,6 +115,43 @@ jobs:
           python manage.py migrate --noinput
           python manage.py check
           python manage.py test apps/
+
+      - name: Config validator check
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.development
+          SECRET_KEY: test-secret-key-not-for-production
+          DEBUG: "True"
+          DATABASE_URL: postgres://test_user:test_password@localhost:5432/test_db
+          ALLOWED_HOSTS: "*"
+          AZURE_MOCK: "true"
+          OPENCLAW_USAGE_PLUGIN_ID: ""
+        run: |
+          python manage.py shell -c "
+          from apps.tenants.services import create_tenant
+          from apps.orchestrator.config_generator import generate_openclaw_config
+          from apps.orchestrator.config_validator import validate_openclaw_config
+          from apps.orchestrator.config_security import audit_config_security
+
+          tenant = create_tenant(display_name='CI Validator', telegram_chat_id=999999)
+          config = generate_openclaw_config(tenant)
+
+          issues = validate_openclaw_config(config)
+          errors = [i for i in issues if i.severity == 'error']
+          if errors:
+              for e in errors:
+                  print(f'ERROR: {e.path} — {e.message}')
+              raise SystemExit(1)
+
+          findings = audit_config_security(config)
+          sec_errors = [f for f in findings if f.severity == 'error']
+          if sec_errors:
+              for f in sec_errors:
+                  print(f'SECURITY: {f.check} — {f.message}')
+              raise SystemExit(1)
+
+          print('Config validator: PASS')
+          print('Security audit: PASS')
+          "
 
   # ==========================================================================
   # OpenClaw config conformance smoke

@@ -1,4 +1,5 @@
 """LINE link token model for deep link account linking flow."""
+
 import uuid
 
 from django.db import models

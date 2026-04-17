@@ -3,6 +3,7 @@
 This module groups approved lessons into clusters based on explicit lesson
 connections (LessonConnection similarity edges), then generates cluster labels.
 """
+
 from __future__ import annotations
 
 from collections import Counter
@@ -138,11 +139,15 @@ def cluster_lessons(tenant: Tenant) -> dict[str, int]:
 def generate_cluster_labels(tenant: Tenant) -> int:
     """Generate simple label strings for each cluster from lesson tags."""
 
-    clusters = Lesson.objects.filter(
-        tenant=tenant,
-        status="approved",
-        cluster_id__isnull=False,
-    ).values_list("cluster_id", flat=True).distinct()
+    clusters = (
+        Lesson.objects.filter(
+            tenant=tenant,
+            status="approved",
+            cluster_id__isnull=False,
+        )
+        .values_list("cluster_id", flat=True)
+        .distinct()
+    )
 
     labeled = 0
     for cluster_id in clusters:

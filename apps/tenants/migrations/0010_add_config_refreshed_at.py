@@ -4,15 +4,14 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0009_migrate_tier_values'),
+        ("tenants", "0009_migrate_tier_values"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='tenant',
-            name='config_refreshed_at',
+            model_name="tenant",
+            name="config_refreshed_at",
             field=models.DateTimeField(blank=True, null=True),
         ),
     ]

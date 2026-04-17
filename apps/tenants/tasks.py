@@ -1,4 +1,5 @@
 """Tasks for tenant maintenance (executed via QStash)."""
+
 from django.utils import timezone
 
 from .services import reset_daily_counters, reset_monthly_counters
@@ -18,7 +19,5 @@ def reset_monthly_counters_task():
 def cleanup_expired_telegram_tokens():
     """Purge expired TelegramLinkTokens older than 1 hour."""
     cutoff = timezone.now() - timezone.timedelta(hours=1)
-    deleted, _ = TelegramLinkToken.objects.filter(
-        expires_at__lt=cutoff
-    ).delete()
+    deleted, _ = TelegramLinkToken.objects.filter(expires_at__lt=cutoff).delete()
     return f"Deleted {deleted} expired tokens"

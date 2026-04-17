@@ -8,6 +8,7 @@ tenant workspace state. Critical edge cases:
 - Within-session routing skips classification
 - New-session routing uses embedding similarity
 """
+
 from __future__ import annotations
 
 from datetime import timedelta
@@ -28,9 +29,7 @@ from apps.tenants.models import Tenant, User
 
 
 def _make_tenant(last_msg_minutes_ago=None):
-    user = User.objects.create_user(
-        username=f"wsr{timezone.now().timestamp()}", password="pass"
-    )
+    user = User.objects.create_user(username=f"wsr{timezone.now().timestamp()}", password="pass")
     tenant = Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE)
     if last_msg_minutes_ago is not None:
         tenant.last_message_at = timezone.now() - timedelta(minutes=last_msg_minutes_ago)
@@ -53,9 +52,7 @@ class TestNoWorkspaces(TestCase):
 
     def test_returns_base_user_id_unchanged(self):
         tenant = _make_tenant()
-        user_param, ws, transitioned = resolve_workspace_routing(
-            tenant, "8078236299", "any message"
-        )
+        user_param, ws, transitioned = resolve_workspace_routing(tenant, "8078236299", "any message")
         self.assertEqual(user_param, "8078236299")
         self.assertIsNone(ws)
         self.assertFalse(transitioned)
@@ -71,9 +68,7 @@ class TestDefaultWorkspaceParam(TestCase):
         tenant.active_workspace = general
         tenant.save(update_fields=["active_workspace"])
 
-        user_param, ws, _ = resolve_workspace_routing(
-            tenant, "8078236299", "anything"
-        )
+        user_param, ws, _ = resolve_workspace_routing(tenant, "8078236299", "anything")
         self.assertEqual(user_param, "8078236299")
         self.assertEqual(ws.id, general.id)
 
@@ -84,9 +79,7 @@ class TestDefaultWorkspaceParam(TestCase):
         tenant.active_workspace = work
         tenant.save(update_fields=["active_workspace"])
 
-        user_param, ws, _ = resolve_workspace_routing(
-            tenant, "8078236299", "budget question"
-        )
+        user_param, ws, _ = resolve_workspace_routing(tenant, "8078236299", "budget question")
         self.assertEqual(user_param, "8078236299:ws:work")
         self.assertEqual(ws.id, work.id)
 
@@ -125,9 +118,7 @@ class TestNewSessionClassification(TestCase):
         tenant.save(update_fields=["active_workspace"])
 
         with patch("apps.router.workspace_routing._classify_message", return_value=work) as classify_mock:
-            user_param, ws, transitioned = resolve_workspace_routing(
-                tenant, "8078236299", "Q3 budget status please"
-            )
+            user_param, ws, transitioned = resolve_workspace_routing(tenant, "8078236299", "Q3 budget status please")
             classify_mock.assert_called_once()
 
         self.assertEqual(user_param, "8078236299:ws:work")
@@ -141,9 +132,7 @@ class TestNewSessionClassification(TestCase):
         tenant.save(update_fields=["active_workspace"])
 
         with patch("apps.router.workspace_routing._classify_message", return_value=None):
-            user_param, ws, transitioned = resolve_workspace_routing(
-                tenant, "8078236299", "ambiguous message"
-            )
+            user_param, ws, transitioned = resolve_workspace_routing(tenant, "8078236299", "ambiguous message")
 
         # Falls back to active (general), no transition since same workspace
         self.assertEqual(user_param, "8078236299")  # general → no suffix
@@ -161,9 +150,7 @@ class TestNoActiveWorkspaceFallback(TestCase):
         _make_workspace(tenant, "Work", "work")
         # active_workspace deliberately not set
 
-        user_param, ws, _ = resolve_workspace_routing(
-            tenant, "8078236299", "hi"
-        )
+        user_param, ws, _ = resolve_workspace_routing(tenant, "8078236299", "hi")
         self.assertEqual(user_param, "8078236299")
         self.assertEqual(ws.id, general.id)
 
@@ -172,9 +159,7 @@ class TestNoActiveWorkspaceFallback(TestCase):
         first = _make_workspace(tenant, "Work", "work")
         _make_workspace(tenant, "Personal", "personal")
 
-        user_param, ws, _ = resolve_workspace_routing(
-            tenant, "8078236299", "hi"
-        )
+        user_param, ws, _ = resolve_workspace_routing(tenant, "8078236299", "hi")
         # Without a default, the first workspace gets the suffix
         self.assertEqual(user_param, "8078236299:ws:work")
         self.assertEqual(ws.id, first.id)
@@ -273,6 +258,7 @@ class TestTransitionMarker(TestCase):
 
     def test_marker_includes_workspace_name(self):
         from apps.router.workspace_routing import build_transition_marker
+
         tenant = _make_tenant()
         work = _make_workspace(tenant, "Work", "work")
         marker = build_transition_marker(work)
@@ -291,6 +277,7 @@ class TestWorkspaceContextMarker(TestCase):
 
     def test_marker_includes_workspace_name(self):
         from apps.router.workspace_routing import build_workspace_context_marker
+
         tenant = _make_tenant()
         work = _make_workspace(tenant, "Work", "work")
         marker = build_workspace_context_marker(work)
@@ -299,6 +286,7 @@ class TestWorkspaceContextMarker(TestCase):
 
     def test_marker_ends_with_newline(self):
         from apps.router.workspace_routing import build_workspace_context_marker
+
         tenant = _make_tenant()
         work = _make_workspace(tenant, "Work", "work")
         marker = build_workspace_context_marker(work)
@@ -306,12 +294,14 @@ class TestWorkspaceContextMarker(TestCase):
 
     def test_marker_empty_for_none_workspace(self):
         from apps.router.workspace_routing import build_workspace_context_marker
+
         self.assertEqual(build_workspace_context_marker(None), "")
 
     def test_marker_present_for_default_workspace(self):
         """Even default workspaces get the marker so the agent knows when it's
         switching back to general from a non-default workspace."""
         from apps.router.workspace_routing import build_workspace_context_marker
+
         tenant = _make_tenant()
         general = _make_workspace(tenant, "General", "general", is_default=True)
         marker = build_workspace_context_marker(general)
@@ -329,9 +319,7 @@ class TestNewSessionWithLowConfidence(TestCase):
         tenant.save(update_fields=["active_workspace"])
 
         with patch("apps.router.workspace_routing._classify_message", return_value=None):
-            user_param, ws, transitioned = resolve_workspace_routing(
-                tenant, "8078236299", "ambiguous"
-            )
+            user_param, ws, transitioned = resolve_workspace_routing(tenant, "8078236299", "ambiguous")
 
         # Stays in work (still active), no transition
         self.assertEqual(user_param, "8078236299:ws:work")
@@ -349,9 +337,7 @@ class TestNewSessionStaysInSameWorkspace(TestCase):
         tenant.save(update_fields=["active_workspace"])
 
         with patch("apps.router.workspace_routing._classify_message", return_value=work):
-            user_param, ws, transitioned = resolve_workspace_routing(
-                tenant, "8078236299", "Q3 budget update"
-            )
+            user_param, ws, transitioned = resolve_workspace_routing(tenant, "8078236299", "Q3 budget update")
 
         self.assertEqual(user_param, "8078236299:ws:work")
         self.assertFalse(transitioned)

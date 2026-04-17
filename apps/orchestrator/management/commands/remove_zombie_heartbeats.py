@@ -8,6 +8,7 @@ Usage:
     python manage.py remove_zombie_heartbeats --dry-run
     python manage.py remove_zombie_heartbeats
 """
+
 from __future__ import annotations
 
 import logging
@@ -43,9 +44,7 @@ class Command(BaseCommand):
                 heartbeat_enabled=False,
             ).select_related("user")
         )
-        self.stdout.write(
-            f"Found {len(tenants)} active tenant(s) with heartbeat disabled.\n"
-        )
+        self.stdout.write(f"Found {len(tenants)} active tenant(s) with heartbeat disabled.\n")
 
         removed = 0
         skipped = 0
@@ -53,9 +52,7 @@ class Command(BaseCommand):
 
         for tenant in tenants:
             try:
-                list_result = invoke_gateway_tool(
-                    tenant, "cron.list", {"includeDisabled": True}
-                )
+                list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
             except GatewayError as exc:
                 self.stderr.write(f"  SKIP {tenant.id}: cannot list jobs — {exc}\n")
                 errors += 1
@@ -101,7 +98,4 @@ class Command(BaseCommand):
             time.sleep(1)
 
         action = "Would remove" if dry_run else "Removed"
-        self.stdout.write(
-            f"\nDone. {action} {removed} zombie heartbeat(s). "
-            f"Skipped: {skipped}. Errors: {errors}\n"
-        )
+        self.stdout.write(f"\nDone. {action} {removed} zombie heartbeat(s). Skipped: {skipped}. Errors: {errors}\n")

@@ -1,4 +1,5 @@
 """Internal runtime views for the OpenClaw finance plugin."""
+
 from __future__ import annotations
 
 import logging
@@ -16,7 +17,7 @@ from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
 from .models import FinanceAccount, FinanceTransaction, PayoffPlan
-from .services import DebtInput, compare_strategies, calculate_payoff, payoff_result_to_dict
+from .services import DebtInput, calculate_payoff, compare_strategies, payoff_result_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ def _parse_decimal(value, field_name: str) -> Decimal:
 
 class RuntimeFinanceAccountsView(APIView):
     """GET: list accounts. POST: create/update an account."""
+
     permission_classes = [AllowAny]
 
     def get(self, request, tenant_id):
@@ -137,17 +139,21 @@ class RuntimeFinanceAccountsView(APIView):
             account.original_balance = balance
             account.save(update_fields=["original_balance"])
 
-        return Response({
-            "id": str(account.id),
-            "nickname": account.nickname,
-            "account_type": account.account_type,
-            "current_balance": str(account.current_balance),
-            "created": created,
-        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+        return Response(
+            {
+                "id": str(account.id),
+                "nickname": account.nickname,
+                "account_type": account.account_type,
+                "current_balance": str(account.current_balance),
+                "created": created,
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
 
 class RuntimeFinanceTransactionsView(APIView):
     """POST: record a payment or transaction."""
+
     permission_classes = [AllowAny]
 
     def post(self, request, tenant_id):
@@ -164,9 +170,7 @@ class RuntimeFinanceTransactionsView(APIView):
         # Fuzzy match account by nickname
         account = None
         if nickname:
-            account = FinanceAccount.objects.filter(
-                tenant=tenant, is_active=True, nickname__iexact=nickname
-            ).first()
+            account = FinanceAccount.objects.filter(tenant=tenant, is_active=True, nickname__iexact=nickname).first()
             if not account:
                 # Try contains match
                 account = FinanceAccount.objects.filter(
@@ -208,24 +212,26 @@ class RuntimeFinanceTransactionsView(APIView):
 
         # Update account balance
         if txn_type in ("payment", "refund"):
-            account.current_balance = max(
-                Decimal("0"), account.current_balance - amount
-            )
+            account.current_balance = max(Decimal("0"), account.current_balance - amount)
         elif txn_type in ("charge", "interest"):
             account.current_balance += amount
         account.save(update_fields=["current_balance", "updated_at"])
 
-        return Response({
-            "transaction_id": str(transaction.id),
-            "account_nickname": account.nickname,
-            "new_balance": str(account.current_balance.quantize(Decimal("0.01"))),
-            "transaction_type": txn_type,
-            "amount": str(amount),
-        }, status=status.HTTP_201_CREATED)
+        return Response(
+            {
+                "transaction_id": str(transaction.id),
+                "account_nickname": account.nickname,
+                "new_balance": str(account.current_balance.quantize(Decimal("0.01"))),
+                "transaction_type": txn_type,
+                "amount": str(amount),
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class RuntimeFinanceBalanceUpdateView(APIView):
     """POST: update an account balance directly."""
+
     permission_classes = [AllowAny]
 
     def post(self, request, tenant_id):
@@ -241,9 +247,7 @@ class RuntimeFinanceBalanceUpdateView(APIView):
 
         account = None
         if nickname:
-            account = FinanceAccount.objects.filter(
-                tenant=tenant, is_active=True, nickname__iexact=nickname
-            ).first()
+            account = FinanceAccount.objects.filter(tenant=tenant, is_active=True, nickname__iexact=nickname).first()
             if not account:
                 account = FinanceAccount.objects.filter(
                     tenant=tenant, is_active=True, nickname__icontains=nickname
@@ -264,15 +268,18 @@ class RuntimeFinanceBalanceUpdateView(APIView):
         account.current_balance = new_balance
         account.save(update_fields=["current_balance", "updated_at"])
 
-        return Response({
-            "account_nickname": account.nickname,
-            "old_balance": str(old_balance),
-            "new_balance": str(account.current_balance.quantize(Decimal("0.01"))),
-        })
+        return Response(
+            {
+                "account_nickname": account.nickname,
+                "old_balance": str(old_balance),
+                "new_balance": str(account.current_balance.quantize(Decimal("0.01"))),
+            }
+        )
 
 
 class RuntimeFinanceArchiveAccountView(APIView):
     """POST: archive an account (soft-delete, hides from totals/calculations)."""
+
     permission_classes = [AllowAny]
 
     def post(self, request, tenant_id):
@@ -291,13 +298,9 @@ class RuntimeFinanceArchiveAccountView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        account = FinanceAccount.objects.filter(
-            tenant=tenant, is_active=True, nickname__iexact=nickname
-        ).first()
+        account = FinanceAccount.objects.filter(tenant=tenant, is_active=True, nickname__iexact=nickname).first()
         if not account:
-            account = FinanceAccount.objects.filter(
-                tenant=tenant, is_active=True, nickname__icontains=nickname
-            ).first()
+            account = FinanceAccount.objects.filter(tenant=tenant, is_active=True, nickname__icontains=nickname).first()
 
         if not account:
             return Response(
@@ -309,15 +312,18 @@ class RuntimeFinanceArchiveAccountView(APIView):
         account.is_active = False
         account.save(update_fields=["is_active", "updated_at"])
 
-        return Response({
-            "account_nickname": account.nickname,
-            "archived": True,
-            "previous_balance": str(previous_balance.quantize(Decimal("0.01"))),
-        })
+        return Response(
+            {
+                "account_nickname": account.nickname,
+                "archived": True,
+                "previous_balance": str(previous_balance.quantize(Decimal("0.01"))),
+            }
+        )
 
 
 class RuntimeFinanceUnarchiveAccountView(APIView):
     """POST: restore a previously archived account."""
+
     permission_classes = [AllowAny]
 
     def post(self, request, tenant_id):
@@ -336,9 +342,7 @@ class RuntimeFinanceUnarchiveAccountView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        account = FinanceAccount.objects.filter(
-            tenant=tenant, is_active=False, nickname__iexact=nickname
-        ).first()
+        account = FinanceAccount.objects.filter(tenant=tenant, is_active=False, nickname__iexact=nickname).first()
         if not account:
             account = FinanceAccount.objects.filter(
                 tenant=tenant, is_active=False, nickname__icontains=nickname
@@ -371,15 +375,18 @@ class RuntimeFinanceUnarchiveAccountView(APIView):
         account.is_active = True
         account.save(update_fields=["is_active", "updated_at"])
 
-        return Response({
-            "account_nickname": account.nickname,
-            "unarchived": True,
-            "current_balance": str(account.current_balance.quantize(Decimal("0.01"))),
-        })
+        return Response(
+            {
+                "account_nickname": account.nickname,
+                "unarchived": True,
+                "current_balance": str(account.current_balance.quantize(Decimal("0.01"))),
+            }
+        )
 
 
 class RuntimeFinancePayoffView(APIView):
     """POST: calculate and optionally save a payoff plan."""
+
     permission_classes = [AllowAny]
 
     def post(self, request, tenant_id):
@@ -392,9 +399,7 @@ class RuntimeFinancePayoffView(APIView):
 
         body = request.data
         try:
-            monthly_budget = _parse_decimal(
-                body.get("monthly_budget"), "monthly_budget"
-            )
+            monthly_budget = _parse_decimal(body.get("monthly_budget"), "monthly_budget")
         except ValueError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -402,10 +407,9 @@ class RuntimeFinancePayoffView(APIView):
 
         # Gather active debt accounts
         debt_accounts = FinanceAccount.objects.filter(
-            tenant=tenant, is_active=True,
-        ).exclude(
-            account_type__in=["savings", "checking", "emergency_fund"]
-        )
+            tenant=tenant,
+            is_active=True,
+        ).exclude(account_type__in=["savings", "checking", "emergency_fund"])
 
         debts = [
             DebtInput(
@@ -419,28 +423,26 @@ class RuntimeFinancePayoffView(APIView):
         ]
 
         if not debts:
-            return Response({
-                "message": "No active debts to calculate payoff for.",
-                "results": {},
-            })
+            return Response(
+                {
+                    "message": "No active debts to calculate payoff for.",
+                    "results": {},
+                }
+            )
 
         if strategy and strategy in ("snowball", "avalanche", "hybrid"):
             result = calculate_payoff(debts, monthly_budget, strategy)
             results = {strategy: payoff_result_to_dict(result)}
         else:
             all_results = compare_strategies(debts, monthly_budget)
-            results = {
-                k: payoff_result_to_dict(v) for k, v in all_results.items()
-            }
+            results = {k: payoff_result_to_dict(v) for k, v in all_results.items()}
 
         # Save active plan if strategy specified
         save = body.get("save", False)
         if save and strategy:
             result_data = results[strategy]
             # Deactivate existing plans
-            PayoffPlan.objects.filter(tenant=tenant, is_active=True).update(
-                is_active=False
-            )
+            PayoffPlan.objects.filter(tenant=tenant, is_active=True).update(is_active=False)
             PayoffPlan.objects.create(
                 tenant=tenant,
                 strategy=strategy,
@@ -458,6 +460,7 @@ class RuntimeFinancePayoffView(APIView):
 
 class RuntimeFinanceSummaryView(APIView):
     """GET: current financial overview for AI context."""
+
     permission_classes = [AllowAny]
 
     def get(self, request, tenant_id):
@@ -476,41 +479,41 @@ class RuntimeFinanceSummaryView(APIView):
 
         total_debt = sum(a.current_balance for a in debt_accounts) or Decimal("0")
         total_savings = sum(a.current_balance for a in savings_accounts) or Decimal("0")
-        total_minimums = sum(
-            a.minimum_payment for a in debt_accounts if a.minimum_payment
-        ) or Decimal("0")
+        total_minimums = sum(a.minimum_payment for a in debt_accounts if a.minimum_payment) or Decimal("0")
 
-        active_plan = PayoffPlan.objects.filter(
-            tenant=tenant, is_active=True
-        ).first()
+        active_plan = PayoffPlan.objects.filter(tenant=tenant, is_active=True).first()
 
-        return Response({
-            "total_debt": str(total_debt),
-            "total_savings": str(total_savings),
-            "total_minimum_payments": str(total_minimums),
-            "debt_account_count": len(debt_accounts),
-            "savings_account_count": len(savings_accounts),
-            "accounts": [
-                {
-                    "nickname": a.nickname,
-                    "account_type": a.account_type,
-                    "current_balance": str(a.current_balance),
-                    "interest_rate": str(a.interest_rate) if a.interest_rate else None,
-                    "minimum_payment": str(a.minimum_payment) if a.minimum_payment else None,
-                    "due_day": a.due_day,
-                    "is_debt": a.is_debt,
-                    "payoff_progress": a.payoff_progress,
+        return Response(
+            {
+                "total_debt": str(total_debt),
+                "total_savings": str(total_savings),
+                "total_minimum_payments": str(total_minimums),
+                "debt_account_count": len(debt_accounts),
+                "savings_account_count": len(savings_accounts),
+                "accounts": [
+                    {
+                        "nickname": a.nickname,
+                        "account_type": a.account_type,
+                        "current_balance": str(a.current_balance),
+                        "interest_rate": str(a.interest_rate) if a.interest_rate else None,
+                        "minimum_payment": str(a.minimum_payment) if a.minimum_payment else None,
+                        "due_day": a.due_day,
+                        "is_debt": a.is_debt,
+                        "payoff_progress": a.payoff_progress,
+                    }
+                    for a in accounts
+                ],
+                "active_plan": {
+                    "strategy": active_plan.strategy,
+                    "monthly_budget": str(active_plan.monthly_budget),
+                    "payoff_months": active_plan.payoff_months,
+                    "payoff_date": active_plan.payoff_date.isoformat(),
+                    "total_interest": str(active_plan.total_interest),
                 }
-                for a in accounts
-            ],
-            "active_plan": {
-                "strategy": active_plan.strategy,
-                "monthly_budget": str(active_plan.monthly_budget),
-                "payoff_months": active_plan.payoff_months,
-                "payoff_date": active_plan.payoff_date.isoformat(),
-                "total_interest": str(active_plan.total_interest),
-            } if active_plan else None,
-        })
+                if active_plan
+                else None,
+            }
+        )
 
 
 def _safe_decimal(value) -> Decimal | None:

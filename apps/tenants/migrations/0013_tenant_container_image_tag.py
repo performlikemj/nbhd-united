@@ -4,15 +4,16 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0012_tenant_is_trial_tenant_trial_ends_at_and_more'),
+        ("tenants", "0012_tenant_is_trial_tenant_trial_ends_at_and_more"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='tenant',
-            name='container_image_tag',
-            field=models.CharField(blank=True, default='', help_text='Current OpenClaw container image tag (git SHA)', max_length=255),
+            model_name="tenant",
+            name="container_image_tag",
+            field=models.CharField(
+                blank=True, default="", help_text="Current OpenClaw container image tag (git SHA)", max_length=255
+            ),
         ),
     ]

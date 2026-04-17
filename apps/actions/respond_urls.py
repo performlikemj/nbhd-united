@@ -1,4 +1,5 @@
 """URLs for gate respond endpoint (internal, from button callbacks)."""
+
 from django.urls import path
 
 from .views import GateRespondView

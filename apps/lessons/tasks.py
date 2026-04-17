@@ -1,4 +1,5 @@
 """QStash-callable task functions for the lessons app."""
+
 from __future__ import annotations
 
 import logging
@@ -11,8 +12,9 @@ logger = logging.getLogger(__name__)
 
 def dedup_lessons_task() -> dict:
     """Remove near-duplicate lessons for all active tenants."""
-    from django.core.management import call_command
     from io import StringIO
+
+    from django.core.management import call_command
 
     out = StringIO()
     call_command("dedup_lessons", stdout=out)
@@ -39,11 +41,10 @@ def reseed_lessons_task() -> dict:
 def reseed_lessons_single_tenant_task(tenant_id: str) -> dict:
     """Delete journal-sourced lessons and re-extract for a single tenant."""
     from apps.journal.extraction import (
-        MIN_NOTE_LENGTH,
         _call_extraction_llm,
         _embedding_duplicate,
     )
-    from apps.journal.models import DailyNote, Document, PendingExtraction
+    from apps.journal.models import PendingExtraction
     from apps.lessons.clustering import refresh_constellation
     from apps.lessons.models import Lesson
     from apps.lessons.services import process_approved_lesson
@@ -55,7 +56,8 @@ def reseed_lessons_single_tenant_task(tenant_id: str) -> dict:
     # ── Delete old lessons (preserve any from a prior reseed attempt) ──
     deleted_lessons, _ = Lesson.objects.filter(tenant=tenant).exclude(source_ref="reseed").delete()
     deleted_pending, _ = PendingExtraction.objects.filter(
-        tenant=tenant, kind=PendingExtraction.Kind.LESSON,
+        tenant=tenant,
+        kind=PendingExtraction.Kind.LESSON,
     ).delete()
     logger.info("reseed[%s]: cleared %d old lessons, %d pending", tid, deleted_lessons, deleted_pending)
 
@@ -109,7 +111,10 @@ def reseed_lessons_single_tenant_task(tenant_id: str) -> dict:
 
     logger.info(
         "reseed[%s]: extracted=%d deduped=%d added=%d",
-        tid, total_extracted, total_deduped, total_added,
+        tid,
+        total_extracted,
+        total_deduped,
+        total_added,
     )
 
     # ── Re-cluster ──

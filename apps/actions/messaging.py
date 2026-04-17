@@ -3,6 +3,7 @@
 Sends confirmation prompts with inline buttons to the user's preferred
 platform (Telegram or LINE), and edits the message after response.
 """
+
 from __future__ import annotations
 
 import logging
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Telegram
 # ---------------------------------------------------------------------------
+
 
 def _send_telegram_confirmation(tenant: Tenant, action: PendingAction) -> str | None:
     """Send a Telegram message with inline approve/deny buttons.
@@ -46,10 +48,12 @@ def _send_telegram_confirmation(tenant: Tenant, action: PendingAction) -> str | 
     )
 
     keyboard = {
-        "inline_keyboard": [[
-            {"text": "✅ Approve", "callback_data": f"gate_approve:{action.id}"},
-            {"text": "❌ Deny", "callback_data": f"gate_deny:{action.id}"},
-        ]]
+        "inline_keyboard": [
+            [
+                {"text": "✅ Approve", "callback_data": f"gate_approve:{action.id}"},
+                {"text": "❌ Deny", "callback_data": f"gate_deny:{action.id}"},
+            ]
+        ]
     }
 
     try:
@@ -132,6 +136,7 @@ def _edit_telegram_message(tenant: Tenant, action: PendingAction) -> None:
 # ---------------------------------------------------------------------------
 # LINE
 # ---------------------------------------------------------------------------
+
 
 def _send_line_confirmation(tenant: Tenant, action: PendingAction) -> str | None:
     """Send a LINE Flex Message with approve/deny buttons.
@@ -316,6 +321,7 @@ def update_gate_message(action: PendingAction) -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _escape_markdown(text: str) -> str:
     """Escape Telegram MarkdownV2 special characters."""

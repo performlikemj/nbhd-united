@@ -13,6 +13,7 @@ Architecture (2026-02-22):
     failures during provisioning and added complexity without meaningful
     security benefit given the network isolation.
 """
+
 from __future__ import annotations
 
 import secrets

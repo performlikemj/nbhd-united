@@ -1,4 +1,5 @@
 """Telegram link token model for QR code / deep link onboarding flow."""
+
 import uuid
 
 from django.db import models

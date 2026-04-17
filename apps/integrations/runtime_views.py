@@ -1,40 +1,37 @@
 """Internal runtime capability endpoints."""
+
 from __future__ import annotations
 
 import logging
 import re
 
 logger = logging.getLogger(__name__)
-from datetime import date, timedelta, datetime
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from datetime import date, datetime, timedelta
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-from django.core.exceptions import ValidationError
 from django.utils import timezone as tz
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.journal.models import DailyNote, Document, JournalEntry, UserMemory
-from apps.lessons.models import Lesson
-from apps.lessons.serializers import LessonSerializer
-from apps.lessons.services import search_lessons
+from apps.billing.services import record_usage
 from apps.journal.document_views import _default_markdown, _default_title
-from apps.orchestrator.personas import get_persona
-from apps.journal.services import (
-    append_log_to_note,
-    get_or_seed_note_template,
-    parse_daily_sections,
-    set_daily_note_section,
-    set_daily_note_sections,
-    upsert_default_daily_note,
-)
+from apps.journal.models import DailyNote, Document, JournalEntry
 from apps.journal.serializers import (
     JournalEntryRuntimeSerializer,
     WeeklyReviewRuntimeSerializer,
 )
+from apps.journal.services import (
+    get_or_seed_note_template,
+    parse_daily_sections,
+)
+from apps.lessons.models import Lesson
+from apps.lessons.serializers import LessonSerializer
+from apps.lessons.services import search_lessons
+from apps.orchestrator.personas import get_persona
 from apps.tenants.models import Tenant
 
 from .google_api import (
@@ -43,7 +40,6 @@ from .google_api import (
     list_calendar_events,
     list_gmail_messages,
 )
-from apps.billing.services import record_usage
 from .internal_auth import InternalAuthError, validate_internal_runtime_request
 from .models import Integration
 from .services import (
@@ -415,9 +411,7 @@ class RuntimeGmailMessagesView(APIView):
             return Response(
                 {
                     "error": "provider_request_failed",
-                    "provider_status": (
-                        exc.response.status_code if exc.response is not None else None
-                    ),
+                    "provider_status": (exc.response.status_code if exc.response is not None else None),
                 },
                 status=status.HTTP_502_BAD_GATEWAY,
             )
@@ -428,6 +422,7 @@ class RuntimeGmailMessagesView(APIView):
             )
 
         from apps.pii.redactor import redact_tool_response
+
         payload = redact_tool_response(payload, tenant)
 
         return Response(
@@ -491,9 +486,7 @@ class RuntimeCalendarEventsView(APIView):
             return Response(
                 {
                     "error": "provider_request_failed",
-                    "provider_status": (
-                        exc.response.status_code if exc.response is not None else None
-                    ),
+                    "provider_status": (exc.response.status_code if exc.response is not None else None),
                 },
                 status=status.HTTP_502_BAD_GATEWAY,
             )
@@ -504,6 +497,7 @@ class RuntimeCalendarEventsView(APIView):
             )
 
         from apps.pii.redactor import redact_tool_response
+
         payload = redact_tool_response(payload, tenant)
 
         return Response(
@@ -574,9 +568,7 @@ class RuntimeGmailMessageDetailView(APIView):
             return Response(
                 {
                     "error": "provider_request_failed",
-                    "provider_status": (
-                        exc.response.status_code if exc.response is not None else None
-                    ),
+                    "provider_status": (exc.response.status_code if exc.response is not None else None),
                 },
                 status=status.HTTP_502_BAD_GATEWAY,
             )
@@ -587,6 +579,7 @@ class RuntimeGmailMessageDetailView(APIView):
             )
 
         from apps.pii.redactor import redact_tool_response
+
         payload = redact_tool_response(payload, tenant)
 
         return Response(
@@ -637,9 +630,7 @@ class RuntimeCalendarFreeBusyView(APIView):
             return Response(
                 {
                     "error": "provider_request_failed",
-                    "provider_status": (
-                        exc.response.status_code if exc.response is not None else None
-                    ),
+                    "provider_status": (exc.response.status_code if exc.response is not None else None),
                 },
                 status=status.HTTP_502_BAD_GATEWAY,
             )
@@ -887,13 +878,9 @@ class RuntimeJournalContextView(APIView):
 
         cutoff = (_tenant_now(tenant) - timedelta(days=days)).date()
 
-        recent_docs = Document.objects.filter(
-            tenant=tenant, kind="daily", slug__gte=str(cutoff)
-        ).order_by("slug")
+        recent_docs = Document.objects.filter(tenant=tenant, kind="daily", slug__gte=str(cutoff)).order_by("slug")
 
-        memory_doc = Document.objects.filter(
-            tenant=tenant, kind="memory", slug="long-term"
-        ).first()
+        memory_doc = Document.objects.filter(tenant=tenant, kind="memory", slug="long-term").first()
 
         # Backbone docs: tasks, goals, ideas — always included so the agent
         # starts every session aware of the user's current state.
@@ -903,7 +890,8 @@ class RuntimeJournalContextView(APIView):
             Document.Kind.IDEAS,
         ]
         backbone_docs = Document.objects.filter(
-            tenant=tenant, kind__in=backbone_kinds,
+            tenant=tenant,
+            kind__in=backbone_kinds,
         )
         backbone_data = {
             doc.kind: {
@@ -935,9 +923,6 @@ class RuntimeJournalContextView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-
-
-
 
 
 class RuntimeLessonCreateView(APIView):
@@ -1003,6 +988,7 @@ class RuntimeLessonCreateView(APIView):
         # Send approval buttons to the user's preferred channel (best-effort)
         try:
             from apps.lessons.notifications import send_lesson_approval_buttons
+
             send_lesson_approval_buttons(tenant, lesson)
         except Exception:
             logger.exception("runtime: failed to send lesson notification for tenant %s", str(tenant.id)[:8])
@@ -1103,6 +1089,7 @@ class RuntimeLessonPendingView(APIView):
             status=200,
         )
 
+
 # ---------------------------------------------------------------------------
 # v2 Document runtime endpoints (unified model)
 # ---------------------------------------------------------------------------
@@ -1139,7 +1126,10 @@ class RuntimeDocumentView(APIView):
         if kind == "daily":
             if not re.match(r"^\d{4}-\d{2}-\d{2}$", slug):
                 return Response(
-                    {"error": "invalid_request", "detail": f"Daily note slug must be a date (YYYY-MM-DD), got: {slug!r}"},
+                    {
+                        "error": "invalid_request",
+                        "detail": f"Daily note slug must be a date (YYYY-MM-DD), got: {slug!r}",
+                    },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -1253,9 +1243,7 @@ class RuntimeJournalSearchView(APIView):
         search_query = SearchQuery(query, search_type="websearch")
 
         results = (
-            qs.annotate(rank=SearchRank(search_vector, search_query))
-            .filter(rank__gt=0.0)
-            .order_by("-rank")[:limit]
+            qs.annotate(rank=SearchRank(search_vector, search_query)).filter(rank__gt=0.0).order_by("-rank")[:limit]
         )
 
         def _make_snippet(text: str, query_terms: str, max_len: int = 300) -> str:
@@ -1364,7 +1352,6 @@ class RuntimeUsageReportView(APIView):
             )
 
         return Response({"status": "ok"}, status=status.HTTP_200_OK)
-
 
 
 class RuntimeMemorySyncView(APIView):
@@ -1498,6 +1485,7 @@ class RuntimeProfileUpdateView(APIView):
             if tz_value:
                 try:
                     from zoneinfo import ZoneInfo
+
                     ZoneInfo(tz_value)  # validate
                 except (KeyError, Exception):
                     return Response(
@@ -1566,9 +1554,7 @@ class RuntimeProfileUpdateView(APIView):
                 seed_names = {j["name"] for j in seed_jobs}
 
                 # List existing jobs and delete any that match a system cron name
-                list_result = invoke_gateway_tool(
-                    tenant, "cron.list", {"includeDisabled": True}
-                )
+                list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
                 jobs = []
                 if isinstance(list_result, dict):
                     jobs = list_result.get("jobs", [])
@@ -1586,7 +1572,9 @@ class RuntimeProfileUpdateView(APIView):
                         except Exception:
                             logger.warning(
                                 "Failed to remove cron job %s during tz resync for tenant %s",
-                                job_id, tenant.id, exc_info=True,
+                                job_id,
+                                tenant.id,
+                                exc_info=True,
                             )
 
                 # Recreate system crons with correct timezone
@@ -1598,23 +1586,27 @@ class RuntimeProfileUpdateView(APIView):
                     except Exception:
                         logger.warning(
                             "Failed to recreate cron job %s during tz resync for tenant %s",
-                            job["name"], tenant.id, exc_info=True,
+                            job["name"],
+                            tenant.id,
+                            exc_info=True,
                         )
 
                 logger.info(
                     "Timezone resync for tenant %s (tz=%s): deleted=%d recreated=%d",
-                    tenant.id, new_tz, deleted, created,
+                    tenant.id,
+                    new_tz,
+                    deleted,
+                    created,
                 )
             except Exception:
-                logger.exception(
-                    "Failed to resync cron timezones for tenant %s", tenant.id, exc_info=True
-                )
+                logger.exception("Failed to resync cron timezones for tenant %s", tenant.id, exc_info=True)
 
         # Trigger config refresh so the agent picks up the new userTimezone
         if "timezone" in updated_fields:
             try:
                 tenant.bump_pending_config()
                 from apps.orchestrator.services import update_tenant_config
+
                 update_tenant_config(str(tenant.id))
             except Exception:
                 logger.exception("Failed to refresh config after profile update for tenant %s", tenant.id)
@@ -1624,20 +1616,23 @@ class RuntimeProfileUpdateView(APIView):
             try:
                 tenant.bump_pending_config()
                 from apps.orchestrator.services import update_tenant_config
+
                 update_tenant_config(str(tenant.id))
             except Exception:
                 logger.exception("Failed to refresh config after location update for tenant %s", tenant.id)
 
-        return Response({
-            "tenant_id": str(tenant.id),
-            "updated": updated_fields,
-            "timezone": user.timezone,
-            "display_name": getattr(user, "display_name", ""),
-            "language": getattr(user, "language", ""),
-            "location_city": getattr(user, "location_city", ""),
-            "location_lat": getattr(user, "location_lat", None),
-            "location_lon": getattr(user, "location_lon", None),
-        })
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "updated": updated_fields,
+                "timezone": user.timezone,
+                "display_name": getattr(user, "display_name", ""),
+                "language": getattr(user, "language", ""),
+                "location_city": getattr(user, "location_city", ""),
+                "location_lat": getattr(user, "location_lat", None),
+                "location_lon": getattr(user, "location_lon", None),
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1648,13 +1643,18 @@ class RuntimeProfileUpdateView(APIView):
 # be reused by user-facing CRUD endpoints (apps/journal/workspace_views.py).
 # These aliases preserve the original local names used throughout this file.
 from apps.journal.workspace_services import (
-    DEFAULT_WORKSPACE_DESCRIPTION,
-    DEFAULT_WORKSPACE_NAME,
-    DEFAULT_WORKSPACE_SLUG,
     WORKSPACE_LIMIT,
+)
+from apps.journal.workspace_services import (
     embed_workspace_description as _embed_workspace_description,
+)
+from apps.journal.workspace_services import (
     ensure_default_workspace as _ensure_default_workspace,
+)
+from apps.journal.workspace_services import (
     generate_unique_slug as _generate_unique_slug,
+)
+from apps.journal.workspace_services import (
     serialize_workspace as _serialize_workspace,
 )
 
@@ -1680,18 +1680,13 @@ class RuntimeWorkspaceListView(APIView):
 
         from apps.journal.models import Workspace
 
-        workspaces = Workspace.objects.filter(tenant=tenant).order_by(
-            "-is_default", "-last_used_at", "name"
-        )
+        workspaces = Workspace.objects.filter(tenant=tenant).order_by("-is_default", "-last_used_at", "name")
         active_id = tenant.active_workspace_id
 
         return Response(
             {
                 "tenant_id": str(tenant.id),
-                "workspaces": [
-                    _serialize_workspace(ws, active_workspace_id=active_id)
-                    for ws in workspaces
-                ],
+                "workspaces": [_serialize_workspace(ws, active_workspace_id=active_id) for ws in workspaces],
                 "active_workspace_id": str(active_id) if active_id else None,
                 "limit": WORKSPACE_LIMIT,
             },
@@ -1756,9 +1751,7 @@ class RuntimeWorkspaceListView(APIView):
         return Response(
             {
                 "tenant_id": str(tenant.id),
-                "workspace": _serialize_workspace(
-                    workspace, active_workspace_id=workspace.id
-                ),
+                "workspace": _serialize_workspace(workspace, active_workspace_id=workspace.id),
                 "default_workspace_created": is_first_create,
             },
             status=status.HTTP_201_CREATED,
@@ -1822,9 +1815,7 @@ class RuntimeWorkspaceDetailView(APIView):
         return Response(
             {
                 "tenant_id": str(tenant.id),
-                "workspace": _serialize_workspace(
-                    workspace, active_workspace_id=tenant.active_workspace_id
-                ),
+                "workspace": _serialize_workspace(workspace, active_workspace_id=tenant.active_workspace_id),
                 "updated": updated_fields,
             },
             status=status.HTTP_200_OK,
@@ -1860,9 +1851,7 @@ class RuntimeWorkspaceDetailView(APIView):
         # If deleting the active workspace, fall back to default
         was_active = tenant.active_workspace_id == workspace.id
         if was_active:
-            default_ws = Workspace.objects.filter(
-                tenant=tenant, is_default=True
-            ).first()
+            default_ws = Workspace.objects.filter(tenant=tenant, is_default=True).first()
             tenant.active_workspace = default_ws
             tenant.save(update_fields=["active_workspace"])
 
@@ -1923,9 +1912,7 @@ class RuntimeWorkspaceSwitchView(APIView):
         return Response(
             {
                 "tenant_id": str(tenant.id),
-                "workspace": _serialize_workspace(
-                    workspace, active_workspace_id=workspace.id
-                ),
+                "workspace": _serialize_workspace(workspace, active_workspace_id=workspace.id),
                 "previous_workspace_id": str(previous_id) if previous_id else None,
             },
             status=status.HTTP_200_OK,
@@ -1960,9 +1947,7 @@ class RedditConnectView(APIView):
             )
 
         try:
-            redirect_url, connection_request_id = initiate_composio_connection(
-                tenant, "reddit", callback_url
-            )
+            redirect_url, connection_request_id = initiate_composio_connection(tenant, "reddit", callback_url)
         except IntegrationProviderConfigError as exc:
             return _integration_error_response(exc)
         except Exception as exc:
@@ -2128,6 +2113,7 @@ class RedditToolView(APIView):
             )
 
         from apps.pii.redactor import redact_tool_response
+
         result = redact_tool_response(result, tenant)
 
         return Response(result, status=status.HTTP_200_OK)

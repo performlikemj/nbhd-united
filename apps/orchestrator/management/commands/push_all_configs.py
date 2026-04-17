@@ -6,10 +6,11 @@ to ensure running containers pick up the new config on next restart.
 
 Usage: python manage.py push_all_configs
 """
+
 from django.core.management.base import BaseCommand
 
-from apps.tenants.models import Tenant
 from apps.orchestrator.services import update_tenant_config
+from apps.tenants.models import Tenant
 
 
 class Command(BaseCommand):
@@ -32,10 +33,6 @@ class Command(BaseCommand):
                 self.stdout.write(f"  ✅ {tenant.container_id}")
             except Exception as e:
                 failed += 1
-                self.stdout.write(self.style.ERROR(
-                    f"  ❌ {tenant.container_id}: {e}"
-                ))
+                self.stdout.write(self.style.ERROR(f"  ❌ {tenant.container_id}: {e}"))
 
-        self.stdout.write(self.style.SUCCESS(
-            f"Done: {updated} pushed, {failed} failed"
-        ))
+        self.stdout.write(self.style.SUCCESS(f"Done: {updated} pushed, {failed} failed"))

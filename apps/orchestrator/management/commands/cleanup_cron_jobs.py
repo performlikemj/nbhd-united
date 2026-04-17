@@ -7,6 +7,7 @@ Usage:
     python manage.py cleanup_cron_jobs --dry-run   # preview what would be removed
     python manage.py cleanup_cron_jobs              # actually remove them
 """
+
 from __future__ import annotations
 
 import logging
@@ -78,16 +79,13 @@ class Command(BaseCommand):
 
         action = "Would remove" if dry_run else "Removed"
         self.stdout.write(
-            f"\nDone. {action} {total_removed} job(s) across {len(tenants)} tenant(s). "
-            f"Errors: {total_errors}\n"
+            f"\nDone. {action} {total_removed} job(s) across {len(tenants)} tenant(s). Errors: {total_errors}\n"
         )
 
     def _process_tenant(self, tenant: Tenant, dry_run: bool) -> tuple[int, int]:
         """Process a single tenant. Returns (removed_count, error_count)."""
         try:
-            list_result = invoke_gateway_tool(
-                tenant, "cron.list", {"includeDisabled": True}
-            )
+            list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
         except GatewayError as exc:
             self.stderr.write(f"  SKIP tenant {tenant.id}: cannot list jobs — {exc}\n")
             return 0, 1

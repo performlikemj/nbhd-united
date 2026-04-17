@@ -1,14 +1,15 @@
 """Journal-domain helper services for templates and note persistence."""
+
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from datetime import date
-import re
 
 from django.core.exceptions import ValidationError
 from django.utils import timezone as tz
 
-from .models import DailyNote, NoteTemplate, Document
+from .models import DailyNote, Document, NoteTemplate
 
 
 def _get_persona_name(tenant) -> str:
@@ -26,45 +27,25 @@ DEFAULT_TEMPLATE_SECTIONS: list[dict[str, str]] = [
     {
         "slug": "morning-report",
         "title": "Morning Report",
-        "content": (
-            "### Overnight Summary\n"
-            "- \n\n"
-            "### Calendar Today\n"
-            "- \n\n"
-            "### Reminders & Follow-ups\n"
-            "- \n"
-        ),
+        "content": ("### Overnight Summary\n- \n\n### Calendar Today\n- \n\n### Reminders & Follow-ups\n- \n"),
         "source": "agent",
     },
     {
         "slug": "weather",
         "title": "Weather",
-        "content": (
-            "**Today:** \n"
-            "**Tomorrow:** \n"
-        ),
+        "content": ("**Today:** \n**Tomorrow:** \n"),
         "source": "agent",
     },
     {
         "slug": "news",
         "title": "News & Interests",
-        "content": (
-            "### Headlines\n"
-            "- \n\n"
-            "### Topics You Follow\n"
-            "- \n"
-        ),
+        "content": ("### Headlines\n- \n\n### Topics You Follow\n- \n"),
         "source": "agent",
     },
     {
         "slug": "focus",
         "title": "Today's Focus",
-        "content": (
-            "### Top 3 Priorities\n"
-            "1. \n2. \n3. \n\n"
-            "### Quick Wins\n"
-            "- \n"
-        ),
+        "content": ("### Top 3 Priorities\n1. \n2. \n3. \n\n### Quick Wins\n- \n"),
         "source": "agent",
     },
     {
@@ -312,7 +293,9 @@ def materialize_sections_markdown(*, note_date: date, sections: list[dict], temp
     return "\n".join(lines) + "\n"
 
 
-def get_or_seed_note_template(*, tenant, date_value: date, markdown: str | None = None) -> tuple[NoteTemplate, list[dict]]:
+def get_or_seed_note_template(
+    *, tenant, date_value: date, markdown: str | None = None
+) -> tuple[NoteTemplate, list[dict]]:
     """Load template for a tenant's daily note and initialise sections from markdown if available."""
     template = get_default_template(tenant=tenant)
     if template is None:
@@ -328,9 +311,7 @@ def get_or_seed_note_template(*, tenant, date_value: date, markdown: str | None 
     markdown_value = (markdown or "").strip()
     if markdown_value:
         default_sections = deepcopy(template.sections)
-        has_legacy_entries = any(
-            _LEGACY_ENTRY_HEADER_RE.match(line.strip()) for line in markdown_value.splitlines()
-        )
+        has_legacy_entries = any(_LEGACY_ENTRY_HEADER_RE.match(line.strip()) for line in markdown_value.splitlines())
         if has_legacy_entries:
             for section in default_sections:
                 if section.get("slug") == "log":
@@ -380,7 +361,9 @@ def set_daily_note_section(
     return note, sections
 
 
-def set_daily_note_sections(*, note: DailyNote, sections: list[dict], template: NoteTemplate | None = None) -> DailyNote:
+def set_daily_note_sections(
+    *, note: DailyNote, sections: list[dict], template: NoteTemplate | None = None
+) -> DailyNote:
     if not sections:
         raise ValidationError("sections cannot be empty.")
 

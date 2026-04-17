@@ -8,8 +8,8 @@ import base64
 import logging
 import os
 import signal
-import time
 import threading
+import time
 from typing import Any
 
 import httpx
@@ -18,6 +18,7 @@ from django.utils import timezone
 
 from apps.billing.services import check_budget, record_usage
 from apps.tenants.models import Tenant
+
 from .error_messages import error_msg
 from .services import (
     extract_chat_id,
@@ -240,6 +241,7 @@ class TelegramPoller:
 
             # Download from file share
             from apps.orchestrator.azure_client import _is_mock
+
             if _is_mock():
                 return False
 
@@ -248,11 +250,13 @@ class TelegramPoller:
                 return False
 
             from azure.storage.fileshare import ShareFileClient
+
             from apps.orchestrator.azure_client import get_storage_client
 
             storage_client = get_storage_client()
             keys = storage_client.storage_accounts.list_keys(
-                settings.AZURE_RESOURCE_GROUP, account_name,
+                settings.AZURE_RESOURCE_GROUP,
+                account_name,
             )
             account_key = keys.keys[0].value
             share_name = f"ws-{str(tenant.id)[:20]}"
@@ -302,22 +306,26 @@ class TelegramPoller:
         entity_map = getattr(tenant, "pii_entity_map", None)
         if entity_map:
             from apps.pii.redactor import rehydrate_text
+
             text = rehydrate_text(text, entity_map)
 
         # Render [[chart:type]] markers into images and inject MEDIA: paths
-        chart_pattern = re.compile(r'\[\[chart:(\w+)(?:\|(.+?))?\]\]')
+        chart_pattern = re.compile(r"\[\[chart:(\w+)(?:\|(.+?))?\]\]")
         for match in chart_pattern.finditer(text):
             chart_type = match.group(1)
             raw_params = match.group(2) or ""
             params = dict(p.split("=", 1) for p in raw_params.split(",") if "=" in p)
             try:
                 from apps.router.charts import render_chart
+
                 png_bytes = render_chart(chart_type, tenant, params)
                 if png_bytes:
                     import uuid as _uuid
+
                     fname = f"charts/{chart_type}_{_uuid.uuid4().hex[:8]}.png"
                     fpath = f"workspace/{fname}"
                     from apps.orchestrator.azure_client import upload_workspace_file_binary
+
                     upload_workspace_file_binary(str(tenant.id), fpath, png_bytes)
                     container_path = f"/home/node/.openclaw/workspace/{fname}"
                     text = text.replace(match.group(0), f"MEDIA:{container_path}")
@@ -330,13 +338,13 @@ class TelegramPoller:
         # Pattern: MEDIA:path or common image extensions in workspace paths
         # OpenClaw uses MEDIA:./path or MEDIA:https://... convention
         media_pattern = re.compile(
-            r'MEDIA:(\S+\.(?:jpg|jpeg|png|gif|webp))',
+            r"MEDIA:(\S+\.(?:jpg|jpeg|png|gif|webp))",
             re.IGNORECASE,
         )
 
         # Also detect workspace image paths the agent might reference
         workspace_pattern = re.compile(
-            r'(/home/node/\.openclaw/workspace/\S+\.(?:jpg|jpeg|png|gif|webp))',
+            r"(/home/node/\.openclaw/workspace/\S+\.(?:jpg|jpeg|png|gif|webp))",
             re.IGNORECASE,
         )
 
@@ -345,8 +353,8 @@ class TelegramPoller:
         workspace_matches = workspace_pattern.findall(text)
 
         # Clean image references from text
-        clean_text = media_pattern.sub('', text)
-        clean_text = workspace_pattern.sub('', clean_text)
+        clean_text = media_pattern.sub("", text)
+        clean_text = workspace_pattern.sub("", clean_text)
         clean_text = clean_text.strip()
 
         # Send images first
@@ -358,9 +366,9 @@ class TelegramPoller:
                 self._send_photo(chat_id, path, tenant)
 
         # Parse inline buttons: [[button:Label|callback_data]]
-        button_pattern = re.compile(r'\[\[button:([^|]+)\|([^\]]+)\]\]')
+        button_pattern = re.compile(r"\[\[button:([^|]+)\|([^\]]+)\]\]")
         buttons = button_pattern.findall(clean_text)
-        clean_text = button_pattern.sub('', clean_text).strip()
+        clean_text = button_pattern.sub("", clean_text).strip()
 
         # Build reply_markup if buttons found
         reply_markup = None
@@ -540,6 +548,7 @@ class TelegramPoller:
 
             # Generate unique filename
             import hashlib
+
             name_hash = hashlib.sha256(photo_bytes[:1024]).hexdigest()[:8]
             filename = f"photo_{name_hash}.{ext}"
             workspace_path = f"workspace/media/inbound/{filename}"
@@ -547,6 +556,7 @@ class TelegramPoller:
 
             # Upload to tenant's file share
             from apps.orchestrator.azure_client import upload_workspace_file_binary
+
             tenant_id = str(tenant.id)
             upload_workspace_file_binary(tenant_id, workspace_path, photo_bytes)
             logger.info("Uploaded photo to %s for tenant %s", workspace_path, tenant_id[:8])
@@ -612,6 +622,7 @@ class TelegramPoller:
 
         # Set service-role RLS context for DB access
         from apps.tenants.middleware import set_rls_context
+
         set_rls_context(service_role=True)
 
         try:
@@ -646,6 +657,7 @@ class TelegramPoller:
             # Onboarding callbacks (tz_country:, tz_zone:)
             if callback_data.startswith("tz_"):
                 from apps.router.onboarding import handle_onboarding_callback
+
                 reply = handle_onboarding_callback(tenant, callback_data)
                 if reply is not None:
                     self._answer_callback_query(callback_id, "✓")
@@ -673,7 +685,7 @@ class TelegramPoller:
                 if chat_id in self._update_in_progress:
                     self._answer_callback_query(callback_id, "⏳ Already updating...")
                     return
-                
+
                 from apps.router.container_updates import handle_update_callback
 
                 # Edit the original message to remove buttons (prevents re-tapping)
@@ -692,17 +704,19 @@ class TelegramPoller:
                     def _do_update():
                         try:
                             from apps.router.container_updates import update_container
+
                             success = update_container(tenant)
                             if not success:
-                                self._send_message(chat_id, "Sorry, the update failed. Your assistant is still available on the current version.")
+                                self._send_message(
+                                    chat_id,
+                                    "Sorry, the update failed. Your assistant is still available on the current version.",
+                                )
                                 return
                             if pending_text:
                                 # Wait for container gateway to be healthy before forwarding
                                 if self._wait_for_container_ready(tenant, timeout=120):
                                     # Prepend context note so agent isn't cold
-                                    context_msg = (
-                                        f"[System: just updated. User's message from before the update:]\n{pending_text}"
-                                    )
+                                    context_msg = f"[System: just updated. User's message from before the update:]\n{pending_text}"
                                     self._send_typing(chat_id)
                                     self._forward_to_container(chat_id, tenant, context_msg)
                                 else:
@@ -757,11 +771,7 @@ class TelegramPoller:
 
         # Paused tenant — trial ended or payment lapsed
         frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
-        if (
-            tenant.status == Tenant.Status.SUSPENDED
-            and not tenant.is_trial
-            and not bool(tenant.stripe_subscription_id)
-        ):
+        if tenant.status == Tenant.Status.SUSPENDED and not tenant.is_trial and not bool(tenant.stripe_subscription_id):
             self._send_message(
                 chat_id,
                 "Your assistant is paused. Running an AI agent costs real money "
@@ -811,6 +821,7 @@ class TelegramPoller:
 
         # Check for container updates before forwarding
         from apps.router.container_updates import check_and_maybe_update
+
         update_action = check_and_maybe_update(tenant)
         if update_action:
             if update_action["action"] == "ask_user":
@@ -883,30 +894,26 @@ class TelegramPoller:
         context_parts: list[str] = []
 
         # Step 1: Always inject goals + tasks
-        goals_doc = Document.objects.filter(
-            tenant=tenant, kind=Document.Kind.GOAL, slug="goals"
-        ).first()
+        goals_doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.GOAL, slug="goals").first()
         if goals_doc and goals_doc.markdown.strip():
             context_parts.append(f"## Your active goals\n{goals_doc.markdown[:1500]}")
 
-        tasks_doc = Document.objects.filter(
-            tenant=tenant, kind=Document.Kind.TASKS, slug="tasks"
-        ).first()
+        tasks_doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.TASKS, slug="tasks").first()
         if tasks_doc and tasks_doc.markdown.strip():
             context_parts.append(f"## Your current tasks\n{tasks_doc.markdown[:1500]}")
 
         # Step 2: Search relevant history (best-effort — skip if embedding fails)
         history_parts: list[str] = []
         try:
-            from apps.lessons.services import generate_embedding
             from pgvector.django import CosineDistance
+
+            from apps.lessons.services import generate_embedding
 
             query_embedding = generate_embedding(message_text[:500])
 
             # Search daily note chunks
             chunks = (
-                DocumentChunk.objects
-                .filter(tenant=tenant)
+                DocumentChunk.objects.filter(tenant=tenant)
                 .annotate(distance=CosineDistance("embedding", query_embedding))
                 .order_by("distance")[:5]
             )
@@ -919,8 +926,7 @@ class TelegramPoller:
 
             # Search lessons
             lessons = (
-                Lesson.objects
-                .filter(tenant=tenant, status="approved", embedding__isnull=False)
+                Lesson.objects.filter(tenant=tenant, status="approved", embedding__isnull=False)
                 .annotate(distance=CosineDistance("embedding", query_embedding))
                 .order_by("distance")[:3]
             )
@@ -930,7 +936,9 @@ class TelegramPoller:
                     history_parts.append(f"💡 {lsn.text}")
 
         except Exception:
-            logger.warning("contextual_recall: embedding search failed for tenant %s", str(tenant.id)[:8], exc_info=True)
+            logger.warning(
+                "contextual_recall: embedding search failed for tenant %s", str(tenant.id)[:8], exc_info=True
+            )
 
         if history_parts:
             context_parts.append("## Relevant history\n" + "\n---\n".join(history_parts))
@@ -938,6 +946,7 @@ class TelegramPoller:
         # Step 3: Workspace awareness — only when tenant has workspaces
         try:
             from apps.journal.models import Workspace
+
             workspaces = list(Workspace.objects.filter(tenant=tenant).order_by("-last_used_at", "name"))
             if workspaces:
                 active = tenant.active_workspace
@@ -962,7 +971,9 @@ class TelegramPoller:
                 if ws_block:
                     context_parts.append(ws_block)
         except Exception:
-            logger.warning("contextual_recall: workspace context failed for tenant %s", str(tenant.id)[:8], exc_info=True)
+            logger.warning(
+                "contextual_recall: workspace context failed for tenant %s", str(tenant.id)[:8], exc_info=True
+            )
 
         if not context_parts:
             return message_text
@@ -1064,7 +1075,9 @@ class TelegramPoller:
                 name = venue.get("title", "")
                 addr = venue.get("address", "")
                 return f"{reply_prefix}📍 User shared a venue: {name} — {addr} ({lat}, {lng}) https://maps.google.com/maps?q={lat},{lng}"
-            return f"{reply_prefix}📍 User shared their location: {lat}, {lng} https://maps.google.com/maps?q={lat},{lng}"
+            return (
+                f"{reply_prefix}📍 User shared their location: {lat}, {lng} https://maps.google.com/maps?q={lat},{lng}"
+            )
 
         # Contact
         contact = message.get("contact")
@@ -1084,10 +1097,24 @@ class TelegramPoller:
 
         # Size limit: 10MB
         if file_size > 10 * 1024 * 1024:
-            return f"[User sent a document: {file_name} ({file_size / (1024*1024):.1f} MB) — too large to process]"
+            return f"[User sent a document: {file_name} ({file_size / (1024 * 1024):.1f} MB) — too large to process]"
 
         # Text-based files we can read
-        text_extensions = {".txt", ".md", ".csv", ".json", ".xml", ".html", ".py", ".js", ".ts", ".yaml", ".yml", ".toml", ".log"}
+        text_extensions = {
+            ".txt",
+            ".md",
+            ".csv",
+            ".json",
+            ".xml",
+            ".html",
+            ".py",
+            ".js",
+            ".ts",
+            ".yaml",
+            ".yml",
+            ".toml",
+            ".log",
+        }
         text_mimes = {"text/", "application/json", "application/xml", "application/yaml"}
 
         ext = ""
@@ -1136,6 +1163,7 @@ class TelegramPoller:
         Returns True if the container came up within the timeout, False otherwise.
         """
         import time as _time
+
         deadline = _time.time() + timeout
         fqdn = tenant.container_fqdn
         if not fqdn:
@@ -1174,7 +1202,9 @@ class TelegramPoller:
         def _retry():
             try:
                 if self._wait_for_container_ready(tenant, timeout=120):
-                    context_msg = f"[System: assistant was restarting when this arrived. User's message:]\n{message_text}"
+                    context_msg = (
+                        f"[System: assistant was restarting when this arrived. User's message:]\n{message_text}"
+                    )
                     self._send_typing(chat_id)
                     self._forward_to_container(chat_id, tenant, context_msg)
                 else:
@@ -1189,8 +1219,7 @@ class TelegramPoller:
         if not tenant.container_fqdn or tenant.status == "provisioning":
             self._send_message(
                 chat_id,
-                "Your assistant is being set up — this usually takes about a minute. "
-                "I'll be ready for you shortly! 🌱",
+                "Your assistant is being set up — this usually takes about a minute. I'll be ready for you shortly! 🌱",
             )
             return
 
@@ -1204,8 +1233,11 @@ class TelegramPoller:
             resolve_workspace_routing,
             update_active_workspace,
         )
+
         user_param, workspace, transitioned = resolve_workspace_routing(
-            tenant, str(chat_id), message_text,
+            tenant,
+            str(chat_id),
+            message_text,
         )
         if transitioned and workspace is not None:
             message_text = build_transition_marker(workspace) + message_text
@@ -1292,7 +1324,7 @@ class TelegramPoller:
                         "user": str(chat_id),
                     },
                     headers={
-                        "Authorization": f"Bearer {gateway_token}",
+                        "Authorization": f"Bearer {self.gateway_token}",
                         "X-User-Timezone": user_tz,
                         "X-Channel": "telegram",
                     },
@@ -1306,8 +1338,7 @@ class TelegramPoller:
 
         if not ai_text:
             logger.error(
-                "No response after retry from container %s for chat_id=%s: "
-                "keys=%s, choices=%r",
+                "No response after retry from container %s for chat_id=%s: keys=%s, choices=%r",
                 tenant.container_fqdn,
                 chat_id,
                 list(result.keys()),
@@ -1315,8 +1346,7 @@ class TelegramPoller:
             )
             self._send_message(
                 chat_id,
-                "Sorry, I couldn't come up with a response. "
-                "Could you try saying that again?",
+                "Sorry, I couldn't come up with a response. Could you try saying that again?",
             )
             self._record_usage(tenant, result)
             return
@@ -1327,10 +1357,12 @@ class TelegramPoller:
         self._record_usage(tenant, result)
 
     # Gateway error strings that should be treated as empty responses
-    _GATEWAY_ERROR_STRINGS = frozenset({
-        "No response from OpenClaw.",
-        "No response from OpenClaw",
-    })
+    _GATEWAY_ERROR_STRINGS = frozenset(
+        {
+            "No response from OpenClaw.",
+            "No response from OpenClaw",
+        }
+    )
 
     def _extract_ai_response(self, result: dict) -> str | None:
         """Extract the AI response text from a chat completions response.
@@ -1357,13 +1389,15 @@ class TelegramPoller:
                 logger.warning(
                     "USAGE_MISSING tenant=%s model=%s result_keys=%s — "
                     "container returned a response but no usage object",
-                    tenant.id, model, list(result.keys()),
+                    tenant.id,
+                    model,
+                    list(result.keys()),
                 )
             else:
                 logger.warning(
-                    "USAGE_MISSING tenant=%s result_keys=%s — "
-                    "no usage object and no model in response",
-                    tenant.id, list(result.keys()),
+                    "USAGE_MISSING tenant=%s result_keys=%s — no usage object and no model in response",
+                    tenant.id,
+                    list(result.keys()),
                 )
             return
 
@@ -1373,9 +1407,10 @@ class TelegramPoller:
 
         if not (input_tokens or output_tokens):
             logger.warning(
-                "USAGE_ZERO tenant=%s model=%s usage_keys=%s — "
-                "usage object present but token counts are zero",
-                tenant.id, model_used, list(usage.keys()),
+                "USAGE_ZERO tenant=%s model=%s usage_keys=%s — usage object present but token counts are zero",
+                tenant.id,
+                model_used,
+                list(usage.keys()),
             )
             return
 
@@ -1410,6 +1445,7 @@ class TelegramPoller:
 
         try:
             import json as _json
+
             json_response = handle_extraction_callback(update, tenant)
             response_data = _json.loads(json_response.content)
             if response_data:
@@ -1429,9 +1465,8 @@ class TelegramPoller:
         chat_id: int,
     ) -> None:
         """Handle action gate approve/deny callbacks."""
-        from apps.actions.models import ActionStatus, PendingAction
         from apps.actions.messaging import update_gate_message
-        from apps.actions.models import ActionAuditLog
+        from apps.actions.models import ActionAuditLog, ActionStatus, PendingAction
 
         try:
             # Parse: gate_approve:123 or gate_deny:123
@@ -1448,9 +1483,7 @@ class TelegramPoller:
 
             # Already resolved?
             if action.status != ActionStatus.PENDING:
-                self._answer_callback_query(
-                    callback_id, f"Already {action.status}"
-                )
+                self._answer_callback_query(callback_id, f"Already {action.status}")
                 return
 
             # Expired?
@@ -1470,6 +1503,7 @@ class TelegramPoller:
 
             # Apply response
             from django.utils import timezone
+
             now = timezone.now()
             action.status = ActionStatus.APPROVED if is_approve else ActionStatus.DENIED
             action.responded_at = now
@@ -1492,7 +1526,9 @@ class TelegramPoller:
 
             logger.info(
                 "Gate callback: tenant=%s action=%s result=%s",
-                tenant.id, action_id, action.status,
+                tenant.id,
+                action_id,
+                action.status,
             )
 
         except PendingAction.DoesNotExist:
@@ -1513,6 +1549,7 @@ class TelegramPoller:
             json_response = handle_lesson_callback(update, tenant)
             # JsonResponse stores rendered content; parse it back
             import json as _json
+
             response_data = _json.loads(json_response.content)
             if response_data:
                 self._execute_telegram_response(response_data)

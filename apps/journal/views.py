@@ -1,9 +1,9 @@
 """User-facing Journal API views."""
+
 from __future__ import annotations
 
 import datetime
 import logging
-from datetime import timedelta
 from uuid import UUID
 
 from django.http import Http404
@@ -16,24 +16,21 @@ from rest_framework.views import APIView
 from apps.tenants.models import Tenant
 
 from .md_utils import append_entry_markdown, parse_daily_note, serialise_daily_note
-from .models import DailyNote, Document, JournalEntry, PendingExtraction, UserMemory, WeeklyReview
-from .models import NoteTemplate
+from .models import DailyNote, Document, JournalEntry, NoteTemplate, PendingExtraction, WeeklyReview
 
 logger = logging.getLogger(__name__)
 from .serializers import (
     DailyNoteEntryInputSerializer,
     DailyNoteEntryPatchSerializer,
-    JournalEntrySerializer,
-    NoteTemplateSerializer,
-    MemoryPatchSerializer,
     DailyNoteTemplateSerializer,
+    JournalEntrySerializer,
+    MemoryPatchSerializer,
+    NoteTemplateSerializer,
     WeeklyReviewSerializer,
 )
 from .services import (
-    set_daily_note_section,
-    ensure_daily_note_template,
     get_or_seed_note_template,
-    parse_daily_sections,
+    set_daily_note_section,
     set_daily_note_sections,
     upsert_default_daily_note,
 )
@@ -300,14 +297,16 @@ class DailyNoteTemplateView(APIView):
                 return Response({"error": "template not found."}, status=404)
 
         try:
-            serializer = DailyNoteTemplateSerializer(data={
-                "date": str(d),
-                "template_id": str(template.id) if template else None,
-                "template_slug": template.slug if template else "",
-                "template_name": template.name if template else "",
-                "markdown": request.data.get("markdown", ""),
-                "sections": sections,
-            })
+            serializer = DailyNoteTemplateSerializer(
+                data={
+                    "date": str(d),
+                    "template_id": str(template.id) if template else None,
+                    "template_slug": template.slug if template else "",
+                    "template_name": template.name if template else "",
+                    "markdown": request.data.get("markdown", ""),
+                    "sections": sections,
+                }
+            )
             serializer.is_valid(raise_exception=True)
         except Exception as exc:
             return Response({"error": "Invalid payload.", "detail": str(exc)}, status=400)
@@ -358,7 +357,9 @@ class DailyNoteSectionView(APIView):
         note = upsert_default_daily_note(tenant=tenant, note_date=d)
         try:
             note, _sections = set_daily_note_section(
-                note=note, section_slug=slug, content=str(content),
+                note=note,
+                section_slug=slug,
+                content=str(content),
             )
         except ValueError as exc:
             return Response({"error": str(exc)}, status=400)
@@ -379,10 +380,12 @@ class MemoryView(APIView):
     def get(self, request):
         tenant = _get_tenant_for_user(request.user)
         doc = Document.objects.filter(tenant=tenant, kind="memory", slug="long-term").first()
-        return Response({
-            "markdown": doc.markdown if doc else "",
-            "updated_at": doc.updated_at.isoformat() if doc else None,
-        })
+        return Response(
+            {
+                "markdown": doc.markdown if doc else "",
+                "updated_at": doc.updated_at.isoformat() if doc else None,
+            }
+        )
 
     def put(self, request):
         tenant = _get_tenant_for_user(request.user)
@@ -398,10 +401,12 @@ class MemoryView(APIView):
         doc.markdown = serializer.validated_data["markdown"]
         doc.save()
 
-        return Response({
-            "markdown": doc.markdown,
-            "updated_at": doc.updated_at.isoformat(),
-        })
+        return Response(
+            {
+                "markdown": doc.markdown,
+                "updated_at": doc.updated_at.isoformat(),
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +500,7 @@ class TemplateDetailView(APIView):
         if template.is_default:
             try:
                 from apps.orchestrator.tasks import update_tenant_config_task
+
                 update_tenant_config_task.delay(str(tenant.id))
             except Exception:
                 pass  # Non-blocking; config update is best-effort.
@@ -530,7 +536,9 @@ class ExtractionApproveView(APIView):
     def post(self, request, extraction_id: UUID):
         tenant = _get_tenant_for_user(request.user)
         pending = PendingExtraction.objects.filter(
-            id=extraction_id, tenant=tenant, status=PendingExtraction.Status.PENDING,
+            id=extraction_id,
+            tenant=tenant,
+            status=PendingExtraction.Status.PENDING,
         ).first()
         if not pending:
             return Response({"detail": "Not found or already processed."}, status=status.HTTP_404_NOT_FOUND)
@@ -544,6 +552,7 @@ class ExtractionApproveView(APIView):
                 _approve_task(pending)
             elif pending.kind == PendingExtraction.Kind.LESSON:
                 from apps.router.extraction_callbacks import _approve_lesson
+
                 _approve_lesson(pending)
         except Exception:
             logger.exception("extraction approve failed for %s", extraction_id)
@@ -564,7 +573,9 @@ class ExtractionDismissView(APIView):
     def post(self, request, extraction_id: UUID):
         tenant = _get_tenant_for_user(request.user)
         pending = PendingExtraction.objects.filter(
-            id=extraction_id, tenant=tenant, status=PendingExtraction.Status.PENDING,
+            id=extraction_id,
+            tenant=tenant,
+            status=PendingExtraction.Status.PENDING,
         ).first()
         if not pending:
             return Response({"detail": "Not found or already processed."}, status=status.HTTP_404_NOT_FOUND)

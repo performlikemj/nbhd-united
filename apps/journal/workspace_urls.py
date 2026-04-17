@@ -1,4 +1,5 @@
 """URL routing for tenant-facing workspace API."""
+
 from django.urls import path
 
 from .workspace_views import (

@@ -1,4 +1,5 @@
 """Repair stale tenant provisioning records missing container metadata."""
+
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.orchestrator.services import repair_stale_tenant_provisioning

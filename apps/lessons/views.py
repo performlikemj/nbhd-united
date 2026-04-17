@@ -164,12 +164,14 @@ class LessonViewSet(viewsets.ModelViewSet):
                     lid_i = lessons_with_embeddings[i].id
                     lid_j = lessons_with_embeddings[j].id
                     if sim >= min_sim and (lid_i, lid_j) not in strong_pairs:
-                        affinity_edges.append({
-                            "source": lid_i,
-                            "target": lid_j,
-                            "similarity": round(sim, 4),
-                            "connection_type": "affinity",
-                        })
+                        affinity_edges.append(
+                            {
+                                "source": lid_i,
+                                "target": lid_j,
+                                "similarity": round(sim, 4),
+                                "connection_type": "affinity",
+                            }
+                        )
 
         # Build cluster summaries for the frontend sidebar.
         grouped: dict[tuple[int, str], list[Lesson]] = {}
@@ -236,8 +238,5 @@ class LessonViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Invalid 'limit' value."}, status=status.HTTP_400_BAD_REQUEST)
 
         lessons = search_lessons(tenant=request.user.tenant, query=query, limit=limit)
-        payload = [
-            {**LessonSerializer(lesson).data, "similarity": lesson.similarity}
-            for lesson in lessons
-        ]
+        payload = [{**LessonSerializer(lesson).data, "similarity": lesson.similarity} for lesson in lessons]
         return Response(payload)

@@ -1,14 +1,5 @@
 from django.urls import path
 
-from .views import (
-    FinanceAccountDetailView,
-    FinanceAccountListView,
-    FinanceDashboardView,
-    FinanceSettingsView,
-    FinanceSnapshotListView,
-    FinanceTransactionListView,
-    PayoffPlanListView,
-)
 from .runtime_views import (
     RuntimeFinanceAccountsView,
     RuntimeFinanceArchiveAccountView,
@@ -17,6 +8,15 @@ from .runtime_views import (
     RuntimeFinanceSummaryView,
     RuntimeFinanceTransactionsView,
     RuntimeFinanceUnarchiveAccountView,
+)
+from .views import (
+    FinanceAccountDetailView,
+    FinanceAccountListView,
+    FinanceDashboardView,
+    FinanceSettingsView,
+    FinanceSnapshotListView,
+    FinanceTransactionListView,
+    PayoffPlanListView,
 )
 
 urlpatterns = [

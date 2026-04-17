@@ -1,10 +1,12 @@
 """Automation domain services."""
+
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
-from datetime import datetime, time as dt_time, timedelta, timezone as dt_timezone
 import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from datetime import time as dt_time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.db import transaction
@@ -95,9 +97,9 @@ def compute_next_run_at(
 
     reference = reference_utc or timezone.now()
     if timezone.is_naive(reference):
-        reference = timezone.make_aware(reference, dt_timezone.utc)
+        reference = timezone.make_aware(reference, UTC)
     else:
-        reference = reference.astimezone(dt_timezone.utc)
+        reference = reference.astimezone(UTC)
 
     local_reference = reference.astimezone(tz)
 
@@ -110,7 +112,7 @@ def compute_next_run_at(
         )
         if candidate <= local_reference:
             candidate = candidate + timedelta(days=1)
-        return candidate.astimezone(dt_timezone.utc)
+        return candidate.astimezone(UTC)
 
     for offset in range(0, 14):
         candidate_date = local_reference.date() + timedelta(days=offset)
@@ -120,7 +122,7 @@ def compute_next_run_at(
         candidate = datetime.combine(candidate_date, schedule_time, tzinfo=tz)
         if candidate <= local_reference:
             continue
-        return candidate.astimezone(dt_timezone.utc)
+        return candidate.astimezone(UTC)
 
     raise AutomationValidationError("Unable to compute next run time from schedule")
 
@@ -130,7 +132,7 @@ def _day_window_for_timezone(reference_utc: datetime, timezone_name: str) -> tup
     local_now = reference_utc.astimezone(tz)
     local_day_start = datetime.combine(local_now.date(), dt_time.min, tzinfo=tz)
     local_day_end = local_day_start + timedelta(days=1)
-    return local_day_start.astimezone(dt_timezone.utc), local_day_end.astimezone(dt_timezone.utc)
+    return local_day_start.astimezone(UTC), local_day_end.astimezone(UTC)
 
 
 def _runs_today_count(tenant: Tenant, timezone_name: str, reference_utc: datetime) -> int:
@@ -293,9 +295,7 @@ def create_automation(*, tenant: Tenant, validated_data: dict) -> Automation:
 
     if status_value == Automation.Status.ACTIVE:
         if _active_automations_count(tenant) >= MAX_ACTIVE_AUTOMATIONS:
-            raise AutomationLimitError(
-                f"active automation limit reached ({MAX_ACTIVE_AUTOMATIONS})"
-            )
+            raise AutomationLimitError(f"active automation limit reached ({MAX_ACTIVE_AUTOMATIONS})")
 
     next_run_at = compute_next_run_at(
         timezone_name=validated_data["timezone"],
@@ -332,9 +332,7 @@ def update_automation(*, automation: Automation, validated_data: dict) -> Automa
 
     if status_value == Automation.Status.ACTIVE and automation.status != Automation.Status.ACTIVE:
         if _active_automations_count(automation.tenant, exclude_id=automation.id) >= MAX_ACTIVE_AUTOMATIONS:
-            raise AutomationLimitError(
-                f"active automation limit reached ({MAX_ACTIVE_AUTOMATIONS})"
-            )
+            raise AutomationLimitError(f"active automation limit reached ({MAX_ACTIVE_AUTOMATIONS})")
 
     automation.kind = validated_data.get("kind", automation.kind)
     automation.status = status_value
@@ -346,8 +344,7 @@ def update_automation(*, automation: Automation, validated_data: dict) -> Automa
     automation.quiet_hours_end = validated_data.get("quiet_hours_end", automation.quiet_hours_end)
 
     schedule_fields_changed = any(
-        field in validated_data
-        for field in ("timezone", "schedule_type", "schedule_time", "schedule_days")
+        field in validated_data for field in ("timezone", "schedule_type", "schedule_time", "schedule_days")
     )
     if automation.status == Automation.Status.ACTIVE and (schedule_fields_changed or "status" in validated_data):
         automation.next_run_at = compute_next_run_at(
@@ -371,9 +368,7 @@ def pause_automation(automation: Automation) -> Automation:
 def resume_automation(automation: Automation) -> Automation:
     if automation.status != Automation.Status.ACTIVE:
         if _active_automations_count(automation.tenant, exclude_id=automation.id) >= MAX_ACTIVE_AUTOMATIONS:
-            raise AutomationLimitError(
-                f"active automation limit reached ({MAX_ACTIVE_AUTOMATIONS})"
-            )
+            raise AutomationLimitError(f"active automation limit reached ({MAX_ACTIVE_AUTOMATIONS})")
         automation.status = Automation.Status.ACTIVE
         automation.next_run_at = compute_next_run_at(
             timezone_name=automation.timezone,
@@ -393,9 +388,9 @@ def execute_automation(
 ) -> AutomationRun:
     reference_utc = scheduled_for or timezone.now()
     if timezone.is_naive(reference_utc):
-        reference_utc = timezone.make_aware(reference_utc, dt_timezone.utc)
+        reference_utc = timezone.make_aware(reference_utc, UTC)
     else:
-        reference_utc = reference_utc.astimezone(dt_timezone.utc)
+        reference_utc = reference_utc.astimezone(UTC)
 
     limit_check = _check_limits(automation, reference_utc=reference_utc)
     if not limit_check.allowed:

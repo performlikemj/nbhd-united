@@ -1,4 +1,5 @@
 """Tests for Azure container payload wiring."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -9,10 +10,10 @@ from django.test import SimpleTestCase, override_settings
 from apps.orchestrator.azure_client import (
     assign_key_vault_role,
     create_container_app,
-    update_container_image,
     create_tenant_file_share,
     register_environment_storage,
     store_tenant_internal_key_in_key_vault,
+    update_container_image,
 )
 
 
@@ -41,9 +42,7 @@ class AzureClientTest(SimpleTestCase):
         mock_get_container_client.return_value = mock_client
 
         mock_result = SimpleNamespace(
-            configuration=SimpleNamespace(
-                ingress=SimpleNamespace(fqdn="oc-tenant.internal.azurecontainerapps.io")
-            ),
+            configuration=SimpleNamespace(ingress=SimpleNamespace(fqdn="oc-tenant.internal.azurecontainerapps.io")),
         )
         mock_poller = MagicMock()
         mock_poller.result.return_value = mock_result
@@ -115,9 +114,7 @@ class AzureClientTest(SimpleTestCase):
         mock_get_container_client.return_value = mock_client
 
         mock_result = SimpleNamespace(
-            configuration=SimpleNamespace(
-                ingress=SimpleNamespace(fqdn="oc-tenant.internal.azurecontainerapps.io")
-            ),
+            configuration=SimpleNamespace(ingress=SimpleNamespace(fqdn="oc-tenant.internal.azurecontainerapps.io")),
         )
         mock_poller = MagicMock()
         mock_poller.result.return_value = mock_result
@@ -167,8 +164,7 @@ class AssignKeyVaultRoleTest(SimpleTestCase):
         call_kwargs = mock_client.role_assignments.create.call_args.kwargs
         self.assertEqual(
             call_kwargs["scope"],
-            "/subscriptions/sub-123/resourceGroups/rg-test"
-            "/providers/Microsoft.KeyVault/vaults/kv-test",
+            "/subscriptions/sub-123/resourceGroups/rg-test/providers/Microsoft.KeyVault/vaults/kv-test",
         )
         params = call_kwargs["parameters"]
         self.assertEqual(params.principal_id, "principal-abc")
@@ -268,7 +264,10 @@ class RegisterEnvironmentStorageTest(SimpleTestCase):
     @patch("apps.orchestrator.azure_client.get_container_client")
     @patch("apps.orchestrator.azure_client.get_storage_client")
     def test_registers_storage_with_environment(
-        self, mock_get_storage_client, mock_get_container_client, _mock_is_mock,
+        self,
+        mock_get_storage_client,
+        mock_get_container_client,
+        _mock_is_mock,
     ):
         mock_storage_client = MagicMock()
         mock_get_storage_client.return_value = mock_storage_client
@@ -310,15 +309,15 @@ class SharedInternalKeyTest(SimpleTestCase):
     @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
     @patch("apps.orchestrator.azure_client.get_container_client")
     def test_container_uses_shared_kv_secret(
-        self, mock_get_container_client, _mock_is_mock,
+        self,
+        mock_get_container_client,
+        _mock_is_mock,
     ):
         mock_client = MagicMock()
         mock_get_container_client.return_value = mock_client
 
         mock_result = SimpleNamespace(
-            configuration=SimpleNamespace(
-                ingress=SimpleNamespace(fqdn="oc-tenant.internal.azurecontainerapps.io")
-            ),
+            configuration=SimpleNamespace(ingress=SimpleNamespace(fqdn="oc-tenant.internal.azurecontainerapps.io")),
         )
         mock_poller = MagicMock()
         mock_poller.result.return_value = mock_result
@@ -373,12 +372,15 @@ class UpdateContainerImageTest(SimpleTestCase):
         mock_client.container_apps.begin_create_or_update.return_value = poller
 
         update_container_image(
-            "oc-tenant", "nbhdunited.azurecr.io/nbhd-openclaw:abc123",
+            "oc-tenant",
+            "nbhdunited.azurecr.io/nbhd-openclaw:abc123",
         )
 
         self.assertEqual(container.image, "nbhdunited.azurecr.io/nbhd-openclaw:abc123")
         mock_client.container_apps.get.assert_called_once_with("rg-test", "oc-tenant")
         mock_client.container_apps.begin_create_or_update.assert_called_once_with(
-            "rg-test", "oc-tenant", app,
+            "rg-test",
+            "oc-tenant",
+            app,
         )
         poller.result.assert_called_once()

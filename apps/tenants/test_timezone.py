@@ -1,4 +1,5 @@
 """Tests for user timezone support."""
+
 from unittest.mock import patch
 
 from django.test import RequestFactory, TestCase
@@ -7,6 +8,7 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.orchestrator.config_generator import generate_openclaw_config
+
 from .middleware import UserTimezoneMiddleware
 from .models import Tenant, User
 from .serializers import TenantRegistrationSerializer, UserSerializer

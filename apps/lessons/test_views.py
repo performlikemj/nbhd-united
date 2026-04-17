@@ -3,6 +3,7 @@ from __future__ import annotations
 from django.test import TestCase
 from rest_framework.test import APIClient
 
+from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
 from .models import Lesson

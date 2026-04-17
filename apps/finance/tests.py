@@ -1,4 +1,5 @@
 """Finance module tests — services, models, runtime views, consumer views, snapshots."""
+
 from __future__ import annotations
 
 from datetime import date
@@ -13,7 +14,6 @@ from apps.tenants.services import create_tenant
 
 from .models import FinanceAccount, FinanceSnapshot, FinanceTransaction, PayoffPlan
 from .services import DebtInput, calculate_payoff, compare_strategies
-
 
 # ═════════════════════════════════════════════════════════════════════
 # 1. Payoff Calculation Service (pure math, no DB)
@@ -88,8 +88,9 @@ class PayoffCalculationTests(UnitTestCase):
 
     def test_single_debt_zero_interest(self):
         debts = [
-            DebtInput(nickname="Card", balance=Decimal("1000"),
-                      interest_rate=Decimal("0"), minimum_payment=Decimal("100")),
+            DebtInput(
+                nickname="Card", balance=Decimal("1000"), interest_rate=Decimal("0"), minimum_payment=Decimal("100")
+            ),
         ]
         result = calculate_payoff(debts, Decimal("500"), "snowball", date(2026, 4, 1))
         self.assertEqual(result.payoff_months, 2)
@@ -98,10 +99,12 @@ class PayoffCalculationTests(UnitTestCase):
 
     def test_budget_less_than_minimums(self):
         debts = [
-            DebtInput(nickname="A", balance=Decimal("5000"),
-                      interest_rate=Decimal("10"), minimum_payment=Decimal("200")),
-            DebtInput(nickname="B", balance=Decimal("3000"),
-                      interest_rate=Decimal("15"), minimum_payment=Decimal("150")),
+            DebtInput(
+                nickname="A", balance=Decimal("5000"), interest_rate=Decimal("10"), minimum_payment=Decimal("200")
+            ),
+            DebtInput(
+                nickname="B", balance=Decimal("3000"), interest_rate=Decimal("15"), minimum_payment=Decimal("150")
+            ),
         ]
         result = calculate_payoff(debts, Decimal("300"), "avalanche", date(2026, 4, 1))
         self.assertGreater(result.payoff_months, 0)
@@ -122,6 +125,7 @@ class PayoffCalculationTests(UnitTestCase):
         start = date(2026, 4, 1)
         result = calculate_payoff(self._make_debts(), Decimal("600"), "snowball", start)
         from dateutil.relativedelta import relativedelta
+
         self.assertEqual(result.payoff_date, start + relativedelta(months=result.payoff_months))
 
     def test_final_balance_is_zero(self):
@@ -143,53 +147,67 @@ class FinanceAccountModelTests(TestCase):
 
     def test_is_debt_for_credit_card(self):
         account = FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("1000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("1000"),
         )
         self.assertTrue(account.is_debt)
 
     def test_is_debt_false_for_savings(self):
         account = FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="savings",
-            nickname="Savings", current_balance=Decimal("5000"),
+            tenant=self.tenant,
+            account_type="savings",
+            nickname="Savings",
+            current_balance=Decimal("5000"),
         )
         self.assertFalse(account.is_debt)
 
     def test_payoff_progress_with_original_balance(self):
         account = FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("600"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("600"),
             original_balance=Decimal("1000"),
         )
         self.assertAlmostEqual(account.payoff_progress, 40.0)
 
     def test_payoff_progress_fully_paid(self):
         account = FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("0"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("0"),
             original_balance=Decimal("1000"),
         )
         self.assertAlmostEqual(account.payoff_progress, 100.0)
 
     def test_payoff_progress_none_without_original(self):
         account = FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("1000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("1000"),
         )
         self.assertIsNone(account.payoff_progress)
 
     def test_payoff_progress_none_for_savings(self):
         account = FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="savings",
-            nickname="Sav", current_balance=Decimal("5000"),
+            tenant=self.tenant,
+            account_type="savings",
+            nickname="Sav",
+            current_balance=Decimal("5000"),
             original_balance=Decimal("1000"),
         )
         self.assertIsNone(account.payoff_progress)
 
     def test_soft_delete(self):
         account = FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("1000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("1000"),
         )
         account.is_active = False
         account.save()
@@ -203,14 +221,19 @@ class FinanceSnapshotModelTests(TestCase):
 
     def test_unique_together_tenant_date(self):
         FinanceSnapshot.objects.create(
-            tenant=self.tenant, date=date(2026, 4, 1),
-            total_debt=Decimal("5000"), total_savings=Decimal("0"),
+            tenant=self.tenant,
+            date=date(2026, 4, 1),
+            total_debt=Decimal("5000"),
+            total_savings=Decimal("0"),
         )
         from django.db import IntegrityError
+
         with self.assertRaises(IntegrityError):
             FinanceSnapshot.objects.create(
-                tenant=self.tenant, date=date(2026, 4, 1),
-                total_debt=Decimal("4500"), total_savings=Decimal("0"),
+                tenant=self.tenant,
+                date=date(2026, 4, 1),
+                total_debt=Decimal("4500"),
+                total_savings=Decimal("0"),
             )
 
 
@@ -291,10 +314,12 @@ class RuntimeFinanceViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["created"])
         self.assertEqual(
-            FinanceAccount.objects.filter(tenant=self.tenant, is_active=True).count(), 1,
+            FinanceAccount.objects.filter(tenant=self.tenant, is_active=True).count(),
+            1,
         )
         self.assertEqual(
-            FinanceAccount.objects.first().current_balance, Decimal("3800"),
+            FinanceAccount.objects.first().current_balance,
+            Decimal("3800"),
         )
 
     def test_create_account_requires_nickname(self):
@@ -324,17 +349,22 @@ class RuntimeFinanceViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 201)
         self.assertEqual(
-            FinanceAccount.objects.first().account_type, "other_debt",
+            FinanceAccount.objects.first().account_type,
+            "other_debt",
         )
 
     def test_list_accounts(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC1", current_balance=Decimal("1000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC1",
+            current_balance=Decimal("1000"),
         )
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="savings",
-            nickname="Sav1", current_balance=Decimal("5000"),
+            tenant=self.tenant,
+            account_type="savings",
+            nickname="Sav1",
+            current_balance=Decimal("5000"),
         )
         response = self.client.get(self._url("/accounts/"), **self._headers())
         self.assertEqual(response.status_code, 200)
@@ -344,12 +374,16 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_accounts_isolated_by_tenant(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="My Card", current_balance=Decimal("1000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="My Card",
+            current_balance=Decimal("1000"),
         )
         FinanceAccount.objects.create(
-            tenant=self.other_tenant, account_type="credit_card",
-            nickname="Their Card", current_balance=Decimal("2000"),
+            tenant=self.other_tenant,
+            account_type="credit_card",
+            nickname="Their Card",
+            current_balance=Decimal("2000"),
         )
         response = self.client.get(self._url("/accounts/"), **self._headers())
         accounts = response.json()["accounts"]
@@ -360,8 +394,10 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_record_payment_updates_balance(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="Chase Card", current_balance=Decimal("4200"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Chase Card",
+            current_balance=Decimal("4200"),
         )
         response = self.client.post(
             self._url("/transactions/"),
@@ -377,8 +413,10 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_record_charge_increases_balance(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("1000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("1000"),
         )
         response = self.client.post(
             self._url("/transactions/"),
@@ -391,8 +429,10 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_payment_cannot_go_below_zero(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("100"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("100"),
         )
         response = self.client.post(
             self._url("/transactions/"),
@@ -405,8 +445,10 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_transaction_fuzzy_nickname_match(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="Chase Sapphire Preferred", current_balance=Decimal("3000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Chase Sapphire Preferred",
+            current_balance=Decimal("3000"),
         )
         response = self.client.post(
             self._url("/transactions/"),
@@ -430,8 +472,10 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_update_balance(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("4200"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("4200"),
         )
         response = self.client.post(
             self._url("/balance/"),
@@ -457,8 +501,10 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_archive_account_by_nickname(self):
         account = FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="student_loan",
-            nickname="Federal Student Loans", current_balance=Decimal("39706.91"),
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Federal Student Loans",
+            current_balance=Decimal("39706.91"),
         )
         response = self.client.post(
             self._url("/accounts/archive/"),
@@ -476,8 +522,10 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_archive_account_fuzzy_match(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="student_loan",
-            nickname="Federal Student Loans", current_balance=Decimal("1000"),
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Federal Student Loans",
+            current_balance=Decimal("1000"),
         )
         response = self.client.post(
             self._url("/accounts/archive/"),
@@ -499,8 +547,10 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_archive_account_tenant_isolation(self):
         FinanceAccount.objects.create(
-            tenant=self.other_tenant, account_type="credit_card",
-            nickname="Their Card", current_balance=Decimal("500"),
+            tenant=self.other_tenant,
+            account_type="credit_card",
+            nickname="Their Card",
+            current_balance=Decimal("500"),
         )
         response = self.client.post(
             self._url("/accounts/archive/"),
@@ -522,14 +572,20 @@ class RuntimeFinanceViewTests(TestCase):
     def test_archive_excludes_from_payoff_calculation(self):
         """Archived debts should not appear in payoff calculations."""
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="Active CC", current_balance=Decimal("2000"),
-            interest_rate=Decimal("20"), minimum_payment=Decimal("50"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Active CC",
+            current_balance=Decimal("2000"),
+            interest_rate=Decimal("20"),
+            minimum_payment=Decimal("50"),
         )
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="student_loan",
-            nickname="Old Loan", current_balance=Decimal("10000"),
-            interest_rate=Decimal("5"), minimum_payment=Decimal("100"),
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Old Loan",
+            current_balance=Decimal("10000"),
+            interest_rate=Decimal("5"),
+            minimum_payment=Decimal("100"),
             is_active=False,
         )
         response = self.client.post(
@@ -546,8 +602,11 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_unarchive_account(self):
         account = FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("1234.56"), is_active=False,
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("1234.56"),
+            is_active=False,
         )
         response = self.client.post(
             self._url("/accounts/unarchive/"),
@@ -565,12 +624,17 @@ class RuntimeFinanceViewTests(TestCase):
     def test_unarchive_name_collision(self):
         """Cannot unarchive if an active account already has that nickname."""
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="Chase Card", current_balance=Decimal("3000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Chase Card",
+            current_balance=Decimal("3000"),
         )
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="chase card", current_balance=Decimal("500"), is_active=False,
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="chase card",
+            current_balance=Decimal("500"),
+            is_active=False,
         )
         response = self.client.post(
             self._url("/accounts/unarchive/"),
@@ -584,8 +648,10 @@ class RuntimeFinanceViewTests(TestCase):
     def test_unarchive_ignores_active_accounts(self):
         """Unarchive scoped to archived rows — cannot target an active one."""
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="Active", current_balance=Decimal("100"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Active",
+            current_balance=Decimal("100"),
         )
         response = self.client.post(
             self._url("/accounts/unarchive/"),
@@ -597,15 +663,21 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_list_accounts_archived_only(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="Active CC", current_balance=Decimal("1000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Active CC",
+            current_balance=Decimal("1000"),
         )
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="student_loan",
-            nickname="Old Loan", current_balance=Decimal("5000"), is_active=False,
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Old Loan",
+            current_balance=Decimal("5000"),
+            is_active=False,
         )
         response = self.client.get(
-            self._url("/accounts/") + "?archived=true", **self._headers(),
+            self._url("/accounts/") + "?archived=true",
+            **self._headers(),
         )
         self.assertEqual(response.status_code, 200)
         accounts = response.json()["accounts"]
@@ -615,15 +687,21 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_list_accounts_archived_all(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="Active", current_balance=Decimal("100"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Active",
+            current_balance=Decimal("100"),
         )
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="Gone", current_balance=Decimal("200"), is_active=False,
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Gone",
+            current_balance=Decimal("200"),
+            is_active=False,
         )
         response = self.client.get(
-            self._url("/accounts/") + "?archived=all", **self._headers(),
+            self._url("/accounts/") + "?archived=all",
+            **self._headers(),
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()["accounts"]), 2)
@@ -632,14 +710,20 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_payoff_calculate_all_strategies(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("5000"),
-            interest_rate=Decimal("20"), minimum_payment=Decimal("100"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("5000"),
+            interest_rate=Decimal("20"),
+            minimum_payment=Decimal("100"),
         )
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="auto_loan",
-            nickname="Car", current_balance=Decimal("8000"),
-            interest_rate=Decimal("6"), minimum_payment=Decimal("200"),
+            tenant=self.tenant,
+            account_type="auto_loan",
+            nickname="Car",
+            current_balance=Decimal("8000"),
+            interest_rate=Decimal("6"),
+            minimum_payment=Decimal("200"),
         )
         response = self.client.post(
             self._url("/payoff/calculate/"),
@@ -656,9 +740,12 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_payoff_calculate_single_strategy(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("3000"),
-            interest_rate=Decimal("18"), minimum_payment=Decimal("80"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("3000"),
+            interest_rate=Decimal("18"),
+            minimum_payment=Decimal("80"),
         )
         response = self.client.post(
             self._url("/payoff/calculate/"),
@@ -672,16 +759,23 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_payoff_save_creates_plan_and_deactivates_old(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("3000"),
-            interest_rate=Decimal("18"), minimum_payment=Decimal("80"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("3000"),
+            interest_rate=Decimal("18"),
+            minimum_payment=Decimal("80"),
         )
         # Create initial plan
         old_plan = PayoffPlan.objects.create(
-            tenant=self.tenant, strategy="snowball",
-            monthly_budget=Decimal("500"), total_debt=Decimal("3000"),
-            total_interest=Decimal("200"), payoff_months=7,
-            payoff_date=date(2026, 11, 1), is_active=True,
+            tenant=self.tenant,
+            strategy="snowball",
+            monthly_budget=Decimal("500"),
+            total_debt=Decimal("3000"),
+            total_interest=Decimal("200"),
+            payoff_months=7,
+            payoff_date=date(2026, 11, 1),
+            is_active=True,
         )
         # Save a new plan
         response = self.client.post(
@@ -700,8 +794,10 @@ class RuntimeFinanceViewTests(TestCase):
     def test_payoff_no_debts_returns_empty(self):
         # Only a savings account, no debts
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="savings",
-            nickname="Sav", current_balance=Decimal("5000"),
+            tenant=self.tenant,
+            account_type="savings",
+            nickname="Sav",
+            current_balance=Decimal("5000"),
         )
         response = self.client.post(
             self._url("/payoff/calculate/"),
@@ -725,24 +821,36 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_summary_aggregates_correctly(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC1", current_balance=Decimal("3000"),
-            interest_rate=Decimal("20"), minimum_payment=Decimal("80"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC1",
+            current_balance=Decimal("3000"),
+            interest_rate=Decimal("20"),
+            minimum_payment=Decimal("80"),
         )
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="auto_loan",
-            nickname="Car", current_balance=Decimal("8000"),
-            interest_rate=Decimal("6"), minimum_payment=Decimal("200"),
+            tenant=self.tenant,
+            account_type="auto_loan",
+            nickname="Car",
+            current_balance=Decimal("8000"),
+            interest_rate=Decimal("6"),
+            minimum_payment=Decimal("200"),
         )
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="savings",
-            nickname="Emergency", current_balance=Decimal("2500"),
+            tenant=self.tenant,
+            account_type="savings",
+            nickname="Emergency",
+            current_balance=Decimal("2500"),
         )
         PayoffPlan.objects.create(
-            tenant=self.tenant, strategy="avalanche",
-            monthly_budget=Decimal("500"), total_debt=Decimal("11000"),
-            total_interest=Decimal("1500"), payoff_months=24,
-            payoff_date=date(2028, 4, 1), is_active=True,
+            tenant=self.tenant,
+            strategy="avalanche",
+            monthly_budget=Decimal("500"),
+            total_debt=Decimal("11000"),
+            total_interest=Decimal("1500"),
+            payoff_months=24,
+            payoff_date=date(2028, 4, 1),
+            is_active=True,
         )
 
         response = self.client.get(self._url("/summary/"), **self._headers())
@@ -759,8 +867,10 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_summary_no_active_plan(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("1000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("1000"),
         )
         response = self.client.get(self._url("/summary/"), **self._headers())
         body = response.json()
@@ -768,8 +878,10 @@ class RuntimeFinanceViewTests(TestCase):
 
     def test_summary_isolated_by_tenant(self):
         FinanceAccount.objects.create(
-            tenant=self.other_tenant, account_type="credit_card",
-            nickname="Their Card", current_balance=Decimal("9999"),
+            tenant=self.other_tenant,
+            account_type="credit_card",
+            nickname="Their Card",
+            current_balance=Decimal("9999"),
         )
         response = self.client.get(self._url("/summary/"), **self._headers())
         body = response.json()
@@ -806,14 +918,19 @@ class ConsumerFinanceViewTests(TestCase):
 
     def test_dashboard_aggregation(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("5000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("5000"),
             original_balance=Decimal("8000"),
-            interest_rate=Decimal("20"), minimum_payment=Decimal("120"),
+            interest_rate=Decimal("20"),
+            minimum_payment=Decimal("120"),
         )
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="savings",
-            nickname="Sav", current_balance=Decimal("2000"),
+            tenant=self.tenant,
+            account_type="savings",
+            nickname="Sav",
+            current_balance=Decimal("2000"),
         )
         response = self.client.get("/api/v1/finance/dashboard/")
         self.assertEqual(response.status_code, 200)
@@ -829,12 +946,18 @@ class ConsumerFinanceViewTests(TestCase):
 
     def test_dashboard_excludes_inactive_accounts(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="Active", current_balance=Decimal("1000"), is_active=True,
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Active",
+            current_balance=Decimal("1000"),
+            is_active=True,
         )
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="Deleted", current_balance=Decimal("2000"), is_active=False,
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Deleted",
+            current_balance=Decimal("2000"),
+            is_active=False,
         )
         response = self.client.get("/api/v1/finance/dashboard/")
         body = response.json()
@@ -843,16 +966,20 @@ class ConsumerFinanceViewTests(TestCase):
 
     def test_dashboard_isolated_by_tenant(self):
         FinanceAccount.objects.create(
-            tenant=self.other_tenant, account_type="credit_card",
-            nickname="Not Mine", current_balance=Decimal("9999"),
+            tenant=self.other_tenant,
+            account_type="credit_card",
+            nickname="Not Mine",
+            current_balance=Decimal("9999"),
         )
         response = self.client.get("/api/v1/finance/dashboard/")
         self.assertEqual(len(response.json()["accounts"]), 0)
 
     def test_accounts_list(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("3000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("3000"),
         )
         response = self.client.get("/api/v1/finance/accounts/")
         self.assertEqual(response.status_code, 200)
@@ -875,8 +1002,10 @@ class ConsumerFinanceViewTests(TestCase):
 
     def test_account_patch(self):
         account = FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("5000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("5000"),
         )
         response = self.client.patch(
             f"/api/v1/finance/accounts/{account.id}/",
@@ -889,8 +1018,10 @@ class ConsumerFinanceViewTests(TestCase):
 
     def test_account_delete_soft_deletes(self):
         account = FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("1000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("1000"),
         )
         response = self.client.delete(f"/api/v1/finance/accounts/{account.id}/")
         self.assertEqual(response.status_code, 204)
@@ -899,12 +1030,17 @@ class ConsumerFinanceViewTests(TestCase):
 
     def test_accounts_list_archived_query_param(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="Active", current_balance=Decimal("500"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Active",
+            current_balance=Decimal("500"),
         )
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="student_loan",
-            nickname="Archived", current_balance=Decimal("2000"), is_active=False,
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Archived",
+            current_balance=Decimal("2000"),
+            is_active=False,
         )
         active_response = self.client.get("/api/v1/finance/accounts/")
         self.assertEqual(len(active_response.json()), 1)
@@ -920,8 +1056,11 @@ class ConsumerFinanceViewTests(TestCase):
     def test_account_patch_unarchive(self):
         """PATCH {is_active: true} should restore an archived account."""
         account = FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("1000"), is_active=False,
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("1000"),
+            is_active=False,
         )
         response = self.client.patch(
             f"/api/v1/finance/accounts/{account.id}/",
@@ -934,8 +1073,10 @@ class ConsumerFinanceViewTests(TestCase):
 
     def test_account_detail_404_for_other_tenant(self):
         account = FinanceAccount.objects.create(
-            tenant=self.other_tenant, account_type="credit_card",
-            nickname="Not Mine", current_balance=Decimal("9999"),
+            tenant=self.other_tenant,
+            account_type="credit_card",
+            nickname="Not Mine",
+            current_balance=Decimal("9999"),
         )
         response = self.client.patch(
             f"/api/v1/finance/accounts/{account.id}/",
@@ -946,12 +1087,16 @@ class ConsumerFinanceViewTests(TestCase):
 
     def test_transactions_list(self):
         account = FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("3000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("3000"),
         )
         FinanceTransaction.objects.create(
-            tenant=self.tenant, account=account,
-            transaction_type="payment", amount=Decimal("200"),
+            tenant=self.tenant,
+            account=account,
+            transaction_type="payment",
+            amount=Decimal("200"),
             date=date(2026, 3, 15),
         )
         response = self.client.get("/api/v1/finance/transactions/")
@@ -960,10 +1105,14 @@ class ConsumerFinanceViewTests(TestCase):
 
     def test_payoff_plans_list(self):
         PayoffPlan.objects.create(
-            tenant=self.tenant, strategy="avalanche",
-            monthly_budget=Decimal("500"), total_debt=Decimal("10000"),
-            total_interest=Decimal("1200"), payoff_months=22,
-            payoff_date=date(2028, 1, 1), is_active=True,
+            tenant=self.tenant,
+            strategy="avalanche",
+            monthly_budget=Decimal("500"),
+            total_debt=Decimal("10000"),
+            total_interest=Decimal("1200"),
+            payoff_months=22,
+            payoff_date=date(2028, 1, 1),
+            is_active=True,
         )
         response = self.client.get("/api/v1/finance/payoff-plans/")
         self.assertEqual(response.status_code, 200)
@@ -971,8 +1120,10 @@ class ConsumerFinanceViewTests(TestCase):
 
     def test_snapshots_list(self):
         FinanceSnapshot.objects.create(
-            tenant=self.tenant, date=date(2026, 3, 1),
-            total_debt=Decimal("10000"), total_savings=Decimal("2000"),
+            tenant=self.tenant,
+            date=date(2026, 3, 1),
+            total_debt=Decimal("10000"),
+            total_savings=Decimal("2000"),
         )
         response = self.client.get("/api/v1/finance/snapshots/")
         self.assertEqual(response.status_code, 200)
@@ -993,15 +1144,20 @@ class SnapshotServiceTests(TestCase):
 
     def test_creates_snapshot_for_active_finance_tenant(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("5000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("5000"),
         )
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="savings",
-            nickname="Sav", current_balance=Decimal("2000"),
+            tenant=self.tenant,
+            account_type="savings",
+            nickname="Sav",
+            current_balance=Decimal("2000"),
         )
 
         from .snapshot import create_monthly_snapshots
+
         count = create_monthly_snapshots(date(2026, 4, 1))
 
         self.assertEqual(count, 1)
@@ -1012,19 +1168,24 @@ class SnapshotServiceTests(TestCase):
 
     def test_idempotent_no_duplicate_snapshots(self):
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("3000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("3000"),
         )
         from .snapshot import create_monthly_snapshots
+
         create_monthly_snapshots(date(2026, 4, 1))
         count = create_monthly_snapshots(date(2026, 4, 1))
         self.assertEqual(count, 1)  # still 1 — skipped the duplicate
         self.assertEqual(
-            FinanceSnapshot.objects.filter(tenant=self.tenant).count(), 1,
+            FinanceSnapshot.objects.filter(tenant=self.tenant).count(),
+            1,
         )
 
     def test_skips_tenants_without_accounts(self):
         from .snapshot import create_monthly_snapshots
+
         count = create_monthly_snapshots(date(2026, 4, 1))
         # Tenant has finance_enabled but no accounts — should skip
         self.assertEqual(count, 1)  # create_monthly_snapshots counts tenants attempted
@@ -1034,37 +1195,49 @@ class SnapshotServiceTests(TestCase):
         self.tenant.finance_enabled = False
         self.tenant.save()
         FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("1000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("1000"),
         )
         from .snapshot import create_monthly_snapshots
+
         count = create_monthly_snapshots(date(2026, 4, 1))
         self.assertEqual(count, 0)
         self.assertEqual(FinanceSnapshot.objects.count(), 0)
 
     def test_aggregates_previous_month_payments(self):
         account = FinanceAccount.objects.create(
-            tenant=self.tenant, account_type="credit_card",
-            nickname="CC", current_balance=Decimal("4000"),
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("4000"),
         )
         FinanceTransaction.objects.create(
-            tenant=self.tenant, account=account,
-            transaction_type="payment", amount=Decimal("300"),
+            tenant=self.tenant,
+            account=account,
+            transaction_type="payment",
+            amount=Decimal("300"),
             date=date(2026, 3, 10),
         )
         FinanceTransaction.objects.create(
-            tenant=self.tenant, account=account,
-            transaction_type="payment", amount=Decimal("200"),
+            tenant=self.tenant,
+            account=account,
+            transaction_type="payment",
+            amount=Decimal("200"),
             date=date(2026, 3, 25),
         )
         # This one is from February — should NOT be included
         FinanceTransaction.objects.create(
-            tenant=self.tenant, account=account,
-            transaction_type="payment", amount=Decimal("100"),
+            tenant=self.tenant,
+            account=account,
+            transaction_type="payment",
+            amount=Decimal("100"),
             date=date(2026, 2, 15),
         )
 
         from .snapshot import create_monthly_snapshots
+
         create_monthly_snapshots(date(2026, 4, 1))
         snap = FinanceSnapshot.objects.get(tenant=self.tenant)
         self.assertEqual(snap.total_payments_this_month, Decimal("500"))
