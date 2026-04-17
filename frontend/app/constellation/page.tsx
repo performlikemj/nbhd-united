@@ -46,7 +46,7 @@ function formatDate(dateString: string): string {
 }
 
 function clusterNodeColor(id: number | null): string {
-  if (id == null) return "#4ECDC4";
+  if (id == null) return "#64748B";
   return CLUSTER_PALETTE[Math.abs(id) % CLUSTER_PALETTE.length];
 }
 
@@ -78,6 +78,86 @@ function loadStoredViewMode(): ViewMode | null {
 
 function defaultViewMode(): ViewMode {
   return "constellation";
+}
+
+/**
+ * Client-side tag-based clustering fallback.
+ * When the API returns no clusters, groups nodes by their most prominent tags
+ * so the constellation still shows meaningful visual differentiation.
+ */
+function clusterByTags(nodes: ConstellationNode[]): {
+  clusters: ConstellationData["clusters"];
+  clusterMap: Map<number, number>;
+} {
+  if (nodes.length === 0) return { clusters: [], clusterMap: new Map() };
+
+  // Build tag frequency across all nodes
+  const tagCounts = new Map<string, number>();
+  for (const n of nodes) {
+    for (const t of n.tags) {
+      tagCounts.set(t, (tagCounts.get(t) || 0) + 1);
+    }
+  }
+
+  // Select top tags as cluster seeds (tags shared by >= 2 nodes, up to 8)
+  const seedTags = [...tagCounts.entries()]
+    .filter(([, count]) => count >= 2)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([tag]) => tag);
+
+  // If we have fewer than 2 seed tags, try using all tags with count >= 1
+  if (seedTags.length < 2) {
+    const allTagsSorted = [...tagCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([tag]) => tag);
+    seedTags.length = 0;
+    seedTags.push(...allTagsSorted);
+  }
+
+  // Assign each node to the cluster of its first matching seed tag
+  const clusterMap = new Map<number, number>();
+  for (const n of nodes) {
+    const matchIdx = n.tags.findIndex((t) => seedTags.includes(t));
+    if (matchIdx >= 0) {
+      clusterMap.set(n.id, seedTags.indexOf(n.tags[matchIdx]));
+    }
+    // Nodes with no matching tag left unassigned (cluster_id stays null)
+  }
+
+  // For unassigned nodes, try to assign to the cluster of their most connected neighbor
+  // (simple: just assign to cluster 0 if we have seeds)
+  for (const n of nodes) {
+    if (!clusterMap.has(n.id) && seedTags.length > 0) {
+      // Assign to a spread of clusters to avoid one mega-cluster
+      clusterMap.set(n.id, n.id % seedTags.length);
+    }
+  }
+
+  // Build cluster objects
+  const clusterCounts = new Map<number, number>();
+  const clusterTagSets = new Map<number, Set<string>>();
+  for (const [nodeId, clusterId] of clusterMap) {
+    clusterCounts.set(clusterId, (clusterCounts.get(clusterId) || 0) + 1);
+    const node = nodes.find((n) => n.id === nodeId);
+    if (node) {
+      const tagSet = clusterTagSets.get(clusterId) || new Set<string>();
+      node.tags.forEach((t) => tagSet.add(t));
+      clusterTagSets.set(clusterId, tagSet);
+    }
+  }
+
+  const clusters: ConstellationData["clusters"] = seedTags
+    .map((tag, i) => ({
+      id: i,
+      label: tag.charAt(0).toUpperCase() + tag.slice(1).replace(/_/g, " "),
+      count: clusterCounts.get(i) || 0,
+      tags: [...(clusterTagSets.get(i) || [])].slice(0, 5),
+    }))
+    .filter((c) => c.count > 0);
+
+  return { clusters, clusterMap };
 }
 
 /** Push overlapping nodes apart with strong repulsion + cluster separation */
@@ -402,85 +482,148 @@ export default function ConstellationPage() {
     }
   }, [viewMode]);
 
+  // Client-side clustering fallback: when API returns no clusters,
+  // derive clusters from node tags so the visual shows differentiation.
+  const effectiveData = useMemo(() => {
+    const hasApiClusters = data.clusters.length > 0;
+    const allUnclustered = data.nodes.length > 0 && data.nodes.every((n) => n.cluster_id == null);
+
+    if (hasApiClusters || !allUnclustered) {
+      return data; // API provided clusters, use them
+    }
+
+    // No clusters — derive from tags
+    const { clusters, clusterMap } = clusterByTags(data.nodes);
+    const nodes = data.nodes.map((n) => {
+      const cid = clusterMap.get(n.id);
+      return cid != null ? { ...n, cluster_id: cid } : n;
+    });
+    return { ...data, nodes, clusters };
+  }, [data]);
+
   const query = searchText.trim().toLowerCase();
-  const totalLessonCount = data.nodes.length;
+  const totalLessonCount = effectiveData.nodes.length;
   const isSparse = totalLessonCount < CLUSTER_THRESHOLD;
 
   const filteredNodes = useMemo(() => {
-    return data.nodes.filter((node) => {
+    return effectiveData.nodes.filter((node) => {
       const matchesSearch = query
         ? node.text.toLowerCase().includes(query) || node.tags.some((tag) => tag.toLowerCase().includes(query))
         : true;
       const matchesCluster = selectedClusterId == null ? true : node.cluster_id === selectedClusterId;
       return matchesSearch && matchesCluster;
     });
-  }, [data.nodes, query, selectedClusterId]);
+  }, [effectiveData.nodes, query, selectedClusterId]);
 
   const filteredNodeIds = useMemo(() => {
     return new Set(filteredNodes.map((node) => Number(node.id)));
   }, [filteredNodes]);
 
   const allEdges = useMemo(() => {
-    return [...data.edges, ...data.affinity_edges].filter((edge) => {
+    return [...effectiveData.edges, ...effectiveData.affinity_edges].filter((edge) => {
       return filteredNodeIds.has(Number(edge.source)) && filteredNodeIds.has(Number(edge.target));
     });
-  }, [data.edges, data.affinity_edges, filteredNodeIds]);
+  }, [effectiveData.edges, effectiveData.affinity_edges, filteredNodeIds]);
 
   const nodesById = useMemo(() => {
     const map = new Map<number, ConstellationNode>();
-    data.nodes.forEach((node) => map.set(Number(node.id), node));
+    effectiveData.nodes.forEach((node) => map.set(Number(node.id), node));
     return map;
-  }, [data.nodes]);
+  }, [effectiveData.nodes]);
 
   // Responsive spacing based on container width
   const spacing = useMemo(() => getSpacing(containerSize.width), [containerSize.width]);
 
-  // Compute pixel positions with collision avoidance
-  // Graph container is a flex child — ResizeObserver gives its actual width
-  // (shrinks automatically when desktop panel is open)
+  // Compute pixel positions with cluster-aware layout + collision avoidance
   const positionedNodes = useMemo(() => {
-    const hasPositions = filteredNodes.some((n) => n.x != null && n.y != null);
     const count = filteredNodes.length;
     const { nodePadding } = spacing;
     const w = containerSize.width;
     const h = containerSize.height;
+    if (count === 0 || w === 0 || h === 0) return [];
 
-    const raw = filteredNodes.map((node, i) => {
-      let nx: number;
-      let ny: number;
+    // Identify unique clusters in the filtered nodes
+    const clusterIds = [...new Set(filteredNodes.map((n) => n.cluster_id))];
+    const numClusters = clusterIds.length;
+    const hasMultipleClusters = numClusters > 1;
+    const hasPositions = filteredNodes.some((n) => n.x != null && n.y != null);
 
-      if (hasPositions && node.x != null && node.y != null) {
-        nx = node.x;
-        ny = node.y;
-      } else if (count === 1) {
-        nx = 0;
-        ny = 0;
-      } else {
-        const angle = (2 * Math.PI * i) / count - Math.PI / 2;
-        const radius = 0.6;
-        nx = radius * Math.cos(angle);
-        ny = radius * Math.sin(angle);
+    // If the API gave us positions AND clusters, trust them
+    if (hasPositions && hasMultipleClusters) {
+      const raw = filteredNodes.map((node) => {
+        const nx = node.x ?? 0;
+        const ny = node.y ?? 0;
+        const px = nodePadding + ((nx + 1) / 2) * (w - 2 * nodePadding);
+        const py = nodePadding + ((ny + 1) / 2) * (h - 2 * nodePadding);
+        return { ...node, px, py };
+      });
+      if (raw.length > 1) {
+        const resolved = resolveCollisions(
+          raw.map((n) => ({ id: n.id, px: n.px, py: n.py, cluster_id: n.cluster_id })),
+          w, h, spacing,
+        );
+        const posMap = new Map(resolved.map((r) => [r.id, r]));
+        return raw.map((n) => {
+          const p = posMap.get(n.id);
+          return p ? { ...n, px: p.px, py: p.py } : n;
+        });
       }
+      return raw;
+    }
 
-      const px = w > 0 ? nodePadding + ((nx + 1) / 2) * (w - 2 * nodePadding) : 0;
-      const py = h > 0 ? nodePadding + ((ny + 1) / 2) * (h - 2 * nodePadding) : 0;
+    // Cluster-aware layout: arrange cluster centroids, then place nodes around them
+    // Use a deterministic seed so layout doesn't jump on re-render
+    let seed = 7;
+    function rand() {
+      seed = (seed * 1664525 + 1013904223) & 0x7fffffff;
+      return (seed / 0x7fffffff) * 2 - 1; // returns -1 to 1
+    }
 
+    const usableW = w - 2 * nodePadding;
+    const usableH = h - 2 * nodePadding;
+    const cx = w / 2;
+    const cy = h / 2;
+
+    // Arrange cluster centroids in a circle
+    const clusterCentroids = new Map<number | null, { x: number; y: number }>();
+    if (hasMultipleClusters) {
+      const orbitR = Math.min(usableW, usableH) * 0.32;
+      clusterIds.forEach((cid, i) => {
+        const angle = (2 * Math.PI * i) / numClusters - Math.PI / 2;
+        clusterCentroids.set(cid, {
+          x: cx + Math.cos(angle) * orbitR,
+          y: cy + Math.sin(angle) * orbitR,
+        });
+      });
+    } else {
+      clusterCentroids.set(clusterIds[0] ?? null, { x: cx, y: cy });
+    }
+
+    // Place each node near its cluster centroid with jitter
+    const nodesPerCluster = new Map<number | null, number>();
+    clusterIds.forEach((cid) => {
+      nodesPerCluster.set(cid, filteredNodes.filter((n) => n.cluster_id === cid).length);
+    });
+
+    const raw = filteredNodes.map((node) => {
+      const centroid = clusterCentroids.get(node.cluster_id) || { x: cx, y: cy };
+      const nInCluster = nodesPerCluster.get(node.cluster_id) || 1;
+      const spread = Math.min(usableW, usableH) * (0.08 + Math.sqrt(nInCluster) * 0.035);
+      const px = centroid.x + rand() * spread;
+      const py = centroid.y + rand() * spread;
       return { ...node, px, py };
     });
 
-    if (raw.length > 1 && w > 0) {
-      const resolved = resolveCollisions(
-        raw.map((n) => ({ id: n.id, px: n.px, py: n.py, cluster_id: n.cluster_id })),
-        w, h, spacing,
-      );
-      const posMap = new Map(resolved.map((r) => [r.id, r]));
-      return raw.map((n) => {
-        const p = posMap.get(n.id);
-        return p ? { ...n, px: p.px, py: p.py } : n;
-      });
-    }
-
-    return raw;
+    // Collision avoidance
+    const resolved = resolveCollisions(
+      raw.map((n) => ({ id: n.id, px: n.px, py: n.py, cluster_id: n.cluster_id })),
+      w, h, spacing,
+    );
+    const posMap = new Map(resolved.map((r) => [r.id, r]));
+    return raw.map((n) => {
+      const p = posMap.get(n.id);
+      return p ? { ...n, px: p.px, py: p.py } : n;
+    });
   }, [filteredNodes, containerSize, spacing]);
 
   const nodePositions = useMemo(() => {
@@ -491,9 +634,9 @@ export default function ConstellationPage() {
 
   const allTags = useMemo(() => {
     const tags = new Set<string>();
-    data.nodes.forEach((n) => n.tags.forEach((t) => tags.add(t)));
+    effectiveData.nodes.forEach((n) => n.tags.forEach((t) => tags.add(t)));
     return Array.from(tags).sort();
-  }, [data.nodes]);
+  }, [effectiveData.nodes]);
 
   const selectedNode = useMemo(() => {
     if (selectedNodeId == null) return null;
@@ -505,14 +648,14 @@ export default function ConstellationPage() {
     if (selectedNodeId == null) return new Set<number>();
     const connected = new Set<number>();
     connected.add(selectedNodeId);
-    for (const edge of [...data.edges, ...data.affinity_edges]) {
+    for (const edge of [...effectiveData.edges, ...effectiveData.affinity_edges]) {
       const src = Number(edge.source);
       const tgt = Number(edge.target);
       if (src === selectedNodeId) connected.add(tgt);
       if (tgt === selectedNodeId) connected.add(src);
     }
     return connected;
-  }, [selectedNodeId, data.edges, data.affinity_edges]);
+  }, [selectedNodeId, effectiveData.edges, effectiveData.affinity_edges]);
 
   // Cluster bounds for nebulae rendering (V1 Safe)
   const clusterBounds = useMemo(
@@ -531,7 +674,7 @@ export default function ConstellationPage() {
   }, [allEdges]);
 
   function starRadius(nodeId: number): number {
-    return 3 + (nodeWeights.get(nodeId) || 1) * 1.2;
+    return Math.min(6, 2.5 + (nodeWeights.get(nodeId) || 1) * 0.6);
   }
 
   const clusterCards = useMemo(() => {
@@ -544,7 +687,7 @@ export default function ConstellationPage() {
     return Array.from(groups.entries())
       .map(([clusterId, nodes]) => ({
         id: clusterId,
-        label: getClusterLabel(clusterId, data.clusters),
+        label: getClusterLabel(clusterId, effectiveData.clusters),
         count: nodes.length,
         nodes,
       }))
@@ -553,21 +696,21 @@ export default function ConstellationPage() {
         if (a.id !== null && b.id === null) return -1;
         return a.label.toLowerCase().localeCompare(b.label.toLowerCase());
       });
-  }, [filteredNodes, data.clusters]);
+  }, [filteredNodes, effectiveData.clusters]);
 
   const clustersForSidebar = useMemo(() => {
-    const items = data.clusters.map((cluster) => ({
+    const items = effectiveData.clusters.map((cluster) => ({
       id: cluster.id as number | null,
       label: cluster.label || `Cluster ${cluster.id}`,
       count: filteredNodes.filter((node) => node.cluster_id === cluster.id).length,
     }));
     const unclusteredCount = filteredNodes.filter((node) => node.cluster_id == null).length;
     if (unclusteredCount > 0) {
-      const label = data.clusters.length === 0 ? "Your Lessons" : "Unclustered";
+      const label = effectiveData.clusters.length === 0 ? "Your Lessons" : "Unclustered";
       items.push({ id: null, label, count: unclusteredCount });
     }
     return items.filter((item) => item.count > 0);
-  }, [data.clusters, filteredNodes]);
+  }, [effectiveData.clusters, filteredNodes]);
 
   const handleToggleCluster = useCallback((clusterId: number | null) => {
     const key = String(clusterId);
@@ -637,7 +780,7 @@ export default function ConstellationPage() {
                 Lessons Constellation
               </h1>
               <p className="text-[11px] text-c-text-muted truncate">
-                {totalLessonCount} lessons &middot; {data.clusters.length} constellations
+                {totalLessonCount} lessons &middot; {effectiveData.clusters.length} constellations
               </p>
             </div>
           </div>
@@ -703,7 +846,7 @@ export default function ConstellationPage() {
               >
                 <defs>
                   {/* Nebula gradients per cluster */}
-                  {data.clusters.map((c) => (
+                  {effectiveData.clusters.map((c) => (
                     <radialGradient key={`neb-${c.id}`} id={`neb-${c.id}`} cx="50%" cy="50%" r="50%">
                       <stop offset="0%" stopColor={clusterNodeColor(c.id)} stopOpacity="0.22" />
                       <stop offset="40%" stopColor={clusterNodeColor(c.id)} stopOpacity="0.08" />
@@ -795,8 +938,8 @@ export default function ConstellationPage() {
                       style={{ transition: "opacity 300ms", opacity }}
                     >
                       {/* Outer glow halo */}
-                      <circle cx={node.px} cy={node.py} r={r * 4} fill="url(#node-glow)" opacity={isSel ? 0.6 : 0.25} style={{ mixBlendMode: "screen" }} />
-                      <circle cx={node.px} cy={node.py} r={r * 2.2} fill={color} opacity={isSel ? 0.45 : 0.28} style={{ filter: "blur(4px)", mixBlendMode: "screen" }} />
+                      <circle cx={node.px} cy={node.py} r={r * 3} fill={color} opacity={isSel ? 0.35 : 0.12} filter="url(#starblur)" />
+                      <circle cx={node.px} cy={node.py} r={r * 1.8} fill={color} opacity={isSel ? 0.4 : 0.2} filter="url(#starblur)" />
                       {/* Core */}
                       <circle cx={node.px} cy={node.py} r={r} fill="#fff" />
                       <circle cx={node.px} cy={node.py} r={r * 0.6} fill={color} />
@@ -811,7 +954,7 @@ export default function ConstellationPage() {
                 {/* Constellation labels (Instrument Serif italic) */}
                 {Array.from(clusterBounds.entries()).map(([key, b]) => {
                   const cid = key === "null" ? null : Number(key);
-                  const label = getClusterLabel(cid, data.clusters);
+                  const label = getClusterLabel(cid, effectiveData.clusters);
                   const color = clusterNodeColor(cid);
                   const isDim = selectedClusterId != null && cid !== selectedClusterId;
                   // Place label above nebula, flip below if near top
@@ -914,7 +1057,7 @@ export default function ConstellationPage() {
             <aside className="hidden md:flex w-[360px] shrink-0 flex-col border-l border-c-border bg-[#0d1218]/95 backdrop-blur-xl overflow-y-auto">
               <StarDetailPanel
                 node={selectedNode}
-                clusters={data.clusters}
+                clusters={effectiveData.clusters}
                 allEdges={allEdges}
                 nodesById={nodesById}
                 onClose={() => setSelectedNodeId(null)}
@@ -929,7 +1072,7 @@ export default function ConstellationPage() {
           <div ref={detailRef} className="md:hidden border-t border-c-border bg-[#0d1218] max-h-[50vh] overflow-y-auto">
             <StarDetailPanel
               node={selectedNode}
-              clusters={data.clusters}
+              clusters={effectiveData.clusters}
               allEdges={allEdges}
               nodesById={nodesById}
               onClose={() => setSelectedNodeId(null)}
