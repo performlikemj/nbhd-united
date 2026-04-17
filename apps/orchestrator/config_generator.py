@@ -724,6 +724,17 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 },
             },
         },
+        # Override OpenRouter base URL — OpenClaw's agent models.json generator
+        # defaults to https://openrouter.ai/v1 (wrong), but the correct endpoint
+        # is /api/v1. This explicit override takes precedence via the
+        # config.models.providers resolution path in provider-catalog-shared.
+        "models": {
+            "providers": {
+                "openrouter": {
+                    "baseUrl": "https://openrouter.ai/api/v1",
+                },
+            },
+        },
         # Agent defaults
         "agents": {
             "defaults": {

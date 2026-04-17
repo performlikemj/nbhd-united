@@ -10,40 +10,58 @@ from __future__ import annotations
 
 from typing import Any
 
-# Deny runtime-management and cross-session controls for subscribers.
-# Cron tools are intentionally ALLOWED so users can manage scheduled tasks
-# via the agent or the settings UI.
+# Deny runtime-management, cross-session controls, direct messaging,
+# and tools with no surface in the Telegram-only subscriber environment.
+#
+# Why deny instead of just not allowing?  We use group:openclaw as the
+# allow-list base (covers web, memory, cron, media, etc.), so individual
+# deny entries carve out what subscribers should NOT touch.
+#
+# NOTE on messaging: tenant containers have no Telegram bot token —
+# direct channel delivery always fails.  All outbound messages MUST go
+# through nbhd_send_to_user (plugin), which proxies via the central
+# Django bot.
 DENIED_TOOLS: tuple[str, ...] = (
+    # Runtime management / cross-session (unchanged from pre-2026.4.15)
     "gateway",
     "sessions_spawn",
     "sessions_send",
     "sessions_list",
     "sessions_history",
     "session_status",
+    "sessions_yield",
+    "subagents",
     "agents_list",
+    # Direct messaging — must use nbhd_send_to_user plugin instead
+    "message",
+    # No browser or canvas surface in Telegram-only containers
+    "browser",
+    "canvas",
+    # Infrastructure / remote execution — not for subscribers
+    "nodes",
+    "code_execution",
+    # Media generation — keep image_generate + tts, deny the rest
+    "music_generate",
+    "video_generate",
 )
 
-# Starter tier: non-destructive helper surface only.
-# Group names must match OpenClaw docs: group:web, group:fs, group:memory,
-# group:messaging, group:automation.  "tts" and "image" are standalone tools.
+# Starter tier: group:openclaw covers web, memory, cron, media, and
+# plan tools.  group:plugins covers NBHD journal/google/finance tools.
 #
-# NOTE: group:fs and group:memory are intentionally EXCLUDED.
-# Subscribers should not interact with raw workspace files.
-# All persistence goes through NBHD journal tools (group:plugins)
-# which write to the Django database — visible on the journal UI.
+# Deny list above carves out what subscribers shouldn't access.
+# Deny takes precedence over allow in OpenClaw's tool policy resolver.
 #
-# NOTE: group:messaging is intentionally EXCLUDED.
-# Tenant containers have no Telegram bot token — direct channel delivery
-# always fails.  All outbound messages (cron jobs, proactive sends) MUST
-# go through the plugin tool nbhd_send_to_user, which proxies via the
-# central Django bot.  Blocking group:messaging here forces the agent to
-# use that path regardless of how the cron job was created.
+# Key additions over pre-2026.4.15 policy:
+#   - memory_search, memory_get (via group:openclaw) — better recall
+#   - update_plan (via group:openclaw) — structured multi-step tracking
+#   - image_generate (via group:openclaw) — image creation
+#
+# NOTE: group:fs (read/write/edit/apply_patch) and exec/process are NOT
+# in group:openclaw — they require the "coding" profile and are absent
+# from our subscriber containers.  No deny entry needed.
 STARTER_ALLOW: tuple[str, ...] = (
-    "group:web",
+    "group:openclaw",
     "group:plugins",
-    "group:automation",
-    "tts",
-    "image",
 )
 
 
