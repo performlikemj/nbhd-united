@@ -182,7 +182,7 @@ Legacy entry for migration safety.
 
 class DefaultTemplateSectionsTest(TestCase):
     def test_default_template_has_five_sections(self):
-        self.assertEqual(len(DEFAULT_TEMPLATE_SECTIONS), 4)
+        self.assertEqual(len(DEFAULT_TEMPLATE_SECTIONS), 5)
         slugs = [s["slug"] for s in DEFAULT_TEMPLATE_SECTIONS]
         self.assertEqual(
             slugs,
@@ -191,6 +191,7 @@ class DefaultTemplateSectionsTest(TestCase):
                 "weather",
                 "news",
                 "focus",
+                "energy-mood",
             ],
         )
 
@@ -199,7 +200,7 @@ class DefaultTemplateSectionsTest(TestCase):
         tenant = Tenant.objects.create(user=user, status="active")
         result = seed_default_templates_for_tenant(tenant=tenant)
         template = result["template"]
-        self.assertEqual(len(template.sections), 4)
+        self.assertEqual(len(template.sections), 5)
 
 
 class SetSectionTest(TestCase):
