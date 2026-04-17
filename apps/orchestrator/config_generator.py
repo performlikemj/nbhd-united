@@ -732,6 +732,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "providers": {
                 "openrouter": {
                     "baseUrl": "https://openrouter.ai/api/v1",
+                    "models": [],  # required by schema; actual models resolved from auth profile
                 },
             },
         },
