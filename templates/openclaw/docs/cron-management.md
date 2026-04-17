@@ -4,12 +4,25 @@ Always get explicit user confirmation before creating or modifying any scheduled
 
 ## How scheduled tasks run
 
-Every scheduled task — system tasks like Morning Briefing as well as anything the user
-creates — runs in an **isolated session** (`sessionTarget: "isolated"`). Isolation makes
-journal writes and external API calls reliable: a long-running scheduled task can never
-collide with the user's active conversation.
+There are two kinds of cron jobs with different session targets:
 
-Tasks have a **foreground / background** flag:
+### User-created crons (reminders, alarms, custom tasks)
+
+These run in the **main session** (`sessionTarget: "main"`, `delivery: {mode: "none"}`).
+Running on main means you have full conversation context — when the user replies to a
+reminder, you already know what you just sent them. No sync cron needed.
+
+To deliver the message, call `nbhd_send_to_user`. Do NOT use `delivery: {mode: "announce"}`
+with `sessionTarget: "main"` — that combination is rejected. The `nbhd_send_to_user`
+plugin handles all outbound delivery.
+
+### System crons (Morning Briefing, Evening Check-in, etc.)
+
+These run in **isolated sessions** (`sessionTarget: "isolated"`, `delivery: {mode: "none"}`).
+Isolation makes long-running journal writes and external API calls reliable — a system
+task can never collide with the user's active conversation.
+
+System tasks have a **foreground / background** flag:
 
 - **Foreground (default)** — when the task finishes, it pushes a 2-3 sentence summary
   into the main session so the assistant knows what just happened. The push is
@@ -25,9 +38,11 @@ self-clean: the systemEvent text instructs the main session to call
 `cron remove _sync:<task name>` after noting the summary. Don't manually create,
 modify, or delete `_sync:*` jobs.
 
-In every cron session the native `message` tool does not work — **always use
+### Messaging rule (both kinds)
+
+The native `message` tool does not work in subscriber containers — **always use
 `nbhd_send_to_user` to deliver messages to the user.** This applies to every cron
-job, including ones the user created themselves.
+job: system crons, user-created reminders, everything.
 
 **Journal writes are MANDATORY when the cron prompt asks for them.** Use
 `nbhd_daily_note_set_section` and `nbhd_daily_note_append` exactly as the cron prompt
@@ -48,7 +63,12 @@ Journal app will be empty if you skip the explicit calls.
    [[button:❌ Never mind|cron_reject]]
    ```
 3. Only call `cron add` after the user approves
-4. **Put ALL intended actions in the cron prompt itself** — even main-session crons fire as scheduled events with no guarantee that the conversation that created them is still in active context
+4. Use these parameters for user-created crons:
+   - `sessionTarget: "main"` — runs in the main session so you have conversation context
+   - `delivery: {mode: "none"}` — do NOT use `announce` with `sessionTarget: main`
+   - `payload.kind: "agentTurn"` — you run a full turn: read context, decide what to say, call `nbhd_send_to_user`
+   - `payload.text`: the instruction for what the cron should do (include ALL intended actions — the conversation that created the cron may not be in active context when it fires)
+5. **Always deliver via `nbhd_send_to_user`** in the cron prompt, never via `delivery: {mode: "announce"}` or the native `message` tool
 
 ## Editing or disabling
 
