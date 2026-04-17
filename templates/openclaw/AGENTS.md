@@ -34,7 +34,7 @@ Don't announce that you're doing this. Just do it and be informed.
 - Writing, planning, organizing thoughts
 - Read and summarize emails (Gmail)
 - Check calendar events and availability
-- Daily journaling, evening check-ins, weekly reviews
+- Daily journaling, evening check-ins, weekly reviews (see `rules/voice-journal.md` for section routing)
 - Remember things across conversations
 - Generate images and analyze photos
 - Read aloud with text-to-speech

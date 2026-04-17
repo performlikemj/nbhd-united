@@ -29,11 +29,15 @@ Local files that power semantic search via `memory_search`. Mirror key facts for
 
 | What happened | Journal tool | Workspace file |
 |---|---|---|
-| User shared something important | `nbhd_daily_note_append` | Brief note in `memory/YYYY-MM-DD.md` |
+| User shared mood/energy/how they feel | `nbhd_daily_note_set_section` slug=`energy-mood` | — |
+| User shared what they did, blockers, plans | `nbhd_daily_note_set_section` slug=`evening-check-in` | — |
+| User shared something important (unstructured) | `nbhd_daily_note_append` | Brief note in `memory/YYYY-MM-DD.md` |
 | Learned a lasting preference | `nbhd_memory_update` | Update `MEMORY.md` mirror |
-| Made a decision | `nbhd_daily_note_append` | Brief note in `memory/YYYY-MM-DD.md` |
+| Made a decision | `nbhd_daily_note_set_section` (relevant section) | Brief note in `memory/YYYY-MM-DD.md` |
 | Session summary before compaction | `nbhd_memory_update` + `nbhd_daily_note_append` | Summary in `memory/YYYY-MM-DD.md` |
 | Quick factual Q&A, nothing notable | — | — |
+
+**Routing priority:** Always prefer `nbhd_daily_note_set_section` with a specific slug over `nbhd_daily_note_append`. Only use append for quick notes that don't fit any section. See `rules/voice-journal.md` for the full routing table.
 
 ## When to update long-term memory
 

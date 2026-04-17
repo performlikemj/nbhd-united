@@ -44,14 +44,22 @@ Ask about gaps — be conversational, not interrogative. Group questions natural
 
 Once you have complete information, update everything in one pass:
 
-| Content | Destination | Tool |
-|---------|-------------|------|
-| Overall day summary, mood, energy | Daily note — appropriate section | `nbhd_daily_note_set_section` |
+| Content | Destination | Tool + slug |
+|---------|-------------|-------------|
+| Mood, energy level, how they feel | `energy-mood` section | `nbhd_daily_note_set_section` slug=`energy-mood` |
+| What got done, accomplishments, wins | `evening-check-in` section | `nbhd_daily_note_set_section` slug=`evening-check-in` |
+| Blockers, what didn't get done | `evening-check-in` section | `nbhd_daily_note_set_section` slug=`evening-check-in` |
+| Plans, intentions for tomorrow | `evening-check-in` section | `nbhd_daily_note_set_section` slug=`evening-check-in` |
 | Project-specific updates | Each project's document | `nbhd_document_set` (kind='project') |
 | New tasks discovered | Tasks document | `nbhd_document_set` (kind='tasks') |
-| Wins, blockers, decisions | Daily note | `nbhd_daily_note_set_section` or `nbhd_daily_note_append` |
-| Personal/family notes | Daily note | `nbhd_daily_note_append` |
 | New goals or shifts in direction | Goals document | `nbhd_document_set` (kind='goal') |
+| Quick notes that don't fit a section | Daily note (timestamped) | `nbhd_daily_note_append` |
+
+**Section routing rules:**
+- If the user mentions mood, energy, or how they feel → always write to `energy-mood` section
+- If the user mentions what they did, blockers, or plans → read the existing `evening-check-in` section first, then write back the merged content
+- Only use `nbhd_daily_note_append` for unstructured notes (e.g., "remembered to call plumber")
+- When writing to `evening-check-in`, preserve existing subsections (What got done, What didn't, Plan for tomorrow) and merge new content into them
 
 **Important:** Don't just append — read the existing content first and slot new info where it belongs. Update existing sections rather than duplicating. If a section already has content for today, merge intelligently.
 

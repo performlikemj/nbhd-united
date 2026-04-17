@@ -48,6 +48,12 @@ DEFAULT_TEMPLATE_SECTIONS: list[dict[str, str]] = [
         "content": ("### Top 3 Priorities\n1. \n2. \n3. \n\n### Quick Wins\n- \n"),
         "source": "agent",
     },
+    {
+        "slug": "energy-mood",
+        "title": "Energy & Mood",
+        "content": "- ?\n",
+        "source": "shared",
+    },
 ]
 
 # Old default slug sets — used to detect unmodified templates during seeding.
