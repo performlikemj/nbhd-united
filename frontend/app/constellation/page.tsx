@@ -961,19 +961,23 @@ export default function ConstellationPage() {
                   const aboveY = b.cy - b.r - 16;
                   const belowY = b.cy + b.r + 22;
                   const labelY = aboveY < 20 ? belowY : aboveY;
+                  const displayLabel = label.replace(/\b\w/g, (c) => c.toUpperCase());
                   return (
                     <g
                       key={`lbl-${key}`}
-                      style={{ cursor: "pointer", opacity: isDim ? 0.2 : 0.9, transition: "opacity 300ms" }}
+                      style={{ cursor: "pointer", opacity: isDim ? 0.3 : 1, transition: "opacity 300ms" }}
                       onClick={() => setSelectedClusterId((c) => (c === cid ? null : cid))}
                     >
                       <text
                         x={b.cx} y={labelY}
                         textAnchor="middle"
-                        fill={color} fillOpacity={0.85}
-                        style={{ fontFamily: "var(--font-serif)", fontSize: 18, fontStyle: "italic", letterSpacing: "0.02em" }}
+                        fill={color}
+                        stroke="rgba(5,7,11,0.85)"
+                        strokeWidth={4}
+                        strokeLinejoin="round"
+                        style={{ fontFamily: "var(--font-serif)", fontSize: 21, fontStyle: "italic", letterSpacing: "0.02em", paintOrder: "stroke fill" }}
                       >
-                        {label}
+                        {displayLabel}
                       </text>
                     </g>
                   );

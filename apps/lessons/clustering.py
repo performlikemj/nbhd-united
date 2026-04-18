@@ -369,11 +369,16 @@ def generate_cluster_labels(tenant: Tenant) -> int:
 
 
 def compute_positions(tenant: Tenant) -> int:
-    """Compute 2D positions from embeddings using PCA (numpy SVD).
+    """Compute 2D positions from embeddings using PCA + inter-cluster spacing.
 
-    Projects 1536-dim embeddings onto the top 2 principal components
-    and normalizes to [-1, 1]. Positions are stored as position_x/position_y
-    on each Lesson so the frontend can render semantic proximity.
+    Projects 1536-dim embeddings onto the top 2 principal components via SVD,
+    then arranges cluster centroids evenly around a circle so every cluster
+    occupies a distinct visual region.  Within each cluster, positions are
+    normalised relative to that cluster's own spread so tight or sparse
+    clusters both fill their territory equally.
+
+    Falls back to percentile-based normalisation when fewer than 2 clusters
+    exist (single-topic tenant or not yet clustered).
 
     Returns the number of lessons updated.
     """
@@ -395,28 +400,81 @@ def compute_positions(tenant: Tenant) -> int:
         Lesson.objects.filter(pk=lessons[0].pk).update(position_x=0.0, position_y=0.0)
         return 1
 
-    # Build embedding matrix (N x 1536)
+    # PCA: project onto top 2 principal components
     embeddings = np.array([lesson.embedding for lesson in lessons], dtype=np.float64)
-
-    # Mean-center
-    mean = embeddings.mean(axis=0)
-    centered = embeddings - mean
-
-    # SVD for PCA — project onto top 2 components
+    centered = embeddings - embeddings.mean(axis=0)
     _U, _S, Vt = np.linalg.svd(centered, full_matrices=False)
-    projected = centered @ Vt[:2].T  # shape (N, 2)
+    projected = centered @ Vt[:2].T  # (n, 2)
 
-    # Normalize each axis to [-1, 1]
-    for axis in range(2):
-        max_val = np.abs(projected[:, axis]).max()
-        if max_val > 0:
-            projected[:, axis] /= max_val
+    # Group lesson indices by cluster_id
+    cluster_to_indices: dict[int | None, list[int]] = {}
+    for i, lesson in enumerate(lessons):
+        cid = lesson.cluster_id
+        cluster_to_indices.setdefault(cid, []).append(i)
 
-    # Bulk update
+    real_clusters = {cid: idx for cid, idx in cluster_to_indices.items() if cid is not None}
+    num_clusters = len(real_clusters)
+
+    final_positions = np.zeros((n, 2))
+
+    if num_clusters >= 2:
+        # ── Inter-cluster spacing ─────────────────────────────────────────
+        # Compute each cluster's PCA centroid.
+        cluster_pca_centroids = {cid: projected[np.array(idx)].mean(axis=0) for cid, idx in real_clusters.items()}
+
+        # Arrange cluster centres evenly on a circle, starting from top.
+        orbit_radius = 0.62
+        sorted_cids = sorted(real_clusters.keys())
+        cluster_new_centers: dict[int, np.ndarray] = {}
+        for k, cid in enumerate(sorted_cids):
+            angle = 2 * math.pi * k / num_clusters - math.pi / 2
+            cluster_new_centers[cid] = np.array([orbit_radius * math.cos(angle), orbit_radius * math.sin(angle)])
+
+        # Territory radius shrinks as clusters multiply to avoid overlap.
+        territory_radius = max(0.12, 0.38 / math.sqrt(num_clusters))
+
+        # Place each clustered lesson relative to its new cluster centre.
+        for cid, indices in real_clusters.items():
+            idx_array = np.array(indices)
+            pca_centroid = cluster_pca_centroids[cid]
+            new_center = cluster_new_centers[cid]
+            offsets = projected[idx_array] - pca_centroid  # (k, 2)
+
+            # Scale so the 90th-percentile offset maps to territory_radius.
+            magnitudes = np.linalg.norm(offsets, axis=1)
+            p90 = float(np.percentile(magnitudes, 90)) if len(magnitudes) > 1 else float(magnitudes[0])
+            scale = territory_radius / max(p90, 1e-9)
+
+            for local_i, global_i in enumerate(indices):
+                final_positions[global_i] = new_center + offsets[local_i] * scale
+
+        # Place unclustered (noise) lessons near the centre using their raw
+        # PCA coordinates scaled to a small inner region.
+        if None in cluster_to_indices:
+            noise_indices = cluster_to_indices[None]
+            noise_pca = projected[np.array(noise_indices)]
+            noise_range = float(
+                np.percentile(np.abs(noise_pca), 90) if len(noise_indices) > 1 else np.abs(noise_pca).max()
+            )
+            noise_range = max(noise_range, 1e-9)
+            for local_i, global_i in enumerate(noise_indices):
+                final_positions[global_i] = np.clip(noise_pca[local_i] / noise_range * 0.20, -0.20, 0.20)
+
+    else:
+        # ── Percentile normalisation (0–1 clusters) ───────────────────────
+        # Clip outliers at the 95th percentile so a handful of extreme
+        # embeddings no longer compress all other lessons into the centre.
+        p95 = float(np.percentile(np.abs(projected), 95))
+        if p95 > 1e-9:
+            final_positions = np.clip(projected / p95, -1.0, 1.0)
+
+    # Safety clip — inter-cluster outliers can slightly exceed ±1.
+    final_positions = np.clip(final_positions, -1.0, 1.0)
+
     updates = []
     for i, lesson in enumerate(lessons):
-        lesson.position_x = float(projected[i, 0])
-        lesson.position_y = float(projected[i, 1])
+        lesson.position_x = float(final_positions[i, 0])
+        lesson.position_y = float(final_positions[i, 1])
         updates.append(lesson)
 
     with transaction.atomic():
