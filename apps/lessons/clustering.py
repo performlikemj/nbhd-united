@@ -1,86 +1,160 @@
 """Clustering helpers for lesson constellation features.
 
-This module groups approved lessons into clusters based on explicit lesson
-connections (LessonConnection similarity edges), then generates cluster labels.
+Groups approved lessons into clusters using agglomerative clustering
+(average linkage) on embedding cosine similarity, then generates
+cluster labels with TF-IDF-weighted tags.
 """
 
 from __future__ import annotations
 
+import math
+import re
 from collections import Counter
 
 from django.db import transaction
 
 from apps.tenants.models import Tenant
 
-from .models import Lesson, LessonConnection
+from .models import Lesson
 
 DEFAULT_CLUSTER_MIN_LESSONS = 5
-CLUSTER_SIMILARITY_THRESHOLD = 0.75
+# Average-linkage threshold: the mean pairwise similarity between two
+# clusters must exceed this value for them to merge.  Raised to 0.78
+# to prevent cross-domain lessons (e.g. DevOps + personal habits) from
+# being pulled into the same cluster via a semantically bridging lesson.
+CLUSTER_SIMILARITY_THRESHOLD = 0.78
+
+# Tags describing personal behavioral patterns rather than subject domains.
+# These receive 1× weight in label scoring; domain-specific tags receive
+# _DOMAIN_WEIGHT_MULTIPLIER× so subject vocabulary wins over generic labels.
+_BEHAVIORAL_TAGS = frozenset({
+    "habits",
+    "habit",
+    "consistency",
+    "growth",
+    "mindset",
+    "discipline",
+    "routine",
+    "productivity",
+    "self-improvement",
+    "personal-development",
+    "resilience",
+    "reflection",
+    "wellbeing",
+    "wellness",
+    "motivation",
+})
+
+_TEXT_STOPWORDS = frozenset({
+    "the", "and", "but", "for", "not", "you", "that", "this", "with",
+    "have", "from", "they", "will", "your", "been", "when", "there",
+    "their", "what", "which", "were", "make", "like", "just", "more",
+    "also", "into", "than", "then", "some", "would", "about", "always",
+    "never", "should", "could", "keep", "good", "best", "use", "using",
+    "used", "can", "may", "might", "over", "each", "every", "first",
+    "before", "after", "while", "since", "both", "through", "very",
+    "only", "often", "most", "where", "how", "why",
+})
+
+_DOMAIN_WEIGHT_MULTIPLIER = 2.0   # multiplier for non-behavioral (domain) tags
+_TEXT_TOKEN_WEIGHT = 0.4           # text tokens count as this fraction of a tag
+_AMBIGUITY_MARGIN = 0.15           # swap in domain term if within 15% of behavioral top
 
 
-def _adjacency_from_connections(
-    lesson_ids: list[int],
+def _extract_text_tokens(text: str, max_chars: int = 200) -> list[str]:
+    """Extract meaningful word tokens from a text snippet for label scoring."""
+    snippet = text[:max_chars].lower()
+    tokens = re.findall(r"[a-z][a-z0-9_-]{2,}", snippet)
+    return [t for t in tokens if t not in _TEXT_STOPWORDS]
+
+
+def _cosine_similarity_matrix(embeddings):
+    """Return (N, N) pairwise cosine-similarity matrix."""
+    import numpy as np
+
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    normalized = embeddings / norms
+    return normalized @ normalized.T
+
+
+def _agglomerative_cluster(
+    sim_matrix,
     *,
     min_similarity: float = CLUSTER_SIMILARITY_THRESHOLD,
-) -> dict[int, set[int]]:
-    """Build undirected adjacency for lesson ids from high-similarity edges."""
+) -> list[list[int]]:
+    """Average-linkage agglomerative clustering.
 
-    adjacency: dict[int, set[int]] = {lesson_id: set() for lesson_id in lesson_ids}
+    Merges the most-similar pair of clusters at each step, stopping
+    when no pair exceeds *min_similarity*.  Unlike connected-component
+    clustering, average linkage prevents the chaining problem where a
+    single bridge edge merges unrelated groups.
 
-    if not lesson_ids:
-        return adjacency
+    Returns a list of clusters (each a list of original row indices).
+    """
+    n = sim_matrix.shape[0]
+    if n == 0:
+        return []
 
-    edges = LessonConnection.objects.filter(
-        from_lesson_id__in=lesson_ids,
-        to_lesson_id__in=lesson_ids,
-        similarity__gte=min_similarity,
-    )
+    active = set(range(n))
+    members: dict[int, list[int]] = {i: [i] for i in range(n)}
 
-    for edge in edges:
-        start = edge.from_lesson_id
-        end = edge.to_lesson_id
-        adjacency[start].add(end)
-        adjacency[end].add(start)
+    # Cluster-level average similarities (initially = raw pairwise sims).
+    csim: dict[int, dict[int, float]] = {
+        i: {j: float(sim_matrix[i, j]) for j in range(n) if j != i}
+        for i in range(n)
+    }
 
-    return adjacency
+    while len(active) > 1:
+        best_sim = -1.0
+        best_a, best_b = -1, -1
+        for a in active:
+            for b in active:
+                if b <= a:
+                    continue
+                s = csim[a].get(b, -1.0)
+                if s > best_sim:
+                    best_sim = s
+                    best_a, best_b = a, b
 
+        if best_sim < min_similarity:
+            break
 
-def _connected_components(lesson_ids: list[int], adjacency: dict[int, set[int]]) -> list[list[int]]:
-    """Return connected components of the lesson graph."""
+        # Merge best_b into best_a.
+        size_a = len(members[best_a])
+        size_b = len(members[best_b])
+        members[best_a].extend(members[best_b])
+        del members[best_b]
+        active.remove(best_b)
 
-    visited: set[int] = set()
-    components: list[list[int]] = []
-
-    for lesson_id in lesson_ids:
-        if lesson_id in visited:
-            continue
-
-        component = []
-        stack = [lesson_id]
-        while stack:
-            current = stack.pop()
-            if current in visited:
+        # Recompute average-linkage similarities for the merged cluster.
+        for k in active:
+            if k == best_a:
                 continue
-            visited.add(current)
-            component.append(current)
-            stack.extend(adjacency.get(current, ()))
+            sim_ak = csim[best_a].get(k, 0.0)
+            sim_bk = csim.get(best_b, {}).get(k, 0.0)
+            merged = (size_a * sim_ak + size_b * sim_bk) / (size_a + size_b)
+            csim[best_a][k] = merged
+            csim[k][best_a] = merged
 
-        components.append(component)
+        for k in active:
+            csim[k].pop(best_b, None)
+        csim.pop(best_b, None)
 
-    return components
+    return [members[i] for i in active]
 
 
 def cluster_lessons(tenant: Tenant) -> dict[str, int]:
-    """Cluster approved lessons with embeddings for a tenant.
+    """Cluster approved lessons using agglomerative clustering (average linkage).
 
-    Returns a summary:
-    {
-      "total": total eligible lessons,
-      "clustered": lessons assigned to a cluster (size >= 2),
-      "clusters": number of non-noise clusters,
-      "noise": isolated lessons not in any cluster
-    }
+    Computes full pairwise cosine similarity from embeddings and merges
+    clusters greedily.  Average linkage prevents the chaining problem
+    where a single bridge lesson pulls unrelated topics together.
+
+    Returns:
+        {"total", "clustered", "clusters", "noise"}
     """
+    import numpy as np
 
     lessons = list(
         Lesson.objects.filter(
@@ -99,11 +173,10 @@ def cluster_lessons(tenant: Tenant) -> dict[str, int]:
             "noise": 0,
         }
 
-    lesson_ids = [lesson.id for lesson in lessons]
-    adjacency = _adjacency_from_connections(lesson_ids)
-    components = _connected_components(lesson_ids, adjacency)
+    embeddings = np.array([l.embedding for l in lessons], dtype=np.float64)
+    sim_matrix = _cosine_similarity_matrix(embeddings)
+    components = _agglomerative_cluster(sim_matrix, min_similarity=CLUSTER_SIMILARITY_THRESHOLD)
 
-    lesson_by_id = {lesson.id: lesson for lesson in lessons}
     updates = []
     cluster_number = 1
     clustered_count = 0
@@ -112,17 +185,16 @@ def cluster_lessons(tenant: Tenant) -> dict[str, int]:
 
     for component in components:
         if len(component) >= 2:
-            for lesson_id in component:
-                lesson_by_id[lesson_id].cluster_id = cluster_number
-                updates.append(lesson_by_id[lesson_id])
+            for idx in component:
+                lessons[idx].cluster_id = cluster_number
+                updates.append(lessons[idx])
             cluster_count += 1
             cluster_number += 1
             clustered_count += len(component)
-            continue
-
-        lesson_by_id[component[0]].cluster_id = None
-        updates.append(lesson_by_id[component[0]])
-        noise_count += 1
+        else:
+            lessons[component[0]].cluster_id = None
+            updates.append(lessons[component[0]])
+            noise_count += 1
 
     if updates:
         with transaction.atomic():
@@ -137,9 +209,23 @@ def cluster_lessons(tenant: Tenant) -> dict[str, int]:
 
 
 def generate_cluster_labels(tenant: Tenant) -> int:
-    """Generate simple label strings for each cluster from lesson tags."""
+    """Generate cluster labels using TF-IDF on tags and text snippets.
 
-    clusters = (
+    Tags frequent within a cluster but rare globally receive higher scores.
+    Domain-specific tags are weighted 2× over behavioral/generic tags
+    (habits, mindset, …) so subject-domain vocabulary wins over generic
+    self-improvement labels.  Text tokens from lesson snippets supplement
+    the tag signal when tags are sparse or overly generic.
+    """
+    all_lessons = list(Lesson.objects.filter(tenant=tenant, status="approved"))
+    total_docs = len(all_lessons) or 1
+
+    # Global document frequency for tags (used as IDF denominator).
+    global_tag_df: Counter = Counter()
+    for lesson in all_lessons:
+        global_tag_df.update(set(lesson.tags))
+
+    cluster_ids = list(
         Lesson.objects.filter(
             tenant=tenant,
             status="approved",
@@ -150,7 +236,7 @@ def generate_cluster_labels(tenant: Tenant) -> int:
     )
 
     labeled = 0
-    for cluster_id in clusters:
+    for cluster_id in cluster_ids:
         cluster_lessons = list(
             Lesson.objects.filter(
                 tenant=tenant,
@@ -161,18 +247,61 @@ def generate_cluster_labels(tenant: Tenant) -> int:
         if not cluster_lessons:
             continue
 
-        text_parts = []
-        tags: list[str] = []
-        for lesson in cluster_lessons:
-            text_parts.append(lesson.text or "")
-            tags.extend([tag for tag in lesson.tags if tag])
+        cluster_size = len(cluster_lessons)
+        text_parts: list[str] = []
+        cluster_tag_tf: Counter = Counter()
 
-        if tags:
-            common_tags = [tag for tag, _count in Counter(tags).most_common(3)]
-            label = " ".join(common_tags[:3]).strip()
-        else:
+        for lesson in cluster_lessons:
+            cluster_tag_tf.update(set(lesson.tags))
+            text_parts.append(lesson.text or "")
+
+        scores: dict[str, float] = {}
+
+        # Tag TF-IDF with domain weighting.
+        for tag, count in cluster_tag_tf.items():
+            tf = count / cluster_size
+            idf = math.log((total_docs + 1) / (global_tag_df.get(tag, 0) + 1))
+            weight = 1.0 if tag.lower() in _BEHAVIORAL_TAGS else _DOMAIN_WEIGHT_MULTIPLIER
+            scores[tag] = tf * idf * weight
+
+        # Text token supplement — adds domain keywords from lesson text as
+        # lower-weight candidates when not already represented by a tag.
+        text_token_tf: Counter = Counter()
+        for lesson in cluster_lessons:
+            text_token_tf.update(set(_extract_text_tokens(lesson.text or "")))
+
+        for token, count in text_token_tf.items():
+            if token in scores:
+                continue  # already covered by a tag
+            tf = count / cluster_size
+            idf = math.log((total_docs + 1) / (global_tag_df.get(token, 0) + 1))
+            weight = 1.0 if token.lower() in _BEHAVIORAL_TAGS else _DOMAIN_WEIGHT_MULTIPLIER
+            scores[token] = tf * idf * weight * _TEXT_TOKEN_WEIGHT
+
+        if not scores:
             raw_text = " ".join(text_parts)[:500].strip()
             label = (raw_text[:40] or "Lesson cluster")[:40]
+            Lesson.objects.filter(
+                tenant=tenant,
+                status="approved",
+                cluster_id=cluster_id,
+            ).update(cluster_label=label)
+            labeled += 1
+            continue
+
+        sorted_terms = sorted(scores, key=lambda t: scores[t], reverse=True)
+
+        # Ambiguity fallback: if the top term is behavioral and a domain term
+        # scores within _AMBIGUITY_MARGIN of it, prefer the domain term.
+        top_term = sorted_terms[0]
+        if top_term.lower() in _BEHAVIORAL_TAGS:
+            domain_terms = [t for t in sorted_terms if t.lower() not in _BEHAVIORAL_TAGS]
+            if domain_terms:
+                best_domain = domain_terms[0]
+                if scores[top_term] <= scores[best_domain] * (1 + _AMBIGUITY_MARGIN):
+                    sorted_terms = [best_domain] + [t for t in sorted_terms if t != best_domain]
+
+        label = " ".join(sorted_terms[:3]).strip()
 
         Lesson.objects.filter(
             tenant=tenant,
