@@ -55,6 +55,7 @@ Rules:
   Bad: "The PR photo was the wrong size (45x35cm instead of 40x30cm)"
   Good: "Always verify exact photo dimensions for government documents before proceeding — Japanese photo machines offer non-standard sizes"
 - context: 1 sentence describing the situation that prompted this lesson.
+- tags: 2-5 specific tags describing the SUBJECT DOMAIN of the lesson — the field or topic it belongs to (e.g. devops, python, cooking, finance, relationships, health, writing). Prefer concrete domain tags over behavioral ones. Avoid generic tags like habits, consistency, growth, mindset, or productivity unless the lesson is explicitly about personal development — a lesson about keeping env files in a stable location should be tagged devops and secrets-management, not habits.
 - Goals: things the user wants to build, ship, or achieve (multi-day/week scope).
 - Tasks: specific near-term action items with clear completion criteria.
 - Ignore small talk, routine status updates, and things that are purely observational with no insight.
