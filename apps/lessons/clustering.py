@@ -27,38 +27,96 @@ CLUSTER_SIMILARITY_THRESHOLD = 0.78
 # Tags describing personal behavioral patterns rather than subject domains.
 # These receive 1× weight in label scoring; domain-specific tags receive
 # _DOMAIN_WEIGHT_MULTIPLIER× so subject vocabulary wins over generic labels.
-_BEHAVIORAL_TAGS = frozenset({
-    "habits",
-    "habit",
-    "consistency",
-    "growth",
-    "mindset",
-    "discipline",
-    "routine",
-    "productivity",
-    "self-improvement",
-    "personal-development",
-    "resilience",
-    "reflection",
-    "wellbeing",
-    "wellness",
-    "motivation",
-})
+_BEHAVIORAL_TAGS = frozenset(
+    {
+        "habits",
+        "habit",
+        "consistency",
+        "growth",
+        "mindset",
+        "discipline",
+        "routine",
+        "productivity",
+        "self-improvement",
+        "personal-development",
+        "resilience",
+        "reflection",
+        "wellbeing",
+        "wellness",
+        "motivation",
+    }
+)
 
-_TEXT_STOPWORDS = frozenset({
-    "the", "and", "but", "for", "not", "you", "that", "this", "with",
-    "have", "from", "they", "will", "your", "been", "when", "there",
-    "their", "what", "which", "were", "make", "like", "just", "more",
-    "also", "into", "than", "then", "some", "would", "about", "always",
-    "never", "should", "could", "keep", "good", "best", "use", "using",
-    "used", "can", "may", "might", "over", "each", "every", "first",
-    "before", "after", "while", "since", "both", "through", "very",
-    "only", "often", "most", "where", "how", "why",
-})
+_TEXT_STOPWORDS = frozenset(
+    {
+        "the",
+        "and",
+        "but",
+        "for",
+        "not",
+        "you",
+        "that",
+        "this",
+        "with",
+        "have",
+        "from",
+        "they",
+        "will",
+        "your",
+        "been",
+        "when",
+        "there",
+        "their",
+        "what",
+        "which",
+        "were",
+        "make",
+        "like",
+        "just",
+        "more",
+        "also",
+        "into",
+        "than",
+        "then",
+        "some",
+        "would",
+        "about",
+        "always",
+        "never",
+        "should",
+        "could",
+        "keep",
+        "good",
+        "best",
+        "use",
+        "using",
+        "used",
+        "can",
+        "may",
+        "might",
+        "over",
+        "each",
+        "every",
+        "first",
+        "before",
+        "after",
+        "while",
+        "since",
+        "both",
+        "through",
+        "very",
+        "only",
+        "often",
+        "most",
+        "where",
+        "how",
+        "why",
+    }
+)
 
-_DOMAIN_WEIGHT_MULTIPLIER = 2.0   # multiplier for non-behavioral (domain) tags
-_TEXT_TOKEN_WEIGHT = 0.4           # text tokens count as this fraction of a tag
-_AMBIGUITY_MARGIN = 0.15           # swap in domain term if within 15% of behavioral top
+_DOMAIN_WEIGHT_MULTIPLIER = 2.0  # multiplier for non-behavioral (domain) tags
+_TEXT_TOKEN_WEIGHT = 0.4  # text tokens count as this fraction of a tag
+_AMBIGUITY_MARGIN = 0.15  # swap in domain term if within 15% of behavioral top
 
 
 def _extract_text_tokens(text: str, max_chars: int = 200) -> list[str]:
@@ -100,10 +158,7 @@ def _agglomerative_cluster(
     members: dict[int, list[int]] = {i: [i] for i in range(n)}
 
     # Cluster-level average similarities (initially = raw pairwise sims).
-    csim: dict[int, dict[int, float]] = {
-        i: {j: float(sim_matrix[i, j]) for j in range(n) if j != i}
-        for i in range(n)
-    }
+    csim: dict[int, dict[int, float]] = {i: {j: float(sim_matrix[i, j]) for j in range(n) if j != i} for i in range(n)}
 
     while len(active) > 1:
         best_sim = -1.0

@@ -114,23 +114,28 @@ class LessonClusteringServiceTests(TestCase):
         noise = 0.001
 
         l_a1 = self._create_approved_lesson(
-            text="Topic A1", tags=["alpha"],
+            text="Topic A1",
+            tags=["alpha"],
             embedding=(a + rng.normal(0, noise, 1536)).tolist(),
         )
         l_a2 = self._create_approved_lesson(
-            text="Topic A2", tags=["alpha"],
+            text="Topic A2",
+            tags=["alpha"],
             embedding=(a + rng.normal(0, noise, 1536)).tolist(),
         )
         l_bridge = self._create_approved_lesson(
-            text="Bridge topic", tags=["bridge"],
+            text="Bridge topic",
+            tags=["bridge"],
             embedding=(b + rng.normal(0, noise, 1536)).tolist(),
         )
         l_c1 = self._create_approved_lesson(
-            text="Topic C1", tags=["gamma"],
+            text="Topic C1",
+            tags=["gamma"],
             embedding=(c + rng.normal(0, noise, 1536)).tolist(),
         )
         l_c2 = self._create_approved_lesson(
-            text="Topic C2", tags=["gamma"],
+            text="Topic C2",
+            tags=["gamma"],
             embedding=(c + rng.normal(0, noise, 1536)).tolist(),
         )
 
