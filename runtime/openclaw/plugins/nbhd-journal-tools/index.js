@@ -204,6 +204,90 @@ export default function register(api) {
     { optional: true },
   );
 
+  // ── Weekly Review: Create (structured) ───────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_weekly_review_create",
+      description:
+        "Save a structured weekly review so it appears on the Horizons Weekly Pulse card. " +
+        "Call this AFTER nbhd_document_put (which saves the free-form markdown) — both are required " +
+        "to fully record a week: the document holds the narrative, this tool records the rating, " +
+        "wins, challenges, lessons, and intentions in structured form.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          week_start: {
+            type: "string",
+            description: "Monday of the reviewed week (ISO date, YYYY-MM-DD).",
+          },
+          week_end: {
+            type: "string",
+            description: "Sunday of the reviewed week (ISO date, YYYY-MM-DD).",
+          },
+          week_rating: {
+            type: "string",
+            enum: ["thumbs-up", "thumbs-down", "meh"],
+            description: "The user's overall rating of the week.",
+          },
+          mood_summary: {
+            type: "string",
+            description: "Brief summary of the week's mood/energy arc.",
+          },
+          top_wins: {
+            type: "array",
+            items: { type: "string" },
+            description: "Biggest wins of the week (highlights first).",
+          },
+          top_challenges: {
+            type: "array",
+            items: { type: "string" },
+            description: "Main challenges or difficulties.",
+          },
+          lessons: {
+            type: "array",
+            items: { type: "string" },
+            description: "Lessons captured this week.",
+          },
+          intentions_next_week: {
+            type: "array",
+            items: { type: "string" },
+            description: "Intentions for the upcoming week (1-3 items).",
+          },
+          raw_text: {
+            type: "string",
+            description: "Full free-form reflection text (can mirror the markdown body).",
+          },
+        },
+        required: ["week_start", "week_end", "week_rating", "mood_summary", "raw_text"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const toStringList = (value) =>
+          Array.isArray(value)
+            ? value.map((item) => asTrimmedString(item)).filter((item) => item.length > 0)
+            : [];
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/weekly-reviews/"),
+          method: "POST",
+          body: {
+            week_start: asTrimmedString(input.week_start),
+            week_end: asTrimmedString(input.week_end),
+            week_rating: asTrimmedString(input.week_rating),
+            mood_summary: asTrimmedString(input.mood_summary),
+            raw_text: asTrimmedString(input.raw_text),
+            top_wins: toStringList(input.top_wins),
+            top_challenges: toStringList(input.top_challenges),
+            lessons: toStringList(input.lessons),
+            intentions_next_week: toStringList(input.intentions_next_week),
+          },
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
   // ── Document: Append ─────────────────────────────────────────────────
   api.registerTool(
     {
