@@ -337,10 +337,7 @@ class HorizonsView(APIView):
                     }
                     for w in weeks
                 ],
-                "weekly_documents": [
-                    _serialize_weekly_document(wd)
-                    for wd in weekly_docs
-                ],
+                "weekly_documents": [_serialize_weekly_document(wd) for wd in weekly_docs],
                 "mood_trend": [{"date": str(m["date"]), "mood": m["mood"], "energy": m["energy"]} for m in moods],
                 "momentum": momentum,
                 "current_streak": streak,
