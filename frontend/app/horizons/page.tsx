@@ -89,7 +89,7 @@ export default function HorizonsPage() {
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
         <div className="lg:col-span-1">
           <HorizonsSection title="Weekly Pulse" delay={200}>
-            <WeeklyPulse weeks={data.weekly_pulse} />
+            <WeeklyPulse weeks={data.weekly_pulse} documents={data.weekly_documents} />
           </HorizonsSection>
         </div>
 
