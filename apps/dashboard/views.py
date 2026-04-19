@@ -18,7 +18,6 @@ from apps.journal.models import Document, JournalEntry, PendingExtraction, Weekl
 from apps.orchestrator.services import check_tenant_health
 from apps.tenants.models import Tenant
 
-
 _WEEKLY_SLUG_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 
 
