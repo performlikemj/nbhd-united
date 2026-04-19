@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+import re
+from datetime import date, datetime, timedelta
 
 from django.db.models import Count, Sum
 from django.utils import timezone
@@ -16,6 +17,79 @@ from apps.integrations.models import Integration
 from apps.journal.models import Document, JournalEntry, PendingExtraction, WeeklyReview
 from apps.orchestrator.services import check_tenant_health
 from apps.tenants.models import Tenant
+
+
+_WEEKLY_SLUG_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+
+
+def _clean_markdown_preview(markdown: str, max_chars: int = 180) -> str:
+    """Produce a clean, prose-only preview snippet from markdown.
+
+    Drops heading lines entirely (they become noise in a short preview),
+    strips formatting markers, and collapses whitespace. The output is
+    plain text suitable for display on a compact dashboard card.
+    """
+    if not markdown:
+        return ""
+    text = markdown
+    # Drop heading lines entirely — the first heading typically restates the title
+    text = re.sub(r"^\s*#{1,6}\s+.*$", "", text, flags=re.MULTILINE)
+    # Drop horizontal rules
+    text = re.sub(r"^\s*[-*_]{3,}\s*$", "", text, flags=re.MULTILINE)
+    # Strip bold/italic markers
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"__(.+?)__", r"\1", text)
+    text = re.sub(r"(?<!\w)\*(.+?)\*(?!\w)", r"\1", text)
+    text = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", text)
+    # Markdown links → just the visible text
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    # Inline code
+    text = re.sub(r"`(.+?)`", r"\1", text)
+    # List markers (unordered + ordered)
+    text = re.sub(r"^\s*[-*+]\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*\d+\.\s+", "", text, flags=re.MULTILINE)
+    # Blockquote markers
+    text = re.sub(r"^\s*>\s*", "", text, flags=re.MULTILINE)
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_chars:
+        text = text[: max_chars - 1].rstrip(" ,;:-") + "\u2026"
+    return text
+
+
+def _derive_week_bounds(slug: str, fallback: date) -> tuple[date, date]:
+    """Given a weekly document slug (YYYY-MM-DD, Monday) return (week_start, week_end).
+
+    Falls back to the Monday/Sunday surrounding `fallback` if the slug isn't a
+    parseable date (older slugs, manual entries, etc.).
+    """
+    match = _WEEKLY_SLUG_RE.match(slug or "")
+    if match:
+        try:
+            start = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            return start, start + timedelta(days=6)
+        except ValueError:
+            pass
+    monday = fallback - timedelta(days=fallback.weekday())
+    return monday, monday + timedelta(days=6)
+
+
+def _serialize_weekly_document(wd: dict) -> dict:
+    """Shape a Document(kind=weekly) row for the Horizons Weekly Pulse fallback."""
+    updated_at = wd["updated_at"]
+    fallback_date = updated_at.date() if isinstance(updated_at, datetime) else updated_at
+    week_start, week_end = _derive_week_bounds(wd.get("slug") or "", fallback_date)
+    markdown = wd.get("markdown") or ""
+    return {
+        "id": str(wd["id"]),
+        "title": wd.get("title") or "Weekly Review",
+        "slug": wd.get("slug") or "",
+        "week_start": str(week_start),
+        "week_end": str(week_end),
+        "preview": _clean_markdown_preview(markdown),
+        "markdown": markdown,
+        "updated_at": updated_at.isoformat(),
+    }
 
 
 class DashboardView(APIView):
@@ -265,13 +339,7 @@ class HorizonsView(APIView):
                     for w in weeks
                 ],
                 "weekly_documents": [
-                    {
-                        "id": str(wd["id"]),
-                        "title": wd["title"] or "Weekly Review",
-                        "slug": wd["slug"],
-                        "preview": (wd["markdown"] or "")[:200],
-                        "updated_at": wd["updated_at"].isoformat(),
-                    }
+                    _serialize_weekly_document(wd)
                     for wd in weekly_docs
                 ],
                 "mood_trend": [{"date": str(m["date"]), "mood": m["mood"], "energy": m["energy"]} for m in moods],

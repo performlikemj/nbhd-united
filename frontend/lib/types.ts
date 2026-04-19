@@ -488,7 +488,10 @@ export interface HorizonsWeeklyDocument {
   id: string;
   title: string;
   slug: string;
+  week_start: string;
+  week_end: string;
   preview: string;
+  markdown: string;
   updated_at: string;
 }
 
