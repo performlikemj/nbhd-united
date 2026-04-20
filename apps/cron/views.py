@@ -291,10 +291,8 @@ def apply_pending_configs(request):
             image_tasks.append(("apply_single_tenant_image", (str(tenant.id), desired_tag), {}))
             image_count += 1
 
-    # 3. Re-seed cron jobs for all active (non-hibernated) tenants
-    active_tenants_with_containers = Tenant.objects.filter(
-        status=Tenant.Status.ACTIVE,
-        container_id__gt="",
+    # 3. Re-seed cron jobs for all entitled, active (non-hibernated) tenants
+    active_tenants_with_containers = Tenant.entitled_active().filter(
         hibernated_at__isnull=True,
     ).values_list("id", flat=True)
 
@@ -364,10 +362,7 @@ def force_reseed_crons(request):
         "Background Tasks",
     }
 
-    tenants = Tenant.objects.filter(
-        status=Tenant.Status.ACTIVE,
-        container_id__gt="",
-    ).select_related("user")
+    tenants = Tenant.entitled_active().select_related("user")
 
     results = []
     for tenant in tenants:
@@ -1028,11 +1023,7 @@ def broadcast_message(request):
 
     from apps.cron.publish import publish_batch
 
-    tenants = Tenant.objects.filter(
-        status=Tenant.Status.ACTIVE,
-        container_id__gt="",
-        container_fqdn__gt="",
-    )
+    tenants = Tenant.entitled_active().filter(container_fqdn__gt="")
 
     batch_tasks = []
     for tenant in tenants:

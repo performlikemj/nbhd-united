@@ -325,6 +325,30 @@ class Tenant(models.Model):
         return self.status == self.Status.ACTIVE
 
     @property
+    def has_entitlement(self) -> bool:
+        """True if tenant has a paid subscription or an unexpired trial."""
+        from django.utils import timezone
+
+        has_subscription = bool(self.stripe_subscription_id)
+        on_valid_trial = bool(self.is_trial) and self.trial_ends_at and self.trial_ends_at > timezone.now()
+        return has_subscription or on_valid_trial
+
+    @classmethod
+    def entitled_active(cls):
+        """Active tenants with valid entitlement (paid or unexpired trial)."""
+        from django.utils import timezone
+
+        now = timezone.now()
+        return cls.objects.filter(
+            status=cls.Status.ACTIVE,
+            container_id__gt="",
+        ).exclude(
+            is_trial=True,
+            trial_ends_at__lte=now,
+            stripe_subscription_id="",
+        )
+
+    @property
     def effective_token_budget(self) -> int:
         """Resolve the active budget: explicit override or tier default.  0 = unlimited."""
         from apps.billing.constants import TIER_TOKEN_BUDGETS
