@@ -433,6 +433,27 @@ def _resolve_channel_formatting(tenant=None) -> str | None:
     return content
 
 
+def _get_tenant_prompt_extras(tenant, section: str) -> str:
+    """Return per-tenant prompt extras for a given section, or empty string.
+
+    Source: ``tenant.user.preferences["prompt_extras"][section]``.
+
+    This is the hook for canary-style per-tenant prompt overrides without a
+    schema migration. Populate via the ``set_prompt_extras`` management
+    command. Known sections: ``agents_md``.
+
+    Unknown or malformed values are silently ignored (returns "").
+    """
+    if tenant is None or not hasattr(tenant, "user"):
+        return ""
+    prefs = getattr(tenant.user, "preferences", None) or {}
+    extras_map = prefs.get("prompt_extras") if isinstance(prefs, dict) else None
+    if not isinstance(extras_map, dict):
+        return ""
+    value = extras_map.get(section, "")
+    return value.strip() if isinstance(value, str) else ""
+
+
 def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     """Render all persona-aware workspace files.
 
@@ -442,12 +463,20 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     - NBHD_IDENTITY_MD
     - NBHD_DOC_* (reference docs written to workspace/docs/)
     - NBHD_SKILL_TEMPLATES_MD (when tenant is provided)
+
+    Per-tenant prompt extras (``tenant.user.preferences['prompt_extras']``)
+    are appended to the relevant base file — e.g., ``agents_md`` extras are
+    concatenated to NBHD_AGENTS_MD. Lets us ship canary-scoped prompt rules
+    without branching the template or running a schema migration.
     """
     result = {
         "NBHD_AGENTS_MD": render_agents_md(persona_key),
         "NBHD_SOUL_MD": render_soul_md(persona_key),
         "NBHD_IDENTITY_MD": render_identity_md(persona_key),
     }
+    agents_extras = _get_tenant_prompt_extras(tenant, "agents_md")
+    if agents_extras:
+        result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + agents_extras
     # Load static reference docs
     for key, filename in _WORKSPACE_DOCS.items():
         content = _load_doc_template(filename)
