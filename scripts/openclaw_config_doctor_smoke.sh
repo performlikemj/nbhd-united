@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
+# OpenClaw config doctor smoke test.
+#
+# Boots a disposable pgvector/pgvector:pg16 container (matching CI — see the
+# openclaw-config-smoke job in .github/workflows/ci-cd.yml), migrates the schema,
+# generates a tenant config, runs the Python validator, and then exercises the
+# upstream `openclaw doctor` CLI against the generated JSON.
+#
+# Set DATABASE_URL to an existing Postgres URL to skip the Docker step.
+
 set -euo pipefail
 
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
-
-DB_PATH="$TMP_DIR/test.sqlite3"
 CONFIG_PATH="$TMP_DIR/openclaw.json"
 STATE_DIR="$TMP_DIR/state"
 PYTHON_BIN="${PYTHON_BIN:-python}"
@@ -13,7 +19,50 @@ if [ -x ".venv/bin/python" ]; then
   PYTHON_BIN=".venv/bin/python"
 fi
 
-export DATABASE_URL="${DATABASE_URL:-sqlite:///$DB_PATH}"
+PG_CONTAINER=""
+cleanup() {
+  rm -rf "$TMP_DIR"
+  if [ -n "$PG_CONTAINER" ]; then
+    docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+if [ -z "${DATABASE_URL:-}" ]; then
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "docker not found — install Docker or set DATABASE_URL to a running Postgres" >&2
+    exit 1
+  fi
+
+  PG_CONTAINER="openclaw-smoke-$$"
+  PG_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+
+  echo "Starting pgvector/pgvector:pg16 on 127.0.0.1:$PG_PORT ($PG_CONTAINER)..."
+  docker run -d --rm \
+    --name "$PG_CONTAINER" \
+    -e POSTGRES_DB=smoke_db \
+    -e POSTGRES_USER=smoke_user \
+    -e POSTGRES_PASSWORD=smoke_password \
+    -p "127.0.0.1:$PG_PORT:5432" \
+    pgvector/pgvector:pg16 >/dev/null
+
+  echo -n "Waiting for Postgres"
+  for i in $(seq 1 60); do
+    if docker exec "$PG_CONTAINER" pg_isready -U smoke_user -d smoke_db >/dev/null 2>&1; then
+      echo " — ready"
+      break
+    fi
+    sleep 1
+    echo -n "."
+    if [ "$i" = "60" ]; then
+      echo " — timed out waiting for Postgres" >&2
+      exit 1
+    fi
+  done
+
+  export DATABASE_URL="postgres://smoke_user:smoke_password@127.0.0.1:$PG_PORT/smoke_db"
+fi
+
 export AZURE_MOCK="true"
 
 # Disable plugins whose paths only exist in the OpenClaw container image,
@@ -50,6 +99,23 @@ pathlib.Path('$CONFIG_PATH').write_text(json.dumps(config))
 
 chmod 600 "$CONFIG_PATH"
 mkdir -p "$STATE_DIR"
+
+# `openclaw doctor` requires Node 22.12+. If the current node is too old, try
+# to source nvm and switch to a Node 22 install.
+node_major() { node --version 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/'; }
+if [ "$(node_major)" -lt 22 ] 2>/dev/null; then
+  NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+  if [ -s "$NVM_DIR/nvm.sh" ]; then
+    # shellcheck disable=SC1090,SC1091
+    . "$NVM_DIR/nvm.sh"
+    nvm use 22 >/dev/null 2>&1 || nvm use --lts >/dev/null 2>&1 || true
+  fi
+  if [ "$(node_major)" -lt 22 ] 2>/dev/null; then
+    echo "openclaw doctor requires Node 22.12+ (current: $(node --version))." >&2
+    echo "Install Node 22 (e.g. 'nvm install 22') or run this script in a shell with Node 22 on PATH." >&2
+    exit 1
+  fi
+fi
 
 set +e
 DOCTOR_OUTPUT="$(

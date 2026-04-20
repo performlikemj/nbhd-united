@@ -382,6 +382,35 @@ class ConfigGeneratorTest(TestCase):
         morning = next(j for j in jobs if j["name"] == "Morning Briefing")
         self.assertNotIn("model", morning)
 
+    # ── Morning briefing prompt shape ──────────────────────────────
+
+    def _morning_briefing_prompt(self) -> str:
+        jobs = build_cron_seed_jobs(self.tenant)
+        morning = next(j for j in jobs if j["name"] == "Morning Briefing")
+        return morning["payload"]["message"]
+
+    def test_morning_briefing_prompt_has_hourly_weather_url(self):
+        prompt = self._morning_briefing_prompt()
+        self.assertIn("api.open-meteo.com/v1/forecast", prompt)
+        # hourly=... is url-encoded in the embedded URL
+        self.assertIn("hourly=", prompt)
+        self.assertIn("precipitation_probability", prompt)
+
+    def test_morning_briefing_prompt_has_intraday_threshold_rule(self):
+        prompt = self._morning_briefing_prompt()
+        # Agent is told which intraday patterns warrant mention
+        self.assertIn("hourly.precipitation_probability", prompt)
+        self.assertIn("thunderstorm", prompt.lower())
+        # And told NOT to enumerate stable days
+        self.assertIn("Sunny all day", prompt)
+
+    def test_morning_briefing_prompt_has_intraday_section_template(self):
+        prompt = self._morning_briefing_prompt()
+        self.assertIn("**Intraday:**", prompt)
+        # Stable-day example preserved
+        self.assertIn("**Today:**", prompt)
+        self.assertIn("**Tomorrow:**", prompt)
+
     # ── GWS skills ──────────────────────────────────────────────────
 
     def test_gws_skills_loaded_when_google_active(self):
