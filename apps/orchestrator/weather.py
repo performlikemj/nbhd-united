@@ -97,6 +97,7 @@ def build_weather_url_from_coords(lat: float, lon: float, tz: str) -> str:
         "latitude": lat,
         "longitude": lon,
         "current": "temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m",
+        "hourly": "temperature_2m,weather_code,precipitation_probability,precipitation,wind_speed_10m",
         "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
         "timezone": tz,
         "forecast_days": 3,
