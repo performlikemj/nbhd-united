@@ -212,6 +212,59 @@ class TenantSerializerTest(TestCase):
         self.assertFalse(data["has_active_subscription"])
 
 
+class TenantHasEntitlementTest(TestCase):
+    """Tests for the Tenant.has_entitlement property."""
+
+    def test_paid_subscription(self):
+        tenant = create_tenant(display_name="Paid", telegram_chat_id=600)
+        tenant.stripe_subscription_id = "sub_live_1"
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.save()
+        self.assertTrue(tenant.has_entitlement)
+
+    def test_valid_trial(self):
+        tenant = create_tenant(display_name="Trial", telegram_chat_id=601)
+        tenant.is_trial = True
+        tenant.trial_ends_at = timezone.now() + timedelta(days=5)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.save()
+        self.assertTrue(tenant.has_entitlement)
+
+    def test_expired_trial_no_subscription(self):
+        tenant = create_tenant(display_name="Expired", telegram_chat_id=602)
+        tenant.is_trial = True
+        tenant.trial_ends_at = timezone.now() - timedelta(hours=1)
+        tenant.stripe_subscription_id = ""
+        tenant.save()
+        self.assertFalse(tenant.has_entitlement)
+
+    def test_no_trial_no_subscription(self):
+        tenant = create_tenant(display_name="Nothing", telegram_chat_id=603)
+        tenant.is_trial = False
+        tenant.stripe_subscription_id = ""
+        tenant.save()
+        self.assertFalse(tenant.has_entitlement)
+
+    def test_entitled_active_excludes_expired_trials(self):
+        paid = create_tenant(display_name="Paid2", telegram_chat_id=604)
+        paid.stripe_subscription_id = "sub_live_2"
+        paid.status = Tenant.Status.ACTIVE
+        paid.container_id = "oc-paid"
+        paid.save()
+
+        expired = create_tenant(display_name="Exp2", telegram_chat_id=605)
+        expired.is_trial = True
+        expired.trial_ends_at = timezone.now() - timedelta(hours=1)
+        expired.stripe_subscription_id = ""
+        expired.status = Tenant.Status.ACTIVE
+        expired.container_id = "oc-expired"
+        expired.save()
+
+        qs = Tenant.entitled_active()
+        self.assertIn(paid, qs)
+        self.assertNotIn(expired, qs)
+
+
 class OnboardTenantViewTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(

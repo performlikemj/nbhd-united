@@ -230,6 +230,10 @@ def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
     if not tenant or not tenant.container_fqdn:
         return
 
+    if not tenant.has_entitlement or tenant.status != Tenant.Status.ACTIVE:
+        logger.info("Broadcast skipped for tenant %s (no entitlement)", tenant_id[:8])
+        return
+
     url = f"https://{tenant.container_fqdn}/v1/chat/completions"
     gateway_token = getattr(settings, "NBHD_INTERNAL_API_KEY", "").strip()
     if not gateway_token:
