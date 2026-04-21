@@ -20,6 +20,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
+from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
 from apps.cron.qstash_verify import verify_qstash_signature
 from apps.orchestrator.azure_client import restart_container_app
 from apps.tenants.models import Tenant
@@ -354,7 +355,6 @@ def force_reseed_crons(request):
         logger.warning("Unauthorized force-reseed-crons attempt")
         return JsonResponse({"error": "Invalid signature"}, status=401)
 
-    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
     from apps.orchestrator.config_generator import build_cron_seed_jobs
 
     # Only touch system-managed jobs — preserve user-created crons
@@ -751,7 +751,6 @@ def resync_cron_timezones(request):
         logger.warning("Unauthorized resync_cron_timezones attempt")
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
-    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
     from apps.orchestrator.config_generator import build_cron_seed_jobs
 
     SYSTEM_JOB_NAMES = {"Morning Briefing", "Evening Check-in", "Week Ahead Review", "Background Tasks"}
