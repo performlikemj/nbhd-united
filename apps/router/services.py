@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import zoneinfo
 from collections import deque
+from datetime import datetime
 from time import monotonic
 from typing import Any
 
@@ -15,6 +17,29 @@ from django.conf import settings
 from apps.tenants.models import Tenant, User
 
 logger = logging.getLogger(__name__)
+
+_UTC = zoneinfo.ZoneInfo("UTC")
+
+
+def build_datetime_context(user_timezone: str) -> str:
+    """Build a timestamp header for interactive messages.
+
+    Returns a single-line prefix like:
+        [Now: 2026-04-21 06:47 JST (Monday)]\n
+
+    Injected before every user message so the agent always knows the current
+    time without needing to call a tool.
+    """
+    tz_str = user_timezone or "UTC"
+    try:
+        tz = zoneinfo.ZoneInfo(tz_str)
+    except (KeyError, Exception):
+        tz = _UTC
+        tz_str = "UTC"
+    now = datetime.now(tz)
+    abbrev = now.strftime("%Z") or tz_str
+    return f"[Now: {now.strftime('%Y-%m-%d %H:%M')} {abbrev} ({now.strftime('%A')})]\n"
+
 
 # In-memory cache: chat_id → (container_fqdn, timestamp)
 ROUTE_CACHE_TTL = 60  # seconds
