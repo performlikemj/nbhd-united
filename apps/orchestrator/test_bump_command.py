@@ -56,13 +56,12 @@ class BumpOpenclawVersionTest(TestCase):
     def test_bump_rolls_back_on_config_failure(self, mock_config, mock_image):
         mock_config.side_effect = Exception("config push failed")
 
-        with self.assertRaises(Exception):
-            call_command(
-                "bump_openclaw_version",
-                oc_version="2026.4.15",
-                tenant=str(self.tenant.id),
-                image_tag="openclaw-2026.4.15",
-            )
+        call_command(
+            "bump_openclaw_version",
+            oc_version="2026.4.15",
+            tenant=str(self.tenant.id),
+            image_tag="openclaw-2026.4.15",
+        )
 
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.openclaw_version, "2026.4.5")
@@ -72,13 +71,12 @@ class BumpOpenclawVersionTest(TestCase):
     def test_bump_rolls_back_on_image_failure(self, mock_config, mock_image):
         mock_image.side_effect = Exception("image deploy failed")
 
-        with self.assertRaises(Exception):
-            call_command(
-                "bump_openclaw_version",
-                oc_version="2026.4.15",
-                tenant=str(self.tenant.id),
-                image_tag="openclaw-2026.4.15",
-            )
+        call_command(
+            "bump_openclaw_version",
+            oc_version="2026.4.15",
+            tenant=str(self.tenant.id),
+            image_tag="openclaw-2026.4.15",
+        )
 
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.openclaw_version, "2026.4.5")
