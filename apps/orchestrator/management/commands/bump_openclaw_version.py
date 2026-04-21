@@ -78,14 +78,18 @@ class Command(BaseCommand):
             tid = str(tenant.id)[:8]
 
             if dry_run:
-                self.stdout.write(f"  [dry-run] {tenant.container_id} ({tid}): {tenant.openclaw_version} -> {target_version}")
+                self.stdout.write(
+                    f"  [dry-run] {tenant.container_id} ({tid}): {tenant.openclaw_version} -> {target_version}"
+                )
                 continue
 
             old_version = tenant.openclaw_version
             try:
                 self._bump_tenant(tenant, target_version, image_tag, registry)
                 succeeded += 1
-                self.stdout.write(self.style.SUCCESS(f"  {tenant.container_id} ({tid}): {old_version} -> {target_version}"))
+                self.stdout.write(
+                    self.style.SUCCESS(f"  {tenant.container_id} ({tid}): {old_version} -> {target_version}")
+                )
             except Exception as e:
                 failed += 1
                 self.stderr.write(self.style.ERROR(f"  {tenant.container_id} ({tid}): FAILED - {e}"))
