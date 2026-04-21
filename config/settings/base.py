@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     "apps.lessons",
     "apps.actions",
     "apps.finance",
+    "apps.fuel",
 ]
 
 MIDDLEWARE = [

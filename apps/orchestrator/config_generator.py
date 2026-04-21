@@ -743,6 +743,15 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             )
         )
 
+    # Fuel plugin — conditionally loaded when tenant has fuel enabled
+    if getattr(tenant, "fuel_enabled", False):
+        _plugin_defs.append(
+            (
+                str(getattr(settings, "OPENCLAW_FUEL_PLUGIN_ID", "nbhd-fuel-tools") or "").strip(),
+                str(getattr(settings, "OPENCLAW_FUEL_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-fuel-tools") or "").strip(),
+            )
+        )
+
     _active_plugins = [(pid, ppath) for pid, ppath in _plugin_defs if pid]
 
     api_base = str(getattr(settings, "API_BASE_URL", "") or "").strip().rstrip("/")

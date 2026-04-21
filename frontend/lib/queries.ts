@@ -92,6 +92,16 @@ import {
   deleteFinanceAccount,
   unarchiveFinanceAccount,
   updateFinanceSettings,
+  fetchFuelCalendar,
+  fetchWorkouts,
+  fetchWorkout,
+  createWorkout,
+  updateWorkout,
+  deleteWorkout,
+  fetchFuelProgress,
+  fetchBodyWeight,
+  createBodyWeight,
+  updateFuelSettings,
   fetchWorkspaces,
   createWorkspace,
   updateWorkspace,
@@ -1063,6 +1073,129 @@ export function useUpdateFinanceSettingsMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: updateFinanceSettings,
+    onMutate: async (newData) => {
+      await queryClient.cancelQueries({ queryKey: ["tenant"] });
+      const previous = queryClient.getQueryData<Tenant>(["tenant"]);
+      queryClient.setQueryData<Tenant>(["tenant"], (old) =>
+        old ? { ...old, ...newData } : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _newData, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["tenant"], context.previous);
+      }
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["tenant"] });
+    },
+  });
+}
+
+// -- Fuel (Workout Tracking) --
+
+export function useFuelCalendarQuery(year: number, month: number) {
+  return useQuery({
+    queryKey: ["fuel-calendar", year, month],
+    queryFn: () => fetchFuelCalendar(year, month),
+    staleTime: 30_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useWorkoutsQuery(params?: {
+  category?: string;
+  status?: string;
+  date_from?: string;
+  date_to?: string;
+  limit?: number;
+}) {
+  return useQuery({
+    queryKey: ["fuel-workouts", params],
+    queryFn: () => fetchWorkouts(params),
+    staleTime: 30_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useWorkoutQuery(id: string | null) {
+  return useQuery({
+    queryKey: ["fuel-workout", id],
+    queryFn: () => fetchWorkout(id!),
+    staleTime: 30_000,
+    enabled: isLoggedIn() && !!id,
+  });
+}
+
+export function useCreateWorkoutMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: createWorkout,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
+    },
+  });
+}
+
+export function useUpdateWorkoutMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Partial<import("@/lib/types").FuelWorkout> }) =>
+      updateWorkout(id, data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-workout"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-progress"] });
+    },
+  });
+}
+
+export function useDeleteWorkoutMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteWorkout,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-progress"] });
+    },
+  });
+}
+
+export function useFuelProgressQuery(category: string) {
+  return useQuery({
+    queryKey: ["fuel-progress", category],
+    queryFn: () => fetchFuelProgress(category),
+    staleTime: 30_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useBodyWeightQuery() {
+  return useQuery({
+    queryKey: ["fuel-body-weight"],
+    queryFn: fetchBodyWeight,
+    staleTime: 30_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useCreateBodyWeightMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: createBodyWeight,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-body-weight"] });
+    },
+  });
+}
+
+export function useUpdateFuelSettingsMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateFuelSettings,
     onMutate: async (newData) => {
       await queryClient.cancelQueries({ queryKey: ["tenant"] });
       const previous = queryClient.getQueryData<Tenant>(["tenant"]);
