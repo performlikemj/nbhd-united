@@ -470,6 +470,47 @@ class ConfigGeneratorTest(TestCase):
         self.assertNotIn("Heartbeat Check-in", names)
 
 
+class VersionAwareConfigTest(TestCase):
+    """Config generation must respect tenant.openclaw_version."""
+
+    def setUp(self):
+        self.tenant = create_tenant(
+            display_name="Version Test",
+            telegram_chat_id=777888999,
+        )
+
+    def test_tools_default_to_2026_4_5_policy(self):
+        config = generate_openclaw_config(self.tenant)
+        allowed = config["tools"]["allow"]
+        self.assertIn("group:web", allowed)
+        self.assertIn("group:automation", allowed)
+        self.assertNotIn("group:openclaw", allowed)
+
+    def test_tools_use_2026_4_15_when_version_set(self):
+        self.tenant.openclaw_version = "2026.4.15"
+        self.tenant.save()
+        config = generate_openclaw_config(self.tenant)
+        allowed = config["tools"]["allow"]
+        self.assertIn("group:openclaw", allowed)
+        self.assertNotIn("group:web", allowed)
+        self.assertNotIn("group:automation", allowed)
+
+    def test_openrouter_base_url_injected_for_2026_4_15(self):
+        self.tenant.openclaw_version = "2026.4.15"
+        self.tenant.save()
+        config = generate_openclaw_config(self.tenant)
+        providers = config.get("models", {}).get("providers", {})
+        self.assertEqual(
+            providers.get("openrouter", {}).get("baseUrl"),
+            "https://openrouter.ai/api/v1",
+        )
+
+    def test_no_openrouter_override_for_2026_4_5(self):
+        config = generate_openclaw_config(self.tenant)
+        providers = config.get("models", {}).get("providers", {})
+        self.assertNotIn("openrouter", providers)
+
+
 class RestoreUserCronJobsTest(TestCase):
     """Tests for user cron job restore deduplication."""
 

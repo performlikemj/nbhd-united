@@ -117,6 +117,11 @@ class Tenant(models.Model):
         default="",
         help_text="Current OpenClaw container image tag (git SHA)",
     )
+    openclaw_version = models.CharField(
+        max_length=20,
+        default="2026.4.5",
+        help_text="OpenClaw runtime version pinned to this tenant's config",
+    )
 
     # Azure Key Vault
     key_vault_prefix = models.CharField(
