@@ -198,7 +198,20 @@ export function usePreferredModelMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: updatePreferredModel,
-    onSuccess: () => {
+    onMutate: async (newModelId: string) => {
+      await queryClient.cancelQueries({ queryKey: ["tenant"] });
+      const previous = queryClient.getQueryData<Record<string, unknown>>(["tenant"]);
+      queryClient.setQueryData(["tenant"], (old: Record<string, unknown> | undefined) =>
+        old ? { ...old, preferred_model: newModelId } : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _newModelId, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["tenant"], context.previous);
+      }
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["tenant"] });
     },
   });
