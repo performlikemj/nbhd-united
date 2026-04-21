@@ -8,49 +8,103 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies = [
-        ('tenants', '0040_fuel_enabled'),
+        ("tenants", "0040_fuel_enabled"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='BodyWeightLog',
+            name="BodyWeightLog",
             fields=[
-                ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
-                ('date', models.DateField()),
-                ('weight_kg', models.DecimalField(decimal_places=2, max_digits=6)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('tenant', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='body_weight_logs', to='tenants.tenant')),
+                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                ("date", models.DateField()),
+                ("weight_kg", models.DecimalField(decimal_places=2, max_digits=6)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "tenant",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="body_weight_logs",
+                        to="tenants.tenant",
+                    ),
+                ),
             ],
             options={
-                'db_table': 'fuel_body_weight',
-                'ordering': ['-date'],
-                'unique_together': {('tenant', 'date')},
+                "db_table": "fuel_body_weight",
+                "ordering": ["-date"],
+                "unique_together": {("tenant", "date")},
             },
         ),
         migrations.CreateModel(
-            name='Workout',
+            name="Workout",
             fields=[
-                ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
-                ('date', models.DateField()),
-                ('status', models.CharField(choices=[('done', 'Done'), ('planned', 'Planned')], default='done', max_length=10)),
-                ('category', models.CharField(choices=[('strength', 'Strength'), ('cardio', 'Cardio'), ('hiit', 'HIIT'), ('calisthenics', 'Calisthenics'), ('mobility', 'Mobility'), ('sport', 'Sport'), ('other', 'Other')], max_length=16)),
-                ('activity', models.CharField(help_text="Free-text activity name, e.g. 'Push — Chest & Shoulders'", max_length=128)),
-                ('duration_minutes', models.IntegerField(blank=True, null=True)),
-                ('rpe', models.IntegerField(blank=True, help_text='Rate of perceived exertion (1-10)', null=True, validators=[django.core.validators.MinValueValidator(1), django.core.validators.MaxValueValidator(10)])),
-                ('notes', models.TextField(blank=True, default='')),
-                ('detail_json', models.JSONField(blank=True, default=dict, help_text='Category-specific data: exercises/sets for strength, distance/pace for cardio, etc.')),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('tenant', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='workouts', to='tenants.tenant')),
+                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                ("date", models.DateField()),
+                (
+                    "status",
+                    models.CharField(choices=[("done", "Done"), ("planned", "Planned")], default="done", max_length=10),
+                ),
+                (
+                    "category",
+                    models.CharField(
+                        choices=[
+                            ("strength", "Strength"),
+                            ("cardio", "Cardio"),
+                            ("hiit", "HIIT"),
+                            ("calisthenics", "Calisthenics"),
+                            ("mobility", "Mobility"),
+                            ("sport", "Sport"),
+                            ("other", "Other"),
+                        ],
+                        max_length=16,
+                    ),
+                ),
+                (
+                    "activity",
+                    models.CharField(
+                        help_text="Free-text activity name, e.g. 'Push — Chest & Shoulders'", max_length=128
+                    ),
+                ),
+                ("duration_minutes", models.IntegerField(blank=True, null=True)),
+                (
+                    "rpe",
+                    models.IntegerField(
+                        blank=True,
+                        help_text="Rate of perceived exertion (1-10)",
+                        null=True,
+                        validators=[
+                            django.core.validators.MinValueValidator(1),
+                            django.core.validators.MaxValueValidator(10),
+                        ],
+                    ),
+                ),
+                ("notes", models.TextField(blank=True, default="")),
+                (
+                    "detail_json",
+                    models.JSONField(
+                        blank=True,
+                        default=dict,
+                        help_text="Category-specific data: exercises/sets for strength, distance/pace for cardio, etc.",
+                    ),
+                ),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                (
+                    "tenant",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE, related_name="workouts", to="tenants.tenant"
+                    ),
+                ),
             ],
             options={
-                'db_table': 'fuel_workouts',
-                'ordering': ['-date', '-created_at'],
-                'indexes': [models.Index(fields=['tenant', 'date'], name='fuel_workou_tenant__8f68ea_idx'), models.Index(fields=['tenant', 'category'], name='fuel_workou_tenant__ae9dac_idx')],
+                "db_table": "fuel_workouts",
+                "ordering": ["-date", "-created_at"],
+                "indexes": [
+                    models.Index(fields=["tenant", "date"], name="fuel_workou_tenant__8f68ea_idx"),
+                    models.Index(fields=["tenant", "category"], name="fuel_workou_tenant__ae9dac_idx"),
+                ],
             },
         ),
     ]

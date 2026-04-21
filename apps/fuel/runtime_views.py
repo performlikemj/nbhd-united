@@ -136,11 +136,13 @@ class RuntimeFuelSummaryView(APIView):
         if latest_weight:
             weight_data = {"date": str(latest_weight.date), "weight_kg": str(latest_weight.weight_kg)}
 
-        return Response({
-            "recent_workouts": recent_data,
-            "planned_workouts": planned_data,
-            "latest_body_weight": weight_data,
-        })
+        return Response(
+            {
+                "recent_workouts": recent_data,
+                "planned_workouts": planned_data,
+                "latest_body_weight": weight_data,
+            }
+        )
 
 
 class RuntimeBodyWeightView(APIView):

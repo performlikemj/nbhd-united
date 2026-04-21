@@ -94,10 +94,16 @@ class WorkoutModelTests(TestCase):
 
     def test_ordering(self):
         Workout.objects.create(
-            tenant=self.tenant, date=date(2026, 4, 19), category="cardio", activity="Run",
+            tenant=self.tenant,
+            date=date(2026, 4, 19),
+            category="cardio",
+            activity="Run",
         )
         Workout.objects.create(
-            tenant=self.tenant, date=date(2026, 4, 21), category="strength", activity="Push",
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Push",
         )
         workouts = list(Workout.objects.filter(tenant=self.tenant))
         self.assertEqual(workouts[0].date, date(2026, 4, 21))
@@ -118,13 +124,17 @@ class BodyWeightLogModelTests(TestCase):
 
     def test_unique_together_tenant_date(self):
         BodyWeightLog.objects.create(
-            tenant=self.tenant, date=date(2026, 4, 21), weight_kg=Decimal("82.50"),
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            weight_kg=Decimal("82.50"),
         )
         from django.db import IntegrityError
 
         with self.assertRaises(IntegrityError):
             BodyWeightLog.objects.create(
-                tenant=self.tenant, date=date(2026, 4, 21), weight_kg=Decimal("83.00"),
+                tenant=self.tenant,
+                date=date(2026, 4, 21),
+                weight_kg=Decimal("83.00"),
             )
 
 
@@ -167,10 +177,16 @@ class ConsumerFuelViewTests(TestCase):
 
     def test_list_workouts(self):
         Workout.objects.create(
-            tenant=self.tenant, date=date(2026, 4, 21), category="strength", activity="Push",
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Push",
         )
         Workout.objects.create(
-            tenant=self.tenant, date=date(2026, 4, 20), category="cardio", activity="Run",
+            tenant=self.tenant,
+            date=date(2026, 4, 20),
+            category="cardio",
+            activity="Run",
         )
         resp = self.client.get("/api/v1/fuel/workouts/")
         self.assertEqual(resp.status_code, 200)
@@ -178,10 +194,16 @@ class ConsumerFuelViewTests(TestCase):
 
     def test_list_workouts_filter_category(self):
         Workout.objects.create(
-            tenant=self.tenant, date=date(2026, 4, 21), category="strength", activity="Push",
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Push",
         )
         Workout.objects.create(
-            tenant=self.tenant, date=date(2026, 4, 20), category="cardio", activity="Run",
+            tenant=self.tenant,
+            date=date(2026, 4, 20),
+            category="cardio",
+            activity="Run",
         )
         resp = self.client.get("/api/v1/fuel/workouts/?category=strength")
         self.assertEqual(len(resp.data), 1)
@@ -189,7 +211,10 @@ class ConsumerFuelViewTests(TestCase):
 
     def test_workout_detail_get(self):
         w = Workout.objects.create(
-            tenant=self.tenant, date=date(2026, 4, 21), category="strength", activity="Push",
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Push",
         )
         resp = self.client.get(f"/api/v1/fuel/workouts/{w.id}/")
         self.assertEqual(resp.status_code, 200)
@@ -197,7 +222,10 @@ class ConsumerFuelViewTests(TestCase):
 
     def test_workout_detail_patch(self):
         w = Workout.objects.create(
-            tenant=self.tenant, date=date(2026, 4, 21), category="strength", activity="Push",
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Push",
         )
         resp = self.client.patch(f"/api/v1/fuel/workouts/{w.id}/", {"rpe": 8}, format="json")
         self.assertEqual(resp.status_code, 200)
@@ -205,7 +233,10 @@ class ConsumerFuelViewTests(TestCase):
 
     def test_workout_detail_delete(self):
         w = Workout.objects.create(
-            tenant=self.tenant, date=date(2026, 4, 21), category="strength", activity="Push",
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Push",
         )
         resp = self.client.delete(f"/api/v1/fuel/workouts/{w.id}/")
         self.assertEqual(resp.status_code, 204)
@@ -213,10 +244,16 @@ class ConsumerFuelViewTests(TestCase):
 
     def test_calendar_view(self):
         Workout.objects.create(
-            tenant=self.tenant, date=date(2026, 4, 21), category="strength", activity="Push",
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Push",
         )
         Workout.objects.create(
-            tenant=self.tenant, date=date(2026, 4, 21), category="mobility", activity="Flow",
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="mobility",
+            activity="Flow",
         )
         resp = self.client.get("/api/v1/fuel/calendar/?year=2026&month=4")
         self.assertEqual(resp.status_code, 200)
@@ -226,7 +263,10 @@ class ConsumerFuelViewTests(TestCase):
     def test_tenant_isolation(self):
         other = create_tenant(display_name="Other", telegram_chat_id=800099)
         Workout.objects.create(
-            tenant=other, date=date(2026, 4, 21), category="strength", activity="Other Push",
+            tenant=other,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Other Push",
         )
         resp = self.client.get("/api/v1/fuel/workouts/")
         self.assertEqual(len(resp.data), 0)
@@ -347,7 +387,10 @@ class RuntimeFuelViewTests(TestCase):
 
     def test_summary(self):
         Workout.objects.create(
-            tenant=self.tenant, date=date(2026, 4, 21), category="strength", activity="Push",
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Push",
         )
         resp = self.client.get(
             f"/api/v1/fuel/runtime/{self.tenant.id}/summary/",
@@ -369,7 +412,10 @@ class RuntimeFuelViewTests(TestCase):
     def test_tenant_isolation_runtime(self):
         other = create_tenant(display_name="Other", telegram_chat_id=800099)
         Workout.objects.create(
-            tenant=other, date=date(2026, 4, 21), category="strength", activity="Other",
+            tenant=other,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Other",
         )
         resp = self.client.get(
             f"/api/v1/fuel/runtime/{self.tenant.id}/summary/",

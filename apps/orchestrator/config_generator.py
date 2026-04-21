@@ -748,9 +748,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         _plugin_defs.append(
             (
                 str(getattr(settings, "OPENCLAW_FUEL_PLUGIN_ID", "nbhd-fuel-tools") or "").strip(),
-                str(
-                    getattr(settings, "OPENCLAW_FUEL_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-fuel-tools") or ""
-                ).strip(),
+                str(getattr(settings, "OPENCLAW_FUEL_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-fuel-tools") or "").strip(),
             )
         )
 

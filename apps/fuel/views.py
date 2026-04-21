@@ -105,7 +105,9 @@ class WorkoutDetailView(APIView):
         if err:
             return err
         serializer = WorkoutSerializer(
-            workout, data=request.data, partial=True,
+            workout,
+            data=request.data,
+            partial=True,
             context={"tenant": workout.tenant},
         )
         serializer.is_valid(raise_exception=True)
@@ -143,9 +145,9 @@ class WorkoutCalendarView(APIView):
         date_from = f"{year}-{month:02d}-01"
         date_to = f"{year}-{month:02d}-{days_in_month:02d}"
 
-        workouts = Workout.objects.filter(
-            tenant=tenant, date__gte=date_from, date__lte=date_to
-        ).order_by("date", "created_at")
+        workouts = Workout.objects.filter(tenant=tenant, date__gte=date_from, date__lte=date_to).order_by(
+            "date", "created_at"
+        )
 
         by_date = defaultdict(list)
         for w in workouts:

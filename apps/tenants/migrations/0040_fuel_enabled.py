@@ -4,15 +4,14 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0039_openclaw_version'),
+        ("tenants", "0039_openclaw_version"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='tenant',
-            name='fuel_enabled',
-            field=models.BooleanField(default=False, help_text='Enable workout tracking and fitness logging'),
+            model_name="tenant",
+            name="fuel_enabled",
+            field=models.BooleanField(default=False, help_text="Enable workout tracking and fitness logging"),
         ),
     ]
