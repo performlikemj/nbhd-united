@@ -292,9 +292,13 @@ def apply_pending_configs(request):
             image_count += 1
 
     # 3. Re-seed cron jobs for all entitled, active (non-hibernated) tenants
-    active_tenants_with_containers = Tenant.entitled_active().filter(
-        hibernated_at__isnull=True,
-    ).values_list("id", flat=True)
+    active_tenants_with_containers = (
+        Tenant.entitled_active()
+        .filter(
+            hibernated_at__isnull=True,
+        )
+        .values_list("id", flat=True)
+    )
 
     cron_seed_count = 0
     for tenant_id in active_tenants_with_containers:
