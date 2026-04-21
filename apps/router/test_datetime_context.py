@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import re
-from unittest.mock import patch
 from datetime import datetime
+from unittest.mock import patch
 
 from django.test import TestCase
 
