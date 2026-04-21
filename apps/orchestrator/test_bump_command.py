@@ -26,7 +26,7 @@ class BumpOpenclawVersionTest(TestCase):
     def test_bump_single_tenant_updates_version_config_image(self, mock_config, mock_image):
         call_command(
             "bump_openclaw_version",
-            version="2026.4.15",
+            oc_version="2026.4.15",
             tenant=str(self.tenant.id),
             image_tag="openclaw-2026.4.15",
         )
@@ -44,7 +44,7 @@ class BumpOpenclawVersionTest(TestCase):
 
         call_command(
             "bump_openclaw_version",
-            version="2026.4.15",
+            oc_version="2026.4.15",
             all=True,
             image_tag="openclaw-2026.4.15",
         )
@@ -59,7 +59,7 @@ class BumpOpenclawVersionTest(TestCase):
         with self.assertRaises(Exception):
             call_command(
                 "bump_openclaw_version",
-                version="2026.4.15",
+                oc_version="2026.4.15",
                 tenant=str(self.tenant.id),
                 image_tag="openclaw-2026.4.15",
             )
@@ -75,7 +75,7 @@ class BumpOpenclawVersionTest(TestCase):
         with self.assertRaises(Exception):
             call_command(
                 "bump_openclaw_version",
-                version="2026.4.15",
+                oc_version="2026.4.15",
                 tenant=str(self.tenant.id),
                 image_tag="openclaw-2026.4.15",
             )
@@ -88,7 +88,7 @@ class BumpOpenclawVersionTest(TestCase):
     def test_dry_run_changes_nothing(self, mock_config, mock_image):
         call_command(
             "bump_openclaw_version",
-            version="2026.4.15",
+            oc_version="2026.4.15",
             tenant=str(self.tenant.id),
             image_tag="openclaw-2026.4.15",
             dry_run=True,
@@ -106,7 +106,7 @@ class BumpOpenclawVersionTest(TestCase):
 
         call_command(
             "bump_openclaw_version",
-            version="2026.4.15",
+            oc_version="2026.4.15",
             tenant=str(self.tenant.id),
             image_tag="openclaw-2026.4.15",
         )
