@@ -16,6 +16,16 @@ from .session_models import Session
 logger = logging.getLogger(__name__)
 
 
+class HasSessionScope(IsAuthenticated):
+    """Placeholder: will enforce PAT scope checks (e.g. sessions:write).
+
+    Currently passes through to IsAuthenticated — all PATs have full access.
+    TODO: check request.auth_pat.scopes when scope enforcement is enabled.
+    """
+
+    pass
+
+
 class SessionCreateSerializer(serializers.Serializer):
     source = serializers.CharField(max_length=128)
     project = serializers.CharField(max_length=256)
@@ -74,7 +84,7 @@ def _ensure_project_document(tenant, project_name: str) -> None:
 class SessionCreateView(APIView):
     """POST /api/v1/sessions/ — push a work session from an external app."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [HasSessionScope]
 
     def post(self, request):
         tenant = getattr(request.user, "tenant", None)
@@ -157,7 +167,13 @@ class SessionListView(APIView):
         if not include_test:
             qs = qs.filter(test_mode=False)
 
-        limit = min(int(request.query_params.get("limit", 50)), 100)
+        try:
+            limit = min(int(request.query_params.get("limit", 50)), 100)
+        except (ValueError, TypeError):
+            return Response(
+                {"detail": "limit must be a positive integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         qs = qs[:limit]
 
         return Response(SessionDetailSerializer(qs, many=True).data)

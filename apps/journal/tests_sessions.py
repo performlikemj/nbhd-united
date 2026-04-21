@@ -137,6 +137,11 @@ class SessionListTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()), 1)
 
+    def test_list_invalid_limit_returns_400(self):
+        response = self.client.get("/api/v1/sessions/?limit=abc")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("limit", response.json()["detail"].lower())
+
     def test_list_tenant_isolation(self):
         """Sessions from other tenants are never visible."""
         other_tenant = create_tenant(display_name="Other User", telegram_chat_id=802)
