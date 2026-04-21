@@ -664,9 +664,9 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     return jobs
 
 
-def _build_tools_section(tier: str) -> dict[str, Any]:
+def _build_tools_section(tier: str, version: str = "2026.4.5") -> dict[str, Any]:
     """Build documented OpenClaw tools policy for subscriber tier."""
-    tools = generate_tool_config(tier)
+    tools = generate_tool_config(tier, version=version)
     tools["media"] = {
         "audio": {
             "enabled": True,
@@ -684,6 +684,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     """
     chat_id = tenant.user.telegram_chat_id  # may be None before Telegram linking
     tier = tenant.model_tier or "starter"
+    oc_version = getattr(tenant, "openclaw_version", "2026.4.5") or "2026.4.5"
     models_config = TIER_MODELS.get(tier, TIER_MODELS["starter"])
     model_entries = TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["starter"])
 
@@ -859,7 +860,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             },
         },
         # Tools
-        "tools": _build_tools_section(tier),
+        "tools": _build_tools_section(tier, version=oc_version),
         # Messages
         "messages": {
             "ackReactionScope": "group-mentions",
@@ -936,6 +937,18 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             env["NBHD_API_BASE_URL"] = api_base or ""
     except Exception:
         pass  # Don't break config generation if integration check fails
+
+    # OpenClaw >= 2026.4.15 auto-generates models.json with the wrong
+    # OpenRouter base URL (/v1 instead of /api/v1). Inject the override.
+    from apps.orchestrator.tool_policy import _parse_version
+
+    if _parse_version(oc_version) >= (2026, 4, 15):
+        models_section = config.setdefault("models", {})
+        providers = models_section.setdefault("providers", {})
+        providers["openrouter"] = {
+            "baseUrl": "https://openrouter.ai/api/v1",
+            "models": [],
+        }
 
     return config
 

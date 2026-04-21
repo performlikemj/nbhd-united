@@ -48,3 +48,45 @@ class ToolPolicyTest(TestCase):
         self.assertIn("allow", config)
         self.assertIn("deny", config)
         self.assertIn("elevated", config)
+
+
+class VersionAwareToolPolicyTest(TestCase):
+    """Tool policy must vary by OpenClaw version."""
+
+    def test_2026_4_5_returns_original_allow(self):
+        allowed = get_allowed_tools("starter", version="2026.4.5")
+        self.assertIn("group:web", allowed)
+        self.assertIn("group:plugins", allowed)
+        self.assertIn("group:automation", allowed)
+        self.assertIn("tts", allowed)
+        self.assertIn("image", allowed)
+        self.assertNotIn("group:openclaw", allowed)
+
+    def test_2026_4_15_returns_new_allow(self):
+        allowed = get_allowed_tools("starter", version="2026.4.15")
+        self.assertIn("group:openclaw", allowed)
+        self.assertIn("group:plugins", allowed)
+        self.assertNotIn("group:web", allowed)
+        self.assertNotIn("group:automation", allowed)
+
+    def test_2026_4_15_denies_expanded_list(self):
+        from apps.orchestrator.tool_policy import get_denied_tools
+
+        denied = get_denied_tools(version="2026.4.15")
+        for tool in ("sessions_yield", "subagents", "message", "browser",
+                      "canvas", "nodes", "code_execution", "music_generate",
+                      "video_generate"):
+            self.assertIn(tool, denied)
+        # Original denies still present
+        self.assertIn("gateway", denied)
+        self.assertIn("sessions_spawn", denied)
+
+    def test_future_version_uses_latest_policy(self):
+        allowed = get_allowed_tools("starter", version="2026.5.1")
+        self.assertIn("group:openclaw", allowed)
+
+    def test_backward_compat_module_constants(self):
+        self.assertIsInstance(DENIED_TOOLS, tuple)
+        self.assertIsInstance(STARTER_ALLOW, tuple)
+        self.assertIn("gateway", DENIED_TOOLS)
+        self.assertIn("group:web", STARTER_ALLOW)

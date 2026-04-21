@@ -4,16 +4,24 @@ Policy intentionally uses documented config keys:
 - tools.allow
 - tools.deny
 - tools.elevated
+
+Version-aware: tool groups changed in OpenClaw 2026.4.15
+(group:automation folded into group:openclaw).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-# Deny runtime-management and cross-session controls for subscribers.
-# Cron tools are intentionally ALLOWED so users can manage scheduled tasks
-# via the agent or the settings UI.
-DENIED_TOOLS: tuple[str, ...] = (
+
+def _parse_version(v: str) -> tuple[int, ...]:
+    """Parse 'YYYY.M.D' version string into a comparable tuple."""
+    return tuple(int(x) for x in v.split("."))
+
+
+# ── 2026.4.5 policy (original) ──────────────────────────────────────
+
+_DENIED_TOOLS_2026_4_5: tuple[str, ...] = (
     "gateway",
     "sessions_spawn",
     "sessions_send",
@@ -23,22 +31,7 @@ DENIED_TOOLS: tuple[str, ...] = (
     "agents_list",
 )
 
-# Starter tier: non-destructive helper surface only.
-# Group names must match OpenClaw docs: group:web, group:fs, group:memory,
-# group:messaging, group:automation.  "tts" and "image" are standalone tools.
-#
-# NOTE: group:fs and group:memory are intentionally EXCLUDED.
-# Subscribers should not interact with raw workspace files.
-# All persistence goes through NBHD journal tools (group:plugins)
-# which write to the Django database — visible on the journal UI.
-#
-# NOTE: group:messaging is intentionally EXCLUDED.
-# Tenant containers have no Telegram bot token — direct channel delivery
-# always fails.  All outbound messages (cron jobs, proactive sends) MUST
-# go through the plugin tool nbhd_send_to_user, which proxies via the
-# central Django bot.  Blocking group:messaging here forces the agent to
-# use that path regardless of how the cron job was created.
-STARTER_ALLOW: tuple[str, ...] = (
+_STARTER_ALLOW_2026_4_5: tuple[str, ...] = (
     "group:web",
     "group:plugins",
     "group:automation",
@@ -46,22 +39,67 @@ STARTER_ALLOW: tuple[str, ...] = (
     "image",
 )
 
+# ── 2026.4.15 policy ────────────────────────────────────────────────
+# group:automation folded into group:openclaw; expanded deny list
+# for tools with no surface in Telegram-only containers.
 
-def get_allowed_tools(tier: str = "starter") -> list[str]:
+_DENIED_TOOLS_2026_4_15: tuple[str, ...] = _DENIED_TOOLS_2026_4_5 + (
+    "sessions_yield",
+    "subagents",
+    "message",
+    "browser",
+    "canvas",
+    "nodes",
+    "code_execution",
+    "music_generate",
+    "video_generate",
+)
+
+_STARTER_ALLOW_2026_4_15: tuple[str, ...] = (
+    "group:openclaw",
+    "group:plugins",
+)
+
+# ── Version registry (newest first) ─────────────────────────────────
+
+_POLICY_VERSIONS: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = [
+    ("2026.4.15", _STARTER_ALLOW_2026_4_15, _DENIED_TOOLS_2026_4_15),
+    ("2026.4.5", _STARTER_ALLOW_2026_4_5, _DENIED_TOOLS_2026_4_5),
+]
+
+# ── Backward-compat aliases (imported by existing tests) ────────────
+
+DENIED_TOOLS = _DENIED_TOOLS_2026_4_5
+STARTER_ALLOW = _STARTER_ALLOW_2026_4_5
+
+
+def _resolve_policy(version: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return (allow, deny) for the given OpenClaw version."""
+    v = _parse_version(version)
+    for entry_version, allow, deny in _POLICY_VERSIONS:
+        if v >= _parse_version(entry_version):
+            return allow, deny
+    # Fallback to oldest known policy
+    return _POLICY_VERSIONS[-1][1], _POLICY_VERSIONS[-1][2]
+
+
+def get_allowed_tools(tier: str = "starter", version: str = "2026.4.5") -> list[str]:
     """Return documented allow-list entries for a subscriber tier."""
-    return list(STARTER_ALLOW)
+    allow, _ = _resolve_policy(version)
+    return list(allow)
 
 
-def get_denied_tools() -> list[str]:
-    """Return the deny-list used for all subscriber tiers."""
-    return list(DENIED_TOOLS)
+def get_denied_tools(version: str = "2026.4.5") -> list[str]:
+    """Return the deny-list for the given OpenClaw version."""
+    _, deny = _resolve_policy(version)
+    return list(deny)
 
 
-def generate_tool_config(tier: str = "starter") -> dict[str, Any]:
+def generate_tool_config(tier: str = "starter", version: str = "2026.4.5") -> dict[str, Any]:
     """Generate the OpenClaw `tools` config block for subscriber tenants."""
     return {
-        "allow": get_allowed_tools(tier),
-        "deny": get_denied_tools(),
+        "allow": get_allowed_tools(tier, version=version),
+        "deny": get_denied_tools(version=version),
         # Prevent host-elevated execution for subscriber agents.
         "elevated": {
             "enabled": False,
