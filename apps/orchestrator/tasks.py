@@ -1,5 +1,7 @@
 """Tasks for async provisioning/deprovisioning (executed via QStash)."""
 
+import httpx
+
 from .services import (
     deprovision_tenant,
     provision_tenant,
@@ -219,7 +221,6 @@ def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
     """
     import logging
 
-    import httpx
     from django.conf import settings
 
     from apps.tenants.models import Tenant
