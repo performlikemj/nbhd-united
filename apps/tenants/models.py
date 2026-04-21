@@ -11,6 +11,7 @@ from django.db import models
 from .line_models import LineLinkToken  # noqa: F401
 
 # Import so Django discovers the models for migrations
+from .pat_models import PersonalAccessToken  # noqa: F401
 from .telegram_models import TelegramLinkToken  # noqa: F401
 
 

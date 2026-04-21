@@ -9,6 +9,9 @@ from pgvector.django import VectorField
 
 from apps.tenants.models import Tenant
 
+# Import so Django discovers the model for migrations
+from .session_models import Session  # noqa: F401
+
 
 class NoteTemplate(models.Model):
     """Per-tenant template definition for sectionized daily notes.
