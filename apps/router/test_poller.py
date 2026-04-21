@@ -246,7 +246,10 @@ class TelegramPollerForwardTest(TestCase):
         # Verify chat completions payload
         payload = mock_post.call_args[1]["json"]
         self.assertEqual(payload["model"], "openclaw")
-        self.assertEqual(payload["messages"][0]["content"], "hi there")
+        content = payload["messages"][0]["content"]
+        # Time header is injected before the user message
+        self.assertIn("[Now: ", content)
+        self.assertTrue(content.endswith("hi there"))
 
         # Verify AI response sent to user via Telegram
         send_calls = self.poller._http.post.call_args_list
