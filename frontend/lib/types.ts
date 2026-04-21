@@ -452,6 +452,41 @@ export interface ConstellationData {
   clusters: { id: number; label: string; count: number; tags: string[] }[];
 }
 
+// Graph view types (Neo4j-style constellation)
+export type GraphNodeKind = "Lesson" | "Cluster" | "Evidence" | "Tag";
+export type GraphRelType = "IN_CLUSTER" | "SIMILAR_TO" | "EVIDENCED_BY" | "TAGGED_WITH" | "REFINES";
+
+export interface GraphNode {
+  id: string | number;
+  kind: GraphNodeKind;
+  label: string;
+  color?: string;
+  text?: string;
+  context?: string;
+  tags?: string[];
+  source_type?: string;
+  source_ref?: string;
+  created_at?: string;
+  cluster_id?: number;
+  weight?: number;
+  constellation?: string;
+  theme?: string;
+}
+
+export interface GraphEdge {
+  source: string | number;
+  target: string | number;
+  type: GraphRelType;
+  similarity?: number;
+}
+
+export interface GraphData {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  kindColors: Record<GraphNodeKind, string>;
+  relColors: Record<GraphRelType, string>;
+}
+
 // Horizons
 export interface HorizonsGoal {
   id: string;
