@@ -252,6 +252,14 @@ def telegram_webhook(request):
     loop = asyncio.new_event_loop()
     try:
         user_timezone = tenant.user.timezone or "UTC"
+
+        # Inject current time into message text so the agent knows "now"
+        from apps.router.services import build_datetime_context
+
+        msg = update.get("message") or update.get("edited_message") or {}
+        if "text" in msg:
+            msg["text"] = build_datetime_context(user_timezone) + msg["text"]
+
         result = loop.run_until_complete(
             forward_to_openclaw(
                 tenant.container_fqdn,

@@ -1248,6 +1248,11 @@ class TelegramPoller:
         if workspace is not None:
             update_active_workspace(tenant, workspace)
 
+        # Inject current time so the agent always knows "now"
+        from apps.router.services import build_datetime_context
+
+        message_text = build_datetime_context(user_tz) + message_text
+
         # Show typing indicator while waiting for AI response
         self._send_typing(chat_id)
         typing_stop = threading.Event()
