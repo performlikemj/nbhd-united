@@ -59,16 +59,17 @@ export function Calendar({ onSelectDay }: CalendarProps) {
 
   // Weekly summary
   const weekTotal = useMemo(() => {
+    const now = new Date();
     const ws: string[] = [];
     for (let i = 0; i < 7; i++) {
-      const d = new Date(today);
+      const d = new Date(now);
       d.setDate(d.getDate() - i);
       ws.push(isoFromParts(d.getFullYear(), d.getMonth(), d.getDate()));
     }
     const seen = ws.flatMap((iso) => (byDate[iso] || []).filter((w) => w.status === "done"));
     const mins = seen.reduce((a, w) => a + (w.duration_minutes || 0), 0);
     return { count: seen.length, hours: Math.round((mins / 60) * 10) / 10 };
-  }, [byDate, todayISO]);
+  }, [byDate]);
 
   const goMonth = (delta: number) => {
     setCursor((c) => {

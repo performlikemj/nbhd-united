@@ -13,7 +13,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from apps.tenants.services import create_tenant
 
 from .models import BodyWeightLog, Workout
-from .services import est_1rm, aggregate_strength_progress
+from .services import est_1rm
 
 # ═════════════════════════════════════════════════════════════════════
 # 1. Service Tests (pure math, no DB)

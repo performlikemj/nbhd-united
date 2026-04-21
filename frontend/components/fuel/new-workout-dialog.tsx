@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { useCreateWorkoutMutation } from "@/lib/queries";
 import type { WorkoutCategory } from "@/lib/types";
@@ -13,26 +13,22 @@ interface NewWorkoutDialogProps {
   onCreated: (id: string) => void;
 }
 
+/** Wrapper — remounts inner form each time dialog opens so state resets. */
 export function NewWorkoutDialog({ open, presetDate, onClose, onCreated }: NewWorkoutDialogProps) {
+  if (!open) return null;
+  return <NewWorkoutDialogInner presetDate={presetDate} onClose={onClose} onCreated={onCreated} />;
+}
+
+function NewWorkoutDialogInner({ presetDate, onClose, onCreated }: Omit<NewWorkoutDialogProps, "open">) {
+  const todayISO = new Date().toISOString().slice(0, 10);
   const [step, setStep] = useState(0);
   const [cat, setCat] = useState<WorkoutCategory | null>(null);
-  const todayISO = new Date().toISOString().slice(0, 10);
   const [date, setDate] = useState(presetDate || todayISO);
-  const [status, setStatus] = useState<"done" | "planned">("done");
+  const [status, setStatus] = useState<"done" | "planned">(
+    presetDate && presetDate > todayISO ? "planned" : "done",
+  );
   const [activity, setActivity] = useState("");
   const createMutation = useCreateWorkoutMutation();
-
-  useEffect(() => {
-    if (open) {
-      setStep(0);
-      setCat(null);
-      setDate(presetDate || todayISO);
-      setStatus(presetDate && presetDate > todayISO ? "planned" : "done");
-      setActivity("");
-    }
-  }, [open, presetDate]);
-
-  if (!open) return null;
 
   const suggestions = cat ? CATEGORIES[cat].suggest : [];
 

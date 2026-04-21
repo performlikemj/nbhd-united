@@ -2,7 +2,7 @@
 
 from rest_framework import serializers
 
-from .models import BodyWeightLog, Workout, WorkoutCategory
+from .models import BodyWeightLog, Workout
 
 
 class WorkoutSerializer(serializers.ModelSerializer):

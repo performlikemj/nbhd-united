@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { useDeleteWorkoutMutation, useUpdateWorkoutMutation, useWorkoutQuery } from "@/lib/queries";
 import type { FuelWorkout, WorkoutCategory } from "@/lib/types";
@@ -34,30 +34,35 @@ interface WorkoutDetailProps {
 }
 
 export function WorkoutDetail({ workoutId, onClose }: WorkoutDetailProps) {
+  if (!workoutId) return null;
+  return <WorkoutDetailInner key={workoutId} workoutId={workoutId} onClose={onClose} />;
+}
+
+function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose: () => void }) {
   const { data: workout } = useWorkoutQuery(workoutId);
   const updateMutation = useUpdateWorkoutMutation();
   const deleteMutation = useDeleteWorkoutMutation();
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Partial<FuelWorkout>>({});
+  const [initialized, setInitialized] = useState(false);
 
-  useEffect(() => {
-    if (workout) {
-      setDraft({
-        activity: workout.activity,
-        date: workout.date,
-        status: workout.status,
-        category: workout.category,
-        duration_minutes: workout.duration_minutes,
-        rpe: workout.rpe,
-        notes: workout.notes,
-        detail_json: workout.detail_json,
-      });
-      setEditing(workout.status === "planned");
-    }
-  }, [workout?.id]);
+  if (workout && !initialized) {
+    setInitialized(true);
+    setDraft({
+      activity: workout.activity,
+      date: workout.date,
+      status: workout.status,
+      category: workout.category,
+      duration_minutes: workout.duration_minutes,
+      rpe: workout.rpe,
+      notes: workout.notes,
+      detail_json: workout.detail_json,
+    });
+    setEditing(workout.status === "planned");
+  }
 
-  if (!workoutId || !workout) return null;
+  if (!workout) return null;
 
   const meta = CATEGORIES[workout.category as WorkoutCategory];
 
