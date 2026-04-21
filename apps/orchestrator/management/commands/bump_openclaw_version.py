@@ -8,19 +8,19 @@ Usage:
 
     # Single tenant (canary)
     python manage.py bump_openclaw_version \\
-        --version 2026.4.15 \\
+        --oc-version 2026.4.15 \\
         --tenant 148ccf1c-... \\
         --image-tag openclaw-2026.4.15
 
     # Fleet rollout
     python manage.py bump_openclaw_version \\
-        --version 2026.4.15 \\
+        --oc-version 2026.4.15 \\
         --all \\
         --image-tag openclaw-2026.4.15
 
     # Preview without changes
     python manage.py bump_openclaw_version \\
-        --version 2026.4.15 --all --image-tag tag --dry-run
+        --oc-version 2026.4.15 --all --image-tag tag --dry-run
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ class Command(BaseCommand):
     help = "Bump OpenClaw version for one or all tenants (config + image, atomic per tenant)"
 
     def add_arguments(self, parser):
-        parser.add_argument("--version", required=True, help="Target OpenClaw version (e.g. 2026.4.15)")
+        parser.add_argument("--oc-version", required=True, help="Target OpenClaw version (e.g. 2026.4.15)")
         parser.add_argument("--image-tag", required=True, help="ACR image tag to deploy (e.g. openclaw-2026.4.15)")
 
         target = parser.add_mutually_exclusive_group(required=True)
@@ -47,7 +47,7 @@ class Command(BaseCommand):
         parser.add_argument("--dry-run", action="store_true", help="Show what would happen without making changes")
 
     def handle(self, *args, **options):
-        target_version = options["version"]
+        target_version = options["oc_version"]
         image_tag = options["image_tag"]
         dry_run = options["dry_run"]
 
