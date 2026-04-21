@@ -3,7 +3,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { isLoggedIn } from "@/lib/auth";
-import { ProvisioningStatus, RefreshConfigStatus, Tenant } from "@/lib/types";
+import {
+  AuthUser,
+  CronJob,
+  Integration,
+  ProvisioningStatus,
+  RefreshConfigStatus,
+  Tenant,
+  TransparencyData,
+  WorkspacesResponse,
+} from "@/lib/types";
 import {
   appendToDocument,
   bulkDeleteCronJobs,
@@ -83,6 +92,16 @@ import {
   deleteFinanceAccount,
   unarchiveFinanceAccount,
   updateFinanceSettings,
+  fetchFuelCalendar,
+  fetchWorkouts,
+  fetchWorkout,
+  createWorkout,
+  updateWorkout,
+  deleteWorkout,
+  fetchFuelProgress,
+  fetchBodyWeight,
+  createBodyWeight,
+  updateFuelSettings,
   fetchWorkspaces,
   createWorkspace,
   updateWorkspace,
@@ -188,7 +207,20 @@ export function useDonationPreferenceMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: updateDonationPreference,
-    onSuccess: () => {
+    onMutate: async (newData: { donation_enabled?: boolean; donation_percentage?: number }) => {
+      await queryClient.cancelQueries({ queryKey: ["usage-transparency"] });
+      const previous = queryClient.getQueryData<TransparencyData>(["usage-transparency"]);
+      queryClient.setQueryData<TransparencyData>(["usage-transparency"], (old) =>
+        old ? { ...old, ...newData } : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _newData, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["usage-transparency"], context.previous);
+      }
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["usage-transparency"] });
     },
   });
@@ -208,7 +240,20 @@ export function useTaskModelPreferencesMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: updateTaskModelPreferences,
-    onSuccess: () => {
+    onMutate: async (newPrefs: Record<string, string>) => {
+      await queryClient.cancelQueries({ queryKey: ["tenant"] });
+      const previous = queryClient.getQueryData<Tenant>(["tenant"]);
+      queryClient.setQueryData<Tenant>(["tenant"], (old) =>
+        old ? { ...old, task_model_preferences: { ...old.task_model_preferences, ...newPrefs } } : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _newPrefs, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["tenant"], context.previous);
+      }
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["tenant"] });
     },
   });
@@ -250,7 +295,20 @@ export function useDisconnectIntegrationMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: disconnectIntegration,
-    onSuccess: () => {
+    onMutate: async (integrationId: string) => {
+      await queryClient.cancelQueries({ queryKey: ["integrations"] });
+      const previous = queryClient.getQueryData<Integration[]>(["integrations"]);
+      queryClient.setQueryData<Integration[]>(["integrations"], (old) =>
+        old ? old.filter((i) => i.id !== integrationId) : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _id, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["integrations"], context.previous);
+      }
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["integrations"] });
     },
   });
@@ -284,7 +342,20 @@ export function useUnlinkTelegramMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: unlinkTelegram,
-    onSuccess: () => {
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: ["telegram-status"] });
+      const previous = queryClient.getQueryData<Record<string, unknown>>(["telegram-status"]);
+      queryClient.setQueryData(["telegram-status"], (old: Record<string, unknown> | undefined) =>
+        old ? { ...old, linked: false, telegram_username: "" } : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _input, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["telegram-status"], context.previous);
+      }
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["telegram-status"] });
       void queryClient.invalidateQueries({ queryKey: ["me"] });
     },
@@ -313,7 +384,20 @@ export function useUnlinkLineMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: unlinkLine,
-    onSuccess: () => {
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: ["line-status"] });
+      const previous = queryClient.getQueryData<Record<string, unknown>>(["line-status"]);
+      queryClient.setQueryData(["line-status"], (old: Record<string, unknown> | undefined) =>
+        old ? { ...old, linked: false, line_display_name: "" } : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _input, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["line-status"], context.previous);
+      }
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["line-status"] });
       void queryClient.invalidateQueries({ queryKey: ["me"] });
     },
@@ -324,7 +408,20 @@ export function useSetPreferredChannelMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (channel: "telegram" | "line") => setPreferredChannel(channel),
-    onSuccess: () => {
+    onMutate: async (channel: "telegram" | "line") => {
+      await queryClient.cancelQueries({ queryKey: ["me"] });
+      const previous = queryClient.getQueryData<AuthUser>(["me"]);
+      queryClient.setQueryData<AuthUser>(["me"], (old) =>
+        old ? { ...old, preferred_channel: channel } : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _channel, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["me"], context.previous);
+      }
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["me"] });
     },
   });
@@ -758,10 +855,22 @@ export function useToggleCronJobMutation() {
   return useMutation({
     mutationFn: ({ name, jobId, enabled }: { name: string; jobId?: string; enabled: boolean }) =>
       toggleCronJob(jobId ?? name, enabled),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
+    onMutate: async ({ name, jobId, enabled }) => {
+      await queryClient.cancelQueries({ queryKey: ["cron-jobs"] });
+      const previous = queryClient.getQueryData<CronJob[]>(["cron-jobs"]);
+      queryClient.setQueryData<CronJob[]>(["cron-jobs"], (old) =>
+        old?.map((job) =>
+          job.jobId === (jobId ?? name) || job.name === name ? { ...job, enabled } : job,
+        ),
+      );
+      return { previous };
     },
-    onError: () => {
+    onError: (_err, _input, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["cron-jobs"], context.previous);
+      }
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
     },
   });
@@ -842,10 +951,25 @@ export function useSwitchWorkspaceMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (slug: string) => switchWorkspace(slug),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+    onMutate: async (slug: string) => {
+      await queryClient.cancelQueries({ queryKey: ["workspaces"] });
+      const previous = queryClient.getQueryData<WorkspacesResponse>(["workspaces"]);
+      queryClient.setQueryData<WorkspacesResponse>(["workspaces"], (old) =>
+        old
+          ? {
+              ...old,
+              workspaces: old.workspaces.map((ws) => ({ ...ws, is_active: ws.slug === slug })),
+            }
+          : old,
+      );
+      return { previous };
     },
-    onError: () => {
+    onError: (_err, _slug, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["workspaces"], context.previous);
+      }
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
     },
   });
@@ -936,6 +1060,129 @@ export function useUpdateFinanceSettingsMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: updateFinanceSettings,
+    onMutate: async (newData) => {
+      await queryClient.cancelQueries({ queryKey: ["tenant"] });
+      const previous = queryClient.getQueryData<Tenant>(["tenant"]);
+      queryClient.setQueryData<Tenant>(["tenant"], (old) =>
+        old ? { ...old, ...newData } : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _newData, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["tenant"], context.previous);
+      }
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["tenant"] });
+    },
+  });
+}
+
+// -- Fuel (Workout Tracking) --
+
+export function useFuelCalendarQuery(year: number, month: number) {
+  return useQuery({
+    queryKey: ["fuel-calendar", year, month],
+    queryFn: () => fetchFuelCalendar(year, month),
+    staleTime: 30_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useWorkoutsQuery(params?: {
+  category?: string;
+  status?: string;
+  date_from?: string;
+  date_to?: string;
+  limit?: number;
+}) {
+  return useQuery({
+    queryKey: ["fuel-workouts", params],
+    queryFn: () => fetchWorkouts(params),
+    staleTime: 30_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useWorkoutQuery(id: string | null) {
+  return useQuery({
+    queryKey: ["fuel-workout", id],
+    queryFn: () => fetchWorkout(id!),
+    staleTime: 30_000,
+    enabled: isLoggedIn() && !!id,
+  });
+}
+
+export function useCreateWorkoutMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: createWorkout,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
+    },
+  });
+}
+
+export function useUpdateWorkoutMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Partial<import("@/lib/types").FuelWorkout> }) =>
+      updateWorkout(id, data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-workout"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-progress"] });
+    },
+  });
+}
+
+export function useDeleteWorkoutMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteWorkout,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-progress"] });
+    },
+  });
+}
+
+export function useFuelProgressQuery(category: string) {
+  return useQuery({
+    queryKey: ["fuel-progress", category],
+    queryFn: () => fetchFuelProgress(category),
+    staleTime: 30_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useBodyWeightQuery() {
+  return useQuery({
+    queryKey: ["fuel-body-weight"],
+    queryFn: fetchBodyWeight,
+    staleTime: 30_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useCreateBodyWeightMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: createBodyWeight,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-body-weight"] });
+    },
+  });
+}
+
+export function useUpdateFuelSettingsMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateFuelSettings,
     onMutate: async (newData) => {
       await queryClient.cancelQueries({ queryKey: ["tenant"] });
       const previous = queryClient.getQueryData<Tenant>(["tenant"]);

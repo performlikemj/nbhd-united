@@ -18,6 +18,7 @@ import {
   useUnlinkLineMutation,
   useUnlinkTelegramMutation,
   useUpdateFinanceSettingsMutation,
+  useUpdateFuelSettingsMutation,
 } from "@/lib/queries";
 import type { TelegramLinkResponse, LineLinkResponse } from "@/lib/api";
 import { ServiceIcon } from "@/components/service-icon";
@@ -265,6 +266,50 @@ function GravityCard() {
   );
 }
 
+function FuelCard() {
+  const { data: tenant } = useTenantQuery();
+  const mutation = useUpdateFuelSettingsMutation();
+  const enabled = tenant?.fuel_enabled ?? false;
+
+  return (
+    <article
+      className={`rounded-panel border p-4 transition-colors ${
+        enabled ? "border-accent/25 bg-accent/5" : "border-border bg-surface-elevated"
+      }`}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="text-base" aria-hidden="true">▲</span>
+            <h3 className="text-base font-medium">Fuel</h3>
+          </div>
+          <p className="mt-1 text-sm text-ink-muted">
+            Workout tracking, fitness logging, and progress trends
+            — powered by your AI assistant.
+          </p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          aria-label={enabled ? "Disable Fuel" : "Enable Fuel"}
+          onClick={() => mutation.mutate({ fuel_enabled: !enabled })}
+          disabled={mutation.isPending}
+          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+            enabled ? "bg-accent" : "bg-border"
+          } ${mutation.isPending ? "opacity-50" : ""}`}
+        >
+          <span
+            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+              enabled ? "translate-x-5" : "translate-x-0"
+            }`}
+          />
+        </button>
+      </div>
+    </article>
+  );
+}
+
 function IntegrationsContent() {
   const searchParams = useSearchParams();
   const { data, isLoading, error } = useIntegrationsQuery();
@@ -324,6 +369,9 @@ function IntegrationsContent() {
       </ErrorBoundary>
       <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load Gravity settings.</p>}>
         <GravityCard />
+      </ErrorBoundary>
+      <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load Fuel settings.</p>}>
+        <FuelCard />
       </ErrorBoundary>
 
       {connectError && (

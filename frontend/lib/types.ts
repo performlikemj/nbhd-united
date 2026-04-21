@@ -44,6 +44,7 @@ export interface Tenant {
   deletion_scheduled_at: string | null;
   platform_budget_exceeded: boolean;
   finance_enabled: boolean;
+  fuel_enabled: boolean;
 }
 
 export interface RefreshConfigStatus {
@@ -452,6 +453,41 @@ export interface ConstellationData {
   clusters: { id: number; label: string; count: number; tags: string[] }[];
 }
 
+// Graph view types (Neo4j-style constellation)
+export type GraphNodeKind = "Lesson" | "Cluster" | "Evidence" | "Tag";
+export type GraphRelType = "IN_CLUSTER" | "SIMILAR_TO" | "EVIDENCED_BY" | "TAGGED_WITH" | "REFINES";
+
+export interface GraphNode {
+  id: string | number;
+  kind: GraphNodeKind;
+  label: string;
+  color?: string;
+  text?: string;
+  context?: string;
+  tags?: string[];
+  source_type?: string;
+  source_ref?: string;
+  created_at?: string;
+  cluster_id?: number;
+  weight?: number;
+  constellation?: string;
+  theme?: string;
+}
+
+export interface GraphEdge {
+  source: string | number;
+  target: string | number;
+  type: GraphRelType;
+  similarity?: number;
+}
+
+export interface GraphData {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  kindColors: Record<GraphNodeKind, string>;
+  relColors: Record<GraphRelType, string>;
+}
+
 // Horizons
 export interface HorizonsGoal {
   id: string;
@@ -574,4 +610,52 @@ export interface FinanceDashboardData {
   active_plan: PayoffPlan | null;
   snapshots: FinanceSnapshot[];
   recent_transactions: FinanceTransaction[];
+}
+
+// -- Fuel (Workout Tracking) --
+
+export type WorkoutCategory =
+  | "strength"
+  | "cardio"
+  | "hiit"
+  | "calisthenics"
+  | "mobility"
+  | "sport"
+  | "other";
+
+export type WorkoutStatus = "done" | "planned";
+
+export interface FuelWorkout {
+  id: string;
+  date: string;
+  status: WorkoutStatus;
+  category: WorkoutCategory;
+  activity: string;
+  duration_minutes: number | null;
+  rpe: number | null;
+  notes: string;
+  detail_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkoutStub {
+  id: string;
+  category: WorkoutCategory;
+  activity: string;
+  status: WorkoutStatus;
+  duration_minutes: number | null;
+  rpe: number | null;
+}
+
+export interface CalendarDay {
+  date: string;
+  workouts: WorkoutStub[];
+}
+
+export interface BodyWeightEntry {
+  id: string;
+  date: string;
+  weight_kg: string;
+  created_at: string;
 }
