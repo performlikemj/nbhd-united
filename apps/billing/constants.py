@@ -9,9 +9,9 @@ MINIMAX_MODEL = "openrouter/minimax/minimax-m2.7"
 MINIMAX_DISPLAY = "MiniMax M2.7"
 MINIMAX_RATE = {"input": 0.3, "output": 1.2}
 
-KIMI_MODEL = "openrouter/moonshotai/kimi-k2.5"
-KIMI_DISPLAY = "Kimi 2.5"
-KIMI_RATE = {"input": 0.38, "output": 1.72}
+KIMI_MODEL = "openrouter/moonshotai/kimi-k2.6"
+KIMI_DISPLAY = "Kimi 2.6"
+KIMI_RATE = {"input": 0.60, "output": 2.80}
 
 GEMMA_MODEL = "openrouter/google/gemma-4-31b-it"
 GEMMA_DISPLAY = "Gemma 4 31B"
