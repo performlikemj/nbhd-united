@@ -54,7 +54,7 @@ Based on OpenClaw docs, add provider configs for:
         baseUrl: "https://api.moonshot.ai/v1",
         apiKey: "${MOONSHOT_API_KEY}",
         api: "openai-completions",
-        models: [{ id: "kimi-k2.5", name: "Kimi K2.5" }],
+        models: [{ id: "kimi-k2.6", name: "Kimi K2.6" }],
       }
     }
   }
