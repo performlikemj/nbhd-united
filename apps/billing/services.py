@@ -98,9 +98,26 @@ def record_usage(
 def check_budget(tenant: Tenant) -> str:
     """Return '' if within budget, or the block reason ('personal'/'global').
 
-    NOTE: Budget enforcement disabled for ClawCon demo period.
-    Usage is still tracked via record_usage().
+    Checks personal cost budget first, then global platform budget.
+    Callers should hibernate the container when a reason is returned.
     """
+    # Personal budget
+    tenant.refresh_from_db(fields=["estimated_cost_this_month", "monthly_cost_budget", "model_tier"])
+    if tenant.is_over_budget:
+        return "personal"
+
+    # Global platform budget
+    from .models import MonthlyBudget
+
+    today = date.today()
+    first_of_month = today.replace(day=1)
+    try:
+        global_budget = MonthlyBudget.objects.get(month=first_of_month)
+        if global_budget.remaining is not None and global_budget.remaining <= 0:
+            return "global"
+    except MonthlyBudget.DoesNotExist:
+        pass
+
     return ""
 
 
