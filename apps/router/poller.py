@@ -1249,7 +1249,7 @@ class TelegramPoller:
             update_active_workspace(tenant, workspace)
 
         # Inject current time so the agent always knows "now"
-        from apps.router.services import build_datetime_context
+        from apps.router.services import build_datetime_context, get_forwarding_timeout
 
         message_text = build_datetime_context(user_tz) + message_text
 
