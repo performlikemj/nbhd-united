@@ -99,13 +99,25 @@ class RuntimeLogWorkoutView(APIView):
             except (TypeError, ValueError):
                 rpe = None
 
+        # Validate date
+        workout_date = data.get("date", str(date.today()))
+        try:
+            date.fromisoformat(str(workout_date))
+        except (ValueError, TypeError):
+            workout_date = str(date.today())
+
+        # Validate activity is a non-empty string
+        activity = str(data.get("activity") or WorkoutCategory(category).label).strip()
+        if not activity:
+            activity = WorkoutCategory(category).label
+
         try:
             workout = Workout.objects.create(
                 tenant=tenant,
-                date=data.get("date", str(date.today())),
+                date=workout_date,
                 status=workout_status,
                 category=category,
-                activity=data.get("activity", WorkoutCategory(category).label),
+                activity=activity,
                 duration_minutes=duration,
                 rpe=rpe,
                 notes=data.get("notes", ""),
@@ -237,25 +249,46 @@ class RuntimeFuelProfileView(APIView):
                 profile.onboarding_status = val
                 updated_fields.append("onboarding_status")
 
-        for field in ("fitness_level", "additional_context"):
-            if field in data:
-                setattr(profile, field, str(data[field]).strip())
-                updated_fields.append(field)
+        _VALID_FITNESS_LEVELS = {"beginner", "intermediate", "advanced", ""}
+        if "fitness_level" in data:
+            val = str(data["fitness_level"]).strip()
+            if val in _VALID_FITNESS_LEVELS:
+                profile.fitness_level = val
+                updated_fields.append("fitness_level")
+
+        if "additional_context" in data:
+            profile.additional_context = str(data["additional_context"]).strip()
+            updated_fields.append("additional_context")
 
         for field in ("goals", "limitations", "equipment"):
             if field in data and isinstance(data[field], list):
-                setattr(profile, field, data[field])
+                # Ensure all items are strings
+                cleaned = [str(item).strip() for item in data[field] if item is not None]
+                setattr(profile, field, cleaned)
                 updated_fields.append(field)
 
         if "days_per_week" in data:
             val = data["days_per_week"]
+            # Coerce string to int
+            if isinstance(val, str):
+                try:
+                    val = int(val)
+                except (TypeError, ValueError):
+                    val = None
             if val is None or (isinstance(val, int) and 1 <= val <= 7):
                 profile.days_per_week = val
                 updated_fields.append("days_per_week")
 
         if updated_fields:
             updated_fields.append("updated_at")
-            profile.save(update_fields=updated_fields)
+            try:
+                profile.save(update_fields=updated_fields)
+            except Exception as exc:
+                logger.exception("Profile save failed for tenant %s", tenant_id)
+                return Response(
+                    {"error": "save_failed", "detail": str(exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         return Response(_serialize_profile(profile))
 
@@ -280,10 +313,19 @@ class RuntimeBodyWeightView(APIView):
         if weight_val is None:
             return Response({"error": "weight_kg is required"}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Validate date
+        try:
+            date.fromisoformat(str(weight_date))
+        except (ValueError, TypeError):
+            weight_date = str(date.today())
+
         try:
             weight_kg = Decimal(str(weight_val))
         except (InvalidOperation, ValueError):
             return Response({"error": "weight_kg must be a valid number"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if weight_kg <= 0 or weight_kg > 500:
+            return Response({"error": "weight_kg must be between 0 and 500"}, status=status.HTTP_400_BAD_REQUEST)
 
         entry, created = BodyWeightLog.objects.update_or_create(
             tenant=tenant,
