@@ -18,7 +18,10 @@ class SessionCreateTest(TestCase):
         # Create PAT for this user
         raw, prefix, token_hash = generate_pat()
         self.pat = PersonalAccessToken.objects.create(
-            user=self.user, name="Test PAT", token_prefix=prefix, token_hash=token_hash,
+            user=self.user,
+            name="Test PAT",
+            token_prefix=prefix,
+            token_hash=token_hash,
         )
         self.raw_token = raw
         self.client = APIClient()
@@ -49,7 +52,9 @@ class SessionCreateTest(TestCase):
         self.client.post("/api/v1/sessions/create/", self.payload, format="json")
         self.assertTrue(
             Document.objects.filter(
-                tenant=self.tenant, kind=Document.Kind.PROJECT, slug="acme-labs-presentation",
+                tenant=self.tenant,
+                kind=Document.Kind.PROJECT,
+                slug="acme-labs-presentation",
             ).exists()
         )
 
@@ -99,19 +104,28 @@ class SessionListTest(TestCase):
 
         # Create test sessions
         Session.objects.create(
-            tenant=self.tenant, source="yardtalk-mac/1.0.0",
-            project="project-a", session_start="2026-04-21T10:00:00Z",
-            session_end="2026-04-21T11:00:00Z", summary="Worked on A",
+            tenant=self.tenant,
+            source="yardtalk-mac/1.0.0",
+            project="project-a",
+            session_start="2026-04-21T10:00:00Z",
+            session_end="2026-04-21T11:00:00Z",
+            summary="Worked on A",
         )
         Session.objects.create(
-            tenant=self.tenant, source="yardtalk-mac/1.0.0",
-            project="project-b", session_start="2026-04-21T12:00:00Z",
-            session_end="2026-04-21T13:00:00Z", summary="Worked on B",
+            tenant=self.tenant,
+            source="yardtalk-mac/1.0.0",
+            project="project-b",
+            session_start="2026-04-21T12:00:00Z",
+            session_end="2026-04-21T13:00:00Z",
+            summary="Worked on B",
         )
         Session.objects.create(
-            tenant=self.tenant, source="yardtalk-mac/1.0.0",
-            project="project-a", session_start="2026-04-21T14:00:00Z",
-            session_end="2026-04-21T15:00:00Z", summary="More work on A",
+            tenant=self.tenant,
+            source="yardtalk-mac/1.0.0",
+            project="project-a",
+            session_start="2026-04-21T14:00:00Z",
+            session_end="2026-04-21T15:00:00Z",
+            summary="More work on A",
             test_mode=True,
         )
 
@@ -145,9 +159,12 @@ class SessionListTest(TestCase):
         """Sessions from other tenants are never visible."""
         other_tenant = create_tenant(display_name="Other User", telegram_chat_id=802)
         Session.objects.create(
-            tenant=other_tenant, source="yardtalk-mac/1.0.0",
-            project="other-project", session_start="2026-04-21T10:00:00Z",
-            session_end="2026-04-21T11:00:00Z", summary="Other's work",
+            tenant=other_tenant,
+            source="yardtalk-mac/1.0.0",
+            project="other-project",
+            session_start="2026-04-21T10:00:00Z",
+            session_end="2026-04-21T11:00:00Z",
+            summary="Other's work",
         )
 
         response = self.client.get("/api/v1/sessions/")
@@ -164,10 +181,14 @@ class SessionDetailTest(TestCase):
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
 
         self.session = Session.objects.create(
-            tenant=self.tenant, source="yardtalk-mac/1.0.0",
-            project="detail-project", session_start="2026-04-21T10:00:00Z",
-            session_end="2026-04-21T11:00:00Z", summary="Detail test",
-            accomplishments=["thing done"], blockers=["stuck on X"],
+            tenant=self.tenant,
+            source="yardtalk-mac/1.0.0",
+            project="detail-project",
+            session_start="2026-04-21T10:00:00Z",
+            session_end="2026-04-21T11:00:00Z",
+            summary="Detail test",
+            accomplishments=["thing done"],
+            blockers=["stuck on X"],
         )
 
     def test_get_session_detail(self):
@@ -185,9 +206,12 @@ class SessionDetailTest(TestCase):
     def test_get_other_tenant_session_returns_404(self):
         other_tenant = create_tenant(display_name="Other Detail", telegram_chat_id=804)
         other_session = Session.objects.create(
-            tenant=other_tenant, source="yardtalk-mac/1.0.0",
-            project="other", session_start="2026-04-21T10:00:00Z",
-            session_end="2026-04-21T11:00:00Z", summary="Other's session",
+            tenant=other_tenant,
+            source="yardtalk-mac/1.0.0",
+            project="other",
+            session_start="2026-04-21T10:00:00Z",
+            session_end="2026-04-21T11:00:00Z",
+            summary="Other's session",
         )
 
         response = self.client.get(f"/api/v1/sessions/{other_session.id}/")

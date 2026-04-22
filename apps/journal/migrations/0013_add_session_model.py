@@ -7,38 +7,88 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('journal', '0012_workspace_model'),
-        ('tenants', '0040_add_personal_access_token'),
+        ("journal", "0012_workspace_model"),
+        ("tenants", "0041_merge_0040_pat_and_fuel"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='Session',
+            name="Session",
             fields=[
-                ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
-                ('source', models.CharField(help_text="App identifier + version, e.g. 'yardtalk-mac/1.0.0'", max_length=128)),
-                ('project', models.CharField(db_index=True, help_text="Project name, e.g. 'acme-labs-presentation'", max_length=256)),
-                ('project_type', models.CharField(blank=True, default='', help_text="Optional project category, e.g. 'presentation_prep'", max_length=128)),
-                ('session_start', models.DateTimeField(help_text='When the work session began')),
-                ('session_end', models.DateTimeField(help_text='When the work session ended')),
-                ('summary', models.TextField(help_text='AI-generated summary of the session')),
-                ('accomplishments', models.JSONField(blank=True, default=list, help_text='List of things accomplished during the session')),
-                ('blockers', models.JSONField(blank=True, default=list, help_text='List of blockers encountered')),
-                ('next_steps', models.JSONField(blank=True, default=list, help_text='List of planned next steps')),
-                ('references', models.JSONField(blank=True, default=dict, help_text='External references: report_url, clip_ids, etc.')),
-                ('test_mode', models.BooleanField(default=False, help_text='True for dev/test pushes — can be bulk-purged')),
-                ('schema_version', models.IntegerField(default=1, help_text='Payload schema version for forward compatibility')),
-                ('idempotency_key', models.CharField(blank=True, default='', help_text='Client-supplied Idempotency-Key for dedup', max_length=255)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('tenant', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='sessions', to='tenants.tenant')),
+                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                (
+                    "source",
+                    models.CharField(help_text="App identifier + version, e.g. 'yardtalk-mac/1.0.0'", max_length=128),
+                ),
+                (
+                    "project",
+                    models.CharField(
+                        db_index=True, help_text="Project name, e.g. 'acme-labs-presentation'", max_length=256
+                    ),
+                ),
+                (
+                    "project_type",
+                    models.CharField(
+                        blank=True,
+                        default="",
+                        help_text="Optional project category, e.g. 'presentation_prep'",
+                        max_length=128,
+                    ),
+                ),
+                ("session_start", models.DateTimeField(help_text="When the work session began")),
+                ("session_end", models.DateTimeField(help_text="When the work session ended")),
+                ("summary", models.TextField(help_text="AI-generated summary of the session")),
+                (
+                    "accomplishments",
+                    models.JSONField(
+                        blank=True, default=list, help_text="List of things accomplished during the session"
+                    ),
+                ),
+                ("blockers", models.JSONField(blank=True, default=list, help_text="List of blockers encountered")),
+                ("next_steps", models.JSONField(blank=True, default=list, help_text="List of planned next steps")),
+                (
+                    "references",
+                    models.JSONField(
+                        blank=True, default=dict, help_text="External references: report_url, clip_ids, etc."
+                    ),
+                ),
+                (
+                    "test_mode",
+                    models.BooleanField(default=False, help_text="True for dev/test pushes — can be bulk-purged"),
+                ),
+                (
+                    "schema_version",
+                    models.IntegerField(default=1, help_text="Payload schema version for forward compatibility"),
+                ),
+                (
+                    "idempotency_key",
+                    models.CharField(
+                        blank=True, default="", help_text="Client-supplied Idempotency-Key for dedup", max_length=255
+                    ),
+                ),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "tenant",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE, related_name="sessions", to="tenants.tenant"
+                    ),
+                ),
             ],
             options={
-                'db_table': 'journal_sessions',
-                'ordering': ['-session_start'],
-                'indexes': [models.Index(fields=['tenant', 'project', '-session_start'], name='journal_ses_tenant__ccf545_idx'), models.Index(fields=['tenant', '-session_start'], name='journal_ses_tenant__acadd1_idx')],
-                'constraints': [models.UniqueConstraint(condition=models.Q(('idempotency_key__gt', '')), fields=('tenant', 'idempotency_key'), name='unique_tenant_idempotency_key')],
+                "db_table": "journal_sessions",
+                "ordering": ["-session_start"],
+                "indexes": [
+                    models.Index(fields=["tenant", "project", "-session_start"], name="journal_ses_tenant__ccf545_idx"),
+                    models.Index(fields=["tenant", "-session_start"], name="journal_ses_tenant__acadd1_idx"),
+                ],
+                "constraints": [
+                    models.UniqueConstraint(
+                        condition=models.Q(("idempotency_key__gt", "")),
+                        fields=("tenant", "idempotency_key"),
+                        name="unique_tenant_idempotency_key",
+                    )
+                ],
             },
         ),
     ]

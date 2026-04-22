@@ -180,10 +180,16 @@ class PATManagementTest(TestCase):
         _, prefix1, hash1 = generate_pat()
         _, prefix2, hash2 = generate_pat()
         PersonalAccessToken.objects.create(
-            user=self.user, name="Active", token_prefix=prefix1, token_hash=hash1,
+            user=self.user,
+            name="Active",
+            token_prefix=prefix1,
+            token_hash=hash1,
         )
         PersonalAccessToken.objects.create(
-            user=self.user, name="Revoked", token_prefix=prefix2, token_hash=hash2,
+            user=self.user,
+            name="Revoked",
+            token_prefix=prefix2,
+            token_hash=hash2,
             revoked_at=timezone.now(),
         )
 
@@ -196,7 +202,10 @@ class PATManagementTest(TestCase):
     def test_revoke_pat(self):
         _, prefix, token_hash = generate_pat()
         pat = PersonalAccessToken.objects.create(
-            user=self.user, name="To Revoke", token_prefix=prefix, token_hash=token_hash,
+            user=self.user,
+            name="To Revoke",
+            token_prefix=prefix,
+            token_hash=token_hash,
         )
 
         response = self.client.delete(f"/api/v1/auth/tokens/{pat.id}/")
@@ -208,7 +217,10 @@ class PATManagementTest(TestCase):
     def test_revoke_already_revoked_returns_400(self):
         _, prefix, token_hash = generate_pat()
         pat = PersonalAccessToken.objects.create(
-            user=self.user, name="Already Revoked", token_prefix=prefix, token_hash=token_hash,
+            user=self.user,
+            name="Already Revoked",
+            token_prefix=prefix,
+            token_hash=token_hash,
             revoked_at=timezone.now(),
         )
 
@@ -217,11 +229,16 @@ class PATManagementTest(TestCase):
 
     def test_revoke_other_users_token_returns_404(self):
         other_user = User.objects.create_user(
-            username="other@example.com", email="other@example.com", password="pass123",
+            username="other@example.com",
+            email="other@example.com",
+            password="pass123",
         )
         _, prefix, token_hash = generate_pat()
         pat = PersonalAccessToken.objects.create(
-            user=other_user, name="Other's Token", token_prefix=prefix, token_hash=token_hash,
+            user=other_user,
+            name="Other's Token",
+            token_prefix=prefix,
+            token_hash=token_hash,
         )
 
         response = self.client.delete(f"/api/v1/auth/tokens/{pat.id}/")
