@@ -118,6 +118,10 @@ def apply_single_tenant_image_task(tenant_id: str, desired_tag: str) -> None:
     if not tenant or not tenant.container_id:
         return
 
+    if tenant.hibernated_at:
+        logger.info("Skipping image update for hibernated tenant %s", tenant_id[:8])
+        return
+
     desired_image = f"{django_settings.AZURE_ACR_SERVER}/nbhd-openclaw:{desired_tag}"
     try:
         update_container_image(tenant.container_id, desired_image)

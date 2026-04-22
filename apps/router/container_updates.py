@@ -71,6 +71,10 @@ def update_container(tenant: Tenant) -> bool:
         logger.warning("No container_id for tenant %s — can't update", tenant.id)
         return False
 
+    if tenant.hibernated_at:
+        logger.info("Skipping update for hibernated tenant %s", tenant.id)
+        return False
+
     latest_tag = get_latest_image_tag()
     image = ACR_IMAGE_TEMPLATE.format(tag=latest_tag)
 
