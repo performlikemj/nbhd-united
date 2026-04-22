@@ -77,21 +77,21 @@ export function DayDrawer({ iso, onClose, onNavigate, onAddWorkout, onOpenWorkou
         className="relative ml-auto h-full w-full sm:w-[540px] bg-surface border-l border-border overflow-y-auto animate-reveal"
       >
         {/* Header */}
-        <div className="sticky top-0 z-10 backdrop-blur bg-surface/90 border-b border-border px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2">
+        <div className="sticky top-0 z-10 backdrop-blur bg-surface/90 border-b border-border px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
             <button
               onClick={() => onNavigate(-1)}
-              className="h-7 w-7 rounded-full hover:bg-surface-hover text-ink-muted flex items-center justify-center"
+              className="h-11 w-11 sm:h-10 sm:w-10 rounded-full hover:bg-surface-hover text-ink-muted flex items-center justify-center"
               aria-label="Previous day"
             >
-              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m15 18-6-6 6-6" /></svg>
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m15 18-6-6 6-6" /></svg>
             </button>
             <button
               onClick={() => onNavigate(1)}
-              className="h-7 w-7 rounded-full hover:bg-surface-hover text-ink-muted flex items-center justify-center"
+              className="h-11 w-11 sm:h-10 sm:w-10 rounded-full hover:bg-surface-hover text-ink-muted flex items-center justify-center"
               aria-label="Next day"
             >
-              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m9 18 6-6-6-6" /></svg>
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m9 18 6-6-6-6" /></svg>
             </button>
             <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-ink-faint ml-1">
               {isToday ? "TODAY" : "DATE"}
@@ -99,17 +99,17 @@ export function DayDrawer({ iso, onClose, onNavigate, onAddWorkout, onOpenWorkou
           </div>
           <button
             onClick={onClose}
-            className="h-7 w-7 rounded-full hover:bg-surface-hover text-ink-muted flex items-center justify-center"
+            className="h-11 w-11 sm:h-10 sm:w-10 rounded-full hover:bg-surface-hover text-ink-muted flex items-center justify-center"
             aria-label="Close"
           >
-            <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12" /></svg>
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12" /></svg>
           </button>
         </div>
 
-        <div className="p-6 space-y-6">
+        <div className="p-4 sm:p-6 space-y-5 sm:space-y-6">
           {/* Date heading */}
           <div>
-            <h2 className="text-3xl font-semibold italic">{fmtLongDate(iso)}</h2>
+            <h2 className="text-2xl sm:text-3xl font-semibold italic">{fmtLongDate(iso)}</h2>
             <div className="mt-1 text-xs text-ink-faint font-mono">
               {items.length === 0 ? "Rest day" : `${done.length} done \u00b7 ${planned.length} planned`}
             </div>
@@ -142,7 +142,7 @@ export function DayDrawer({ iso, onClose, onNavigate, onAddWorkout, onOpenWorkou
           {/* Add button */}
           <button
             onClick={() => onAddWorkout(iso)}
-            className="w-full rounded-xl border border-dashed border-border hover:border-border-strong bg-surface-elevated hover:bg-surface-hover transition px-4 py-4 flex items-center justify-center gap-2 text-sm text-ink-muted hover:text-ink"
+            className="w-full rounded-xl border border-dashed border-border hover:border-border-strong bg-surface-elevated hover:bg-surface-hover transition px-4 min-h-[48px] py-3 flex items-center justify-center gap-2 text-sm text-ink-muted hover:text-ink"
           >
             <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 5v14M5 12h14" /></svg>
             Add workout on {fmtShortDate(iso)}
@@ -160,10 +160,10 @@ function WorkoutRow({ w, onClick }: { w: FuelWorkout; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      className="w-full rounded-panel border border-border bg-surface-elevated hover:border-border-strong hover:bg-surface-hover transition px-4 py-3 text-left flex items-center gap-3"
+      className="w-full rounded-panel border border-border bg-surface-elevated hover:border-border-strong hover:bg-surface-hover transition px-3 sm:px-4 py-3 text-left flex items-center gap-2.5 sm:gap-3 min-h-[44px]"
     >
       <span
-        className="shrink-0 h-8 w-8 rounded-lg flex items-center justify-center text-xs font-bold"
+        className="shrink-0 h-9 w-9 sm:h-8 sm:w-8 rounded-lg flex items-center justify-center text-xs font-bold"
         style={{ background: `color-mix(in srgb, ${meta.accent} 15%, transparent)`, color: meta.accent }}
       >
         {meta.label.charAt(0)}

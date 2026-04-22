@@ -31,31 +31,31 @@ export default function FuelPage() {
   };
 
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-8 py-8 sm:py-14">
-      {/* Top bar */}
-      <div className="flex items-center justify-between mb-8">
+    <div className="max-w-5xl mx-auto px-4 sm:px-8 py-6 sm:py-14">
+      {/* Header — stacks on mobile, row on sm+ */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
         <div>
           <span className="text-accent text-[10px] font-bold uppercase tracking-[0.2em] mb-1 block">FUEL</span>
-          <h1 className="text-4xl sm:text-5xl font-semibold italic leading-[0.98]">
+          <h1 className="text-3xl sm:text-4xl md:text-5xl font-semibold italic leading-tight">
             Every session,<br />
             <span className="text-ink-muted">on the calendar.</span>
           </h1>
-          <p className="mt-3 text-sm text-ink-muted max-w-[560px]">
+          <p className="mt-3 text-sm text-ink-muted max-w-[560px] hidden sm:block">
             Click a day to open it. Plan ahead, log what you did, and edit anything after the fact.
             Pick a category for the logger shape — the activity name is yours to write.
           </p>
         </div>
         <button
           onClick={() => setNewSheet({ open: true, date: null })}
-          className="rounded-full bg-accent text-white px-4 py-2 text-sm font-medium hover:opacity-90 transition flex items-center gap-1.5 shrink-0"
+          className="self-start sm:self-auto rounded-full bg-accent text-white min-h-[44px] px-5 py-2.5 text-sm font-medium hover:opacity-90 transition flex items-center gap-1.5 shrink-0"
         >
-          <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14" /></svg>
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14" /></svg>
           Log workout
         </button>
       </div>
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 border-b border-border mb-6">
+      <div className="flex items-center gap-1 border-b border-border mb-6 overflow-x-auto">
         {([
           { id: "calendar" as Tab, label: "Calendar" },
           { id: "history" as Tab, label: "History", count: doneCount },
@@ -66,7 +66,7 @@ export default function FuelPage() {
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`relative px-4 py-3 text-sm transition ${on ? "text-ink" : "text-ink-muted hover:text-ink"}`}
+              className={`relative min-h-[44px] px-4 py-3 text-sm whitespace-nowrap transition ${on ? "text-ink" : "text-ink-muted hover:text-ink"}`}
             >
               {t.label}
               {t.count != null && (
