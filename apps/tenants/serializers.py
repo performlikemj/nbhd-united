@@ -98,6 +98,7 @@ class TenantSerializer(serializers.ModelSerializer):
             "task_model_preferences",
             "platform_budget_exceeded",
             "finance_enabled",
+            "fuel_enabled",
         )
         read_only_fields = fields
 

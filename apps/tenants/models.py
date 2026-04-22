@@ -283,6 +283,12 @@ class Tenant(models.Model):
         help_text="Enable budget tracking and debt payoff tools",
     )
 
+    # Fuel module (workout tracking)
+    fuel_enabled = models.BooleanField(
+        default=False,
+        help_text="Enable workout tracking and fitness logging",
+    )
+
     # Idle hibernation
     hibernated_at = models.DateTimeField(
         null=True,

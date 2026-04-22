@@ -73,9 +73,17 @@ class VersionAwareToolPolicyTest(TestCase):
         from apps.orchestrator.tool_policy import get_denied_tools
 
         denied = get_denied_tools(version="2026.4.15")
-        for tool in ("sessions_yield", "subagents", "message", "browser",
-                      "canvas", "nodes", "code_execution", "music_generate",
-                      "video_generate"):
+        for tool in (
+            "sessions_yield",
+            "subagents",
+            "message",
+            "browser",
+            "canvas",
+            "nodes",
+            "code_execution",
+            "music_generate",
+            "video_generate",
+        ):
             self.assertIn(tool, denied)
         # Original denies still present
         self.assertIn("gateway", denied)

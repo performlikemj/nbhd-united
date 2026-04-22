@@ -859,3 +859,91 @@ export function updateFinanceSettings(data: { finance_enabled: boolean }): Promi
     body: JSON.stringify(data),
   });
 }
+
+// -- Fuel (Workout Tracking) --
+
+export function fetchFuelCalendar(
+  year: number,
+  month: number,
+): Promise<import("@/lib/types").CalendarDay[]> {
+  return apiFetch<import("@/lib/types").CalendarDay[]>(
+    `/api/v1/fuel/calendar/?year=${year}&month=${month}`,
+  );
+}
+
+export function fetchWorkouts(params?: {
+  category?: string;
+  status?: string;
+  date_from?: string;
+  date_to?: string;
+  limit?: number;
+}): Promise<import("@/lib/types").FuelWorkout[]> {
+  const qs = new URLSearchParams();
+  if (params?.category) qs.set("category", params.category);
+  if (params?.status) qs.set("status", params.status);
+  if (params?.date_from) qs.set("date_from", params.date_from);
+  if (params?.date_to) qs.set("date_to", params.date_to);
+  if (params?.limit) qs.set("limit", String(params.limit));
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return apiFetch<import("@/lib/types").FuelWorkout[]>(`/api/v1/fuel/workouts/${suffix}`);
+}
+
+export function fetchWorkout(id: string): Promise<import("@/lib/types").FuelWorkout> {
+  return apiFetch<import("@/lib/types").FuelWorkout>(`/api/v1/fuel/workouts/${id}/`);
+}
+
+export function createWorkout(
+  data: Partial<import("@/lib/types").FuelWorkout>,
+): Promise<import("@/lib/types").FuelWorkout> {
+  return apiFetch<import("@/lib/types").FuelWorkout>("/api/v1/fuel/workouts/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateWorkout(
+  id: string,
+  data: Partial<import("@/lib/types").FuelWorkout>,
+): Promise<import("@/lib/types").FuelWorkout> {
+  return apiFetch<import("@/lib/types").FuelWorkout>(`/api/v1/fuel/workouts/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteWorkout(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/fuel/workouts/${id}/`, {
+    method: "DELETE",
+  });
+}
+
+export function fetchFuelProgress(
+  category: string,
+): Promise<{ category: string; progress: Record<string, unknown> }> {
+  return apiFetch<{ category: string; progress: Record<string, unknown> }>(
+    `/api/v1/fuel/progress/?category=${category}`,
+  );
+}
+
+export function fetchBodyWeight(): Promise<import("@/lib/types").BodyWeightEntry[]> {
+  return apiFetch<import("@/lib/types").BodyWeightEntry[]>("/api/v1/fuel/body-weight/");
+}
+
+export function createBodyWeight(data: {
+  date: string;
+  weight_kg: number;
+}): Promise<import("@/lib/types").BodyWeightEntry> {
+  return apiFetch<import("@/lib/types").BodyWeightEntry>("/api/v1/fuel/body-weight/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateFuelSettings(
+  data: { fuel_enabled: boolean },
+): Promise<{ fuel_enabled: boolean }> {
+  return apiFetch<{ fuel_enabled: boolean }>("/api/v1/fuel/settings/", {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}

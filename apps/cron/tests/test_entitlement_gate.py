@@ -90,7 +90,7 @@ class ForceReseedEntitlementTest(TestCase):
         self.client = APIClient()
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
-    @patch("apps.cron.views.invoke_gateway_tool")
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
     def test_skips_expired_trial(self, mock_gateway, mock_verify):
         _make_tenant(
             suffix=10,
@@ -149,7 +149,7 @@ class BroadcastMessageEntitlementTest(TestCase):
 class BroadcastSingleTenantEntitlementTest(TestCase):
     """broadcast_single_tenant_task must skip unentitled tenants."""
 
-    @patch("apps.orchestrator.tasks.httpx.post")
+    @patch("httpx.post")
     def test_skips_unentitled_tenant(self, mock_post):
         tenant = _make_tenant(
             suffix=30,
@@ -163,7 +163,7 @@ class BroadcastSingleTenantEntitlementTest(TestCase):
         broadcast_single_tenant_task(str(tenant.id), "hello")
         mock_post.assert_not_called()
 
-    @patch("apps.orchestrator.tasks.httpx.post")
+    @patch("httpx.post")
     def test_sends_to_entitled_tenant(self, mock_post):
         from unittest.mock import MagicMock
 

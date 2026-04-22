@@ -19,10 +19,19 @@ from .models import Lesson
 
 DEFAULT_CLUSTER_MIN_LESSONS = 5
 # Average-linkage threshold: the mean pairwise similarity between two
-# clusters must exceed this value for them to merge.  Raised to 0.78
+# clusters must exceed this value for them to merge.  Raised to 0.84
 # to prevent cross-domain lessons (e.g. DevOps + personal habits) from
 # being pulled into the same cluster via a semantically bridging lesson.
-CLUSTER_SIMILARITY_THRESHOLD = 0.78
+CLUSTER_SIMILARITY_THRESHOLD = 0.84
+
+# Maximum lessons per cluster.  Prevents mega-clusters that absorb
+# loosely related topics.  When a merge would exceed this, skip it.
+MAX_CLUSTER_SIZE = 8
+
+# Minimum pairwise similarity for a lesson to stay in a cluster during
+# the post-clustering coherence check.  Lessons below this threshold
+# against the cluster median are ejected as noise.
+COHERENCE_MIN_SIMILARITY = 0.72
 
 # Tags describing personal behavioral patterns rather than subject domains.
 # These receive 1× weight in label scoring; domain-specific tags receive
@@ -140,13 +149,17 @@ def _agglomerative_cluster(
     sim_matrix,
     *,
     min_similarity: float = CLUSTER_SIMILARITY_THRESHOLD,
+    max_size: int = MAX_CLUSTER_SIZE,
 ) -> list[list[int]]:
-    """Average-linkage agglomerative clustering.
+    """Average-linkage agglomerative clustering with size cap.
 
     Merges the most-similar pair of clusters at each step, stopping
     when no pair exceeds *min_similarity*.  Unlike connected-component
     clustering, average linkage prevents the chaining problem where a
     single bridge edge merges unrelated groups.
+
+    Merges that would create a cluster larger than *max_size* are
+    skipped (the pair is blacklisted for the rest of the run).
 
     Returns a list of clusters (each a list of original row indices).
     """
@@ -156,6 +169,7 @@ def _agglomerative_cluster(
 
     active = set(range(n))
     members: dict[int, list[int]] = {i: [i] for i in range(n)}
+    blocked: set[tuple[int, int]] = set()
 
     # Cluster-level average similarities (initially = raw pairwise sims).
     csim: dict[int, dict[int, float]] = {i: {j: float(sim_matrix[i, j]) for j in range(n) if j != i} for i in range(n)}
@@ -167,6 +181,9 @@ def _agglomerative_cluster(
             for b in active:
                 if b <= a:
                     continue
+                pair = (min(a, b), max(a, b))
+                if pair in blocked:
+                    continue
                 s = csim[a].get(b, -1.0)
                 if s > best_sim:
                     best_sim = s
@@ -174,6 +191,11 @@ def _agglomerative_cluster(
 
         if best_sim < min_similarity:
             break
+
+        # Size cap: skip merge if it would exceed max_size.
+        if len(members[best_a]) + len(members[best_b]) > max_size:
+            blocked.add((min(best_a, best_b), max(best_a, best_b)))
+            continue
 
         # Merge best_b into best_a.
         size_a = len(members[best_a])
@@ -197,6 +219,44 @@ def _agglomerative_cluster(
         csim.pop(best_b, None)
 
     return [members[i] for i in active]
+
+
+def _eject_outliers(
+    clusters: list[list[int]],
+    sim_matrix,
+    *,
+    min_coherence: float = COHERENCE_MIN_SIMILARITY,
+) -> list[list[int]]:
+    """Remove lessons whose median similarity to cluster-mates is too low.
+
+    Ejected lessons become singleton clusters (noise).  This catches
+    the case where a lesson slipped in through average-linkage averaging
+    despite being semantically distant from most of the cluster.
+    """
+    result: list[list[int]] = []
+    for cluster in clusters:
+        if len(cluster) <= 2:
+            result.append(cluster)
+            continue
+
+        kept: list[int] = []
+        ejected: list[int] = []
+        for idx in cluster:
+            # Compute median similarity to other members
+            sims = [float(sim_matrix[idx, other]) for other in cluster if other != idx]
+            sims.sort()
+            median_sim = sims[len(sims) // 2] if sims else 0.0
+            if median_sim >= min_coherence:
+                kept.append(idx)
+            else:
+                ejected.append(idx)
+
+        if kept:
+            result.append(kept)
+        for e in ejected:
+            result.append([e])
+
+    return result
 
 
 def cluster_lessons(tenant: Tenant) -> dict[str, int]:
@@ -230,7 +290,13 @@ def cluster_lessons(tenant: Tenant) -> dict[str, int]:
 
     embeddings = np.array([l.embedding for l in lessons], dtype=np.float64)
     sim_matrix = _cosine_similarity_matrix(embeddings)
-    components = _agglomerative_cluster(sim_matrix, min_similarity=CLUSTER_SIMILARITY_THRESHOLD)
+    components = _agglomerative_cluster(
+        sim_matrix,
+        min_similarity=CLUSTER_SIMILARITY_THRESHOLD,
+        max_size=MAX_CLUSTER_SIZE,
+    )
+    # Eject outlier lessons that slipped in through averaging
+    components = _eject_outliers(components, sim_matrix, min_coherence=COHERENCE_MIN_SIMILARITY)
 
     updates = []
     cluster_number = 1
