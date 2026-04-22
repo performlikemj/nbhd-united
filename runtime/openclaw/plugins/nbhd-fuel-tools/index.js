@@ -188,7 +188,87 @@ export default function register(api) {
           detail_json: {
             type: "object",
             description:
-              'Category-specific structured data. For strength: {"exercises": [{"name": "Deadlift", "sets": [{"weight": 75, "reps": 5}]}]}. For cardio: {"distance_km": 5, "pace": "5:30"}.',
+              "Category-specific structured data. Shape depends on category.",
+            properties: {
+              exercises: {
+                type: "array",
+                description:
+                  "For strength/calisthenics. Each exercise has a name and sets.",
+                items: {
+                  type: "object",
+                  properties: {
+                    name: {
+                      type: "string",
+                      description: "Exercise name, e.g. 'Bench Press', 'Deadlift'.",
+                    },
+                    sets: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          reps: {
+                            type: "integer",
+                            description:
+                              "Number of reps performed (must be a number, e.g. 8). If unknown, omit.",
+                          },
+                          weight: {
+                            type: "number",
+                            description: "Weight in kg (e.g. 75). Use 0 for bodyweight.",
+                          },
+                          hold_s: {
+                            type: "integer",
+                            description:
+                              "Hold duration in seconds (for isometric exercises like planks).",
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+              distance_km: {
+                type: "number",
+                description: "Distance in km (for cardio).",
+              },
+              pace: {
+                type: "string",
+                description: "Pace as min:sec per km, e.g. '5:30' (for cardio).",
+              },
+              avg_hr: {
+                type: "integer",
+                description: "Average heart rate in bpm.",
+              },
+              elevation: {
+                type: "integer",
+                description: "Elevation gain in meters.",
+              },
+              rounds: {
+                type: "integer",
+                description: "Number of rounds (for HIIT).",
+              },
+              work_s: {
+                type: "integer",
+                description: "Work interval in seconds (for HIIT).",
+              },
+              rest_s: {
+                type: "integer",
+                description: "Rest interval in seconds (for HIIT).",
+              },
+              peak_hr: {
+                type: "integer",
+                description: "Peak heart rate in bpm (for HIIT).",
+              },
+              calories: {
+                type: "integer",
+                description: "Calories burned.",
+              },
+              blocks: {
+                type: "array",
+                items: { type: "string" },
+                description:
+                  "Movement blocks for mobility, e.g. ['Hip 90/90', 'Cat-cow'].",
+              },
+            },
           },
         },
         required: ["activity"],
