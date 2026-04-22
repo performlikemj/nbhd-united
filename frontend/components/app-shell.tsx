@@ -272,8 +272,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div
           id="mobile-nav-menu"
           className={clsx(
-            "overflow-hidden border-t border-border bg-surface transition-[max-height] duration-200 ease-out md:hidden",
-            mobileMenuOpen ? "max-h-60" : "max-h-0 border-t-transparent",
+            "overflow-y-auto overscroll-contain border-t border-border bg-surface transition-[max-height] duration-200 ease-out md:hidden",
+            mobileMenuOpen ? "max-h-[70vh]" : "max-h-0 border-t-transparent",
           )}
         >
           <nav className="flex flex-col gap-1 px-4 py-3" role="navigation" aria-label="Mobile navigation">
