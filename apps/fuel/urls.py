@@ -5,6 +5,7 @@ from .runtime_views import (
     RuntimeFuelProfileView,
     RuntimeFuelSummaryView,
     RuntimeLogWorkoutView,
+    RuntimeSleepView,
 )
 from .views import (
     BodyWeightDetailView,
@@ -16,6 +17,8 @@ from .views import (
     PRFeedView,
     RestingHRDetailView,
     RestingHRListView,
+    SleepDetailView,
+    SleepListView,
     WeeklyVolumeSummaryView,
     WorkoutCalendarView,
     WorkoutCountView,
@@ -71,6 +74,12 @@ urlpatterns = [
         RestingHRDetailView.as_view(),
         name="fuel-resting-hr-detail",
     ),
+    path("sleep/", SleepListView.as_view(), name="fuel-sleep"),
+    path(
+        "sleep/<uuid:entry_id>/",
+        SleepDetailView.as_view(),
+        name="fuel-sleep-detail",
+    ),
     # Runtime (OpenClaw plugin, internal auth)
     path(
         "runtime/<uuid:tenant_id>/log/",
@@ -91,5 +100,10 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/profile/",
         RuntimeFuelProfileView.as_view(),
         name="runtime-fuel-profile",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/sleep/",
+        RuntimeSleepView.as_view(),
+        name="runtime-fuel-sleep",
     ),
 ]

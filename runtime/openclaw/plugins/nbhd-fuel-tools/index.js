@@ -350,6 +350,62 @@ export default function register(api) {
     { optional: true },
   );
 
+  // ── Log Sleep ───────────────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_fuel_log_sleep",
+      description:
+        "Log the user's sleep duration. Upserts by date. Include quality (1-5) if the user mentions how they slept.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          duration_hours: {
+            type: "number",
+            description: "Sleep duration in hours, e.g. 7.5 for 7 hours 30 minutes.",
+          },
+          quality: {
+            type: "integer",
+            minimum: 1,
+            maximum: 5,
+            description: "Sleep quality 1-5. Only include if the user mentions it.",
+          },
+          notes: {
+            type: "string",
+            description: "Optional notes, e.g. 'woke up twice', 'slept great'.",
+          },
+          date: {
+            type: "string",
+            description: "Date in YYYY-MM-DD format. Defaults to today (last night's sleep).",
+          },
+        },
+        required: ["duration_hours"],
+      },
+      async execute(_id, params) {
+        try {
+          const input = asObject(params);
+          const body = {
+            duration_hours: input.duration_hours,
+          };
+          if (input.quality !== undefined)
+            body.quality = parseInteger(input.quality, { defaultValue: undefined, min: 1, max: 5 });
+          if (input.notes) body.notes = asTrimmedString(input.notes);
+          if (input.date) body.date = asTrimmedString(input.date);
+
+          const payload = await callRuntime(api, {
+            path: fuelPath(api, "/sleep/"),
+            method: "POST",
+            body,
+          });
+          return renderPayload(payload);
+        } catch (error) {
+          return renderPayload({ error: error.message });
+        }
+      },
+    },
+    { optional: true },
+  );
+
   // ── Update Fitness Profile ──────────────────────────────────────────
   api.registerTool(
     {

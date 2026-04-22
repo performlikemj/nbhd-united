@@ -8,6 +8,7 @@ from .models import (
     FuelProfile,
     PersonalRecord,
     RestingHeartRateLog,
+    SleepLog,
     Workout,
     WorkoutTemplate,
 )
@@ -118,6 +119,17 @@ class RestingHeartRateLogSerializer(serializers.ModelSerializer):
     class Meta:
         model = RestingHeartRateLog
         fields = ["id", "date", "bpm", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+    def create(self, validated_data):
+        validated_data["tenant"] = self.context["tenant"]
+        return super().create(validated_data)
+
+
+class SleepLogSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SleepLog
+        fields = ["id", "date", "duration_hours", "quality", "notes", "created_at"]
         read_only_fields = ["id", "created_at"]
 
     def create(self, validated_data):

@@ -193,6 +193,36 @@ class RestingHeartRateLog(models.Model):
         return f"{self.date} — {self.bpm} bpm"
 
 
+class SleepLog(models.Model):
+    """Daily sleep duration entry for trend tracking."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="sleep_logs")
+    date = models.DateField()
+    duration_hours = models.DecimalField(
+        max_digits=4,
+        decimal_places=2,
+        validators=[MinValueValidator(0), MaxValueValidator(24)],
+        help_text="Sleep duration in hours, e.g. 7.5",
+    )
+    quality = models.IntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text="Sleep quality rating 1-5 (optional)",
+    )
+    notes = models.TextField(blank=True, default="", help_text="Optional notes, e.g. 'woke up twice'")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "fuel_sleep"
+        ordering = ["-date"]
+        unique_together = ["tenant", "date"]
+
+    def __str__(self) -> str:
+        return f"{self.date} — {self.duration_hours}h"
+
+
 class BodyWeightLog(models.Model):
     """Daily body-weight entry for trend tracking."""
 

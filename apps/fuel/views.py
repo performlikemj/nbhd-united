@@ -25,6 +25,7 @@ from .models import (
     FuelProfile,
     PersonalRecord,
     RestingHeartRateLog,
+    SleepLog,
     Workout,
     WorkoutCategory,
     WorkoutStatus,
@@ -36,6 +37,7 @@ from .serializers import (
     FuelProfileSerializer,
     PersonalRecordSerializer,
     RestingHeartRateLogSerializer,
+    SleepLogSerializer,
     WorkoutSerializer,
     WorkoutStubSerializer,
     WorkoutTemplateSerializer,
@@ -668,6 +670,101 @@ class RestingHRDetailView(APIView):
         try:
             entry = RestingHeartRateLog.objects.get(id=entry_id, tenant=tenant)
         except RestingHeartRateLog.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        entry.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Sleep Tracking
+# ═════════════════════════════════════════════════════════════════════
+
+
+class SleepListView(APIView):
+    """GET: list entries. POST: create or upsert by date."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        limit = min(_safe_int(request.query_params.get("limit"), 90), 365)
+        entries = SleepLog.objects.filter(tenant=tenant)[:limit]
+        return Response(SleepLogSerializer(entries, many=True).data)
+
+    def post(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+
+        entry_date = request.data.get("date")
+        duration_raw = request.data.get("duration_hours")
+        if not entry_date or duration_raw is None:
+            return Response({"error": "date and duration_hours required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            date_cls.fromisoformat(str(entry_date))
+        except (ValueError, TypeError):
+            return Response({"error": "date must be YYYY-MM-DD format"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            from decimal import Decimal, InvalidOperation
+
+            duration = Decimal(str(duration_raw))
+        except (InvalidOperation, ValueError, TypeError):
+            return Response({"error": "duration_hours must be a number"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if duration < 0 or duration > 24:
+            return Response({"error": "duration_hours must be between 0 and 24"}, status=status.HTTP_400_BAD_REQUEST)
+
+        quality = None
+        quality_raw = request.data.get("quality")
+        if quality_raw is not None:
+            quality = _safe_int(quality_raw, None)
+            if quality is not None and not (1 <= quality <= 5):
+                quality = None
+
+        entry, created = SleepLog.objects.update_or_create(
+            tenant=tenant,
+            date=entry_date,
+            defaults={
+                "duration_hours": duration,
+                "quality": quality,
+                "notes": str(request.data.get("notes", "")).strip(),
+            },
+        )
+        return Response(
+            SleepLogSerializer(entry).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class SleepDetailView(APIView):
+    """PATCH/DELETE a single sleep entry."""
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, entry_id):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            entry = SleepLog.objects.get(id=entry_id, tenant=tenant)
+        except SleepLog.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        serializer = SleepLogSerializer(entry, data=request.data, partial=True, context={"tenant": tenant})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, entry_id):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            entry = SleepLog.objects.get(id=entry_id, tenant=tenant)
+        except SleepLog.DoesNotExist:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
         entry.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
