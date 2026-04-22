@@ -98,6 +98,10 @@ class Command(BaseCommand):
             self.stdout.write(f"Done: {succeeded} succeeded, {failed} failed")
 
     def _bump_tenant(self, tenant: Tenant, target_version: str, image_tag: str, registry: str) -> None:
+        if tenant.hibernated_at:
+            self.stdout.write(f"  skip (hibernated): {tenant.container_id}")
+            return
+
         old_version = tenant.openclaw_version
 
         # 1. Set version so config generator produces version-correct output
