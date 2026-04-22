@@ -132,11 +132,15 @@ export default function register(api) {
         properties: {},
       },
       async execute() {
-        const payload = await callRuntime(api, {
-          path: fuelPath(api, "/summary/"),
-          method: "GET",
-        });
-        return renderPayload(payload);
+        try {
+          const payload = await callRuntime(api, {
+            path: fuelPath(api, "/summary/"),
+            method: "GET",
+          });
+          return renderPayload(payload);
+        } catch (error) {
+          return renderPayload({ error: error.message });
+        }
       },
     },
     { optional: true },
@@ -274,24 +278,30 @@ export default function register(api) {
         required: ["activity"],
       },
       async execute(_id, params) {
-        const input = asObject(params);
-        const body = {
-          activity: asTrimmedString(input.activity),
-        };
-        if (input.category) body.category = asTrimmedString(input.category);
-        if (input.date) body.date = asTrimmedString(input.date);
-        if (input.status) body.status = asTrimmedString(input.status);
-        if (input.duration_minutes !== undefined) body.duration_minutes = input.duration_minutes;
-        if (input.rpe !== undefined) body.rpe = input.rpe;
-        if (input.notes) body.notes = asTrimmedString(input.notes);
-        if (input.detail_json) body.detail_json = input.detail_json;
+        try {
+          const input = asObject(params);
+          const body = {
+            activity: asTrimmedString(input.activity),
+          };
+          if (input.category) body.category = asTrimmedString(input.category);
+          if (input.date) body.date = asTrimmedString(input.date);
+          if (input.status) body.status = asTrimmedString(input.status);
+          if (input.duration_minutes !== undefined)
+            body.duration_minutes = parseInteger(input.duration_minutes, { defaultValue: undefined, min: 1, max: 1440 });
+          if (input.rpe !== undefined)
+            body.rpe = parseInteger(input.rpe, { defaultValue: undefined, min: 1, max: 10 });
+          if (input.notes) body.notes = asTrimmedString(input.notes);
+          if (input.detail_json) body.detail_json = input.detail_json;
 
-        const payload = await callRuntime(api, {
-          path: fuelPath(api, "/log/"),
-          method: "POST",
-          body,
-        });
-        return renderPayload(payload);
+          const payload = await callRuntime(api, {
+            path: fuelPath(api, "/log/"),
+            method: "POST",
+            body,
+          });
+          return renderPayload(payload);
+        } catch (error) {
+          return renderPayload({ error: error.message });
+        }
       },
     },
     { optional: true },
@@ -319,18 +329,22 @@ export default function register(api) {
         required: ["weight_kg"],
       },
       async execute(_id, params) {
-        const input = asObject(params);
-        const body = {
-          weight_kg: input.weight_kg,
-        };
-        if (input.date) body.date = asTrimmedString(input.date);
+        try {
+          const input = asObject(params);
+          const body = {
+            weight_kg: input.weight_kg,
+          };
+          if (input.date) body.date = asTrimmedString(input.date);
 
-        const payload = await callRuntime(api, {
-          path: fuelPath(api, "/body-weight/"),
+          const payload = await callRuntime(api, {
+            path: fuelPath(api, "/body-weight/"),
           method: "POST",
           body,
         });
         return renderPayload(payload);
+        } catch (error) {
+          return renderPayload({ error: error.message });
+        }
       },
     },
     { optional: true },
@@ -388,22 +402,27 @@ export default function register(api) {
         },
       },
       async execute(_id, params) {
-        const input = asObject(params);
-        const body = {};
-        if (input.onboarding_status) body.onboarding_status = asTrimmedString(input.onboarding_status);
-        if (input.fitness_level) body.fitness_level = asTrimmedString(input.fitness_level);
-        if (Array.isArray(input.goals)) body.goals = input.goals;
-        if (Array.isArray(input.limitations)) body.limitations = input.limitations;
-        if (Array.isArray(input.equipment)) body.equipment = input.equipment;
-        if (input.days_per_week !== undefined) body.days_per_week = input.days_per_week;
-        if (input.additional_context) body.additional_context = asTrimmedString(input.additional_context);
+        try {
+          const input = asObject(params);
+          const body = {};
+          if (input.onboarding_status) body.onboarding_status = asTrimmedString(input.onboarding_status);
+          if (input.fitness_level) body.fitness_level = asTrimmedString(input.fitness_level);
+          if (Array.isArray(input.goals)) body.goals = input.goals.map(String);
+          if (Array.isArray(input.limitations)) body.limitations = input.limitations.map(String);
+          if (Array.isArray(input.equipment)) body.equipment = input.equipment.map(String);
+          if (input.days_per_week !== undefined)
+            body.days_per_week = parseInteger(input.days_per_week, { defaultValue: undefined, min: 1, max: 7 });
+          if (input.additional_context) body.additional_context = asTrimmedString(input.additional_context);
 
-        const payload = await callRuntime(api, {
-          path: fuelPath(api, "/profile/"),
-          method: "PATCH",
-          body,
-        });
-        return renderPayload(payload);
+          const payload = await callRuntime(api, {
+            path: fuelPath(api, "/profile/"),
+            method: "PATCH",
+            body,
+          });
+          return renderPayload(payload);
+        } catch (error) {
+          return renderPayload({ error: error.message });
+        }
       },
     },
     { optional: true },

@@ -2,12 +2,22 @@
 
 import calendar
 from collections import defaultdict
+from datetime import date as date_cls
 
 from django.db.models import Count, Sum
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+
+def _safe_int(value, default):
+    """Parse an int from query params, returning default on failure."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
 
 from .models import (
     BodyWeightLog,
@@ -17,6 +27,7 @@ from .models import (
     RestingHeartRateLog,
     Workout,
     WorkoutCategory,
+    WorkoutStatus,
     WorkoutTemplate,
 )
 from .serializers import (
@@ -111,7 +122,7 @@ class WorkoutListView(APIView):
         if cat and cat in WorkoutCategory.values:
             qs = qs.filter(category=cat)
         status_filter = request.query_params.get("status")
-        if status_filter in ("done", "planned", "rest"):
+        if status_filter and status_filter in WorkoutStatus.values:
             qs = qs.filter(status=status_filter)
         date_from = request.query_params.get("date_from")
         date_to = request.query_params.get("date_to")
@@ -120,7 +131,7 @@ class WorkoutListView(APIView):
         if date_to:
             qs = qs.filter(date__lte=date_to)
 
-        limit = min(int(request.query_params.get("limit", 100)), 500)
+        limit = min(_safe_int(request.query_params.get("limit"), 100), 500)
         qs = qs[:limit]
         serializer = WorkoutSerializer(qs, many=True)
         return Response(serializer.data)
@@ -193,9 +204,11 @@ class WorkoutCalendarView(APIView):
         try:
             year = int(request.query_params["year"])
             month = int(request.query_params["month"])
-        except (KeyError, ValueError):
+            if not (1 <= month <= 12) or not (1900 <= year <= 2100):
+                raise ValueError("out of range")
+        except (KeyError, ValueError, TypeError):
             return Response(
-                {"error": "year and month query params required"},
+                {"error": "year (1900-2100) and month (1-12) query params required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -281,7 +294,7 @@ class WorkoutCountView(APIView):
         if cat and cat in WorkoutCategory.values:
             qs = qs.filter(category=cat)
         status_filter = request.query_params.get("status")
-        if status_filter in ("done", "planned", "rest"):
+        if status_filter and status_filter in WorkoutStatus.values:
             qs = qs.filter(status=status_filter)
         date_from = request.query_params.get("date_from")
         date_to = request.query_params.get("date_to")
@@ -302,7 +315,7 @@ class BodyWeightListView(APIView):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
-        limit = min(int(request.query_params.get("limit", 90)), 365)
+        limit = min(_safe_int(request.query_params.get("limit"), 90), 365)
         entries = BodyWeightLog.objects.filter(tenant=tenant)[:limit]
         return Response(BodyWeightLogSerializer(entries, many=True).data)
 
@@ -442,8 +455,6 @@ class WorkoutDuplicateView(APIView):
         except Workout.DoesNotExist:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
 
-        from datetime import date as date_cls
-
         new_workout = Workout.objects.create(
             tenant=tenant,
             date=date_cls.today(),
@@ -467,7 +478,6 @@ class WeeklyVolumeSummaryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from datetime import date as date_cls
         from datetime import timedelta
 
         tenant = getattr(request.user, "tenant", None)
@@ -525,7 +535,7 @@ class PRFeedView(APIView):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
-        limit = min(int(request.query_params.get("limit", 20)), 100)
+        limit = min(_safe_int(request.query_params.get("limit"), 20), 100)
         prs = PersonalRecord.objects.filter(tenant=tenant)[:limit]
         return Response(PersonalRecordSerializer(prs, many=True).data)
 
@@ -596,7 +606,7 @@ class RestingHRListView(APIView):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
-        limit = min(int(request.query_params.get("limit", 90)), 365)
+        limit = min(_safe_int(request.query_params.get("limit"), 90), 365)
         entries = RestingHeartRateLog.objects.filter(tenant=tenant)[:limit]
         return Response(RestingHeartRateLogSerializer(entries, many=True).data)
 
@@ -606,14 +616,26 @@ class RestingHRListView(APIView):
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
 
         entry_date = request.data.get("date")
-        bpm = request.data.get("bpm")
-        if not entry_date or bpm is None:
+        bpm_raw = request.data.get("bpm")
+        if not entry_date or bpm_raw is None:
             return Response({"error": "date and bpm required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        bpm = _safe_int(bpm_raw, None)
+        if bpm is None or not (20 <= bpm <= 250):
+            return Response(
+                {"error": "bpm must be an integer between 20 and 250"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            date_cls.fromisoformat(str(entry_date))
+        except (ValueError, TypeError):
+            return Response({"error": "date must be YYYY-MM-DD format"}, status=status.HTTP_400_BAD_REQUEST)
 
         entry, created = RestingHeartRateLog.objects.update_or_create(
             tenant=tenant,
             date=entry_date,
-            defaults={"bpm": int(bpm)},
+            defaults={"bpm": bpm},
         )
         return Response(
             RestingHeartRateLogSerializer(entry).data,
