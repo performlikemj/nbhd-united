@@ -669,6 +669,28 @@ class LineWebhookView(View):
             )
             return
 
+        # Budget check — before wake so we don't start a container just to block it
+        budget_reason = check_budget(tenant)
+        if budget_reason:
+            from apps.router.views import _hibernate_for_quota
+
+            _hibernate_for_quota(tenant)
+            lang = tenant.user.language or "en"
+            if budget_reason == "global":
+                msg_key = "budget_unavailable"
+                kwargs: dict[str, str] = {}
+            else:
+                msg_key = "budget_exhausted_trial" if tenant.is_trial else "budget_exhausted_paid"
+                kwargs = {
+                    "plus_message": "",
+                    "billing_url": f"{frontend_url}/billing",
+                }
+            _send_line_flex(
+                line_user_id,
+                build_status_bubble(error_msg(lang, msg_key, **kwargs), tone="warning"),
+            )
+            return
+
         # Hibernated tenant — buffer message and wake container
         from apps.router.wake_on_message import handle_hibernated_message
 
@@ -703,25 +725,6 @@ class LineWebhookView(View):
             if onboarding_reply is not None:
                 self._send_onboarding_reply(line_user_id, onboarding_reply)
                 return
-
-        # Budget check
-        budget_reason = check_budget(tenant)
-        if budget_reason:
-            lang = tenant.user.language or "en"
-            if budget_reason == "global":
-                msg_key = "budget_unavailable"
-                kwargs: dict[str, str] = {}
-            else:
-                msg_key = "budget_exhausted_trial" if tenant.is_trial else "budget_exhausted_paid"
-                kwargs = {
-                    "plus_message": "",
-                    "billing_url": f"{frontend_url}/billing",
-                }
-            _send_line_flex(
-                line_user_id,
-                build_status_bubble(error_msg(lang, msg_key, **kwargs), tone="warning"),
-            )
-            return
 
         # Show loading animation while LLM processes
         _show_loading(line_user_id)

@@ -781,9 +781,12 @@ class TelegramPoller:
             )
             return
 
-        # Budget check
+        # Budget check — hibernate container if over budget
         budget_reason = check_budget(tenant)
         if budget_reason:
+            from apps.router.views import _hibernate_for_quota
+
+            _hibernate_for_quota(tenant)
             self._send_budget_exhausted(chat_id, tenant, budget_reason)
             return
 

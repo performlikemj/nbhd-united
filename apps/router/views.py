@@ -114,6 +114,26 @@ def _record_usage_from_openclaw_result(tenant: Tenant, result: object) -> None:
         logger.exception("Failed to record usage for tenant=%s after OpenClaw callback", tenant.id)
 
 
+def _hibernate_for_quota(tenant: Tenant) -> None:
+    """Hibernate a tenant's container when they exceed their budget.
+
+    Skips if already hibernated. Uses the same deactivation path as idle
+    hibernation so the container can be re-woken when budget resets.
+    """
+    if tenant.hibernated_at or not tenant.container_id:
+        return
+    try:
+        from apps.orchestrator.azure_client import hibernate_container_app
+
+        hibernate_container_app(tenant.container_id)
+        Tenant.objects.filter(id=tenant.id).update(
+            hibernated_at=timezone.now(),
+        )
+        logger.info("Hibernated container %s — tenant over budget", tenant.container_id)
+    except Exception:
+        logger.exception("Failed to hibernate over-budget container %s", tenant.container_id)
+
+
 def _build_budget_exhausted_message(chat_id: int, tenant: Tenant, reason: str) -> dict:
     frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
     lang = tenant.user.language or "en"
@@ -219,6 +239,12 @@ def telegram_webhook(request):
             }
         )
 
+    # Budget check — before wake so we don't start a container just to block it
+    budget_reason = check_budget(tenant)
+    if budget_reason:
+        _hibernate_for_quota(tenant)
+        return JsonResponse(_build_budget_exhausted_message(chat_id, tenant, budget_reason))
+
     # Hibernated tenant — buffer message and wake container
     from apps.router.wake_on_message import handle_hibernated_message
 
@@ -240,10 +266,6 @@ def telegram_webhook(request):
         )
     elif wake_result is False:
         return HttpResponse("ok")
-
-    budget_reason = check_budget(tenant)
-    if budget_reason:
-        return JsonResponse(_build_budget_exhausted_message(chat_id, tenant, budget_reason))
 
     tenant.last_message_at = timezone.now()
     tenant.save(update_fields=["last_message_at"])
