@@ -14,10 +14,10 @@ export function Progress() {
   const progress = data?.progress as Record<string, unknown> | undefined;
 
   return (
-    <div className="space-y-5">
-      {/* Category chips — horizontal scroll on mobile */}
-      <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
-        <div className="flex items-center gap-2 min-w-max sm:min-w-0 sm:flex-wrap pb-1 sm:pb-0">
+    <div className="space-y-5 overflow-hidden">
+      {/* Category chips — scrollable row */}
+      <div className="overflow-x-auto pb-1">
+        <div className="flex items-center gap-2 w-max">
           <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-ink-faint mr-1 shrink-0">CATEGORY</span>
           {CATEGORY_IDS.map((c) => {
             const on = cat === c;
@@ -53,7 +53,7 @@ export function Progress() {
 /* ---- Sparkline SVG ---- */
 function Sparkline({ pts, color, invert }: { pts: { value: number }[]; color: string; invert?: boolean }) {
   if (!pts || pts.length < 2) {
-    return <div className="mt-4 text-[11px] text-ink-faint">Log more sessions to see the trend.</div>;
+    return <div className="mt-4 text-xs text-ink-faint">Log more sessions to see the trend.</div>;
   }
   const W = 280, H = 64, pad = 6;
   const vals = pts.map((p) => p.value);
@@ -97,7 +97,7 @@ function StrengthProgress({ data }: { data: Record<string, unknown> }) {
   }
 
   return (
-    <div className="grid md:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
       {lifts.map(([lift, pts]) => {
         const displayPts = pts.map((p) => ({ ...p, value: dw(p.value) }));
         const latest = displayPts.at(-1)!.value;
@@ -106,28 +106,28 @@ function StrengthProgress({ data }: { data: Record<string, unknown> }) {
         const hasTrend = displayPts.length >= 2;
         return (
           <div key={lift} className="rounded-panel border border-border bg-surface-elevated p-4 sm:p-5">
-            <div className="flex items-start justify-between">
-              <div>
-                <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint">{lift.toUpperCase()}</div>
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint truncate">{lift.toUpperCase()}</div>
                 <div className="mt-1.5 flex items-baseline gap-2">
-                  <span className="text-3xl font-semibold italic" style={{ color: accent }}>{latest}</span>
+                  <span className="text-2xl sm:text-3xl font-semibold italic" style={{ color: accent }}>{latest}</span>
                   <span className="text-[11px] text-ink-faint">{unit} &middot; est 1RM</span>
                 </div>
               </div>
               {hasTrend ? (
-                <div className={`text-right font-mono text-[11px] px-2 py-1 rounded-full ${
+                <div className={`shrink-0 text-right font-mono text-[11px] px-2 py-1 rounded-full ${
                   delta > 0 ? "text-emerald-text bg-emerald-bg" : delta < 0 ? "text-rose-text bg-rose-bg" : "text-ink-faint bg-surface-hover"
                 }`}>
                   {delta > 0 ? "\u2191" : delta < 0 ? "\u2193" : "\u00b7"} {Math.abs(delta)} {unit}
                 </div>
               ) : (
-                <div className="text-[9px] font-bold uppercase tracking-wider text-ink-faint px-2 py-1 rounded-full bg-surface-hover">1 SESSION</div>
+                <div className="shrink-0 text-[9px] font-bold uppercase tracking-wider text-ink-faint px-2 py-1 rounded-full bg-surface-hover">1 SESSION</div>
               )}
             </div>
             {hasTrend ? (
               <Sparkline pts={displayPts} color={accent} />
             ) : (
-              <div className="mt-4 rounded-lg border border-dashed border-border px-3 py-4 text-center text-[11px] text-ink-faint">
+              <div className="mt-4 rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-ink-faint">
                 Log another session to see the trend
               </div>
             )}
@@ -152,10 +152,10 @@ function CardioProgress({ data }: { data: Record<string, unknown> }) {
   };
 
   return (
-    <div className="grid md:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
       <div className="rounded-panel border border-border bg-surface-elevated p-4 sm:p-5">
         <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint">PACE TREND</div>
-        <div className="mt-1.5 text-3xl font-semibold italic" style={{ color: accent }}>
+        <div className="mt-1.5 text-2xl sm:text-3xl font-semibold italic" style={{ color: accent }}>
           {pace.length > 0 ? fmtPace(Math.min(...pace.map((p) => p.value))) : "\u2014"}
           <span className="text-xs text-ink-faint ml-1">/km best</span>
         </div>
@@ -163,7 +163,7 @@ function CardioProgress({ data }: { data: Record<string, unknown> }) {
       </div>
       <div className="rounded-panel border border-border bg-surface-elevated p-4 sm:p-5">
         <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint">DISTANCE PER SESSION</div>
-        <div className="mt-1.5 text-3xl font-semibold italic" style={{ color: accent }}>
+        <div className="mt-1.5 text-2xl sm:text-3xl font-semibold italic" style={{ color: accent }}>
           {totalKm.toFixed(1)}<span className="text-xs text-ink-faint ml-1">km total</span>
         </div>
         <Sparkline pts={dist} color={accent} />
@@ -180,10 +180,10 @@ function HiitProgress({ data }: { data: Record<string, unknown> }) {
   const totalMin = (data.total_minutes as number) || 0;
 
   return (
-    <div className="grid md:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
       <div className="rounded-panel border border-border bg-surface-elevated p-4 sm:p-5">
         <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint">PEAK HR</div>
-        <div className="mt-1.5 text-3xl font-semibold italic" style={{ color: accent }}>
+        <div className="mt-1.5 text-2xl sm:text-3xl font-semibold italic" style={{ color: accent }}>
           {hrPts.length ? Math.max(...hrPts.map((p) => p.value)) : "\u2014"}<span className="text-xs text-ink-faint ml-1">bpm</span>
         </div>
         <Sparkline pts={hrPts} color={accent} />
@@ -192,11 +192,11 @@ function HiitProgress({ data }: { data: Record<string, unknown> }) {
         <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint">TOTALS</div>
         <div className="mt-1.5 grid grid-cols-2 gap-4">
           <div>
-            <div className="text-3xl font-semibold italic">{count}</div>
+            <div className="text-2xl sm:text-3xl font-semibold italic">{count}</div>
             <div className="font-mono text-[10px] text-ink-faint">sessions</div>
           </div>
           <div>
-            <div className="text-3xl font-semibold italic">{totalMin}</div>
+            <div className="text-2xl sm:text-3xl font-semibold italic">{totalMin}</div>
             <div className="font-mono text-[10px] text-ink-faint">total min</div>
           </div>
         </div>
@@ -215,11 +215,11 @@ function CalisProgress({ data }: { data: Record<string, unknown> }) {
   }
 
   return (
-    <div className="grid md:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
       {skills.map(([name, { points, is_hold }]) => (
         <div key={name} className="rounded-panel border border-border bg-surface-elevated p-4 sm:p-5">
           <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint">{name.toUpperCase()}</div>
-          <div className="mt-1.5 text-3xl font-semibold italic" style={{ color: accent }}>
+          <div className="mt-1.5 text-2xl sm:text-3xl font-semibold italic" style={{ color: accent }}>
             {points.at(-1)?.value ?? 0}
             <span className="text-[11px] text-ink-faint ml-1">{is_hold ? "sec best" : "reps best"}</span>
           </div>
@@ -238,15 +238,15 @@ function CountProgress({ data, accent }: { data: Record<string, unknown>; accent
   return (
     <div className="rounded-panel border border-border bg-surface-elevated p-4 sm:p-5">
       <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint">SESSIONS</div>
-      <div className="mt-1.5 text-3xl font-semibold italic" style={{ color: accent }}>{count}</div>
+      <div className="mt-1.5 text-2xl sm:text-3xl font-semibold italic" style={{ color: accent }}>{count}</div>
       <div className="mt-4 space-y-1.5">
         {sessions.map((s, i) => (
-          <div key={i} className="flex items-center gap-3 text-xs">
-            <span className="font-mono text-[10px] text-ink-faint w-16 shrink-0">
+          <div key={i} className="flex items-center gap-2 sm:gap-3 text-xs">
+            <span className="font-mono text-[10px] text-ink-faint w-14 sm:w-16 shrink-0">
               {new Date(s.date + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
             </span>
             <span className="flex-1 text-ink truncate">{s.activity}</span>
-            {s.duration_minutes && <span className="font-mono text-[11px] text-ink-muted">{s.duration_minutes} min</span>}
+            {s.duration_minutes != null && <span className="font-mono text-[11px] text-ink-muted shrink-0">{s.duration_minutes} min</span>}
           </div>
         ))}
       </div>

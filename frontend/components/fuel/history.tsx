@@ -29,10 +29,10 @@ export function History({ onOpenWorkout }: HistoryProps) {
   }
 
   return (
-    <div className="space-y-4">
-      {/* Filter chips — horizontal scroll on mobile */}
-      <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
-        <div className="flex items-center gap-1.5 min-w-max sm:min-w-0 sm:flex-wrap pb-1 sm:pb-0">
+    <div className="space-y-4 overflow-hidden">
+      {/* Filter chips — scrollable row */}
+      <div className="overflow-x-auto pb-1">
+        <div className="flex items-center gap-1.5 w-max">
           <button
             onClick={() => setFilter("all")}
             className={`rounded-full min-h-[44px] px-3 py-2 text-[11px] font-bold uppercase tracking-wider transition border whitespace-nowrap ${
@@ -122,12 +122,12 @@ function WorkoutRow({ w, onClick }: { w: FuelWorkout; onClick: () => void }) {
         </div>
         <div className="mt-0.5 text-sm text-ink truncate">{w.activity}</div>
         <div className="mt-0.5 text-[11px] text-ink-faint flex flex-wrap gap-x-2">
-          {w.duration_minutes && <span>{w.duration_minutes} min</span>}
+          {w.duration_minutes != null && <span>{w.duration_minutes} min</span>}
           {w.rpe != null && <span>&middot; RPE {w.rpe}</span>}
           {summaryChips(w).map((s, i) => <span key={i}>&middot; {s}</span>)}
         </div>
       </div>
-      <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 text-ink-faint" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m9 18 6-6-6-6" /></svg>
+      <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 text-ink-faint shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m9 18 6-6-6-6" /></svg>
     </button>
   );
 }
