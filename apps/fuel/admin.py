@@ -1,6 +1,15 @@
 from django.contrib import admin
 
-from .models import BodyWeightLog, FuelGoal, FuelProfile, PersonalRecord, RestingHeartRateLog, Workout, WorkoutTemplate
+from .models import (
+    BodyWeightLog,
+    FuelGoal,
+    FuelProfile,
+    PersonalRecord,
+    RestingHeartRateLog,
+    SleepLog,
+    Workout,
+    WorkoutTemplate,
+)
 
 
 @admin.register(Workout)
@@ -52,5 +61,12 @@ class FuelGoalAdmin(admin.ModelAdmin):
 @admin.register(RestingHeartRateLog)
 class RestingHeartRateLogAdmin(admin.ModelAdmin):
     list_display = ["tenant", "date", "bpm"]
+    search_fields = ["tenant__user__display_name"]
+    readonly_fields = ["id", "created_at"]
+
+
+@admin.register(SleepLog)
+class SleepLogAdmin(admin.ModelAdmin):
+    list_display = ["tenant", "date", "duration_hours", "quality"]
     search_fields = ["tenant__user__display_name"]
     readonly_fields = ["id", "created_at"]

@@ -10,6 +10,7 @@ import { NewWorkoutDialog } from "@/components/fuel/new-workout-dialog";
 import { ProfileCard } from "@/components/fuel/profile-card";
 import { Progress } from "@/components/fuel/progress";
 import { RestingHeartRate } from "@/components/fuel/resting-heart-rate";
+import { Sleep } from "@/components/fuel/sleep";
 import { WeeklySummary } from "@/components/fuel/weekly-summary";
 import { WorkoutDetail } from "@/components/fuel/workout-detail";
 import { useWorkoutCountQuery } from "@/lib/queries";
@@ -91,6 +92,7 @@ export default function FuelPage() {
         <div className="space-y-8">
           <Progress />
           <BodyWeight />
+          <Sleep />
           <RestingHeartRate />
         </div>
       )}

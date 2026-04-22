@@ -200,11 +200,24 @@ class RuntimeFuelSummaryView(APIView):
         except FuelProfile.DoesNotExist:
             profile_data = None
 
+        # Latest sleep
+        from .models import SleepLog
+
+        latest_sleep = SleepLog.objects.filter(tenant=tenant).first()
+        sleep_data = None
+        if latest_sleep:
+            sleep_data = {
+                "date": str(latest_sleep.date),
+                "duration_hours": str(latest_sleep.duration_hours),
+                "quality": latest_sleep.quality,
+            }
+
         return Response(
             {
                 "recent_workouts": recent_data,
                 "planned_workouts": planned_data,
                 "latest_body_weight": weight_data,
+                "latest_sleep": sleep_data,
                 "profile": profile_data,
             }
         )
@@ -334,5 +347,68 @@ class RuntimeBodyWeightView(APIView):
         )
         return Response(
             {"date": str(entry.date), "weight_kg": str(entry.weight_kg), "created": created},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class RuntimeSleepView(APIView):
+    """POST: log sleep from the AI assistant."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, tenant_id):
+        err = _internal_auth_or_401(request, tenant_id)
+        if err:
+            return err
+        tenant_or_resp = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant_or_resp, Response):
+            return tenant_or_resp
+        tenant = tenant_or_resp
+
+        from .models import SleepLog
+
+        data = request.data
+        sleep_date = data.get("date", str(date.today()))
+        duration_val = data.get("duration_hours")
+        if duration_val is None:
+            return Response({"error": "duration_hours is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            date.fromisoformat(str(sleep_date))
+        except (ValueError, TypeError):
+            sleep_date = str(date.today())
+
+        try:
+            duration = Decimal(str(duration_val))
+        except (InvalidOperation, ValueError):
+            return Response({"error": "duration_hours must be a number"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if duration < 0 or duration > 24:
+            return Response({"error": "duration_hours must be between 0 and 24"}, status=status.HTTP_400_BAD_REQUEST)
+
+        quality = None
+        quality_raw = data.get("quality")
+        if quality_raw is not None:
+            try:
+                quality = max(1, min(5, int(quality_raw)))
+            except (TypeError, ValueError):
+                quality = None
+
+        entry, created = SleepLog.objects.update_or_create(
+            tenant=tenant,
+            date=sleep_date,
+            defaults={
+                "duration_hours": duration,
+                "quality": quality,
+                "notes": str(data.get("notes", "")).strip(),
+            },
+        )
+        return Response(
+            {
+                "date": str(entry.date),
+                "duration_hours": str(entry.duration_hours),
+                "quality": entry.quality,
+                "created": created,
+            },
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )

@@ -80,6 +80,15 @@ When the user says something that sounds like a workout log, log it immediately.
 - **`pace`** = string in `"M:SS"` format. `"5:30"` not `"5 min 30 sec"`.
 - **If a value is unknown, omit the field** — don't guess or put text descriptions in numeric fields.
 
+## Sleep Logging
+
+When the user mentions sleep, log it:
+- "slept 7 hours" → `duration_hours: 7.0`
+- "got 6.5 hours, slept terribly" → `duration_hours: 6.5, quality: 1`
+- "great sleep last night, about 8 hours" → `duration_hours: 8.0, quality: 5`
+
+Use sleep data when making recommendations — poor sleep or short duration should inform recovery suggestions. Don't push hard workouts after bad sleep.
+
 ## Profile-Aware Recommendations
 
 When the profile is completed, use it:

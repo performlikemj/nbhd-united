@@ -116,6 +116,8 @@ import {
   deleteFuelGoal,
   fetchRestingHR,
   createRestingHR,
+  fetchSleep,
+  createSleep,
   fetchWorkspaces,
   createWorkspace,
   updateWorkspace,
@@ -1376,6 +1378,26 @@ export function useCreateRestingHRMutation() {
     mutationFn: createRestingHR,
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["fuel-resting-hr"] });
+    },
+  });
+}
+
+// Sleep
+export function useSleepQuery() {
+  return useQuery({
+    queryKey: ["fuel-sleep"],
+    queryFn: fetchSleep,
+    staleTime: 5 * 60_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useCreateSleepMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: createSleep,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-sleep"] });
     },
   });
 }

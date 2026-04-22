@@ -700,6 +700,15 @@ export interface RestingHeartRateEntry {
   created_at: string;
 }
 
+export interface SleepEntry {
+  id: string;
+  date: string;
+  duration_hours: string;
+  quality: number | null;
+  notes: string;
+  created_at: string;
+}
+
 export type FuelOnboardingStatus = "pending" | "in_progress" | "completed" | "declined";
 
 export interface FuelProfile {

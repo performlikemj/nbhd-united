@@ -1041,3 +1041,20 @@ export function createRestingHR(data: { date: string; bpm: number }): Promise<im
     body: JSON.stringify(data),
   });
 }
+
+// Sleep
+export function fetchSleep(): Promise<import("@/lib/types").SleepEntry[]> {
+  return apiFetch<import("@/lib/types").SleepEntry[]>("/api/v1/fuel/sleep/");
+}
+
+export function createSleep(data: {
+  date: string;
+  duration_hours: number;
+  quality?: number;
+  notes?: string;
+}): Promise<import("@/lib/types").SleepEntry> {
+  return apiFetch<import("@/lib/types").SleepEntry>("/api/v1/fuel/sleep/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
