@@ -971,3 +971,73 @@ export function updateFuelProfile(
     body: JSON.stringify(data),
   });
 }
+
+// Templates
+export function fetchWorkoutTemplates(category?: string): Promise<import("@/lib/types").WorkoutTemplate[]> {
+  const qs = category ? `?category=${category}` : "";
+  return apiFetch<import("@/lib/types").WorkoutTemplate[]>(`/api/v1/fuel/templates/${qs}`);
+}
+
+export function createWorkoutTemplate(
+  data: Partial<import("@/lib/types").WorkoutTemplate>,
+): Promise<import("@/lib/types").WorkoutTemplate> {
+  return apiFetch<import("@/lib/types").WorkoutTemplate>("/api/v1/fuel/templates/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteWorkoutTemplate(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/fuel/templates/${id}/`, { method: "DELETE" });
+}
+
+export function duplicateWorkout(id: string): Promise<import("@/lib/types").FuelWorkout> {
+  return apiFetch<import("@/lib/types").FuelWorkout>(`/api/v1/fuel/workouts/${id}/duplicate/`, { method: "POST" });
+}
+
+// Weekly volume
+export function fetchWeeklyVolume(weekStart?: string): Promise<{
+  week_start: string;
+  week_end: string;
+  by_category: { category: string; count: number; total_minutes: number | null }[];
+  totals: { sessions: number; minutes: number };
+}> {
+  const qs = weekStart ? `?week_start=${weekStart}` : "";
+  return apiFetch(`/api/v1/fuel/weekly-summary/${qs}`);
+}
+
+// PRs
+export function fetchPRFeed(limit?: number): Promise<import("@/lib/types").PersonalRecord[]> {
+  const qs = limit ? `?limit=${limit}` : "";
+  return apiFetch<import("@/lib/types").PersonalRecord[]>(`/api/v1/fuel/prs/${qs}`);
+}
+
+// Goals
+export function fetchFuelGoals(): Promise<import("@/lib/types").FuelGoal[]> {
+  return apiFetch<import("@/lib/types").FuelGoal[]>("/api/v1/fuel/goals/");
+}
+
+export function createFuelGoal(
+  data: Partial<import("@/lib/types").FuelGoal>,
+): Promise<import("@/lib/types").FuelGoal> {
+  return apiFetch<import("@/lib/types").FuelGoal>("/api/v1/fuel/goals/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteFuelGoal(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/fuel/goals/${id}/`, { method: "DELETE" });
+}
+
+// Resting heart rate
+export function fetchRestingHR(): Promise<import("@/lib/types").RestingHeartRateEntry[]> {
+  return apiFetch<import("@/lib/types").RestingHeartRateEntry[]>("/api/v1/fuel/resting-hr/");
+}
+
+export function createRestingHR(data: { date: string; bpm: number }): Promise<import("@/lib/types").RestingHeartRateEntry> {
+  return apiFetch<import("@/lib/types").RestingHeartRateEntry>("/api/v1/fuel/resting-hr/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}

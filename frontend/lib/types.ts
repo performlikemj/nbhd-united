@@ -623,7 +623,7 @@ export type WorkoutCategory =
   | "sport"
   | "other";
 
-export type WorkoutStatus = "done" | "planned";
+export type WorkoutStatus = "done" | "planned" | "rest";
 
 export interface FuelWorkout {
   id: string;
@@ -641,6 +641,7 @@ export interface FuelWorkout {
 
 export interface WorkoutStub {
   id: string;
+  date: string;
   category: WorkoutCategory;
   activity: string;
   status: WorkoutStatus;
@@ -657,6 +658,45 @@ export interface BodyWeightEntry {
   id: string;
   date: string;
   weight_kg: string;
+  created_at: string;
+}
+
+export interface WorkoutTemplate {
+  id: string;
+  name: string;
+  category: WorkoutCategory;
+  activity: string;
+  duration_minutes: number | null;
+  detail_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PersonalRecord {
+  id: string;
+  exercise_name: string;
+  category: WorkoutCategory;
+  value: string;
+  previous_value: string | null;
+  metric: string;
+  date: string;
+  created_at: string;
+}
+
+export interface FuelGoal {
+  id: string;
+  exercise_name: string;
+  metric: string;
+  target_value: string;
+  target_date: string | null;
+  achieved_at: string | null;
+  created_at: string;
+}
+
+export interface RestingHeartRateEntry {
+  id: string;
+  date: string;
+  bpm: number;
   created_at: string;
 }
 

@@ -9,13 +9,22 @@ from .runtime_views import (
 from .views import (
     BodyWeightDetailView,
     BodyWeightListView,
+    FuelGoalDetailView,
+    FuelGoalListView,
     FuelProfileView,
     FuelSettingsView,
+    PRFeedView,
+    RestingHRDetailView,
+    RestingHRListView,
+    WeeklyVolumeSummaryView,
     WorkoutCalendarView,
     WorkoutCountView,
     WorkoutDetailView,
+    WorkoutDuplicateView,
     WorkoutListView,
     WorkoutProgressView,
+    WorkoutTemplateDetailView,
+    WorkoutTemplateListView,
 )
 
 urlpatterns = [
@@ -29,13 +38,38 @@ urlpatterns = [
         WorkoutDetailView.as_view(),
         name="fuel-workout-detail",
     ),
+    path(
+        "workouts/<uuid:workout_id>/duplicate/",
+        WorkoutDuplicateView.as_view(),
+        name="fuel-workout-duplicate",
+    ),
     path("calendar/", WorkoutCalendarView.as_view(), name="fuel-calendar"),
     path("progress/", WorkoutProgressView.as_view(), name="fuel-progress"),
+    path("weekly-summary/", WeeklyVolumeSummaryView.as_view(), name="fuel-weekly-summary"),
+    path("templates/", WorkoutTemplateListView.as_view(), name="fuel-templates"),
+    path(
+        "templates/<uuid:template_id>/",
+        WorkoutTemplateDetailView.as_view(),
+        name="fuel-template-detail",
+    ),
+    path("prs/", PRFeedView.as_view(), name="fuel-prs"),
+    path("goals/", FuelGoalListView.as_view(), name="fuel-goals"),
+    path(
+        "goals/<uuid:goal_id>/",
+        FuelGoalDetailView.as_view(),
+        name="fuel-goal-detail",
+    ),
     path("body-weight/", BodyWeightListView.as_view(), name="fuel-body-weight"),
     path(
         "body-weight/<uuid:entry_id>/",
         BodyWeightDetailView.as_view(),
         name="fuel-body-weight-detail",
+    ),
+    path("resting-hr/", RestingHRListView.as_view(), name="fuel-resting-hr"),
+    path(
+        "resting-hr/<uuid:entry_id>/",
+        RestingHRDetailView.as_view(),
+        name="fuel-resting-hr-detail",
     ),
     # Runtime (OpenClaw plugin, internal auth)
     path(

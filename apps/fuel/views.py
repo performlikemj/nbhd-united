@@ -3,19 +3,38 @@
 import calendar
 from collections import defaultdict
 
-from django.db.models import Sum
+from django.db.models import Count, Sum
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import BodyWeightLog, FuelProfile, Workout, WorkoutCategory
-from .serializers import BodyWeightLogSerializer, FuelProfileSerializer, WorkoutSerializer, WorkoutStubSerializer
+from .models import (
+    BodyWeightLog,
+    FuelGoal,
+    FuelProfile,
+    PersonalRecord,
+    RestingHeartRateLog,
+    Workout,
+    WorkoutCategory,
+    WorkoutTemplate,
+)
+from .serializers import (
+    BodyWeightLogSerializer,
+    FuelGoalSerializer,
+    FuelProfileSerializer,
+    PersonalRecordSerializer,
+    RestingHeartRateLogSerializer,
+    WorkoutSerializer,
+    WorkoutStubSerializer,
+    WorkoutTemplateSerializer,
+)
 from .services import (
     aggregate_calisthenics_progress,
     aggregate_cardio_progress,
     aggregate_hiit_progress,
     aggregate_strength_progress,
+    detect_prs,
 )
 
 
@@ -92,7 +111,7 @@ class WorkoutListView(APIView):
         if cat and cat in WorkoutCategory.values:
             qs = qs.filter(category=cat)
         status_filter = request.query_params.get("status")
-        if status_filter in ("done", "planned"):
+        if status_filter in ("done", "planned", "rest"):
             qs = qs.filter(status=status_filter)
         date_from = request.query_params.get("date_from")
         date_to = request.query_params.get("date_to")
@@ -112,7 +131,8 @@ class WorkoutListView(APIView):
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
         serializer = WorkoutSerializer(data=request.data, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        workout = serializer.save()
+        detect_prs(tenant, workout)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -148,7 +168,8 @@ class WorkoutDetailView(APIView):
             context={"tenant": workout.tenant},
         )
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        updated = serializer.save()
+        detect_prs(workout.tenant, updated)
         return Response(serializer.data)
 
     def delete(self, request, workout_id):
@@ -260,7 +281,7 @@ class WorkoutCountView(APIView):
         if cat and cat in WorkoutCategory.values:
             qs = qs.filter(category=cat)
         status_filter = request.query_params.get("status")
-        if status_filter in ("done", "planned"):
+        if status_filter in ("done", "planned", "rest"):
             qs = qs.filter(status=status_filter)
         date_from = request.query_params.get("date_from")
         date_to = request.query_params.get("date_to")
@@ -334,6 +355,297 @@ class BodyWeightDetailView(APIView):
         try:
             entry = BodyWeightLog.objects.get(id=entry_id, tenant=tenant)
         except BodyWeightLog.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        entry.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Workout Templates (PR 4)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class WorkoutTemplateListView(APIView):
+    """GET: list templates. POST: create template."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        cat = request.query_params.get("category")
+        qs = WorkoutTemplate.objects.filter(tenant=tenant)
+        if cat and cat in WorkoutCategory.values:
+            qs = qs.filter(category=cat)
+        return Response(WorkoutTemplateSerializer(qs, many=True).data)
+
+    def post(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        serializer = WorkoutTemplateSerializer(data=request.data, context={"tenant": tenant})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class WorkoutTemplateDetailView(APIView):
+    """GET/PATCH/DELETE a single template."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _get(self, request, template_id):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return None, Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            tmpl = WorkoutTemplate.objects.get(id=template_id, tenant=tenant)
+        except WorkoutTemplate.DoesNotExist:
+            return None, Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        return tmpl, None
+
+    def get(self, request, template_id):
+        tmpl, err = self._get(request, template_id)
+        if err:
+            return err
+        return Response(WorkoutTemplateSerializer(tmpl).data)
+
+    def patch(self, request, template_id):
+        tmpl, err = self._get(request, template_id)
+        if err:
+            return err
+        serializer = WorkoutTemplateSerializer(tmpl, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, template_id):
+        tmpl, err = self._get(request, template_id)
+        if err:
+            return err
+        tmpl.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class WorkoutDuplicateView(APIView):
+    """POST: create a new workout pre-filled from an existing one."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, workout_id):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            source = Workout.objects.get(id=workout_id, tenant=tenant)
+        except Workout.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        from datetime import date as date_cls
+
+        new_workout = Workout.objects.create(
+            tenant=tenant,
+            date=date_cls.today(),
+            status="planned",
+            category=source.category,
+            activity=source.activity,
+            duration_minutes=source.duration_minutes,
+            detail_json=source.detail_json,
+        )
+        return Response(WorkoutSerializer(new_workout).data, status=status.HTTP_201_CREATED)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Weekly Volume Summary (PR 5)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class WeeklyVolumeSummaryView(APIView):
+    """GET: weekly workout volume summary."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from datetime import date as date_cls
+        from datetime import timedelta
+
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+
+        week_start_str = request.query_params.get("week_start")
+        if week_start_str:
+            try:
+                week_start = date_cls.fromisoformat(week_start_str)
+            except ValueError:
+                return Response({"error": "invalid week_start"}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            today = date_cls.today()
+            week_start = today - timedelta(days=today.weekday())  # Monday
+
+        week_end = week_start + timedelta(days=6)
+
+        by_category = list(
+            Workout.objects.filter(
+                tenant=tenant,
+                status="done",
+                date__gte=week_start,
+                date__lte=week_end,
+            )
+            .values("category")
+            .annotate(count=Count("id"), total_minutes=Sum("duration_minutes"))
+            .order_by("category")
+        )
+
+        total_sessions = sum(c["count"] for c in by_category)
+        total_minutes = sum(c["total_minutes"] or 0 for c in by_category)
+
+        return Response(
+            {
+                "week_start": str(week_start),
+                "week_end": str(week_end),
+                "by_category": by_category,
+                "totals": {"sessions": total_sessions, "minutes": total_minutes},
+            }
+        )
+
+
+# ═════════════════════════════════════════════════════════════════════
+# PR History + Goals (PR 6)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class PRFeedView(APIView):
+    """GET: recent personal records."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        limit = min(int(request.query_params.get("limit", 20)), 100)
+        prs = PersonalRecord.objects.filter(tenant=tenant)[:limit]
+        return Response(PersonalRecordSerializer(prs, many=True).data)
+
+
+class FuelGoalListView(APIView):
+    """GET: list goals. POST: create goal."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        goals = FuelGoal.objects.filter(tenant=tenant)
+        return Response(FuelGoalSerializer(goals, many=True).data)
+
+    def post(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        serializer = FuelGoalSerializer(data=request.data, context={"tenant": tenant})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class FuelGoalDetailView(APIView):
+    """PATCH/DELETE a single goal."""
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, goal_id):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            goal = FuelGoal.objects.get(id=goal_id, tenant=tenant)
+        except FuelGoal.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        serializer = FuelGoalSerializer(goal, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, goal_id):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            goal = FuelGoal.objects.get(id=goal_id, tenant=tenant)
+        except FuelGoal.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        goal.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Resting Heart Rate (PR 7)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class RestingHRListView(APIView):
+    """GET: list entries. POST: create or upsert by date."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        limit = min(int(request.query_params.get("limit", 90)), 365)
+        entries = RestingHeartRateLog.objects.filter(tenant=tenant)[:limit]
+        return Response(RestingHeartRateLogSerializer(entries, many=True).data)
+
+    def post(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+
+        entry_date = request.data.get("date")
+        bpm = request.data.get("bpm")
+        if not entry_date or bpm is None:
+            return Response({"error": "date and bpm required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        entry, created = RestingHeartRateLog.objects.update_or_create(
+            tenant=tenant,
+            date=entry_date,
+            defaults={"bpm": int(bpm)},
+        )
+        return Response(
+            RestingHeartRateLogSerializer(entry).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class RestingHRDetailView(APIView):
+    """PATCH/DELETE a single resting HR entry."""
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, entry_id):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            entry = RestingHeartRateLog.objects.get(id=entry_id, tenant=tenant)
+        except RestingHeartRateLog.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        serializer = RestingHeartRateLogSerializer(entry, data=request.data, partial=True, context={"tenant": tenant})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, entry_id):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            entry = RestingHeartRateLog.objects.get(id=entry_id, tenant=tenant)
+        except RestingHeartRateLog.DoesNotExist:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
         entry.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

@@ -2,7 +2,15 @@
 
 from rest_framework import serializers
 
-from .models import BodyWeightLog, FuelProfile, Workout
+from .models import (
+    BodyWeightLog,
+    FuelGoal,
+    FuelProfile,
+    PersonalRecord,
+    RestingHeartRateLog,
+    Workout,
+    WorkoutTemplate,
+)
 
 
 class FuelProfileSerializer(serializers.ModelSerializer):
@@ -70,6 +78,46 @@ class BodyWeightLogSerializer(serializers.ModelSerializer):
     class Meta:
         model = BodyWeightLog
         fields = ["id", "date", "weight_kg", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+    def create(self, validated_data):
+        validated_data["tenant"] = self.context["tenant"]
+        return super().create(validated_data)
+
+
+class WorkoutTemplateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WorkoutTemplate
+        fields = ["id", "name", "category", "activity", "duration_minutes", "detail_json", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def create(self, validated_data):
+        validated_data["tenant"] = self.context["tenant"]
+        return super().create(validated_data)
+
+
+class PersonalRecordSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PersonalRecord
+        fields = ["id", "exercise_name", "category", "value", "previous_value", "metric", "date", "created_at"]
+        read_only_fields = fields
+
+
+class FuelGoalSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FuelGoal
+        fields = ["id", "exercise_name", "metric", "target_value", "target_date", "achieved_at", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+    def create(self, validated_data):
+        validated_data["tenant"] = self.context["tenant"]
+        return super().create(validated_data)
+
+
+class RestingHeartRateLogSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RestingHeartRateLog
+        fields = ["id", "date", "bpm", "created_at"]
         read_only_fields = ["id", "created_at"]
 
     def create(self, validated_data):

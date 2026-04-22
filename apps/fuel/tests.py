@@ -359,6 +359,46 @@ class ConsumerFuelViewTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(len(resp.data), 2)
 
+    def test_create_rest_day(self):
+        resp = self.client.post(
+            "/api/v1/fuel/workouts/",
+            {"date": "2026-04-21", "status": "rest", "category": "other", "activity": "Rest day"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["status"], "rest")
+
+    def test_rest_day_in_calendar(self):
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            status="rest",
+            category="other",
+            activity="Rest day",
+        )
+        resp = self.client.get("/api/v1/fuel/calendar/?year=2026&month=4")
+        self.assertEqual(resp.status_code, 200)
+        day = next(d for d in resp.data if d["date"] == "2026-04-21")
+        self.assertEqual(len(day["workouts"]), 1)
+        self.assertEqual(day["workouts"][0]["status"], "rest")
+
+    def test_rest_day_not_in_done_count(self):
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            status="rest",
+            category="other",
+            activity="Rest day",
+        )
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 20),
+            category="strength",
+            activity="Push",
+        )
+        resp = self.client.get("/api/v1/fuel/workouts/count/?status=done")
+        self.assertEqual(resp.data["count"], 1)
+
     def test_progress_strength(self):
         Workout.objects.create(
             tenant=self.tenant,
@@ -766,3 +806,278 @@ class RuntimeFuelSummaryWithProfileTests(TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertIsNone(resp.data["profile"])
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Templates, Duplicate, Weekly Volume, PRs, Goals, Resting HR
+# ═════════════════════════════════════════════════════════════════════
+
+
+class WorkoutTemplateTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Template Test", telegram_chat_id=800050)
+        self.user = self.tenant.user
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def test_create_template(self):
+        resp = self.client.post(
+            "/api/v1/fuel/templates/",
+            {
+                "name": "Push Day A",
+                "category": "strength",
+                "activity": "Push — Chest & Shoulders",
+                "detail_json": {"exercises": [{"name": "Bench", "sets": [{"reps": 8, "weight": 75}]}]},
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["name"], "Push Day A")
+
+    def test_list_templates(self):
+        from .models import WorkoutTemplate
+
+        WorkoutTemplate.objects.create(
+            tenant=self.tenant,
+            name="A",
+            category="strength",
+            activity="Push",
+        )
+        WorkoutTemplate.objects.create(
+            tenant=self.tenant,
+            name="B",
+            category="cardio",
+            activity="Run",
+        )
+        resp = self.client.get("/api/v1/fuel/templates/")
+        self.assertEqual(len(resp.data), 2)
+
+    def test_list_templates_filter_category(self):
+        from .models import WorkoutTemplate
+
+        WorkoutTemplate.objects.create(tenant=self.tenant, name="A", category="strength", activity="Push")
+        WorkoutTemplate.objects.create(tenant=self.tenant, name="B", category="cardio", activity="Run")
+        resp = self.client.get("/api/v1/fuel/templates/?category=strength")
+        self.assertEqual(len(resp.data), 1)
+
+    def test_delete_template(self):
+        from .models import WorkoutTemplate
+
+        tmpl = WorkoutTemplate.objects.create(tenant=self.tenant, name="A", category="strength", activity="Push")
+        resp = self.client.delete(f"/api/v1/fuel/templates/{tmpl.id}/")
+        self.assertEqual(resp.status_code, 204)
+
+
+class WorkoutDuplicateTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Dup Test", telegram_chat_id=800051)
+        self.user = self.tenant.user
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def test_duplicate_workout(self):
+        source = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 20),
+            category="strength",
+            activity="Push Day",
+            duration_minutes=60,
+            detail_json={"exercises": [{"name": "Bench", "sets": [{"reps": 8, "weight": 75}]}]},
+        )
+        resp = self.client.post(f"/api/v1/fuel/workouts/{source.id}/duplicate/")
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["activity"], "Push Day")
+        self.assertEqual(resp.data["status"], "planned")
+        self.assertNotEqual(resp.data["id"], str(source.id))
+        self.assertEqual(resp.data["detail_json"]["exercises"][0]["name"], "Bench")
+
+
+class WeeklyVolumeTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Volume Test", telegram_chat_id=800052)
+        self.user = self.tenant.user
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def test_weekly_summary(self):
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date.today(),
+            category="strength",
+            activity="Push",
+            duration_minutes=60,
+        )
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date.today(),
+            category="cardio",
+            activity="Run",
+            duration_minutes=30,
+        )
+        resp = self.client.get("/api/v1/fuel/weekly-summary/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["totals"]["sessions"], 2)
+        self.assertEqual(resp.data["totals"]["minutes"], 90)
+
+    def test_weekly_summary_empty(self):
+        resp = self.client.get("/api/v1/fuel/weekly-summary/")
+        self.assertEqual(resp.data["totals"]["sessions"], 0)
+
+
+class PRDetectionTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="PR Test", telegram_chat_id=800053)
+        self.user = self.tenant.user
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def test_pr_detected_on_create(self):
+        from .models import PersonalRecord
+
+        resp = self.client.post(
+            "/api/v1/fuel/workouts/",
+            {
+                "date": "2026-04-21",
+                "category": "strength",
+                "activity": "Push",
+                "detail_json": {"exercises": [{"name": "Bench", "sets": [{"reps": 8, "weight": 75}]}]},
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(PersonalRecord.objects.filter(tenant=self.tenant).count(), 1)
+        pr = PersonalRecord.objects.first()
+        self.assertEqual(pr.exercise_name, "Bench")
+        self.assertIsNone(pr.previous_value)
+
+    def test_pr_updated_on_improvement(self):
+        from .models import PersonalRecord
+
+        # First workout
+        self.client.post(
+            "/api/v1/fuel/workouts/",
+            {
+                "date": "2026-04-20",
+                "category": "strength",
+                "activity": "Push",
+                "detail_json": {"exercises": [{"name": "Bench", "sets": [{"reps": 8, "weight": 70}]}]},
+            },
+            format="json",
+        )
+        # Second workout with heavier weight
+        self.client.post(
+            "/api/v1/fuel/workouts/",
+            {
+                "date": "2026-04-21",
+                "category": "strength",
+                "activity": "Push",
+                "detail_json": {"exercises": [{"name": "Bench", "sets": [{"reps": 8, "weight": 80}]}]},
+            },
+            format="json",
+        )
+        prs = PersonalRecord.objects.filter(tenant=self.tenant, exercise_name="Bench").order_by("created_at")
+        self.assertEqual(prs.count(), 2)
+        latest = prs.last()
+        self.assertIsNotNone(latest.previous_value)
+
+    def test_pr_feed(self):
+        from .models import PersonalRecord
+
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Push",
+            detail_json={"exercises": [{"name": "Bench", "sets": [{"reps": 8, "weight": 80}]}]},
+        )
+        PersonalRecord.objects.create(
+            tenant=self.tenant,
+            workout=w,
+            exercise_name="Bench",
+            category="strength",
+            value=Decimal("99.0"),
+            metric="est_1rm",
+            date=date(2026, 4, 21),
+        )
+        resp = self.client.get("/api/v1/fuel/prs/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data), 1)
+
+
+class FuelGoalTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Goal Test", telegram_chat_id=800054)
+        self.user = self.tenant.user
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def test_create_goal(self):
+        resp = self.client.post(
+            "/api/v1/fuel/goals/",
+            {"exercise_name": "Bench Press", "metric": "est_1rm", "target_value": "100.0", "target_date": "2026-06-01"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["exercise_name"], "Bench Press")
+
+    def test_list_goals(self):
+        from .models import FuelGoal
+
+        FuelGoal.objects.create(tenant=self.tenant, exercise_name="Bench", target_value=Decimal("100"))
+        FuelGoal.objects.create(tenant=self.tenant, exercise_name="Squat", target_value=Decimal("150"))
+        resp = self.client.get("/api/v1/fuel/goals/")
+        self.assertEqual(len(resp.data), 2)
+
+    def test_delete_goal(self):
+        from .models import FuelGoal
+
+        goal = FuelGoal.objects.create(tenant=self.tenant, exercise_name="Bench", target_value=Decimal("100"))
+        resp = self.client.delete(f"/api/v1/fuel/goals/{goal.id}/")
+        self.assertEqual(resp.status_code, 204)
+
+
+class RestingHeartRateTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="RHR Test", telegram_chat_id=800055)
+        self.user = self.tenant.user
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def test_create_rhr(self):
+        resp = self.client.post(
+            "/api/v1/fuel/resting-hr/",
+            {"date": "2026-04-21", "bpm": 62},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["bpm"], 62)
+
+    def test_rhr_upsert(self):
+        from .models import RestingHeartRateLog
+
+        self.client.post("/api/v1/fuel/resting-hr/", {"date": "2026-04-21", "bpm": 62}, format="json")
+        resp = self.client.post("/api/v1/fuel/resting-hr/", {"date": "2026-04-21", "bpm": 58}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(RestingHeartRateLog.objects.filter(tenant=self.tenant).count(), 1)
+        self.assertEqual(resp.data["bpm"], 58)
+
+    def test_rhr_list(self):
+        from .models import RestingHeartRateLog
+
+        RestingHeartRateLog.objects.create(tenant=self.tenant, date=date(2026, 4, 21), bpm=62)
+        RestingHeartRateLog.objects.create(tenant=self.tenant, date=date(2026, 4, 20), bpm=60)
+        resp = self.client.get("/api/v1/fuel/resting-hr/")
+        self.assertEqual(len(resp.data), 2)
+
+    def test_rhr_delete(self):
+        from .models import RestingHeartRateLog
+
+        entry = RestingHeartRateLog.objects.create(tenant=self.tenant, date=date(2026, 4, 21), bpm=62)
+        resp = self.client.delete(f"/api/v1/fuel/resting-hr/{entry.id}/")
+        self.assertEqual(resp.status_code, 204)

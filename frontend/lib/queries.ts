@@ -105,6 +105,17 @@ import {
   updateFuelSettings,
   fetchFuelProfile,
   updateFuelProfile,
+  fetchWorkoutTemplates,
+  createWorkoutTemplate,
+  deleteWorkoutTemplate,
+  duplicateWorkout,
+  fetchWeeklyVolume,
+  fetchPRFeed,
+  fetchFuelGoals,
+  createFuelGoal,
+  deleteFuelGoal,
+  fetchRestingHR,
+  createRestingHR,
   fetchWorkspaces,
   createWorkspace,
   updateWorkspace,
@@ -1253,6 +1264,118 @@ export function useUpdateFuelProfileMutation() {
     mutationFn: updateFuelProfile,
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["fuel-profile"] });
+    },
+  });
+}
+
+// Templates
+export function useWorkoutTemplatesQuery(category?: string) {
+  return useQuery({
+    queryKey: ["fuel-templates", category ?? ""],
+    queryFn: () => fetchWorkoutTemplates(category),
+    staleTime: 5 * 60_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useCreateWorkoutTemplateMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: createWorkoutTemplate,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-templates"] });
+    },
+  });
+}
+
+export function useDeleteWorkoutTemplateMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteWorkoutTemplate,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-templates"] });
+    },
+  });
+}
+
+export function useDuplicateWorkoutMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: duplicateWorkout,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-workout-count"] });
+    },
+  });
+}
+
+// Weekly volume
+export function useWeeklyVolumeQuery(weekStart?: string) {
+  return useQuery({
+    queryKey: ["fuel-weekly-volume", weekStart ?? ""],
+    queryFn: () => fetchWeeklyVolume(weekStart),
+    staleTime: 5 * 60_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+// PRs
+export function usePRFeedQuery() {
+  return useQuery({
+    queryKey: ["fuel-prs"],
+    queryFn: () => fetchPRFeed(),
+    staleTime: 5 * 60_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+// Goals
+export function useFuelGoalsQuery() {
+  return useQuery({
+    queryKey: ["fuel-goals"],
+    queryFn: fetchFuelGoals,
+    staleTime: 5 * 60_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useCreateFuelGoalMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: createFuelGoal,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-goals"] });
+    },
+  });
+}
+
+export function useDeleteFuelGoalMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteFuelGoal,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-goals"] });
+    },
+  });
+}
+
+// Resting heart rate
+export function useRestingHRQuery() {
+  return useQuery({
+    queryKey: ["fuel-resting-hr"],
+    queryFn: fetchRestingHR,
+    staleTime: 5 * 60_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useCreateRestingHRMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: createRestingHR,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-resting-hr"] });
     },
   });
 }

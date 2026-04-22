@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import BodyWeightLog, FuelProfile, Workout
+from .models import BodyWeightLog, FuelGoal, FuelProfile, PersonalRecord, RestingHeartRateLog, Workout, WorkoutTemplate
 
 
 @admin.register(Workout)
@@ -24,3 +24,33 @@ class FuelProfileAdmin(admin.ModelAdmin):
     list_filter = ["onboarding_status"]
     search_fields = ["tenant__user__display_name"]
     readonly_fields = ["id", "created_at", "updated_at"]
+
+
+@admin.register(WorkoutTemplate)
+class WorkoutTemplateAdmin(admin.ModelAdmin):
+    list_display = ["name", "tenant", "category", "activity", "created_at"]
+    list_filter = ["category"]
+    search_fields = ["name", "tenant__user__display_name"]
+    readonly_fields = ["id", "created_at", "updated_at"]
+
+
+@admin.register(PersonalRecord)
+class PersonalRecordAdmin(admin.ModelAdmin):
+    list_display = ["exercise_name", "tenant", "value", "previous_value", "metric", "date"]
+    list_filter = ["category", "metric"]
+    search_fields = ["exercise_name", "tenant__user__display_name"]
+    readonly_fields = ["id", "created_at"]
+
+
+@admin.register(FuelGoal)
+class FuelGoalAdmin(admin.ModelAdmin):
+    list_display = ["exercise_name", "tenant", "target_value", "metric", "target_date", "achieved_at"]
+    search_fields = ["exercise_name", "tenant__user__display_name"]
+    readonly_fields = ["id", "created_at"]
+
+
+@admin.register(RestingHeartRateLog)
+class RestingHeartRateLogAdmin(admin.ModelAdmin):
+    list_display = ["tenant", "date", "bpm"]
+    search_fields = ["tenant__user__display_name"]
+    readonly_fields = ["id", "created_at"]
