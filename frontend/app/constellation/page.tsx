@@ -106,7 +106,7 @@ function clusterByTags(nodes: ConstellationNode[]): { clusters: ConstellationDat
 // ── Graph layout ─────────────────────────────────────────────────────────────
 
 function layoutGraph(graphNodes: GraphNode[], _graphEdges: GraphEdge[], clusters: ConstellationData["clusters"]): Record<string, { x: number; y: number }> {
-  const cx = VW / 2, cy = VH / 2, ringR = Math.min(VW, VH) * 0.36;
+  const cx = VW / 2, cy = VH / 2, ringR = Math.min(VW, VH) * 0.42;
   const cc: Record<number, { x: number; y: number }> = {};
   clusters.forEach((c, i) => { const a = (i / clusters.length) * Math.PI * 2 - Math.PI / 2 + 0.3; cc[c.id] = { x: cx + Math.cos(a) * ringR, y: cy + Math.sin(a) * ringR }; });
   const pos: Record<string, { x: number; y: number }> = {};
@@ -123,7 +123,7 @@ function layoutGraph(graphNodes: GraphNode[], _graphEdges: GraphEdge[], clusters
       const ringIdx = onOuter ? i - splitAt : i, ringCount = ringList.length;
       const toC = Math.atan2(cy - center.y, cx - center.x), spread = Math.PI * 1.35, a0 = toC + Math.PI - spread / 2;
       const angle = a0 + (ringCount > 1 ? (ringIdx / (ringCount - 1)) * spread : spread / 2);
-      pos[String(n.id)] = { x: center.x + Math.cos(angle) * (onOuter ? 230 : 150), y: center.y + Math.sin(angle) * (onOuter ? 230 : 150) };
+      pos[String(n.id)] = { x: center.x + Math.cos(angle) * (onOuter ? 280 : 180), y: center.y + Math.sin(angle) * (onOuter ? 280 : 180) };
     });
   });
   graphNodes.filter((n) => n.kind === "Evidence").forEach((n) => {
@@ -141,7 +141,7 @@ function layoutGraph(graphNodes: GraphNode[], _graphEdges: GraphEdge[], clusters
     if (lc[lids[i]] !== lc[lids[j]]) continue;
     const pa = pos[lids[i]], pb = pos[lids[j]]; if (!pa || !pb) continue;
     const dx = pa.x - pb.x, dy = pa.y - pb.y, d = Math.sqrt(dx * dx + dy * dy + 0.01);
-    if (d < 110) { const push = (110 - d) * 0.3, nx = dx / d, ny = dy / d; pa.x += nx * push; pa.y += ny * push; pb.x -= nx * push; pb.y -= ny * push; }
+    if (d < 130) { const push = (130 - d) * 0.3, nx = dx / d, ny = dy / d; pa.x += nx * push; pa.y += ny * push; pb.x -= nx * push; pb.y -= ny * push; }
   }
   return pos;
 }
@@ -295,23 +295,88 @@ export default function ConstellationPage() {
   const toScreen = useCallback((x: number, y: number) => ({ x: stageSize.w / 2 + (x - VW / 2) * scale + pan.x, y: stageSize.h / 2 + (y - VH / 2) * scale + pan.y }), [stageSize.w, stageSize.h, scale, pan.x, pan.y]);
   const screenToWorld = useCallback((sx: number, sy: number) => ({ x: (sx - stageSize.w / 2 - pan.x) / scale + VW / 2, y: (sy - stageSize.h / 2 - pan.y) / scale + VH / 2 }), [stageSize.w, stageSize.h, scale, pan.x, pan.y]);
 
-  function onMouseDown(e: React.MouseEvent) {
-    if ((e.target as HTMLElement).closest("[data-no-drag]")) return;
-    const nodeEl = (e.target as SVGElement).closest("[data-graphnode]");
-    if (nodeEl) { const nid = nodeEl.getAttribute("data-node-id") || ""; const sw = screenToWorld(e.clientX, e.clientY); const p = positions[nid] || { x: 0, y: 0 }; dragRef.current = { mode: "node", nodeId: nid, offsetX: p.x - sw.x, offsetY: p.y - sw.y, moved: 0, sx: e.clientX, sy: e.clientY, x: e.clientX, y: e.clientY, px: pan.x, py: pan.y }; }
-    else { dragRef.current = { mode: "pan", x: e.clientX, y: e.clientY, px: pan.x, py: pan.y, moved: 0 }; }
+  // Shared pointer logic for mouse + touch
+  const pinchRef = useRef<{ d0: number; z0: number } | null>(null);
+
+  function pointerDown(cx: number, cy: number, target: EventTarget) {
+    if ((target as HTMLElement).closest("[data-no-drag]")) return;
+    const nodeEl = (target as SVGElement).closest("[data-graphnode]");
+    if (nodeEl) {
+      const nid = nodeEl.getAttribute("data-node-id") || "";
+      const sw = screenToWorld(cx, cy);
+      const p = positions[nid] || { x: 0, y: 0 };
+      dragRef.current = { mode: "node", nodeId: nid, offsetX: p.x - sw.x, offsetY: p.y - sw.y, moved: 0, sx: cx, sy: cy, x: cx, y: cy, px: pan.x, py: pan.y };
+    } else {
+      dragRef.current = { mode: "pan", x: cx, y: cy, px: pan.x, py: pan.y, moved: 0 };
+    }
   }
-  function onMouseMove(e: React.MouseEvent) {
+  function pointerMove(cx: number, cy: number) {
     const d = dragRef.current; if (!d) return;
-    if (d.mode === "pan") { const dx = e.clientX - d.x, dy = e.clientY - d.y; d.moved = Math.max(d.moved, Math.hypot(dx, dy)); setPan({ x: d.px + dx, y: d.py + dy }); }
-    else if (d.mode === "node" && d.nodeId) { const dx = e.clientX - (d.sx || 0), dy = e.clientY - (d.sy || 0); d.moved = Math.max(d.moved, Math.hypot(dx, dy)); if (d.moved > 3) { const w = screenToWorld(e.clientX, e.clientY); setPositions((prev) => ({ ...prev, [d.nodeId!]: { x: w.x + (d.offsetX || 0), y: w.y + (d.offsetY || 0) } })); } }
+    if (d.mode === "pan") {
+      const dx = cx - d.x, dy = cy - d.y;
+      d.moved = Math.max(d.moved, Math.hypot(dx, dy));
+      setPan({ x: d.px + dx, y: d.py + dy });
+    } else if (d.mode === "node" && d.nodeId) {
+      const dx = cx - (d.sx || 0), dy = cy - (d.sy || 0);
+      d.moved = Math.max(d.moved, Math.hypot(dx, dy));
+      if (d.moved > 3) {
+        const w = screenToWorld(cx, cy);
+        setPositions((prev) => ({ ...prev, [d.nodeId!]: { x: w.x + (d.offsetX || 0), y: w.y + (d.offsetY || 0) } }));
+      }
+    }
   }
-  function onMouseUp() {
+  function pointerUp() {
     const d = dragRef.current; dragRef.current = null; if (!d) return;
-    if (d.mode === "pan" && d.moved < 4) { if (selectedId) setSelectedId(null); else if (isolated) setIsolated(null); }
-    else if (d.mode === "node" && d.moved < 3 && d.nodeId) { const n = graphData.nodes.find((x) => String(x.id) === String(d.nodeId)); if (!n) return; if (n.kind === "Cluster") { setIsolated((prev) => (prev === d.nodeId! ? null : d.nodeId!)); setSelectedId(d.nodeId!); } else setSelectedId(d.nodeId!); }
+    if (d.mode === "pan" && d.moved < 4) {
+      if (selectedId) setSelectedId(null);
+      else if (isolated) setIsolated(null);
+    } else if (d.mode === "node" && d.moved < 3 && d.nodeId) {
+      const n = graphData.nodes.find((x) => String(x.id) === String(d.nodeId));
+      if (!n) return;
+      if (n.kind === "Cluster") { setIsolated((prev) => (prev === d.nodeId! ? null : d.nodeId!)); setSelectedId(d.nodeId!); }
+      else setSelectedId(d.nodeId!);
+    }
   }
+
+  // Mouse events
+  function onMouseDown(e: React.MouseEvent) { pointerDown(e.clientX, e.clientY, e.target); }
+  function onMouseMove(e: React.MouseEvent) { pointerMove(e.clientX, e.clientY); }
+  function onMouseUp() { pointerUp(); }
   function onWheel(e: React.WheelEvent) { e.preventDefault(); setZoom((z) => Math.max(0.3, Math.min(3, z * Math.exp(-e.deltaY * 0.0015)))); }
+
+  // Touch events — single finger drags/taps, two fingers pinch-zoom
+  function onTouchStart(e: React.TouchEvent) {
+    if (e.touches.length === 2) {
+      // Pinch start
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      pinchRef.current = { d0: Math.hypot(dx, dy), z0: zoom };
+      dragRef.current = null;
+      return;
+    }
+    if (e.touches.length === 1) {
+      const t = e.touches[0];
+      pointerDown(t.clientX, t.clientY, t.target);
+    }
+  }
+  function onTouchMove(e: React.TouchEvent) {
+    e.preventDefault(); // prevent scroll
+    if (e.touches.length === 2 && pinchRef.current) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const d = Math.hypot(dx, dy);
+      const ratio = d / pinchRef.current.d0;
+      setZoom(Math.max(0.3, Math.min(3, pinchRef.current.z0 * ratio)));
+      return;
+    }
+    if (e.touches.length === 1) {
+      pointerMove(e.touches[0].clientX, e.touches[0].clientY);
+    }
+  }
+  function onTouchEnd(e: React.TouchEvent) {
+    if (pinchRef.current && e.touches.length < 2) { pinchRef.current = null; return; }
+    if (e.touches.length === 0) pointerUp();
+  }
   function toggleKind(k: GraphNodeKind) { setKindFilter((s) => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n; }); setSelectedId(null); }
   function toggleRel(r: GraphRelType) { setRelFilter((s) => { const n = new Set(s); n.has(r) ? n.delete(r) : n.add(r); return n; }); }
   const selected = selectedId ? graphData.nodes.find((n) => String(n.id) === String(selectedId)) ?? null : null;
@@ -326,7 +391,9 @@ export default function ConstellationPage() {
     <div className="flex flex-col flex-1 -mt-4 relative text-[#E2E8F0]" style={{ background: "#04070b", minHeight: "calc(100vh - 120px)" }}>
       {/* Stage — flex child for real dimensions */}
       <section ref={stageRef} className="flex-1 relative overflow-hidden min-h-[500px] cursor-grab active:cursor-grabbing select-none"
-        onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp} onWheel={onWheel}>
+        onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp} onWheel={onWheel}
+        onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}
+        style={{ touchAction: "none" }}>
         <div className="absolute inset-0 pointer-events-none" style={{ background: "radial-gradient(ellipse 80% 60% at 35% 40%, rgba(124,107,240,0.06) 0%, transparent 55%), radial-gradient(ellipse 70% 50% at 75% 65%, rgba(78,205,196,0.05) 0%, transparent 55%), radial-gradient(circle at 50% 100%, rgba(232,180,184,0.04) 0%, transparent 60%), #04070b" }} />
         <div className="absolute inset-0 pointer-events-none opacity-[0.04]" style={{ backgroundImage: "linear-gradient(#7C6BF0 1px, transparent 1px), linear-gradient(90deg, #7C6BF0 1px, transparent 1px)", backgroundSize: `${48 * zoom}px ${48 * zoom}px`, backgroundPosition: `${pan.x}px ${pan.y}px` }} />
 
