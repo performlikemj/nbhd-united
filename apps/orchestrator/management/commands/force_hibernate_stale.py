@@ -72,9 +72,7 @@ class Command(BaseCommand):
                 **{}
             )
             .extra(
-                where=[
-                    "(last_message_at < %s OR (last_message_at IS NULL AND provisioned_at < %s))"
-                ],
+                where=["(last_message_at < %s OR (last_message_at IS NULL AND provisioned_at < %s))"],
                 params=[cutoff, cutoff],
             )
         )
@@ -146,9 +144,7 @@ class Command(BaseCommand):
                 client.container_apps_revisions.deactivate_revision(rg, container_name, rev.name)
 
             self.stdout.write(
-                self.style.SUCCESS(
-                    f"  hibernated: {container_name} ({email}, deactivated {len(active_revs)} rev(s))"
-                )
+                self.style.SUCCESS(f"  hibernated: {container_name} ({email}, deactivated {len(active_revs)} rev(s))")
             )
             return True
 
@@ -171,9 +167,7 @@ class Command(BaseCommand):
             all_apps = client.container_apps.list_by_resource_group(rg)
             oc_apps = [app for app in all_apps if app.name.startswith("oc-")]
 
-            known_ids = set(
-                Tenant.objects.exclude(container_id="").values_list("container_id", flat=True)
-            )
+            known_ids = set(Tenant.objects.exclude(container_id="").values_list("container_id", flat=True))
 
             orphans = [app for app in oc_apps if app.name not in known_ids]
             self.stdout.write(f"Found {len(orphans)} orphan(s)")
