@@ -102,6 +102,8 @@ import {
   fetchBodyWeight,
   createBodyWeight,
   updateFuelSettings,
+  fetchFuelProfile,
+  updateFuelProfile,
   fetchWorkspaces,
   createWorkspace,
   updateWorkspace,
@@ -1211,6 +1213,27 @@ export function useUpdateFuelSettingsMutation() {
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["tenant"] });
+      void queryClient.invalidateQueries({ queryKey: ["fuel-profile"] });
+    },
+  });
+}
+
+export function useFuelProfileQuery() {
+  const { data: tenant } = useTenantQuery();
+  return useQuery({
+    queryKey: ["fuel-profile"],
+    queryFn: fetchFuelProfile,
+    staleTime: 30_000,
+    enabled: isLoggedIn() && !!tenant?.fuel_enabled,
+  });
+}
+
+export function useUpdateFuelProfileMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: updateFuelProfile,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-profile"] });
     },
   });
 }

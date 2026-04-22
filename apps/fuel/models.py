@@ -60,6 +60,53 @@ class Workout(models.Model):
         return f"{self.activity} ({self.category}, {self.date})"
 
 
+class OnboardingStatus(models.TextChoices):
+    PENDING = "pending", "Pending"
+    IN_PROGRESS = "in_progress", "In Progress"
+    COMPLETED = "completed", "Completed"
+    DECLINED = "declined", "Declined"
+
+
+class FuelProfile(models.Model):
+    """Per-tenant fitness profile — populated via assistant-led onboarding."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.OneToOneField(Tenant, on_delete=models.CASCADE, related_name="fuel_profile")
+    onboarding_status = models.CharField(
+        max_length=16,
+        choices=OnboardingStatus.choices,
+        default=OnboardingStatus.PENDING,
+    )
+    fitness_level = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        help_text="beginner, intermediate, or advanced",
+    )
+    goals = models.JSONField(default=list, blank=True, help_text="Fitness goals, e.g. ['strength', 'weight_loss']")
+    limitations = models.JSONField(
+        default=list, blank=True, help_text="Injuries or restrictions, e.g. ['right shoulder — rotator cuff']"
+    )
+    equipment = models.JSONField(
+        default=list, blank=True, help_text="Available equipment, e.g. ['dumbbells', 'pull_up_bar']"
+    )
+    days_per_week = models.IntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(7)],
+        help_text="Preferred training days per week",
+    )
+    additional_context = models.TextField(blank=True, default="", help_text="Free-form fitness context")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "fuel_profiles"
+
+    def __str__(self) -> str:
+        return f"FuelProfile({self.tenant}, {self.onboarding_status})"
+
+
 class BodyWeightLog(models.Model):
     """Daily body-weight entry for trend tracking."""
 

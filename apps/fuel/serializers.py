@@ -2,7 +2,25 @@
 
 from rest_framework import serializers
 
-from .models import BodyWeightLog, Workout
+from .models import BodyWeightLog, FuelProfile, Workout
+
+
+class FuelProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FuelProfile
+        fields = [
+            "id",
+            "onboarding_status",
+            "fitness_level",
+            "goals",
+            "limitations",
+            "equipment",
+            "days_per_week",
+            "additional_context",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
 
 
 class WorkoutSerializer(serializers.ModelSerializer):

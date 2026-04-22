@@ -7,6 +7,7 @@ import { Calendar } from "@/components/fuel/calendar";
 import { DayDrawer } from "@/components/fuel/day-drawer";
 import { History } from "@/components/fuel/history";
 import { NewWorkoutDialog } from "@/components/fuel/new-workout-dialog";
+import { ProfileCard } from "@/components/fuel/profile-card";
 import { Progress } from "@/components/fuel/progress";
 import { WorkoutDetail } from "@/components/fuel/workout-detail";
 import { useWorkoutsQuery } from "@/lib/queries";
@@ -53,6 +54,8 @@ export default function FuelPage() {
           Log workout
         </button>
       </div>
+
+      <ProfileCard />
 
       {/* Tabs */}
       <div className="flex items-center gap-1 border-b border-border mb-6 overflow-x-auto">

@@ -100,6 +100,21 @@ Rules:
 - Save monitored subreddits to memory after setup: `{"reddit": {"monitored_subreddits": [...]}}`
 - If user asks about Reddit but it's not connected: offer to connect via `nbhd_reddit_connect`
 
+## Fuel Tools (`nbhd-fuel-tools` plugin — only loaded when Fuel is enabled)
+
+| Tool | Purpose |
+|------|---------|
+| `nbhd_fuel_summary` | Get recent workouts, planned workouts, body weight, and fitness profile. Call at session start for context. |
+| `nbhd_fuel_log_workout` | Log a workout. Only `activity` is required — infer category from the name, default to today and status "done". |
+| `nbhd_fuel_log_body_weight` | Log body weight (upserts by date). |
+| `nbhd_fuel_update_profile` | Update fitness profile progressively — send any subset of fields during onboarding. |
+
+Rules:
+- When logging from natural language, infer as much as possible — don't interrogate
+- "deadlift 75kg 3x5" → single call with `category=strength`, `detail_json` with exercises/sets
+- Always confirm what was logged with a brief message
+- See `rules/fuel.md` for onboarding flow and profile-aware recommendations
+
 ## Built-in Tools (OpenClaw)
 
 | Tool | Purpose |

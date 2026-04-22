@@ -90,11 +90,14 @@ Keep messages concise, focused on the "why". Examples:
 
 ## Frontend Conventions
 
-- Follow `frontend/BRAND_GUIDE.md` for all design tokens
+@DESIGN.md
+
+- Tokens, typography, components, do's/don'ts: follow `DESIGN.md` (imported above). It supersedes `frontend/BRAND_GUIDE.md`, which is pre-Constellation and out of date.
+- Source of truth for tokens is `frontend/app/globals.css`; Tailwind mappings in `frontend/tailwind.config.ts`. Keep `DESIGN.md` aligned when these change.
 - Mobile-first responsive design
-- WCAG 2.1 AA accessibility (4.5:1 contrast, 44x44px touch targets)
+- WCAG 2.1 AA accessibility (4.5:1 contrast, 44×44px touch targets)
 - Respect `prefers-reduced-motion`
-- Use CSS variables from design system, not hardcoded values
+- Use CSS variables / Tailwind tokens, never hardcoded hex
 
 ## Gotchas
 

@@ -2,12 +2,14 @@ from django.urls import path
 
 from .runtime_views import (
     RuntimeBodyWeightView,
+    RuntimeFuelProfileView,
     RuntimeFuelSummaryView,
     RuntimeLogWorkoutView,
 )
 from .views import (
     BodyWeightDetailView,
     BodyWeightListView,
+    FuelProfileView,
     FuelSettingsView,
     WorkoutCalendarView,
     WorkoutDetailView,
@@ -18,6 +20,7 @@ from .views import (
 urlpatterns = [
     # Consumer-facing (frontend, JWT auth)
     path("settings/", FuelSettingsView.as_view(), name="fuel-settings"),
+    path("profile/", FuelProfileView.as_view(), name="fuel-profile"),
     path("workouts/", WorkoutListView.as_view(), name="fuel-workouts"),
     path(
         "workouts/<uuid:workout_id>/",
@@ -47,5 +50,10 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/body-weight/",
         RuntimeBodyWeightView.as_view(),
         name="runtime-fuel-body-weight",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/profile/",
+        RuntimeFuelProfileView.as_view(),
+        name="runtime-fuel-profile",
     ),
 ]
