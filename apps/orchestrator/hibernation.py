@@ -101,13 +101,7 @@ def _capture_tenant_cron_schedules(tenant: Tenant) -> list[dict]:
 
         result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": False})
         data = result.get("details", result) if isinstance(result, dict) else result
-        jobs = (
-            data.get("jobs", [])
-            if isinstance(data, dict)
-            else data
-            if isinstance(data, list)
-            else []
-        )
+        jobs = data.get("jobs", []) if isinstance(data, dict) else data if isinstance(data, list) else []
 
         # Persist snapshot for debugging / restore purposes
         Tenant.objects.filter(id=tenant.id).update(
