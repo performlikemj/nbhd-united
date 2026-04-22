@@ -60,6 +60,7 @@ Detailed behavioral rules live in `rules/` — loaded on demand:
 | `rules/week-ahead.md` | Weekly cron review pass, mid-week plan changes |
 | `rules/voice-journal.md` | Voice recording processing, project cross-referencing, follow-up questions |
 | `rules/workspaces.md` | Workspace routing, switching, transition markers, chip indicators |
+| `rules/fuel.md` | Fuel workout tracking, fitness onboarding, natural language logging |
 
 Read the relevant rule file when working in that context.
 

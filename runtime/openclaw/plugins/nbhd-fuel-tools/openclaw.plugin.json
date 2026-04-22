@@ -1,0 +1,21 @@
+{
+  "id": "nbhd-fuel-tools",
+  "name": "NBHD Fuel Tools",
+  "description": "Workout tracking, body weight logging, fitness profile management, and progress context.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string",
+        "description": "Override NBHD API base URL. Defaults to NBHD_API_BASE_URL env var."
+      },
+      "requestTimeoutMs": {
+        "type": "number",
+        "minimum": 1000,
+        "maximum": 60000,
+        "description": "HTTP timeout for NBHD runtime endpoint requests."
+      }
+    }
+  }
+}

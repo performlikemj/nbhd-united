@@ -422,3 +422,289 @@ class RuntimeFuelViewTests(TestCase):
             **self.headers,
         )
         self.assertEqual(len(resp.data["recent_workouts"]), 0)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 5. FuelProfile Model Tests
+# ═════════════════════════════════════════════════════════════════════
+
+
+class FuelProfileModelTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Profile Test", telegram_chat_id=800020)
+
+    def test_create_profile(self):
+        from .models import FuelProfile
+
+        profile = FuelProfile.objects.create(tenant=self.tenant)
+        self.assertEqual(profile.onboarding_status, "pending")
+        self.assertEqual(profile.fitness_level, "")
+        self.assertEqual(profile.goals, [])
+        self.assertEqual(profile.limitations, [])
+        self.assertEqual(profile.equipment, [])
+        self.assertIsNone(profile.days_per_week)
+
+    def test_one_to_one_constraint(self):
+        from django.db import IntegrityError
+
+        from .models import FuelProfile
+
+        FuelProfile.objects.create(tenant=self.tenant)
+        with self.assertRaises(IntegrityError):
+            FuelProfile.objects.create(tenant=self.tenant)
+
+    def test_status_transitions(self):
+        from .models import FuelProfile
+
+        profile = FuelProfile.objects.create(tenant=self.tenant)
+        profile.onboarding_status = "in_progress"
+        profile.save(update_fields=["onboarding_status"])
+        profile.refresh_from_db()
+        self.assertEqual(profile.onboarding_status, "in_progress")
+
+        profile.onboarding_status = "completed"
+        profile.save(update_fields=["onboarding_status"])
+        profile.refresh_from_db()
+        self.assertEqual(profile.onboarding_status, "completed")
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 6. Fuel Settings Toggle with Profile
+# ═════════════════════════════════════════════════════════════════════
+
+
+class FuelSettingsToggleWithProfileTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Toggle Test", telegram_chat_id=800021)
+        self.user = self.tenant.user
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def test_enable_creates_profile(self):
+        from .models import FuelProfile
+
+        resp = self.client.patch("/api/v1/fuel/settings/", {"fuel_enabled": True}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.data["fuel_enabled"])
+        self.assertEqual(resp.data["fuel_profile_status"], "pending")
+        self.assertTrue(FuelProfile.objects.filter(tenant=self.tenant).exists())
+
+    def test_enable_idempotent(self):
+        from .models import FuelProfile
+
+        # First enable
+        self.client.patch("/api/v1/fuel/settings/", {"fuel_enabled": True}, format="json")
+        profile = FuelProfile.objects.get(tenant=self.tenant)
+        profile.onboarding_status = "completed"
+        profile.fitness_level = "intermediate"
+        profile.save(update_fields=["onboarding_status", "fitness_level"])
+
+        # Second enable — should not reset
+        resp = self.client.patch("/api/v1/fuel/settings/", {"fuel_enabled": True}, format="json")
+        self.assertEqual(resp.data["fuel_profile_status"], "completed")
+        profile.refresh_from_db()
+        self.assertEqual(profile.fitness_level, "intermediate")
+
+    def test_disable_preserves_profile(self):
+        from .models import FuelProfile
+
+        self.client.patch("/api/v1/fuel/settings/", {"fuel_enabled": True}, format="json")
+        profile = FuelProfile.objects.get(tenant=self.tenant)
+        profile.onboarding_status = "completed"
+        profile.save(update_fields=["onboarding_status"])
+
+        # Disable
+        resp = self.client.patch("/api/v1/fuel/settings/", {"fuel_enabled": False}, format="json")
+        self.assertFalse(resp.data["fuel_enabled"])
+        # Profile still exists
+        self.assertTrue(FuelProfile.objects.filter(tenant=self.tenant).exists())
+        profile.refresh_from_db()
+        self.assertEqual(profile.onboarding_status, "completed")
+
+    def test_toggle_cycle_preserves_completed_profile(self):
+        from .models import FuelProfile
+
+        # Enable → complete profile → disable → re-enable
+        self.client.patch("/api/v1/fuel/settings/", {"fuel_enabled": True}, format="json")
+        profile = FuelProfile.objects.get(tenant=self.tenant)
+        profile.onboarding_status = "completed"
+        profile.goals = ["strength", "endurance"]
+        profile.save(update_fields=["onboarding_status", "goals"])
+
+        self.client.patch("/api/v1/fuel/settings/", {"fuel_enabled": False}, format="json")
+        resp = self.client.patch("/api/v1/fuel/settings/", {"fuel_enabled": True}, format="json")
+        self.assertEqual(resp.data["fuel_profile_status"], "completed")
+        profile.refresh_from_db()
+        self.assertEqual(profile.goals, ["strength", "endurance"])
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 7. Consumer FuelProfile View Tests
+# ═════════════════════════════════════════════════════════════════════
+
+
+class ConsumerFuelProfileViewTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Profile View Test", telegram_chat_id=800022)
+        self.user = self.tenant.user
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def test_get_profile_404_when_none(self):
+        resp = self.client.get("/api/v1/fuel/profile/")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_get_profile(self):
+        from .models import FuelProfile
+
+        FuelProfile.objects.create(
+            tenant=self.tenant,
+            onboarding_status="completed",
+            fitness_level="intermediate",
+            goals=["strength"],
+            days_per_week=4,
+        )
+        resp = self.client.get("/api/v1/fuel/profile/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["fitness_level"], "intermediate")
+        self.assertEqual(resp.data["goals"], ["strength"])
+
+    def test_patch_profile(self):
+        from .models import FuelProfile
+
+        FuelProfile.objects.create(tenant=self.tenant)
+        resp = self.client.patch(
+            "/api/v1/fuel/profile/",
+            {"fitness_level": "advanced", "days_per_week": 5},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["fitness_level"], "advanced")
+        self.assertEqual(resp.data["days_per_week"], 5)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 8. Runtime FuelProfile View Tests
+# ═════════════════════════════════════════════════════════════════════
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+class RuntimeFuelProfileViewTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="RT Profile Test", telegram_chat_id=800023)
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def test_get_profile(self):
+        from .models import FuelProfile
+
+        FuelProfile.objects.create(
+            tenant=self.tenant,
+            onboarding_status="completed",
+            fitness_level="beginner",
+            goals=["weight_loss"],
+        )
+        resp = self.client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/profile/",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["fitness_level"], "beginner")
+        self.assertEqual(resp.data["goals"], ["weight_loss"])
+
+    def test_get_profile_404(self):
+        resp = self.client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/profile/",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_patch_progressive_update(self):
+        from .models import FuelProfile
+
+        FuelProfile.objects.create(tenant=self.tenant)
+
+        # First update — fitness level
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/profile/",
+            {"onboarding_status": "in_progress", "fitness_level": "intermediate"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["onboarding_status"], "in_progress")
+        self.assertEqual(resp.data["fitness_level"], "intermediate")
+
+        # Second update — goals
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/profile/",
+            {"goals": ["strength", "endurance"]},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["goals"], ["strength", "endurance"])
+        # fitness_level preserved
+        self.assertEqual(resp.data["fitness_level"], "intermediate")
+
+    def test_patch_creates_profile_if_missing(self):
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/profile/",
+            {"onboarding_status": "declined"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["onboarding_status"], "declined")
+
+    def test_auth_required(self):
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/profile/")
+        self.assertEqual(resp.status_code, 401)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 9. Runtime Summary Includes Profile
+# ═════════════════════════════════════════════════════════════════════
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+class RuntimeFuelSummaryWithProfileTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Summary Profile", telegram_chat_id=800024)
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def test_summary_includes_profile(self):
+        from .models import FuelProfile
+
+        FuelProfile.objects.create(
+            tenant=self.tenant,
+            onboarding_status="completed",
+            fitness_level="advanced",
+            goals=["muscle_gain"],
+            days_per_week=6,
+        )
+        resp = self.client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/summary/",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("profile", resp.data)
+        self.assertEqual(resp.data["profile"]["fitness_level"], "advanced")
+        self.assertEqual(resp.data["profile"]["onboarding_status"], "completed")
+
+    def test_summary_profile_null_when_none(self):
+        resp = self.client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/summary/",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(resp.data["profile"])

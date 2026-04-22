@@ -941,8 +941,21 @@ export function createBodyWeight(data: {
 
 export function updateFuelSettings(
   data: { fuel_enabled: boolean },
-): Promise<{ fuel_enabled: boolean }> {
-  return apiFetch<{ fuel_enabled: boolean }>("/api/v1/fuel/settings/", {
+): Promise<{ fuel_enabled: boolean; fuel_profile_status: import("@/lib/types").FuelOnboardingStatus | null }> {
+  return apiFetch<{ fuel_enabled: boolean; fuel_profile_status: import("@/lib/types").FuelOnboardingStatus | null }>("/api/v1/fuel/settings/", {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function fetchFuelProfile(): Promise<import("@/lib/types").FuelProfile> {
+  return apiFetch<import("@/lib/types").FuelProfile>("/api/v1/fuel/profile/");
+}
+
+export function updateFuelProfile(
+  data: Partial<import("@/lib/types").FuelProfile>,
+): Promise<import("@/lib/types").FuelProfile> {
+  return apiFetch<import("@/lib/types").FuelProfile>("/api/v1/fuel/profile/", {
     method: "PATCH",
     body: JSON.stringify(data),
   });

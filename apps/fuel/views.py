@@ -8,8 +8,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import BodyWeightLog, Workout, WorkoutCategory
-from .serializers import BodyWeightLogSerializer, WorkoutSerializer, WorkoutStubSerializer
+from .models import BodyWeightLog, FuelProfile, Workout, WorkoutCategory
+from .serializers import BodyWeightLogSerializer, FuelProfileSerializer, WorkoutSerializer, WorkoutStubSerializer
 from .services import (
     aggregate_calisthenics_progress,
     aggregate_cardio_progress,
@@ -36,7 +36,43 @@ class FuelSettingsView(APIView):
         tenant.fuel_enabled = bool(fuel_enabled)
         tenant.save(update_fields=["fuel_enabled"])
         tenant.bump_pending_config()
-        return Response({"fuel_enabled": tenant.fuel_enabled})
+
+        # Create profile on enable (no-op if already exists)
+        profile_status = None
+        if tenant.fuel_enabled:
+            profile, _created = FuelProfile.objects.get_or_create(tenant=tenant)
+            profile_status = profile.onboarding_status
+
+        return Response({"fuel_enabled": tenant.fuel_enabled, "fuel_profile_status": profile_status})
+
+
+class FuelProfileView(APIView):
+    """GET/PATCH the tenant's fitness profile."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            profile = FuelProfile.objects.get(tenant=tenant)
+        except FuelProfile.DoesNotExist:
+            return Response({"error": "no_profile"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(FuelProfileSerializer(profile).data)
+
+    def patch(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            profile = FuelProfile.objects.get(tenant=tenant)
+        except FuelProfile.DoesNotExist:
+            return Response({"error": "no_profile"}, status=status.HTTP_404_NOT_FOUND)
+        serializer = FuelProfileSerializer(profile, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
 
 class WorkoutListView(APIView):

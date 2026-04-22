@@ -19,6 +19,7 @@ import {
   useUnlinkTelegramMutation,
   useUpdateFinanceSettingsMutation,
   useUpdateFuelSettingsMutation,
+  useFuelProfileQuery,
 } from "@/lib/queries";
 import type { TelegramLinkResponse, LineLinkResponse } from "@/lib/api";
 import { ServiceIcon } from "@/components/service-icon";
@@ -266,6 +267,24 @@ function GravityCard() {
   );
 }
 
+function FuelProfileStatus() {
+  const { data: profile } = useFuelProfileQuery();
+  if (!profile) return null;
+
+  const statusText: Record<string, string> = {
+    pending: "Your assistant will guide you through profile setup next time you chat.",
+    in_progress: "Profile setup in progress \u2014 continue chatting with your assistant to complete it.",
+    completed: `${profile.fitness_level ? profile.fitness_level.charAt(0).toUpperCase() + profile.fitness_level.slice(1) : "Profile set up"} \u00b7 ${profile.goals.length} goal${profile.goals.length !== 1 ? "s" : ""} \u00b7 ${profile.days_per_week ?? "?"} days/wk`,
+    declined: "Using general workouts \u2014 chat with your assistant to set up a profile anytime.",
+  };
+
+  return (
+    <p className="mt-2 text-xs text-ink-muted">
+      {statusText[profile.onboarding_status] ?? statusText.pending}
+    </p>
+  );
+}
+
 function FuelCard() {
   const { data: tenant } = useTenantQuery();
   const mutation = useUpdateFuelSettingsMutation();
@@ -287,6 +306,7 @@ function FuelCard() {
             Workout tracking, fitness logging, and progress trends
             — powered by your AI assistant.
           </p>
+          {enabled && <FuelProfileStatus />}
         </div>
         <button
           type="button"

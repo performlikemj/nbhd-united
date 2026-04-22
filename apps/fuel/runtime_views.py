@@ -16,9 +16,23 @@ from apps.integrations.internal_auth import InternalAuthError, validate_internal
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
-from .models import BodyWeightLog, Workout, WorkoutCategory, WorkoutStatus
+from .models import BodyWeightLog, FuelProfile, OnboardingStatus, Workout, WorkoutCategory, WorkoutStatus
 
 logger = logging.getLogger(__name__)
+
+_PROFILE_FIELDS = (
+    "onboarding_status",
+    "fitness_level",
+    "goals",
+    "limitations",
+    "equipment",
+    "days_per_week",
+    "additional_context",
+)
+
+
+def _serialize_profile(profile: FuelProfile) -> dict:
+    return {f: getattr(profile, f) for f in _PROFILE_FIELDS}
 
 
 def _internal_auth_or_401(request, tenant_id: UUID) -> Response | None:
@@ -136,13 +150,83 @@ class RuntimeFuelSummaryView(APIView):
         if latest_weight:
             weight_data = {"date": str(latest_weight.date), "weight_kg": str(latest_weight.weight_kg)}
 
+        # Fitness profile
+        try:
+            profile = FuelProfile.objects.get(tenant=tenant)
+            profile_data = _serialize_profile(profile)
+        except FuelProfile.DoesNotExist:
+            profile_data = None
+
         return Response(
             {
                 "recent_workouts": recent_data,
                 "planned_workouts": planned_data,
                 "latest_body_weight": weight_data,
+                "profile": profile_data,
             }
         )
+
+
+class RuntimeFuelProfileView(APIView):
+    """GET/PATCH: fitness profile for the AI assistant."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, tenant_id):
+        err = _internal_auth_or_401(request, tenant_id)
+        if err:
+            return err
+        tenant_or_resp = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant_or_resp, Response):
+            return tenant_or_resp
+        tenant = tenant_or_resp
+
+        try:
+            profile = FuelProfile.objects.get(tenant=tenant)
+        except FuelProfile.DoesNotExist:
+            return Response({"error": "no_profile"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(_serialize_profile(profile))
+
+    def patch(self, request, tenant_id):
+        err = _internal_auth_or_401(request, tenant_id)
+        if err:
+            return err
+        tenant_or_resp = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant_or_resp, Response):
+            return tenant_or_resp
+        tenant = tenant_or_resp
+
+        profile, _created = FuelProfile.objects.get_or_create(tenant=tenant)
+        data = request.data
+        updated_fields = []
+
+        if "onboarding_status" in data:
+            val = data["onboarding_status"]
+            if val in OnboardingStatus.values:
+                profile.onboarding_status = val
+                updated_fields.append("onboarding_status")
+
+        for field in ("fitness_level", "additional_context"):
+            if field in data:
+                setattr(profile, field, str(data[field]).strip())
+                updated_fields.append(field)
+
+        for field in ("goals", "limitations", "equipment"):
+            if field in data and isinstance(data[field], list):
+                setattr(profile, field, data[field])
+                updated_fields.append(field)
+
+        if "days_per_week" in data:
+            val = data["days_per_week"]
+            if val is None or (isinstance(val, int) and 1 <= val <= 7):
+                profile.days_per_week = val
+                updated_fields.append("days_per_week")
+
+        if updated_fields:
+            updated_fields.append("updated_at")
+            profile.save(update_fields=updated_fields)
+
+        return Response(_serialize_profile(profile))
 
 
 class RuntimeBodyWeightView(APIView):

@@ -60,6 +60,21 @@ If you have finance tools available but the user hasn't mentioned finances, they
 
 ---
 
+## Fuel (Fitness)
+
+**What:** Workout tracking with calendar view, progress trends (est. 1RM, pace, distance),
+and body weight logging. The user can log workouts via conversation or at `/fuel`.
+When first enabled, you'll lead them through a quick fitness profile setup to personalize
+recommendations.
+
+**How to check usage:** If you have `nbhd_fuel_*` tools available, the feature is enabled.
+Call `nbhd_fuel_summary` — if `profile` is null or `profile.onboarding_status` is `"pending"`,
+the user hasn't set up their profile yet. If `recent_workouts` is empty, they haven't logged anything.
+
+**Nudge:** "I can track your workouts and show progress over time — you can enable Fuel at `/settings/integrations`."
+
+---
+
 ## Google Workspace
 
 **What:** Gmail (read emails, search inbox), Google Calendar (view events, check availability),

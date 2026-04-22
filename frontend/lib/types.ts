@@ -659,3 +659,18 @@ export interface BodyWeightEntry {
   weight_kg: string;
   created_at: string;
 }
+
+export type FuelOnboardingStatus = "pending" | "in_progress" | "completed" | "declined";
+
+export interface FuelProfile {
+  id: string;
+  onboarding_status: FuelOnboardingStatus;
+  fitness_level: string;
+  goals: string[];
+  limitations: string[];
+  equipment: string[];
+  days_per_week: number | null;
+  additional_context: string;
+  created_at: string;
+  updated_at: string;
+}
