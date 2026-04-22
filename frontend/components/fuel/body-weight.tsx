@@ -40,7 +40,7 @@ export function BodyWeight() {
       </div>
 
       {/* Trend card */}
-      <div className="rounded-panel border border-border bg-surface-elevated p-5">
+      <div className="rounded-panel border border-border bg-surface-elevated p-4 sm:p-5">
         <div className="flex items-start justify-between">
           <div>
             <div className="text-3xl font-semibold italic">
@@ -70,28 +70,30 @@ export function BodyWeight() {
         )}
       </div>
 
-      {/* Quick add */}
-      <form onSubmit={handleSubmit} className="flex gap-2">
-        <input
-          type="date"
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-          className="rounded-lg border border-border bg-surface-elevated px-3 py-2 font-mono text-sm text-ink focus:outline-none focus:border-accent"
-        />
-        <input
-          type="number"
-          step="0.1"
-          value={weight}
-          onChange={(e) => setWeight(e.target.value)}
-          placeholder={unit}
-          className="w-24 rounded-lg border border-border bg-surface-elevated px-3 py-2 font-mono text-sm text-ink focus:outline-none focus:border-accent placeholder:text-ink-faint"
-        />
+      {/* Quick add — stacks on mobile */}
+      <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-2">
+        <div className="flex gap-2">
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="flex-1 sm:flex-none rounded-lg border border-border bg-surface-elevated px-3 min-h-[44px] py-2 font-mono text-sm text-ink focus:outline-none focus:border-accent"
+          />
+          <input
+            type="number"
+            step="0.1"
+            value={weight}
+            onChange={(e) => setWeight(e.target.value)}
+            placeholder={unit}
+            className="w-20 sm:w-24 rounded-lg border border-border bg-surface-elevated px-3 min-h-[44px] py-2 font-mono text-sm text-ink focus:outline-none focus:border-accent placeholder:text-ink-faint"
+          />
+        </div>
         <button
           type="submit"
           disabled={!weight || createMutation.isPending}
-          className="rounded-lg bg-accent text-white px-4 py-2 text-sm font-medium hover:opacity-90 transition disabled:opacity-50"
+          className="rounded-lg bg-accent text-white min-h-[44px] px-4 py-2 text-sm font-medium hover:opacity-90 transition disabled:opacity-50"
         >
-          {createMutation.isPending ? "..." : "Log"}
+          {createMutation.isPending ? "Logging\u2026" : "Log"}
         </button>
       </form>
 
@@ -121,7 +123,7 @@ function UnitToggle({ unit, onChange }: { unit: "kg" | "lbs"; onChange: (u: "kg"
         <button
           key={u}
           onClick={() => onChange(u)}
-          className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition ${
+          className={`rounded-full min-h-[36px] min-w-[44px] px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider transition ${
             unit === u ? "bg-surface-hover text-ink" : "text-ink-faint hover:text-ink"
           }`}
         >

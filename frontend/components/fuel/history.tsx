@@ -30,35 +30,37 @@ export function History({ onOpenWorkout }: HistoryProps) {
 
   return (
     <div className="space-y-4">
-      {/* Filter chips */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        <button
-          onClick={() => setFilter("all")}
-          className={`rounded-full px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider transition border ${
-            filter === "all" ? "bg-ink text-surface border-ink" : "border-border text-ink-muted hover:text-ink"
-          }`}
-        >
-          ALL <span className="font-mono opacity-60 ml-1">{counts.total}</span>
-        </button>
-        {CATEGORY_IDS.map((c) => {
-          const n = counts[c] || 0;
-          if (n === 0) return null;
-          const on = filter === c;
-          return (
-            <button
-              key={c}
-              onClick={() => setFilter(c)}
-              className={`rounded-full px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider transition border flex items-center gap-1.5 ${
-                on ? "text-ink" : "text-ink-muted"
-              }`}
-              style={on ? { background: `color-mix(in srgb, ${CATEGORIES[c].accent} 20%, transparent)`, borderColor: CATEGORIES[c].accent } : { borderColor: "var(--color-border)" }}
-            >
-              <span className="h-1.5 w-1.5 rounded-full" style={{ background: CATEGORIES[c].accent }} />
-              {CATEGORIES[c].label}
-              <span className="font-mono opacity-60">{n}</span>
-            </button>
-          );
-        })}
+      {/* Filter chips — horizontal scroll on mobile */}
+      <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
+        <div className="flex items-center gap-1.5 min-w-max sm:min-w-0 sm:flex-wrap pb-1 sm:pb-0">
+          <button
+            onClick={() => setFilter("all")}
+            className={`rounded-full min-h-[44px] px-3 py-2 text-[11px] font-bold uppercase tracking-wider transition border whitespace-nowrap ${
+              filter === "all" ? "bg-ink text-surface border-ink" : "border-border text-ink-muted hover:text-ink"
+            }`}
+          >
+            ALL <span className="font-mono opacity-60 ml-1">{counts.total}</span>
+          </button>
+          {CATEGORY_IDS.map((c) => {
+            const n = counts[c] || 0;
+            if (n === 0) return null;
+            const on = filter === c;
+            return (
+              <button
+                key={c}
+                onClick={() => setFilter(c)}
+                className={`rounded-full min-h-[44px] px-3 py-2 text-[11px] font-bold uppercase tracking-wider transition border flex items-center gap-1.5 whitespace-nowrap ${
+                  on ? "text-ink" : "text-ink-muted"
+                }`}
+                style={on ? { background: `color-mix(in srgb, ${CATEGORIES[c].accent} 20%, transparent)`, borderColor: CATEGORIES[c].accent } : { borderColor: "var(--color-border)" }}
+              >
+                <span className="h-1.5 w-1.5 rounded-full" style={{ background: CATEGORIES[c].accent }} />
+                {CATEGORIES[c].label}
+                <span className="font-mono opacity-60">{n}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* List */}
@@ -67,7 +69,7 @@ export function History({ onOpenWorkout }: HistoryProps) {
           <WorkoutRow key={w.id} w={w} onClick={() => onOpenWorkout(w.id)} />
         ))}
         {filtered.length === 0 && (
-          <div className="rounded-panel border border-border p-8 text-center text-sm text-ink-faint">
+          <div className="rounded-panel border border-border p-4 sm:p-8 text-center text-sm text-ink-faint">
             No workouts logged yet.
           </div>
         )}
@@ -104,7 +106,7 @@ function WorkoutRow({ w, onClick }: { w: FuelWorkout; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      className="w-full rounded-panel border border-border bg-surface-elevated hover:border-border-strong hover:bg-surface-hover transition px-4 py-3 text-left flex items-center gap-3"
+      className="w-full rounded-panel border border-border bg-surface-elevated hover:border-border-strong hover:bg-surface-hover transition px-3 sm:px-4 py-3 text-left flex items-center gap-2.5 sm:gap-3 min-h-[44px]"
     >
       <span
         className="shrink-0 h-8 w-8 rounded-lg flex items-center justify-center text-xs font-bold"

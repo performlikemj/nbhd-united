@@ -63,14 +63,14 @@ function NewWorkoutDialogInner({ presetDate, onClose, onCreated }: Omit<NewWorko
         className="relative ml-auto h-full w-full sm:w-[480px] bg-surface border-l border-border overflow-y-auto animate-reveal"
       >
         {/* Header */}
-        <div className="sticky top-0 z-10 backdrop-blur bg-surface/90 border-b border-border px-6 py-4 flex items-center justify-between">
+        <div className="sticky top-0 z-10 backdrop-blur bg-surface/90 border-b border-border px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             {step === 1 && (
               <button
                 onClick={() => setStep(0)}
-                className="h-7 w-7 rounded-full hover:bg-surface-hover text-ink-muted flex items-center justify-center"
+                className="h-11 w-11 sm:h-10 sm:w-10 rounded-full hover:bg-surface-hover text-ink-muted flex items-center justify-center"
               >
-                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m15 18-6-6 6-6" /></svg>
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m15 18-6-6 6-6" /></svg>
               </button>
             )}
             <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-ink-faint">
@@ -79,16 +79,16 @@ function NewWorkoutDialogInner({ presetDate, onClose, onCreated }: Omit<NewWorko
           </div>
           <button
             onClick={onClose}
-            className="h-7 w-7 rounded-full hover:bg-surface-hover text-ink-muted flex items-center justify-center"
+            className="h-11 w-11 sm:h-10 sm:w-10 rounded-full hover:bg-surface-hover text-ink-muted flex items-center justify-center"
             aria-label="Close"
           >
-            <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12" /></svg>
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12" /></svg>
           </button>
         </div>
 
         {/* Step 0: Category picker */}
         {step === 0 && (
-          <div className="p-6">
+          <div className="p-4 sm:p-6">
             <h2 className="text-2xl font-semibold italic">What kind of session?</h2>
             <p className="text-xs text-ink-faint mt-1">Category determines which fields you&apos;ll log.</p>
             <div className="mt-5 grid grid-cols-2 gap-2">
@@ -116,7 +116,7 @@ function NewWorkoutDialogInner({ presetDate, onClose, onCreated }: Omit<NewWorko
 
         {/* Step 1: Activity details */}
         {step === 1 && cat && (
-          <div className="p-6 space-y-5">
+          <div className="p-4 sm:p-6 space-y-5">
             <div>
               <label className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint">ACTIVITY</label>
               <input
@@ -175,7 +175,7 @@ function NewWorkoutDialogInner({ presetDate, onClose, onCreated }: Omit<NewWorko
             <button
               onClick={handleCreate}
               disabled={createMutation.isPending}
-              className="w-full rounded-full bg-accent text-white font-medium py-3 text-sm hover:opacity-90 transition disabled:opacity-50"
+              className="w-full rounded-full bg-accent text-white font-medium min-h-[48px] py-3 text-sm hover:opacity-90 transition disabled:opacity-50"
             >
               {createMutation.isPending ? "Creating\u2026" : "Create workout"}
             </button>
