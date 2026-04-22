@@ -44,8 +44,7 @@ logger = logging.getLogger(__name__)
 
 LINE_API_BASE = "https://api.line.me/v2/bot"
 LINE_CONTENT_API = "https://api-data.line.me/v2/bot/message"
-CHAT_COMPLETIONS_TIMEOUT = 120.0  # generous timeout for AI response
-VOICE_CHAT_TIMEOUT = 180.0  # extra budget for voice (cold-start after Whisper)
+VOICE_CHAT_TIMEOUT_EXTRA = 60.0  # additional seconds for voice (Whisper transcription)
 LOADING_SECONDS = 60  # loading animation max (auto-clears on response)
 WHISPER_API_URL = "https://api.openai.com/v1/audio/transcriptions"
 
@@ -838,9 +837,14 @@ class LineWebhookView(View):
             update_active_workspace(tenant, workspace)
 
         # Inject current time so the agent always knows "now"
-        from apps.router.services import build_datetime_context
+        from apps.router.services import build_datetime_context, get_forwarding_timeout
 
         message_text = build_datetime_context(user_tz) + message_text
+
+        # Model-aware timeout — reasoning models get more time
+        chat_timeout, _is_reasoning = get_forwarding_timeout(tenant)
+        if is_voice:
+            chat_timeout += VOICE_CHAT_TIMEOUT_EXTRA
 
         try:
             resp = httpx.post(
@@ -856,20 +860,23 @@ class LineWebhookView(View):
                     "X-Line-User-Id": line_user_id,
                     "X-Channel": "line",
                 },
-                timeout=VOICE_CHAT_TIMEOUT if is_voice else CHAT_COMPLETIONS_TIMEOUT,
+                timeout=chat_timeout,
             )
             resp.raise_for_status()
             result = resp.json()
         except httpx.TimeoutException:
             logger.warning(
-                "Timeout forwarding to %s for line_user_id=%s",
+                "Timeout forwarding to %s for line_user_id=%s (model=%s, timeout=%.0fs)",
                 tenant.container_fqdn,
                 line_user_id,
+                tenant.preferred_model or "default",
+                chat_timeout,
             )
             _send_line_flex(
                 line_user_id,
                 build_status_bubble(
-                    "That took longer than expected. Could you send it again?",
+                    "That took longer than expected. Your message was received "
+                    "— just send a follow-up and I'll pick up where I left off.",
                     tone="warning",
                 ),
             )
@@ -951,7 +958,7 @@ class LineWebhookView(View):
                         "X-Line-User-Id": line_user_id,
                         "X-Channel": "line",
                     },
-                    timeout=CHAT_COMPLETIONS_TIMEOUT,
+                    timeout=chat_timeout,
                 )
                 retry_resp.raise_for_status()
                 result = retry_resp.json()
