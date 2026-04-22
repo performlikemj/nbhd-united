@@ -164,6 +164,24 @@ def extract_chat_id(update: dict) -> int | None:
     return None
 
 
+def get_forwarding_timeout(tenant: Tenant) -> tuple[float, bool]:
+    """Return ``(timeout_seconds, is_reasoning)`` for a tenant's active model.
+
+    Reasoning models (e.g. Kimi K2.6) get a longer timeout because their
+    inference is slower.  The second element signals whether the caller
+    should show a "still thinking" notice.
+    """
+    from apps.billing.constants import (
+        DEFAULT_CHAT_TIMEOUT,
+        REASONING_MODEL_TIMEOUT,
+        REASONING_MODELS,
+    )
+
+    model = tenant.preferred_model or ""
+    is_reasoning = model in REASONING_MODELS
+    return (REASONING_MODEL_TIMEOUT if is_reasoning else DEFAULT_CHAT_TIMEOUT, is_reasoning)
+
+
 async def forward_to_openclaw(
     container_fqdn: str,
     update: dict,

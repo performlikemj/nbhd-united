@@ -254,18 +254,24 @@ def telegram_webhook(request):
         user_timezone = tenant.user.timezone or "UTC"
 
         # Inject current time into message text so the agent knows "now"
-        from apps.router.services import build_datetime_context
+        from apps.router.services import build_datetime_context, get_forwarding_timeout
 
         msg = update.get("message") or update.get("edited_message") or {}
         if "text" in msg:
             msg["text"] = build_datetime_context(user_timezone) + msg["text"]
+
+        # Reasoning models need more time; the agent replies directly via bot
+        # token even if this times out, but a longer window lets us capture
+        # the result for usage tracking.
+        _chat_timeout, is_reasoning = get_forwarding_timeout(tenant)
+        wh_timeout = 120.0 if is_reasoning else 30.0
 
         result = loop.run_until_complete(
             forward_to_openclaw(
                 tenant.container_fqdn,
                 update,
                 user_timezone=user_timezone,
-                timeout=30.0,
+                timeout=wh_timeout,
                 max_retries=1,
                 retry_delay=5.0,
             )

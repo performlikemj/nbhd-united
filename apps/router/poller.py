@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_API_BASE = "https://api.telegram.org/bot"
 POLL_TIMEOUT = 30  # seconds for long-polling
 MAX_BACKOFF = 60  # max seconds between retries on error
-CHAT_COMPLETIONS_TIMEOUT = 120.0  # generous timeout for AI response
+STILL_THINKING_DELAY = 45.0  # seconds before sending "still thinking" notice
 
 
 class TelegramPoller:
@@ -1253,13 +1253,25 @@ class TelegramPoller:
 
         message_text = build_datetime_context(user_tz) + message_text
 
+        # Model-aware timeout — reasoning models (e.g. Kimi K2.6) get more time
+        chat_timeout, is_reasoning = get_forwarding_timeout(tenant)
+
         # Show typing indicator while waiting for AI response
         self._send_typing(chat_id)
         typing_stop = threading.Event()
 
         def _keep_typing():
+            elapsed = 0.0
+            thinking_sent = False
             while not typing_stop.wait(5.0):
+                elapsed += 5.0
                 self._send_typing(chat_id)
+                if is_reasoning and not thinking_sent and elapsed >= STILL_THINKING_DELAY:
+                    self._send_message(
+                        chat_id,
+                        "🧠 Still thinking — this model takes a bit longer for thoughtful responses.",
+                    )
+                    thinking_sent = True
 
         typing_thread = threading.Thread(target=_keep_typing, daemon=True)
         typing_thread.start()
@@ -1278,15 +1290,22 @@ class TelegramPoller:
                     "X-Telegram-Chat-Id": str(chat_id),
                     "X-Channel": "telegram",
                 },
-                timeout=CHAT_COMPLETIONS_TIMEOUT,
+                timeout=chat_timeout,
             )
             resp.raise_for_status()
             result = resp.json()
         except httpx.TimeoutException:
-            logger.warning("Timeout forwarding to %s for chat_id=%s", tenant.container_fqdn, chat_id)
+            logger.warning(
+                "Timeout forwarding to %s for chat_id=%s (model=%s, timeout=%.0fs)",
+                tenant.container_fqdn,
+                chat_id,
+                tenant.preferred_model or "default",
+                chat_timeout,
+            )
             self._send_message(
                 chat_id,
-                "⏱️ That took longer than expected — I may have lost your message. Could you send it again?",
+                "⏱️ That took longer than expected. Your message was received "
+                "— just send a follow-up and I'll pick up where I left off.",
             )
             return
         except httpx.HTTPStatusError as e:
@@ -1333,7 +1352,7 @@ class TelegramPoller:
                         "X-User-Timezone": user_tz,
                         "X-Channel": "telegram",
                     },
-                    timeout=CHAT_COMPLETIONS_TIMEOUT,
+                    timeout=chat_timeout,
                 )
                 retry_resp.raise_for_status()
                 result = retry_resp.json()

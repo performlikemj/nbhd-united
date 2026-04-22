@@ -47,6 +47,18 @@ MODEL_RATES: dict[str, dict[str, float]] = {
 
 DEFAULT_RATE = {"input": 0.3, "output": 1.2, "display_name": "Unknown Model"}
 
+# ── Reasoning / slow-inference models ─────────────────────────────────────
+# These models have longer time-to-first-token and generation times.
+# The router gives them a higher forwarding timeout and sends a
+# "still thinking" notice so users know the system hasn't stalled.
+REASONING_MODELS: set[str] = {
+    KIMI_MODEL,
+    KIMI_MODEL.removeprefix("openrouter/"),
+}
+
+DEFAULT_CHAT_TIMEOUT = 120.0  # seconds — standard models
+REASONING_MODEL_TIMEOUT = 240.0  # seconds — reasoning models (within gunicorn 300s)
+
 # Monthly token budget (informational — enforcement uses TIER_COST_BUDGETS).
 TIER_TOKEN_BUDGETS: dict[str, int] = {
     "starter": 5_000_000,
