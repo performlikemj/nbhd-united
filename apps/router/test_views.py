@@ -172,9 +172,10 @@ class TelegramWebhookViewTest(TestCase):
             model_used="anthropic/claude-opus-4-20250514",
         )
 
+    @patch("apps.router.views._hibernate_for_quota")
     @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
-    def test_active_tenant_over_budget_is_not_blocked(self, mock_forward):
-        """Budget enforcement disabled for ClawCon — over-budget tenants still get forwarded."""
+    def test_active_tenant_over_budget_is_blocked(self, mock_forward, mock_hibernate):
+        """Over-budget tenants are blocked and their container is hibernated."""
         mock_forward.return_value = {"ok": True}
         tenant = create_tenant(display_name="QuotaBlocked", telegram_chat_id=123458)
         tenant.status = Tenant.Status.ACTIVE
@@ -194,7 +195,8 @@ class TelegramWebhookViewTest(TestCase):
         response = self._post_update({"message": {"chat": {"id": 123458}}})
 
         self.assertEqual(response.status_code, 200)
-        mock_forward.assert_called_once()
+        mock_forward.assert_not_called()
+        mock_hibernate.assert_called_once()
 
     @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
     def test_active_tenant_forwards_user_timezone(self, mock_forward):

@@ -32,7 +32,6 @@ class UsageTrackingTest(TestCase):
         self.assertEqual(check_budget(self.tenant), "")
 
     def test_check_budget_over_limit(self):
-        # Budget enforcement disabled for ClawCon demo period
         self.tenant.estimated_cost_this_month = self.tenant.effective_cost_budget
         self.tenant.save()
-        self.assertEqual(check_budget(self.tenant), "")
+        self.assertEqual(check_budget(self.tenant), "personal")
