@@ -10,7 +10,7 @@ import { NewWorkoutDialog } from "@/components/fuel/new-workout-dialog";
 import { ProfileCard } from "@/components/fuel/profile-card";
 import { Progress } from "@/components/fuel/progress";
 import { WorkoutDetail } from "@/components/fuel/workout-detail";
-import { useWorkoutsQuery } from "@/lib/queries";
+import { useWorkoutCountQuery } from "@/lib/queries";
 
 type Tab = "calendar" | "history" | "progress";
 
@@ -20,8 +20,8 @@ export default function FuelPage() {
   const [workoutId, setWorkoutId] = useState<string | null>(null);
   const [newSheet, setNewSheet] = useState<{ open: boolean; date: string | null }>({ open: false, date: null });
 
-  const { data: doneWorkouts } = useWorkoutsQuery({ status: "done", limit: 500 });
-  const doneCount = doneWorkouts?.length ?? 0;
+  const { data: countData } = useWorkoutCountQuery({ status: "done" });
+  const doneCount = countData?.count ?? 0;
 
   const navigateDay = (delta: number) => {
     if (!dayIso) return;

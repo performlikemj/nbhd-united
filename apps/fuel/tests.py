@@ -209,6 +209,64 @@ class ConsumerFuelViewTests(TestCase):
         self.assertEqual(len(resp.data), 1)
         self.assertEqual(resp.data[0]["category"], "strength")
 
+    def test_workout_count(self):
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Push",
+        )
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 20),
+            category="cardio",
+            activity="Run",
+        )
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 19),
+            category="strength",
+            activity="Pull",
+            status="planned",
+        )
+        resp = self.client.get("/api/v1/fuel/workouts/count/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["count"], 3)
+
+    def test_workout_count_with_status_filter(self):
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Push",
+        )
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 19),
+            category="strength",
+            activity="Pull",
+            status="planned",
+        )
+        resp = self.client.get("/api/v1/fuel/workouts/count/?status=done")
+        self.assertEqual(resp.data["count"], 1)
+
+    def test_workout_count_tenant_isolation(self):
+        other = create_tenant(display_name="Other", telegram_chat_id=800099)
+        Workout.objects.create(
+            tenant=other,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Other Push",
+        )
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="My Push",
+        )
+        resp = self.client.get("/api/v1/fuel/workouts/count/")
+        self.assertEqual(resp.data["count"], 1)
+
     def test_workout_detail_get(self):
         w = Workout.objects.create(
             tenant=self.tenant,

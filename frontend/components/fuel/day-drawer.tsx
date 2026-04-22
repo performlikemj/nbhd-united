@@ -1,7 +1,7 @@
 "use client";
 
-import { useWorkoutsQuery } from "@/lib/queries";
-import type { FuelWorkout, WorkoutCategory } from "@/lib/types";
+import { useFuelCalendarQuery } from "@/lib/queries";
+import type { FuelWorkout, WorkoutCategory, WorkoutStub } from "@/lib/types";
 import { CATEGORIES } from "./category-meta";
 
 function fmtLongDate(iso: string): string {
@@ -19,34 +19,8 @@ function fmtShortDate(iso: string): string {
   return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-function summaryChips(w: FuelWorkout): string[] {
-  const d = w.detail_json || {};
-  if (w.category === "strength") {
-    const exercises = (d.exercises as { sets: unknown[] }[]) || [];
-    const sets = exercises.reduce((a, e) => a + (e.sets?.length || 0), 0);
-    return [`${exercises.length} exercises`, `${sets} sets`];
-  }
-  if (w.category === "cardio") {
-    return [
-      d.distance_km && `${d.distance_km} km`,
-      d.pace && `${d.pace}/km`,
-      d.avg_hr && `${d.avg_hr} bpm`,
-    ].filter(Boolean) as string[];
-  }
-  if (w.category === "hiit") {
-    return [
-      `${d.rounds || "?"} rounds`,
-      d.peak_hr && `peak ${d.peak_hr}`,
-    ].filter(Boolean) as string[];
-  }
-  if (w.category === "calisthenics") {
-    return [`${((d.skills as unknown[]) || []).length} skills`];
-  }
-  if (w.category === "mobility") {
-    return [`${((d.blocks as unknown[]) || []).length} blocks`];
-  }
-  return [];
-}
+// Removed summaryChips — day drawer uses stubs without detail_json.
+// Full workout details are shown in WorkoutDetail when the user taps a row.
 
 interface DayDrawerProps {
   iso: string | null;
@@ -57,13 +31,15 @@ interface DayDrawerProps {
 }
 
 export function DayDrawer({ iso, onClose, onNavigate, onAddWorkout, onOpenWorkout }: DayDrawerProps) {
-  const { data: allWorkouts } = useWorkoutsQuery(
-    iso ? { date_from: iso, date_to: iso } : undefined,
-  );
+  // Derive stubs from the calendar cache — no extra fetch needed.
+  // React Query deduplicates since Calendar uses the same queryKey.
+  const [y, m] = iso ? iso.split("-").map(Number) : [0, 0];
+  const { data: calendarData } = useFuelCalendarQuery(y, m);
 
   if (!iso) return null;
 
-  const items = (allWorkouts || []).filter((w) => w.date === iso);
+  const dayEntry = calendarData?.find((d) => d.date === iso);
+  const items: WorkoutStub[] = dayEntry?.workouts ?? [];
   const planned = items.filter((w) => w.status === "planned");
   const done = items.filter((w) => w.status === "done");
   const todayISO = new Date().toISOString().slice(0, 10);
@@ -153,7 +129,7 @@ export function DayDrawer({ iso, onClose, onNavigate, onAddWorkout, onOpenWorkou
   );
 }
 
-function WorkoutRow({ w, onClick }: { w: FuelWorkout; onClick: () => void }) {
+function WorkoutRow({ w, onClick }: { w: WorkoutStub | FuelWorkout; onClick: () => void }) {
   const meta = CATEGORIES[w.category as WorkoutCategory];
   const planned = w.status === "planned";
 
@@ -181,11 +157,8 @@ function WorkoutRow({ w, onClick }: { w: FuelWorkout; onClick: () => void }) {
         </div>
         <div className="mt-0.5 text-sm text-ink truncate">{w.activity}</div>
         <div className="mt-0.5 text-[11px] text-ink-faint flex flex-wrap gap-x-2">
-          {w.duration_minutes && <span>{w.duration_minutes} min</span>}
+          {w.duration_minutes != null && <span>{w.duration_minutes} min</span>}
           {w.rpe != null && <span>&middot; RPE {w.rpe}</span>}
-          {summaryChips(w).map((s, i) => (
-            <span key={i}>&middot; {s}</span>
-          ))}
         </div>
       </div>
       <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 text-ink-faint" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m9 18 6-6-6-6" /></svg>

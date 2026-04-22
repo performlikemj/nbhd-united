@@ -3,6 +3,7 @@
 import calendar
 from collections import defaultdict
 
+from django.db.models import Sum
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -207,28 +208,68 @@ class WorkoutProgressView(APIView):
         if cat not in WorkoutCategory.values:
             return Response({"error": "invalid category"}, status=status.HTTP_400_BAD_REQUEST)
 
-        workouts = list(Workout.objects.filter(tenant=tenant, category=cat, status="done"))
+        base_qs = Workout.objects.filter(tenant=tenant, category=cat, status="done")
 
-        if cat == "strength":
-            data = aggregate_strength_progress(workouts)
+        if cat in ("strength", "calisthenics"):
+            # Only load fields needed for detail_json parsing, cap to 365 days
+            workouts = list(base_qs.only("date", "detail_json").order_by("date")[:365])
+            data = (
+                aggregate_strength_progress(workouts)
+                if cat == "strength"
+                else aggregate_calisthenics_progress(workouts)
+            )
         elif cat == "cardio":
+            workouts = list(base_qs.only("date", "detail_json").order_by("date")[:365])
             data = aggregate_cardio_progress(workouts)
         elif cat == "hiit":
+            workouts = list(base_qs.only("date", "duration_minutes", "detail_json").order_by("date")[:365])
             data = aggregate_hiit_progress(workouts)
-        elif cat == "calisthenics":
-            data = aggregate_calisthenics_progress(workouts)
         else:
-            # mobility, sport, other — simple count + list
+            # mobility, sport, other — simple count + recent list
+            total = base_qs.count()
+            total_min = base_qs.aggregate(total=Sum("duration_minutes"))["total"] or 0
+            sessions = list(
+                base_qs.only("date", "activity", "duration_minutes")
+                .order_by("-date")[:50]
+                .values("date", "activity", "duration_minutes")
+            )
             data = {
-                "session_count": len(workouts),
-                "total_minutes": sum(w.duration_minutes or 0 for w in workouts),
+                "session_count": total,
+                "total_minutes": total_min,
                 "sessions": [
-                    {"date": str(w.date), "activity": w.activity, "duration_minutes": w.duration_minutes}
-                    for w in workouts
+                    {"date": str(s["date"]), "activity": s["activity"], "duration_minutes": s["duration_minutes"]}
+                    for s in sessions
                 ],
             }
 
         return Response({"category": cat, "progress": data})
+
+
+class WorkoutCountView(APIView):
+    """GET: count workouts matching filters (lightweight alternative to listing)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        qs = Workout.objects.filter(tenant=tenant)
+
+        cat = request.query_params.get("category")
+        if cat and cat in WorkoutCategory.values:
+            qs = qs.filter(category=cat)
+        status_filter = request.query_params.get("status")
+        if status_filter in ("done", "planned"):
+            qs = qs.filter(status=status_filter)
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("date_to")
+        if date_from:
+            qs = qs.filter(date__gte=date_from)
+        if date_to:
+            qs = qs.filter(date__lte=date_to)
+
+        return Response({"count": qs.count()})
 
 
 class BodyWeightListView(APIView):

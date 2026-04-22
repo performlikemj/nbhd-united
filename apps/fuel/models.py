@@ -54,6 +54,7 @@ class Workout(models.Model):
         indexes = [
             models.Index(fields=["tenant", "date"]),
             models.Index(fields=["tenant", "category"]),
+            models.Index(fields=["tenant", "status", "date"]),
         ]
 
     def __str__(self) -> str:
