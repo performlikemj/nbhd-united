@@ -20,7 +20,15 @@ from .models import BodyWeightLog, FuelProfile, OnboardingStatus, Workout, Worko
 
 logger = logging.getLogger(__name__)
 
-_PROFILE_FIELDS = ("onboarding_status", "fitness_level", "goals", "limitations", "equipment", "days_per_week", "additional_context")
+_PROFILE_FIELDS = (
+    "onboarding_status",
+    "fitness_level",
+    "goals",
+    "limitations",
+    "equipment",
+    "days_per_week",
+    "additional_context",
+)
 
 
 def _serialize_profile(profile: FuelProfile) -> dict:
