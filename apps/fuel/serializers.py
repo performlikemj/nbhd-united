@@ -62,7 +62,7 @@ class WorkoutStubSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Workout
-        fields = ["id", "category", "activity", "status", "duration_minutes", "rpe"]
+        fields = ["id", "date", "category", "activity", "status", "duration_minutes", "rpe"]
         read_only_fields = fields
 
 

@@ -95,6 +95,7 @@ import {
   fetchFuelCalendar,
   fetchWorkouts,
   fetchWorkout,
+  fetchWorkoutCount,
   createWorkout,
   updateWorkout,
   deleteWorkout,
@@ -1100,7 +1101,7 @@ export function useFuelCalendarQuery(year: number, month: number) {
   return useQuery({
     queryKey: ["fuel-calendar", year, month],
     queryFn: () => fetchFuelCalendar(year, month),
-    staleTime: 30_000,
+    staleTime: 5 * 60_000,
     enabled: isLoggedIn(),
   });
 }
@@ -1113,9 +1114,16 @@ export function useWorkoutsQuery(params?: {
   limit?: number;
 }) {
   return useQuery({
-    queryKey: ["fuel-workouts", params],
+    queryKey: [
+      "fuel-workouts",
+      params?.status ?? "",
+      params?.category ?? "",
+      params?.date_from ?? "",
+      params?.date_to ?? "",
+      String(params?.limit ?? ""),
+    ],
     queryFn: () => fetchWorkouts(params),
-    staleTime: 30_000,
+    staleTime: 2 * 60_000,
     enabled: isLoggedIn(),
   });
 }
@@ -1124,8 +1132,17 @@ export function useWorkoutQuery(id: string | null) {
   return useQuery({
     queryKey: ["fuel-workout", id],
     queryFn: () => fetchWorkout(id!),
-    staleTime: 30_000,
+    staleTime: 60_000,
     enabled: isLoggedIn() && !!id,
+  });
+}
+
+export function useWorkoutCountQuery(params?: { status?: string; category?: string }) {
+  return useQuery({
+    queryKey: ["fuel-workout-count", params?.status ?? "", params?.category ?? ""],
+    queryFn: () => fetchWorkoutCount(params),
+    staleTime: 5 * 60_000,
+    enabled: isLoggedIn(),
   });
 }
 
@@ -1136,6 +1153,7 @@ export function useCreateWorkoutMutation() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
       void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-workout-count"] });
     },
   });
 }
@@ -1162,6 +1180,7 @@ export function useDeleteWorkoutMutation() {
       void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
       void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
       void qc.invalidateQueries({ queryKey: ["fuel-progress"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-workout-count"] });
     },
   });
 }
@@ -1170,7 +1189,7 @@ export function useFuelProgressQuery(category: string) {
   return useQuery({
     queryKey: ["fuel-progress", category],
     queryFn: () => fetchFuelProgress(category),
-    staleTime: 30_000,
+    staleTime: 5 * 60_000,
     enabled: isLoggedIn(),
   });
 }
@@ -1179,7 +1198,7 @@ export function useBodyWeightQuery() {
   return useQuery({
     queryKey: ["fuel-body-weight"],
     queryFn: fetchBodyWeight,
-    staleTime: 30_000,
+    staleTime: 5 * 60_000,
     enabled: isLoggedIn(),
   });
 }
@@ -1223,7 +1242,7 @@ export function useFuelProfileQuery() {
   return useQuery({
     queryKey: ["fuel-profile"],
     queryFn: fetchFuelProfile,
-    staleTime: 30_000,
+    staleTime: 10 * 60_000,
     enabled: isLoggedIn() && !!tenant?.fuel_enabled,
   });
 }

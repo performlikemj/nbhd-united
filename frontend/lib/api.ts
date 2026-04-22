@@ -888,6 +888,17 @@ export function fetchWorkouts(params?: {
   return apiFetch<import("@/lib/types").FuelWorkout[]>(`/api/v1/fuel/workouts/${suffix}`);
 }
 
+export function fetchWorkoutCount(params?: {
+  status?: string;
+  category?: string;
+}): Promise<{ count: number }> {
+  const qs = new URLSearchParams();
+  if (params?.status) qs.set("status", params.status);
+  if (params?.category) qs.set("category", params.category);
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return apiFetch<{ count: number }>(`/api/v1/fuel/workouts/count/${suffix}`);
+}
+
 export function fetchWorkout(id: string): Promise<import("@/lib/types").FuelWorkout> {
   return apiFetch<import("@/lib/types").FuelWorkout>(`/api/v1/fuel/workouts/${id}/`);
 }

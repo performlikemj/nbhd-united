@@ -12,6 +12,7 @@ from .views import (
     FuelProfileView,
     FuelSettingsView,
     WorkoutCalendarView,
+    WorkoutCountView,
     WorkoutDetailView,
     WorkoutListView,
     WorkoutProgressView,
@@ -22,6 +23,7 @@ urlpatterns = [
     path("settings/", FuelSettingsView.as_view(), name="fuel-settings"),
     path("profile/", FuelProfileView.as_view(), name="fuel-profile"),
     path("workouts/", WorkoutListView.as_view(), name="fuel-workouts"),
+    path("workouts/count/", WorkoutCountView.as_view(), name="fuel-workout-count"),
     path(
         "workouts/<uuid:workout_id>/",
         WorkoutDetailView.as_view(),
