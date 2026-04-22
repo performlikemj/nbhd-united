@@ -9,7 +9,7 @@ ENV NODE_ENV=production
 # NOTE: --require for suppress-chmod-eperm.js is added AFTER the COPY step
 # below (npm install reads NODE_OPTIONS and would fail if the file isn't
 # present yet).
-ENV NODE_OPTIONS="--max-old-space-size=1024 --dns-result-order=ipv4first --no-network-family-autoselection"
+ENV NODE_OPTIONS="--max-old-space-size=512 --dns-result-order=ipv4first --no-network-family-autoselection"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \

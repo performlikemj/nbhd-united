@@ -295,6 +295,12 @@ class Tenant(models.Model):
         blank=True,
         help_text="When the container was idle-hibernated. Null = running normally.",
     )
+    cron_wake_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the container was woken for a scheduled cron job. "
+        "Null = not a cron wake. Used to apply the shorter 30-min idle window.",
+    )
 
     # Workspace routing
     active_workspace = models.ForeignKey(

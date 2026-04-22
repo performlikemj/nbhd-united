@@ -85,6 +85,9 @@ TASK_MAP = {
     "hibernate_idle_tenants": "apps.orchestrator.tasks.hibernate_idle_tenants_task",
     "deliver_buffered_messages": "apps.orchestrator.hibernation.deliver_buffered_messages_task",
     "resume_hibernated_crons": "apps.orchestrator.hibernation.resume_hibernated_crons_task",
+    # Cron-aware wake — wake hibernated containers for scheduled crons
+    "wake_for_cron": "apps.orchestrator.hibernation.wake_for_cron_task",
+    "check_cron_wake_idle": "apps.orchestrator.hibernation.check_cron_wake_idle_task",
     # Cleanup delivered message buffers
     "cleanup_delivered_buffers": "apps.orchestrator.hibernation.cleanup_delivered_buffers_task",
     # Nightly extraction — goals/tasks/lessons from daily notes

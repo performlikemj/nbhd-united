@@ -55,6 +55,9 @@ azure-keyvault-secrets
 # Charts (server-side rendering for chat channels)
 matplotlib
 
+# Cron expression parsing (compute next fire time for hibernation wake)
+croniter
+
 # Utils
 whitenoise
 django-extensions

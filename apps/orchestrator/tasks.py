@@ -284,7 +284,7 @@ def hibernate_idle_tenants_task() -> dict:
 
     from django.db import transaction
 
-    cutoff = timezone.now() - timedelta(hours=24)
+    cutoff = timezone.now() - timedelta(hours=2)
 
     hibernated = 0
     failed = 0
