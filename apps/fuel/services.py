@@ -3,13 +3,25 @@
 from __future__ import annotations
 
 
-def est_1rm(weight: float, reps: int) -> float:
+def _safe_num(val, default=0) -> float:
+    """Coerce a value to float, returning default if not numeric."""
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def est_1rm(weight, reps) -> float:
     """Epley formula: estimated one-rep max from weight and reps."""
-    if not weight or reps < 1:
+    w = _safe_num(weight)
+    r = _safe_num(reps)
+    if not w or r < 1:
         return 0.0
-    if reps == 1:
-        return float(weight)
-    return round(weight * (1 + reps / 30), 1)
+    if r == 1:
+        return w
+    return round(w * (1 + r / 30), 1)
 
 
 def enrich_strength_detail(detail: dict) -> dict:

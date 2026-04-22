@@ -84,17 +84,48 @@ class RuntimeLogWorkoutView(APIView):
         if workout_status not in WorkoutStatus.values:
             workout_status = "done"
 
-        workout = Workout.objects.create(
-            tenant=tenant,
-            date=data.get("date", str(date.today())),
-            status=workout_status,
-            category=category,
-            activity=data.get("activity", WorkoutCategory(category).label),
-            duration_minutes=data.get("duration_minutes"),
-            rpe=data.get("rpe"),
-            notes=data.get("notes", ""),
-            detail_json=data.get("detail_json", {}),
-        )
+        # Coerce duration_minutes and rpe to int, tolerating non-numeric input
+        duration = data.get("duration_minutes")
+        if duration is not None:
+            try:
+                duration = int(duration)
+            except (TypeError, ValueError):
+                duration = None
+
+        rpe = data.get("rpe")
+        if rpe is not None:
+            try:
+                rpe = max(1, min(10, int(rpe)))
+            except (TypeError, ValueError):
+                rpe = None
+
+        try:
+            workout = Workout.objects.create(
+                tenant=tenant,
+                date=data.get("date", str(date.today())),
+                status=workout_status,
+                category=category,
+                activity=data.get("activity", WorkoutCategory(category).label),
+                duration_minutes=duration,
+                rpe=rpe,
+                notes=data.get("notes", ""),
+                detail_json=data.get("detail_json", {}),
+            )
+        except Exception as exc:
+            logger.exception("RuntimeLogWorkoutView failed for tenant %s", tenant_id)
+            return Response(
+                {"error": "create_failed", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # PR detection is best-effort — don't let it break workout logging
+        try:
+            from .services import detect_prs
+
+            detect_prs(tenant, workout)
+        except Exception:
+            logger.exception("PR detection failed for workout %s", workout.id)
+
         return Response(
             {
                 "id": str(workout.id),
