@@ -81,7 +81,7 @@ export function Calendar({ onSelectDay }: CalendarProps) {
   };
 
   return (
-    <div className="space-y-3 sm:space-y-4">
+    <div className="space-y-3 sm:space-y-4 overflow-hidden">
       {/* Header */}
       <div className="flex items-end justify-between flex-wrap gap-3">
         <div>
@@ -184,9 +184,9 @@ export function Calendar({ onSelectDay }: CalendarProps) {
         })}
       </div>
 
-      {/* Legend — horizontal scroll on mobile */}
-      <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
-        <div className="flex items-center gap-3 text-[10px] font-mono text-ink-faint pt-2 min-w-max sm:min-w-0 sm:flex-wrap">
+      {/* Legend — wraps on mobile */}
+      <div className="overflow-x-auto">
+        <div className="flex items-center gap-2 sm:gap-3 text-[10px] font-mono text-ink-faint pt-2 flex-wrap">
           <span className="hidden sm:inline">Click a day to open it.</span>
           <span className="hidden sm:inline text-border">&middot;</span>
           {CATEGORY_IDS.map((c) => (
