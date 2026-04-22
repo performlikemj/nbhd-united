@@ -132,6 +132,8 @@ export function Calendar({ onSelectDay }: CalendarProps) {
           const iso = isoFromParts(c.y, c.m, c.d);
           const items = byDate[iso] || [];
           const isToday = iso === todayISO;
+          const isRestDay = items.length === 1 && items[0].status === "rest";
+          const workoutItems = items.filter((w) => w.status !== "rest");
           return (
             <button
               key={i}
@@ -154,24 +156,33 @@ export function Calendar({ onSelectDay }: CalendarProps) {
               </div>
               {/* Activity slivers — dots only on mobile, text on sm+ */}
               <div className="mt-0.5 sm:mt-1 space-y-0.5">
-                {items.slice(0, 3).map((w) => {
-                  const accent = CATEGORIES[w.category as WorkoutCategory]?.accent || "#94a3b8";
-                  const planned = w.status === "planned";
-                  return (
-                    <div
-                      key={w.id}
-                      className={`flex items-center gap-1 ${planned ? "opacity-70" : ""}`}
-                    >
-                      <span
-                        className="h-1.5 w-1.5 sm:h-1 sm:w-1 rounded-full shrink-0"
-                        style={{ background: accent, opacity: planned ? 0.5 : 1 }}
-                      />
-                      <span className="hidden sm:block truncate text-[10px] leading-tight text-ink-muted">{w.activity}</span>
-                    </div>
-                  );
-                })}
-                {items.length > 3 && (
-                  <div className="text-[8px] sm:text-[9px] font-mono text-ink-faint">+{items.length - 3}</div>
+                {isRestDay ? (
+                  <div className="flex items-center gap-1 opacity-50">
+                    <span className="h-1.5 w-1.5 sm:h-1 sm:w-1 rounded-full shrink-0 bg-ink-faint" />
+                    <span className="hidden sm:block text-[10px] leading-tight text-ink-faint">Rest</span>
+                  </div>
+                ) : (
+                  <>
+                    {workoutItems.slice(0, 3).map((w) => {
+                      const accent = CATEGORIES[w.category as WorkoutCategory]?.accent || "#94a3b8";
+                      const planned = w.status === "planned";
+                      return (
+                        <div
+                          key={w.id}
+                          className={`flex items-center gap-1 ${planned ? "opacity-70" : ""}`}
+                        >
+                          <span
+                            className="h-1.5 w-1.5 sm:h-1 sm:w-1 rounded-full shrink-0"
+                            style={{ background: accent, opacity: planned ? 0.5 : 1 }}
+                          />
+                          <span className="hidden sm:block truncate text-[10px] leading-tight text-ink-muted">{w.activity}</span>
+                        </div>
+                      );
+                    })}
+                    {workoutItems.length > 3 && (
+                      <div className="text-[8px] sm:text-[9px] font-mono text-ink-faint">+{workoutItems.length - 3}</div>
+                    )}
+                  </>
                 )}
               </div>
               {isToday && (

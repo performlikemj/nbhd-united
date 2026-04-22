@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { useCreateWorkoutMutation } from "@/lib/queries";
+import { useCreateWorkoutMutation, useWorkoutTemplatesQuery } from "@/lib/queries";
 import type { WorkoutCategory } from "@/lib/types";
 import { CATEGORIES, CATEGORY_IDS } from "./category-meta";
 
@@ -28,16 +28,21 @@ function NewWorkoutDialogInner({ presetDate, onClose, onCreated }: Omit<NewWorko
     presetDate && presetDate > todayISO ? "planned" : "done",
   );
   const [activity, setActivity] = useState("");
+  const [detailFromTemplate, setDetailFromTemplate] = useState<Record<string, unknown> | null>(null);
   const createMutation = useCreateWorkoutMutation();
+  const { data: templates } = useWorkoutTemplatesQuery(cat ?? undefined);
 
   const suggestions = cat ? CATEGORIES[cat].suggest : [];
+  const catTemplates = (templates || []).filter((t) => t.category === cat);
 
   const handleCreate = async () => {
     if (!cat) return;
-    const detailJson: Record<string, unknown> = {};
-    if (cat === "strength") detailJson.exercises = [];
-    if (cat === "calisthenics") detailJson.skills = [];
-    if (cat === "mobility") detailJson.blocks = [];
+    let detailJson: Record<string, unknown> = detailFromTemplate || {};
+    if (!detailFromTemplate) {
+      if (cat === "strength") detailJson = { exercises: [] };
+      if (cat === "calisthenics") detailJson = { skills: [] };
+      if (cat === "mobility") detailJson = { blocks: [] };
+    }
 
     try {
       const result = await createMutation.mutateAsync({
@@ -137,6 +142,23 @@ function NewWorkoutDialogInner({ presetDate, onClose, onCreated }: Omit<NewWorko
                 ))}
               </div>
             </div>
+
+            {catTemplates.length > 0 && (
+              <div>
+                <label className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint">FROM TEMPLATE</label>
+                <div className="mt-1.5 space-y-1.5">
+                  {catTemplates.map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => { setActivity(t.activity); setDetailFromTemplate(t.detail_json); }}
+                      className="w-full rounded-lg border border-border hover:border-border-strong bg-surface-elevated hover:bg-surface-hover transition px-3 py-2 text-left text-sm text-ink-muted hover:text-ink min-h-[44px]"
+                    >
+                      {t.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useFuelCalendarQuery } from "@/lib/queries";
+import { useCreateWorkoutMutation, useDeleteWorkoutMutation, useFuelCalendarQuery } from "@/lib/queries";
 import type { FuelWorkout, WorkoutCategory, WorkoutStub } from "@/lib/types";
 import { CATEGORIES } from "./category-meta";
 
@@ -35,11 +35,15 @@ export function DayDrawer({ iso, onClose, onNavigate, onAddWorkout, onOpenWorkou
   // React Query deduplicates since Calendar uses the same queryKey.
   const [y, m] = iso ? iso.split("-").map(Number) : [0, 0];
   const { data: calendarData } = useFuelCalendarQuery(y, m);
+  const createMutation = useCreateWorkoutMutation();
+  const deleteMutation = useDeleteWorkoutMutation();
 
   if (!iso) return null;
 
   const dayEntry = calendarData?.find((d) => d.date === iso);
+
   const items: WorkoutStub[] = dayEntry?.workouts ?? [];
+  const restEntry = items.find((w) => w.status === "rest");
   const planned = items.filter((w) => w.status === "planned");
   const done = items.filter((w) => w.status === "done");
   const todayISO = new Date().toISOString().slice(0, 10);
@@ -87,7 +91,11 @@ export function DayDrawer({ iso, onClose, onNavigate, onAddWorkout, onOpenWorkou
           <div>
             <h2 className="text-2xl sm:text-3xl font-semibold italic">{fmtLongDate(iso)}</h2>
             <div className="mt-1 text-xs text-ink-faint font-mono">
-              {items.length === 0 ? "Rest day" : `${done.length} done \u00b7 ${planned.length} planned`}
+              {items.length === 0
+                ? "No activity"
+                : restEntry && items.length === 1
+                  ? "Rest day"
+                  : `${done.length} done \u00b7 ${planned.length} planned`}
             </div>
           </div>
 
@@ -115,14 +123,41 @@ export function DayDrawer({ iso, onClose, onNavigate, onAddWorkout, onOpenWorkou
             </div>
           )}
 
-          {/* Add button */}
-          <button
-            onClick={() => onAddWorkout(iso)}
-            className="w-full rounded-xl border border-dashed border-border hover:border-border-strong bg-surface-elevated hover:bg-surface-hover transition px-4 min-h-[48px] py-3 flex items-center justify-center gap-2 text-sm text-ink-muted hover:text-ink"
-          >
-            <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 5v14M5 12h14" /></svg>
-            Add workout on {fmtShortDate(iso)}
-          </button>
+          {/* Rest day indicator */}
+          {restEntry && (
+            <div className="rounded-xl border border-border bg-surface-elevated px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-ink-faint text-lg">&#x1F6CC;</span>
+                <span className="text-sm text-ink-muted">Rest day</span>
+              </div>
+              <button
+                onClick={() => deleteMutation.mutate(restEntry.id)}
+                className="text-xs text-ink-faint hover:text-rose-text transition min-h-[36px] px-2"
+              >
+                Remove
+              </button>
+            </div>
+          )}
+
+          {/* Add workout + rest day buttons */}
+          <div className="space-y-2">
+            <button
+              onClick={() => onAddWorkout(iso)}
+              className="w-full rounded-xl border border-dashed border-border hover:border-border-strong bg-surface-elevated hover:bg-surface-hover transition px-4 min-h-[48px] py-3 flex items-center justify-center gap-2 text-sm text-ink-muted hover:text-ink"
+            >
+              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 5v14M5 12h14" /></svg>
+              Add workout on {fmtShortDate(iso)}
+            </button>
+            {!restEntry && done.length === 0 && (
+              <button
+                onClick={() => createMutation.mutate({ status: "rest", category: "other", activity: "Rest day", date: iso, duration_minutes: null, detail_json: {} })}
+                disabled={createMutation.isPending}
+                className="w-full rounded-xl border border-border hover:border-border-strong bg-surface-elevated hover:bg-surface-hover transition px-4 min-h-[44px] py-2.5 flex items-center justify-center gap-2 text-sm text-ink-faint hover:text-ink"
+              >
+                Mark as rest day
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

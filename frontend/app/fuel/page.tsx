@@ -9,6 +9,8 @@ import { History } from "@/components/fuel/history";
 import { NewWorkoutDialog } from "@/components/fuel/new-workout-dialog";
 import { ProfileCard } from "@/components/fuel/profile-card";
 import { Progress } from "@/components/fuel/progress";
+import { RestingHeartRate } from "@/components/fuel/resting-heart-rate";
+import { WeeklySummary } from "@/components/fuel/weekly-summary";
 import { WorkoutDetail } from "@/components/fuel/workout-detail";
 import { useWorkoutCountQuery } from "@/lib/queries";
 
@@ -56,6 +58,7 @@ export default function FuelPage() {
       </div>
 
       <ProfileCard />
+      <WeeklySummary />
 
       {/* Tabs */}
       <div className="flex items-center gap-1 border-b border-border mb-6 overflow-x-auto">
@@ -88,6 +91,7 @@ export default function FuelPage() {
         <div className="space-y-8">
           <Progress />
           <BodyWeight />
+          <RestingHeartRate />
         </div>
       )}
 

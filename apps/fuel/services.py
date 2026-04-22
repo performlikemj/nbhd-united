@@ -98,3 +98,54 @@ def aggregate_calisthenics_progress(workouts) -> dict:
             entry["points"].append({"date": str(w.date), "value": top})
 
     return by_skill
+
+
+def detect_prs(tenant, workout) -> list[dict]:
+    """Detect personal records from a workout. Returns list of new PRs created."""
+    from .models import PersonalRecord
+
+    if workout.status != "done":
+        return []
+
+    new_prs = []
+
+    if workout.category == "strength":
+        for ex in (workout.detail_json or {}).get("exercises", []):
+            name = ex.get("name", "").strip()
+            if not name:
+                continue
+            top_1rm = max(
+                (est_1rm(s.get("weight", 0), s.get("reps", 0)) for s in ex.get("sets", [])),
+                default=0,
+            )
+            if top_1rm <= 0:
+                continue
+
+            from decimal import Decimal
+
+            top_decimal = Decimal(str(top_1rm))
+
+            # Check previous best
+            prev = (
+                PersonalRecord.objects.filter(tenant=tenant, exercise_name=name, metric="est_1rm")
+                .order_by("-value")
+                .first()
+            )
+            prev_value = prev.value if prev else None
+
+            if prev_value is None or top_decimal > prev_value:
+                pr = PersonalRecord.objects.create(
+                    tenant=tenant,
+                    workout=workout,
+                    exercise_name=name,
+                    category="strength",
+                    value=top_decimal,
+                    previous_value=prev_value,
+                    metric="est_1rm",
+                    date=workout.date,
+                )
+                new_prs.append(
+                    {"exercise": name, "value": float(pr.value), "previous": float(prev_value) if prev_value else None}
+                )
+
+    return new_prs

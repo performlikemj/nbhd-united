@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { useDeleteWorkoutMutation, useUpdateWorkoutMutation, useWorkoutQuery } from "@/lib/queries";
+import { useCreateWorkoutTemplateMutation, useDeleteWorkoutMutation, useDuplicateWorkoutMutation, useUpdateWorkoutMutation, useWorkoutQuery } from "@/lib/queries";
 import type { FuelWorkout, WorkoutCategory } from "@/lib/types";
 import { CATEGORIES, CATEGORY_IDS } from "./category-meta";
 import { displayToKg, kgToDisplay, useWeightUnit } from "./use-weight-unit";
@@ -42,6 +42,8 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
   const { data: workout } = useWorkoutQuery(workoutId);
   const updateMutation = useUpdateWorkoutMutation();
   const deleteMutation = useDeleteWorkoutMutation();
+  const duplicateMutation = useDuplicateWorkoutMutation();
+  const templateMutation = useCreateWorkoutTemplateMutation();
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Partial<FuelWorkout>>({});
@@ -259,9 +261,27 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
                 </button>
               </>
             ) : (
-              <button onClick={() => setEditing(true)} className="flex-1 rounded-full bg-surface-elevated hover:bg-surface-hover border border-border text-ink font-medium min-h-[44px] py-2.5 text-sm transition">
-                Edit workout
-              </button>
+              <>
+                <button onClick={() => setEditing(true)} className="flex-1 rounded-full bg-surface-elevated hover:bg-surface-hover border border-border text-ink font-medium min-h-[44px] py-2.5 text-sm transition">
+                  Edit workout
+                </button>
+                <button
+                  onClick={() => duplicateMutation.mutate(workout.id)}
+                  disabled={duplicateMutation.isPending}
+                  className="rounded-full border border-border hover:border-border-strong text-ink-muted hover:text-ink min-h-[44px] px-4 py-2.5 text-sm transition disabled:opacity-50"
+                >
+                  {duplicateMutation.isPending ? "Duplicating\u2026" : "Duplicate"}
+                </button>
+                <button
+                  onClick={() => {
+                    const name = prompt("Template name:");
+                    if (name) templateMutation.mutate({ name, category: workout.category, activity: workout.activity, duration_minutes: workout.duration_minutes, detail_json: workout.detail_json });
+                  }}
+                  className="rounded-full border border-border hover:border-border-strong text-ink-muted hover:text-ink min-h-[44px] px-4 py-2.5 text-sm transition"
+                >
+                  Save as template
+                </button>
+              </>
             )}
             <button onClick={handleDelete} className="rounded-full border border-border hover:border-rose-border text-ink-muted hover:text-rose-text min-h-[44px] px-4 py-2.5 text-sm transition">
               Delete

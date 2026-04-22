@@ -21,6 +21,7 @@ class WorkoutCategory(models.TextChoices):
 class WorkoutStatus(models.TextChoices):
     DONE = "done", "Done"
     PLANNED = "planned", "Planned"
+    REST = "rest", "Rest"
 
 
 class Workout(models.Model):
@@ -106,6 +107,90 @@ class FuelProfile(models.Model):
 
     def __str__(self) -> str:
         return f"FuelProfile({self.tenant}, {self.onboarding_status})"
+
+
+class WorkoutTemplate(models.Model):
+    """Reusable workout template for quick logging."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="workout_templates")
+    name = models.CharField(max_length=128, help_text="Template name, e.g. 'Push Day A'")
+    category = models.CharField(max_length=16, choices=WorkoutCategory.choices)
+    activity = models.CharField(max_length=128)
+    duration_minutes = models.IntegerField(null=True, blank=True)
+    detail_json = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "fuel_workout_templates"
+        ordering = ["-updated_at"]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.category})"
+
+
+class PersonalRecord(models.Model):
+    """A personal record achieved during a workout."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="personal_records")
+    workout = models.ForeignKey(Workout, on_delete=models.CASCADE, related_name="prs")
+    exercise_name = models.CharField(max_length=128)
+    category = models.CharField(max_length=16, choices=WorkoutCategory.choices)
+    value = models.DecimalField(max_digits=8, decimal_places=2, help_text="The new record value")
+    previous_value = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+    metric = models.CharField(max_length=16, default="est_1rm", help_text="est_1rm, distance, hold_s, reps")
+    date = models.DateField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "fuel_personal_records"
+        ordering = ["-date", "-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "exercise_name"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"PR: {self.exercise_name} {self.value} ({self.date})"
+
+
+class FuelGoal(models.Model):
+    """A fitness goal with a target value and optional deadline."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="fuel_goals")
+    exercise_name = models.CharField(max_length=128)
+    metric = models.CharField(max_length=16, default="est_1rm")
+    target_value = models.DecimalField(max_digits=8, decimal_places=2)
+    target_date = models.DateField(null=True, blank=True)
+    achieved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "fuel_goals"
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"Goal: {self.exercise_name} → {self.target_value}"
+
+
+class RestingHeartRateLog(models.Model):
+    """Daily resting heart rate entry for trend tracking."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="rhr_logs")
+    date = models.DateField()
+    bpm = models.IntegerField(validators=[MinValueValidator(20), MaxValueValidator(250)])
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "fuel_resting_heart_rate"
+        ordering = ["-date"]
+        unique_together = ["tenant", "date"]
+
+    def __str__(self) -> str:
+        return f"{self.date} — {self.bpm} bpm"
 
 
 class BodyWeightLog(models.Model):
