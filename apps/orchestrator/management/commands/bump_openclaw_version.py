@@ -26,7 +26,7 @@ Usage:
 from __future__ import annotations
 
 from django.conf import settings
-from django.core.management.base import BaseCommand, CommandError
+from django.core.management.base import BaseCommand
 
 from apps.orchestrator.azure_client import update_container_image
 from apps.orchestrator.services import update_tenant_config

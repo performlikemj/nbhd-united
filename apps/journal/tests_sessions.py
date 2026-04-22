@@ -4,8 +4,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from apps.tenants.models import Tenant, User
-from apps.tenants.pat_models import generate_pat, PersonalAccessToken
+from apps.tenants.pat_models import PersonalAccessToken, generate_pat
 from apps.tenants.services import create_tenant
 
 from .models import Document
