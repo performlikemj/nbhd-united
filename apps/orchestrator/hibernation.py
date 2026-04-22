@@ -1,8 +1,13 @@
 """Idle hibernation service — scale-to-zero for inactive tenants.
 
-Tenants whose containers have been idle for 24+ hours get their revisions
+Tenants whose containers have been idle for 2+ hours get their revisions
 deactivated (0 replicas, 0 cost). When a message arrives, the container
 wakes and buffered messages are auto-forwarded via QStash.
+
+Cron-aware wake: before hibernating, we capture the tenant's cron
+schedules and schedule a QStash task to wake the container just before
+the next cron fires. After 30 minutes, if no user messages arrived, the
+container is re-hibernated (and the next cron wake is scheduled again).
 
 This is distinct from billing-based SUSPENDED status — hibernated tenants
 remain status=ACTIVE with a non-null ``hibernated_at`` timestamp.
@@ -11,6 +16,7 @@ remain status=ACTIVE with a non-null ``hibernated_at`` timestamp.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from django.utils import timezone
 
@@ -18,18 +24,32 @@ from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
 
+# How early (seconds) to wake the container before a cron fires.
+# Container needs ~60s to start + ~60s for crons to resume.
+_CRON_WAKE_LEAD_SECONDS = 120
+
+# How long (seconds) to keep a cron-woken container alive before
+# re-hibernating if no user messages arrive.
+_CRON_WAKE_IDLE_SECONDS = 1800  # 30 minutes
+
 
 def hibernate_idle_tenant(tenant: Tenant) -> bool:
     """Hibernate a single idle tenant's container.
 
-    Order matters: suspend crons first (container must be reachable),
-    then deactivate revisions.
+    Order matters:
+    1. Capture cron schedules (container must be reachable)
+    2. Suspend crons (container must be reachable)
+    3. Deactivate revisions
+    4. Schedule next cron wake
 
     Returns True on success.
     """
     tid = str(tenant.id)[:8]
 
-    # 1. Suspend crons while container is still up
+    # 1. Capture cron schedules before suspending (for cron-aware wake)
+    cron_jobs = _capture_tenant_cron_schedules(tenant)
+
+    # 2. Suspend crons while container is still up
     if tenant.container_fqdn:
         try:
             from apps.cron.suspension import suspend_tenant_crons
@@ -46,7 +66,7 @@ def hibernate_idle_tenant(tenant: Tenant) -> bool:
                 tid,
             )
 
-    # 2. Deactivate all revisions → 0 replicas
+    # 3. Deactivate all revisions → 0 replicas
     try:
         from apps.orchestrator.azure_client import hibernate_container_app
 
@@ -55,10 +75,135 @@ def hibernate_idle_tenant(tenant: Tenant) -> bool:
         logger.exception("idle_hibernate: failed to hibernate container for %s", tid)
         return False
 
-    # 3. Mark tenant as hibernated
-    Tenant.objects.filter(id=tenant.id).update(hibernated_at=timezone.now())
+    # 4. Mark tenant as hibernated, clear any stale cron_wake_at
+    Tenant.objects.filter(id=tenant.id).update(
+        hibernated_at=timezone.now(),
+        cron_wake_at=None,
+    )
     logger.info("idle_hibernate: tenant %s hibernated successfully", tid)
+
+    # 5. Schedule wake for the next cron job
+    _schedule_next_cron_wake(tenant, cron_jobs)
+
     return True
+
+
+def _capture_tenant_cron_schedules(tenant: Tenant) -> list[dict]:
+    """Query tenant's enabled cron jobs and save a snapshot.
+
+    Returns the raw job list for use by ``_schedule_next_cron_wake``.
+    """
+    if not tenant.container_fqdn:
+        return []
+
+    try:
+        from apps.cron.gateway_client import invoke_gateway_tool
+
+        result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": False})
+        data = result.get("details", result) if isinstance(result, dict) else result
+        jobs = (
+            data.get("jobs", [])
+            if isinstance(data, dict)
+            else data
+            if isinstance(data, list)
+            else []
+        )
+
+        # Persist snapshot for debugging / restore purposes
+        Tenant.objects.filter(id=tenant.id).update(
+            cron_jobs_snapshot={"jobs": jobs, "snapshot_at": timezone.now().isoformat()},
+        )
+        return jobs
+    except Exception:
+        logger.exception(
+            "idle_hibernate: failed to capture cron schedules for %s",
+            str(tenant.id)[:8],
+        )
+        return []
+
+
+def _schedule_next_cron_wake(tenant: Tenant, cron_jobs: list[dict]) -> None:
+    """Schedule a QStash task to wake the tenant before their next cron fires."""
+    if not cron_jobs:
+        return
+
+    now_ms = int(timezone.now().timestamp() * 1000)
+    earliest_ms = _find_earliest_next_run(cron_jobs, now_ms)
+
+    if not earliest_ms:
+        logger.info(
+            "idle_hibernate: no upcoming crons for tenant %s, skipping cron wake",
+            str(tenant.id)[:8],
+        )
+        return
+
+    delay_seconds = max(60, (earliest_ms - now_ms) // 1000 - _CRON_WAKE_LEAD_SECONDS)
+
+    try:
+        from apps.cron.publish import publish_task
+
+        publish_task(
+            "wake_for_cron",
+            str(tenant.id),
+            delay_seconds=delay_seconds,
+            idempotency_key=f"wake-cron-{tenant.id}-{earliest_ms}",
+        )
+        logger.info(
+            "idle_hibernate: scheduled cron wake for tenant %s in %ds (next cron ~%s)",
+            str(tenant.id)[:8],
+            delay_seconds,
+            datetime.fromtimestamp(earliest_ms / 1000, tz=timezone.utc).isoformat(),
+        )
+    except Exception:
+        logger.exception(
+            "idle_hibernate: failed to schedule cron wake for %s",
+            str(tenant.id)[:8],
+        )
+
+
+def _find_earliest_next_run(cron_jobs: list[dict], now_ms: int) -> int | None:
+    """Return the earliest ``nextRunAtMs`` from the job list.
+
+    Falls back to computing the next run from the cron expression if
+    ``nextRunAtMs`` is missing.
+    """
+    candidates: list[int] = []
+
+    for job in cron_jobs:
+        if not job.get("enabled", True):
+            continue
+
+        next_run = job.get("nextRunAtMs")
+        if next_run and next_run > now_ms:
+            candidates.append(next_run)
+            continue
+
+        # Fallback: compute from cron expression
+        schedule = job.get("schedule", {})
+        expr = schedule.get("expr")
+        tz_name = schedule.get("tz", "UTC")
+        if expr:
+            computed = _next_run_from_expr(expr, tz_name)
+            if computed and computed > now_ms:
+                candidates.append(computed)
+
+    return min(candidates) if candidates else None
+
+
+def _next_run_from_expr(expr: str, tz_name: str) -> int | None:
+    """Compute next run time in epoch ms from a cron expression + timezone."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        from croniter import croniter
+
+        now = datetime.now(ZoneInfo(tz_name))
+        cron = croniter(expr, now)
+        next_dt = cron.get_next(datetime)
+        return int(next_dt.timestamp() * 1000)
+    except Exception:
+        logger.debug("Failed to parse cron expr %r tz=%s", expr, tz_name)
+        return None
 
 
 def wake_hibernated_tenant(tenant: Tenant) -> bool:
@@ -121,6 +266,111 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
 
     logger.info("idle_wake: tenant %s wake initiated", tid)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Cron-aware wake tasks
+# ---------------------------------------------------------------------------
+
+
+def wake_for_cron_task(tenant_id: str) -> dict:
+    """Wake a hibernated tenant's container for a scheduled cron job.
+
+    Called by QStash ~2 minutes before the tenant's next cron is due.
+    After 30 minutes, if no user messages arrived, the container is
+    re-hibernated via ``check_cron_wake_idle_task``.
+    """
+    tenant = Tenant.objects.filter(id=tenant_id).first()
+    if not tenant:
+        logger.warning("wake_for_cron: tenant %s not found", tenant_id[:8])
+        return {"status": "tenant_not_found"}
+
+    if not tenant.hibernated_at:
+        logger.info("wake_for_cron: tenant %s already awake, skipping", tenant_id[:8])
+        return {"status": "already_awake"}
+
+    if tenant.status != Tenant.Status.ACTIVE:
+        logger.info(
+            "wake_for_cron: tenant %s not active (status=%s), skipping",
+            tenant_id[:8],
+            tenant.status,
+        )
+        return {"status": "not_active"}
+
+    # Wake the container (clears hibernated_at, resumes crons, delivers buffers)
+    if not wake_hibernated_tenant(tenant):
+        return {"status": "wake_failed"}
+
+    # Mark this as a cron-triggered wake
+    Tenant.objects.filter(id=tenant.id).update(cron_wake_at=timezone.now())
+
+    # Schedule idle check — if no user messages in 30 min, re-hibernate
+    try:
+        from apps.cron.publish import publish_task
+
+        publish_task(
+            "check_cron_wake_idle",
+            str(tenant.id),
+            delay_seconds=_CRON_WAKE_IDLE_SECONDS,
+        )
+    except Exception:
+        logger.exception(
+            "wake_for_cron: failed to schedule idle check for %s",
+            tenant_id[:8],
+        )
+
+    logger.info("wake_for_cron: tenant %s woken for scheduled cron", tenant_id[:8])
+    return {"status": "woken_for_cron"}
+
+
+def check_cron_wake_idle_task(tenant_id: str) -> dict:
+    """Check if a cron-woken tenant should be re-hibernated.
+
+    Called 30 minutes after a cron wake. If no user messages were sent
+    during the wake window, hibernate immediately (which also schedules
+    the next cron wake). If the user messaged, clear ``cron_wake_at``
+    and let normal idle detection handle it.
+    """
+    tenant = Tenant.objects.filter(id=tenant_id).first()
+    if not tenant:
+        return {"status": "tenant_not_found"}
+
+    if not tenant.cron_wake_at:
+        logger.info(
+            "check_cron_wake_idle: tenant %s has no cron_wake_at, skipping",
+            tenant_id[:8],
+        )
+        return {"status": "not_cron_wake"}
+
+    if tenant.hibernated_at:
+        logger.info(
+            "check_cron_wake_idle: tenant %s already hibernated, skipping",
+            tenant_id[:8],
+        )
+        return {"status": "already_hibernated"}
+
+    # Did the user send any messages since the cron wake?
+    user_messaged = tenant.last_message_at and tenant.last_message_at > tenant.cron_wake_at
+
+    if user_messaged:
+        # User is active — hand off to normal idle detection (2h threshold)
+        Tenant.objects.filter(id=tenant.id).update(cron_wake_at=None)
+        logger.info(
+            "check_cron_wake_idle: tenant %s has user activity, staying awake",
+            tenant_id[:8],
+        )
+        return {"status": "user_active"}
+
+    # No user activity — re-hibernate (this also schedules the next cron wake)
+    logger.info(
+        "check_cron_wake_idle: tenant %s idle after cron wake, re-hibernating",
+        tenant_id[:8],
+    )
+    Tenant.objects.filter(id=tenant.id).update(cron_wake_at=None)
+    tenant.refresh_from_db()
+    hibernate_idle_tenant(tenant)
+
+    return {"status": "re_hibernated"}
 
 
 def deliver_buffered_messages_task(tenant_id: str) -> dict:

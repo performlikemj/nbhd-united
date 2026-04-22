@@ -35,8 +35,8 @@ SYSTEM_CRONS = [
     ("repair-stale-provisioning", "*/30 * * * *", "/api/cron/trigger/repair_stale_tenant_provisioning/"),
     # Daily at 06:30 UTC — refresh infra costs from Azure billing
     ("refresh-infra-costs", "30 6 * * *", "/api/cron/trigger/refresh_infra_costs/"),
-    # Every 6 hours — hibernate idle tenants (no messages in 24h)
-    ("hibernate-idle-tenants", "0 */6 * * *", "/api/cron/trigger/hibernate_idle_tenants/"),
+    # Every hour — hibernate idle tenants (no messages in 2h)
+    ("hibernate-idle-tenants", "0 * * * *", "/api/cron/trigger/hibernate_idle_tenants/"),
     # Daily at 07:00 UTC — clean up delivered message buffers older than 7 days
     ("cleanup-delivered-buffers", "0 7 * * *", "/api/cron/trigger/cleanup_delivered_buffers/"),
     # Daily at 21:30 UTC — extract goals/tasks/lessons from daily notes

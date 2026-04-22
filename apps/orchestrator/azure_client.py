@@ -643,7 +643,7 @@ def create_container_app(
                     {
                         "name": "openclaw",
                         "image": f"{settings.AZURE_ACR_SERVER}/nbhd-openclaw:latest",
-                        "resources": {"cpu": 0.75, "memory": "1.5Gi"},
+                        "resources": {"cpu": 0.5, "memory": "1.0Gi"},
                         "env": [
                             {"name": "ANTHROPIC_API_KEY", "secretRef": "anthropic-key"},
                             {"name": "OPENAI_API_KEY", "secretRef": "openai-key"},
@@ -663,7 +663,7 @@ def create_container_app(
                             {
                                 "name": "NODE_OPTIONS",
                                 "value": (
-                                    "--max-old-space-size=1024 "
+                                    "--max-old-space-size=512 "
                                     "--dns-result-order=ipv4first "
                                     "--no-network-family-autoselection "
                                     "--require /opt/nbhd/suppress-chmod-eperm.js"
