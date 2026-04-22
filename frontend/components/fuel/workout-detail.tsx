@@ -149,8 +149,8 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
           {editing && (
             <div>
               <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint mb-2">CATEGORY</div>
-              <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
-                <div className="flex gap-1.5 min-w-max sm:min-w-0 sm:flex-wrap">
+              <div className="overflow-x-auto pb-1">
+                <div className="flex gap-1.5 w-max sm:w-auto sm:flex-wrap">
                   {CATEGORY_IDS.map((c) => {
                     const on = draft.category === c;
                     return (
