@@ -706,17 +706,58 @@ def register_system_crons(request):
 
     resp = httpx.get("https://qstash.upstash.io/v2/schedules", headers=headers)
     resp.raise_for_status()
-    existing_destinations = {s["destination"] for s in resp.json()}
+    existing = {s["destination"]: s for s in resp.json()}
 
     registered = []
+    updated = []
     skipped = []
     failed = []
 
     for name, cron_expr, path in SYSTEM_CRONS:
         destination = f"{base_url}{path}"
-        if destination in existing_destinations:
-            skipped.append(name)
+        if destination in existing:
+            existing_sched = existing[destination]
+            if existing_sched.get("cron") == cron_expr:
+                skipped.append(name)
+                continue
+
+            # Cron expression changed — delete old and recreate
+            schedule_id = existing_sched.get("scheduleId")
+            if not schedule_id:
+                skipped.append(name)
+                continue
+
+            del_resp = httpx.delete(
+                f"https://qstash.upstash.io/v2/schedules/{schedule_id}",
+                headers=headers,
+            )
+            if del_resp.status_code not in (200, 204):
+                logger.error(
+                    "Failed to delete old schedule %s: %s %s",
+                    name,
+                    del_resp.status_code,
+                    del_resp.text,
+                )
+                failed.append(name)
+                continue
+
+            create_resp = httpx.post(
+                f"https://qstash.upstash.io/v2/schedules/{destination}",
+                headers={**headers, "Upstash-Cron": cron_expr},
+            )
+            if create_resp.status_code in (200, 201):
+                updated.append(name)
+                logger.info("Updated QStash cron: %s → %s", name, cron_expr)
+            else:
+                failed.append(name)
+                logger.error(
+                    "Failed to recreate QStash cron %s: %s %s",
+                    name,
+                    create_resp.status_code,
+                    create_resp.text,
+                )
             continue
+
         create_resp = httpx.post(
             f"https://qstash.upstash.io/v2/schedules/{destination}",
             headers={**headers, "Upstash-Cron": cron_expr},
@@ -726,9 +767,21 @@ def register_system_crons(request):
             logger.info("Registered QStash cron: %s → %s", name, cron_expr)
         else:
             failed.append(name)
-            logger.error("Failed to register QStash cron %s: %s %s", name, create_resp.status_code, create_resp.text)
+            logger.error(
+                "Failed to register QStash cron %s: %s %s",
+                name,
+                create_resp.status_code,
+                create_resp.text,
+            )
 
-    return JsonResponse({"registered": registered, "skipped": skipped, "failed": failed})
+    return JsonResponse(
+        {
+            "registered": registered,
+            "updated": updated,
+            "skipped": skipped,
+            "failed": failed,
+        }
+    )
 
 
 @csrf_exempt
