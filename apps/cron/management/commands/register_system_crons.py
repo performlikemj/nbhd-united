@@ -87,14 +87,50 @@ class Command(BaseCommand):
         existing = {s["destination"]: s for s in resp.json()}
 
         registered = 0
+        updated = 0
         skipped = 0
 
         for name, cron_expr, path in SYSTEM_CRONS:
             destination = f"{base_url}{path}"
 
             if destination in existing:
-                self.stdout.write(f"  skip (exists): {name} → {cron_expr}")
-                skipped += 1
+                existing_sched = existing[destination]
+                existing_cron = existing_sched.get("cron", "")
+                if existing_cron == cron_expr:
+                    self.stdout.write(f"  skip (unchanged): {name} → {cron_expr}")
+                    skipped += 1
+                    continue
+
+                # Cron expression changed — update the existing schedule
+                schedule_id = existing_sched.get("scheduleId")
+                if not schedule_id:
+                    self.stderr.write(f"  SKIP (no scheduleId): {name}")
+                    skipped += 1
+                    continue
+
+                if dry_run:
+                    self.stdout.write(f"  [dry-run] would update: {name} — {existing_cron} → {cron_expr}")
+                    updated += 1
+                    continue
+
+                # Delete old schedule and create new one with updated cron
+                del_resp = httpx.delete(
+                    f"https://qstash.upstash.io/v2/schedules/{schedule_id}",
+                    headers=headers,
+                )
+                if del_resp.status_code not in (200, 204):
+                    self.stderr.write(f"  FAILED to delete old schedule {name}: {del_resp.status_code} {del_resp.text}")
+                    continue
+
+                create_resp = httpx.post(
+                    f"https://qstash.upstash.io/v2/schedules/{destination}",
+                    headers={**headers, "Upstash-Cron": cron_expr},
+                )
+                if create_resp.status_code in (200, 201):
+                    self.stdout.write(self.style.SUCCESS(f"  updated: {name} — {existing_cron} → {cron_expr}"))
+                    updated += 1
+                else:
+                    self.stderr.write(f"  FAILED to recreate {name}: {create_resp.status_code} {create_resp.text}")
                 continue
 
             if dry_run:
@@ -111,4 +147,4 @@ class Command(BaseCommand):
             else:
                 self.stderr.write(f"  FAILED: {name} — {create_resp.status_code} {create_resp.text}")
 
-        self.stdout.write(f"\nDone: {registered} registered, {skipped} already existed")
+        self.stdout.write(f"\nDone: {registered} registered, {updated} updated, {skipped} unchanged")
