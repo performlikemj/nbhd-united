@@ -7,6 +7,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
+from django.db import models as db_models
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -16,7 +17,16 @@ from apps.integrations.internal_auth import InternalAuthError, validate_internal
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
-from .models import BodyWeightLog, FuelProfile, OnboardingStatus, Workout, WorkoutCategory, WorkoutStatus
+from .models import (
+    BodyWeightLog,
+    FuelProfile,
+    OnboardingStatus,
+    PlanStatus,
+    Workout,
+    WorkoutCategory,
+    WorkoutPlan,
+    WorkoutStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +37,8 @@ _PROFILE_FIELDS = (
     "limitations",
     "equipment",
     "days_per_week",
+    "preferred_days",
+    "preferred_time",
     "additional_context",
 )
 
@@ -212,10 +224,29 @@ class RuntimeFuelSummaryView(APIView):
                 "quality": latest_sleep.quality,
             }
 
+        # Active workout plans
+        active_plans = WorkoutPlan.objects.filter(tenant=tenant, status=PlanStatus.ACTIVE)[:3]
+        plans_data = []
+        for p in active_plans:
+            total = Workout.objects.filter(plan=p).count()
+            done = Workout.objects.filter(plan=p, status=WorkoutStatus.DONE).count()
+            plans_data.append(
+                {
+                    "id": str(p.id),
+                    "name": p.name,
+                    "start_date": str(p.start_date),
+                    "weeks": p.weeks,
+                    "days_per_week": p.days_per_week,
+                    "workout_count": total,
+                    "completed_count": done,
+                }
+            )
+
         return Response(
             {
                 "recent_workouts": recent_data,
                 "planned_workouts": planned_data,
+                "active_plans": plans_data,
                 "latest_body_weight": weight_data,
                 "latest_sleep": sleep_data,
                 "profile": profile_data,
@@ -291,6 +322,17 @@ class RuntimeFuelProfileView(APIView):
             if val is None or (isinstance(val, int) and 1 <= val <= 7):
                 profile.days_per_week = val
                 updated_fields.append("days_per_week")
+
+        if "preferred_days" in data and isinstance(data["preferred_days"], list):
+            cleaned = [int(d) for d in data["preferred_days"] if isinstance(d, int) and 0 <= d <= 6]
+            profile.preferred_days = cleaned
+            updated_fields.append("preferred_days")
+
+        if "preferred_time" in data:
+            val = str(data["preferred_time"]).strip().lower()
+            if val in {"morning", "afternoon", "evening", ""}:
+                profile.preferred_time = val
+                updated_fields.append("preferred_time")
 
         if updated_fields:
             updated_fields.append("updated_at")
@@ -412,3 +454,310 @@ class RuntimeSleepView(APIView):
             },
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
+
+
+# ── Workout Plan CRUD ────────────────────────────────────────────────
+
+
+def _serialize_plan(plan, include_workouts=False):
+    """Serialize a WorkoutPlan with optional workout list."""
+    total = Workout.objects.filter(plan=plan).count()
+    done = Workout.objects.filter(plan=plan, status=WorkoutStatus.DONE).count()
+    data = {
+        "id": str(plan.id),
+        "name": plan.name,
+        "status": plan.status,
+        "start_date": str(plan.start_date),
+        "weeks": plan.weeks,
+        "days_per_week": plan.days_per_week,
+        "schedule_json": plan.schedule_json,
+        "notes": plan.notes,
+        "workout_count": total,
+        "completed_count": done,
+    }
+    if include_workouts:
+        workouts = Workout.objects.filter(plan=plan).order_by("date", "created_at")
+        data["workouts"] = [
+            {
+                "id": str(w.id),
+                "date": str(w.date),
+                "status": w.status,
+                "category": w.category,
+                "activity": w.activity,
+                "duration_minutes": w.duration_minutes,
+            }
+            for w in workouts
+        ]
+    return data
+
+
+def _expand_plan_workouts(plan, tenant, schedule_json, start_date, weeks):
+    """Bulk-create planned Workout rows from a schedule template."""
+    from datetime import timedelta
+
+    # Align to Monday of the start_date's week
+    plan_monday = start_date - timedelta(days=start_date.weekday())
+    workouts_to_create = []
+
+    for week_idx in range(weeks):
+        for day_str, workout_def in schedule_json.items():
+            try:
+                day_int = int(day_str)
+            except (TypeError, ValueError):
+                continue
+            if day_int < 0 or day_int > 6:
+                continue
+
+            workout_date = plan_monday + timedelta(weeks=week_idx, days=day_int)
+            # Skip days before the plan's actual start_date in the first week
+            if workout_date < start_date:
+                continue
+
+            category = workout_def.get("category", "other")
+            if category not in WorkoutCategory.values:
+                category = "other"
+
+            workouts_to_create.append(
+                Workout(
+                    tenant=tenant,
+                    plan=plan,
+                    date=workout_date,
+                    status=WorkoutStatus.PLANNED,
+                    category=category,
+                    activity=str(workout_def.get("activity", WorkoutCategory(category).label)).strip(),
+                    duration_minutes=workout_def.get("duration_minutes"),
+                    detail_json=workout_def.get("detail_json", {}),
+                )
+            )
+
+    if workouts_to_create:
+        Workout.objects.bulk_create(workouts_to_create)
+    return len(workouts_to_create)
+
+
+class RuntimeWorkoutPlanListCreateView(APIView):
+    """GET: list plans. POST: create plan + expand into planned workouts."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, tenant_id):
+        err = _internal_auth_or_401(request, tenant_id)
+        if err:
+            return err
+        tenant_or_resp = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant_or_resp, Response):
+            return tenant_or_resp
+        tenant = tenant_or_resp
+
+        status_filter = request.query_params.get("status")
+        qs = WorkoutPlan.objects.filter(tenant=tenant)
+        if status_filter and status_filter in PlanStatus.values:
+            qs = qs.filter(status=status_filter)
+        # Active plans first, then by created_at desc
+        plans = qs.order_by(
+            db_models.Case(
+                db_models.When(status=PlanStatus.ACTIVE, then=0),
+                default=1,
+                output_field=db_models.IntegerField(),
+            ),
+            "-created_at",
+        )[:10]
+
+        return Response({"plans": [_serialize_plan(p) for p in plans]})
+
+    def post(self, request, tenant_id):
+        err = _internal_auth_or_401(request, tenant_id)
+        if err:
+            return err
+        tenant_or_resp = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant_or_resp, Response):
+            return tenant_or_resp
+        tenant = tenant_or_resp
+
+        data = request.data
+        name = str(data.get("name", "")).strip()
+        if not name:
+            return Response({"error": "name is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        schedule_json = data.get("schedule_json", {})
+        if not isinstance(schedule_json, dict) or not schedule_json:
+            return Response(
+                {"error": "schedule_json must be a non-empty object"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        weeks_val = data.get("weeks")
+        try:
+            weeks = max(1, min(52, int(weeks_val)))
+        except (TypeError, ValueError):
+            return Response({"error": "weeks must be an integer 1-52"}, status=status.HTTP_400_BAD_REQUEST)
+
+        days_per_week_val = data.get("days_per_week")
+        try:
+            days_per_week = max(1, min(7, int(days_per_week_val)))
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "days_per_week must be an integer 1-7"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Default start_date to next Monday
+        from datetime import timedelta
+
+        start_date_str = data.get("start_date")
+        if start_date_str:
+            try:
+                plan_start = date.fromisoformat(str(start_date_str))
+            except (ValueError, TypeError):
+                plan_start = date.today() + timedelta(days=(7 - date.today().weekday()) % 7 or 7)
+        else:
+            # Next Monday
+            today = date.today()
+            days_ahead = (7 - today.weekday()) % 7 or 7
+            plan_start = today + timedelta(days=days_ahead)
+
+        try:
+            plan = WorkoutPlan.objects.create(
+                tenant=tenant,
+                name=name,
+                start_date=plan_start,
+                weeks=weeks,
+                days_per_week=days_per_week,
+                schedule_json=schedule_json,
+                notes=str(data.get("notes", "")).strip(),
+            )
+        except Exception as exc:
+            logger.exception("WorkoutPlan creation failed for tenant %s", tenant_id)
+            return Response(
+                {"error": "create_failed", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        workouts_created = _expand_plan_workouts(plan, tenant, schedule_json, plan_start, weeks)
+
+        result = _serialize_plan(plan)
+        result["workouts_created"] = workouts_created
+        return Response(result, status=status.HTTP_201_CREATED)
+
+
+class RuntimeWorkoutPlanDetailView(APIView):
+    """GET/PATCH/DELETE a single workout plan."""
+
+    permission_classes = [AllowAny]
+
+    def _get_plan(self, tenant, plan_id):
+        try:
+            return WorkoutPlan.objects.get(id=plan_id, tenant=tenant)
+        except WorkoutPlan.DoesNotExist:
+            return None
+
+    def get(self, request, tenant_id, plan_id):
+        err = _internal_auth_or_401(request, tenant_id)
+        if err:
+            return err
+        tenant_or_resp = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant_or_resp, Response):
+            return tenant_or_resp
+        tenant = tenant_or_resp
+
+        plan = self._get_plan(tenant, plan_id)
+        if not plan:
+            return Response({"error": "plan_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(_serialize_plan(plan, include_workouts=True))
+
+    def patch(self, request, tenant_id, plan_id):
+        err = _internal_auth_or_401(request, tenant_id)
+        if err:
+            return err
+        tenant_or_resp = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant_or_resp, Response):
+            return tenant_or_resp
+        tenant = tenant_or_resp
+
+        plan = self._get_plan(tenant, plan_id)
+        if not plan:
+            return Response({"error": "plan_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        data = request.data
+        updated_fields = []
+        needs_regeneration = False
+
+        if "name" in data:
+            plan.name = str(data["name"]).strip()
+            updated_fields.append("name")
+
+        if "status" in data and data["status"] in PlanStatus.values:
+            plan.status = data["status"]
+            updated_fields.append("status")
+
+        if "notes" in data:
+            plan.notes = str(data["notes"]).strip()
+            updated_fields.append("notes")
+
+        if "weeks" in data:
+            try:
+                plan.weeks = max(1, min(52, int(data["weeks"])))
+                updated_fields.append("weeks")
+                needs_regeneration = True
+            except (TypeError, ValueError):
+                pass
+
+        if "schedule_json" in data and isinstance(data["schedule_json"], dict):
+            plan.schedule_json = data["schedule_json"]
+            updated_fields.append("schedule_json")
+            needs_regeneration = True
+
+        if "days_per_week" in data:
+            try:
+                plan.days_per_week = max(1, min(7, int(data["days_per_week"])))
+                updated_fields.append("days_per_week")
+            except (TypeError, ValueError):
+                pass
+
+        if updated_fields:
+            updated_fields.append("updated_at")
+            try:
+                plan.save(update_fields=updated_fields)
+            except Exception as exc:
+                logger.exception("WorkoutPlan update failed for plan %s", plan_id)
+                return Response(
+                    {"error": "update_failed", "detail": str(exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # Regenerate future planned workouts if schedule or weeks changed
+        if needs_regeneration:
+            today = date.today()
+            # Delete future planned workouts belonging to this plan
+            Workout.objects.filter(plan=plan, status=WorkoutStatus.PLANNED, date__gte=today).delete()
+            # Regenerate from today forward for remaining weeks
+
+            elapsed_days = (today - plan.start_date).days
+            elapsed_weeks = max(0, elapsed_days // 7)
+            remaining_weeks = max(0, plan.weeks - elapsed_weeks)
+            if remaining_weeks > 0:
+                regen_start = max(today, plan.start_date)
+                _expand_plan_workouts(plan, tenant, plan.schedule_json, regen_start, remaining_weeks)
+
+        return Response(_serialize_plan(plan, include_workouts=True))
+
+    def delete(self, request, tenant_id, plan_id):
+        err = _internal_auth_or_401(request, tenant_id)
+        if err:
+            return err
+        tenant_or_resp = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant_or_resp, Response):
+            return tenant_or_resp
+        tenant = tenant_or_resp
+
+        plan = self._get_plan(tenant, plan_id)
+        if not plan:
+            return Response({"error": "plan_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Delete planned workouts, preserve completed ones
+        Workout.objects.filter(plan=plan, status=WorkoutStatus.PLANNED).delete()
+        Workout.objects.filter(plan=plan).exclude(status=WorkoutStatus.PLANNED).update(plan=None)
+        plan.delete()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)

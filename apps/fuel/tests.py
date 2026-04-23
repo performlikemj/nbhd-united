@@ -12,7 +12,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.tenants.services import create_tenant
 
-from .models import BodyWeightLog, Workout
+from .models import BodyWeightLog, FuelProfile, Workout, WorkoutPlan
 from .services import est_1rm
 
 # ═════════════════════════════════════════════════════════════════════
@@ -532,7 +532,6 @@ class FuelProfileModelTests(TestCase):
         self.tenant = create_tenant(display_name="Profile Test", telegram_chat_id=800020)
 
     def test_create_profile(self):
-        from .models import FuelProfile
 
         profile = FuelProfile.objects.create(tenant=self.tenant)
         self.assertEqual(profile.onboarding_status, "pending")
@@ -545,14 +544,11 @@ class FuelProfileModelTests(TestCase):
     def test_one_to_one_constraint(self):
         from django.db import IntegrityError
 
-        from .models import FuelProfile
-
         FuelProfile.objects.create(tenant=self.tenant)
         with self.assertRaises(IntegrityError):
             FuelProfile.objects.create(tenant=self.tenant)
 
     def test_status_transitions(self):
-        from .models import FuelProfile
 
         profile = FuelProfile.objects.create(tenant=self.tenant)
         profile.onboarding_status = "in_progress"
@@ -580,7 +576,6 @@ class FuelSettingsToggleWithProfileTests(TestCase):
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
 
     def test_enable_creates_profile(self):
-        from .models import FuelProfile
 
         resp = self.client.patch("/api/v1/fuel/settings/", {"fuel_enabled": True}, format="json")
         self.assertEqual(resp.status_code, 200)
@@ -589,7 +584,6 @@ class FuelSettingsToggleWithProfileTests(TestCase):
         self.assertTrue(FuelProfile.objects.filter(tenant=self.tenant).exists())
 
     def test_enable_idempotent(self):
-        from .models import FuelProfile
 
         # First enable
         self.client.patch("/api/v1/fuel/settings/", {"fuel_enabled": True}, format="json")
@@ -605,7 +599,6 @@ class FuelSettingsToggleWithProfileTests(TestCase):
         self.assertEqual(profile.fitness_level, "intermediate")
 
     def test_disable_preserves_profile(self):
-        from .models import FuelProfile
 
         self.client.patch("/api/v1/fuel/settings/", {"fuel_enabled": True}, format="json")
         profile = FuelProfile.objects.get(tenant=self.tenant)
@@ -621,7 +614,6 @@ class FuelSettingsToggleWithProfileTests(TestCase):
         self.assertEqual(profile.onboarding_status, "completed")
 
     def test_toggle_cycle_preserves_completed_profile(self):
-        from .models import FuelProfile
 
         # Enable → complete profile → disable → re-enable
         self.client.patch("/api/v1/fuel/settings/", {"fuel_enabled": True}, format="json")
@@ -655,7 +647,6 @@ class ConsumerFuelProfileViewTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_get_profile(self):
-        from .models import FuelProfile
 
         FuelProfile.objects.create(
             tenant=self.tenant,
@@ -670,7 +661,6 @@ class ConsumerFuelProfileViewTests(TestCase):
         self.assertEqual(resp.data["goals"], ["strength"])
 
     def test_patch_profile(self):
-        from .models import FuelProfile
 
         FuelProfile.objects.create(tenant=self.tenant)
         resp = self.client.patch(
@@ -699,7 +689,6 @@ class RuntimeFuelProfileViewTests(TestCase):
         }
 
     def test_get_profile(self):
-        from .models import FuelProfile
 
         FuelProfile.objects.create(
             tenant=self.tenant,
@@ -723,7 +712,6 @@ class RuntimeFuelProfileViewTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_patch_progressive_update(self):
-        from .models import FuelProfile
 
         FuelProfile.objects.create(tenant=self.tenant)
 
@@ -781,7 +769,6 @@ class RuntimeFuelSummaryWithProfileTests(TestCase):
         }
 
     def test_summary_includes_profile(self):
-        from .models import FuelProfile
 
         FuelProfile.objects.create(
             tenant=self.tenant,
@@ -1081,3 +1068,420 @@ class RestingHeartRateTests(TestCase):
         entry = RestingHeartRateLog.objects.create(tenant=self.tenant, date=date(2026, 4, 21), bpm=62)
         resp = self.client.delete(f"/api/v1/fuel/resting-hr/{entry.id}/")
         self.assertEqual(resp.status_code, 204)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Workout Plan Tests
+# ═════════════════════════════════════════════════════════════════════
+
+
+class WorkoutPlanModelTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Plan Model Test", telegram_chat_id=800060)
+
+    def test_create_plan(self):
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="4-Week Strength",
+            start_date=date(2026, 4, 27),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={
+                "0": {"activity": "Push", "category": "strength"},
+                "2": {"activity": "Pull", "category": "strength"},
+                "4": {"activity": "Legs", "category": "strength"},
+            },
+        )
+        self.assertEqual(plan.status, "active")
+        self.assertEqual(plan.weeks, 4)
+
+    def test_workout_plan_fk(self):
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Test Plan",
+            start_date=date(2026, 4, 27),
+            weeks=2,
+            days_per_week=2,
+            schedule_json={"0": {"activity": "Push", "category": "strength"}},
+        )
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            plan=plan,
+            date=date(2026, 4, 27),
+            status="planned",
+            category="strength",
+            activity="Push",
+        )
+        self.assertEqual(w.plan, plan)
+        self.assertEqual(plan.workouts.count(), 1)
+
+    def test_plan_delete_set_null(self):
+        """Deleting a plan sets workout.plan to NULL instead of cascading."""
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Temp Plan",
+            start_date=date(2026, 4, 27),
+            weeks=1,
+            days_per_week=1,
+            schedule_json={"0": {"activity": "Push", "category": "strength"}},
+        )
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            plan=plan,
+            date=date(2026, 4, 27),
+            status="done",
+            category="strength",
+            activity="Push",
+        )
+        plan.delete()
+        w.refresh_from_db()
+        self.assertIsNone(w.plan)
+
+    def test_profile_preferred_fields(self):
+        profile = FuelProfile.objects.create(
+            tenant=self.tenant,
+            preferred_days=[0, 2, 4],
+            preferred_time="morning",
+        )
+        profile.refresh_from_db()
+        self.assertEqual(profile.preferred_days, [0, 2, 4])
+        self.assertEqual(profile.preferred_time, "morning")
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+class RuntimeWorkoutPlanTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="RT Plan Test", telegram_chat_id=800061)
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def test_create_plan(self):
+        resp = self.client.post(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/",
+            {
+                "name": "4-Week Strength",
+                "start_date": "2026-04-27",
+                "weeks": 4,
+                "days_per_week": 3,
+                "schedule_json": {
+                    "0": {"activity": "Push", "category": "strength", "duration_minutes": 60},
+                    "2": {"activity": "Pull", "category": "strength", "duration_minutes": 60},
+                    "4": {"activity": "Legs", "category": "strength", "duration_minutes": 55},
+                },
+                "notes": "Linear progression: add 2.5kg each week.",
+            },
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["name"], "4-Week Strength")
+        self.assertEqual(resp.data["status"], "active")
+        # 4 weeks x 3 days = 12 planned workouts
+        self.assertEqual(resp.data["workouts_created"], 12)
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant, status="planned").count(), 12)
+
+    def test_create_plan_date_math(self):
+        """Workouts land on correct weekdays."""
+        self.client.post(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/",
+            {
+                "name": "Test Dates",
+                "start_date": "2026-04-27",  # Monday
+                "weeks": 1,
+                "days_per_week": 2,
+                "schedule_json": {
+                    "0": {"activity": "Mon Workout", "category": "strength"},
+                    "4": {"activity": "Fri Workout", "category": "cardio"},
+                },
+            },
+            format="json",
+            **self.headers,
+        )
+        workouts = Workout.objects.filter(tenant=self.tenant).order_by("date")
+        self.assertEqual(workouts.count(), 2)
+        # 2026-04-27 is a Monday (weekday=0)
+        self.assertEqual(workouts[0].date, date(2026, 4, 27))
+        self.assertEqual(workouts[0].activity, "Mon Workout")
+        # 2026-05-01 is a Friday (weekday=4)
+        self.assertEqual(workouts[1].date, date(2026, 5, 1))
+        self.assertEqual(workouts[1].activity, "Fri Workout")
+
+    def test_list_plans(self):
+        WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Plan A",
+            start_date=date(2026, 4, 27),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {"activity": "Push", "category": "strength"}},
+        )
+        resp = self.client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data["plans"]), 1)
+
+    def test_get_plan_detail(self):
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Detail Plan",
+            start_date=date(2026, 4, 27),
+            weeks=1,
+            days_per_week=1,
+            schedule_json={"0": {"activity": "Push", "category": "strength"}},
+        )
+        Workout.objects.create(
+            tenant=self.tenant,
+            plan=plan,
+            date=date(2026, 4, 27),
+            status="planned",
+            category="strength",
+            activity="Push",
+        )
+        resp = self.client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan.id}/",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["name"], "Detail Plan")
+        self.assertEqual(len(resp.data["workouts"]), 1)
+
+    def test_update_plan_status(self):
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Pause Me",
+            start_date=date(2026, 4, 27),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {"activity": "Push", "category": "strength"}},
+        )
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan.id}/",
+            {"status": "paused"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["status"], "paused")
+
+    def test_delete_plan_preserves_done(self):
+        """DELETE removes planned workouts but preserves completed ones."""
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Delete Me",
+            start_date=date(2026, 4, 27),
+            weeks=2,
+            days_per_week=1,
+            schedule_json={"0": {"activity": "Push", "category": "strength"}},
+        )
+        # One done, one planned
+        Workout.objects.create(
+            tenant=self.tenant,
+            plan=plan,
+            date=date(2026, 4, 27),
+            status="done",
+            category="strength",
+            activity="Push",
+        )
+        Workout.objects.create(
+            tenant=self.tenant,
+            plan=plan,
+            date=date(2026, 5, 4),
+            status="planned",
+            category="strength",
+            activity="Push",
+        )
+
+        resp = self.client.delete(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan.id}/",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 204)
+
+        # Plan is gone
+        self.assertFalse(WorkoutPlan.objects.filter(id=plan.id).exists())
+        # Planned workout deleted, done workout preserved with plan=None
+        remaining = Workout.objects.filter(tenant=self.tenant)
+        self.assertEqual(remaining.count(), 1)
+        self.assertEqual(remaining[0].status, "done")
+        self.assertIsNone(remaining[0].plan)
+
+    def test_summary_includes_active_plans(self):
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Active Plan",
+            start_date=date(2026, 4, 27),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {"activity": "Push", "category": "strength"}},
+        )
+        Workout.objects.create(
+            tenant=self.tenant,
+            plan=plan,
+            date=date(2026, 4, 27),
+            status="planned",
+            category="strength",
+            activity="Push",
+        )
+        resp = self.client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/summary/",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("active_plans", resp.data)
+        self.assertEqual(len(resp.data["active_plans"]), 1)
+        self.assertEqual(resp.data["active_plans"][0]["name"], "Active Plan")
+        self.assertEqual(resp.data["active_plans"][0]["workout_count"], 1)
+
+    def test_profile_preferred_days_runtime(self):
+        FuelProfile.objects.create(tenant=self.tenant)
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/profile/",
+            {"preferred_days": [0, 2, 4], "preferred_time": "morning"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["preferred_days"], [0, 2, 4])
+        self.assertEqual(resp.data["preferred_time"], "morning")
+
+    def test_create_plan_auth_required(self):
+        resp = self.client.post(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/",
+            {"name": "No Auth", "weeks": 4, "days_per_week": 3, "schedule_json": {}},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 401)
+
+
+class ConsumerWorkoutPlanTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Consumer Plan Test", telegram_chat_id=800062)
+        self.user = self.tenant.user
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def test_list_plans(self):
+        WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Plan A",
+            start_date=date(2026, 4, 27),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {"activity": "Push", "category": "strength"}},
+        )
+        resp = self.client.get("/api/v1/fuel/plans/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(resp.data[0]["name"], "Plan A")
+
+    def test_create_plan(self):
+        resp = self.client.post(
+            "/api/v1/fuel/plans/",
+            {
+                "name": "New Plan",
+                "start_date": "2026-04-27",
+                "weeks": 4,
+                "days_per_week": 3,
+                "schedule_json": {"0": {"activity": "Push", "category": "strength"}},
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["name"], "New Plan")
+
+    def test_get_plan_detail(self):
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Detail Plan",
+            start_date=date(2026, 4, 27),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {"activity": "Push", "category": "strength"}},
+        )
+        resp = self.client.get(f"/api/v1/fuel/plans/{plan.id}/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["name"], "Detail Plan")
+
+    def test_patch_plan(self):
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Old Name",
+            start_date=date(2026, 4, 27),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {"activity": "Push", "category": "strength"}},
+        )
+        resp = self.client.patch(
+            f"/api/v1/fuel/plans/{plan.id}/",
+            {"name": "New Name", "status": "paused"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["name"], "New Name")
+        self.assertEqual(resp.data["status"], "paused")
+
+    def test_delete_plan(self):
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Delete Me",
+            start_date=date(2026, 4, 27),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {"activity": "Push", "category": "strength"}},
+        )
+        Workout.objects.create(
+            tenant=self.tenant,
+            plan=plan,
+            date=date(2026, 4, 27),
+            status="planned",
+            category="strength",
+            activity="Push",
+        )
+        resp = self.client.delete(f"/api/v1/fuel/plans/{plan.id}/")
+        self.assertEqual(resp.status_code, 204)
+        self.assertFalse(WorkoutPlan.objects.filter(id=plan.id).exists())
+        # Planned workout deleted
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 0)
+
+    def test_tenant_isolation(self):
+        other = create_tenant(display_name="Other", telegram_chat_id=800099)
+        WorkoutPlan.objects.create(
+            tenant=other,
+            name="Other Plan",
+            start_date=date(2026, 4, 27),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {"activity": "Push", "category": "strength"}},
+        )
+        resp = self.client.get("/api/v1/fuel/plans/")
+        self.assertEqual(len(resp.data), 0)
+
+    def test_workout_serializer_includes_plan(self):
+        """Workout serializer includes plan_id and plan_name."""
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="My Plan",
+            start_date=date(2026, 4, 27),
+            weeks=1,
+            days_per_week=1,
+            schedule_json={"0": {"activity": "Push", "category": "strength"}},
+        )
+        Workout.objects.create(
+            tenant=self.tenant,
+            plan=plan,
+            date=date(2026, 4, 27),
+            status="planned",
+            category="strength",
+            activity="Push",
+        )
+        resp = self.client.get("/api/v1/fuel/workouts/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(resp.data[0]["plan_id"], str(plan.id))
+        self.assertEqual(resp.data[0]["plan_name"], "My Plan")

@@ -8,6 +8,7 @@ from .models import (
     RestingHeartRateLog,
     SleepLog,
     Workout,
+    WorkoutPlan,
     WorkoutTemplate,
 )
 
@@ -70,3 +71,11 @@ class SleepLogAdmin(admin.ModelAdmin):
     list_display = ["tenant", "date", "duration_hours", "quality"]
     search_fields = ["tenant__user__display_name"]
     readonly_fields = ["id", "created_at"]
+
+
+@admin.register(WorkoutPlan)
+class WorkoutPlanAdmin(admin.ModelAdmin):
+    list_display = ["name", "tenant", "status", "start_date", "weeks", "days_per_week", "created_at"]
+    list_filter = ["status"]
+    search_fields = ["name", "tenant__user__display_name"]
+    readonly_fields = ["id", "created_at", "updated_at"]
