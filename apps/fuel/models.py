@@ -24,11 +24,62 @@ class WorkoutStatus(models.TextChoices):
     REST = "rest", "Rest"
 
 
+class PlanStatus(models.TextChoices):
+    ACTIVE = "active", "Active"
+    COMPLETED = "completed", "Completed"
+    PAUSED = "paused", "Paused"
+    ARCHIVED = "archived", "Archived"
+
+
+class WorkoutPlan(models.Model):
+    """A named workout program that groups planned workouts."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="workout_plans")
+    name = models.CharField(max_length=128, help_text="Plan name, e.g. '4-Week Strength Builder'")
+    status = models.CharField(max_length=12, choices=PlanStatus.choices, default=PlanStatus.ACTIVE)
+    start_date = models.DateField(help_text="First day of the plan")
+    weeks = models.IntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(52)],
+        help_text="Plan duration in weeks",
+    )
+    days_per_week = models.IntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(7)],
+        help_text="Training days per week in this plan",
+    )
+    schedule_json = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Weekly template: keys are weekday indices (0=Mon..6=Sun), values are workout definitions",
+    )
+    notes = models.TextField(blank=True, default="", help_text="Programming notes, progression strategy")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "fuel_workout_plans"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "status"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.status}, {self.weeks}w)"
+
+
 class Workout(models.Model):
     """A single workout session — planned or completed."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="workouts")
+    plan = models.ForeignKey(
+        WorkoutPlan,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="workouts",
+        help_text="The workout plan this belongs to, if any.",
+    )
     date = models.DateField()
     status = models.CharField(max_length=10, choices=WorkoutStatus.choices, default=WorkoutStatus.DONE)
     category = models.CharField(max_length=16, choices=WorkoutCategory.choices)
@@ -97,6 +148,17 @@ class FuelProfile(models.Model):
         blank=True,
         validators=[MinValueValidator(1), MaxValueValidator(7)],
         help_text="Preferred training days per week",
+    )
+    preferred_days = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Preferred training days as weekday indices: 0=Monday ... 6=Sunday, e.g. [0, 2, 4]",
+    )
+    preferred_time = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        help_text="Preferred workout time: morning, afternoon, evening, or empty",
     )
     additional_context = models.TextField(blank=True, default="", help_text="Free-form fitness context")
     created_at = models.DateTimeField(auto_now_add=True)
