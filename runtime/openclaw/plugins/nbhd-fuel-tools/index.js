@@ -450,6 +450,17 @@ export default function register(api) {
             maximum: 7,
             description: "How many days per week the user wants to train.",
           },
+          preferred_days: {
+            type: "array",
+            items: { type: "integer", minimum: 0, maximum: 6 },
+            description:
+              "Preferred training days as weekday indices: 0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday, 5=Saturday, 6=Sunday.",
+          },
+          preferred_time: {
+            type: "string",
+            enum: ["morning", "afternoon", "evening"],
+            description: "Preferred workout time of day.",
+          },
           additional_context: {
             type: "string",
             description:
@@ -468,6 +479,9 @@ export default function register(api) {
           if (Array.isArray(input.equipment)) body.equipment = input.equipment.map(String);
           if (input.days_per_week !== undefined)
             body.days_per_week = parseInteger(input.days_per_week, { defaultValue: undefined, min: 1, max: 7 });
+          if (Array.isArray(input.preferred_days))
+            body.preferred_days = input.preferred_days.filter((d) => typeof d === "number" && d >= 0 && d <= 6);
+          if (input.preferred_time) body.preferred_time = asTrimmedString(input.preferred_time);
           if (input.additional_context) body.additional_context = asTrimmedString(input.additional_context);
 
           const payload = await callRuntime(api, {
@@ -476,6 +490,197 @@ export default function register(api) {
             body,
           });
           return renderPayload(payload);
+        } catch (error) {
+          return renderPayload({ error: error.message });
+        }
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Create Workout Plan ─────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_fuel_create_plan",
+      description:
+        "Create a structured workout plan. Design the full program based on the user's profile, journal context, sleep trends, lessons, and goals — not just fitness data. Each entry in schedule_json maps a weekday (0=Monday through 6=Sunday) to a workout definition. The backend auto-generates all individual planned workouts on the calendar. Check nbhd_fuel_summary for existing active plans before creating a new one.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          name: {
+            type: "string",
+            description: "Plan name, e.g. '4-Week Strength Builder'.",
+          },
+          start_date: {
+            type: "string",
+            description: "Start date YYYY-MM-DD. Defaults to next Monday if omitted.",
+          },
+          weeks: {
+            type: "integer",
+            minimum: 1,
+            maximum: 12,
+            description: "Duration in weeks (1-12).",
+          },
+          days_per_week: {
+            type: "integer",
+            minimum: 1,
+            maximum: 7,
+            description: "Training days per week.",
+          },
+          schedule_json: {
+            type: "object",
+            description:
+              'Weekly template. Keys are weekday indices ("0"=Mon, "1"=Tue, ..., "6"=Sun). Values are workout definitions with activity, category, optional duration_minutes and detail_json. Only include training days — rest days are implied by absence.',
+            additionalProperties: {
+              type: "object",
+              properties: {
+                activity: { type: "string", description: "Workout name, e.g. 'Push — Chest & Shoulders'." },
+                category: {
+                  type: "string",
+                  enum: ["strength", "cardio", "hiit", "calisthenics", "mobility", "sport", "other"],
+                },
+                duration_minutes: { type: "integer", description: "Estimated duration in minutes." },
+                detail_json: {
+                  type: "object",
+                  description: "Category-specific data: exercises with sets/reps for strength, distance/pace for cardio, etc.",
+                },
+              },
+              required: ["activity", "category"],
+            },
+          },
+          notes: {
+            type: "string",
+            description:
+              "Programming notes and progression strategy. Tie back to the user's context — explain why you chose this structure.",
+          },
+        },
+        required: ["name", "weeks", "days_per_week", "schedule_json"],
+      },
+      async execute(_id, params) {
+        try {
+          const input = asObject(params);
+          const body = {
+            name: asTrimmedString(input.name),
+            weeks: parseInteger(input.weeks, { defaultValue: 4, min: 1, max: 12 }),
+            days_per_week: parseInteger(input.days_per_week, { defaultValue: 3, min: 1, max: 7 }),
+            schedule_json: asObject(input.schedule_json),
+          };
+          if (input.start_date) body.start_date = asTrimmedString(input.start_date);
+          if (input.notes) body.notes = asTrimmedString(input.notes);
+
+          const payload = await callRuntime(api, {
+            path: fuelPath(api, "/plans/"),
+            method: "POST",
+            body,
+          });
+          return renderPayload(payload);
+        } catch (error) {
+          return renderPayload({ error: error.message });
+        }
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Update Workout Plan ─────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_fuel_update_plan",
+      description:
+        "Update an existing workout plan. Can change name, status (active/paused/completed/archived), notes, or schedule. If schedule_json or weeks change, future planned workouts are deleted and regenerated from the new template. Use this for swapping exercises, changing frequency, pausing, or completing a plan.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          plan_id: {
+            type: "string",
+            description: "UUID of the plan to update (from nbhd_fuel_summary or plan creation response).",
+          },
+          name: { type: "string", description: "New plan name." },
+          status: {
+            type: "string",
+            enum: ["active", "paused", "completed", "archived"],
+            description: "New plan status.",
+          },
+          notes: { type: "string", description: "Updated programming notes." },
+          weeks: {
+            type: "integer",
+            minimum: 1,
+            maximum: 12,
+            description: "New duration in weeks. Triggers workout regeneration.",
+          },
+          days_per_week: {
+            type: "integer",
+            minimum: 1,
+            maximum: 7,
+            description: "New training days per week.",
+          },
+          schedule_json: {
+            type: "object",
+            description: "New weekly schedule template. Triggers workout regeneration for remaining weeks.",
+          },
+        },
+        required: ["plan_id"],
+      },
+      async execute(_id, params) {
+        try {
+          const input = asObject(params);
+          const planId = asTrimmedString(input.plan_id);
+          if (!planId) throw new Error("plan_id is required");
+
+          const body = {};
+          if (input.name) body.name = asTrimmedString(input.name);
+          if (input.status) body.status = asTrimmedString(input.status);
+          if (input.notes !== undefined) body.notes = asTrimmedString(input.notes);
+          if (input.weeks !== undefined)
+            body.weeks = parseInteger(input.weeks, { defaultValue: undefined, min: 1, max: 12 });
+          if (input.days_per_week !== undefined)
+            body.days_per_week = parseInteger(input.days_per_week, { defaultValue: undefined, min: 1, max: 7 });
+          if (input.schedule_json) body.schedule_json = asObject(input.schedule_json);
+
+          const payload = await callRuntime(api, {
+            path: fuelPath(api, `/plans/${encodeURIComponent(planId)}/`),
+            method: "PATCH",
+            body,
+          });
+          return renderPayload(payload);
+        } catch (error) {
+          return renderPayload({ error: error.message });
+        }
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Delete Workout Plan ─────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_fuel_delete_plan",
+      description:
+        "Delete a workout plan. Removes all future planned workouts. Completed workouts are preserved but unlinked from the plan. Always confirm with the user before calling this.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          plan_id: {
+            type: "string",
+            description: "UUID of the plan to delete.",
+          },
+        },
+        required: ["plan_id"],
+      },
+      async execute(_id, params) {
+        try {
+          const input = asObject(params);
+          const planId = asTrimmedString(input.plan_id);
+          if (!planId) throw new Error("plan_id is required");
+
+          await callRuntime(api, {
+            path: fuelPath(api, `/plans/${encodeURIComponent(planId)}/`),
+            method: "DELETE",
+          });
+          return renderPayload({ deleted: true, plan_id: planId });
         } catch (error) {
           return renderPayload({ error: error.message });
         }

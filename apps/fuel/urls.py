@@ -6,6 +6,8 @@ from .runtime_views import (
     RuntimeFuelSummaryView,
     RuntimeLogWorkoutView,
     RuntimeSleepView,
+    RuntimeWorkoutPlanDetailView,
+    RuntimeWorkoutPlanListCreateView,
 )
 from .views import (
     BodyWeightDetailView,
@@ -25,6 +27,8 @@ from .views import (
     WorkoutDetailView,
     WorkoutDuplicateView,
     WorkoutListView,
+    WorkoutPlanDetailView,
+    WorkoutPlanListView,
     WorkoutProgressView,
     WorkoutTemplateDetailView,
     WorkoutTemplateListView,
@@ -80,6 +84,12 @@ urlpatterns = [
         SleepDetailView.as_view(),
         name="fuel-sleep-detail",
     ),
+    path("plans/", WorkoutPlanListView.as_view(), name="fuel-plans"),
+    path(
+        "plans/<uuid:plan_id>/",
+        WorkoutPlanDetailView.as_view(),
+        name="fuel-plan-detail",
+    ),
     # Runtime (OpenClaw plugin, internal auth)
     path(
         "runtime/<uuid:tenant_id>/log/",
@@ -105,5 +115,15 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/sleep/",
         RuntimeSleepView.as_view(),
         name="runtime-fuel-sleep",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/plans/",
+        RuntimeWorkoutPlanListCreateView.as_view(),
+        name="runtime-fuel-plans",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/plans/<uuid:plan_id>/",
+        RuntimeWorkoutPlanDetailView.as_view(),
+        name="runtime-fuel-plan-detail",
     ),
 ]

@@ -28,6 +28,7 @@ from .models import (
     SleepLog,
     Workout,
     WorkoutCategory,
+    WorkoutPlan,
     WorkoutStatus,
     WorkoutTemplate,
 )
@@ -38,6 +39,7 @@ from .serializers import (
     PersonalRecordSerializer,
     RestingHeartRateLogSerializer,
     SleepLogSerializer,
+    WorkoutPlanSerializer,
     WorkoutSerializer,
     WorkoutStubSerializer,
     WorkoutTemplateSerializer,
@@ -767,4 +769,119 @@ class SleepDetailView(APIView):
         except SleepLog.DoesNotExist:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
         entry.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ── Workout Plans ────────────────────────────────────────────────────
+
+
+class WorkoutPlanListView(APIView):
+    """GET: list plans. POST: create plan."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+
+        qs = WorkoutPlan.objects.filter(tenant=tenant)
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+
+        result = []
+        for plan in qs.order_by("-created_at")[:20]:
+            data = WorkoutPlanSerializer(plan).data
+            data["workout_count"] = Workout.objects.filter(plan=plan).count()
+            data["completed_count"] = Workout.objects.filter(plan=plan, status=WorkoutStatus.DONE).count()
+            result.append(data)
+
+        return Response(result)
+
+    def post(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        serializer = WorkoutPlanSerializer(data=request.data, context={"tenant": tenant})
+        serializer.is_valid(raise_exception=True)
+        plan = serializer.save()
+
+        # Expand the schedule template into individual planned Workout rows
+        if plan.schedule_json and plan.start_date and plan.weeks:
+            from .runtime_views import _expand_plan_workouts
+
+            _expand_plan_workouts(plan, tenant, plan.schedule_json, plan.start_date, plan.weeks)
+
+        data = serializer.data
+        data["workout_count"] = Workout.objects.filter(plan=plan).count()
+        return Response(data, status=status.HTTP_201_CREATED)
+
+
+class WorkoutPlanDetailView(APIView):
+    """GET/PATCH/DELETE a single workout plan."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, plan_id):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            plan = WorkoutPlan.objects.get(id=plan_id, tenant=tenant)
+        except WorkoutPlan.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        data = WorkoutPlanSerializer(plan).data
+        data["workout_count"] = Workout.objects.filter(plan=plan).count()
+        data["completed_count"] = Workout.objects.filter(plan=plan, status=WorkoutStatus.DONE).count()
+        return Response(data)
+
+    def patch(self, request, plan_id):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            plan = WorkoutPlan.objects.get(id=plan_id, tenant=tenant)
+        except WorkoutPlan.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        old_schedule = plan.schedule_json
+        old_weeks = plan.weeks
+
+        serializer = WorkoutPlanSerializer(plan, data=request.data, partial=True, context={"tenant": tenant})
+        serializer.is_valid(raise_exception=True)
+        plan = serializer.save()
+
+        # Regenerate planned workouts if schedule or weeks changed
+        if plan.schedule_json != old_schedule or plan.weeks != old_weeks:
+            from datetime import date as _date
+
+            from .runtime_views import _expand_plan_workouts
+
+            today = _date.today()
+            Workout.objects.filter(plan=plan, status=WorkoutStatus.PLANNED, date__gte=today).delete()
+            elapsed_days = (today - plan.start_date).days
+            elapsed_weeks = max(0, elapsed_days // 7)
+            remaining_weeks = max(0, plan.weeks - elapsed_weeks)
+            if remaining_weeks > 0:
+                regen_start = max(today, plan.start_date)
+                _expand_plan_workouts(plan, tenant, plan.schedule_json, regen_start, remaining_weeks)
+
+        data = WorkoutPlanSerializer(plan).data
+        data["workout_count"] = Workout.objects.filter(plan=plan).count()
+        data["completed_count"] = Workout.objects.filter(plan=plan, status=WorkoutStatus.DONE).count()
+        return Response(data)
+
+    def delete(self, request, plan_id):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            plan = WorkoutPlan.objects.get(id=plan_id, tenant=tenant)
+        except WorkoutPlan.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        # Delete planned workouts, preserve completed ones
+        Workout.objects.filter(plan=plan, status=WorkoutStatus.PLANNED).delete()
+        Workout.objects.filter(plan=plan).exclude(status=WorkoutStatus.PLANNED).update(plan=None)
+        plan.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

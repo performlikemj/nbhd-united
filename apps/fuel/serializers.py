@@ -10,6 +10,7 @@ from .models import (
     RestingHeartRateLog,
     SleepLog,
     Workout,
+    WorkoutPlan,
     WorkoutTemplate,
 )
 
@@ -25,6 +26,8 @@ class FuelProfileSerializer(serializers.ModelSerializer):
             "limitations",
             "equipment",
             "days_per_week",
+            "preferred_days",
+            "preferred_time",
             "additional_context",
             "created_at",
             "updated_at",
@@ -32,7 +35,37 @@ class FuelProfileSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
+class WorkoutPlanSerializer(serializers.ModelSerializer):
+    workout_count = serializers.IntegerField(read_only=True, default=0)
+    completed_count = serializers.IntegerField(read_only=True, default=0)
+
+    class Meta:
+        model = WorkoutPlan
+        fields = [
+            "id",
+            "name",
+            "status",
+            "start_date",
+            "weeks",
+            "days_per_week",
+            "schedule_json",
+            "notes",
+            "workout_count",
+            "completed_count",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "workout_count", "completed_count", "created_at", "updated_at"]
+
+    def create(self, validated_data):
+        validated_data["tenant"] = self.context["tenant"]
+        return super().create(validated_data)
+
+
 class WorkoutSerializer(serializers.ModelSerializer):
+    plan_id = serializers.UUIDField(source="plan.id", read_only=True, default=None)
+    plan_name = serializers.CharField(source="plan.name", read_only=True, default=None)
+
     class Meta:
         model = Workout
         fields = [
@@ -45,10 +78,12 @@ class WorkoutSerializer(serializers.ModelSerializer):
             "rpe",
             "notes",
             "detail_json",
+            "plan_id",
+            "plan_name",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = ["id", "plan_id", "plan_name", "created_at", "updated_at"]
 
     def validate_detail_json(self, value):
         """Basic shape validation per category."""
@@ -69,9 +104,11 @@ class WorkoutSerializer(serializers.ModelSerializer):
 class WorkoutStubSerializer(serializers.ModelSerializer):
     """Lightweight serializer for calendar day cells."""
 
+    plan_id = serializers.UUIDField(source="plan.id", read_only=True, default=None)
+
     class Meta:
         model = Workout
-        fields = ["id", "date", "category", "activity", "status", "duration_minutes", "rpe"]
+        fields = ["id", "date", "category", "activity", "status", "duration_minutes", "rpe", "plan_id"]
         read_only_fields = fields
 
 
