@@ -70,11 +70,32 @@ _logger = logging.getLogger(__name__)
 def _schedule_fuel_welcome(tenant):
     """Create a one-shot cron that sends a Fuel welcome message.
 
-    Fires 5 minutes after enablement (gives config time to deploy),
-    then auto-deletes. Best-effort — failures are logged, not raised.
+    Fires ~5 minutes after enablement (gives config time to deploy).
+    Uses a date-specific cron expression so it fires exactly once,
+    then the prompt instructs the agent to self-remove the cron.
+    Best-effort — failures are logged, not raised.
     """
+    import zoneinfo
+    from datetime import datetime, timedelta
+
     try:
         from apps.cron.gateway_client import invoke_gateway_tool
+
+        user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
+        try:
+            tz = zoneinfo.ZoneInfo(user_tz)
+        except Exception:
+            tz = zoneinfo.ZoneInfo("UTC")
+
+        fire_at = datetime.now(tz) + timedelta(minutes=5)
+        # Date-specific cron expr: fires once (minute hour day month *)
+        cron_expr = f"{fire_at.minute} {fire_at.hour} {fire_at.day} {fire_at.month} *"
+
+        welcome_message = (
+            _FUEL_WELCOME_PROMPT
+            + "\n\n---\n"
+            + "After sending the welcome, remove this cron: `cron remove _fuel:welcome`"
+        )
 
         invoke_gateway_tool(
             tenant,
@@ -82,18 +103,18 @@ def _schedule_fuel_welcome(tenant):
             {
                 "job": {
                     "name": "_fuel:welcome",
-                    "schedule": {"kind": "at", "at": "5m"},
+                    "schedule": {"kind": "cron", "expr": cron_expr, "tz": user_tz},
                     "sessionTarget": "isolated",
                     "payload": {
                         "kind": "agentTurn",
-                        "message": _FUEL_WELCOME_PROMPT,
+                        "message": welcome_message,
                     },
                     "delivery": {"mode": "none"},
                     "enabled": True,
                 }
             },
         )
-        _logger.info("Scheduled fuel welcome cron for tenant %s", tenant.id)
+        _logger.info("Scheduled fuel welcome cron for tenant %s (fires at %s)", tenant.id, fire_at.isoformat())
     except Exception:
         _logger.warning(
             "Failed to schedule fuel welcome for tenant %s (user will get onboarding on next message)",
