@@ -781,6 +781,30 @@ def _build_tools_section(tier: str, version: str = "2026.4.21") -> dict[str, Any
     return tools
 
 
+def _build_channels_config(tenant: Tenant) -> dict[str, Any]:
+    """Build channels config based on which messaging channels the tenant has linked.
+
+    Only enables channels the user has actually connected (has a chat/user ID).
+    Falls back to the preferred_channel if nothing is linked yet (pre-connection
+    provisioning), so the assistant still knows which surface to expect.
+    """
+    user = tenant.user
+    channels: dict[str, Any] = {}
+
+    if getattr(user, "telegram_chat_id", None):
+        channels["telegram"] = {"enabled": True}
+    if getattr(user, "line_user_id", None):
+        channels["line"] = {"enabled": True}
+
+    # Fallback: if no channel linked yet, enable the preferred channel so the
+    # assistant can format messages for the expected surface during onboarding.
+    if not channels:
+        preferred = getattr(user, "preferred_channel", "telegram") or "telegram"
+        channels[preferred] = {"enabled": True}
+
+    return channels
+
+
 def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     """Generate a complete openclaw.json for a tenant's container.
 
@@ -933,18 +957,12 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 },
             },
         },
-        # Messaging channels — the central Django router handles actual
-        # Telegram/LINE I/O; no bot tokens are set (container never connects
-        # directly). Surface capabilities (inlineButtons) are auto-detected
-        # by OpenClaw based on channel type — no explicit config needed.
-        "channels": {
-            "telegram": {
-                "enabled": True,
-            },
-            "line": {
-                "enabled": True,
-            },
-        },
+        # Messaging channels — only enable the channel(s) the tenant has
+        # actually linked.  The central Django router handles Telegram/LINE
+        # I/O; no bot tokens are set.  Enabling an unlinked channel causes
+        # plugin validation errors in OpenClaw >= 2026.4.21 (e.g. "telegram
+        # missing register/activate export").
+        "channels": _build_channels_config(tenant),
         # Gateway — local mode; bind to loopback so internal tool calls
         # (cron, etc.) auto-pair via localhost.  The OpenClaw proxy sidecar
         # (listening on 0.0.0.0:8080) handles external traffic forwarding.

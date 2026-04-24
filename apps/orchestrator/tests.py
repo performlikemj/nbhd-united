@@ -140,9 +140,15 @@ class ConfigGeneratorTest(TestCase):
     def test_channels_have_no_explicit_capabilities(self):
         """Capabilities are auto-detected by OpenClaw — not set in config."""
         config = generate_openclaw_config(self.tenant)
+        for channel_config in config["channels"].values():
+            self.assertNotIn("capabilities", channel_config)
+
+    def test_only_linked_channels_enabled(self):
+        """Only channels the tenant has linked should appear in config."""
+        # Tenant has telegram_chat_id set, not line_user_id
+        config = generate_openclaw_config(self.tenant)
         self.assertIn("telegram", config["channels"])
-        self.assertNotIn("capabilities", config["channels"]["telegram"])
-        self.assertNotIn("capabilities", config["channels"]["line"])
+        self.assertNotIn("line", config["channels"])
 
     def test_chat_completions_endpoint_enabled(self):
         """Gateway exposes /v1/chat/completions for central poller forwarding."""
