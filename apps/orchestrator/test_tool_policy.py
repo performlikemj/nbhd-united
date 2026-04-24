@@ -3,6 +3,7 @@
 from django.test import TestCase
 
 from apps.orchestrator.tool_policy import (
+    _STARTER_ALLOW_2026_4_15,
     DENIED_TOOLS,
     STARTER_ALLOW,
     generate_tool_config,
@@ -12,8 +13,9 @@ from apps.orchestrator.tool_policy import (
 
 class ToolPolicyTest(TestCase):
     def test_starter_allowlist_has_expected_groups(self):
+        """Default version (4.21) resolves to the 4.15 policy."""
         allowed = get_allowed_tools("starter")
-        self.assertEqual(allowed, list(STARTER_ALLOW))
+        self.assertEqual(allowed, list(_STARTER_ALLOW_2026_4_15))
         self.assertNotIn("group:ui", allowed)
         self.assertNotIn("group:runtime", allowed)
         # Workspace file tools excluded — persistence via journal plugins only
@@ -22,7 +24,7 @@ class ToolPolicyTest(TestCase):
         self.assertIn("group:plugins", allowed)
 
     def test_unknown_tier_defaults_to_starter(self):
-        self.assertEqual(get_allowed_tools("unknown"), list(STARTER_ALLOW))
+        self.assertEqual(get_allowed_tools("unknown"), list(_STARTER_ALLOW_2026_4_15))
 
     def test_policy_denies_runtime_management_tools(self):
         config = generate_tool_config("starter")

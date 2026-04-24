@@ -61,8 +61,12 @@ class ConfigGeneratorTest(TestCase):
         config = generate_openclaw_config(self.tenant)
         primary = config["agents"]["defaults"]["model"]["primary"]
         self.assertTrue(primary.startswith("openrouter/"))
-        # OpenRouter is built-in; no custom providers block needed
-        self.assertNotIn("models", config)
+        # >= 2026.4.15 injects explicit OpenRouter base URL override
+        providers = config.get("models", {}).get("providers", {})
+        self.assertEqual(
+            providers.get("openrouter", {}).get("baseUrl"),
+            "https://openrouter.ai/api/v1",
+        )
 
     def test_starter_tier_has_active_models(self):
         self.tenant.model_tier = "starter"
@@ -468,12 +472,14 @@ class VersionAwareConfigTest(TestCase):
             telegram_chat_id=777888999,
         )
 
-    def test_tools_default_to_2026_4_5_policy(self):
+    def test_tools_default_to_current_policy(self):
+        """New tenants get the current default version (4.21 → 4.15 policy)."""
         config = generate_openclaw_config(self.tenant)
         allowed = config["tools"]["allow"]
-        self.assertIn("group:web", allowed)
-        self.assertIn("group:automation", allowed)
-        self.assertNotIn("group:openclaw", allowed)
+        self.assertIn("group:openclaw", allowed)
+        self.assertIn("group:plugins", allowed)
+        self.assertNotIn("group:web", allowed)
+        self.assertNotIn("group:automation", allowed)
 
     def test_tools_use_2026_4_15_when_version_set(self):
         self.tenant.openclaw_version = "2026.4.15"
@@ -495,6 +501,8 @@ class VersionAwareConfigTest(TestCase):
         )
 
     def test_no_openrouter_override_for_2026_4_5(self):
+        self.tenant.openclaw_version = "2026.4.5"
+        self.tenant.save()
         config = generate_openclaw_config(self.tenant)
         providers = config.get("models", {}).get("providers", {})
         self.assertNotIn("openrouter", providers)
