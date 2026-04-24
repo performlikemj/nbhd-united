@@ -571,6 +571,158 @@ class RestoreUserCronJobsTest(TestCase):
         self.assertEqual(result["restored"], 1)  # Only custom job
         self.assertEqual(mock_invoke.call_count, 1)
 
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_sync_prefix_jobs_are_never_restored(self, mock_invoke):
+        """_sync:* Phase 2 crons are system-generated and should not be restored."""
+        self.tenant.cron_jobs_snapshot = {
+            "jobs": [
+                {"name": "_sync:Morning Briefing", "sessionTarget": "main", "schedule": "0 7 * * *"},
+                {"name": "_sync:Evening Check-in", "sessionTarget": "main", "schedule": "0 21 * * *"},
+                {"name": "My Custom Reminder", "schedule": "0 12 * * *"},
+            ],
+            "snapshot_at": "2026-01-01T00:00:00",
+        }
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        result = restore_user_cron_jobs(self.tenant, existing_job_names=set())
+
+        self.assertEqual(result["restored"], 1)  # Only custom reminder
+        self.assertEqual(mock_invoke.call_count, 1)
+
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_fuel_prefix_jobs_are_never_restored(self, mock_invoke):
+        """_fuel:* workout prep crons are system-generated and should not be restored."""
+        self.tenant.cron_jobs_snapshot = {
+            "jobs": [
+                {"name": "_fuel:Workout Prep", "schedule": "0 6 * * 1,3,5"},
+                {"name": "Study Reminder", "schedule": "0 18 * * *"},
+            ],
+            "snapshot_at": "2026-01-01T00:00:00",
+        }
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        result = restore_user_cron_jobs(self.tenant, existing_job_names=set())
+
+        self.assertEqual(result["restored"], 1)  # Only study reminder
+        self.assertEqual(mock_invoke.call_count, 1)
+
+
+class ImageUpdateCronRestoreTest(TestCase):
+    """Tests for cron snapshot/restore during image updates."""
+
+    def setUp(self):
+        self.tenant = create_tenant(
+            display_name="Image Update Test",
+            telegram_chat_id=444555666,
+        )
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.container_id = "oc-test-container"
+        self.tenant.container_fqdn = "oc-test.internal.example.io"
+        self.tenant.save()
+
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.azure_client.update_container_image")
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_image_update_snapshots_crons_before_restart(self, mock_gw, mock_update, mock_publish):
+        """Pre-image snapshot should save cron jobs to the database."""
+        from apps.orchestrator.tasks import apply_single_tenant_image_task
+
+        mock_gw.return_value = {"jobs": [
+            {"name": "Morning Briefing", "schedule": "0 7 * * *"},
+            {"name": "My Reminder", "schedule": "0 12 * * *"},
+        ]}
+
+        apply_single_tenant_image_task(str(self.tenant.id), "abc123")
+
+        self.tenant.refresh_from_db()
+        snapshot = self.tenant.cron_jobs_snapshot
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(len(snapshot["jobs"]), 2)
+        self.assertEqual(snapshot["trigger"], "pre-image-update")
+        self.assertEqual(snapshot["image_tag"], "abc123")
+
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.azure_client.update_container_image")
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_image_update_schedules_restore_task(self, mock_gw, mock_update, mock_publish):
+        """After image update, a delayed restore_crons_after_image_update should be queued."""
+        from apps.orchestrator.tasks import apply_single_tenant_image_task
+
+        mock_gw.return_value = {"jobs": []}
+
+        apply_single_tenant_image_task(str(self.tenant.id), "abc123")
+
+        mock_publish.assert_called_once()
+        call_args = mock_publish.call_args
+        self.assertEqual(call_args[0][0], "restore_crons_after_image_update")
+        self.assertEqual(call_args[0][1], str(self.tenant.id))
+        self.assertEqual(call_args[1]["delay_seconds"], 90)
+
+    @patch("apps.orchestrator.services.dedup_tenant_cron_jobs")
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_restore_from_snapshot_creates_missing_jobs(self, mock_gw, mock_dedup):
+        """restore_crons_after_image_update should create jobs from snapshot."""
+        from apps.orchestrator.tasks import restore_crons_after_image_update_task
+
+        self.tenant.cron_jobs_snapshot = {
+            "jobs": [
+                {"name": "Morning Briefing", "id": "abc", "schedule": "0 7 * * *"},
+                {"name": "My Reminder", "id": "def", "schedule": "0 12 * * *"},
+            ],
+            "snapshot_at": "2026-01-01T00:00:00",
+            "trigger": "pre-image-update",
+        }
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        # cron.list returns empty (container just restarted)
+        mock_gw.return_value = {"jobs": []}
+
+        restore_crons_after_image_update_task(str(self.tenant.id))
+
+        # Both jobs should be created (with id stripped)
+        add_calls = [c for c in mock_gw.call_args_list if c[0][1] == "cron.add"]
+        self.assertEqual(len(add_calls), 2)
+        # Verify gateway-internal 'id' field is stripped
+        for call in add_calls:
+            job_arg = call[0][2]["job"]
+            self.assertNotIn("id", job_arg)
+
+    @patch("apps.orchestrator.services.dedup_tenant_cron_jobs")
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_restore_skips_already_existing_jobs(self, mock_gw, mock_dedup):
+        """Jobs already on the container should not be re-created."""
+        from apps.orchestrator.tasks import restore_crons_after_image_update_task
+
+        self.tenant.cron_jobs_snapshot = {
+            "jobs": [
+                {"name": "Morning Briefing", "schedule": "0 7 * * *"},
+                {"name": "My Reminder", "schedule": "0 12 * * *"},
+            ],
+            "snapshot_at": "2026-01-01T00:00:00",
+            "trigger": "pre-image-update",
+        }
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        # Container already has Morning Briefing (e.g., its own restore worked)
+        mock_gw.return_value = {"jobs": [{"name": "Morning Briefing", "schedule": "0 7 * * *"}]}
+
+        restore_crons_after_image_update_task(str(self.tenant.id))
+
+        add_calls = [c for c in mock_gw.call_args_list if c[0][1] == "cron.add"]
+        self.assertEqual(len(add_calls), 1)  # Only My Reminder
+        self.assertEqual(add_calls[0][0][2]["job"]["name"], "My Reminder")
+
+    @patch("apps.orchestrator.services.seed_cron_jobs")
+    def test_restore_falls_back_to_seed_when_no_snapshot(self, mock_seed):
+        """Without a snapshot, should fall back to seed_cron_jobs."""
+        from apps.orchestrator.tasks import restore_crons_after_image_update_task
+
+        self.tenant.cron_jobs_snapshot = None
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        restore_crons_after_image_update_task(str(self.tenant.id))
+        mock_seed.assert_called_once()
+
 
 @override_settings()
 class ProvisioningTest(TestCase):

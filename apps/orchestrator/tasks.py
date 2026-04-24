@@ -104,17 +104,24 @@ def apply_single_tenant_config_task(tenant_id: str) -> None:
 
 
 def apply_single_tenant_image_task(tenant_id: str, desired_tag: str) -> None:
-    """Update a single tenant's container image (enqueued by apply-pending-configs)."""
+    """Update a single tenant's container image (enqueued by apply-pending-configs).
+
+    Three-phase flow to prevent cron loss on restart:
+      1. Snapshot current crons from the running container → PostgreSQL
+      2. Update the container image (triggers restart, wipes SQLite)
+      3. Schedule a delayed restore from the snapshot
+    """
     import logging
 
     from django.conf import settings as django_settings
+    from django.utils import timezone
 
     from apps.orchestrator.azure_client import update_container_image
     from apps.tenants.models import Tenant
 
     logger = logging.getLogger(__name__)
 
-    tenant = Tenant.objects.filter(id=tenant_id).first()
+    tenant = Tenant.objects.filter(id=tenant_id).select_related("user").first()
     if not tenant or not tenant.container_id:
         return
 
@@ -122,6 +129,35 @@ def apply_single_tenant_image_task(tenant_id: str, desired_tag: str) -> None:
         logger.info("Skipping image update for hibernated tenant %s", tenant_id[:8])
         return
 
+    # Phase 1: Snapshot current cron state before the restart wipes SQLite.
+    try:
+        from apps.cron.gateway_client import invoke_gateway_tool
+        from apps.orchestrator.services import _extract_cron_jobs
+
+        result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+        jobs = _extract_cron_jobs(result)
+        if jobs is not None:
+            Tenant.objects.filter(id=tenant_id).update(
+                cron_jobs_snapshot={
+                    "jobs": jobs,
+                    "snapshot_at": timezone.now().isoformat(),
+                    "trigger": "pre-image-update",
+                    "image_tag": desired_tag,
+                },
+            )
+            logger.info(
+                "Pre-image cron snapshot saved for tenant %s (%d jobs)",
+                tenant_id[:8],
+                len(jobs),
+            )
+    except Exception:
+        logger.warning(
+            "Pre-image cron snapshot failed for tenant %s (proceeding — will fall back to seed)",
+            tenant_id[:8],
+            exc_info=True,
+        )
+
+    # Phase 2: Update the container image.
     desired_image = f"{django_settings.AZURE_ACR_SERVER}/nbhd-openclaw:{desired_tag}"
     try:
         update_container_image(tenant.container_id, desired_image)
@@ -130,6 +166,119 @@ def apply_single_tenant_image_task(tenant_id: str, desired_tag: str) -> None:
         )
     except Exception:
         logger.exception("apply_single_tenant_image failed for %s", tenant_id)
+        return
+
+    # Phase 3: Schedule post-restart cron restore (90s for container startup).
+    from apps.cron.publish import publish_task as publish_qstash_task
+
+    try:
+        publish_qstash_task(
+            "restore_crons_after_image_update",
+            tenant_id,
+            delay_seconds=90,
+            idempotency_key=f"post-image-restore-{tenant_id}-{desired_tag}",
+        )
+        logger.info("Scheduled post-image cron restore for tenant %s (90s delay)", tenant_id[:8])
+    except Exception:
+        logger.warning(
+            "Failed to schedule post-image cron restore for %s (non-fatal)",
+            tenant_id[:8],
+            exc_info=True,
+        )
+
+
+def restore_crons_after_image_update_task(tenant_id: str) -> None:
+    """Restore cron jobs from snapshot after a container image update.
+
+    Called ~90s after apply_single_tenant_image_task to give the container
+    time to start. Restores every job from the pre-image snapshot with full
+    fidelity. Falls back to seed_cron_jobs if the snapshot is missing.
+    """
+    import logging
+
+    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
+    from apps.orchestrator.services import _extract_cron_jobs, dedup_tenant_cron_jobs, seed_cron_jobs
+    from apps.tenants.models import Tenant
+
+    logger = logging.getLogger(__name__)
+
+    tenant = Tenant.objects.filter(id=tenant_id).select_related("user").first()
+    if not tenant or not tenant.container_id:
+        return
+
+    snapshot = getattr(tenant, "cron_jobs_snapshot", None)
+    if not snapshot or not isinstance(snapshot, dict) or not snapshot.get("jobs"):
+        logger.warning(
+            "No cron snapshot for tenant %s — falling back to seed_cron_jobs",
+            tenant_id[:8],
+        )
+        seed_cron_jobs(tenant)
+        return
+
+    snapshot_jobs = snapshot["jobs"]
+
+    # Check what's already on the container (may not be empty if the container
+    # restored some jobs from its own persistence layer).
+    try:
+        result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+        existing_jobs = _extract_cron_jobs(result) or []
+    except GatewayError:
+        logger.warning(
+            "cron.list failed for tenant %s — container may still be starting, falling back to seed",
+            tenant_id[:8],
+            exc_info=True,
+        )
+        seed_cron_jobs(tenant)
+        return
+
+    existing_names = {j.get("name", "").lower() for j in existing_jobs if isinstance(j, dict)}
+
+    # Gateway-internal fields that cron.add rejects
+    _STRIP_FIELDS = {"id", "jobId", "createdAt", "state", "createdAtMs", "updatedAtMs", "nextRunAtMs", "runningAtMs"}
+
+    # Deduplicate within snapshot (dirty snapshots may have duplicate names)
+    seen_names: set[str] = set()
+    jobs_to_restore: list[dict] = []
+    for job in snapshot_jobs:
+        if not isinstance(job, dict) or not job.get("name"):
+            continue
+        lower_name = job["name"].lower()
+        if lower_name in seen_names or lower_name in existing_names:
+            continue
+        seen_names.add(lower_name)
+        jobs_to_restore.append(job)
+
+    restored = 0
+    errors = 0
+    for job in jobs_to_restore:
+        clean_job = {k: v for k, v in job.items() if k not in _STRIP_FIELDS}
+        try:
+            invoke_gateway_tool(tenant, "cron.add", {"job": clean_job})
+            restored += 1
+        except GatewayError as exc:
+            logger.warning(
+                "Failed to restore cron '%s' for tenant %s: %s",
+                job.get("name"),
+                tenant_id[:8],
+                exc,
+            )
+            errors += 1
+
+    # Safety-net dedup
+    if restored > 0:
+        try:
+            dedup_tenant_cron_jobs(tenant)
+        except Exception:
+            logger.warning("Post-restore dedup failed for %s (non-fatal)", tenant_id[:8], exc_info=True)
+
+    logger.info(
+        "Post-image cron restore for tenant %s: %d restored, %d errors, %d already present (snapshot had %d)",
+        tenant_id[:8],
+        restored,
+        errors,
+        len(existing_names),
+        len(snapshot_jobs),
+    )
 
 
 def force_reseed_crons_task() -> dict:
