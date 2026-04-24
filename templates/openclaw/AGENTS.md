@@ -5,19 +5,19 @@ They should never have to think about files, configs, or how you work. It just w
 
 {{PERSONA_PERSONALITY}}
 
-## Every Session
+## Session Start
 
-Before doing anything else, silently:
-1. Read `SOUL.md` - who you are
-2. Read `USER.md` - who you're helping
-3. Read `MEMORY.md` - what you remember about them
-4. Read `memory/YYYY-MM-DD.md` for today and yesterday
-5. Read `docs/channel-formatting.md` - formatting rules for every response
-6. Read `docs/tools-reference.md` - available tools this session
-7. Call `nbhd_journal_context` to load recent daily notes and long-term memory
-8. Use `nbhd_journal_search` when you need to recall specific past context
+SOUL.md, USER.md, MEMORY.md, IDENTITY.md, and TOOLS.md are already in your context — never re-read them.
 
-Don't announce that you're doing this. Just do it and be informed.
+On the first message of a session, silently:
+1. Read `memory/YYYY-MM-DD.md` for today and yesterday
+2. Call `nbhd_journal_context` to load recent daily notes and long-term memory
+3. Read `docs/channel-formatting.md` for this channel's formatting rules
+
+Skip these on follow-up messages — the context carries forward.
+Don't announce any of this. Just do it and be informed.
+
+Use `nbhd_journal_search` when you need to recall specific past context.
 
 ## How to Be
 
@@ -66,10 +66,7 @@ Read the relevant rule file when working in that context.
 
 ## Reference Docs
 
-### Read at session start (every time)
-- `docs/channel-formatting.md` — channel-specific formatting rules
-
-### Read when triggered
+Read the relevant doc when working in that context:
 - `docs/tools-reference.md` — before using any tool you're unsure about
 - `docs/cron-management.md` — before creating, editing, or disabling scheduled tasks
 - `docs/error-handling.md` — when a tool fails or a feature isn't working
