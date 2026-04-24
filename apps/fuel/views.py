@@ -123,7 +123,13 @@ def _schedule_fuel_welcome(tenant):
 
 
 class FuelSettingsView(APIView):
-    """PATCH: toggle fuel_enabled for the tenant."""
+    """PATCH: toggle fuel_enabled for the tenant.
+
+    Enabling Fuel adds a plugin (requires assistant restart). The response
+    includes ``restart_required: true`` so the frontend can show a
+    confirmation dialog. The actual restart is triggered by the user
+    calling ``POST /api/v1/fuel/restart/``.
+    """
 
     permission_classes = [IsAuthenticated]
 
@@ -137,6 +143,8 @@ class FuelSettingsView(APIView):
                 {"error": "fuel_enabled is required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        was_enabled = tenant.fuel_enabled
         tenant.fuel_enabled = bool(fuel_enabled)
         tenant.save(update_fields=["fuel_enabled"])
         tenant.bump_pending_config()
@@ -147,27 +155,64 @@ class FuelSettingsView(APIView):
             profile, _created = FuelProfile.objects.get_or_create(tenant=tenant)
             profile_status = profile.onboarding_status
 
-        # Deploy config immediately so the assistant picks up the fuel
-        # plugin on the user's next message — don't wait for the hourly
-        # apply_pending_configs cron.
+        # Write config to file share so it's ready when the container restarts.
         try:
             from apps.cron.publish import publish_task
 
             publish_task("apply_single_tenant_config", str(tenant.id))
         except Exception:
-            _logger.warning(
-                "Failed to enqueue immediate config deploy for tenant %s (will apply on next cron cycle)",
-                tenant.id,
+            _logger.warning("Failed to enqueue config deploy for tenant %s", tenant.id)
+
+        # Plugin changes require a container restart. Tell the frontend
+        # so it can ask the user to confirm before calling /restart/.
+        plugin_changed = was_enabled != tenant.fuel_enabled
+        restart_required = plugin_changed and bool(tenant.container_id)
+
+        return Response(
+            {
+                "fuel_enabled": tenant.fuel_enabled,
+                "fuel_profile_status": profile_status,
+                "restart_required": restart_required,
+            }
+        )
+
+
+class FuelRestartView(APIView):
+    """POST: restart the assistant to pick up plugin changes.
+
+    Called after the user confirms the restart in the frontend.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        if not tenant.container_id:
+            return Response({"error": "no_container"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            from apps.orchestrator.azure_client import restart_container_app
+
+            restart_container_app(tenant.container_id)
+        except Exception:
+            _logger.exception("Container restart failed for tenant %s", tenant.id)
+            return Response(
+                {"error": "restart_failed", "detail": "Could not restart your assistant. Try again in a moment."},
+                status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        # Schedule a one-shot welcome message for newly enabled Fuel.
-        # Fires 5 min after enablement (gives config time to deploy), then
-        # auto-deletes. The assistant sends a brief nudge via the user's
-        # channel — actual onboarding starts when they respond.
-        if tenant.fuel_enabled and profile_status == "pending":
-            _schedule_fuel_welcome(tenant)
+        # Schedule welcome cron after restart
+        if tenant.fuel_enabled:
+            try:
+                profile = FuelProfile.objects.get(tenant=tenant)
+                if profile.onboarding_status == "pending":
+                    _schedule_fuel_welcome(tenant)
+            except FuelProfile.DoesNotExist:
+                pass
 
-        return Response({"fuel_enabled": tenant.fuel_enabled, "fuel_profile_status": profile_status})
+        return Response({"restarted": True})
 
 
 class FuelProfileView(APIView):
