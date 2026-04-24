@@ -725,7 +725,7 @@ class ImageUpdateCronRestoreTest(TestCase):
         """Without a snapshot, should fall back to seed_cron_jobs."""
         from apps.orchestrator.tasks import restore_crons_after_image_update_task
 
-        self.tenant.cron_jobs_snapshot = None
+        self.tenant.cron_jobs_snapshot = {}
         self.tenant.save(update_fields=["cron_jobs_snapshot"])
 
         restore_crons_after_image_update_task(str(self.tenant.id))
