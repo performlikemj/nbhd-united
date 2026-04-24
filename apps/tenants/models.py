@@ -184,6 +184,10 @@ class Tenant(models.Model):
         default=0,
         help_text="Monthly API cost cap in USD. 0 = use tier default.",
     )
+    is_budget_exempt = models.BooleanField(
+        default=False,
+        help_text="Exempt from personal and global budget enforcement. Usage still tracked.",
+    )
 
     # NOTE: Per-tenant internal API keys were removed (2026-02-22).
     # All containers share a single key via Azure Key Vault. This is safe
