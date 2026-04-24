@@ -307,6 +307,109 @@ export default function register(api) {
     { optional: true },
   );
 
+  // ── Update Workout ───────────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_fuel_update_workout",
+      description:
+        'Update an existing workout. Use when the user wants to correct a logged workout — wrong date, wrong exercise, change status from planned to done, adjust rpe, etc. Get the workout_id from nbhd_fuel_summary or from the response when logging a workout. Only send the fields that need changing.',
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          workout_id: {
+            type: "string",
+            description: "UUID of the workout to update (from summary or log response).",
+          },
+          activity: { type: "string", description: "New activity name." },
+          category: {
+            type: "string",
+            enum: ["strength", "cardio", "hiit", "calisthenics", "mobility", "sport", "other"],
+          },
+          status: {
+            type: "string",
+            enum: ["done", "planned"],
+            description: 'Change status, e.g. mark a planned workout as "done".',
+          },
+          date: { type: "string", description: "New date in YYYY-MM-DD format." },
+          duration_minutes: { type: "integer", description: "Updated duration in minutes." },
+          rpe: { type: "integer", minimum: 1, maximum: 10, description: "Updated RPE." },
+          notes: { type: "string", description: "Updated notes." },
+          detail_json: {
+            type: "object",
+            description: "Updated category-specific structured data.",
+          },
+        },
+        required: ["workout_id"],
+      },
+      async execute(_id, params) {
+        try {
+          const input = asObject(params);
+          const workoutId = asTrimmedString(input.workout_id);
+          if (!workoutId) throw new Error("workout_id is required");
+
+          const body = {};
+          if (input.activity) body.activity = asTrimmedString(input.activity);
+          if (input.category) body.category = asTrimmedString(input.category);
+          if (input.status) body.status = asTrimmedString(input.status);
+          if (input.date) body.date = asTrimmedString(input.date);
+          if (input.duration_minutes !== undefined)
+            body.duration_minutes = parseInteger(input.duration_minutes, { defaultValue: undefined, min: 1, max: 1440 });
+          if (input.rpe !== undefined)
+            body.rpe = parseInteger(input.rpe, { defaultValue: undefined, min: 1, max: 10 });
+          if (input.notes !== undefined) body.notes = asTrimmedString(input.notes);
+          if (input.detail_json) body.detail_json = input.detail_json;
+
+          const payload = await callRuntime(api, {
+            path: fuelPath(api, `/workouts/${encodeURIComponent(workoutId)}/`),
+            method: "PATCH",
+            body,
+          });
+          return renderPayload(payload);
+        } catch (error) {
+          return renderPayload({ error: error.message });
+        }
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Delete Workout ──────────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_fuel_delete_workout",
+      description:
+        "Delete a workout. Use when the user wants to remove a logged workout entirely — duplicates, mistakes, or workouts they don't want tracked. Confirm with the user before deleting. Get the workout_id from nbhd_fuel_summary.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          workout_id: {
+            type: "string",
+            description: "UUID of the workout to delete.",
+          },
+        },
+        required: ["workout_id"],
+      },
+      async execute(_id, params) {
+        try {
+          const input = asObject(params);
+          const workoutId = asTrimmedString(input.workout_id);
+          if (!workoutId) throw new Error("workout_id is required");
+
+          const payload = await callRuntime(api, {
+            path: fuelPath(api, `/workouts/${encodeURIComponent(workoutId)}/`),
+            method: "DELETE",
+          });
+          return renderPayload(payload);
+        } catch (error) {
+          return renderPayload({ error: error.message });
+        }
+      },
+    },
+    { optional: true },
+  );
+
   // ── Log Body Weight ─────────────────────────────────────────────────
   api.registerTool(
     {

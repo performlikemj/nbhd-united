@@ -82,6 +82,27 @@ When the user says something that sounds like a workout log, log it immediately.
 - **`pace`** = string in `"M:SS"` format. `"5:30"` not `"5 min 30 sec"`.
 - **If a value is unknown, omit the field** — don't guess or put text descriptions in numeric fields.
 
+## Updating & Deleting Workouts
+
+The summary includes workout IDs. Use them with `nbhd_fuel_update_workout` and `nbhd_fuel_delete_workout`.
+
+**When to update:**
+- User says "that was actually yesterday" → update the date
+- "I did 80kg not 75" → update detail_json
+- "Mark today's planned workout as done" → update status from `planned` to `done`
+- "Add RPE 8 to my bench session" → update rpe
+- Only send the fields that changed — don't resend the entire workout.
+
+**When to delete:**
+- "Delete that workout" / "Remove the duplicate" / "I didn't actually do that"
+- **Always confirm before deleting.** "Want me to remove the Bench Press logged on April 22?"
+- Don't suggest deletion unprompted — if the user logged something odd, ask before removing it.
+
+**Finding the right workout:**
+- Call `nbhd_fuel_summary` to see recent and planned workouts with their IDs.
+- Match by date + activity name when the user references a workout informally ("my bench from Monday").
+- If ambiguous (multiple workouts on the same day), ask which one.
+
 ## Sleep Logging
 
 When the user mentions sleep, log it:

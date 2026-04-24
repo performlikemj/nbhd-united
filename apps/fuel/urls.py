@@ -6,6 +6,7 @@ from .runtime_views import (
     RuntimeFuelSummaryView,
     RuntimeLogWorkoutView,
     RuntimeSleepView,
+    RuntimeWorkoutDetailView,  # noqa: F401
     RuntimeWorkoutPlanDetailView,
     RuntimeWorkoutPlanListCreateView,
 )
@@ -95,6 +96,11 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/log/",
         RuntimeLogWorkoutView.as_view(),
         name="runtime-fuel-log",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/workouts/<uuid:workout_id>/",
+        RuntimeWorkoutDetailView.as_view(),
+        name="runtime-fuel-workout-detail",
     ),
     path(
         "runtime/<uuid:tenant_id>/summary/",

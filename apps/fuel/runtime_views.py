@@ -162,6 +162,128 @@ class RuntimeLogWorkoutView(APIView):
         )
 
 
+class RuntimeWorkoutDetailView(APIView):
+    """PATCH/DELETE a single workout from the AI assistant."""
+
+    permission_classes = [AllowAny]
+
+    def _get_workout(self, request, tenant_id, workout_id):
+        err = _internal_auth_or_401(request, tenant_id)
+        if err:
+            return None, None, err
+        tenant_or_resp = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant_or_resp, Response):
+            return None, None, tenant_or_resp
+        tenant = tenant_or_resp
+        try:
+            workout = Workout.objects.get(id=workout_id, tenant=tenant)
+        except Workout.DoesNotExist:
+            return None, None, Response({"error": "workout_not_found"}, status=status.HTTP_404_NOT_FOUND)
+        return tenant, workout, None
+
+    def patch(self, request, tenant_id, workout_id):
+        tenant, workout, err = self._get_workout(request, tenant_id, workout_id)
+        if err:
+            return err
+
+        data = request.data
+        updated_fields = []
+
+        if "activity" in data:
+            workout.activity = str(data["activity"]).strip()
+            updated_fields.append("activity")
+
+        if "category" in data:
+            val = data["category"]
+            if val in WorkoutCategory.values:
+                workout.category = val
+                updated_fields.append("category")
+
+        if "status" in data:
+            val = data["status"]
+            if val in WorkoutStatus.values:
+                workout.status = val
+                updated_fields.append("status")
+
+        if "date" in data:
+            try:
+                date.fromisoformat(str(data["date"]))
+                workout.date = str(data["date"])
+                updated_fields.append("date")
+            except (ValueError, TypeError):
+                pass
+
+        if "duration_minutes" in data:
+            val = data["duration_minutes"]
+            if val is None:
+                workout.duration_minutes = None
+            else:
+                try:
+                    workout.duration_minutes = int(val)
+                except (TypeError, ValueError):
+                    pass
+            updated_fields.append("duration_minutes")
+
+        if "rpe" in data:
+            val = data["rpe"]
+            if val is None:
+                workout.rpe = None
+            else:
+                try:
+                    workout.rpe = max(1, min(10, int(val)))
+                except (TypeError, ValueError):
+                    pass
+            updated_fields.append("rpe")
+
+        if "notes" in data:
+            workout.notes = str(data["notes"]).strip()
+            updated_fields.append("notes")
+
+        if "detail_json" in data and isinstance(data["detail_json"], dict):
+            workout.detail_json = data["detail_json"]
+            updated_fields.append("detail_json")
+
+        if updated_fields:
+            updated_fields.append("updated_at")
+            try:
+                workout.save(update_fields=updated_fields)
+            except Exception as exc:
+                logger.exception("RuntimeWorkoutDetailView PATCH failed for %s", workout_id)
+                return Response(
+                    {"error": "update_failed", "detail": str(exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # Re-run PR detection if exercise data changed
+            if "detail_json" in updated_fields:
+                try:
+                    from .services import detect_prs
+
+                    detect_prs(tenant, workout)
+                except Exception:
+                    logger.exception("PR detection failed for workout %s", workout.id)
+
+        return Response(
+            {
+                "id": str(workout.id),
+                "date": str(workout.date),
+                "category": workout.category,
+                "activity": workout.activity,
+                "status": workout.status,
+                "duration_minutes": workout.duration_minutes,
+                "rpe": workout.rpe,
+            }
+        )
+
+    def delete(self, request, tenant_id, workout_id):
+        _tenant, workout, err = self._get_workout(request, tenant_id, workout_id)
+        if err:
+            return err
+        workout_info = {"id": str(workout.id), "activity": workout.activity, "date": str(workout.date)}
+        workout.delete()
+        return Response({"deleted": True, **workout_info})
+
+
 class RuntimeFuelSummaryView(APIView):
     """GET: recent workouts + weekly stats for AI context."""
 
@@ -179,6 +301,7 @@ class RuntimeFuelSummaryView(APIView):
         recent = Workout.objects.filter(tenant=tenant, status="done").order_by("-date", "-created_at")[:20]
         recent_data = [
             {
+                "id": str(w.id),
                 "date": str(w.date),
                 "category": w.category,
                 "activity": w.activity,
@@ -191,6 +314,7 @@ class RuntimeFuelSummaryView(APIView):
         planned = Workout.objects.filter(tenant=tenant, status="planned").order_by("date")[:10]
         planned_data = [
             {
+                "id": str(w.id),
                 "date": str(w.date),
                 "category": w.category,
                 "activity": w.activity,
