@@ -7,6 +7,7 @@ import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
 import { useCheckoutMutation, useStripePortalMutation, useTenantQuery } from "@/lib/queries";
+import { modelSummary } from "@/lib/models";
 
 export default function SettingsBillingPage() {
   const { data: tenant, isLoading, error } = useTenantQuery();
@@ -85,7 +86,7 @@ export default function SettingsBillingPage() {
               <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
                 <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Plan</dt>
                 <dd className="mt-1 text-lg font-semibold">$12/mo</dd>
-                <p className="mt-1 text-xs text-ink-muted">3 AI models included: MiniMax M2.7, Kimi 2.5, Gemma 4</p>
+                <p className="mt-1 text-xs text-ink-muted">{modelSummary()}</p>
               </div>
               <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
                 <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Agent Status</dt>

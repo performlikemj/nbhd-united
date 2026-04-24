@@ -4,6 +4,7 @@ import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { IntelligenceMeter } from "@/components/intelligence-meter";
 import { usePreferredModelMutation, useTaskModelPreferencesMutation, useTenantQuery } from "@/lib/queries";
+import { MODELS, ACTIVE_MODELS, DEFAULT_MODEL } from "@/lib/models";
 
 const SCHEDULED_TASKS = [
   { slug: "morning_briefing", label: "Morning Briefing" },
@@ -12,26 +13,6 @@ const SCHEDULED_TASKS = [
   { slug: "background_tasks", label: "Background Tasks" },
   { slug: "heartbeat", label: "Heartbeat Check-in" },
 ] as const;
-
-interface ModelUI {
-  model_id: string;
-  name: string;
-  tagline: string;
-  intelligence: number;
-  input_rate: number;
-  output_rate: number;
-  comingSoon?: boolean;
-}
-
-const MODELS: ModelUI[] = [
-  { model_id: "openrouter/minimax/minimax-m2.7", name: "MiniMax M2.7", tagline: "Fast and efficient", intelligence: 6, input_rate: 0.3, output_rate: 1.2 },
-  { model_id: "openrouter/moonshotai/kimi-k2.6", name: "Kimi 2.6", tagline: "Balanced capability and cost", intelligence: 7, input_rate: 0.60, output_rate: 2.80 },
-  { model_id: "openrouter/google/gemma-4-31b-it", name: "Gemma 4 31B", tagline: "Lightweight and affordable", intelligence: 6, input_rate: 0.14, output_rate: 0.40 },
-];
-
-const ACTIVE_MODELS = MODELS.filter((m) => !m.comingSoon);
-
-const DEFAULT_MODEL = "openrouter/minimax/minimax-m2.7";
 
 export default function AIProviderPage() {
   const { data: tenant, isLoading: tenantLoading } = useTenantQuery();
