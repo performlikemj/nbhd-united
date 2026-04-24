@@ -456,7 +456,7 @@ _FUEL_WORKOUT_PREP_PROMPT = (
 )
 
 
-def build_fuel_workout_cron(tenant: Tenant, plan: WorkoutPlan) -> dict | None:
+def build_fuel_workout_cron(tenant: Tenant, plan) -> dict | None:  # plan: WorkoutPlan
     """Build a background Fuel workout-prep cron tied to an active plan.
 
     Fires 30 minutes before the morning briefing on the plan's training days.
