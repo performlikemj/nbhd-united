@@ -119,7 +119,7 @@ HIDDEN_SYSTEM_CRONS = frozenset(
 # the two-phase cron pattern: foreground tasks create short-lived
 # `_sync:<job name>` crons that fire a summary into the main session and
 # then self-remove. We never want users to see them in the UI.
-HIDDEN_SYSTEM_CRON_PREFIXES: tuple[str, ...] = ("_sync:",)
+HIDDEN_SYSTEM_CRON_PREFIXES: tuple[str, ...] = ("_sync:", "_fuel:")
 
 
 def _is_hidden_cron(name: str) -> bool:

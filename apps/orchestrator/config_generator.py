@@ -422,6 +422,85 @@ _PROJECT_CHECKIN_PROMPT = (
     "9. Keep the tone casual and supportive — this is a friend checking in, not a standup meeting\n"
 )
 
+_FUEL_WORKOUT_PREP_PROMPT = (
+    "Fuel background workout prep. This is a silent cron — "
+    "do NOT message the user. Do NOT call nbhd_send_to_user.\n\n"
+    "Your job is to write today's workout context into the daily note so that "
+    "every other session (morning briefing, user conversations, evening check-in) "
+    "can see it without needing special Fuel instructions.\n\n"
+    "Steps:\n"
+    "1. Call `nbhd_fuel_summary` to get active plans, today's planned workouts, "
+    "recent workout history, and last night's sleep.\n"
+    "2. Check yesterday's planned workouts — if any were not logged as done, "
+    "note them as missed.\n"
+    "3. Write a `fuel` section to today's daily note "
+    "(`nbhd_daily_note_set_section` with `section_slug` = `fuel`).\n\n"
+    "The fuel section should be brief (4-6 lines) and contain:\n"
+    "- **Today's workout** — activity, category, estimated duration. "
+    'If no workout is planned today, write "Rest day."\n'
+    "- **Plan progress** — plan name, sessions completed vs total.\n"
+    "- **Last night's sleep** — duration and quality if available. "
+    "If sleep was short (<6h) or poor (quality ≤2), add a recovery note "
+    '(e.g. "consider lighter session or mobility work").\n'
+    "- **Yesterday** — completed, missed, or rest.\n\n"
+    "Example:\n"
+    "```\n"
+    "**Today:** Push Day — Chest & Shoulders (strength, ~60 min)\n"
+    "**Plan:** 4-Week Strength Builder — 8/12 sessions done\n"
+    "**Sleep:** 7.5h, quality 4/5 — recovery looks good\n"
+    "**Yesterday:** Pull Day ✓ completed\n"
+    "```\n\n"
+    "If there is no active plan, skip silently — do not write the fuel section.\n\n"
+    "**Do NOT message the user. Do NOT call nbhd_send_to_user. "
+    "Do NOT write to tomorrow's daily note. This is a silent background run.**\n"
+)
+
+
+def build_fuel_workout_cron(tenant: Tenant, plan) -> dict | None:  # plan: WorkoutPlan
+    """Build a background Fuel workout-prep cron tied to an active plan.
+
+    Fires 30 minutes before the morning briefing on the plan's training days.
+    Returns None if the plan has no valid schedule.
+    """
+    schedule_json = plan.schedule_json or {}
+    if not schedule_json:
+        return None
+
+    # Convert plan weekday indices (0=Mon..6=Sun) to cron (0=Sun, 1=Mon..6=Sat)
+    cron_days = []
+    for day_str in schedule_json:
+        try:
+            plan_day = int(day_str)
+            if 0 <= plan_day <= 6:
+                cron_days.append((plan_day + 1) % 7)
+        except (TypeError, ValueError):
+            continue
+
+    if not cron_days:
+        return None
+
+    user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
+    day_expr = ",".join(str(d) for d in sorted(cron_days))
+    cron_expr = f"30 6 * * {day_expr}"  # 6:30am on training days
+
+    return {
+        "name": f"_fuel:{plan.name}",
+        "schedule": {"kind": "cron", "expr": cron_expr, "tz": user_tz},
+        "sessionTarget": "isolated",
+        "payload": {
+            "kind": "agentTurn",
+            "message": _build_cron_message(
+                _FUEL_WORKOUT_PREP_PROMPT,
+                f"_fuel:{plan.name}",
+                foreground=False,
+                tenant=tenant,
+            ),
+        },
+        "delivery": {"mode": "none"},
+        "enabled": True,
+    }
+
+
 _BACKGROUND_TASKS_PROMPT = (
     "Background maintenance run. This is a cron (isolated) session — "
     "you cannot have a back-and-forth conversation. You must do everything in ONE turn.\n\n"
@@ -642,6 +721,17 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     heartbeat_job = _build_heartbeat_cron(tenant)
     if heartbeat_job is not None:
         jobs.append(heartbeat_job)
+
+    # Fuel workout-prep cron — background, fires on training days before
+    # morning briefing so the daily note has workout context for all sessions.
+    if getattr(tenant, "fuel_enabled", False):
+        from apps.fuel.models import WorkoutPlan
+
+        active_plan = WorkoutPlan.objects.filter(tenant=tenant, status="active").order_by("-created_at").first()
+        if active_plan:
+            fuel_job = build_fuel_workout_cron(tenant, active_plan)
+            if fuel_job:
+                jobs.append(fuel_job)
 
     # Apply per-task model overrides from tenant preferences
     _TASK_SLUG_MAP = {

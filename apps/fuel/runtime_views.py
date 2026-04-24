@@ -659,6 +659,51 @@ def _expand_plan_workouts(plan, tenant, schedule_json, start_date, weeks):
     return len(workouts_to_create)
 
 
+def _manage_fuel_cron(tenant, plan, action="create"):
+    """Best-effort cron lifecycle management for a workout plan.
+
+    Actions: "create" (add cron), "remove" (delete cron), "update" (remove + recreate).
+    Failures are logged but never block plan operations.
+    """
+    try:
+        from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
+        from apps.orchestrator.config_generator import build_fuel_workout_cron
+    except ImportError:
+        logger.warning("Could not import gateway_client or config_generator for fuel cron")
+        return
+
+    cron_name = f"_fuel:{plan.name}"
+
+    try:
+        if action in ("remove", "update"):
+            # Find and remove existing fuel cron(s) for this tenant
+            try:
+                result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+                existing = (
+                    result.get("jobs", []) if isinstance(result, dict) else result if isinstance(result, list) else []
+                )
+                for job in existing:
+                    if isinstance(job, dict) and str(job.get("name", "")).startswith("_fuel:"):
+                        job_id = job.get("id") or job.get("jobId") or job.get("name")
+                        if job_id:
+                            invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
+            except GatewayError:
+                logger.warning("Failed to remove fuel cron for tenant %s", tenant.id)
+
+        if action in ("create", "update"):
+            if plan.status != "active":
+                return  # Only create crons for active plans
+            job_dict = build_fuel_workout_cron(tenant, plan)
+            if job_dict:
+                invoke_gateway_tool(tenant, "cron.add", {"job": job_dict})
+                logger.info("Created fuel cron '%s' for tenant %s", cron_name, tenant.id)
+
+    except GatewayError:
+        logger.warning("Fuel cron %s failed for tenant %s (best-effort)", action, tenant.id)
+    except Exception:
+        logger.exception("Unexpected error managing fuel cron for tenant %s", tenant.id)
+
+
 class RuntimeWorkoutPlanListCreateView(APIView):
     """GET: list plans. POST: create plan + expand into planned workouts."""
 
@@ -758,6 +803,9 @@ class RuntimeWorkoutPlanListCreateView(APIView):
             )
 
         workouts_created = _expand_plan_workouts(plan, tenant, schedule_json, plan_start, weeks)
+
+        # Create background fuel cron (best-effort)
+        _manage_fuel_cron(tenant, plan, action="create")
 
         result = _serialize_plan(plan)
         result["workouts_created"] = workouts_created
@@ -864,6 +912,14 @@ class RuntimeWorkoutPlanDetailView(APIView):
                 regen_start = max(today, plan.start_date)
                 _expand_plan_workouts(plan, tenant, plan.schedule_json, regen_start, remaining_weeks)
 
+        # Manage fuel cron based on status/schedule changes (best-effort)
+        if "status" in updated_fields or needs_regeneration:
+            if plan.status == "active":
+                _manage_fuel_cron(tenant, plan, action="update")
+            else:
+                # Paused, completed, archived → remove cron
+                _manage_fuel_cron(tenant, plan, action="remove")
+
         return Response(_serialize_plan(plan, include_workouts=True))
 
     def delete(self, request, tenant_id, plan_id):
@@ -878,6 +934,9 @@ class RuntimeWorkoutPlanDetailView(APIView):
         plan = self._get_plan(tenant, plan_id)
         if not plan:
             return Response({"error": "plan_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Remove fuel cron before deleting plan (best-effort)
+        _manage_fuel_cron(tenant, plan, action="remove")
 
         # Delete planned workouts, preserve completed ones
         Workout.objects.filter(plan=plan, status=WorkoutStatus.PLANNED).delete()

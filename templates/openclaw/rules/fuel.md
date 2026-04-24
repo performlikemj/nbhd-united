@@ -216,3 +216,30 @@ When you have both Fuel and journal context in the same session:
 - If today has a planned workout and the user mentions low energy/bad sleep/stress → suggest an adjusted version or swap for lighter work. Don't silently override — say why.
 - If they completed a workout, briefly acknowledge it in the context of the plan: "That's 8 of 12 sessions done — right on track."
 - If they missed a planned workout, don't guilt-trip. Check journal for why (was it a rough day?) and either reschedule or let it go.
+
+## Background Workout Cron
+
+When an active plan exists, a background cron fires at 6:30am on training days. It runs silently — no user message. Its only job is to write a `fuel` section into today's daily note with workout context.
+
+**This is how the plan becomes visible to ALL sessions.** The morning briefing, evening check-in, heartbeat, and any user conversation all load the daily note at session start. If there's a `fuel` section, they see it — no special Fuel instructions needed.
+
+### What the cron writes (fuel section)
+
+Brief, 4-6 lines:
+- **Today's workout** — activity, category, duration. Or "rest day."
+- **Plan progress** — name, sessions completed vs total.
+- **Last night's sleep** — duration, quality, recovery note if poor.
+- **Yesterday** — completed, missed, or rest.
+
+### What other sessions should do when they see the fuel section
+
+You don't need Fuel tools to act on the `fuel` section — it's plain text in the daily note.
+
+- **Morning Briefing**: Weave the planned workout into the briefing naturally. If sleep was poor, mention it alongside the workout. "You've got Push Day today — and you slept 7.5 hours, so you're good to go." Don't repeat the section verbatim.
+- **User conversations**: If the user mentions fatigue, stress, or pain, cross-reference the fuel section. A heavy leg day + bad sleep + "I'm exhausted" = suggest adjustment.
+- **Evening Check-in**: If the fuel section shows a planned workout, check if it was logged. If done, acknowledge plan progress. If not, ask casually.
+- **Week Ahead Review**: Factor upcoming training days into the week preview. Flag conflicts with travel or busy periods.
+
+### Cron lifecycle
+
+The cron is created automatically when a plan becomes active and removed when the plan is paused, completed, archived, or deleted. No user action needed — it's tied to the plan lifecycle. The cron is hidden from the user's Scheduled Tasks page.
