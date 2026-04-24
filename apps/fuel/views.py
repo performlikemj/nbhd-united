@@ -1,6 +1,7 @@
 """Consumer-facing Fuel API views (JWT auth, frontend)."""
 
 import calendar
+import logging
 from collections import defaultdict
 from datetime import date as date_cls
 
@@ -52,6 +53,53 @@ from .services import (
     detect_prs,
 )
 
+_FUEL_WELCOME_PROMPT = (
+    "Fuel was just enabled for this user. Send them a brief, warm welcome "
+    "via `nbhd_send_to_user` letting them know their fitness assistant is "
+    "ready. Keep it to 2-3 sentences — invite them to start a conversation "
+    "about their fitness goals whenever they're ready. Don't start the full "
+    "onboarding questionnaire in this message — just let them know the "
+    "feature is live and you're here when they want to set things up.\n\n"
+    "**Do NOT ask questions in this message.** Just welcome them and let "
+    "them know they can come to you when ready."
+)
+
+_logger = logging.getLogger(__name__)
+
+
+def _schedule_fuel_welcome(tenant):
+    """Create a one-shot cron that sends a Fuel welcome message.
+
+    Fires 5 minutes after enablement (gives config time to deploy),
+    then auto-deletes. Best-effort — failures are logged, not raised.
+    """
+    try:
+        from apps.cron.gateway_client import invoke_gateway_tool
+
+        invoke_gateway_tool(
+            tenant,
+            "cron.add",
+            {
+                "job": {
+                    "name": "_fuel:welcome",
+                    "schedule": {"kind": "at", "at": "5m"},
+                    "sessionTarget": "isolated",
+                    "payload": {
+                        "kind": "agentTurn",
+                        "message": _FUEL_WELCOME_PROMPT,
+                    },
+                    "delivery": {"mode": "none"},
+                    "enabled": True,
+                }
+            },
+        )
+        _logger.info("Scheduled fuel welcome cron for tenant %s", tenant.id)
+    except Exception:
+        _logger.warning(
+            "Failed to schedule fuel welcome for tenant %s (user will get onboarding on next message)",
+            tenant.id,
+        )
+
 
 class FuelSettingsView(APIView):
     """PATCH: toggle fuel_enabled for the tenant."""
@@ -86,12 +134,17 @@ class FuelSettingsView(APIView):
 
             publish_task("apply_single_tenant_config", str(tenant.id))
         except Exception:
-            import logging
-
-            logging.getLogger(__name__).warning(
+            _logger.warning(
                 "Failed to enqueue immediate config deploy for tenant %s (will apply on next cron cycle)",
                 tenant.id,
             )
+
+        # Schedule a one-shot welcome message for newly enabled Fuel.
+        # Fires 5 min after enablement (gives config time to deploy), then
+        # auto-deletes. The assistant sends a brief nudge via the user's
+        # channel — actual onboarding starts when they respond.
+        if tenant.fuel_enabled and profile_status == "pending":
+            _schedule_fuel_welcome(tenant)
 
         return Response({"fuel_enabled": tenant.fuel_enabled, "fuel_profile_status": profile_status})
 
