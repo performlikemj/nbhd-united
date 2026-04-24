@@ -633,10 +633,12 @@ class ImageUpdateCronRestoreTest(TestCase):
         """Pre-image snapshot should save cron jobs to the database."""
         from apps.orchestrator.tasks import apply_single_tenant_image_task
 
-        mock_gw.return_value = {"jobs": [
-            {"name": "Morning Briefing", "schedule": "0 7 * * *"},
-            {"name": "My Reminder", "schedule": "0 12 * * *"},
-        ]}
+        mock_gw.return_value = {
+            "jobs": [
+                {"name": "Morning Briefing", "schedule": "0 7 * * *"},
+                {"name": "My Reminder", "schedule": "0 12 * * *"},
+            ]
+        }
 
         apply_single_tenant_image_task(str(self.tenant.id), "abc123")
 
