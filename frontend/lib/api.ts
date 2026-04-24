@@ -952,10 +952,16 @@ export function createBodyWeight(data: {
 
 export function updateFuelSettings(
   data: { fuel_enabled: boolean },
-): Promise<{ fuel_enabled: boolean; fuel_profile_status: import("@/lib/types").FuelOnboardingStatus | null }> {
-  return apiFetch<{ fuel_enabled: boolean; fuel_profile_status: import("@/lib/types").FuelOnboardingStatus | null }>("/api/v1/fuel/settings/", {
+): Promise<{ fuel_enabled: boolean; fuel_profile_status: import("@/lib/types").FuelOnboardingStatus | null; restart_required: boolean }> {
+  return apiFetch<{ fuel_enabled: boolean; fuel_profile_status: import("@/lib/types").FuelOnboardingStatus | null; restart_required: boolean }>("/api/v1/fuel/settings/", {
     method: "PATCH",
     body: JSON.stringify(data),
+  });
+}
+
+export function restartFuelAssistant(): Promise<{ restarted: boolean }> {
+  return apiFetch<{ restarted: boolean }>("/api/v1/fuel/restart/", {
+    method: "POST",
   });
 }
 

@@ -289,6 +289,43 @@ function FuelCard() {
   const { data: tenant } = useTenantQuery();
   const mutation = useUpdateFuelSettingsMutation();
   const enabled = tenant?.fuel_enabled ?? false;
+  const [showRestartPrompt, setShowRestartPrompt] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+
+  const handleToggle = async () => {
+    if (enabled) {
+      mutation.mutate({ fuel_enabled: false });
+      return;
+    }
+    mutation.mutate(
+      { fuel_enabled: true },
+      {
+        onSuccess: (data) => {
+          if (data.restart_required) {
+            setShowRestartPrompt(true);
+          }
+        },
+      },
+    );
+  };
+
+  const handleRestart = async () => {
+    setRestarting(true);
+    try {
+      const { restartFuelAssistant } = await import("@/lib/api");
+      await restartFuelAssistant();
+    } catch {
+      // Restart failed — user can retry
+    } finally {
+      setRestarting(false);
+      setShowRestartPrompt(false);
+    }
+  };
+
+  const handleDecline = () => {
+    mutation.mutate({ fuel_enabled: false });
+    setShowRestartPrompt(false);
+  };
 
   return (
     <article
@@ -306,26 +343,53 @@ function FuelCard() {
             Workout tracking, fitness logging, and progress trends
             — powered by your AI assistant.
           </p>
-          {enabled && <FuelProfileStatus />}
+          {enabled && !showRestartPrompt && <FuelProfileStatus />}
         </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={enabled}
-          aria-label={enabled ? "Disable Fuel" : "Enable Fuel"}
-          onClick={() => mutation.mutate({ fuel_enabled: !enabled })}
-          disabled={mutation.isPending}
-          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-            enabled ? "bg-accent" : "bg-border"
-          } ${mutation.isPending ? "opacity-50" : ""}`}
-        >
-          <span
-            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-              enabled ? "translate-x-5" : "translate-x-0"
-            }`}
-          />
-        </button>
+        {!showRestartPrompt && (
+          <button
+            type="button"
+            role="switch"
+            aria-checked={enabled}
+            aria-label={enabled ? "Disable Fuel" : "Enable Fuel"}
+            onClick={handleToggle}
+            disabled={mutation.isPending || restarting}
+            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+              enabled ? "bg-accent" : "bg-border"
+            } ${mutation.isPending || restarting ? "opacity-50" : ""}`}
+          >
+            <span
+              className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                enabled ? "translate-x-5" : "translate-x-0"
+              }`}
+            />
+          </button>
+        )}
       </div>
+      {showRestartPrompt && (
+        <div className="mt-3 rounded-xl border border-amber-border bg-amber-bg p-3">
+          <p className="text-sm text-amber-text">
+            Enabling Fuel requires restarting your assistant. Active conversations will be briefly interrupted.
+          </p>
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              onClick={handleRestart}
+              disabled={restarting}
+              className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white transition-all hover:brightness-110 disabled:opacity-50"
+            >
+              {restarting ? "Restarting..." : "Restart now"}
+            </button>
+            <button
+              type="button"
+              onClick={handleDecline}
+              disabled={restarting}
+              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-ink-muted transition-all hover:bg-surface-hover disabled:opacity-50"
+            >
+              Not now
+            </button>
+          </div>
+        </div>
+      )}
     </article>
   );
 }

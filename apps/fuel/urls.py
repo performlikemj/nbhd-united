@@ -16,6 +16,7 @@ from .views import (
     FuelGoalDetailView,
     FuelGoalListView,
     FuelProfileView,
+    FuelRestartView,  # noqa: F401
     FuelSettingsView,
     PRFeedView,
     RestingHRDetailView,
@@ -38,6 +39,7 @@ from .views import (
 urlpatterns = [
     # Consumer-facing (frontend, JWT auth)
     path("settings/", FuelSettingsView.as_view(), name="fuel-settings"),
+    path("restart/", FuelRestartView.as_view(), name="fuel-restart"),  # noqa: F401
     path("profile/", FuelProfileView.as_view(), name="fuel-profile"),
     path("workouts/", WorkoutListView.as_view(), name="fuel-workouts"),
     path("workouts/count/", WorkoutCountView.as_view(), name="fuel-workout-count"),
