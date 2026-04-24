@@ -30,11 +30,12 @@ class TenantAdmin(admin.ModelAdmin):
         "user",
         "status",
         "model_tier",
+        "is_budget_exempt",
         "container_id",
         "messages_today",
         "messages_this_month",
         "created_at",
     )
-    list_filter = ("status", "model_tier")
+    list_filter = ("status", "model_tier", "is_budget_exempt")
     search_fields = ("user__username", "user__display_name", "container_id")
     readonly_fields = ("id", "created_at", "updated_at", "provisioned_at")

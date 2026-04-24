@@ -1,5 +1,6 @@
 """Tests for billing app."""
 
+
 from django.test import TestCase
 
 from apps.tenants.services import create_tenant
@@ -35,3 +36,22 @@ class UsageTrackingTest(TestCase):
         self.tenant.estimated_cost_this_month = self.tenant.effective_cost_budget
         self.tenant.save()
         self.assertEqual(check_budget(self.tenant), "personal")
+
+    def test_check_budget_exempt_skips_personal(self):
+        """Exempt tenant is not blocked even when over personal budget."""
+        self.tenant.estimated_cost_this_month = self.tenant.effective_cost_budget + 1
+        self.tenant.is_budget_exempt = True
+        self.tenant.save()
+        self.assertEqual(check_budget(self.tenant), "")
+
+    def test_check_budget_exempt_skips_global(self):
+        """Exempt tenant is not blocked even when global budget is exhausted."""
+        from datetime import date
+
+        from .models import MonthlyBudget
+
+        first = date.today().replace(day=1)
+        MonthlyBudget.objects.create(month=first, budget_dollars=100, spent_dollars=200)
+        self.tenant.is_budget_exempt = True
+        self.tenant.save()
+        self.assertEqual(check_budget(self.tenant), "")

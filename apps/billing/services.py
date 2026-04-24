@@ -102,7 +102,9 @@ def check_budget(tenant: Tenant) -> str:
     Callers should hibernate the container when a reason is returned.
     """
     # Personal budget
-    tenant.refresh_from_db(fields=["estimated_cost_this_month", "monthly_cost_budget", "model_tier"])
+    tenant.refresh_from_db(fields=["estimated_cost_this_month", "monthly_cost_budget", "model_tier", "is_budget_exempt"])
+    if tenant.is_budget_exempt:
+        return ""
     if tenant.is_over_budget:
         return "personal"
 
