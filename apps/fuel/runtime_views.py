@@ -679,7 +679,9 @@ def _manage_fuel_cron(tenant, plan, action="create"):
             # Find and remove existing fuel cron(s) for this tenant
             try:
                 result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-                existing = result.get("jobs", []) if isinstance(result, dict) else result if isinstance(result, list) else []
+                existing = (
+                    result.get("jobs", []) if isinstance(result, dict) else result if isinstance(result, list) else []
+                )
                 for job in existing:
                     if isinstance(job, dict) and str(job.get("name", "")).startswith("_fuel:"):
                         job_id = job.get("id") or job.get("jobId") or job.get("name")

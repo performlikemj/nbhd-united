@@ -727,9 +727,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     if getattr(tenant, "fuel_enabled", False):
         from apps.fuel.models import WorkoutPlan
 
-        active_plan = (
-            WorkoutPlan.objects.filter(tenant=tenant, status="active").order_by("-created_at").first()
-        )
+        active_plan = WorkoutPlan.objects.filter(tenant=tenant, status="active").order_by("-created_at").first()
         if active_plan:
             fuel_job = build_fuel_workout_cron(tenant, active_plan)
             if fuel_job:
