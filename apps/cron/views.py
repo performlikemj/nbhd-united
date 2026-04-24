@@ -74,6 +74,8 @@ TASK_MAP = {
     # Per-tenant config/image updates (enqueued by apply-pending-configs)
     "apply_single_tenant_config": "apps.orchestrator.tasks.apply_single_tenant_config_task",
     "apply_single_tenant_image": "apps.orchestrator.tasks.apply_single_tenant_image_task",
+    # Post-image-update cron restore (enqueued by apply_single_tenant_image_task)
+    "restore_crons_after_image_update": "apps.orchestrator.tasks.restore_crons_after_image_update_task",
     # One-off broadcast (enqueued by broadcast-message)
     "broadcast_single_tenant": "apps.orchestrator.tasks.broadcast_single_tenant_task",
     # Cron dedup (enqueued by dedup-crons)
@@ -295,7 +297,11 @@ def apply_pending_configs(request):
             image_tasks.append(("apply_single_tenant_image", (str(tenant.id), desired_tag), {}))
             image_count += 1
 
-    # 3. Re-seed cron jobs for all entitled, active (non-hibernated) tenants
+    # 3. Re-seed cron jobs for entitled, active (non-hibernated) tenants that
+    #    are NOT about to get an image update. Image updates restart the
+    #    container (wiping SQLite), so seeding now is wasted work — the
+    #    post-image reseed in apply_single_tenant_image_task handles them.
+    stale_image_tenant_ids = {t_id for _, (t_id, _), _ in image_tasks}
     active_tenants_with_containers = (
         Tenant.entitled_active()
         .filter(
@@ -306,6 +312,8 @@ def apply_pending_configs(request):
 
     cron_seed_count = 0
     for tenant_id in active_tenants_with_containers:
+        if str(tenant_id) in stale_image_tenant_ids:
+            continue  # post-image reseed will handle this tenant
         config_tasks.append(("seed_cron_jobs", (str(tenant_id),), {}))
         cron_seed_count += 1
 

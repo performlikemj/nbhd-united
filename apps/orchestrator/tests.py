@@ -61,8 +61,12 @@ class ConfigGeneratorTest(TestCase):
         config = generate_openclaw_config(self.tenant)
         primary = config["agents"]["defaults"]["model"]["primary"]
         self.assertTrue(primary.startswith("openrouter/"))
-        # OpenRouter is built-in; no custom providers block needed
-        self.assertNotIn("models", config)
+        # >= 2026.4.15 injects explicit OpenRouter base URL override
+        providers = config.get("models", {}).get("providers", {})
+        self.assertEqual(
+            providers.get("openrouter", {}).get("baseUrl"),
+            "https://openrouter.ai/api/v1",
+        )
 
     def test_starter_tier_has_active_models(self):
         self.tenant.model_tier = "starter"
@@ -136,9 +140,15 @@ class ConfigGeneratorTest(TestCase):
     def test_channels_have_no_explicit_capabilities(self):
         """Capabilities are auto-detected by OpenClaw — not set in config."""
         config = generate_openclaw_config(self.tenant)
+        for channel_config in config["channels"].values():
+            self.assertNotIn("capabilities", channel_config)
+
+    def test_only_linked_channels_enabled(self):
+        """Only channels the tenant has linked should appear in config."""
+        # Tenant has telegram_chat_id set, not line_user_id
+        config = generate_openclaw_config(self.tenant)
         self.assertIn("telegram", config["channels"])
-        self.assertNotIn("capabilities", config["channels"]["telegram"])
-        self.assertNotIn("capabilities", config["channels"]["line"])
+        self.assertNotIn("line", config["channels"])
 
     def test_chat_completions_endpoint_enabled(self):
         """Gateway exposes /v1/chat/completions for central poller forwarding."""
@@ -468,12 +478,14 @@ class VersionAwareConfigTest(TestCase):
             telegram_chat_id=777888999,
         )
 
-    def test_tools_default_to_2026_4_5_policy(self):
+    def test_tools_default_to_current_policy(self):
+        """New tenants get the current default version (4.21 → 4.15 policy)."""
         config = generate_openclaw_config(self.tenant)
         allowed = config["tools"]["allow"]
-        self.assertIn("group:web", allowed)
-        self.assertIn("group:automation", allowed)
-        self.assertNotIn("group:openclaw", allowed)
+        self.assertIn("group:openclaw", allowed)
+        self.assertIn("group:plugins", allowed)
+        self.assertNotIn("group:web", allowed)
+        self.assertNotIn("group:automation", allowed)
 
     def test_tools_use_2026_4_15_when_version_set(self):
         self.tenant.openclaw_version = "2026.4.15"
@@ -495,6 +507,8 @@ class VersionAwareConfigTest(TestCase):
         )
 
     def test_no_openrouter_override_for_2026_4_5(self):
+        self.tenant.openclaw_version = "2026.4.5"
+        self.tenant.save()
         config = generate_openclaw_config(self.tenant)
         providers = config.get("models", {}).get("providers", {})
         self.assertNotIn("openrouter", providers)
@@ -562,6 +576,158 @@ class RestoreUserCronJobsTest(TestCase):
 
         self.assertEqual(result["restored"], 1)  # Only custom job
         self.assertEqual(mock_invoke.call_count, 1)
+
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_sync_prefix_jobs_are_never_restored(self, mock_invoke):
+        """_sync:* Phase 2 crons are system-generated and should not be restored."""
+        self.tenant.cron_jobs_snapshot = {
+            "jobs": [
+                {"name": "_sync:Morning Briefing", "sessionTarget": "main", "schedule": "0 7 * * *"},
+                {"name": "_sync:Evening Check-in", "sessionTarget": "main", "schedule": "0 21 * * *"},
+                {"name": "My Custom Reminder", "schedule": "0 12 * * *"},
+            ],
+            "snapshot_at": "2026-01-01T00:00:00",
+        }
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        result = restore_user_cron_jobs(self.tenant, existing_job_names=set())
+
+        self.assertEqual(result["restored"], 1)  # Only custom reminder
+        self.assertEqual(mock_invoke.call_count, 1)
+
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_fuel_prefix_jobs_are_never_restored(self, mock_invoke):
+        """_fuel:* workout prep crons are system-generated and should not be restored."""
+        self.tenant.cron_jobs_snapshot = {
+            "jobs": [
+                {"name": "_fuel:Workout Prep", "schedule": "0 6 * * 1,3,5"},
+                {"name": "Study Reminder", "schedule": "0 18 * * *"},
+            ],
+            "snapshot_at": "2026-01-01T00:00:00",
+        }
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        result = restore_user_cron_jobs(self.tenant, existing_job_names=set())
+
+        self.assertEqual(result["restored"], 1)  # Only study reminder
+        self.assertEqual(mock_invoke.call_count, 1)
+
+
+class ImageUpdateCronRestoreTest(TestCase):
+    """Tests for cron snapshot/restore during image updates."""
+
+    def setUp(self):
+        self.tenant = create_tenant(
+            display_name="Image Update Test",
+            telegram_chat_id=444555666,
+        )
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.container_id = "oc-test-container"
+        self.tenant.container_fqdn = "oc-test.internal.example.io"
+        self.tenant.save()
+
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.azure_client.update_container_image")
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_image_update_snapshots_crons_before_restart(self, mock_gw, mock_update, mock_publish):
+        """Pre-image snapshot should save cron jobs to the database."""
+        from apps.orchestrator.tasks import apply_single_tenant_image_task
+
+        mock_gw.return_value = {"jobs": [
+            {"name": "Morning Briefing", "schedule": "0 7 * * *"},
+            {"name": "My Reminder", "schedule": "0 12 * * *"},
+        ]}
+
+        apply_single_tenant_image_task(str(self.tenant.id), "abc123")
+
+        self.tenant.refresh_from_db()
+        snapshot = self.tenant.cron_jobs_snapshot
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(len(snapshot["jobs"]), 2)
+        self.assertEqual(snapshot["trigger"], "pre-image-update")
+        self.assertEqual(snapshot["image_tag"], "abc123")
+
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.azure_client.update_container_image")
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_image_update_schedules_restore_task(self, mock_gw, mock_update, mock_publish):
+        """After image update, a delayed restore_crons_after_image_update should be queued."""
+        from apps.orchestrator.tasks import apply_single_tenant_image_task
+
+        mock_gw.return_value = {"jobs": []}
+
+        apply_single_tenant_image_task(str(self.tenant.id), "abc123")
+
+        mock_publish.assert_called_once()
+        call_args = mock_publish.call_args
+        self.assertEqual(call_args[0][0], "restore_crons_after_image_update")
+        self.assertEqual(call_args[0][1], str(self.tenant.id))
+        self.assertEqual(call_args[1]["delay_seconds"], 90)
+
+    @patch("apps.orchestrator.services.dedup_tenant_cron_jobs")
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_restore_from_snapshot_creates_missing_jobs(self, mock_gw, mock_dedup):
+        """restore_crons_after_image_update should create jobs from snapshot."""
+        from apps.orchestrator.tasks import restore_crons_after_image_update_task
+
+        self.tenant.cron_jobs_snapshot = {
+            "jobs": [
+                {"name": "Morning Briefing", "id": "abc", "schedule": "0 7 * * *"},
+                {"name": "My Reminder", "id": "def", "schedule": "0 12 * * *"},
+            ],
+            "snapshot_at": "2026-01-01T00:00:00",
+            "trigger": "pre-image-update",
+        }
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        # cron.list returns empty (container just restarted)
+        mock_gw.return_value = {"jobs": []}
+
+        restore_crons_after_image_update_task(str(self.tenant.id))
+
+        # Both jobs should be created (with id stripped)
+        add_calls = [c for c in mock_gw.call_args_list if c[0][1] == "cron.add"]
+        self.assertEqual(len(add_calls), 2)
+        # Verify gateway-internal 'id' field is stripped
+        for call in add_calls:
+            job_arg = call[0][2]["job"]
+            self.assertNotIn("id", job_arg)
+
+    @patch("apps.orchestrator.services.dedup_tenant_cron_jobs")
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_restore_skips_already_existing_jobs(self, mock_gw, mock_dedup):
+        """Jobs already on the container should not be re-created."""
+        from apps.orchestrator.tasks import restore_crons_after_image_update_task
+
+        self.tenant.cron_jobs_snapshot = {
+            "jobs": [
+                {"name": "Morning Briefing", "schedule": "0 7 * * *"},
+                {"name": "My Reminder", "schedule": "0 12 * * *"},
+            ],
+            "snapshot_at": "2026-01-01T00:00:00",
+            "trigger": "pre-image-update",
+        }
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        # Container already has Morning Briefing (e.g., its own restore worked)
+        mock_gw.return_value = {"jobs": [{"name": "Morning Briefing", "schedule": "0 7 * * *"}]}
+
+        restore_crons_after_image_update_task(str(self.tenant.id))
+
+        add_calls = [c for c in mock_gw.call_args_list if c[0][1] == "cron.add"]
+        self.assertEqual(len(add_calls), 1)  # Only My Reminder
+        self.assertEqual(add_calls[0][0][2]["job"]["name"], "My Reminder")
+
+    @patch("apps.orchestrator.services.seed_cron_jobs")
+    def test_restore_falls_back_to_seed_when_no_snapshot(self, mock_seed):
+        """Without a snapshot, should fall back to seed_cron_jobs."""
+        from apps.orchestrator.tasks import restore_crons_after_image_update_task
+
+        self.tenant.cron_jobs_snapshot = None
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        restore_crons_after_image_update_task(str(self.tenant.id))
+        mock_seed.assert_called_once()
 
 
 @override_settings()

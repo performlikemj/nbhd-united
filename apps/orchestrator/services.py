@@ -588,6 +588,12 @@ SYSTEM_JOB_NAMES = frozenset(
     }
 )
 
+# Prefixes for system-generated cron jobs (Phase 2 sync, Fuel workout prep).
+# These are auto-created alongside their parent jobs and should NOT be
+# restored from snapshot as "user" jobs — they may use legacy payload/session
+# formats incompatible with newer OpenClaw versions.
+_SYSTEM_GENERATED_PREFIXES = ("_sync:", "_fuel:")
+
 
 def restore_user_cron_jobs(tenant: Tenant, existing_job_names: set[str]) -> dict:
     """Restore user-created cron jobs from the PostgreSQL snapshot.
@@ -612,6 +618,7 @@ def restore_user_cron_jobs(tenant: Tenant, existing_job_names: set[str]) -> dict
         if isinstance(job, dict)
         and job.get("name")
         and job["name"] not in SYSTEM_JOB_NAMES
+        and not job["name"].startswith(_SYSTEM_GENERATED_PREFIXES)
         and job["name"].lower() not in existing_lower
     ]
 
