@@ -777,6 +777,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "defaults": {
                 "model": {
                     "primary": models_config["primary"],
+                    "fallbacks": [m for m in model_entries if m != models_config["primary"]],
                 },
                 "models": model_entries,
                 "workspace": "/home/node/.openclaw/workspace",
