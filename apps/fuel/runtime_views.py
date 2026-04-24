@@ -469,6 +469,12 @@ class RuntimeFuelProfileView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+        # If preferred_time changed and there's an active plan, update the fuel cron
+        if "preferred_time" in updated_fields:
+            active_plan = WorkoutPlan.objects.filter(tenant=tenant, status="active").order_by("-created_at").first()
+            if active_plan:
+                _manage_fuel_cron(tenant, active_plan, action="update")
+
         return Response(_serialize_profile(profile))
 
 
@@ -693,7 +699,13 @@ def _manage_fuel_cron(tenant, plan, action="create"):
         if action in ("create", "update"):
             if plan.status != "active":
                 return  # Only create crons for active plans
-            job_dict = build_fuel_workout_cron(tenant, plan)
+            # Get preferred_time from profile for cron scheduling
+            pref_time = ""
+            try:
+                pref_time = FuelProfile.objects.get(tenant=tenant).preferred_time
+            except FuelProfile.DoesNotExist:
+                pass
+            job_dict = build_fuel_workout_cron(tenant, plan, preferred_time=pref_time)
             if job_dict:
                 invoke_gateway_tool(tenant, "cron.add", {"job": job_dict})
                 logger.info("Created fuel cron '%s' for tenant %s", cron_name, tenant.id)

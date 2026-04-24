@@ -78,6 +78,21 @@ class FuelSettingsView(APIView):
             profile, _created = FuelProfile.objects.get_or_create(tenant=tenant)
             profile_status = profile.onboarding_status
 
+        # Deploy config immediately so the assistant picks up the fuel
+        # plugin on the user's next message — don't wait for the hourly
+        # apply_pending_configs cron.
+        try:
+            from apps.cron.publish import publish_task
+
+            publish_task("apply_single_tenant_config", str(tenant.id))
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Failed to enqueue immediate config deploy for tenant %s (will apply on next cron cycle)",
+                tenant.id,
+            )
+
         return Response({"fuel_enabled": tenant.fuel_enabled, "fuel_profile_status": profile_status})
 
 
