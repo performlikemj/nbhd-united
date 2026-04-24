@@ -919,13 +919,12 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             },
         },
         # Messaging channels — the central Django router handles actual
-        # Telegram/LINE I/O, but we declare the channels here so the agent
-        # knows its surface capabilities (inline buttons, etc.).
-        # No bot tokens are set — the container never connects directly.
+        # Telegram/LINE I/O; no bot tokens are set (container never connects
+        # directly). Surface capabilities (inlineButtons) are auto-detected
+        # by OpenClaw based on channel type — no explicit config needed.
         "channels": {
             "telegram": {
                 "enabled": True,
-                "capabilities": ["inlineButtons"],
             },
             "line": {
                 "enabled": True,

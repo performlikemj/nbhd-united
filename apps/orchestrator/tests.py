@@ -45,11 +45,11 @@ class ConfigGeneratorTest(TestCase):
         # Auth is intentionally present — token from env var for Django→OC calls
         self.assertEqual(config["gateway"]["auth"]["mode"], "token")
 
-    def test_telegram_channel_absent_for_central_poller(self):
-        """No Telegram channel — central Django poller handles all inbound."""
+    def test_telegram_channel_enabled_for_central_poller(self):
+        """Telegram channel enabled — capabilities auto-detected by OpenClaw."""
         config = generate_openclaw_config(self.tenant)
         self.assertIn("telegram", config["channels"])
-        self.assertIn("inlineButtons", config["channels"]["telegram"]["capabilities"])
+        self.assertNotIn("capabilities", config["channels"]["telegram"])
 
     def test_starter_tier_model(self):
         self.tenant.model_tier = "starter"
@@ -133,29 +133,18 @@ class ConfigGeneratorTest(TestCase):
         self.assertNotIn("group:automation", tools["deny"])
         self.assertNotIn("group:ui", tools["allow"])
 
-    def test_channels_empty_no_telegram(self):
-        """No Telegram channel — central Django poller handles all Telegram."""
+    def test_channels_have_no_explicit_capabilities(self):
+        """Capabilities are auto-detected by OpenClaw — not set in config."""
         config = generate_openclaw_config(self.tenant)
         self.assertIn("telegram", config["channels"])
-        self.assertIn("inlineButtons", config["channels"]["telegram"]["capabilities"])
+        self.assertNotIn("capabilities", config["channels"]["telegram"])
+        self.assertNotIn("capabilities", config["channels"]["line"])
 
     def test_chat_completions_endpoint_enabled(self):
         """Gateway exposes /v1/chat/completions for central poller forwarding."""
         config = generate_openclaw_config(self.tenant)
         endpoints = config["gateway"]["http"]["endpoints"]
         self.assertTrue(endpoints["chatCompletions"]["enabled"])
-
-    # ── OpenClaw v2026.4.5 upgrade compatibility ─────────────────────
-
-    def test_line_channel_has_no_capabilities_key(self):
-        """LINE schema rejects 'capabilities' in OpenClaw >= 2026.4.5."""
-        config = generate_openclaw_config(self.tenant)
-        self.assertNotIn("capabilities", config["channels"]["line"])
-
-    def test_telegram_channel_retains_capabilities(self):
-        """Telegram channel config should still include 'capabilities'."""
-        config = generate_openclaw_config(self.tenant)
-        self.assertIn("capabilities", config["channels"]["telegram"])
 
     def test_heartbeat_cron_uses_delivery_none(self):
         """Heartbeat cron uses delivery.mode='none' — sends via plugin, not built-in messaging."""
