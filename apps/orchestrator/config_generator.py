@@ -456,10 +456,19 @@ _FUEL_WORKOUT_PREP_PROMPT = (
 )
 
 
-def build_fuel_workout_cron(tenant: Tenant, plan) -> dict | None:  # plan: WorkoutPlan
+_FUEL_PREP_HOUR = {
+    "morning": 6,  # 6:00am — before a morning workout
+    "afternoon": 11,  # 11:00am — before an afternoon workout
+    "evening": 16,  # 4:00pm — before an evening workout
+}
+_FUEL_PREP_DEFAULT_HOUR = 6  # fallback if preferred_time not set
+
+
+def build_fuel_workout_cron(tenant: Tenant, plan, preferred_time: str = "") -> dict | None:
     """Build a background Fuel workout-prep cron tied to an active plan.
 
-    Fires 30 minutes before the morning briefing on the plan's training days.
+    Fires on training days at a time derived from the user's preferred_time
+    (from FuelProfile). The cron is independent of all other scheduled tasks.
     Returns None if the plan has no valid schedule.
     """
     schedule_json = plan.schedule_json or {}
@@ -481,7 +490,8 @@ def build_fuel_workout_cron(tenant: Tenant, plan) -> dict | None:  # plan: Worko
 
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
     day_expr = ",".join(str(d) for d in sorted(cron_days))
-    cron_expr = f"30 6 * * {day_expr}"  # 6:30am on training days
+    prep_hour = _FUEL_PREP_HOUR.get(preferred_time, _FUEL_PREP_DEFAULT_HOUR)
+    cron_expr = f"0 {prep_hour} * * {day_expr}"
 
     return {
         "name": f"_fuel:{plan.name}",
@@ -722,14 +732,19 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     if heartbeat_job is not None:
         jobs.append(heartbeat_job)
 
-    # Fuel workout-prep cron — background, fires on training days before
-    # morning briefing so the daily note has workout context for all sessions.
+    # Fuel workout-prep cron — background, fires on training days at the
+    # user's preferred workout time. Independent of all other crons.
     if getattr(tenant, "fuel_enabled", False):
-        from apps.fuel.models import WorkoutPlan
+        from apps.fuel.models import FuelProfile, WorkoutPlan
 
         active_plan = WorkoutPlan.objects.filter(tenant=tenant, status="active").order_by("-created_at").first()
         if active_plan:
-            fuel_job = build_fuel_workout_cron(tenant, active_plan)
+            pref_time = ""
+            try:
+                pref_time = FuelProfile.objects.get(tenant=tenant).preferred_time
+            except FuelProfile.DoesNotExist:
+                pass
+            fuel_job = build_fuel_workout_cron(tenant, active_plan, preferred_time=pref_time)
             if fuel_job:
                 jobs.append(fuel_job)
 
