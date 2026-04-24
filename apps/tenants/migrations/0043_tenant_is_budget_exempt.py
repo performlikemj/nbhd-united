@@ -4,15 +4,16 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0042_cron_wake_at'),
+        ("tenants", "0042_cron_wake_at"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='tenant',
-            name='is_budget_exempt',
-            field=models.BooleanField(default=False, help_text='Exempt from personal and global budget enforcement. Usage still tracked.'),
+            model_name="tenant",
+            name="is_budget_exempt",
+            field=models.BooleanField(
+                default=False, help_text="Exempt from personal and global budget enforcement. Usage still tracked."
+            ),
         ),
     ]

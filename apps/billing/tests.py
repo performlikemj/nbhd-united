@@ -1,6 +1,5 @@
 """Tests for billing app."""
 
-
 from django.test import TestCase
 
 from apps.tenants.services import create_tenant
