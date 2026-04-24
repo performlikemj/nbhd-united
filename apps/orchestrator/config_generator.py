@@ -456,10 +456,14 @@ _FUEL_WORKOUT_PREP_PROMPT = (
 )
 
 
+_MORNING_BRIEFING_HOUR = 7  # Must match the Morning Briefing schedule in build_cron_seed_jobs
+
+
 def build_fuel_workout_cron(tenant: Tenant, plan) -> dict | None:  # plan: WorkoutPlan
     """Build a background Fuel workout-prep cron tied to an active plan.
 
-    Fires 30 minutes before the morning briefing on the plan's training days.
+    Fires 30 minutes before the morning briefing on the plan's training days
+    so the daily note has workout context before any session reads it.
     Returns None if the plan has no valid schedule.
     """
     schedule_json = plan.schedule_json or {}
@@ -481,7 +485,9 @@ def build_fuel_workout_cron(tenant: Tenant, plan) -> dict | None:  # plan: Worko
 
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
     day_expr = ",".join(str(d) for d in sorted(cron_days))
-    cron_expr = f"30 6 * * {day_expr}"  # 6:30am on training days
+    # 30 min before morning briefing, on training days only
+    prep_hour = (_MORNING_BRIEFING_HOUR - 1) % 24
+    cron_expr = f"30 {prep_hour} * * {day_expr}"
 
     return {
         "name": f"_fuel:{plan.name}",
@@ -612,7 +618,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     jobs = [
         {
             "name": "Morning Briefing",
-            "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": user_tz},
+            "schedule": {"kind": "cron", "expr": f"0 {_MORNING_BRIEFING_HOUR} * * *", "tz": user_tz},
             "sessionTarget": "isolated",
             "payload": {
                 "kind": "agentTurn",
