@@ -18,7 +18,7 @@ class BumpOpenclawVersionTest(TestCase):
         self.tenant.status = Tenant.Status.ACTIVE
         self.tenant.container_id = "oc-bump-test"
         self.tenant.container_fqdn = "oc-bump-test.internal"
-        self.tenant.openclaw_version = "2026.4.5"
+        self.tenant.openclaw_version = "2026.4.21"
         self.tenant.save()
 
     @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_container_image")
@@ -26,27 +26,27 @@ class BumpOpenclawVersionTest(TestCase):
     def test_bump_single_tenant_updates_version_config_image(self, mock_config, mock_image):
         call_command(
             "bump_openclaw_version",
-            oc_version="2026.4.15",
+            oc_version="2026.4.25",
             tenant=str(self.tenant.id),
-            image_tag="openclaw-2026.4.15",
+            image_tag="openclaw-2026.4.25",
         )
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.openclaw_version, "2026.4.15")
-        self.assertEqual(self.tenant.container_image_tag, "openclaw-2026.4.15")
+        self.assertEqual(self.tenant.openclaw_version, "2026.4.25")
+        self.assertEqual(self.tenant.container_image_tag, "openclaw-2026.4.25")
         mock_config.assert_called_once_with(str(self.tenant.id))
         mock_image.assert_called_once()
 
     @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_container_image")
     @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_tenant_config")
     def test_bump_all_skips_already_bumped(self, mock_config, mock_image):
-        self.tenant.openclaw_version = "2026.4.15"
+        self.tenant.openclaw_version = "2026.4.25"
         self.tenant.save()
 
         call_command(
             "bump_openclaw_version",
-            oc_version="2026.4.15",
+            oc_version="2026.4.25",
             all=True,
-            image_tag="openclaw-2026.4.15",
+            image_tag="openclaw-2026.4.25",
         )
         mock_config.assert_not_called()
         mock_image.assert_not_called()
@@ -58,13 +58,13 @@ class BumpOpenclawVersionTest(TestCase):
 
         call_command(
             "bump_openclaw_version",
-            oc_version="2026.4.15",
+            oc_version="2026.4.25",
             tenant=str(self.tenant.id),
-            image_tag="openclaw-2026.4.15",
+            image_tag="openclaw-2026.4.25",
         )
 
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.openclaw_version, "2026.4.5")
+        self.assertEqual(self.tenant.openclaw_version, "2026.4.21")
 
     @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_container_image")
     @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_tenant_config")
@@ -73,26 +73,26 @@ class BumpOpenclawVersionTest(TestCase):
 
         call_command(
             "bump_openclaw_version",
-            oc_version="2026.4.15",
+            oc_version="2026.4.25",
             tenant=str(self.tenant.id),
-            image_tag="openclaw-2026.4.15",
+            image_tag="openclaw-2026.4.25",
         )
 
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.openclaw_version, "2026.4.5")
+        self.assertEqual(self.tenant.openclaw_version, "2026.4.21")
 
     @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_container_image")
     @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_tenant_config")
     def test_dry_run_changes_nothing(self, mock_config, mock_image):
         call_command(
             "bump_openclaw_version",
-            oc_version="2026.4.15",
+            oc_version="2026.4.25",
             tenant=str(self.tenant.id),
-            image_tag="openclaw-2026.4.15",
+            image_tag="openclaw-2026.4.25",
             dry_run=True,
         )
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.openclaw_version, "2026.4.5")
+        self.assertEqual(self.tenant.openclaw_version, "2026.4.21")
         mock_config.assert_not_called()
         mock_image.assert_not_called()
 
@@ -104,10 +104,10 @@ class BumpOpenclawVersionTest(TestCase):
 
         call_command(
             "bump_openclaw_version",
-            oc_version="2026.4.15",
+            oc_version="2026.4.25",
             tenant=str(self.tenant.id),
-            image_tag="openclaw-2026.4.15",
+            image_tag="openclaw-2026.4.25",
         )
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.openclaw_version, "2026.4.5")
+        self.assertEqual(self.tenant.openclaw_version, "2026.4.21")
         mock_config.assert_not_called()

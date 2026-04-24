@@ -769,7 +769,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     return jobs
 
 
-def _build_tools_section(tier: str, version: str = "2026.4.5") -> dict[str, Any]:
+def _build_tools_section(tier: str, version: str = "2026.4.21") -> dict[str, Any]:
     """Build documented OpenClaw tools policy for subscriber tier."""
     tools = generate_tool_config(tier, version=version)
     tools["media"] = {
@@ -789,7 +789,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     """
     chat_id = tenant.user.telegram_chat_id  # may be None before Telegram linking
     tier = tenant.model_tier or "starter"
-    oc_version = getattr(tenant, "openclaw_version", "2026.4.5") or "2026.4.5"
+    oc_version = getattr(tenant, "openclaw_version", "2026.4.21") or "2026.4.21"
     models_config = TIER_MODELS.get(tier, TIER_MODELS["starter"])
     model_entries = TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["starter"])
 

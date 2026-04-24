@@ -83,19 +83,19 @@ def _resolve_policy(version: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return _POLICY_VERSIONS[-1][1], _POLICY_VERSIONS[-1][2]
 
 
-def get_allowed_tools(tier: str = "starter", version: str = "2026.4.5") -> list[str]:
+def get_allowed_tools(tier: str = "starter", version: str = "2026.4.21") -> list[str]:
     """Return documented allow-list entries for a subscriber tier."""
     allow, _ = _resolve_policy(version)
     return list(allow)
 
 
-def get_denied_tools(version: str = "2026.4.5") -> list[str]:
+def get_denied_tools(version: str = "2026.4.21") -> list[str]:
     """Return the deny-list for the given OpenClaw version."""
     _, deny = _resolve_policy(version)
     return list(deny)
 
 
-def generate_tool_config(tier: str = "starter", version: str = "2026.4.5") -> dict[str, Any]:
+def generate_tool_config(tier: str = "starter", version: str = "2026.4.21") -> dict[str, Any]:
     """Generate the OpenClaw `tools` config block for subscriber tenants."""
     return {
         "allow": get_allowed_tools(tier, version=version),

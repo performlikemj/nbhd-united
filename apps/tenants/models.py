@@ -120,7 +120,7 @@ class Tenant(models.Model):
     )
     openclaw_version = models.CharField(
         max_length=20,
-        default="2026.4.5",
+        default="2026.4.21",
         help_text="OpenClaw runtime version pinned to this tenant's config",
     )
 
