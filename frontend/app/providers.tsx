@@ -1,9 +1,10 @@
 "use client";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ReactNode, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 
 import { ErrorBoundary } from "@/components/error-boundary";
+import { installPersistence, seedQueryClient } from "@/lib/query-persist";
 
 export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(
@@ -18,6 +19,11 @@ export function Providers({ children }: { children: ReactNode }) {
         },
       })
   );
+
+  useEffect(() => {
+    seedQueryClient(queryClient);
+    return installPersistence(queryClient);
+  }, [queryClient]);
 
   return (
     <ErrorBoundary>

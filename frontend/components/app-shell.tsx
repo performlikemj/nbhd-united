@@ -8,6 +8,7 @@ import { ReactNode, useEffect, useRef, useState } from "react";
 import { logout } from "@/lib/api";
 import { clearTokens, isLoggedIn } from "@/lib/auth";
 import { useMeQuery, useTenantQuery } from "@/lib/queries";
+import { clearPersistedCache } from "@/lib/query-persist";
 import { BrandLogo } from "@/components/brand-logo";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { SiteFooter } from "@/components/site-footer";
@@ -144,7 +145,6 @@ function BackgroundLayers() {
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [checked, setChecked] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const isPublicPage = publicPages.includes(pathname) || pathname.startsWith("/legal/");
@@ -165,8 +165,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!isPublicPage && !isLoggedIn()) {
       router.replace("/login");
-    } else {
-      setChecked(true);
     }
   }, [pathname, isPublicPage, router]);
 
@@ -177,13 +175,10 @@ export function AppShell({ children }: { children: ReactNode }) {
       // Proceed with local logout even if server-side revocation fails.
     } finally {
       clearTokens();
+      clearPersistedCache();
       router.push("/login");
     }
   };
-
-  if (!checked && !isPublicPage) {
-    return null;
-  }
 
   // Full-bleed pages — no shell chrome (landing, auth, onboarding)
   const fullBleedPages = ["/", "/signup", "/login", "/onboarding"];

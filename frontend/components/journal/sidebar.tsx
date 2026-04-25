@@ -276,6 +276,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
               key={item.kind}
               type="button"
               onMouseEnter={() => prefetchDocument(item.kind, slug)}
+              onFocus={() => prefetchDocument(item.kind, slug)}
               onClick={() => onNavigate(item.kind, slug)}
               className={clsx(
                 "flex w-full items-center gap-3 rounded-xl px-4 py-2.5 text-left text-sm transition min-h-[44px]",
@@ -395,6 +396,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
                           <button
                             type="button"
                             onMouseEnter={() => prefetchDocument(sectionDocKind, item.slug)}
+                            onFocus={() => prefetchDocument(sectionDocKind, item.slug)}
                             onClick={() => {
                               if (!isConfirming) onNavigate(sectionDocKind, item.slug);
                             }}

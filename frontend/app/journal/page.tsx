@@ -2,9 +2,11 @@
 
 import { useState, useRef, useCallback } from "react";
 import clsx from "clsx";
+import { useQueryClient } from "@tanstack/react-query";
 import { Sidebar } from "@/components/journal/sidebar";
 import { DocumentView } from "@/components/journal/document-view";
 import { useSidebarTreeQuery } from "@/lib/queries";
+import { fetchDocument } from "@/lib/api";
 
 function todayISO(): string {
   const d = new Date();
@@ -42,6 +44,17 @@ export default function JournalPage() {
   // Recent entries from sidebar tree
   const { data: tree } = useSidebarTreeQuery();
   const dailyEntries = (tree ?? []).find((s) => s.kind === "daily")?.items ?? [];
+
+  const queryClient = useQueryClient();
+  const prefetchDocument = useCallback(
+    (kind: string, slug: string) => {
+      void queryClient.prefetchQuery({
+        queryKey: ["document", kind, slug],
+        queryFn: () => fetchDocument(kind, slug),
+      });
+    },
+    [queryClient],
+  );
 
   // Draggable sidebar FAB — persists Y position in localStorage
   const SIDEBAR_FAB_KEY = "sidebar-fab-y";
@@ -167,6 +180,8 @@ export default function JournalPage() {
                     key={entry.slug}
                     type="button"
                     onClick={() => handleNavigate("daily", entry.slug)}
+                    onMouseEnter={() => prefetchDocument("daily", entry.slug)}
+                    onFocus={() => prefetchDocument("daily", entry.slug)}
                     className={clsx(
                       "w-full rounded-xl p-3 text-left transition-all duration-200",
                       isActive

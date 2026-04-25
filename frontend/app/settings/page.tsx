@@ -426,7 +426,10 @@ export default function SettingsPage() {
   if (isLoading) {
     return (
       <div className="space-y-4">
+        <SectionCardSkeleton lines={6} />
+        <SectionCardSkeleton lines={3} />
         <SectionCardSkeleton lines={4} />
+        <SectionCardSkeleton lines={2} />
       </div>
     );
   }
