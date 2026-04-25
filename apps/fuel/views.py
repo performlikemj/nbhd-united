@@ -87,7 +87,7 @@ def _schedule_fuel_welcome(tenant):
         except Exception:
             tz = zoneinfo.ZoneInfo("UTC")
 
-        fire_at = datetime.now(tz) + timedelta(minutes=5)
+        fire_at = datetime.now(tz) + timedelta(minutes=1)
         # Date-specific cron expr: fires once (minute hour day month *)
         cron_expr = f"{fire_at.minute} {fire_at.hour} {fire_at.day} {fire_at.month} *"
 
