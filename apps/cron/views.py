@@ -94,6 +94,8 @@ TASK_MAP = {
     "cleanup_delivered_buffers": "apps.orchestrator.hibernation.cleanup_delivered_buffers_task",
     # Nightly extraction — goals/tasks/lessons from daily notes
     "nightly_extraction": "apps.orchestrator.tasks.nightly_extraction_task",
+    # Fuel welcome cron — delayed after container restart
+    "schedule_fuel_welcome": "apps.fuel.tasks.schedule_fuel_welcome_task",
 }
 
 
