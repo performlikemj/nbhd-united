@@ -203,12 +203,19 @@ class FuelRestartView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        # Schedule welcome cron after restart
+        # Schedule welcome cron AFTER the container is back up (~90s for
+        # cold start). We can't call the Gateway API on a restarting container.
         if tenant.fuel_enabled:
             try:
                 profile = FuelProfile.objects.get(tenant=tenant)
                 if profile.onboarding_status == "pending":
-                    _schedule_fuel_welcome(tenant)
+                    from apps.cron.publish import publish_task
+
+                    publish_task(
+                        "schedule_fuel_welcome",
+                        str(tenant.id),
+                        delay_seconds=90,
+                    )
             except FuelProfile.DoesNotExist:
                 pass
 
