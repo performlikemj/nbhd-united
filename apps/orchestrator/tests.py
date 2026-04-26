@@ -253,6 +253,25 @@ class ConfigGeneratorTest(TestCase):
                     f"{job['name']} should carry the conditional guard",
                 )
 
+    def test_phase2_sync_block_disambiguates_tool_from_message(self):
+        """The Phase 2 sync block must explicitly tell the agent that this is a
+        tool invocation, not a chat message. Regression guard for the cron-leak
+        incident where the model emitted `/cron add ...` text via
+        `nbhd_send_to_user` instead of calling the cron tool, and dropped the
+        leading underscore from the `_sync:` prefix.
+        """
+        from .config_generator import _phase2_sync_block
+
+        block = _phase2_sync_block("Evening Check-in")
+
+        # Tool-vs-message disambiguation must be explicit
+        self.assertIn("TOOL invocation", block)
+        self.assertIn("nbhd_send_to_user", block)
+
+        # The `_sync:` underscore prefix must be flagged as required
+        self.assertIn("_sync:Evening Check-in", block)
+        self.assertIn("MUST start with underscore", block)
+
     def test_background_jobs_skip_phase2_sync_block(self):
         """Background seed jobs (foreground=false) do NOT carry the Phase 2 wrapper."""
         from .config_generator import build_cron_seed_jobs

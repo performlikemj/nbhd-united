@@ -356,15 +356,29 @@ def upload_config_to_file_share(tenant_id: str, config_json: str) -> None:
     logger.info("Uploaded openclaw.json to file share %s (atomic)", share_name)
 
 
-def upload_workspace_file(tenant_id: str, file_path: str, content: str) -> None:
+def upload_workspace_file(
+    tenant_id: str,
+    file_path: str,
+    content: str,
+    *,
+    skip_if_exists: bool = False,
+) -> None:
     """Upload a workspace file to the tenant's Azure File Share.
 
     file_path is relative to the workspace root, e.g. 'workspace/AGENTS.md'.
+
+    When ``skip_if_exists`` is True, the upload is a no-op if the file already
+    exists on the share. Use this for files the agent owns after first seed
+    (SOUL.md, IDENTITY.md) so later config refreshes don't overwrite agent
+    edits — this matches the `[ ! -f ]` guards in `runtime/openclaw/entrypoint.sh`.
     """
     share_name = f"ws-{str(tenant_id)[:20]}"
 
     if _is_mock():
-        logger.info("[MOCK] Uploaded %s to file share %s", file_path, share_name)
+        if skip_if_exists:
+            logger.info("[MOCK] Skip-if-exists upload of %s to file share %s", file_path, share_name)
+        else:
+            logger.info("[MOCK] Uploaded %s to file share %s", file_path, share_name)
         return
 
     account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
@@ -379,6 +393,27 @@ def upload_workspace_file(tenant_id: str, file_path: str, content: str) -> None:
         account_name,
     )
     account_key = keys.keys[0].value
+    account_url = f"https://{account_name}.file.core.windows.net"
+
+    if skip_if_exists:
+        from azure.core.exceptions import ResourceNotFoundError
+
+        check_client = ShareFileClient(
+            account_url=account_url,
+            share_name=share_name,
+            file_path=file_path,
+            credential=account_key,
+        )
+        try:
+            check_client.get_file_properties()
+            logger.info(
+                "Skipping upload of %s to file share %s (already exists)",
+                file_path,
+                share_name,
+            )
+            return
+        except ResourceNotFoundError:
+            pass  # File missing — fall through and seed it
 
     from azure.storage.fileshare import ShareDirectoryClient
 
@@ -387,7 +422,7 @@ def upload_workspace_file(tenant_id: str, file_path: str, content: str) -> None:
     for i in range(1, len(parts)):
         dir_path = "/".join(parts[:i])
         dir_client = ShareDirectoryClient(
-            account_url=f"https://{account_name}.file.core.windows.net",
+            account_url=account_url,
             share_name=share_name,
             directory_path=dir_path,
             credential=account_key,
@@ -398,7 +433,7 @@ def upload_workspace_file(tenant_id: str, file_path: str, content: str) -> None:
             pass  # Already exists
 
     file_client = ShareFileClient(
-        account_url=f"https://{account_name}.file.core.windows.net",
+        account_url=account_url,
         share_name=share_name,
         file_path=file_path,
         credential=account_key,
