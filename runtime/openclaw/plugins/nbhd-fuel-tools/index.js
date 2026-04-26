@@ -453,6 +453,43 @@ export default function register(api) {
     { optional: true },
   );
 
+  // ── Delete Body Weight ──────────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_fuel_delete_body_weight",
+      description:
+        "Delete a body weight entry by date. Use when the user wants to remove a logged weight — typos, mistakes, or duplicates. Confirm with the user before deleting.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          date: {
+            type: "string",
+            description: "Date of the weight entry to delete, in YYYY-MM-DD format.",
+          },
+        },
+        required: ["date"],
+      },
+      async execute(_id, params) {
+        try {
+          const input = asObject(params);
+          const dateStr = asTrimmedString(input.date);
+          if (!dateStr) throw new Error("date is required");
+
+          const payload = await callRuntime(api, {
+            path: fuelPath(api, "/body-weight/"),
+            method: "DELETE",
+            query: { date: dateStr },
+          });
+          return renderPayload(payload);
+        } catch (error) {
+          return renderPayload({ error: error.message });
+        }
+      },
+    },
+    { optional: true },
+  );
+
   // ── Log Sleep ───────────────────────────────────────────────────────
   api.registerTool(
     {
