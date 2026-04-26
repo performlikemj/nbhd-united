@@ -5,29 +5,36 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies = [
-        ('tenants', '0045_openclaw_version_4_21'),
+        ("tenants", "0045_openclaw_version_4_21"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='CronJob',
+            name="CronJob",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(max_length=255)),
-                ('gateway_job_id', models.CharField(blank=True, default='', max_length=64)),
-                ('data', models.JSONField(default=dict, help_text='The full job dict as returned by the OpenClaw gateway.')),
-                ('last_synced_at', models.DateTimeField(blank=True, null=True)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('tenant', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='cron_jobs', to='tenants.tenant')),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("name", models.CharField(max_length=255)),
+                ("gateway_job_id", models.CharField(blank=True, default="", max_length=64)),
+                (
+                    "data",
+                    models.JSONField(default=dict, help_text="The full job dict as returned by the OpenClaw gateway."),
+                ),
+                ("last_synced_at", models.DateTimeField(blank=True, null=True)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                (
+                    "tenant",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE, related_name="cron_jobs", to="tenants.tenant"
+                    ),
+                ),
             ],
             options={
-                'indexes': [models.Index(fields=['tenant', 'last_synced_at'], name='cron_cronjo_tenant__c74c4c_idx')],
-                'constraints': [models.UniqueConstraint(fields=('tenant', 'name'), name='cron_unique_tenant_name')],
+                "indexes": [models.Index(fields=["tenant", "last_synced_at"], name="cron_cronjo_tenant__c74c4c_idx")],
+                "constraints": [models.UniqueConstraint(fields=("tenant", "name"), name="cron_unique_tenant_name")],
             },
         ),
     ]

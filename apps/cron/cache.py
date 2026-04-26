@@ -69,10 +69,7 @@ def upsert_jobs_to_cache(tenant, jobs: list[dict[str, Any]]) -> None:
     desired_names = set(by_name)
 
     with transaction.atomic():
-        existing = {
-            cj.name: cj
-            for cj in CronJob.objects.select_for_update().filter(tenant=tenant)
-        }
+        existing = {cj.name: cj for cj in CronJob.objects.select_for_update().filter(tenant=tenant)}
         for name, job in by_name.items():
             gateway_job_id = str(job.get("id") or job.get("jobId") or "")[:64]
             row = existing.get(name)
