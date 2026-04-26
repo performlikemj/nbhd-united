@@ -15,6 +15,11 @@ from rest_framework.views import APIView
 
 from apps.tenants.models import Tenant
 
+from .cache import (
+    is_container_unavailable_error,
+    read_jobs_from_cache,
+    upsert_jobs_to_cache,
+)
 from .gateway_client import GatewayError, invoke_gateway_tool
 
 logger = logging.getLogger(__name__)
@@ -131,6 +136,50 @@ def _is_hidden_cron(name: str) -> bool:
     return name.startswith(HIDDEN_SYSTEM_CRON_PREFIXES)
 
 
+def _filter_visible_jobs(raw_jobs: list[dict]) -> list[dict]:
+    """Strip hidden system crons and tag each job with its ``foreground`` flag."""
+    visible: list[dict] = []
+    for j in raw_jobs:
+        if not isinstance(j, dict):
+            continue
+        if _is_hidden_cron(j.get("name", "")):
+            continue
+        payload = j.get("payload") or {}
+        message = ""
+        if isinstance(payload, dict):
+            message = payload.get("message") or payload.get("text", "") or ""
+        visible.append({**j, "foreground": _message_has_phase2_marker(message)})
+    return visible
+
+
+def _update_legacy_snapshot(tenant, raw_jobs: list[dict]) -> None:
+    """Mirror the freshly-read job list into ``Tenant.cron_jobs_snapshot``.
+
+    The hibernation flow still reads this field — keep writing it until
+    Phase 2 retires the snapshot/restore machinery.
+    """
+    try:
+        from django.utils import timezone as tz
+
+        seen: dict[str, dict] = {}
+        for job in raw_jobs:
+            if not isinstance(job, dict):
+                continue
+            name = job.get("name", "")
+            if not name:
+                continue
+            prev = seen.get(name)
+            if prev is None or job.get("createdAt", "") > prev.get("createdAt", ""):
+                seen[name] = job
+        tenant.cron_jobs_snapshot = {
+            "jobs": list(seen.values()),
+            "snapshot_at": tz.now().isoformat(),
+        }
+        tenant.save(update_fields=["cron_jobs_snapshot"])
+    except Exception:
+        logger.warning("Failed to snapshot cron jobs for tenant %s", tenant.id, exc_info=True)
+
+
 def _get_tenant_for_user(user) -> Tenant:
     try:
         return user.tenant
@@ -152,59 +201,48 @@ class CronJobListCreateView(APIView):
 
     def get(self, request):
         tenant = _get_tenant_for_user(request.user)
+
+        # Hibernated tenants serve from the Postgres cache directly. Calling
+        # the gateway would 404 with the Azure "Container App - Unavailable"
+        # splash, which surfaced as a confusing dashboard error.
+        if tenant.hibernated_at:
+            return Response({"jobs": _filter_visible_jobs(read_jobs_from_cache(tenant))})
+
+        # Not provisioned / no container at all: surface as 502 (unchanged).
+        # Fallback only covers gateway-level container unavailability below.
         try:
             _require_active_tenant(tenant)
-            result = invoke_gateway_tool(tenant, "cron.list", {})
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
-        # Snapshot the full job list (including system crons) to PostgreSQL
-        # so user-created jobs can be restored after container restarts.
+        try:
+            result = invoke_gateway_tool(tenant, "cron.list", {})
+        except GatewayError as exc:
+            if is_container_unavailable_error(exc):
+                logger.info(
+                    "cron.list gateway unavailable for tenant %s — serving cached cron list",
+                    tenant.id,
+                )
+                return Response({"jobs": _filter_visible_jobs(read_jobs_from_cache(tenant))})
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
         data = result.get("details", result)
-        if isinstance(data, dict) and "jobs" in data:
-            try:
-                from django.utils import timezone as tz
+        raw_jobs = data["jobs"] if isinstance(data, dict) and "jobs" in data else []
 
-                # Deduplicate by name — keep newest per name (by createdAt)
-                # to prevent dirty snapshots from propagating duplicates.
-                raw_jobs = data["jobs"]
-                seen: dict[str, dict] = {}
-                for job in raw_jobs:
-                    if not isinstance(job, dict):
-                        continue
-                    name = job.get("name", "")
-                    if not name:
-                        continue
-                    prev = seen.get(name)
-                    if prev is None or job.get("createdAt", "") > prev.get("createdAt", ""):
-                        seen[name] = job
-                tenant.cron_jobs_snapshot = {
-                    "jobs": list(seen.values()),
-                    "snapshot_at": tz.now().isoformat(),
-                }
-                tenant.save(update_fields=["cron_jobs_snapshot"])
-            except Exception:
-                logger.warning("Failed to snapshot cron jobs for tenant %s", tenant.id, exc_info=True)
+        # Populate the Postgres caches: the per-row table and the legacy
+        # JSONField snapshot (still read by the hibernation path).
+        try:
+            upsert_jobs_to_cache(tenant, raw_jobs)
+        except Exception:
+            logger.warning(
+                "Failed to upsert cron jobs to cache for tenant %s",
+                tenant.id,
+                exc_info=True,
+            )
+        _update_legacy_snapshot(tenant, raw_jobs)
 
-        # Filter out hidden system crons from user-facing list, and enrich
-        # each visible job with its `foreground` flag (derived from the
-        # presence of the Phase 2 sync marker in the message body — the
-        # message itself is the source of truth, no separate storage needed).
         if isinstance(data, dict) and "jobs" in data:
-            visible_jobs = []
-            for j in data["jobs"]:
-                if not isinstance(j, dict):
-                    continue
-                name = j.get("name", "")
-                if _is_hidden_cron(name):
-                    continue
-                message = ""
-                payload = j.get("payload") or {}
-                if isinstance(payload, dict):
-                    message = payload.get("message") or payload.get("text", "") or ""
-                j = {**j, "foreground": _message_has_phase2_marker(message)}
-                visible_jobs.append(j)
-            data = {**data, "jobs": visible_jobs}
+            data = {**data, "jobs": _filter_visible_jobs(raw_jobs)}
         return Response(data)
 
     MAX_CRON_JOBS = 10
