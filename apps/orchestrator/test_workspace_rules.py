@@ -100,3 +100,53 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
             any("workspaces.md" in p for p in rules_paths),
             f"workspaces.md not found in uploaded rules: {rules_paths}",
         )
+
+    @patch("apps.orchestrator.services.upload_config_to_file_share")
+    @patch("apps.orchestrator.services.config_to_json", return_value="{}")
+    @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
+    @patch("apps.orchestrator.services._audit_and_log")
+    @patch("apps.orchestrator.services.update_system_cron_prompts", return_value={"updated": 0})
+    @patch("apps.orchestrator.azure_client.upload_workspace_file")
+    def test_soul_and_identity_use_skip_if_exists(
+        self,
+        mock_upload_workspace_file,
+        _mock_update_crons,
+        _mock_audit,
+        _mock_generate_config,
+        _mock_config_to_json,
+        _mock_upload_config,
+    ):
+        """SOUL.md and IDENTITY.md must be uploaded with skip_if_exists=True so a
+        config refresh never overwrites agent-evolved soul/identity content.
+        Mirrors the `[ ! -f ]` guard in runtime/openclaw/entrypoint.sh.
+        """
+        from apps.orchestrator.services import update_tenant_config
+
+        update_tenant_config(str(self.tenant.id))
+
+        seed_once_paths = {"workspace/SOUL.md", "workspace/IDENTITY.md"}
+        seen_seed_once: dict[str, bool] = {}
+        for call in mock_upload_workspace_file.call_args_list:
+            file_path = call.args[1] if len(call.args) > 1 else call.kwargs.get("file_path")
+            if file_path in seed_once_paths:
+                seen_seed_once[file_path] = call.kwargs.get("skip_if_exists", False)
+
+        self.assertEqual(
+            set(seen_seed_once.keys()),
+            seed_once_paths,
+            f"Expected SOUL.md and IDENTITY.md to be uploaded, got {set(seen_seed_once.keys())}",
+        )
+        for path, skip_flag in seen_seed_once.items():
+            self.assertTrue(
+                skip_flag,
+                f"{path} must be uploaded with skip_if_exists=True (got {skip_flag})",
+            )
+
+        # Sanity: AGENTS.md and rules must still be unconditional overwrites
+        for call in mock_upload_workspace_file.call_args_list:
+            file_path = call.args[1] if len(call.args) > 1 else call.kwargs.get("file_path", "")
+            if file_path == "workspace/AGENTS.md" or "workspace/rules/" in file_path:
+                self.assertFalse(
+                    call.kwargs.get("skip_if_exists", False),
+                    f"{file_path} must overwrite, not skip-if-exists",
+                )

@@ -370,10 +370,9 @@ def update_tenant_config(tenant_id: str) -> None:
         persona_key = (tenant.user.preferences or {}).get("agent_persona", "neighbor")
         workspace_files = render_workspace_files(persona_key, tenant=tenant)
 
-        file_map = {
+        # System-controlled files — always overwrite on config refresh.
+        file_map_overwrite = {
             "NBHD_AGENTS_MD": "workspace/AGENTS.md",
-            "NBHD_SOUL_MD": "workspace/SOUL.md",
-            "NBHD_IDENTITY_MD": "workspace/IDENTITY.md",
             # Reference docs — written to workspace/docs/ and read on-demand
             "NBHD_DOC_TOOLS_REFERENCE": "workspace/docs/tools-reference.md",
             "NBHD_DOC_CHANNEL_FORMATTING": "workspace/docs/channel-formatting.md",
@@ -384,12 +383,32 @@ def update_tenant_config(tenant_id: str) -> None:
 
         # Deploy full or silent platform guide based on feature_tips_enabled
         guide_key = "NBHD_DOC_PLATFORM_GUIDE" if tenant.feature_tips_enabled else "NBHD_DOC_PLATFORM_GUIDE_SILENT"
-        file_map[guide_key] = "workspace/docs/platform-guide.md"
+        file_map_overwrite[guide_key] = "workspace/docs/platform-guide.md"
 
-        for env_key, file_path in file_map.items():
+        # Agent-owned after first seed — never overwrite. Mirrors the
+        # `[ ! -f ]` guards in runtime/openclaw/entrypoint.sh: SOUL.md and
+        # IDENTITY.md are seeded once at provision and then belong to the
+        # tenant's assistant. Overwriting them here would silently wipe any
+        # evolution the agent has done.
+        file_map_seed_once = {
+            "NBHD_SOUL_MD": "workspace/SOUL.md",
+            "NBHD_IDENTITY_MD": "workspace/IDENTITY.md",
+        }
+
+        for env_key, file_path in file_map_overwrite.items():
             content = workspace_files.get(env_key, "")
             if content:
                 upload_workspace_file(str(tenant.id), file_path, content)
+
+        for env_key, file_path in file_map_seed_once.items():
+            content = workspace_files.get(env_key, "")
+            if content:
+                upload_workspace_file(
+                    str(tenant.id),
+                    file_path,
+                    content,
+                    skip_if_exists=True,
+                )
 
         # Upload all rule templates to workspace/rules/ — referenced by AGENTS.md
         # for on-demand loading. Auto-discovers all .md files in templates/openclaw/rules/.
