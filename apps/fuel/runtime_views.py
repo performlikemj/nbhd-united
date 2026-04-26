@@ -479,7 +479,7 @@ class RuntimeFuelProfileView(APIView):
 
 
 class RuntimeBodyWeightView(APIView):
-    """POST: log body weight from the AI assistant."""
+    """POST: log body weight. DELETE: remove an entry by date."""
 
     permission_classes = [AllowAny]
 
@@ -521,6 +521,33 @@ class RuntimeBodyWeightView(APIView):
             {"date": str(entry.date), "weight_kg": str(entry.weight_kg), "created": created},
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
+
+    def delete(self, request, tenant_id):
+        err = _internal_auth_or_401(request, tenant_id)
+        if err:
+            return err
+        tenant_or_resp = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant_or_resp, Response):
+            return tenant_or_resp
+        tenant = tenant_or_resp
+
+        weight_date = request.query_params.get("date") or request.data.get("date")
+        if not weight_date:
+            return Response({"error": "date is required"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            date.fromisoformat(str(weight_date))
+        except (ValueError, TypeError):
+            return Response({"error": "date must be YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            entry = BodyWeightLog.objects.get(tenant=tenant, date=weight_date)
+        except BodyWeightLog.DoesNotExist:
+            return Response(
+                {"error": "no_entry_for_date", "date": str(weight_date)},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        entry.delete()
+        return Response({"deleted": True, "date": str(weight_date)}, status=status.HTTP_200_OK)
 
 
 class RuntimeSleepView(APIView):

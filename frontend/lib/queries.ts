@@ -102,6 +102,7 @@ import {
   fetchFuelProgress,
   fetchBodyWeight,
   createBodyWeight,
+  deleteBodyWeight,
   updateFuelSettings,
   fetchFuelProfile,
   updateFuelProfile,
@@ -1220,6 +1221,16 @@ export function useCreateBodyWeightMutation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: createBodyWeight,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-body-weight"] });
+    },
+  });
+}
+
+export function useDeleteBodyWeightMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteBodyWeight,
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["fuel-body-weight"] });
     },

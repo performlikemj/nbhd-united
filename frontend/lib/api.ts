@@ -950,6 +950,12 @@ export function createBodyWeight(data: {
   });
 }
 
+export function deleteBodyWeight(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/fuel/body-weight/${id}/`, {
+    method: "DELETE",
+  });
+}
+
 export function updateFuelSettings(
   data: { fuel_enabled: boolean },
 ): Promise<{ fuel_enabled: boolean; fuel_profile_status: import("@/lib/types").FuelOnboardingStatus | null; restart_required: boolean }> {
