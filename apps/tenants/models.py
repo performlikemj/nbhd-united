@@ -8,6 +8,8 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
+from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION  # noqa: I001
+
 from .line_models import LineLinkToken  # noqa: F401
 
 # Import so Django discovers the models for migrations
