@@ -204,14 +204,39 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
     """Wake a hibernated tenant's container and schedule follow-up tasks.
 
     Returns True on success.
+
+    Image refresh on wake: if the latest image tag (``OPENCLAW_IMAGE_TAG``)
+    differs from the tenant's stored ``container_image_tag``, push the new
+    image instead of activating the existing latest revision. In single-
+    revision mode that simultaneously wakes the container AND lands it on
+    the current image, fixing the "wake-on-old-image" bug where hibernated
+    tenants come back stale because fleet rollouts skip them.
     """
     tid = str(tenant.id)[:8]
 
-    # 1. Activate latest revision → 1 replica (~30-60s startup)
+    # 1. Wake the container — image-refresh path takes priority over plain wake
     try:
-        from apps.orchestrator.azure_client import wake_container_app
+        from django.conf import settings as django_settings
 
-        wake_container_app(tenant.container_id)
+        from apps.orchestrator.azure_client import update_container_image, wake_container_app
+
+        desired_tag = getattr(django_settings, "OPENCLAW_IMAGE_TAG", "latest") or "latest"
+        current_tag = tenant.container_image_tag or ""
+        needs_image_refresh = desired_tag != "latest" and current_tag != desired_tag
+
+        if needs_image_refresh:
+            registry = getattr(django_settings, "AZURE_ACR_SERVER", "nbhdunited.azurecr.io")
+            desired_image = f"{registry}/nbhd-openclaw:{desired_tag}"
+            update_container_image(tenant.container_id, desired_image)
+            Tenant.objects.filter(id=tenant.id).update(container_image_tag=desired_tag)
+            logger.info(
+                "idle_wake: refreshed image for %s (%s -> %s)",
+                tid,
+                current_tag[:10] if current_tag else "?",
+                desired_tag[:10],
+            )
+        else:
+            wake_container_app(tenant.container_id)
     except Exception:
         logger.exception("idle_wake: failed to wake container for %s", tid)
         return False

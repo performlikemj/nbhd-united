@@ -111,3 +111,34 @@ class BumpOpenclawVersionTest(TestCase):
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.openclaw_version, "2026.4.21")
         mock_config.assert_not_called()
+
+    @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_container_image")
+    @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_tenant_config")
+    def test_bump_wakes_and_bumps_hibernated_tenants(self, mock_config, mock_image):
+        """Hibernated tenants must NOT be skipped — they're the ones the
+        auto-rollout misses, and pushing a new image in single-revision mode
+        wakes them onto the new image. Regression guard for the silent-fleet-
+        rollout-failure mode discovered 2026-04-26.
+        """
+        from django.utils import timezone
+
+        self.tenant.hibernated_at = timezone.now()
+        self.tenant.container_image_tag = "old-sha"
+        self.tenant.save(update_fields=["hibernated_at", "container_image_tag"])
+
+        call_command(
+            "bump_openclaw_version",
+            oc_version="2026.4.25",
+            tenant=str(self.tenant.id),
+            image_tag="openclaw-2026.4.25",
+        )
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.openclaw_version, "2026.4.25")
+        self.assertEqual(self.tenant.container_image_tag, "openclaw-2026.4.25")
+        self.assertIsNone(
+            self.tenant.hibernated_at,
+            "hibernated_at must be cleared after waking via image push",
+        )
+        mock_config.assert_called_once_with(str(self.tenant.id))
+        mock_image.assert_called_once()
