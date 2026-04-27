@@ -713,6 +713,16 @@ def create_container_app(
                         "volumeMounts": [
                             {"volumeName": "workspace", "mountPath": "/home/node/.openclaw"},
                             {"volumeName": "sessions-scratch", "mountPath": "/home/node/.openclaw/agents"},
+                            # OpenClaw's bundled-channel installer copies files
+                            # with modes Azure File Share/SMB doesn't support
+                            # (EPERM on `.buildstamp` copy) and leaves a stale
+                            # lock dir that wedges across container restarts.
+                            # Shadowing this path with EmptyDir keeps the
+                            # install on ephemeral local storage.
+                            {
+                                "volumeName": "plugin-runtime-deps",
+                                "mountPath": "/home/node/.openclaw/plugin-runtime-deps",
+                            },
                         ],
                     },
                 ],
@@ -724,6 +734,10 @@ def create_container_app(
                     },
                     {
                         "name": "sessions-scratch",
+                        "storageType": "EmptyDir",
+                    },
+                    {
+                        "name": "plugin-runtime-deps",
                         "storageType": "EmptyDir",
                     },
                 ],
@@ -814,10 +828,89 @@ def restart_container_app(container_name: str) -> None:
     logger.info("Restarted container app %s", container_name)
 
 
+_PLUGIN_RUNTIME_DEPS_VOLUME = "plugin-runtime-deps"
+_PLUGIN_RUNTIME_DEPS_PATH = "/home/node/.openclaw/plugin-runtime-deps"
+
+
+def _ensure_plugin_runtime_deps_in_template(app) -> bool:
+    """Mutate a Container App template in place to include the
+    plugin-runtime-deps EmptyDir mount on the openclaw container.
+
+    Returns True if the template was modified, False if the mount was
+    already present. Caller is responsible for persisting the change.
+    """
+    from azure.mgmt.appcontainers.models import Volume, VolumeMount
+
+    template = app.template
+    volumes = list(template.volumes or [])
+    volume_names = {v.name for v in volumes}
+
+    modified = False
+
+    if _PLUGIN_RUNTIME_DEPS_VOLUME not in volume_names:
+        volumes.append(Volume(name=_PLUGIN_RUNTIME_DEPS_VOLUME, storage_type="EmptyDir"))
+        template.volumes = volumes
+        modified = True
+
+    for container in template.containers:
+        if container.name != "openclaw":
+            continue
+        mounts = list(container.volume_mounts or [])
+        if not any(m.volume_name == _PLUGIN_RUNTIME_DEPS_VOLUME for m in mounts):
+            mounts.append(
+                VolumeMount(
+                    volume_name=_PLUGIN_RUNTIME_DEPS_VOLUME,
+                    mount_path=_PLUGIN_RUNTIME_DEPS_PATH,
+                )
+            )
+            container.volume_mounts = mounts
+            modified = True
+        break
+
+    return modified
+
+
+def ensure_plugin_runtime_deps_mount(container_name: str) -> bool:
+    """Idempotently add the plugin-runtime-deps EmptyDir mount to an
+    existing Container App.
+
+    OpenClaw's bundled-channel installer hits EPERM when copying
+    `.buildstamp` onto an Azure File Share (SMB doesn't support the
+    file modes Node uses) and leaves a stale runtime-deps lock that
+    wedges across container restarts. Mounting EmptyDir at the install
+    target keeps the install on ephemeral local storage.
+
+    Returns True if a new revision was created, False if the mount was
+    already present (no-op).
+    """
+    if _is_mock():
+        logger.info("[MOCK] Ensured plugin-runtime-deps mount on %s", container_name)
+        return False
+
+    client = get_container_client()
+    app = client.container_apps.get(
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+    )
+
+    if not _ensure_plugin_runtime_deps_in_template(app):
+        return False
+
+    client.container_apps.begin_create_or_update(
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+        app,
+    ).result()
+    logger.info("Added plugin-runtime-deps EmptyDir mount to %s", container_name)
+    return True
+
+
 def update_container_image(container_name: str, image: str) -> None:
     """Update the container image of an existing Container App.
 
     This triggers a new revision, effectively restarting the container.
+    Also ensures the plugin-runtime-deps EmptyDir mount is present so
+    image bumps roll out the volume fix in the same revision.
     """
     import hashlib
 
@@ -835,6 +928,8 @@ def update_container_image(container_name: str, image: str) -> None:
         if container.name == "openclaw":
             container.image = image
             break
+
+    _ensure_plugin_runtime_deps_in_template(app)
 
     # Generate a unique revision suffix from the image tag to avoid
     # "revision with suffix already exists" errors.

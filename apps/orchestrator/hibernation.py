@@ -218,13 +218,19 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
     try:
         from django.conf import settings as django_settings
 
-        from apps.orchestrator.azure_client import update_container_image, wake_container_app
+        from apps.orchestrator.azure_client import (
+            ensure_plugin_runtime_deps_mount,
+            update_container_image,
+            wake_container_app,
+        )
 
         desired_tag = getattr(django_settings, "OPENCLAW_IMAGE_TAG", "latest") or "latest"
         current_tag = tenant.container_image_tag or ""
         needs_image_refresh = desired_tag != "latest" and current_tag != desired_tag
 
         if needs_image_refresh:
+            # update_container_image bakes the EmptyDir mount into the same
+            # revision as the image bump, so a single restart lands both.
             registry = getattr(django_settings, "AZURE_ACR_SERVER", "nbhdunited.azurecr.io")
             desired_image = f"{registry}/nbhd-openclaw:{desired_tag}"
             update_container_image(tenant.container_id, desired_image)
@@ -235,6 +241,11 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
                 current_tag[:10] if current_tag else "?",
                 desired_tag[:10],
             )
+        elif ensure_plugin_runtime_deps_mount(tenant.container_id):
+            # In single-revision mode, adding the mount creates a new revision
+            # which auto-activates — that wakes the container too. No separate
+            # wake call needed.
+            logger.info("idle_wake: added plugin-runtime-deps mount and woke %s", tid)
         else:
             wake_container_app(tenant.container_id)
     except Exception:
