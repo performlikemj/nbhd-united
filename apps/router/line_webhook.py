@@ -430,6 +430,124 @@ def _send_line_status_bubble(tenant: Tenant, text: str, tone: str = "success") -
     _send_line_push(line_user_id, [build_status_bubble(text, tone=tone)])
 
 
+def relay_ai_response_to_line(
+    tenant: Tenant,
+    line_user_id: str,
+    ai_text: str,
+    reply_token: str | None = None,
+) -> bool:
+    """Format and deliver an AI assistant response to LINE.
+
+    Single source of truth for outbound AI replies — used by both the live
+    webhook and the hibernation buffered-delivery path so they share PII
+    rehydration, [[chart:]] rendering, MEDIA stripping, quick-reply
+    extraction, table conversion, code-block stripping, Flex bubble
+    construction, and emergency plain-text fallback.
+
+    Sends via Reply API (free) when ``reply_token`` is supplied, otherwise
+    Push API. Returns True on successful delivery.
+    """
+    if not ai_text or not line_user_id:
+        return False
+
+    # Rehydrate PII placeholders before sending to user
+    entity_map = getattr(tenant, "pii_entity_map", None)
+    if entity_map:
+        from apps.pii.redactor import rehydrate_text
+
+        ai_text = rehydrate_text(ai_text, entity_map)
+
+    try:
+        # Render [[chart:type]] markers into images
+        image_messages: list[dict] = []
+        chart_pattern = re.compile(r"\[\[chart:(\w+)(?:\|(.+?))?\]\]")
+        for match in chart_pattern.finditer(ai_text):
+            chart_type = match.group(1)
+            raw_params = match.group(2) or ""
+            params = dict(p.split("=", 1) for p in raw_params.split(",") if "=" in p)
+            try:
+                from apps.router.charts import render_chart
+
+                png_bytes = render_chart(chart_type, tenant, params)
+                if png_bytes:
+                    import uuid as _uuid
+
+                    fname = f"charts/{chart_type}_{_uuid.uuid4().hex[:8]}.png"
+                    fpath = f"workspace/{fname}"
+                    from apps.orchestrator.azure_client import upload_workspace_file_binary
+
+                    upload_workspace_file_binary(str(tenant.id), fpath, png_bytes)
+                    chart_url = f"{settings.API_BASE_URL}/api/v1/charts/{tenant.id}/{fname.split('/')[-1]}"
+                    image_messages.append(
+                        {
+                            "type": "image",
+                            "originalContentUrl": chart_url,
+                            "previewImageUrl": chart_url,
+                        }
+                    )
+            except Exception:
+                logger.exception("Chart rendering failed for %s (LINE)", chart_type)
+        ai_text = chart_pattern.sub("", ai_text)
+
+        # Strip MEDIA markers (image sending from workspace not yet supported on LINE)
+        clean_text = re.sub(r"MEDIA:\S+", "", ai_text).strip()
+
+        # Extract quick reply buttons before stripping markdown
+        clean_text, quick_reply_items = extract_quick_reply_buttons(clean_text)
+
+        # Pre-process: convert tables and strip code blocks BEFORE Flex decision
+        # (both Flex and plain text paths need these gone)
+        clean_text = _convert_tables(clean_text)
+        clean_text = re.sub(r"```[^\n]*\n(.*?)```", r"\1", clean_text, flags=re.DOTALL)
+
+        # Build Flex message (branded bubbles for all content types)
+        messages: list[dict] = []
+        try:
+            flex_msg = build_flex_bubble(clean_text, alt_text=_strip_markdown(clean_text))
+            messages = [flex_msg]
+        except Exception:
+            # Flex construction failed — fall back to plain text
+            logger.debug("Flex build failed, falling back to plain text", exc_info=True)
+            plain = _strip_markdown(clean_text)
+            plain = re.sub(r"\n{3,}", "\n\n", plain).strip()
+            if plain:
+                chunks = _split_message(plain, max_len=5000)
+                messages = [{"type": "text", "text": c} for c in chunks[:5]]
+
+        # Prepend chart images before text/Flex messages
+        if image_messages:
+            messages = image_messages + messages
+
+        # Attach quick replies to the last message
+        if messages and quick_reply_items:
+            messages[-1] = attach_quick_reply(messages[-1], quick_reply_items)
+
+        # LINE Push API allows max 5 messages per request
+        messages = messages[:5]
+
+        if not messages:
+            return False
+
+        sent = _send_line_messages(line_user_id, messages, reply_token=reply_token)
+        if sent:
+            return True
+
+        logger.error(
+            "LINE response delivery failed for %s (container=%s)",
+            line_user_id,
+            tenant.container_fqdn,
+        )
+        # Retry with plain text as emergency fallback
+        fallback_text = _strip_markdown(ai_text)
+        return _send_line_text(line_user_id, fallback_text[:5000])
+
+    except Exception:
+        logger.exception("Error building LINE response for %s", line_user_id)
+        # Emergency fallback — strip markdown before sending
+        fallback_text = _strip_markdown(ai_text)
+        return _send_line_text(line_user_id, fallback_text[:5000])
+
+
 @method_decorator(csrf_exempt, name="dispatch")
 class LineWebhookView(View):
     """Receive and process LINE webhook events."""
@@ -987,101 +1105,7 @@ class LineWebhookView(View):
             return
 
         if ai_text:
-            # Rehydrate PII placeholders before sending to user
-            entity_map = getattr(tenant, "pii_entity_map", None)
-            if entity_map:
-                from apps.pii.redactor import rehydrate_text
-
-                ai_text = rehydrate_text(ai_text, entity_map)
-
-            try:
-                # Render [[chart:type]] markers into images
-                image_messages: list[dict] = []
-                chart_pattern = re.compile(r"\[\[chart:(\w+)(?:\|(.+?))?\]\]")
-                for match in chart_pattern.finditer(ai_text):
-                    chart_type = match.group(1)
-                    raw_params = match.group(2) or ""
-                    params = dict(p.split("=", 1) for p in raw_params.split(",") if "=" in p)
-                    try:
-                        from apps.router.charts import render_chart
-
-                        png_bytes = render_chart(chart_type, tenant, params)
-                        if png_bytes:
-                            import uuid as _uuid
-
-                            fname = f"charts/{chart_type}_{_uuid.uuid4().hex[:8]}.png"
-                            fpath = f"workspace/{fname}"
-                            from apps.orchestrator.azure_client import upload_workspace_file_binary
-
-                            upload_workspace_file_binary(str(tenant.id), fpath, png_bytes)
-                            chart_url = f"{settings.API_BASE_URL}/api/v1/charts/{tenant.id}/{fname.split('/')[-1]}"
-                            image_messages.append(
-                                {
-                                    "type": "image",
-                                    "originalContentUrl": chart_url,
-                                    "previewImageUrl": chart_url,
-                                }
-                            )
-                    except Exception:
-                        logger.exception("Chart rendering failed for %s (LINE)", chart_type)
-                ai_text = chart_pattern.sub("", ai_text)
-
-                # Strip MEDIA markers (image sending from workspace not yet supported on LINE)
-                clean_text = re.sub(r"MEDIA:\S+", "", ai_text).strip()
-
-                # Extract quick reply buttons before stripping markdown
-                clean_text, quick_reply_items = extract_quick_reply_buttons(clean_text)
-
-                # Pre-process: convert tables and strip code blocks BEFORE Flex decision
-                # (both Flex and plain text paths need these gone)
-                clean_text = _convert_tables(clean_text)
-                clean_text = re.sub(r"```[^\n]*\n(.*?)```", r"\1", clean_text, flags=re.DOTALL)
-
-                # Build Flex message (branded bubbles for all content types)
-                messages: list[dict] = []
-                try:
-                    flex_msg = build_flex_bubble(clean_text, alt_text=_strip_markdown(clean_text))
-                    messages = [flex_msg]
-                except Exception:
-                    # Flex construction failed — fall back to plain text
-                    logger.debug("Flex build failed, falling back to plain text", exc_info=True)
-                    plain = _strip_markdown(clean_text)
-                    plain = re.sub(r"\n{3,}", "\n\n", plain).strip()
-                    if plain:
-                        chunks = _split_message(plain, max_len=5000)
-                        messages = [{"type": "text", "text": c} for c in chunks[:5]]
-
-                # Prepend chart images before text/Flex messages
-                if image_messages:
-                    messages = image_messages + messages
-
-                # Attach quick replies to the last message
-                if messages and quick_reply_items:
-                    messages[-1] = attach_quick_reply(messages[-1], quick_reply_items)
-
-                # LINE Push API allows max 5 messages per request
-                messages = messages[:5]
-
-                # Send via Reply API (free) with Push fallback
-                if messages:
-                    sent = _send_line_messages(line_user_id, messages, reply_token=reply_token)
-                    if not sent:
-                        logger.error(
-                            "LINE response delivery failed for %s (container=%s)",
-                            line_user_id,
-                            tenant.container_fqdn,
-                        )
-                        # Retry with plain text as emergency fallback
-                        fallback_text = _strip_markdown(ai_text)
-                        _send_line_text(line_user_id, fallback_text[:5000])
-            except Exception:
-                logger.exception(
-                    "Error building LINE response for %s",
-                    line_user_id,
-                )
-                # Emergency fallback — strip markdown before sending
-                fallback_text = _strip_markdown(ai_text)
-                _send_line_text(line_user_id, fallback_text[:5000])
+            relay_ai_response_to_line(tenant, line_user_id, ai_text, reply_token=reply_token)
 
         # Record usage
         self._record_usage(tenant, result)
