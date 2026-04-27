@@ -5,8 +5,14 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 
+from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
+
+# Synthetic future version — clearly ahead of OPENCLAW_CURRENT_VERSION so the
+# bump command always has work to do regardless of the real fleet version.
+_BUMP_TARGET = "2026.99.0"
+_BUMP_IMAGE = "openclaw-2026.99.0"
 
 
 class BumpOpenclawVersionTest(TestCase):
@@ -18,7 +24,7 @@ class BumpOpenclawVersionTest(TestCase):
         self.tenant.status = Tenant.Status.ACTIVE
         self.tenant.container_id = "oc-bump-test"
         self.tenant.container_fqdn = "oc-bump-test.internal"
-        self.tenant.openclaw_version = "2026.4.21"
+        self.tenant.openclaw_version = OPENCLAW_CURRENT_VERSION
         self.tenant.save()
 
     @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_container_image")
@@ -26,27 +32,27 @@ class BumpOpenclawVersionTest(TestCase):
     def test_bump_single_tenant_updates_version_config_image(self, mock_config, mock_image):
         call_command(
             "bump_openclaw_version",
-            oc_version="2026.4.25",
+            oc_version=_BUMP_TARGET,
             tenant=str(self.tenant.id),
-            image_tag="openclaw-2026.4.25",
+            image_tag=_BUMP_IMAGE,
         )
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.openclaw_version, "2026.4.25")
-        self.assertEqual(self.tenant.container_image_tag, "openclaw-2026.4.25")
+        self.assertEqual(self.tenant.openclaw_version, _BUMP_TARGET)
+        self.assertEqual(self.tenant.container_image_tag, _BUMP_IMAGE)
         mock_config.assert_called_once_with(str(self.tenant.id))
         mock_image.assert_called_once()
 
     @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_container_image")
     @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_tenant_config")
     def test_bump_all_skips_already_bumped(self, mock_config, mock_image):
-        self.tenant.openclaw_version = "2026.4.25"
+        self.tenant.openclaw_version = _BUMP_TARGET
         self.tenant.save()
 
         call_command(
             "bump_openclaw_version",
-            oc_version="2026.4.25",
+            oc_version=_BUMP_TARGET,
             all=True,
-            image_tag="openclaw-2026.4.25",
+            image_tag=_BUMP_IMAGE,
         )
         mock_config.assert_not_called()
         mock_image.assert_not_called()
@@ -58,13 +64,13 @@ class BumpOpenclawVersionTest(TestCase):
 
         call_command(
             "bump_openclaw_version",
-            oc_version="2026.4.25",
+            oc_version=_BUMP_TARGET,
             tenant=str(self.tenant.id),
-            image_tag="openclaw-2026.4.25",
+            image_tag=_BUMP_IMAGE,
         )
 
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.openclaw_version, "2026.4.21")
+        self.assertEqual(self.tenant.openclaw_version, OPENCLAW_CURRENT_VERSION)
 
     @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_container_image")
     @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_tenant_config")
@@ -73,26 +79,26 @@ class BumpOpenclawVersionTest(TestCase):
 
         call_command(
             "bump_openclaw_version",
-            oc_version="2026.4.25",
+            oc_version=_BUMP_TARGET,
             tenant=str(self.tenant.id),
-            image_tag="openclaw-2026.4.25",
+            image_tag=_BUMP_IMAGE,
         )
 
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.openclaw_version, "2026.4.21")
+        self.assertEqual(self.tenant.openclaw_version, OPENCLAW_CURRENT_VERSION)
 
     @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_container_image")
     @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_tenant_config")
     def test_dry_run_changes_nothing(self, mock_config, mock_image):
         call_command(
             "bump_openclaw_version",
-            oc_version="2026.4.25",
+            oc_version=_BUMP_TARGET,
             tenant=str(self.tenant.id),
-            image_tag="openclaw-2026.4.25",
+            image_tag=_BUMP_IMAGE,
             dry_run=True,
         )
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.openclaw_version, "2026.4.21")
+        self.assertEqual(self.tenant.openclaw_version, OPENCLAW_CURRENT_VERSION)
         mock_config.assert_not_called()
         mock_image.assert_not_called()
 
@@ -104,12 +110,12 @@ class BumpOpenclawVersionTest(TestCase):
 
         call_command(
             "bump_openclaw_version",
-            oc_version="2026.4.25",
+            oc_version=_BUMP_TARGET,
             tenant=str(self.tenant.id),
-            image_tag="openclaw-2026.4.25",
+            image_tag=_BUMP_IMAGE,
         )
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.openclaw_version, "2026.4.21")
+        self.assertEqual(self.tenant.openclaw_version, OPENCLAW_CURRENT_VERSION)
         mock_config.assert_not_called()
 
     @patch("apps.orchestrator.management.commands.bump_openclaw_version.update_container_image")
@@ -128,14 +134,14 @@ class BumpOpenclawVersionTest(TestCase):
 
         call_command(
             "bump_openclaw_version",
-            oc_version="2026.4.25",
+            oc_version=_BUMP_TARGET,
             tenant=str(self.tenant.id),
-            image_tag="openclaw-2026.4.25",
+            image_tag=_BUMP_IMAGE,
         )
 
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.openclaw_version, "2026.4.25")
-        self.assertEqual(self.tenant.container_image_tag, "openclaw-2026.4.25")
+        self.assertEqual(self.tenant.openclaw_version, _BUMP_TARGET)
+        self.assertEqual(self.tenant.container_image_tag, _BUMP_IMAGE)
         self.assertIsNone(
             self.tenant.hibernated_at,
             "hibernated_at must be cleared after waking via image push",

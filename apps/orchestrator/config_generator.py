@@ -13,7 +13,7 @@ from typing import Any
 from django.conf import settings
 
 from apps.billing.constants import GEMMA_MODEL, KIMI_MODEL, MINIMAX_MODEL
-from apps.orchestrator.tool_policy import generate_tool_config
+from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION, generate_tool_config
 from apps.tenants.models import Tenant
 
 _CRON_CONTEXT_PREAMBLE = (
@@ -779,7 +779,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     return jobs
 
 
-def _build_tools_section(tier: str, version: str = "2026.4.21") -> dict[str, Any]:
+def _build_tools_section(tier: str, version: str = OPENCLAW_CURRENT_VERSION) -> dict[str, Any]:
     """Build documented OpenClaw tools policy for subscriber tier."""
     tools = generate_tool_config(tier, version=version)
     tools["media"] = {
@@ -823,7 +823,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     """
     chat_id = tenant.user.telegram_chat_id  # may be None before Telegram linking
     tier = tenant.model_tier or "starter"
-    oc_version = getattr(tenant, "openclaw_version", "2026.4.21") or "2026.4.21"
+    oc_version = getattr(tenant, "openclaw_version", OPENCLAW_CURRENT_VERSION) or OPENCLAW_CURRENT_VERSION
     models_config = TIER_MODELS.get(tier, TIER_MODELS["starter"])
     model_entries = TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["starter"])
 
