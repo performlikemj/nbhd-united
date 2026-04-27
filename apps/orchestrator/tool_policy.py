@@ -13,6 +13,12 @@ from __future__ import annotations
 
 from typing import Any
 
+# ── Single source of truth for the current fleet version ────────────
+# Bump this constant + Dockerfile.openclaw ARG when rolling out a new
+# OpenClaw release.  Everything else (model default, config fallback,
+# function defaults, tests) imports this value.
+OPENCLAW_CURRENT_VERSION = "2026.4.25"
+
 
 def _parse_version(v: str) -> tuple[int, ...]:
     """Parse 'YYYY.M.D' version string into a comparable tuple."""
@@ -83,19 +89,19 @@ def _resolve_policy(version: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return _POLICY_VERSIONS[-1][1], _POLICY_VERSIONS[-1][2]
 
 
-def get_allowed_tools(tier: str = "starter", version: str = "2026.4.21") -> list[str]:
+def get_allowed_tools(tier: str = "starter", version: str = OPENCLAW_CURRENT_VERSION) -> list[str]:
     """Return documented allow-list entries for a subscriber tier."""
     allow, _ = _resolve_policy(version)
     return list(allow)
 
 
-def get_denied_tools(version: str = "2026.4.21") -> list[str]:
+def get_denied_tools(version: str = OPENCLAW_CURRENT_VERSION) -> list[str]:
     """Return the deny-list for the given OpenClaw version."""
     _, deny = _resolve_policy(version)
     return list(deny)
 
 
-def generate_tool_config(tier: str = "starter", version: str = "2026.4.21") -> dict[str, Any]:
+def generate_tool_config(tier: str = "starter", version: str = OPENCLAW_CURRENT_VERSION) -> dict[str, Any]:
     """Generate the OpenClaw `tools` config block for subscriber tenants."""
     return {
         "allow": get_allowed_tools(tier, version=version),
