@@ -434,13 +434,16 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
                 )
                 resp.raise_for_status()
 
-                # Send response back via LINE
+                # Send response back via LINE — use the same pipeline as the
+                # live webhook so markdown stripping, Flex bubbles, charts,
+                # and PII rehydration all apply (no reply_token: buffered
+                # delivery happens long after the webhook reply window).
                 result = resp.json()
                 ai_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
                 if ai_text and line_user_id:
-                    from apps.router.line_webhook import _send_line_text
+                    from apps.router.line_webhook import relay_ai_response_to_line
 
-                    _send_line_text(line_user_id, ai_text)
+                    relay_ai_response_to_line(tenant, line_user_id, ai_text)
 
             msg.delivered = True
             msg.delivered_at = timezone.now()
