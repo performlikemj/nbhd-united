@@ -67,15 +67,19 @@ class WakeHibernatedTenantImageRefreshTest(TestCase):
     )
     @patch("apps.cron.publish.publish_task")
     @patch("apps.orchestrator.azure_client.wake_container_app")
+    @patch("apps.orchestrator.azure_client.ensure_plugin_runtime_deps_mount", return_value=False)
     @patch("apps.orchestrator.azure_client.update_container_image")
     def test_wake_uses_plain_wake_when_image_already_current(
         self,
         mock_update_image,
+        mock_ensure_mount,
         mock_wake,
         _mock_publish,
     ):
         """No image refresh when tenant is already on the desired tag —
-        avoids creating an unnecessary new revision per wake.
+        avoids creating an unnecessary new revision per wake. When the
+        plugin-runtime-deps mount is already present, fall through to the
+        plain wake call.
         """
         self.tenant.container_image_tag = "samesha"
         self.tenant.save(update_fields=["container_image_tag"])
@@ -83,7 +87,38 @@ class WakeHibernatedTenantImageRefreshTest(TestCase):
         result = wake_hibernated_tenant(self.tenant)
 
         self.assertTrue(result)
+        mock_ensure_mount.assert_called_once_with("oc-wake-test")
         mock_wake.assert_called_once_with("oc-wake-test")
+        mock_update_image.assert_not_called()
+
+    @override_settings(
+        OPENCLAW_IMAGE_TAG="samesha",
+        AZURE_ACR_SERVER="test.azurecr.io",
+    )
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.azure_client.wake_container_app")
+    @patch("apps.orchestrator.azure_client.ensure_plugin_runtime_deps_mount", return_value=True)
+    @patch("apps.orchestrator.azure_client.update_container_image")
+    def test_wake_skips_plain_wake_when_mount_was_added(
+        self,
+        mock_update_image,
+        mock_ensure_mount,
+        mock_wake,
+        _mock_publish,
+    ):
+        """If ensure_plugin_runtime_deps_mount adds the mount, the resulting
+        new revision auto-activates in single-revision mode — that wakes the
+        container, so wake_container_app must not be called (would be a
+        wasted second restart).
+        """
+        self.tenant.container_image_tag = "samesha"
+        self.tenant.save(update_fields=["container_image_tag"])
+
+        result = wake_hibernated_tenant(self.tenant)
+
+        self.assertTrue(result)
+        mock_ensure_mount.assert_called_once_with("oc-wake-test")
+        mock_wake.assert_not_called()
         mock_update_image.assert_not_called()
 
     @override_settings(
@@ -92,10 +127,12 @@ class WakeHibernatedTenantImageRefreshTest(TestCase):
     )
     @patch("apps.cron.publish.publish_task")
     @patch("apps.orchestrator.azure_client.wake_container_app")
+    @patch("apps.orchestrator.azure_client.ensure_plugin_runtime_deps_mount", return_value=False)
     @patch("apps.orchestrator.azure_client.update_container_image")
     def test_wake_uses_plain_wake_when_image_tag_is_latest(
         self,
         mock_update_image,
+        mock_ensure_mount,
         mock_wake,
         _mock_publish,
     ):
@@ -107,5 +144,6 @@ class WakeHibernatedTenantImageRefreshTest(TestCase):
 
         wake_hibernated_tenant(self.tenant)
 
+        mock_ensure_mount.assert_called_once_with("oc-wake-test")
         mock_wake.assert_called_once_with("oc-wake-test")
         mock_update_image.assert_not_called()

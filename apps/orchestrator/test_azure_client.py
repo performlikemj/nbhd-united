@@ -11,6 +11,7 @@ from apps.orchestrator.azure_client import (
     assign_key_vault_role,
     create_container_app,
     create_tenant_file_share,
+    ensure_plugin_runtime_deps_mount,
     register_environment_storage,
     store_tenant_internal_key_in_key_vault,
     update_container_image,
@@ -384,3 +385,147 @@ class UpdateContainerImageTest(SimpleTestCase):
             app,
         )
         poller.result.assert_called_once()
+
+
+@override_settings(
+    AZURE_LOCATION="westus2",
+    AZURE_CONTAINER_ENV_ID="/subscriptions/test/resourceGroups/rg/providers/Microsoft.App/managedEnvironments/env",
+    AZURE_ACR_SERVER="nbhdunited.azurecr.io",
+    AZURE_RESOURCE_GROUP="rg-nbhd-prod",
+    AZURE_KEY_VAULT_NAME="kv-nbhd-prod",
+    ANTHROPIC_API_KEY="anthropic-secret",
+    OPENAI_API_KEY="openai-secret",
+    TELEGRAM_BOT_TOKEN="telegram-secret",
+    TELEGRAM_WEBHOOK_SECRET="webhook-secret",
+    NBHD_INTERNAL_API_KEY="internal-secret",
+    API_BASE_URL="https://nbhd-django.example.com",
+)
+class PluginRuntimeDepsMountTest(SimpleTestCase):
+    """Coverage for the plugin-runtime-deps EmptyDir mount that shadows the
+    file-share install path so OpenClaw's bundled-channel installer doesn't
+    hit EPERM on `.buildstamp` or wedge on a stale lock across restarts.
+    """
+
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_create_container_app_includes_emptydir_volume(
+        self,
+        mock_get_container_client,
+        _mock_is_mock,
+    ):
+        mock_client = MagicMock()
+        mock_get_container_client.return_value = mock_client
+
+        mock_result = SimpleNamespace(
+            configuration=SimpleNamespace(ingress=SimpleNamespace(fqdn="oc-tenant.internal")),
+        )
+        mock_poller = MagicMock()
+        mock_poller.result.return_value = mock_result
+        mock_client.container_apps.begin_create_or_update.return_value = mock_poller
+
+        create_container_app(
+            tenant_id="tenant-deps",
+            container_name="oc-tenant",
+            config_json='{"a":1}',
+            identity_id="/identities/tenant-deps",
+            identity_client_id="client-deps",
+        )
+
+        payload = mock_client.container_apps.begin_create_or_update.call_args.args[2]
+        template = payload["properties"]["template"]
+        volumes = {v["name"]: v for v in template["volumes"]}
+        self.assertIn("plugin-runtime-deps", volumes)
+        self.assertEqual(volumes["plugin-runtime-deps"]["storageType"], "EmptyDir")
+
+        mounts = {m["volumeName"]: m for m in template["containers"][0]["volumeMounts"]}
+        self.assertIn("plugin-runtime-deps", mounts)
+        self.assertEqual(
+            mounts["plugin-runtime-deps"]["mountPath"],
+            "/home/node/.openclaw/plugin-runtime-deps",
+        )
+
+    @override_settings(AZURE_RESOURCE_GROUP="rg-test")
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_ensure_mount_adds_volume_when_missing(
+        self,
+        mock_get_container_client,
+        _mock_is_mock,
+    ):
+        mock_client = MagicMock()
+        mock_get_container_client.return_value = mock_client
+
+        existing_volume = SimpleNamespace(name="workspace")
+        existing_mount = SimpleNamespace(volume_name="workspace")
+        container = SimpleNamespace(name="openclaw", volume_mounts=[existing_mount])
+        app = MagicMock()
+        app.template.containers = [container]
+        app.template.volumes = [existing_volume]
+        mock_client.container_apps.get.return_value = app
+        mock_client.container_apps.begin_create_or_update.return_value = MagicMock()
+
+        added = ensure_plugin_runtime_deps_mount("oc-tenant")
+
+        self.assertTrue(added)
+        volume_names = {v.name for v in app.template.volumes}
+        self.assertIn("plugin-runtime-deps", volume_names)
+        mount_names = {m.volume_name for m in container.volume_mounts}
+        self.assertIn("plugin-runtime-deps", mount_names)
+        mock_client.container_apps.begin_create_or_update.assert_called_once()
+
+    @override_settings(AZURE_RESOURCE_GROUP="rg-test")
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_ensure_mount_is_idempotent(
+        self,
+        mock_get_container_client,
+        _mock_is_mock,
+    ):
+        mock_client = MagicMock()
+        mock_get_container_client.return_value = mock_client
+
+        existing_volume = SimpleNamespace(name="plugin-runtime-deps")
+        existing_mount = SimpleNamespace(volume_name="plugin-runtime-deps")
+        container = SimpleNamespace(name="openclaw", volume_mounts=[existing_mount])
+        app = MagicMock()
+        app.template.containers = [container]
+        app.template.volumes = [existing_volume]
+        mock_client.container_apps.get.return_value = app
+
+        added = ensure_plugin_runtime_deps_mount("oc-tenant")
+
+        self.assertFalse(added)
+        mock_client.container_apps.begin_create_or_update.assert_not_called()
+
+    @override_settings(AZURE_RESOURCE_GROUP="rg-test")
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_update_container_image_bakes_in_mount(
+        self,
+        mock_get_container_client,
+        _mock_is_mock,
+    ):
+        """Image bumps must add the EmptyDir mount in the same revision so
+        every fleet rollout self-heals tenants stuck on old templates.
+        """
+        mock_client = MagicMock()
+        mock_get_container_client.return_value = mock_client
+
+        container = SimpleNamespace(
+            name="openclaw",
+            image="old:tag",
+            volume_mounts=[SimpleNamespace(volume_name="workspace")],
+        )
+        app = MagicMock()
+        app.template.containers = [container]
+        app.template.volumes = [SimpleNamespace(name="workspace")]
+        mock_client.container_apps.get.return_value = app
+        mock_client.container_apps.begin_create_or_update.return_value = MagicMock()
+
+        update_container_image("oc-tenant", "nbhdunited.azurecr.io/nbhd-openclaw:newtag")
+
+        self.assertEqual(container.image, "nbhdunited.azurecr.io/nbhd-openclaw:newtag")
+        volume_names = {v.name for v in app.template.volumes}
+        self.assertIn("plugin-runtime-deps", volume_names)
+        mount_names = {m.volume_name for m in container.volume_mounts}
+        self.assertIn("plugin-runtime-deps", mount_names)
