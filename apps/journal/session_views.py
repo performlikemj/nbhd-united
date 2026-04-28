@@ -6,9 +6,11 @@ from django.db import IntegrityError
 from django.utils.text import slugify
 from rest_framework import serializers, status
 from rest_framework.generics import get_object_or_404
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from apps.tenants.permissions import HasSessionsReadScope, HasSessionsWriteScope
+from apps.tenants.throttling import PATSessionIngestDayThrottle, PATSessionIngestMinuteThrottle
 
 from .models import Document
 from .session_models import Session
@@ -16,19 +18,10 @@ from .session_models import Session
 logger = logging.getLogger(__name__)
 
 
-class HasSessionScope(IsAuthenticated):
-    """Placeholder: will enforce PAT scope checks (e.g. sessions:write).
-
-    Currently passes through to IsAuthenticated — all PATs have full access.
-    TODO: check request.auth_pat.scopes when scope enforcement is enabled.
-    """
-
-    pass
-
-
 class SessionCreateSerializer(serializers.Serializer):
     source = serializers.CharField(max_length=128)
     project = serializers.CharField(max_length=256)
+    project_identity = serializers.CharField(max_length=512, required=False, default="", allow_blank=True)
     project_type = serializers.CharField(max_length=128, required=False, default="")
     session_start = serializers.DateTimeField()
     session_end = serializers.DateTimeField()
@@ -53,6 +46,7 @@ class SessionDetailSerializer(serializers.ModelSerializer):
             "id",
             "source",
             "project",
+            "project_identity",
             "project_type",
             "session_start",
             "session_end",
@@ -84,7 +78,8 @@ def _ensure_project_document(tenant, project_name: str) -> None:
 class SessionCreateView(APIView):
     """POST /api/v1/sessions/ — push a work session from an external app."""
 
-    permission_classes = [HasSessionScope]
+    permission_classes = [HasSessionsWriteScope]
+    throttle_classes = [PATSessionIngestMinuteThrottle, PATSessionIngestDayThrottle]
 
     def post(self, request):
         tenant = getattr(request.user, "tenant", None)
@@ -108,6 +103,7 @@ class SessionCreateView(APIView):
                 tenant=tenant,
                 source=data["source"],
                 project=data["project"],
+                project_identity=data.get("project_identity", ""),
                 project_type=data.get("project_type", ""),
                 session_start=data["session_start"],
                 session_end=data["session_end"],
@@ -145,7 +141,7 @@ class SessionCreateView(APIView):
 class SessionListView(APIView):
     """GET /api/v1/sessions/ — list sessions with optional filters."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [HasSessionsReadScope]
 
     def get(self, request):
         tenant = getattr(request.user, "tenant", None)
@@ -155,9 +151,13 @@ class SessionListView(APIView):
         qs = Session.objects.filter(tenant=tenant)
 
         # Filters
-        project = request.query_params.get("project")
-        if project:
-            qs = qs.filter(project=project)
+        project_identity = request.query_params.get("project_identity")
+        if project_identity:
+            qs = qs.filter(project_identity=project_identity)
+        else:
+            project = request.query_params.get("project")
+            if project:
+                qs = qs.filter(project=project)
 
         since = request.query_params.get("since")
         if since:
@@ -182,7 +182,7 @@ class SessionListView(APIView):
 class SessionDetailView(APIView):
     """GET/DELETE /api/v1/sessions/{id}/ — retrieve or delete a session."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [HasSessionsReadScope]
 
     def get(self, request, session_id):
         tenant = getattr(request.user, "tenant", None)

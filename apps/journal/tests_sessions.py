@@ -1,11 +1,15 @@
 """Tests for Session API endpoints."""
 
+from unittest.mock import patch
+
+from django.core.cache import cache
 from django.test import TestCase
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.tenants.pat_models import PersonalAccessToken, generate_pat
 from apps.tenants.services import create_tenant
+from apps.tenants.throttling import PATSessionIngestMinuteThrottle
 
 from .models import Document
 from .session_models import Session
@@ -22,6 +26,7 @@ class SessionCreateTest(TestCase):
             name="Test PAT",
             token_prefix=prefix,
             token_hash=token_hash,
+            scopes=["sessions:write", "sessions:read"],
         )
         self.raw_token = raw
         self.client = APIClient()
@@ -92,6 +97,145 @@ class SessionCreateTest(TestCase):
         client = APIClient()
         response = client.post("/api/v1/sessions/create/", self.payload, format="json")
         self.assertEqual(response.status_code, 401)
+
+
+class SessionThrottleTest(TestCase):
+    """PAT-keyed throttle on session ingest."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Throttle User", telegram_chat_id=806)
+        self.user = self.tenant.user
+        raw, prefix, token_hash = generate_pat()
+        PersonalAccessToken.objects.create(
+            user=self.user,
+            name="Throttle PAT",
+            token_prefix=prefix,
+            token_hash=token_hash,
+            scopes=["sessions:write"],
+        )
+        self.client = APIClient()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {raw}")
+        self.raw = raw
+        self.payload = {
+            "source": "yardtalk-mac/1.0.0",
+            "project": "throttle-test",
+            "session_start": "2026-04-21T10:00:00Z",
+            "session_end": "2026-04-21T11:00:00Z",
+            "summary": "throttle test",
+        }
+        cache.clear()
+
+    def test_ingest_throttled_per_pat(self):
+        with patch.object(PATSessionIngestMinuteThrottle, "rate", "2/minute"):
+            r1 = self.client.post("/api/v1/sessions/create/", self.payload, format="json")
+            r2 = self.client.post("/api/v1/sessions/create/", self.payload, format="json")
+            r3 = self.client.post("/api/v1/sessions/create/", self.payload, format="json")
+        self.assertEqual(r1.status_code, 201)
+        self.assertEqual(r2.status_code, 201)
+        self.assertEqual(r3.status_code, 429)
+
+    def test_throttle_isolated_per_pat(self):
+        """A second PAT for the same user has its own counter."""
+        raw2, prefix2, token_hash2 = generate_pat()
+        PersonalAccessToken.objects.create(
+            user=self.user,
+            name="Second PAT",
+            token_prefix=prefix2,
+            token_hash=token_hash2,
+            scopes=["sessions:write"],
+        )
+        with patch.object(PATSessionIngestMinuteThrottle, "rate", "1/minute"):
+            r1 = self.client.post("/api/v1/sessions/create/", self.payload, format="json")
+            self.assertEqual(r1.status_code, 201)
+            r2 = self.client.post("/api/v1/sessions/create/", self.payload, format="json")
+            self.assertEqual(r2.status_code, 429)
+            self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {raw2}")
+            r3 = self.client.post("/api/v1/sessions/create/", self.payload, format="json")
+            self.assertEqual(r3.status_code, 201)
+
+
+class SessionScopeEnforcementTest(TestCase):
+    """PAT scope enforcement on session endpoints."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Scope User", telegram_chat_id=805)
+        self.user = self.tenant.user
+        self.client = APIClient()
+        self.payload = {
+            "source": "yardtalk-mac/1.0.0",
+            "project": "scope-test",
+            "session_start": "2026-04-21T14:00:00Z",
+            "session_end": "2026-04-21T15:00:00Z",
+            "summary": "scope test",
+        }
+        self.session = Session.objects.create(
+            tenant=self.tenant,
+            source="yardtalk-mac/1.0.0",
+            project="scope-test",
+            session_start="2026-04-21T10:00:00Z",
+            session_end="2026-04-21T11:00:00Z",
+            summary="pre-existing",
+        )
+
+    def _pat_with_scopes(self, scopes):
+        raw, prefix, token_hash = generate_pat()
+        PersonalAccessToken.objects.create(
+            user=self.user,
+            name=f"Test {scopes}",
+            token_prefix=prefix,
+            token_hash=token_hash,
+            scopes=scopes,
+        )
+        return raw
+
+    def test_write_scope_can_ingest(self):
+        raw = self._pat_with_scopes(["sessions:write"])
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {raw}")
+        response = self.client.post("/api/v1/sessions/create/", self.payload, format="json")
+        self.assertEqual(response.status_code, 201)
+
+    def test_write_scope_cannot_read(self):
+        raw = self._pat_with_scopes(["sessions:write"])
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {raw}")
+        response = self.client.get("/api/v1/sessions/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_read_scope_can_list(self):
+        raw = self._pat_with_scopes(["sessions:read"])
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {raw}")
+        response = self.client.get("/api/v1/sessions/")
+        self.assertEqual(response.status_code, 200)
+
+    def test_read_scope_can_get_detail(self):
+        raw = self._pat_with_scopes(["sessions:read"])
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {raw}")
+        response = self.client.get(f"/api/v1/sessions/{self.session.id}/")
+        self.assertEqual(response.status_code, 200)
+
+    def test_read_scope_cannot_ingest(self):
+        raw = self._pat_with_scopes(["sessions:read"])
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {raw}")
+        response = self.client.post("/api/v1/sessions/create/", self.payload, format="json")
+        self.assertEqual(response.status_code, 403)
+
+    def test_empty_scopes_denied_everywhere(self):
+        raw = self._pat_with_scopes([])
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {raw}")
+        self.assertEqual(
+            self.client.post("/api/v1/sessions/create/", self.payload, format="json").status_code,
+            403,
+        )
+        self.assertEqual(self.client.get("/api/v1/sessions/").status_code, 403)
+
+    def test_jwt_bypasses_scope_check(self):
+        """JWT-authenticated UI requests have full access regardless of scope."""
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+        self.assertEqual(
+            self.client.post("/api/v1/sessions/create/", self.payload, format="json").status_code,
+            201,
+        )
+        self.assertEqual(self.client.get("/api/v1/sessions/").status_code, 200)
 
 
 class SessionListTest(TestCase):
@@ -216,3 +360,106 @@ class SessionDetailTest(TestCase):
 
         response = self.client.get(f"/api/v1/sessions/{other_session.id}/")
         self.assertEqual(response.status_code, 404)
+
+
+class SessionProjectIdentityTest(TestCase):
+    """project_identity is the canonical project key when present."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Identity User", telegram_chat_id=807)
+        self.user = self.tenant.user
+        raw, prefix, token_hash = generate_pat()
+        PersonalAccessToken.objects.create(
+            user=self.user,
+            name="Identity PAT",
+            token_prefix=prefix,
+            token_hash=token_hash,
+            scopes=["sessions:write", "sessions:read"],
+        )
+        self.client = APIClient()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {raw}")
+        self.payload = {
+            "source": "claude-code/1.0.0",
+            "project": "Acme Labs Presentation",
+            "session_start": "2026-04-21T14:00:00Z",
+            "session_end": "2026-04-21T15:00:00Z",
+            "summary": "did the thing",
+        }
+
+    def test_create_with_project_identity(self):
+        self.payload["project_identity"] = "https://github.com/acme/presentation.git"
+        response = self.client.post("/api/v1/sessions/create/", self.payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            response.json()["project_identity"],
+            "https://github.com/acme/presentation.git",
+        )
+
+    def test_create_without_project_identity_back_compat(self):
+        response = self.client.post("/api/v1/sessions/create/", self.payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["project_identity"], "")
+
+    def test_list_filter_by_project_identity(self):
+        identity = "https://github.com/acme/presentation.git"
+        Session.objects.create(
+            tenant=self.tenant,
+            source="claude-code/1.0.0",
+            project="Acme Labs",
+            project_identity=identity,
+            session_start="2026-04-21T10:00:00Z",
+            session_end="2026-04-21T11:00:00Z",
+            summary="session A",
+        )
+        Session.objects.create(
+            tenant=self.tenant,
+            source="yardtalk-mac/1.0.0",
+            project="Acme Labs",
+            project_identity="",
+            session_start="2026-04-21T12:00:00Z",
+            session_end="2026-04-21T13:00:00Z",
+            summary="session B (no identity)",
+        )
+        Session.objects.create(
+            tenant=self.tenant,
+            source="claude-code/1.0.0",
+            project="Different Project",
+            project_identity="https://github.com/other/repo.git",
+            session_start="2026-04-21T14:00:00Z",
+            session_end="2026-04-21T15:00:00Z",
+            summary="session C (other project)",
+        )
+
+        response = self.client.get(f"/api/v1/sessions/?project_identity={identity}")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["summary"], "session A")
+
+    def test_list_project_identity_takes_precedence_over_project(self):
+        """When both filters are passed, identity wins."""
+        Session.objects.create(
+            tenant=self.tenant,
+            source="claude-code/1.0.0",
+            project="display-name-1",
+            project_identity="canonical-id-X",
+            session_start="2026-04-21T10:00:00Z",
+            session_end="2026-04-21T11:00:00Z",
+            summary="match",
+        )
+        Session.objects.create(
+            tenant=self.tenant,
+            source="claude-code/1.0.0",
+            project="display-name-2",
+            project_identity="canonical-id-X",
+            session_start="2026-04-21T12:00:00Z",
+            session_end="2026-04-21T13:00:00Z",
+            summary="also match",
+        )
+
+        response = self.client.get(
+            "/api/v1/sessions/?project_identity=canonical-id-X&project=display-name-1"
+        )
+        self.assertEqual(response.status_code, 200)
+        # Identity filter wins → both sessions match (regardless of display name)
+        self.assertEqual(len(response.json()), 2)

@@ -30,6 +30,16 @@ class Session(models.Model):
         db_index=True,
         help_text="Project name, e.g. 'acme-labs-presentation'",
     )
+    project_identity = models.CharField(
+        max_length=512,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text=(
+            "Stable canonical ID for the project (e.g. git remote URL). "
+            "Authoritative for grouping when present; absent for non-code work."
+        ),
+    )
     project_type = models.CharField(
         max_length=128,
         blank=True,
