@@ -68,6 +68,20 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             " had to drop it after a few tries. If it's important, please send"
             " it again.\n\nIt started with: \u201c{excerpt}\u201d"
         ),
+        "forwarding_timeout": (
+            "That took longer than expected. Your message was received"
+            " \u2014 just send a follow-up and I'll pick up where I left off."
+        ),
+        "provisioning_almost_ready": (
+            "Your assistant is almost ready \u2014 just finishing setup. Try again in about a minute! \U0001f331"
+        ),
+        "provisioning_setup": (
+            "Your assistant is being set up \u2014 this usually takes about a minute."
+            " I'll be ready for you shortly! \U0001f331"
+        ),
+        "restarting": "I'm restarting \u2014 please try again in about a minute!",
+        "forwarding_error": "Something went wrong. Please try again.",
+        "empty_response_after_retry": ("Sorry, I couldn't come up with a response. Could you try saying that again?"),
     },
     "ja": {
         "budget_exhausted_trial": (
@@ -115,6 +129,32 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             "\u4f55\u5ea6\u304b\u8a66\u884c\u3057\u305f\u5f8c\u30b9\u30ad\u30c3\u30d7\u3055\u305b\u3066\u3044\u305f\u3060\u304d\u307e\u3057\u305f\u3002"
             "\u91cd\u8981\u306a\u5185\u5bb9\u3067\u3057\u305f\u3089\u3001\u3082\u3046\u4e00\u5ea6\u9001\u3063\u3066\u3044\u305f\u3060\u3051\u307e\u3059\u304b\uff1f"
             "\n\n\u30e1\u30c3\u30bb\u30fc\u30b8\u306e\u51b2\u982d\uff1a\u300c{excerpt}\u300d"
+        ),
+        "forwarding_timeout": (
+            "\u601d\u3063\u305f\u3088\u308a\u6642\u9593\u304c\u304b\u304b\u3063\u3066\u3057\u307e\u3044\u307e\u3057\u305f\u3002"
+            "\u30e1\u30c3\u30bb\u30fc\u30b8\u306f\u53d7\u3051\u53d6\u308a\u307e\u3057\u305f"
+            "\u2014\u3082\u3046\u4e00\u5ea6\u30e1\u30c3\u30bb\u30fc\u30b8\u3092\u9001\u3063\u3066\u3044\u305f\u3060\u3051\u308c\u3070\u3001\u7d9a\u304d\u304b\u3089\u5fdc\u3048\u307e\u3059\u3002"
+        ),
+        "provisioning_almost_ready": (
+            "\u30a2\u30b7\u30b9\u30bf\u30f3\u30c8\u306e\u6e96\u5099\u304c\u3082\u3046\u3059\u3050\u3067\u304d\u307e\u3059"
+            "\u2014\u30bb\u30c3\u30c8\u30a2\u30c3\u30d7\u306e\u4ed5\u4e0a\u3052\u4e2d\u3067\u3059\u3002"
+            "1\u5206\u307b\u3069\u5f8c\u306b\u3082\u3046\u4e00\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\uff01\U0001f331"
+        ),
+        "provisioning_setup": (
+            "\u30a2\u30b7\u30b9\u30bf\u30f3\u30c8\u306e\u30bb\u30c3\u30c8\u30a2\u30c3\u30d7\u4e2d\u3067\u3059"
+            "\u2014\u901a\u5e38\u7d041\u5206\u307b\u3069\u304b\u304b\u308a\u307e\u3059\u3002"
+            "\u3082\u3046\u3057\u3070\u3089\u304f\u304a\u5f85\u3061\u304f\u3060\u3055\u3044\uff01\U0001f331"
+        ),
+        "restarting": (
+            "\u73fe\u5728\u518d\u8d77\u52d5\u4e2d\u3067\u3059"
+            "\u2014\u7d041\u5206\u5f8c\u306b\u3082\u3046\u4e00\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\uff01"
+        ),
+        "forwarding_error": (
+            "\u30a8\u30e9\u30fc\u304c\u767a\u751f\u3057\u307e\u3057\u305f\u3002\u3082\u3046\u4e00\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002"
+        ),
+        "empty_response_after_retry": (
+            "\u3054\u3081\u3093\u306a\u3055\u3044\u3001\u9069\u5207\u306a\u8fd4\u4fe1\u304c\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f\u3002"
+            "\u3082\u3046\u4e00\u5ea6\u8a00\u3044\u63db\u3048\u3066\u3082\u3089\u3048\u307e\u3059\u304b\uff1f"
         ),
     },
     "es": {

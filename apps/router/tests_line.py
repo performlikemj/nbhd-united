@@ -829,8 +829,9 @@ class LineWebhookEdgeCaseTest(TestCase):
         mock_push.assert_called_once()
         msg = mock_push.call_args[0][1][0]
         self.assertEqual(msg["type"], "flex")
-        msg_json = json.dumps(msg).lower()
-        self.assertIn("set up", msg_json)
+        msg_json = json.dumps(msg, ensure_ascii=False)
+        # User is language=ja → setup notice must be Japanese ("\u30bb\u30c3\u30c8\u30a2\u30c3\u30d7" = "setup")
+        self.assertIn("\u30bb\u30c3\u30c8\u30a2\u30c3\u30d7", msg_json)
 
 
 @override_settings(LINE_CHANNEL_SECRET="test-secret", LINE_CHANNEL_ACCESS_TOKEN="test-token")
