@@ -903,6 +903,37 @@ export function fetchWorkout(id: string): Promise<import("@/lib/types").FuelWork
   return apiFetch<import("@/lib/types").FuelWorkout>(`/api/v1/fuel/workouts/${id}/`);
 }
 
+export function fetchScheduleWindow(window: string = "7d"): Promise<import("@/lib/types").FuelWorkout[]> {
+  return apiFetch<import("@/lib/types").FuelWorkout[]>(`/api/v1/fuel/workouts/?window=${encodeURIComponent(window)}`);
+}
+
+export function skipWorkout(id: string, reason?: string): Promise<import("@/lib/types").FuelWorkout> {
+  return apiFetch<import("@/lib/types").FuelWorkout>(`/api/v1/fuel/workouts/${id}/skip/`, {
+    method: "POST",
+    body: JSON.stringify({ reason: reason ?? "" }),
+  });
+}
+
+export function completeWorkout(
+  id: string,
+  data?: { notes?: string; rpe?: number; duration_minutes?: number },
+): Promise<import("@/lib/types").FuelWorkout> {
+  return apiFetch<import("@/lib/types").FuelWorkout>(`/api/v1/fuel/workouts/${id}/complete/`, {
+    method: "POST",
+    body: JSON.stringify(data ?? {}),
+  });
+}
+
+export function swapWorkouts(
+  a: string,
+  b: string,
+): Promise<{ a: import("@/lib/types").FuelWorkout; b: import("@/lib/types").FuelWorkout }> {
+  return apiFetch<{ a: import("@/lib/types").FuelWorkout; b: import("@/lib/types").FuelWorkout }>(
+    "/api/v1/fuel/workouts/swap/",
+    { method: "POST", body: JSON.stringify({ a, b }) },
+  );
+}
+
 export function createWorkout(
   data: Partial<import("@/lib/types").FuelWorkout>,
 ): Promise<import("@/lib/types").FuelWorkout> {

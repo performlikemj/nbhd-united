@@ -96,9 +96,13 @@ import {
   fetchWorkouts,
   fetchWorkout,
   fetchWorkoutCount,
+  fetchScheduleWindow,
   createWorkout,
   updateWorkout,
   deleteWorkout,
+  skipWorkout,
+  completeWorkout,
+  swapWorkouts,
   fetchFuelProgress,
   fetchBodyWeight,
   createBodyWeight,
@@ -1195,7 +1199,56 @@ export function useDeleteWorkoutMutation() {
       void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
       void qc.invalidateQueries({ queryKey: ["fuel-progress"] });
       void qc.invalidateQueries({ queryKey: ["fuel-workout-count"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-schedule"] });
     },
+  });
+}
+
+export function useScheduleWindowQuery(window: string = "7d") {
+  return useQuery({
+    queryKey: ["fuel-schedule", window],
+    queryFn: () => fetchScheduleWindow(window),
+    staleTime: 60_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+function invalidateFuelLists(qc: ReturnType<typeof useQueryClient>) {
+  void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
+  void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
+  void qc.invalidateQueries({ queryKey: ["fuel-workout"] });
+  void qc.invalidateQueries({ queryKey: ["fuel-workout-count"] });
+  void qc.invalidateQueries({ queryKey: ["fuel-schedule"] });
+  void qc.invalidateQueries({ queryKey: ["fuel-progress"] });
+}
+
+export function useSkipWorkoutMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason?: string }) => skipWorkout(id, reason),
+    onSuccess: () => invalidateFuelLists(qc),
+  });
+}
+
+export function useCompleteWorkoutMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data?: { notes?: string; rpe?: number; duration_minutes?: number };
+    }) => completeWorkout(id, data),
+    onSuccess: () => invalidateFuelLists(qc),
+  });
+}
+
+export function useSwapWorkoutsMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ a, b }: { a: string; b: string }) => swapWorkouts(a, b),
+    onSuccess: () => invalidateFuelLists(qc),
   });
 }
 

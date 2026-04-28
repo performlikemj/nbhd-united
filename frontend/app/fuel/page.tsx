@@ -10,15 +10,16 @@ import { NewWorkoutDialog } from "@/components/fuel/new-workout-dialog";
 import { ProfileCard } from "@/components/fuel/profile-card";
 import { Progress } from "@/components/fuel/progress";
 import { RestingHeartRate } from "@/components/fuel/resting-heart-rate";
+import { ScheduleWeek } from "@/components/fuel/schedule-week";
 import { Sleep } from "@/components/fuel/sleep";
 import { WeeklySummary } from "@/components/fuel/weekly-summary";
 import { WorkoutDetail } from "@/components/fuel/workout-detail";
 import { useWorkoutCountQuery } from "@/lib/queries";
 
-type Tab = "calendar" | "history" | "progress";
+type Tab = "schedule" | "calendar" | "history" | "progress";
 
 export default function FuelPage() {
-  const [tab, setTab] = useState<Tab>("calendar");
+  const [tab, setTab] = useState<Tab>("schedule");
   const [dayIso, setDayIso] = useState<string | null>(null);
   const [workoutId, setWorkoutId] = useState<string | null>(null);
   const [newSheet, setNewSheet] = useState<{ open: boolean; date: string | null }>({ open: false, date: null });
@@ -64,6 +65,7 @@ export default function FuelPage() {
       {/* Tabs */}
       <div className="flex items-center gap-1 border-b border-border mb-6 overflow-x-auto">
         {([
+          { id: "schedule" as Tab, label: "Schedule" },
           { id: "calendar" as Tab, label: "Calendar" },
           { id: "history" as Tab, label: "History", count: doneCount },
           { id: "progress" as Tab, label: "Progress" },
@@ -86,6 +88,12 @@ export default function FuelPage() {
       </div>
 
       {/* Tab content */}
+      {tab === "schedule" && (
+        <ScheduleWeek
+          onAddSession={(iso) => setNewSheet({ open: true, date: iso })}
+          onOpenWorkout={(id) => setWorkoutId(id)}
+        />
+      )}
       {tab === "calendar" && <Calendar onSelectDay={setDayIso} />}
       {tab === "history" && <History onOpenWorkout={setWorkoutId} />}
       {tab === "progress" && (

@@ -22,6 +22,15 @@ class WorkoutStatus(models.TextChoices):
     DONE = "done", "Done"
     PLANNED = "planned", "Planned"
     REST = "rest", "Rest"
+    IN_PROGRESS = "in_progress", "In Progress"
+    SKIPPED = "skipped", "Skipped"
+    RESCHEDULED = "rescheduled", "Rescheduled"
+
+
+class WorkoutSource(models.TextChoices):
+    USER = "user", "User"
+    ASSISTANT = "assistant", "Assistant"
+    TEMPLATE = "template", "Template"
 
 
 class PlanStatus(models.TextChoices):
@@ -80,8 +89,43 @@ class Workout(models.Model):
         related_name="workouts",
         help_text="The workout plan this belongs to, if any.",
     )
-    date = models.DateField()
-    status = models.CharField(max_length=10, choices=WorkoutStatus.choices, default=WorkoutStatus.DONE)
+    date = models.DateField(help_text="Day of the workout (derived from scheduled_at when present).")
+    scheduled_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Scheduled time-of-day (tz-aware). When null, the workout is day-only (legacy or completed-without-time).",
+    )
+    window_start_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Earliest acceptable time. Defaults to scheduled_at - 2h if null.",
+    )
+    window_end_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Latest acceptable time. Defaults to scheduled_at + 2h if null.",
+    )
+    status = models.CharField(max_length=16, choices=WorkoutStatus.choices, default=WorkoutStatus.DONE)
+    source = models.CharField(
+        max_length=16,
+        choices=WorkoutSource.choices,
+        default=WorkoutSource.USER,
+        help_text="Who created this session.",
+    )
+    original_workout = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reschedules",
+        help_text="If this is a rescheduled session, points back to the original.",
+    )
+    skip_reason = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        help_text="Reason captured when status=skipped (e.g. 'traveling', 'kid sick').",
+    )
     category = models.CharField(max_length=16, choices=WorkoutCategory.choices)
     activity = models.CharField(max_length=128, help_text="Free-text activity name, e.g. 'Push — Chest & Shoulders'")
     duration_minutes = models.IntegerField(null=True, blank=True)
@@ -92,6 +136,11 @@ class Workout(models.Model):
         help_text="Rate of perceived exertion (1-10)",
     )
     notes = models.TextField(blank=True, default="")
+    notes_thread = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Conversation thread on the session: list of {at, who, text} entries.",
+    )
     detail_json = models.JSONField(
         default=dict,
         blank=True,
@@ -107,6 +156,8 @@ class Workout(models.Model):
             models.Index(fields=["tenant", "date"]),
             models.Index(fields=["tenant", "category"]),
             models.Index(fields=["tenant", "status", "date"]),
+            models.Index(fields=["tenant", "scheduled_at"]),
+            models.Index(fields=["tenant", "status", "scheduled_at"]),
         ]
 
     def __str__(self) -> str:
@@ -161,6 +212,14 @@ class FuelProfile(models.Model):
         help_text="Preferred workout time: morning, afternoon, evening, or empty",
     )
     additional_context = models.TextField(blank=True, default="", help_text="Free-form fitness context")
+    use_session_scheduling = models.BooleanField(
+        default=False,
+        help_text=(
+            "Cutover flag for the per-session Fuel cron model: when True, the "
+            "tenant's _fuel:* crons are derived from Workout.scheduled_at and "
+            "the legacy preferred_time-based emission is suppressed."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

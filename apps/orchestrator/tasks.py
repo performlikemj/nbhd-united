@@ -271,6 +271,22 @@ def restore_crons_after_image_update_task(tenant_id: str) -> None:
         except Exception:
             logger.warning("Post-restore dedup failed for %s (non-fatal)", tenant_id[:8], exc_info=True)
 
+    # If the tenant is on the new per-session Fuel flow, snapshot didn't
+    # capture _fuel:* (the restore step deliberately filters them by prefix),
+    # so we regenerate them here from Postgres truth.
+    profile = getattr(tenant, "fuel_profile", None)
+    if profile and profile.use_session_scheduling:
+        try:
+            from apps.orchestrator.fuel_cron import regenerate_fuel_crons
+
+            regenerate_fuel_crons(tenant)
+        except Exception:
+            logger.warning(
+                "Post-image Fuel cron regen failed for %s (non-fatal)",
+                tenant_id[:8],
+                exc_info=True,
+            )
+
     logger.info(
         "Post-image cron restore for tenant %s: %d restored, %d errors, %d already present (snapshot had %d)",
         tenant_id[:8],
@@ -561,6 +577,54 @@ def dedup_cron_jobs_task(tenant_id: str) -> None:
         result["deleted"],
         result["errors"],
     )
+
+
+def regenerate_fuel_crons_task(tenant_id: str) -> dict:
+    """Reconcile a tenant's _fuel:* crons with the derived set (Postgres truth).
+
+    Enqueued (debounced 30s) by ``apps/fuel/signals.py`` on Workout writes;
+    also runnable on demand or from the hourly reconcile.
+    """
+    import logging
+
+    from apps.orchestrator.fuel_cron import regenerate_fuel_crons
+    from apps.tenants.models import Tenant
+
+    logger = logging.getLogger(__name__)
+
+    tenant = Tenant.objects.filter(id=tenant_id).select_related("user").first()
+    if not tenant or not tenant.container_fqdn:
+        return {"added": 0, "removed": 0, "unchanged": 0, "errors": 0}
+    return regenerate_fuel_crons(tenant)
+
+
+def reconcile_fuel_crons_task() -> dict:
+    """Hourly fleet-wide reconcile — catches drift on tenants on the new flow."""
+    import logging
+
+    from apps.fuel.models import FuelProfile
+    from apps.orchestrator.fuel_cron import regenerate_fuel_crons
+    from apps.tenants.models import Tenant
+
+    logger = logging.getLogger(__name__)
+
+    profiles = FuelProfile.objects.filter(use_session_scheduling=True).select_related("tenant", "tenant__user")
+    totals = {"tenants": 0, "added": 0, "removed": 0, "errors": 0}
+    for profile in profiles:
+        tenant: Tenant = profile.tenant
+        if not tenant.container_fqdn:
+            continue
+        try:
+            res = regenerate_fuel_crons(tenant)
+            totals["tenants"] += 1
+            totals["added"] += res["added"]
+            totals["removed"] += res["removed"]
+            totals["errors"] += res["errors"]
+        except Exception:
+            logger.exception("reconcile_fuel_crons: tenant %s failed", tenant.id)
+            totals["errors"] += 1
+    logger.info("reconcile_fuel_crons: %s", totals)
+    return totals
 
 
 def remove_zombie_heartbeats_task() -> dict:

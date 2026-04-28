@@ -6,9 +6,12 @@ from .runtime_views import (
     RuntimeFuelSummaryView,
     RuntimeLogWorkoutView,
     RuntimeSleepView,
+    RuntimeWorkoutCompleteView,
     RuntimeWorkoutDetailView,  # noqa: F401
     RuntimeWorkoutPlanDetailView,
     RuntimeWorkoutPlanListCreateView,
+    RuntimeWorkoutSkipView,
+    RuntimeWorkoutSwapView,
 )
 from .views import (
     BodyWeightDetailView,
@@ -25,6 +28,7 @@ from .views import (
     SleepListView,
     WeeklyVolumeSummaryView,
     WorkoutCalendarView,
+    WorkoutCompleteView,
     WorkoutCountView,
     WorkoutDetailView,
     WorkoutDuplicateView,
@@ -32,6 +36,8 @@ from .views import (
     WorkoutPlanDetailView,
     WorkoutPlanListView,
     WorkoutProgressView,
+    WorkoutSkipView,
+    WorkoutSwapView,
     WorkoutTemplateDetailView,
     WorkoutTemplateListView,
 )
@@ -53,6 +59,17 @@ urlpatterns = [
         WorkoutDuplicateView.as_view(),
         name="fuel-workout-duplicate",
     ),
+    path(
+        "workouts/<uuid:workout_id>/skip/",
+        WorkoutSkipView.as_view(),
+        name="fuel-workout-skip",
+    ),
+    path(
+        "workouts/<uuid:workout_id>/complete/",
+        WorkoutCompleteView.as_view(),
+        name="fuel-workout-complete",
+    ),
+    path("workouts/swap/", WorkoutSwapView.as_view(), name="fuel-workout-swap"),
     path("calendar/", WorkoutCalendarView.as_view(), name="fuel-calendar"),
     path("progress/", WorkoutProgressView.as_view(), name="fuel-progress"),
     path("weekly-summary/", WeeklyVolumeSummaryView.as_view(), name="fuel-weekly-summary"),
@@ -103,6 +120,21 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/workouts/<uuid:workout_id>/",
         RuntimeWorkoutDetailView.as_view(),
         name="runtime-fuel-workout-detail",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/workouts/<uuid:workout_id>/skip/",
+        RuntimeWorkoutSkipView.as_view(),
+        name="runtime-fuel-workout-skip",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/workouts/<uuid:workout_id>/complete/",
+        RuntimeWorkoutCompleteView.as_view(),
+        name="runtime-fuel-workout-complete",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/workouts/swap/",
+        RuntimeWorkoutSwapView.as_view(),
+        name="runtime-fuel-workout-swap",
     ),
     path(
         "runtime/<uuid:tenant_id>/summary/",

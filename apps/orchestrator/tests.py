@@ -2,6 +2,7 @@
 
 import json
 import os
+from datetime import UTC
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
@@ -17,6 +18,7 @@ from .config_generator import (
     generate_openclaw_config,
 )
 from .config_validator import validate_openclaw_config
+from .fuel_cron import derive_fuel_cron_jobs
 from .services import (
     deprovision_tenant,
     provision_tenant,
@@ -791,3 +793,366 @@ class ProvisioningTest(TestCase):
         self.assertEqual(upload_args[0], str(self.tenant.id))
         # Config should contain gateway settings
         self.assertIn("gateway", upload_args[1])
+
+
+class DeriveFuelCronJobsTest(TestCase):
+    """Pure derive_fuel_cron_jobs(tenant) — Postgres source-of-truth for Fuel crons."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Derive Fuel Test", telegram_chat_id=999111222)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+
+    def _make_workout(self, **kw):
+        from datetime import date as date_cls
+
+        from apps.fuel.models import Workout
+
+        defaults = dict(
+            tenant=self.tenant,
+            date=date_cls(2026, 5, 1),
+            category="strength",
+            activity="Push",
+            status="planned",
+        )
+        defaults.update(kw)
+        return Workout.objects.create(**defaults)
+
+    def test_returns_empty_when_fuel_disabled(self):
+        from datetime import datetime
+
+        self.tenant.fuel_enabled = False
+        self.tenant.save(update_fields=["fuel_enabled"])
+        self._make_workout(scheduled_at=datetime(2026, 5, 1, 7, 0, tzinfo=UTC))
+        jobs = derive_fuel_cron_jobs(self.tenant, now=datetime(2026, 5, 1, 0, 0, tzinfo=UTC))
+        self.assertEqual(jobs, [])
+
+    def test_returns_empty_when_no_scheduled_sessions(self):
+        from datetime import datetime
+
+        # Workout exists but no scheduled_at
+        self._make_workout()
+        jobs = derive_fuel_cron_jobs(self.tenant, now=datetime(2026, 5, 1, 0, 0, tzinfo=UTC))
+        self.assertEqual(jobs, [])
+
+    def test_emits_one_cron_per_planned_session_in_horizon(self):
+        from datetime import datetime
+
+        a = self._make_workout(scheduled_at=datetime(2026, 5, 1, 7, 0, tzinfo=UTC))
+        b = self._make_workout(scheduled_at=datetime(2026, 5, 1, 18, 0, tzinfo=UTC))
+        # Out of horizon
+        self._make_workout(scheduled_at=datetime(2026, 5, 4, 7, 0, tzinfo=UTC))
+        jobs = derive_fuel_cron_jobs(
+            self.tenant,
+            horizon_hours=48,
+            now=datetime(2026, 5, 1, 0, 0, tzinfo=UTC),
+        )
+        self.assertEqual(len(jobs), 2)
+        names = sorted(j["name"] for j in jobs)
+        self.assertEqual(
+            names,
+            sorted([f"_fuel:{str(a.id).split('-')[0]}", f"_fuel:{str(b.id).split('-')[0]}"]),
+        )
+
+    def test_skips_non_planned_statuses(self):
+        from datetime import datetime
+
+        self._make_workout(
+            status="done",
+            scheduled_at=datetime(2026, 5, 1, 7, 0, tzinfo=UTC),
+        )
+        self._make_workout(
+            status="skipped",
+            scheduled_at=datetime(2026, 5, 1, 8, 0, tzinfo=UTC),
+        )
+        jobs = derive_fuel_cron_jobs(self.tenant, now=datetime(2026, 5, 1, 0, 0, tzinfo=UTC))
+        self.assertEqual(jobs, [])
+
+    def test_cron_expr_is_one_shot_in_user_tz(self):
+        from datetime import datetime
+
+        self.tenant.user.timezone = "Asia/Tokyo"
+        self.tenant.user.save(update_fields=["timezone"])
+        # 7am Tokyo = 22:00 UTC the previous day
+        self._make_workout(scheduled_at=datetime(2026, 4, 30, 22, 0, tzinfo=UTC))
+        jobs = derive_fuel_cron_jobs(
+            self.tenant,
+            now=datetime(2026, 4, 30, 0, 0, tzinfo=UTC),
+        )
+        self.assertEqual(len(jobs), 1)
+        # 22:00 UTC = 07:00 Asia/Tokyo on May 1
+        self.assertEqual(jobs[0]["schedule"]["expr"], "0 7 1 5 *")
+        self.assertEqual(jobs[0]["schedule"]["tz"], "Asia/Tokyo")
+
+    def test_cron_payload_shape(self):
+        from datetime import datetime
+
+        self._make_workout(scheduled_at=datetime(2026, 5, 1, 7, 0, tzinfo=UTC))
+        jobs = derive_fuel_cron_jobs(self.tenant, now=datetime(2026, 5, 1, 0, 0, tzinfo=UTC))
+        job = jobs[0]
+        self.assertEqual(job["sessionTarget"], "isolated")
+        self.assertEqual(job["payload"]["kind"], "agentTurn")
+        self.assertEqual(job["delivery"]["mode"], "none")
+        self.assertTrue(job["enabled"])
+        self.assertIn("Fuel background workout prep", job["payload"]["message"])
+
+    def test_unknown_timezone_falls_back_to_utc(self):
+        from datetime import datetime
+
+        self.tenant.user.timezone = "Mars/Olympus_Mons"
+        self.tenant.user.save(update_fields=["timezone"])
+        self._make_workout(scheduled_at=datetime(2026, 5, 1, 7, 0, tzinfo=UTC))
+        jobs = derive_fuel_cron_jobs(self.tenant, now=datetime(2026, 5, 1, 0, 0, tzinfo=UTC))
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["schedule"]["tz"], "UTC")
+
+
+class RegenerateFuelCronsTest(TestCase):
+    """regenerate_fuel_crons diff-and-apply against gateway."""
+
+    def setUp(self):
+        from apps.fuel.models import FuelProfile
+
+        self.tenant = create_tenant(display_name="Regen Test", telegram_chat_id=999333444)
+        self.tenant.fuel_enabled = True
+        self.tenant.container_fqdn = "oc-regen.example.com"
+        self.tenant.save(update_fields=["fuel_enabled", "container_fqdn"])
+        FuelProfile.objects.create(tenant=self.tenant, use_session_scheduling=True)
+
+    def _make_workout(self, **kw):
+        from datetime import date as date_cls
+
+        from apps.fuel.models import Workout
+
+        defaults = dict(
+            tenant=self.tenant,
+            date=date_cls(2026, 5, 1),
+            category="strength",
+            activity="Push",
+            status="planned",
+        )
+        defaults.update(kw)
+        return Workout.objects.create(**defaults)
+
+    def test_skips_when_flag_off(self):
+        self.tenant.fuel_profile.use_session_scheduling = False
+        self.tenant.fuel_profile.save(update_fields=["use_session_scheduling"])
+        from apps.orchestrator.fuel_cron import regenerate_fuel_crons
+
+        result = regenerate_fuel_crons(self.tenant)
+        self.assertEqual(result, {"added": 0, "removed": 0, "unchanged": 0, "errors": 0})
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_adds_missing_jobs(self, mock_invoke):
+        from datetime import datetime
+
+        from apps.orchestrator.fuel_cron import regenerate_fuel_crons
+
+        self._make_workout(scheduled_at=datetime(2026, 5, 1, 7, 0, tzinfo=UTC))
+        # cron.list returns empty
+        mock_invoke.side_effect = lambda tenant, tool, args: {"details": {"jobs": []}}
+
+        with patch(
+            "apps.orchestrator.fuel_cron.derive_fuel_cron_jobs",
+            return_value=[
+                {
+                    "name": "_fuel:abcd1234",
+                    "schedule": {"kind": "cron", "expr": "0 7 1 5 *", "tz": "UTC"},
+                    "sessionTarget": "isolated",
+                    "payload": {"kind": "agentTurn", "message": "x"},
+                    "delivery": {"mode": "none"},
+                    "enabled": True,
+                }
+            ],
+        ):
+            result = regenerate_fuel_crons(self.tenant)
+        self.assertEqual(result["added"], 1)
+        self.assertEqual(result["removed"], 0)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_removes_stale_session_jobs(self, mock_invoke):
+        from apps.orchestrator.fuel_cron import regenerate_fuel_crons
+
+        # Container has a stale session-prefix job (8 hex chars after _fuel:)
+        # but the desired set is empty.
+        mock_invoke.side_effect = lambda tenant, tool, args: (
+            {"details": {"jobs": [{"name": "_fuel:abcd1234", "id": "job-id-1"}]}} if tool == "cron.list" else None
+        )
+        with patch("apps.orchestrator.fuel_cron.derive_fuel_cron_jobs", return_value=[]):
+            result = regenerate_fuel_crons(self.tenant)
+        self.assertEqual(result["removed"], 1)
+        self.assertEqual(result["added"], 0)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_leaves_legacy_plan_jobs_alone(self, mock_invoke):
+        """Legacy `_fuel:{plan_name}` jobs (name has no UUID short-id) must not
+        be removed by the per-session reconcile — they belong to the old flow."""
+        from apps.orchestrator.fuel_cron import regenerate_fuel_crons
+
+        mock_invoke.side_effect = lambda tenant, tool, args: (
+            {"details": {"jobs": [{"name": "_fuel:My Plan", "id": "legacy-id"}]}} if tool == "cron.list" else None
+        )
+        with patch("apps.orchestrator.fuel_cron.derive_fuel_cron_jobs", return_value=[]):
+            result = regenerate_fuel_crons(self.tenant)
+        self.assertEqual(result["removed"], 0)
+
+
+class FuelEmissionSuppressionTest(TestCase):
+    """build_cron_seed_jobs must suppress legacy `_fuel:{plan_name}` emission
+    once the tenant is on the new per-session flow."""
+
+    def setUp(self):
+        from apps.fuel.models import FuelProfile, WorkoutPlan
+
+        self.tenant = create_tenant(display_name="Suppression Test", telegram_chat_id=999444555)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+        WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="My Plan",
+            status="active",
+            start_date="2026-04-28",
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {}, "2": {}, "4": {}},
+        )
+        self.profile = FuelProfile.objects.create(tenant=self.tenant, preferred_time="morning")
+
+    def test_legacy_fuel_cron_emitted_when_flag_off(self):
+        jobs = build_cron_seed_jobs(self.tenant)
+        names = [j["name"] for j in jobs]
+        self.assertIn("_fuel:My Plan", names)
+
+    def test_legacy_fuel_cron_suppressed_when_flag_on(self):
+        self.profile.use_session_scheduling = True
+        self.profile.save(update_fields=["use_session_scheduling"])
+        jobs = build_cron_seed_jobs(self.tenant)
+        names = [j["name"] for j in jobs]
+        self.assertNotIn("_fuel:My Plan", names)
+
+
+class WorkoutSignalRegenTest(TestCase):
+    """Workout post_save / post_delete fires the debounced regen task only
+    when the tenant has opted into session scheduling."""
+
+    def setUp(self):
+        from apps.fuel.models import FuelProfile
+
+        self.tenant = create_tenant(display_name="Signal Test", telegram_chat_id=999555666)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+        FuelProfile.objects.create(tenant=self.tenant)
+
+    def _make_workout(self):
+        from datetime import date as date_cls
+
+        from apps.fuel.models import Workout
+
+        return Workout.objects.create(
+            tenant=self.tenant,
+            date=date_cls(2026, 5, 1),
+            category="strength",
+            activity="Push",
+            status="planned",
+        )
+
+    @patch("apps.cron.publish.publish_task")
+    def test_no_publish_when_flag_off(self, mock_publish):
+        self._make_workout()
+        mock_publish.assert_not_called()
+
+    @patch("apps.cron.publish.publish_task")
+    def test_publishes_debounced_regen_when_flag_on(self, mock_publish):
+        self.tenant.fuel_profile.use_session_scheduling = True
+        self.tenant.fuel_profile.save(update_fields=["use_session_scheduling"])
+        self._make_workout()
+        mock_publish.assert_called()
+        call = mock_publish.call_args
+        self.assertEqual(call[0][0], "regenerate_fuel_crons")
+        self.assertEqual(call[1]["delay_seconds"], 30)
+        self.assertEqual(call[1]["idempotency_key"], f"regen-fuel:{self.tenant.id}")
+
+    @patch("apps.cron.publish.publish_task")
+    def test_publishes_on_delete(self, mock_publish):
+        self.tenant.fuel_profile.use_session_scheduling = True
+        self.tenant.fuel_profile.save(update_fields=["use_session_scheduling"])
+        w = self._make_workout()
+        mock_publish.reset_mock()
+        w.delete()
+        mock_publish.assert_called_once()
+
+
+class FuelEndToEndTest(TestCase):
+    """End-to-end: Workout save → signal → regen → cron-list mutations.
+
+    QStash isn't configured in tests, so publish_task executes the regen
+    synchronously. We mock invoke_gateway_tool to capture what would be
+    sent to the container.
+    """
+
+    def setUp(self):
+        from apps.fuel.models import FuelProfile
+
+        self.tenant = create_tenant(display_name="E2E Test", telegram_chat_id=999666777)
+        self.tenant.fuel_enabled = True
+        self.tenant.container_fqdn = "oc-e2e.example.com"
+        self.tenant.save(update_fields=["fuel_enabled", "container_fqdn"])
+        FuelProfile.objects.create(tenant=self.tenant, use_session_scheduling=True)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_creating_planned_workout_emits_cron_add(self, mock_invoke):
+        from datetime import datetime, timedelta
+
+        from apps.fuel.models import Workout
+
+        # cron.list returns empty → all derived jobs are new adds
+        mock_invoke.side_effect = lambda tenant, tool, args: {"details": {"jobs": []}} if tool == "cron.list" else None
+        future = datetime.now(tz=UTC) + timedelta(hours=4)
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=future.date(),
+            scheduled_at=future,
+            category="strength",
+            activity="Push",
+            status="planned",
+        )
+        # Signal → publish_task (sync since QStash not configured) → regen.
+        # Expect at least one cron.add call for the session.
+        add_calls = [c for c in mock_invoke.call_args_list if c[0][1] == "cron.add"]
+        self.assertGreaterEqual(len(add_calls), 1)
+        added_job = add_calls[0][0][2]["job"]
+        self.assertTrue(added_job["name"].startswith("_fuel:"))
+        self.assertEqual(len(added_job["name"]) - len("_fuel:"), 8)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_skip_workout_removes_its_cron(self, mock_invoke):
+        from datetime import datetime, timedelta
+
+        from apps.fuel.models import Workout, WorkoutStatus
+
+        future = datetime.now(tz=UTC) + timedelta(hours=4)
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            date=future.date(),
+            scheduled_at=future,
+            category="strength",
+            activity="Push",
+            status="planned",
+        )
+        short = str(w.id).split("-")[0]
+
+        # After flipping to skipped, cron.list should still see the
+        # session's previously-added job; the next regen should remove it.
+        mock_invoke.reset_mock()
+        mock_invoke.side_effect = lambda tenant, tool, args: (
+            {"details": {"jobs": [{"name": f"_fuel:{short}", "id": "job-id-existing"}]}}
+            if tool == "cron.list"
+            else None
+        )
+
+        w.status = WorkoutStatus.SKIPPED
+        w.save(update_fields=["status", "updated_at"])
+
+        remove_calls = [c for c in mock_invoke.call_args_list if c[0][1] == "cron.remove"]
+        self.assertGreaterEqual(len(remove_calls), 1)
+        self.assertEqual(remove_calls[0][0][2]["jobId"], "job-id-existing")
