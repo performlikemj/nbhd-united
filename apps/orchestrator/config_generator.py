@@ -744,19 +744,31 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
 
     # Fuel workout-prep cron — background, fires on training days at the
     # user's preferred workout time. Independent of all other crons.
+    #
+    # Suppressed when the tenant is on the new per-session flow
+    # (FuelProfile.use_session_scheduling=True): in that case ``_fuel:*``
+    # crons are derived from Workout.scheduled_at by
+    # ``apps/orchestrator/fuel_cron.py::regenerate_fuel_crons``.
     if getattr(tenant, "fuel_enabled", False):
         from apps.fuel.models import FuelProfile, WorkoutPlan
 
-        active_plan = WorkoutPlan.objects.filter(tenant=tenant, status="active").order_by("-created_at").first()
-        if active_plan:
-            pref_time = ""
-            try:
-                pref_time = FuelProfile.objects.get(tenant=tenant).preferred_time
-            except FuelProfile.DoesNotExist:
-                pass
-            fuel_job = build_fuel_workout_cron(tenant, active_plan, preferred_time=pref_time)
-            if fuel_job:
-                jobs.append(fuel_job)
+        use_session_scheduling = False
+        pref_time = ""
+        try:
+            profile = FuelProfile.objects.get(tenant=tenant)
+            use_session_scheduling = profile.use_session_scheduling
+            pref_time = profile.preferred_time
+        except FuelProfile.DoesNotExist:
+            pass
+
+        if not use_session_scheduling:
+            active_plan = (
+                WorkoutPlan.objects.filter(tenant=tenant, status="active").order_by("-created_at").first()
+            )
+            if active_plan:
+                fuel_job = build_fuel_workout_cron(tenant, active_plan, preferred_time=pref_time)
+                if fuel_job:
+                    jobs.append(fuel_job)
 
     # Apply per-task model overrides from tenant preferences
     _TASK_SLUG_MAP = {

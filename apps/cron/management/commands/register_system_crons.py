@@ -41,6 +41,9 @@ SYSTEM_CRONS = [
     ("cleanup-delivered-buffers", "0 7 * * *", "/api/cron/trigger/cleanup_delivered_buffers/"),
     # Daily at 21:30 UTC — extract goals/tasks/lessons from daily notes
     ("nightly-extraction", "30 21 * * *", "/api/cron/trigger/nightly_extraction/"),
+    # Every hour — reconcile derived Fuel session crons against Postgres truth
+    # for tenants on the new per-session scheduling flow (catches drift).
+    ("reconcile-fuel-crons", "0 * * * *", "/api/cron/trigger/reconcile_fuel_crons/"),
 ]
 
 

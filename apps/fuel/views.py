@@ -271,6 +271,17 @@ class WorkoutListView(APIView):
             qs = qs.filter(status=status_filter)
         date_from = request.query_params.get("date_from")
         date_to = request.query_params.get("date_to")
+        window = request.query_params.get("window")
+        if window and not (date_from or date_to):
+            from datetime import timedelta
+
+            unit = window[-1].lower()
+            magnitude = _safe_int(window[:-1], 0)
+            days = magnitude * (7 if unit == "w" else 1)
+            if days > 0:
+                today = date_cls.today()
+                date_from = today.isoformat()
+                date_to = (today + timedelta(days=days)).isoformat()
         if date_from:
             qs = qs.filter(date__gte=date_from)
         if date_to:
@@ -610,6 +621,104 @@ class WorkoutDuplicateView(APIView):
             detail_json=source.detail_json,
         )
         return Response(WorkoutSerializer(new_workout).data, status=status.HTTP_201_CREATED)
+
+
+class WorkoutSkipView(APIView):
+    """POST: mark a planned workout as skipped, with an optional reason.
+
+    Soft-state — preserves the row for adherence math; distinct from DELETE
+    (which removes the session entirely, e.g. for an accidental add).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, workout_id):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            workout = Workout.objects.get(id=workout_id, tenant=tenant)
+        except Workout.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        reason = (request.data.get("reason") or "")[:128]
+        workout.status = WorkoutStatus.SKIPPED
+        workout.skip_reason = reason
+        workout.save(update_fields=["status", "skip_reason", "updated_at"])
+        return Response(WorkoutSerializer(workout).data)
+
+
+class WorkoutCompleteView(APIView):
+    """POST: mark a workout as completed, optionally with notes/RPE/duration."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, workout_id):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            workout = Workout.objects.get(id=workout_id, tenant=tenant)
+        except Workout.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        workout.status = WorkoutStatus.DONE
+        if "notes" in request.data:
+            workout.notes = request.data["notes"] or ""
+        if "rpe" in request.data and request.data["rpe"] is not None:
+            try:
+                rpe = int(request.data["rpe"])
+                if 1 <= rpe <= 10:
+                    workout.rpe = rpe
+            except (TypeError, ValueError):
+                pass
+        if "duration_minutes" in request.data and request.data["duration_minutes"] is not None:
+            try:
+                workout.duration_minutes = int(request.data["duration_minutes"])
+            except (TypeError, ValueError):
+                pass
+        workout.save()
+        detect_prs(tenant, workout)
+        return Response(WorkoutSerializer(workout).data)
+
+
+class WorkoutSwapView(APIView):
+    """POST: swap the scheduled_at + date of two workouts atomically.
+
+    Body: {"a": <uuid>, "b": <uuid>}.
+    Used by drag-one-onto-another in the week strip.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from django.db import transaction
+
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        a_id = request.data.get("a")
+        b_id = request.data.get("b")
+        if not a_id or not b_id or a_id == b_id:
+            return Response(
+                {"error": "must provide distinct 'a' and 'b' workout ids"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            a = Workout.objects.get(id=a_id, tenant=tenant)
+            b = Workout.objects.get(id=b_id, tenant=tenant)
+        except Workout.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        with transaction.atomic():
+            a.scheduled_at, b.scheduled_at = b.scheduled_at, a.scheduled_at
+            a.window_start_at, b.window_start_at = b.window_start_at, a.window_start_at
+            a.window_end_at, b.window_end_at = b.window_end_at, a.window_end_at
+            a.date, b.date = b.date, a.date
+            a.save(update_fields=["scheduled_at", "window_start_at", "window_end_at", "date", "updated_at"])
+            b.save(update_fields=["scheduled_at", "window_start_at", "window_end_at", "date", "updated_at"])
+
+        return Response(
+            {"a": WorkoutSerializer(a).data, "b": WorkoutSerializer(b).data},
+        )
 
 
 # ═════════════════════════════════════════════════════════════════════

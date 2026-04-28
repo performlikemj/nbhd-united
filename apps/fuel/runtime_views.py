@@ -284,6 +284,144 @@ class RuntimeWorkoutDetailView(APIView):
         return Response({"deleted": True, **workout_info})
 
 
+class RuntimeWorkoutSkipView(APIView):
+    """POST: assistant marks a planned workout as skipped, with reason.
+
+    Soft-state — preserves the row for adherence; distinct from DELETE.
+    Mirrors the consumer-facing WorkoutSkipView.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, tenant_id, workout_id):
+        err = _internal_auth_or_401(request, tenant_id)
+        if err:
+            return err
+        tenant_or_resp = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant_or_resp, Response):
+            return tenant_or_resp
+        try:
+            workout = Workout.objects.get(id=workout_id, tenant=tenant_or_resp)
+        except Workout.DoesNotExist:
+            return Response({"error": "workout_not_found"}, status=status.HTTP_404_NOT_FOUND)
+        reason = str(request.data.get("reason") or "")[:128]
+        workout.status = WorkoutStatus.SKIPPED
+        workout.skip_reason = reason
+        workout.save(update_fields=["status", "skip_reason", "updated_at"])
+        return Response(
+            {
+                "id": str(workout.id),
+                "status": workout.status,
+                "skip_reason": workout.skip_reason,
+                "date": str(workout.date),
+            }
+        )
+
+
+class RuntimeWorkoutCompleteView(APIView):
+    """POST: assistant marks a workout as completed.
+
+    Optional: notes, rpe, duration_minutes. Mirrors WorkoutCompleteView.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, tenant_id, workout_id):
+        err = _internal_auth_or_401(request, tenant_id)
+        if err:
+            return err
+        tenant_or_resp = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant_or_resp, Response):
+            return tenant_or_resp
+        try:
+            workout = Workout.objects.get(id=workout_id, tenant=tenant_or_resp)
+        except Workout.DoesNotExist:
+            return Response({"error": "workout_not_found"}, status=status.HTTP_404_NOT_FOUND)
+        workout.status = WorkoutStatus.DONE
+        if "notes" in request.data:
+            workout.notes = str(request.data.get("notes") or "")
+        if request.data.get("rpe") is not None:
+            try:
+                rpe = int(request.data["rpe"])
+                if 1 <= rpe <= 10:
+                    workout.rpe = rpe
+            except (TypeError, ValueError):
+                pass
+        if request.data.get("duration_minutes") is not None:
+            try:
+                workout.duration_minutes = int(request.data["duration_minutes"])
+            except (TypeError, ValueError):
+                pass
+        workout.save()
+        try:
+            from .services import detect_prs
+
+            detect_prs(tenant_or_resp, workout)
+        except Exception:
+            logger.exception("PR detection failed for workout %s", workout.id)
+        return Response(
+            {
+                "id": str(workout.id),
+                "status": workout.status,
+                "rpe": workout.rpe,
+                "duration_minutes": workout.duration_minutes,
+                "date": str(workout.date),
+            }
+        )
+
+
+class RuntimeWorkoutSwapView(APIView):
+    """POST: assistant swaps scheduled_at + date of two workouts atomically.
+
+    Body: {"a": <uuid>, "b": <uuid>}. Mirrors WorkoutSwapView.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, tenant_id):
+        from django.db import transaction
+
+        err = _internal_auth_or_401(request, tenant_id)
+        if err:
+            return err
+        tenant_or_resp = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant_or_resp, Response):
+            return tenant_or_resp
+        a_id = request.data.get("a")
+        b_id = request.data.get("b")
+        if not a_id or not b_id or a_id == b_id:
+            return Response(
+                {"error": "must provide distinct 'a' and 'b' workout ids"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            a = Workout.objects.get(id=a_id, tenant=tenant_or_resp)
+            b = Workout.objects.get(id=b_id, tenant=tenant_or_resp)
+        except Workout.DoesNotExist:
+            return Response({"error": "workout_not_found"}, status=status.HTTP_404_NOT_FOUND)
+        with transaction.atomic():
+            a.scheduled_at, b.scheduled_at = b.scheduled_at, a.scheduled_at
+            a.window_start_at, b.window_start_at = b.window_start_at, a.window_start_at
+            a.window_end_at, b.window_end_at = b.window_end_at, a.window_end_at
+            a.date, b.date = b.date, a.date
+            a.save(update_fields=["scheduled_at", "window_start_at", "window_end_at", "date", "updated_at"])
+            b.save(update_fields=["scheduled_at", "window_start_at", "window_end_at", "date", "updated_at"])
+        return Response(
+            {
+                "a": {
+                    "id": str(a.id),
+                    "scheduled_at": a.scheduled_at.isoformat() if a.scheduled_at else None,
+                    "date": str(a.date),
+                },
+                "b": {
+                    "id": str(b.id),
+                    "scheduled_at": b.scheduled_at.isoformat() if b.scheduled_at else None,
+                    "date": str(b.date),
+                },
+            }
+        )
+
+
 class RuntimeFuelSummaryView(APIView):
     """GET: recent workouts + weekly stats for AI context."""
 

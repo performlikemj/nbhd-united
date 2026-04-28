@@ -623,17 +623,32 @@ export type WorkoutCategory =
   | "sport"
   | "other";
 
-export type WorkoutStatus = "done" | "planned" | "rest";
+export type WorkoutStatus =
+  | "done"
+  | "planned"
+  | "rest"
+  | "in_progress"
+  | "skipped"
+  | "rescheduled";
+
+export type WorkoutSource = "user" | "assistant" | "template";
 
 export interface FuelWorkout {
   id: string;
   date: string;
+  scheduled_at: string | null;
+  window_start_at: string | null;
+  window_end_at: string | null;
   status: WorkoutStatus;
+  source: WorkoutSource;
+  original_workout: string | null;
+  skip_reason: string;
   category: WorkoutCategory;
   activity: string;
   duration_minutes: number | null;
   rpe: number | null;
   notes: string;
+  notes_thread: { at: string; who: string; text: string }[];
   detail_json: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -642,6 +657,7 @@ export interface FuelWorkout {
 export interface WorkoutStub {
   id: string;
   date: string;
+  scheduled_at: string | null;
   category: WorkoutCategory;
   activity: string;
   status: WorkoutStatus;

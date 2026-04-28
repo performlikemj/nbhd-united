@@ -96,6 +96,9 @@ TASK_MAP = {
     "nightly_extraction": "apps.orchestrator.tasks.nightly_extraction_task",
     # Fuel welcome cron — delayed after container restart
     "schedule_fuel_welcome": "apps.fuel.tasks.schedule_fuel_welcome_task",
+    # Fuel session-scheduling cutover — derived from Workout.scheduled_at
+    "regenerate_fuel_crons": "apps.orchestrator.tasks.regenerate_fuel_crons_task",
+    "reconcile_fuel_crons": "apps.orchestrator.tasks.reconcile_fuel_crons_task",
 }
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date
 from decimal import Decimal
 from unittest import TestCase as UnitTestCase
 
@@ -423,6 +423,125 @@ class ConsumerFuelViewTests(TestCase):
 
 
 # ═════════════════════════════════════════════════════════════════════
+# 3b. Session lifecycle (skip / complete / swap / scheduled_at)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class WorkoutSessionLifecycleTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Session Test", telegram_chat_id=800099)
+        self.user = self.tenant.user
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def _make(self, **kw):
+        defaults = dict(
+            tenant=self.tenant,
+            date=date(2026, 4, 28),
+            category="strength",
+            activity="Push",
+            status="planned",
+        )
+        defaults.update(kw)
+        return Workout.objects.create(**defaults)
+
+    def test_create_with_scheduled_at_derives_date(self):
+        from datetime import datetime
+
+        resp = self.client.post(
+            "/api/v1/fuel/workouts/",
+            {
+                "scheduled_at": datetime(2026, 5, 1, 7, 30, tzinfo=UTC).isoformat(),
+                "category": "strength",
+                "activity": "Push",
+                "status": "planned",
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(resp.data["date"], "2026-05-01")
+        self.assertIsNotNone(resp.data["scheduled_at"])
+
+    def test_skip_sets_status_and_reason(self):
+        w = self._make()
+        resp = self.client.post(f"/api/v1/fuel/workouts/{w.id}/skip/", {"reason": "traveling"}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["status"], "skipped")
+        self.assertEqual(resp.data["skip_reason"], "traveling")
+
+    def test_skip_truncates_long_reason(self):
+        w = self._make()
+        long_reason = "x" * 200
+        resp = self.client.post(f"/api/v1/fuel/workouts/{w.id}/skip/", {"reason": long_reason}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data["skip_reason"]), 128)
+
+    def test_complete_marks_done_with_optional_fields(self):
+        w = self._make()
+        resp = self.client.post(
+            f"/api/v1/fuel/workouts/{w.id}/complete/",
+            {"notes": "felt strong", "rpe": 8, "duration_minutes": 55},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["status"], "done")
+        self.assertEqual(resp.data["notes"], "felt strong")
+        self.assertEqual(resp.data["rpe"], 8)
+        self.assertEqual(resp.data["duration_minutes"], 55)
+
+    def test_complete_ignores_invalid_rpe(self):
+        w = self._make(rpe=5)
+        resp = self.client.post(f"/api/v1/fuel/workouts/{w.id}/complete/", {"rpe": 99}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["rpe"], 5)
+
+    def test_swap_exchanges_scheduled_at_and_date(self):
+        from datetime import datetime
+
+        a = self._make(date=date(2026, 4, 28), scheduled_at=datetime(2026, 4, 28, 7, 0, tzinfo=UTC))
+        b = self._make(date=date(2026, 4, 30), scheduled_at=datetime(2026, 4, 30, 18, 0, tzinfo=UTC))
+        resp = self.client.post(
+            "/api/v1/fuel/workouts/swap/", {"a": str(a.id), "b": str(b.id)}, format="json"
+        )
+        self.assertEqual(resp.status_code, 200)
+        a.refresh_from_db()
+        b.refresh_from_db()
+        self.assertEqual(a.date, date(2026, 4, 30))
+        self.assertEqual(b.date, date(2026, 4, 28))
+        self.assertEqual(a.scheduled_at.hour, 18)
+        self.assertEqual(b.scheduled_at.hour, 7)
+
+    def test_swap_rejects_same_id(self):
+        a = self._make()
+        resp = self.client.post(
+            "/api/v1/fuel/workouts/swap/", {"a": str(a.id), "b": str(a.id)}, format="json"
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_swap_404_on_missing(self):
+        a = self._make()
+        import uuid
+
+        resp = self.client.post(
+            "/api/v1/fuel/workouts/swap/", {"a": str(a.id), "b": str(uuid.uuid4())}, format="json"
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_list_window_query_param(self):
+        from datetime import timedelta
+
+        today = date.today()
+        self._make(date=today)  # in window
+        self._make(date=today + timedelta(days=3))  # in window
+        self._make(date=today + timedelta(days=14))  # out of window
+        self._make(date=today - timedelta(days=2))  # out of window (past)
+        resp = self.client.get("/api/v1/fuel/workouts/?window=7d")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data), 2)
+
+
+# ═════════════════════════════════════════════════════════════════════
 # 4. Runtime View Tests
 # ═════════════════════════════════════════════════════════════════════
 
@@ -520,6 +639,83 @@ class RuntimeFuelViewTests(TestCase):
             **self.headers,
         )
         self.assertEqual(len(resp.data["recent_workouts"]), 0)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 4b. Runtime Session Lifecycle (skip / complete / swap mirrors)
+# ═════════════════════════════════════════════════════════════════════
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+class RuntimeSessionLifecycleTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Runtime Session Test", telegram_chat_id=800077)
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def _make(self, **kw):
+        defaults = dict(
+            tenant=self.tenant,
+            date=date(2026, 4, 28),
+            category="strength",
+            activity="Push",
+            status="planned",
+        )
+        defaults.update(kw)
+        return Workout.objects.create(**defaults)
+
+    def test_runtime_skip(self):
+        w = self._make()
+        resp = self.client.post(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/workouts/{w.id}/skip/",
+            {"reason": "kid sick"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["status"], "skipped")
+        self.assertEqual(resp.data["skip_reason"], "kid sick")
+
+    def test_runtime_skip_unauthorized(self):
+        w = self._make()
+        resp = self.client.post(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/workouts/{w.id}/skip/",
+            {"reason": "x"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 401)
+
+    def test_runtime_complete(self):
+        w = self._make()
+        resp = self.client.post(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/workouts/{w.id}/complete/",
+            {"rpe": 7, "duration_minutes": 50, "notes": "good push session"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["status"], "done")
+        self.assertEqual(resp.data["rpe"], 7)
+
+    def test_runtime_swap(self):
+        from datetime import datetime
+
+        a = self._make(date=date(2026, 4, 28), scheduled_at=datetime(2026, 4, 28, 7, 0, tzinfo=UTC))
+        b = self._make(date=date(2026, 4, 30), scheduled_at=datetime(2026, 4, 30, 18, 0, tzinfo=UTC))
+        resp = self.client.post(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/workouts/swap/",
+            {"a": str(a.id), "b": str(b.id)},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        a.refresh_from_db()
+        b.refresh_from_db()
+        self.assertEqual(a.date, date(2026, 4, 30))
+        self.assertEqual(b.date, date(2026, 4, 28))
 
 
 # ═════════════════════════════════════════════════════════════════════
