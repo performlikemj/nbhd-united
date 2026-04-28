@@ -16,6 +16,7 @@ remain status=ACTIVE with a non-null ``hibernated_at`` timestamp.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 
 from django.utils import timezone
@@ -403,14 +404,127 @@ def check_cron_wake_idle_task(tenant_id: str) -> dict:
     return {"status": "re_hibernated"}
 
 
+_MAX_DELIVERY_ATTEMPTS = 3
+_TRANSIENT_BACKOFFS_SECONDS: tuple[float, ...] = (5.0, 15.0, 45.0)
+
+
+def _post_chat_completion_with_backoff(
+    url: str,
+    *,
+    payload: dict,
+    headers: dict,
+    timeout: float = 120.0,
+    backoffs: tuple[float, ...] = _TRANSIENT_BACKOFFS_SECONDS,
+):
+    """POST to OpenClaw `/v1/chat/completions` with retry on transient errors.
+
+    A "transient" error is a connection/timeout error or any 5xx response —
+    typically a still-cold container or a brief gateway hiccup. Those get
+    retried with the given backoffs *before* this counts as a failed
+    delivery attempt against the buffered message. Permanent errors (4xx)
+    raise immediately.
+
+    Returns the parsed JSON body on success.
+    """
+
+    import httpx
+
+    delays = [0.0, *backoffs]
+    last_error: Exception | None = None
+    for i, delay in enumerate(delays):
+        if delay:
+            time.sleep(delay)
+        try:
+            resp = httpx.post(url, json=payload, headers=headers, timeout=timeout)
+        except httpx.RequestError as exc:
+            last_error = exc
+            logger.warning(
+                "post_chat: transient %s on attempt %d/%d",
+                type(exc).__name__,
+                i + 1,
+                len(delays),
+            )
+            continue
+
+        if resp.status_code >= 500:
+            last_error = httpx.HTTPStatusError(
+                f"Server error {resp.status_code}",
+                request=resp.request,
+                response=resp,
+            )
+            logger.warning(
+                "post_chat: %d on attempt %d/%d",
+                resp.status_code,
+                i + 1,
+                len(delays),
+            )
+            continue
+
+        resp.raise_for_status()
+        return resp.json()
+
+    assert last_error is not None
+    raise last_error
+
+
+def _send_apology_for_dropped_message(tenant: Tenant, msg) -> None:
+    """Notify the user we couldn't process their buffered message after the
+    attempts cap. Uses channel-native plain push (NOT
+    `relay_ai_response_to_line`) since this is system status, not assistant
+    content."""
+    from apps.router.models import BufferedMessage
+
+    excerpt = (msg.user_text or "").strip().replace("\n", " ")
+    if len(excerpt) > 50:
+        excerpt = excerpt[:50] + "…"
+
+    base = (
+        "Sorry — I had trouble responding to one of your messages and "
+        "had to drop it after a few tries. If it's important, please "
+        "send it again."
+    )
+    text = f"{base}\n\nIt started with: \u201c{excerpt}\u201d" if excerpt else base
+
+    if msg.channel == BufferedMessage.Channel.LINE:
+        line_user_id = getattr(tenant.user, "line_user_id", None)
+        if not line_user_id:
+            return
+        from apps.router.line_webhook import _send_line_text
+
+        try:
+            _send_line_text(line_user_id, text)
+        except Exception:
+            logger.exception(
+                "deliver_buffered: failed to push apology to LINE for tenant %s",
+                str(tenant.id)[:8],
+            )
+    else:
+        # Telegram apology not yet wired up — Telegram path uses
+        # forward_to_openclaw which has its own retry envelope, so the
+        # head-of-line stall pattern is less acute here. Log only.
+        logger.info(
+            "deliver_buffered: dropped Telegram msg for tenant %s (apology not impl)",
+            str(tenant.id)[:8],
+        )
+
+
 def deliver_buffered_messages_task(tenant_id: str) -> dict:
     """Forward all buffered messages for a tenant to its container.
 
     Called via QStash ~45s after wake to give the container time to start.
+
+    Resilience semantics (regression guard for 2026-04-28 head-of-line
+    incident):
+      - Transient 5xx / connection errors retry inside the task with
+        backoff before counting as a delivery attempt.
+      - On a real per-message failure we increment ``delivery_attempts``
+        and break to preserve queue order; QStash retries the task.
+      - Once a message has hit ``_MAX_DELIVERY_ATTEMPTS`` we mark it
+        ``delivered=True / status=failed`` and push a one-shot apology
+        to the user so the head of the queue can never block forever.
     """
     import asyncio
 
-    import httpx
     from django.conf import settings
 
     from apps.router.models import BufferedMessage
@@ -419,7 +533,7 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
     tenant = Tenant.objects.select_related("user").filter(id=tenant_id).first()
     if not tenant or not tenant.container_fqdn:
         logger.warning("deliver_buffered: tenant %s not found or no FQDN", tenant_id[:8])
-        return {"delivered": 0, "failed": 0}
+        return {"delivered": 0, "failed": 0, "dropped": 0}
 
     messages = BufferedMessage.objects.filter(
         tenant=tenant,
@@ -428,8 +542,26 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
 
     delivered = 0
     failed = 0
+    dropped = 0
 
     for msg in messages:
+        # Drop messages past the attempts cap so they don't block the
+        # queue forever, then notify the user.
+        if msg.delivery_attempts >= _MAX_DELIVERY_ATTEMPTS:
+            logger.warning(
+                "deliver_buffered: dropping msg %s for tenant %s after %d attempts",
+                msg.id,
+                tenant_id[:8],
+                msg.delivery_attempts,
+            )
+            msg.delivered = True
+            msg.delivered_at = timezone.now()
+            msg.delivery_status = BufferedMessage.Status.FAILED
+            msg.save(update_fields=["delivered", "delivered_at", "delivery_status"])
+            _send_apology_for_dropped_message(tenant, msg)
+            dropped += 1
+            continue
+
         try:
             if msg.channel == BufferedMessage.Channel.TELEGRAM:
                 loop = asyncio.new_event_loop()
@@ -454,9 +586,9 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
                 user_tz = tenant.user.timezone or "UTC"
                 line_user_id = tenant.user.line_user_id or ""
 
-                resp = httpx.post(
+                result = _post_chat_completion_with_backoff(
                     url,
-                    json={
+                    payload={
                         "model": "openclaw",
                         "messages": [{"role": "user", "content": msg.user_text or "..."}],
                         "user": line_user_id,
@@ -466,15 +598,12 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
                         "X-User-Timezone": user_tz,
                         "X-Line-User-Id": line_user_id,
                     },
-                    timeout=120.0,
                 )
-                resp.raise_for_status()
 
                 # Send response back via LINE — use the same pipeline as the
                 # live webhook so markdown stripping, Flex bubbles, charts,
                 # and PII rehydration all apply (no reply_token: buffered
                 # delivery happens long after the webhook reply window).
-                result = resp.json()
                 ai_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
                 if ai_text and line_user_id:
                     from apps.router.line_webhook import relay_ai_response_to_line
@@ -483,25 +612,40 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
 
             msg.delivered = True
             msg.delivered_at = timezone.now()
-            msg.save(update_fields=["delivered", "delivered_at"])
+            msg.delivery_status = BufferedMessage.Status.DELIVERED
+            msg.save(update_fields=["delivered", "delivered_at", "delivery_status"])
             delivered += 1
 
         except Exception:
             logger.exception(
-                "deliver_buffered: failed to deliver msg %s for tenant %s",
+                "deliver_buffered: failed to deliver msg %s for tenant %s (attempt %d/%d)",
                 msg.id,
                 tenant_id[:8],
+                msg.delivery_attempts + 1,
+                _MAX_DELIVERY_ATTEMPTS,
             )
+            msg.delivery_attempts += 1
+            msg.save(update_fields=["delivery_attempts"])
             failed += 1
-            raise  # Let QStash retry
+            # Stop processing further messages to preserve order.
+            # QStash will retry the task; on the next cycle this message
+            # will be retried (and eventually dropped if it keeps failing).
+            break
 
     logger.info(
-        "deliver_buffered: tenant %s — delivered=%d failed=%d",
+        "deliver_buffered: tenant %s — delivered=%d failed=%d dropped=%d",
         tenant_id[:8],
         delivered,
         failed,
+        dropped,
     )
-    return {"delivered": delivered, "failed": failed}
+
+    if failed > 0:
+        # Surface a non-2xx so QStash retries the task. Dropped messages
+        # don't count — they've already been resolved (apology sent).
+        raise RuntimeError(f"deliver_buffered: {failed} message(s) failed for tenant {tenant_id[:8]}")
+
+    return {"delivered": delivered, "failed": failed, "dropped": dropped}
 
 
 def resume_hibernated_crons_task(tenant_id: str) -> None:

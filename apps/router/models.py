@@ -36,10 +36,25 @@ class BufferedMessage(models.Model):
     delivered = models.BooleanField(default=False)
     delivered_at = models.DateTimeField(null=True, blank=True)
 
+    class Status(models.TextChoices):
+        PENDING = "pending"
+        DELIVERED = "delivered"
+        FAILED = "failed"
+
+    delivery_attempts = models.PositiveSmallIntegerField(
+        default=0,
+        help_text="Number of times deliver_buffered_messages has tried and failed to deliver this message.",
+    )
+    delivery_status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+        help_text="Terminal state: 'delivered' on success, 'failed' after attempts cap reached.",
+    )
+
     class Meta:
         db_table = "buffered_messages"
         ordering = ["created_at"]
 
     def __str__(self) -> str:
-        status = "delivered" if self.delivered else "pending"
-        return f"BufferedMessage({self.channel}, {status}, tenant={self.tenant_id})"
+        return f"BufferedMessage({self.channel}, {self.delivery_status}, tenant={self.tenant_id})"
