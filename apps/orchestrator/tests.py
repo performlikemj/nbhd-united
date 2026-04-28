@@ -976,9 +976,7 @@ class RegenerateFuelCronsTest(TestCase):
         # Container has a stale session-prefix job (8 hex chars after _fuel:)
         # but the desired set is empty.
         mock_invoke.side_effect = lambda tenant, tool, args: (
-            {"details": {"jobs": [{"name": "_fuel:abcd1234", "id": "job-id-1"}]}}
-            if tool == "cron.list"
-            else None
+            {"details": {"jobs": [{"name": "_fuel:abcd1234", "id": "job-id-1"}]}} if tool == "cron.list" else None
         )
         with patch("apps.orchestrator.fuel_cron.derive_fuel_cron_jobs", return_value=[]):
             result = regenerate_fuel_crons(self.tenant)
@@ -992,9 +990,7 @@ class RegenerateFuelCronsTest(TestCase):
         from apps.orchestrator.fuel_cron import regenerate_fuel_crons
 
         mock_invoke.side_effect = lambda tenant, tool, args: (
-            {"details": {"jobs": [{"name": "_fuel:My Plan", "id": "legacy-id"}]}}
-            if tool == "cron.list"
-            else None
+            {"details": {"jobs": [{"name": "_fuel:My Plan", "id": "legacy-id"}]}} if tool == "cron.list" else None
         )
         with patch("apps.orchestrator.fuel_cron.derive_fuel_cron_jobs", return_value=[]):
             result = regenerate_fuel_crons(self.tenant)
@@ -1110,9 +1106,7 @@ class FuelEndToEndTest(TestCase):
         from apps.fuel.models import Workout
 
         # cron.list returns empty → all derived jobs are new adds
-        mock_invoke.side_effect = lambda tenant, tool, args: (
-            {"details": {"jobs": []}} if tool == "cron.list" else None
-        )
+        mock_invoke.side_effect = lambda tenant, tool, args: {"details": {"jobs": []}} if tool == "cron.list" else None
         future = datetime.now(tz=UTC) + timedelta(hours=4)
         Workout.objects.create(
             tenant=self.tenant,

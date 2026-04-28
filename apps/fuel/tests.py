@@ -501,9 +501,7 @@ class WorkoutSessionLifecycleTests(TestCase):
 
         a = self._make(date=date(2026, 4, 28), scheduled_at=datetime(2026, 4, 28, 7, 0, tzinfo=UTC))
         b = self._make(date=date(2026, 4, 30), scheduled_at=datetime(2026, 4, 30, 18, 0, tzinfo=UTC))
-        resp = self.client.post(
-            "/api/v1/fuel/workouts/swap/", {"a": str(a.id), "b": str(b.id)}, format="json"
-        )
+        resp = self.client.post("/api/v1/fuel/workouts/swap/", {"a": str(a.id), "b": str(b.id)}, format="json")
         self.assertEqual(resp.status_code, 200)
         a.refresh_from_db()
         b.refresh_from_db()
@@ -514,18 +512,14 @@ class WorkoutSessionLifecycleTests(TestCase):
 
     def test_swap_rejects_same_id(self):
         a = self._make()
-        resp = self.client.post(
-            "/api/v1/fuel/workouts/swap/", {"a": str(a.id), "b": str(a.id)}, format="json"
-        )
+        resp = self.client.post("/api/v1/fuel/workouts/swap/", {"a": str(a.id), "b": str(a.id)}, format="json")
         self.assertEqual(resp.status_code, 400)
 
     def test_swap_404_on_missing(self):
         a = self._make()
         import uuid
 
-        resp = self.client.post(
-            "/api/v1/fuel/workouts/swap/", {"a": str(a.id), "b": str(uuid.uuid4())}, format="json"
-        )
+        resp = self.client.post("/api/v1/fuel/workouts/swap/", {"a": str(a.id), "b": str(uuid.uuid4())}, format="json")
         self.assertEqual(resp.status_code, 404)
 
     def test_list_window_query_param(self):

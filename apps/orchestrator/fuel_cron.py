@@ -144,7 +144,8 @@ def regenerate_fuel_crons(tenant: Tenant) -> dict:
     current_fuel = {
         j.get("name", ""): j
         for j in current_jobs
-        if isinstance(j, dict) and j.get("name", "").startswith(_FUEL_SESSION_PREFIX)
+        if isinstance(j, dict)
+        and j.get("name", "").startswith(_FUEL_SESSION_PREFIX)
         # Exclude legacy `_fuel:{plan_name}` (which has a name with no UUID
         # short-id); only target derived per-session jobs (8 hex chars after
         # the prefix). Legacy emission is suppressed in build_cron_seed_jobs.

@@ -5,64 +5,103 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('fuel', '0007_rename_plan_index'),
-        ('tenants', '0045_openclaw_version_4_21'),
+        ("fuel", "0007_rename_plan_index"),
+        ("tenants", "0045_openclaw_version_4_21"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='workout',
-            name='notes_thread',
-            field=models.JSONField(blank=True, default=list, help_text='Conversation thread on the session: list of {at, who, text} entries.'),
+            model_name="workout",
+            name="notes_thread",
+            field=models.JSONField(
+                blank=True,
+                default=list,
+                help_text="Conversation thread on the session: list of {at, who, text} entries.",
+            ),
         ),
         migrations.AddField(
-            model_name='workout',
-            name='original_workout',
-            field=models.ForeignKey(blank=True, help_text='If this is a rescheduled session, points back to the original.', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='reschedules', to='fuel.workout'),
+            model_name="workout",
+            name="original_workout",
+            field=models.ForeignKey(
+                blank=True,
+                help_text="If this is a rescheduled session, points back to the original.",
+                null=True,
+                on_delete=django.db.models.deletion.SET_NULL,
+                related_name="reschedules",
+                to="fuel.workout",
+            ),
         ),
         migrations.AddField(
-            model_name='workout',
-            name='scheduled_at',
-            field=models.DateTimeField(blank=True, help_text='Scheduled time-of-day (tz-aware). When null, the workout is day-only (legacy or completed-without-time).', null=True),
+            model_name="workout",
+            name="scheduled_at",
+            field=models.DateTimeField(
+                blank=True,
+                help_text="Scheduled time-of-day (tz-aware). When null, the workout is day-only (legacy or completed-without-time).",
+                null=True,
+            ),
         ),
         migrations.AddField(
-            model_name='workout',
-            name='skip_reason',
-            field=models.CharField(blank=True, default='', help_text="Reason captured when status=skipped (e.g. 'traveling', 'kid sick').", max_length=128),
+            model_name="workout",
+            name="skip_reason",
+            field=models.CharField(
+                blank=True,
+                default="",
+                help_text="Reason captured when status=skipped (e.g. 'traveling', 'kid sick').",
+                max_length=128,
+            ),
         ),
         migrations.AddField(
-            model_name='workout',
-            name='source',
-            field=models.CharField(choices=[('user', 'User'), ('assistant', 'Assistant'), ('template', 'Template')], default='user', help_text='Who created this session.', max_length=16),
+            model_name="workout",
+            name="source",
+            field=models.CharField(
+                choices=[("user", "User"), ("assistant", "Assistant"), ("template", "Template")],
+                default="user",
+                help_text="Who created this session.",
+                max_length=16,
+            ),
         ),
         migrations.AddField(
-            model_name='workout',
-            name='window_end_at',
-            field=models.DateTimeField(blank=True, help_text='Latest acceptable time. Defaults to scheduled_at + 2h if null.', null=True),
+            model_name="workout",
+            name="window_end_at",
+            field=models.DateTimeField(
+                blank=True, help_text="Latest acceptable time. Defaults to scheduled_at + 2h if null.", null=True
+            ),
         ),
         migrations.AddField(
-            model_name='workout',
-            name='window_start_at',
-            field=models.DateTimeField(blank=True, help_text='Earliest acceptable time. Defaults to scheduled_at - 2h if null.', null=True),
+            model_name="workout",
+            name="window_start_at",
+            field=models.DateTimeField(
+                blank=True, help_text="Earliest acceptable time. Defaults to scheduled_at - 2h if null.", null=True
+            ),
         ),
         migrations.AlterField(
-            model_name='workout',
-            name='date',
-            field=models.DateField(help_text='Day of the workout (derived from scheduled_at when present).'),
+            model_name="workout",
+            name="date",
+            field=models.DateField(help_text="Day of the workout (derived from scheduled_at when present)."),
         ),
         migrations.AlterField(
-            model_name='workout',
-            name='status',
-            field=models.CharField(choices=[('done', 'Done'), ('planned', 'Planned'), ('rest', 'Rest'), ('in_progress', 'In Progress'), ('skipped', 'Skipped'), ('rescheduled', 'Rescheduled')], default='done', max_length=16),
+            model_name="workout",
+            name="status",
+            field=models.CharField(
+                choices=[
+                    ("done", "Done"),
+                    ("planned", "Planned"),
+                    ("rest", "Rest"),
+                    ("in_progress", "In Progress"),
+                    ("skipped", "Skipped"),
+                    ("rescheduled", "Rescheduled"),
+                ],
+                default="done",
+                max_length=16,
+            ),
         ),
         migrations.AddIndex(
-            model_name='workout',
-            index=models.Index(fields=['tenant', 'scheduled_at'], name='fuel_workou_tenant__32d3ff_idx'),
+            model_name="workout",
+            index=models.Index(fields=["tenant", "scheduled_at"], name="fuel_workou_tenant__32d3ff_idx"),
         ),
         migrations.AddIndex(
-            model_name='workout',
-            index=models.Index(fields=['tenant', 'status', 'scheduled_at'], name='fuel_workou_tenant__8bc077_idx'),
+            model_name="workout",
+            index=models.Index(fields=["tenant", "status", "scheduled_at"], name="fuel_workou_tenant__8bc077_idx"),
         ),
     ]

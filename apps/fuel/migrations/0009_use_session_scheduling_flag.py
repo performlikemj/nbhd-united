@@ -4,15 +4,17 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('fuel', '0008_add_session_scheduling'),
+        ("fuel", "0008_add_session_scheduling"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='fuelprofile',
-            name='use_session_scheduling',
-            field=models.BooleanField(default=False, help_text="Cutover flag for the per-session Fuel cron model: when True, the tenant's _fuel:* crons are derived from Workout.scheduled_at and the legacy preferred_time-based emission is suppressed."),
+            model_name="fuelprofile",
+            name="use_session_scheduling",
+            field=models.BooleanField(
+                default=False,
+                help_text="Cutover flag for the per-session Fuel cron model: when True, the tenant's _fuel:* crons are derived from Workout.scheduled_at and the legacy preferred_time-based emission is suppressed.",
+            ),
         ),
     ]
