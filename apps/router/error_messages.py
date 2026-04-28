@@ -58,6 +58,16 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             " We keep things transparent so you know exactly where your money goes.\n\n"
             "Ready to pick up where you left off? {billing_url}"
         ),
+        "dropped_message": (
+            "Sorry \u2014 I had trouble responding to one of your messages and"
+            " had to drop it after a few tries. If it's important, please send"
+            " it again."
+        ),
+        "dropped_message_with_excerpt": (
+            "Sorry \u2014 I had trouble responding to one of your messages and"
+            " had to drop it after a few tries. If it's important, please send"
+            " it again.\n\nIt started with: \u201c{excerpt}\u201d"
+        ),
     },
     "ja": {
         "budget_exhausted_trial": (
@@ -94,6 +104,17 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             "\u2014\u30af\u30e9\u30a6\u30c9\u30b5\u30fc\u30d0\u30fc\u3001\u30e2\u30c7\u30eb\u30c8\u30fc\u30af\u30f3\u3001\u30b9\u30c8\u30ec\u30fc\u30b8\u3002"
             "\u900f\u660e\u6027\u3092\u5927\u5207\u306b\u3057\u3066\u3044\u307e\u3059\u3002\n\n"
             "\u518d\u958b\u3057\u307e\u3059\u304b\uff1f {billing_url}"
+        ),
+        "dropped_message": (
+            "\u3054\u3081\u3093\u306a\u3055\u3044\u2014\u3044\u305f\u3060\u3044\u305f\u30e1\u30c3\u30bb\u30fc\u30b8\u306e\u4e00\u3064\u306b\u9001\u4fe1\u30a8\u30e9\u30fc\u304c\u767a\u751f\u3057\u3001"
+            "\u4f55\u5ea6\u304b\u8a66\u884c\u3057\u305f\u5f8c\u30b9\u30ad\u30c3\u30d7\u3055\u305b\u3066\u3044\u305f\u3060\u304d\u307e\u3057\u305f\u3002"
+            "\u91cd\u8981\u306a\u5185\u5bb9\u3067\u3057\u305f\u3089\u3001\u3082\u3046\u4e00\u5ea6\u9001\u3063\u3066\u3044\u305f\u3060\u3051\u307e\u3059\u304b\uff1f"
+        ),
+        "dropped_message_with_excerpt": (
+            "\u3054\u3081\u3093\u306a\u3055\u3044\u2014\u3044\u305f\u3060\u3044\u305f\u30e1\u30c3\u30bb\u30fc\u30b8\u306e\u4e00\u3064\u306b\u9001\u4fe1\u30a8\u30e9\u30fc\u304c\u767a\u751f\u3057\u3001"
+            "\u4f55\u5ea6\u304b\u8a66\u884c\u3057\u305f\u5f8c\u30b9\u30ad\u30c3\u30d7\u3055\u305b\u3066\u3044\u305f\u3060\u304d\u307e\u3057\u305f\u3002"
+            "\u91cd\u8981\u306a\u5185\u5bb9\u3067\u3057\u305f\u3089\u3001\u3082\u3046\u4e00\u5ea6\u9001\u3063\u3066\u3044\u305f\u3060\u3051\u307e\u3059\u304b\uff1f"
+            "\n\n\u30e1\u30c3\u30bb\u30fc\u30b8\u306e\u51b2\u982d\uff1a\u300c{excerpt}\u300d"
         ),
     },
     "es": {
