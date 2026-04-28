@@ -471,19 +471,20 @@ def _send_apology_for_dropped_message(tenant: Tenant, msg) -> None:
     """Notify the user we couldn't process their buffered message after the
     attempts cap. Uses channel-native plain push (NOT
     `relay_ai_response_to_line`) since this is system status, not assistant
-    content."""
+    content. Localized via the existing `error_msg` framework — falls back
+    to English for languages without a translated key."""
+    from apps.router.error_messages import error_msg
     from apps.router.models import BufferedMessage
 
     excerpt = (msg.user_text or "").strip().replace("\n", " ")
     if len(excerpt) > 50:
-        excerpt = excerpt[:50] + "…"
+        excerpt = excerpt[:50] + "\u2026"
 
-    base = (
-        "Sorry — I had trouble responding to one of your messages and "
-        "had to drop it after a few tries. If it's important, please "
-        "send it again."
-    )
-    text = f"{base}\n\nIt started with: \u201c{excerpt}\u201d" if excerpt else base
+    lang = getattr(tenant.user, "language", None) or "en"
+    if excerpt:
+        text = error_msg(lang, "dropped_message_with_excerpt", excerpt=excerpt)
+    else:
+        text = error_msg(lang, "dropped_message")
 
     if msg.channel == BufferedMessage.Channel.LINE:
         line_user_id = getattr(tenant.user, "line_user_id", None)

@@ -337,3 +337,52 @@ class ApologyHelperTest(TestCase):
         # Should NOT raise.
         _send_apology_for_dropped_message(tenant, msg)
         mock_send_text.assert_called_once()
+
+    @patch("apps.router.line_webhook._send_line_text", return_value=True)
+    def test_apology_localized_to_user_language(self, mock_send_text):
+        """Apology must respect tenant.user.language. Falls back to English
+        for languages without a translated key, but for languages we DO
+        translate (en, ja) the user gets their language."""
+        from apps.orchestrator.hibernation import _send_apology_for_dropped_message
+
+        user = _make_user(line_user_id="U_apology_ja")
+        user.language = "ja"
+        user.save(update_fields=["language"])
+        tenant = _make_tenant(user)
+        msg = BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={"events": []},
+            user_text="\u4f53\u91cd\u3092\u8a18\u9332",  # "log my weight" in JP
+        )
+
+        _send_apology_for_dropped_message(tenant, msg)
+
+        mock_send_text.assert_called_once()
+        body = mock_send_text.call_args[0][1]
+        # English markers must NOT appear when ja translation exists.
+        self.assertNotIn("Sorry", body)
+        self.assertNotIn("It started with", body)
+        # Japanese marker must appear.
+        self.assertIn("\u3054\u3081\u3093\u306a\u3055\u3044", body)  # "Sorry" in JP
+        # Excerpt is preserved (Unicode passes through .format()).
+        self.assertIn("\u4f53\u91cd", body)
+
+    @patch("apps.router.line_webhook._send_line_text", return_value=True)
+    def test_apology_falls_back_to_english_for_untranslated_language(self, mock_send_text):
+        from apps.orchestrator.hibernation import _send_apology_for_dropped_message
+
+        user = _make_user(line_user_id="U_apology_xx")
+        user.language = "vi"  # Vietnamese — not translated yet, falls back
+        user.save(update_fields=["language"])
+        tenant = _make_tenant(user)
+        msg = BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={"events": []},
+            user_text="hello",
+        )
+
+        _send_apology_for_dropped_message(tenant, msg)
+        body = mock_send_text.call_args[0][1]
+        self.assertIn("Sorry", body)  # English fallback
