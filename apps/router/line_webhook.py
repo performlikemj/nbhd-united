@@ -921,13 +921,12 @@ class LineWebhookView(View):
         Uses Flex Messages for structured content, quick replies for buttons,
         and Reply API (free) with Push fallback.
         """
+        lang = tenant.user.language or "en"
+
         if not tenant.container_fqdn or tenant.status == "provisioning":
             _send_line_flex(
                 line_user_id,
-                build_short_bubble(
-                    "Your assistant is being set up — this usually takes about a minute. "
-                    "I'll be ready for you shortly! 🌱",
-                ),
+                build_short_bubble(error_msg(lang, "provisioning_setup")),
             )
             return
 
@@ -995,11 +994,7 @@ class LineWebhookView(View):
             )
             _send_line_flex(
                 line_user_id,
-                build_status_bubble(
-                    "That took longer than expected. Your message was received "
-                    "— just send a follow-up and I'll pick up where I left off.",
-                    tone="warning",
-                ),
+                build_status_bubble(error_msg(lang, "forwarding_timeout"), tone="warning"),
             )
             return
         except httpx.HTTPStatusError as e:
@@ -1011,25 +1006,17 @@ class LineWebhookView(View):
                 if tenant.status == "provisioning":
                     _send_line_flex(
                         line_user_id,
-                        build_short_bubble(
-                            "Your assistant is almost ready — just finishing setup. Try again in about a minute! 🌱",
-                        ),
+                        build_short_bubble(error_msg(lang, "provisioning_almost_ready")),
                     )
                 else:
                     _send_line_flex(
                         line_user_id,
-                        build_status_bubble(
-                            "I'm restarting \u2014 please try again in about a minute!",
-                            tone="warning",
-                        ),
+                        build_status_bubble(error_msg(lang, "restarting"), tone="warning"),
                     )
             else:
                 _send_line_flex(
                     line_user_id,
-                    build_status_bubble(
-                        "Something went wrong. Please try again.",
-                        tone="error",
-                    ),
+                    build_status_bubble(error_msg(lang, "forwarding_error"), tone="error"),
                 )
             return
         except httpx.HTTPError as e:
@@ -1038,17 +1025,12 @@ class LineWebhookView(View):
             if tenant.status == "provisioning":
                 _send_line_flex(
                     line_user_id,
-                    build_short_bubble(
-                        "Your assistant is almost ready — just finishing setup. Try again in about a minute! 🌱",
-                    ),
+                    build_short_bubble(error_msg(lang, "provisioning_almost_ready")),
                 )
             else:
                 _send_line_flex(
                     line_user_id,
-                    build_status_bubble(
-                        "I'm restarting \u2014 please try again in about a minute!",
-                        tone="warning",
-                    ),
+                    build_status_bubble(error_msg(lang, "restarting"), tone="warning"),
                 )
             return
 
@@ -1097,9 +1079,7 @@ class LineWebhookView(View):
             )
             _send_line_flex(
                 line_user_id,
-                build_short_bubble(
-                    "Sorry, I couldn't come up with a response. Could you try saying that again?",
-                ),
+                build_short_bubble(error_msg(lang, "empty_response_after_retry")),
             )
             self._record_usage(tenant, result)
             return

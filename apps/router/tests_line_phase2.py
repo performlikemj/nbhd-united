@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+import httpx
 from django.test import TestCase, override_settings
 
 from apps.router.line_flex import (
@@ -921,3 +922,108 @@ class MarkdownTableConversionTest(TestCase):
         result = _strip_markdown(text)
         self.assertIn("\u7a2e\u76ee: \u30b9\u30af\u30ef\u30c3\u30c8", result)
         self.assertIn("\u30bb\u30c3\u30c8: 4\u00d78", result)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Localization of system status messages (PR #393)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(LINE_CHANNEL_ACCESS_TOKEN="test-token", LINE_CHANNEL_SECRET="test-secret")
+class WebhookForwardErrorLocalizationTest(TestCase):
+    """The user-facing error/notice messages emitted by _forward_to_container
+    when the upstream container is unhappy (timeout, 5xx, restarting, empty
+    response) must respect tenant.user.language."""
+
+    def _make_user_tenant(self, lang: str, line_user_id: str):
+        from apps.tenants.models import Tenant, User
+
+        user = User.objects.create_user(
+            username=f"loc_{lang}_{line_user_id[-4:]}",
+            password="test123",
+            line_user_id=line_user_id,
+            language=lang,
+        )
+        tenant = Tenant.objects.create(
+            user=user,
+            status=Tenant.Status.ACTIVE,
+            container_fqdn="test.example.com",
+        )
+        return tenant
+
+    def _last_pushed_text(self, mock_push) -> str:
+        """Pull the human-readable text out of the most recent push payload —
+        could be a Flex bubble or a status bubble. We just stringify and
+        scan."""
+        import json
+
+        msg = mock_push.call_args[0][1][0]
+        return json.dumps(msg, ensure_ascii=False)
+
+    @patch("apps.router.line_webhook._send_line_push")
+    @patch("apps.router.line_webhook.httpx.post")
+    def test_502_restarting_message_localized_to_japanese(self, mock_httpx, mock_push):
+        from apps.router.line_webhook import LineWebhookView
+
+        tenant = self._make_user_tenant("ja", "U_loc_502")
+
+        # Force a 502 → triggers "restarting" branch
+        bad_resp = MagicMock()
+        bad_resp.status_code = 502
+        bad_resp.is_success = False
+        bad_resp.text = "Bad Gateway"
+        bad_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Server error '502 Bad Gateway'", request=MagicMock(), response=bad_resp
+        )
+        mock_httpx.return_value = bad_resp
+        mock_push.return_value = True
+
+        view = LineWebhookView()
+        view._forward_to_container("U_loc_502", tenant, "hi")
+
+        mock_push.assert_called_once()
+        body = self._last_pushed_text(mock_push)
+        # Japanese marker: "再起動" (re-starting)
+        self.assertIn("\u518d\u8d77\u52d5", body)
+        # English marker must NOT leak
+        self.assertNotIn("I'm restarting", body)
+
+    @patch("apps.router.line_webhook._send_line_push")
+    @patch("apps.router.line_webhook.httpx.post")
+    def test_timeout_message_localized_to_japanese(self, mock_httpx, mock_push):
+        from apps.router.line_webhook import LineWebhookView
+
+        tenant = self._make_user_tenant("ja", "U_loc_timeout")
+        mock_httpx.side_effect = httpx.TimeoutException("read timeout")
+        mock_push.return_value = True
+
+        view = LineWebhookView()
+        view._forward_to_container("U_loc_timeout", tenant, "hi")
+
+        body = self._last_pushed_text(mock_push)
+        # Japanese marker: "時間" (time)
+        self.assertIn("\u6642\u9593", body)
+        self.assertNotIn("took longer than expected", body)
+
+    @patch("apps.router.line_webhook._send_line_push")
+    @patch("apps.router.line_webhook.httpx.post")
+    def test_restarting_falls_back_to_english_for_untranslated_language(self, mock_httpx, mock_push):
+        from apps.router.line_webhook import LineWebhookView
+
+        tenant = self._make_user_tenant("vi", "U_loc_vi")  # Vietnamese — falls back
+
+        bad_resp = MagicMock()
+        bad_resp.status_code = 502
+        bad_resp.is_success = False
+        bad_resp.text = "Bad Gateway"
+        bad_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Server error '502 Bad Gateway'", request=MagicMock(), response=bad_resp
+        )
+        mock_httpx.return_value = bad_resp
+        mock_push.return_value = True
+
+        view = LineWebhookView()
+        view._forward_to_container("U_loc_vi", tenant, "hi")
+
+        body = self._last_pushed_text(mock_push)
+        self.assertIn("I'm restarting", body)
