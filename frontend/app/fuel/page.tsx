@@ -63,7 +63,7 @@ export default function FuelPage() {
       <WeeklySummary />
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 border-b border-border mb-6 overflow-x-auto">
+      <div className="flex items-stretch border-b border-border mb-6">
         {([
           { id: "schedule" as Tab, label: "Schedule" },
           { id: "calendar" as Tab, label: "Calendar" },
@@ -75,13 +75,13 @@ export default function FuelPage() {
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`relative min-h-[44px] px-4 py-3 text-sm whitespace-nowrap transition ${on ? "text-ink" : "text-ink-muted hover:text-ink"}`}
+              className={`relative flex-1 sm:flex-none min-h-[44px] px-2 sm:px-4 py-3 text-sm whitespace-nowrap transition ${on ? "text-ink" : "text-ink-muted hover:text-ink"}`}
             >
               {t.label}
               {t.count != null && (
                 <span className={`ml-2 font-mono text-[10px] ${on ? "text-ink-muted" : "text-ink-faint"}`}>{t.count}</span>
               )}
-              {on && <span className="absolute left-3 right-3 bottom-0 h-[1.5px] bg-ink rounded-full" />}
+              {on && <span className="absolute left-2 right-2 sm:left-3 sm:right-3 bottom-0 h-[1.5px] bg-ink rounded-full" />}
             </button>
           );
         })}
