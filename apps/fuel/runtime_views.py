@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import UTC, date
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
@@ -1121,3 +1121,220 @@ class RuntimeWorkoutPlanDetailView(APIView):
         plan.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Audit — single source-of-truth view for the assistant before
+# creating/proposing/delivering any workout-related schedule. Cross-
+# references three places where workout state can hide:
+#   1. Today's daily-note Fuel section (the "today_plan" the user is
+#      already locked into — written by the morning prep cron).
+#   2. Workout rows in Postgres (next 14d).
+#   3. The OpenClaw container's cron registry (active _fuel:* and any
+#      other workout-named user-created cron).
+# ═════════════════════════════════════════════════════════════════════
+
+
+def _parse_fuel_section(markdown: str) -> str | None:
+    """Return the contents of the `## Fuel` section from a daily-note doc, or None."""
+    if not markdown:
+        return None
+    marker = "## Fuel"
+    idx = markdown.find(marker)
+    if idx == -1:
+        # Try lowercase / variant
+        lower = markdown.lower().find("## fuel")
+        if lower == -1:
+            return None
+        idx = lower
+    after_heading = markdown.find("\n", idx)
+    if after_heading == -1:
+        return None
+    next_heading = markdown.find("\n## ", after_heading + 1)
+    if next_heading == -1:
+        section_body = markdown[after_heading + 1 :]
+    else:
+        section_body = markdown[after_heading + 1 : next_heading]
+    section_body = section_body.strip()
+    return section_body or None
+
+
+class RuntimeFuelAuditView(APIView):
+    """GET: cross-reference today's daily note + Workout rows + container crons.
+
+    Designed to be the single tool the assistant calls before suggesting,
+    delivering, or scheduling any workout. Returns conflicts so the agent
+    can stop short of creating duplicates or contradicting the locked plan.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, tenant_id):
+        from datetime import datetime, timedelta
+
+        from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
+        from apps.journal.models import Document
+        from apps.orchestrator.fuel_cron import _FUEL_SESSION_PREFIX
+        from apps.orchestrator.services import _extract_cron_jobs
+
+        err = _internal_auth_or_401(request, tenant_id)
+        if err:
+            return err
+        tenant_or_resp = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant_or_resp, Response):
+            return tenant_or_resp
+        tenant = tenant_or_resp
+
+        now = datetime.now(tz=UTC)
+        today = date.today()
+        horizon_14d_end = today + timedelta(days=14)
+        horizon_48h_end = now + timedelta(hours=48)
+
+        # 1. today_plan — parse from today's daily-note Fuel section
+        today_doc = Document.objects.filter(tenant=tenant, kind="daily", slug=str(today)).first()
+        today_plan_body = _parse_fuel_section(today_doc.markdown) if today_doc else None
+        today_plan = {
+            "exists": bool(today_plan_body),
+            "iso_date": str(today),
+            "raw_section": today_plan_body,
+        }
+
+        # 2. next_14d_workouts — Postgres truth
+        next_14d_qs = Workout.objects.filter(
+            tenant=tenant,
+            date__gte=today,
+            date__lte=horizon_14d_end,
+        ).order_by("date", "scheduled_at", "created_at")
+        next_14d = [
+            {
+                "id": str(w.id),
+                "date": str(w.date),
+                "scheduled_at": w.scheduled_at.isoformat() if w.scheduled_at else None,
+                "category": w.category,
+                "activity": w.activity,
+                "status": w.status,
+                "duration_minutes": w.duration_minutes,
+            }
+            for w in next_14d_qs
+        ]
+
+        # 3. fuel-related crons — gateway cron.list filtered to _fuel:* and
+        # any user-named cron whose name hints at workout activity.
+        fuel_crons: list[dict] = []
+        cron_list_error: str | None = None
+        try:
+            list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+            all_jobs = _extract_cron_jobs(list_result) or []
+            workout_hints = (
+                "fuel",
+                "workout",
+                "lift",
+                "run",
+                "yoga",
+                "gym",
+                "train",
+                "push",
+                "pull",
+                "leg",
+                "session",
+                "exercise",
+                "cardio",
+                "hiit",
+                "bouldering",
+                "climb",
+                "cycle",
+                "swim",
+            )
+            for j in all_jobs:
+                if not isinstance(j, dict):
+                    continue
+                name = (j.get("name") or "").strip()
+                lname = name.lower()
+                is_fuel_session = name.startswith(_FUEL_SESSION_PREFIX)
+                is_workout_hint = any(h in lname for h in workout_hints) and not lname.startswith("_sync:")
+                if is_fuel_session or is_workout_hint:
+                    fuel_crons.append(
+                        {
+                            "name": name,
+                            "id": j.get("id") or j.get("jobId"),
+                            "schedule": j.get("schedule"),
+                            "next_fire_at_ms": j.get("nextRunAtMs"),
+                            "kind": "fuel_session" if is_fuel_session else "user_named",
+                            "enabled": j.get("enabled", True),
+                        }
+                    )
+        except GatewayError as exc:
+            cron_list_error = str(exc)
+            logger.warning(
+                "RuntimeFuelAuditView: cron.list failed for tenant %s: %s",
+                tenant_id,
+                exc,
+            )
+
+        # 4. conflicts
+        # duplicate_fires: more than one cron fires at the same minute
+        by_fire: dict[str, list[str]] = {}
+        for c in fuel_crons:
+            sched = c.get("schedule") or {}
+            expr = sched.get("expr") or sched.get("cronExpr") or ""
+            tz = sched.get("tz") or ""
+            key = f"{expr}@{tz}"
+            if expr:
+                by_fire.setdefault(key, []).append(c["name"])
+        duplicate_fires = [{"fires_at": k, "crons": names} for k, names in by_fire.items() if len(names) > 1]
+
+        # orphan_crons: _fuel:{8-hex} cron whose Workout (by short id) isn't in next_14d
+        next_14d_short_ids = {w["id"].split("-")[0] for w in next_14d}
+        orphan_crons = [
+            {"name": c["name"], "kind": c["kind"]}
+            for c in fuel_crons
+            if c["kind"] == "fuel_session" and c["name"].removeprefix(_FUEL_SESSION_PREFIX) not in next_14d_short_ids
+        ]
+
+        # orphan_workouts: planned Workout in next 48h with no matching _fuel: cron
+        fuel_session_short_ids = {
+            c["name"].removeprefix(_FUEL_SESSION_PREFIX) for c in fuel_crons if c["kind"] == "fuel_session"
+        }
+        orphan_workouts = []
+        for w in next_14d_qs:
+            if w.status != WorkoutStatus.PLANNED:
+                continue
+            if not w.scheduled_at or w.scheduled_at > horizon_48h_end:
+                continue
+            short = str(w.id).split("-")[0]
+            if short not in fuel_session_short_ids:
+                orphan_workouts.append({"id": str(w.id), "date": str(w.date), "activity": w.activity})
+
+        return Response(
+            {
+                "today_plan": today_plan,
+                "next_14d_workouts": next_14d,
+                "fuel_crons": fuel_crons,
+                "cron_list_error": cron_list_error,
+                "conflicts": {
+                    "duplicate_fires": duplicate_fires,
+                    "orphan_crons": orphan_crons,
+                    "orphan_workouts": orphan_workouts,
+                },
+                "guidance": _audit_guidance(today_plan, fuel_crons, duplicate_fires),
+            }
+        )
+
+
+def _audit_guidance(today_plan: dict, fuel_crons: list, duplicate_fires: list) -> str:
+    """Single-line instruction for the agent based on the audit state."""
+    if duplicate_fires:
+        return (
+            "STOP — duplicate cron firings detected. Surface the duplicates to the user "
+            "and offer to remove them. Do NOT add more crons until they are resolved."
+        )
+    if today_plan.get("exists"):
+        return (
+            "today_plan.raw_section is the locked plan for today. Deliver THAT plan "
+            "verbatim — do not invent a different one. If the user asks for a different "
+            "workout today, surface the conflict before changing anything."
+        )
+    return (
+        "No locked plan for today. Safe to propose one. Before scheduling, check "
+        "next_14d_workouts so your proposal fits the existing program."
+    )

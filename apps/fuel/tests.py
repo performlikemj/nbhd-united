@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date
 from decimal import Decimal
 from unittest import TestCase as UnitTestCase
+from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
@@ -710,6 +711,138 @@ class RuntimeSessionLifecycleTests(TestCase):
         b.refresh_from_db()
         self.assertEqual(a.date, date(2026, 4, 30))
         self.assertEqual(b.date, date(2026, 4, 28))
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 4c. Runtime Audit (cross-reference today_plan + crons + workouts)
+# ═════════════════════════════════════════════════════════════════════
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+class RuntimeFuelAuditTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Audit Test", telegram_chat_id=800301)
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def _make(self, **kw):
+        defaults = dict(
+            tenant=self.tenant,
+            date=date.today(),
+            category="strength",
+            activity="Push",
+            status="planned",
+        )
+        defaults.update(kw)
+        return Workout.objects.create(**defaults)
+
+    def _set_daily_fuel_section(self, body: str, day=None) -> None:
+        from apps.journal.models import Document
+
+        d = day or date.today()
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug=str(d),
+            title=f"Daily Note {d}",
+            markdown=f"# Daily Note\n\n## Fuel\n{body}\n\n## Next\n",
+        )
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_no_today_plan_no_crons(self, mock_invoke):
+        mock_invoke.return_value = {"details": {"jobs": []}}
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.data
+        self.assertFalse(body["today_plan"]["exists"])
+        self.assertEqual(body["next_14d_workouts"], [])
+        self.assertEqual(body["fuel_crons"], [])
+        self.assertEqual(body["conflicts"]["duplicate_fires"], [])
+        self.assertIn("Safe to propose", body["guidance"])
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_returns_today_plan_when_section_present(self, mock_invoke):
+        mock_invoke.return_value = {"details": {"jobs": []}}
+        self._set_daily_fuel_section("**Today:** Push Day — Chest & Shoulders\n**Plan:** 4-Week Builder")
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        self.assertTrue(resp.data["today_plan"]["exists"])
+        self.assertIn("Push Day", resp.data["today_plan"]["raw_section"])
+        self.assertIn("locked plan for today", resp.data["guidance"])
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_lists_next_14d_workouts(self, mock_invoke):
+        from datetime import timedelta
+
+        mock_invoke.return_value = {"details": {"jobs": []}}
+        today = date.today()
+        self._make(date=today + timedelta(days=2), activity="Pull Day")
+        self._make(date=today + timedelta(days=4), activity="Leg Day", category="strength")
+        # Out of horizon
+        self._make(date=today + timedelta(days=20), activity="Far Future")
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        activities = [w["activity"] for w in resp.data["next_14d_workouts"]]
+        self.assertIn("Pull Day", activities)
+        self.assertIn("Leg Day", activities)
+        self.assertNotIn("Far Future", activities)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_flags_duplicate_fires(self, mock_invoke):
+        mock_invoke.return_value = {
+            "details": {
+                "jobs": [
+                    {
+                        "name": "_fuel:abcd1234",
+                        "id": "j1",
+                        "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": "UTC"},
+                    },
+                    {
+                        "name": "user-leg-day",
+                        "id": "j2",
+                        "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": "UTC"},
+                    },
+                ]
+            }
+        }
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        dupes = resp.data["conflicts"]["duplicate_fires"]
+        self.assertEqual(len(dupes), 1)
+        self.assertCountEqual(dupes[0]["crons"], ["_fuel:abcd1234", "user-leg-day"])
+        self.assertIn("STOP", resp.data["guidance"])
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_flags_orphan_crons(self, mock_invoke):
+        mock_invoke.return_value = {
+            "details": {
+                "jobs": [
+                    {
+                        "name": "_fuel:deadbeef",
+                        "id": "j-orphan",
+                        "schedule": {"kind": "cron", "expr": "0 18 1 5 *", "tz": "UTC"},
+                    }
+                ]
+            }
+        }
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        orphans = resp.data["conflicts"]["orphan_crons"]
+        self.assertEqual(len(orphans), 1)
+        self.assertEqual(orphans[0]["name"], "_fuel:deadbeef")
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_recovers_from_cron_list_failure(self, mock_invoke):
+        from apps.cron.gateway_client import GatewayError
+
+        mock_invoke.side_effect = GatewayError("container 503")
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["fuel_crons"], [])
+        self.assertIsNotNone(resp.data["cron_list_error"])
+
+    def test_audit_unauthorized(self):
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/")
+        self.assertEqual(resp.status_code, 401)
 
 
 # ═════════════════════════════════════════════════════════════════════
