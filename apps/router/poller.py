@@ -1190,17 +1190,11 @@ class TelegramPoller:
             return
         self._update_in_progress.add(chat_id)
         tenant.refresh_from_db(fields=["status"])
+        lang = getattr(tenant.user, "language", None) or "en"
         if tenant.status == "provisioning":
-            self._send_message(
-                chat_id,
-                "Your assistant is almost ready — just finishing setup. "
-                "I'll send your message through as soon as it's live! 🌱",
-            )
+            self._send_message(chat_id, error_msg(lang, "telegram_provisioning_almost_ready"))
         else:
-            self._send_message(
-                chat_id,
-                "⏳ I'm restarting right now — I'll send your message through once I'm back up (about a minute).",
-            )
+            self._send_message(chat_id, error_msg(lang, "telegram_restarting"))
 
         def _retry():
             try:
@@ -1211,7 +1205,7 @@ class TelegramPoller:
                     self._send_typing(chat_id)
                     self._forward_to_container(chat_id, tenant, context_msg)
                 else:
-                    self._send_message(chat_id, "I'm back! Sorry about that — could you resend your last message?")
+                    self._send_message(chat_id, error_msg(lang, "telegram_resend_after_failed_wait"))
             finally:
                 self._update_in_progress.discard(chat_id)
 
@@ -1219,11 +1213,9 @@ class TelegramPoller:
 
     def _forward_to_container(self, chat_id: int, tenant: Tenant, message_text: str) -> None:
         """Send the message to the tenant's OpenClaw container via /v1/chat/completions and relay the response."""
+        lang = getattr(tenant.user, "language", None) or "en"
         if not tenant.container_fqdn or tenant.status == "provisioning":
-            self._send_message(
-                chat_id,
-                "Your assistant is being set up — this usually takes about a minute. I'll be ready for you shortly! 🌱",
-            )
+            self._send_message(chat_id, error_msg(lang, "provisioning_setup"))
             return
 
         url = f"https://{tenant.container_fqdn}/v1/chat/completions"
@@ -1305,11 +1297,7 @@ class TelegramPoller:
                 tenant.preferred_model or "default",
                 chat_timeout,
             )
-            self._send_message(
-                chat_id,
-                "⏱️ That took longer than expected. Your message was received "
-                "— just send a follow-up and I'll pick up where I left off.",
-            )
+            self._send_message(chat_id, error_msg(lang, "forwarding_timeout"))
             return
         except httpx.HTTPStatusError as e:
             status_code = e.response.status_code if e.response else 0
@@ -1319,7 +1307,7 @@ class TelegramPoller:
                 # Container restarting — buffer and retry
                 self._handle_container_restart(chat_id, tenant, message_text)
             else:
-                self._send_message(chat_id, "Something went wrong on my end. Please try again.")
+                self._send_message(chat_id, error_msg(lang, "forwarding_error"))
             return
         except httpx.HTTPError as e:
             logger.error("Error forwarding to %s: %s", tenant.container_fqdn, e)
@@ -1371,10 +1359,7 @@ class TelegramPoller:
                 list(result.keys()),
                 result.get("choices", [])[:1],
             )
-            self._send_message(
-                chat_id,
-                "Sorry, I couldn't come up with a response. Could you try saying that again?",
-            )
+            self._send_message(chat_id, error_msg(lang, "empty_response_after_retry"))
             self._record_usage(tenant, result)
             return
 
@@ -1481,7 +1466,8 @@ class TelegramPoller:
             logger.exception("Error handling extraction callback")
             callback_id = update["callback_query"].get("id")
             if callback_id:
-                self._answer_callback_query(callback_id, "Something went wrong")
+                lang = getattr(tenant.user, "language", None) or "en"
+                self._answer_callback_query(callback_id, error_msg(lang, "forwarding_error"))
 
     def _handle_gate_callback(
         self,
@@ -1562,7 +1548,8 @@ class TelegramPoller:
             self._answer_callback_query(callback_id, "Action not found")
         except Exception:
             logger.exception("Error handling gate callback")
-            self._answer_callback_query(callback_id, "Something went wrong")
+            lang = getattr(tenant.user, "language", None) or "en"
+            self._answer_callback_query(callback_id, error_msg(lang, "forwarding_error"))
 
     def _handle_lesson_callback(self, update: dict, tenant: Tenant) -> None:
         """Handle lesson approval callback queries via the existing handler.
@@ -1584,4 +1571,5 @@ class TelegramPoller:
             logger.exception("Error handling lesson callback")
             callback_id = update["callback_query"].get("id")
             if callback_id:
-                self._answer_callback_query(callback_id, "Something went wrong")
+                lang = getattr(tenant.user, "language", None) or "en"
+                self._answer_callback_query(callback_id, error_msg(lang, "forwarding_error"))

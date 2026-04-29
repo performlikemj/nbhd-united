@@ -355,3 +355,106 @@ class TelegramPollerExtractTextTest(TestCase):
 
     def test_no_message(self):
         self.assertIsNone(self.poller._extract_message_text({}))
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Localization of forward-error system messages (PR #394)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(
+    TELEGRAM_BOT_TOKEN="TEST-BOT-TOKEN",
+    TELEGRAM_WEBHOOK_SECRET="test-secret",
+    FRONTEND_URL="https://app.example.com",
+    ROUTER_RATE_LIMIT_PER_MINUTE=10,
+)
+class TelegramPollerForwardErrorLocalizationTest(TestCase):
+    """The user-facing notices the Telegram poller emits when the upstream
+    container is unhappy must respect tenant.user.language. Telegram-specific
+    keys (telegram_restarting, telegram_provisioning_almost_ready,
+    telegram_resend_after_failed_wait) preserve the auto-retry promise that
+    LINE doesn't share."""
+
+    def setUp(self):
+        import secrets
+
+        from apps.tenants.services import create_tenant
+
+        # Distinct chat_id per test to avoid in-memory _update_in_progress collisions.
+        self.chat_id = 100000 + secrets.randbits(20)
+        self.tenant = create_tenant(
+            display_name="Loc Test",
+            telegram_chat_id=self.chat_id,
+        )
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.container_fqdn = "oc-loc-test.example.com"
+        self.tenant.save(update_fields=["status", "container_fqdn"])
+
+        self.poller = TelegramPoller()
+        self.poller._http = MagicMock()
+        self.poller._send_message = MagicMock()
+        self.poller._answer_callback_query = MagicMock()
+
+    def _set_language(self, lang: str) -> None:
+        self.tenant.user.language = lang
+        self.tenant.user.save(update_fields=["language"])
+        self.tenant.refresh_from_db()
+
+    def _last_send_message_text(self) -> str:
+        # _send_message(chat_id, text)
+        return self.poller._send_message.call_args[0][1]
+
+    @patch("apps.router.poller.threading.Thread")
+    def test_handle_container_restart_running_localized_to_japanese(self, _mock_thread):
+        """5xx on a running container should send the JP telegram_restarting
+        message that promises auto-retry, not the LINE-style 'try again'
+        wording or hardcoded English."""
+        self._set_language("ja")
+
+        self.poller._handle_container_restart(self.chat_id, self.tenant, "hello")
+
+        body = self._last_send_message_text()
+        # Japanese marker for "restarting" — \u518d\u8d77\u52d5
+        self.assertIn("\u518d\u8d77\u52d5", body)
+        # Auto-retry promise must be present (Telegram-specific behavior)
+        # \u9001\u4fe1 = "send"
+        self.assertIn("\u9001\u4fe1", body)
+        # English markers must NOT leak
+        self.assertNotIn("I'm restarting", body)
+
+    @patch("apps.router.poller.threading.Thread")
+    def test_handle_container_restart_provisioning_localized_to_japanese(self, _mock_thread):
+        self._set_language("ja")
+        self.tenant.status = Tenant.Status.PROVISIONING
+        self.tenant.save(update_fields=["status"])
+
+        self.poller._handle_container_restart(self.chat_id, self.tenant, "hello")
+
+        body = self._last_send_message_text()
+        # JP "almost ready" / "setup finishing" — \u30bb\u30c3\u30c8\u30a2\u30c3\u30d7
+        self.assertIn("\u30bb\u30c3\u30c8\u30a2\u30c3\u30d7", body)
+        self.assertNotIn("almost ready", body)
+
+    def test_forward_to_container_provisioning_setup_localized_to_japanese(self):
+        self._set_language("ja")
+        self.tenant.container_fqdn = ""  # → triggers provisioning_setup branch
+        self.tenant.save(update_fields=["container_fqdn"])
+
+        self.poller._forward_to_container(self.chat_id, self.tenant, "hi")
+
+        body = self._last_send_message_text()
+        self.assertIn("\u30bb\u30c3\u30c8\u30a2\u30c3\u30d7", body)
+        self.assertNotIn("being set up", body)
+
+    @patch("apps.router.poller.threading.Thread")
+    def test_handle_container_restart_falls_back_to_english(self, _mock_thread):
+        """Untranslated languages fall back to the English form of the
+        telegram_restarting key (still has auto-retry promise)."""
+        self._set_language("vi")  # Vietnamese — not translated
+
+        self.poller._handle_container_restart(self.chat_id, self.tenant, "hello")
+
+        body = self._last_send_message_text()
+        # English fallback retains the auto-retry promise.
+        self.assertIn("I'm restarting right now", body)
+        self.assertIn("send your message through", body)

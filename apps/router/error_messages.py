@@ -82,6 +82,17 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "restarting": "I'm restarting \u2014 please try again in about a minute!",
         "forwarding_error": "Something went wrong. Please try again.",
         "empty_response_after_retry": ("Sorry, I couldn't come up with a response. Could you try saying that again?"),
+        # Telegram-specific variants — Telegram path auto-retries the message
+        # once the container is back, so wording promises delivery rather
+        # than asking the user to retry manually.
+        "telegram_provisioning_almost_ready": (
+            "Your assistant is almost ready \u2014 just finishing setup."
+            " I'll send your message through as soon as it's live! \U0001f331"
+        ),
+        "telegram_restarting": (
+            "\u23f3 I'm restarting right now \u2014 I'll send your message through once I'm back up (about a minute)."
+        ),
+        "telegram_resend_after_failed_wait": ("I'm back! Sorry about that \u2014 could you resend your last message?"),
     },
     "ja": {
         "budget_exhausted_trial": (
@@ -155,6 +166,21 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "empty_response_after_retry": (
             "\u3054\u3081\u3093\u306a\u3055\u3044\u3001\u9069\u5207\u306a\u8fd4\u4fe1\u304c\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f\u3002"
             "\u3082\u3046\u4e00\u5ea6\u8a00\u3044\u63db\u3048\u3066\u3082\u3089\u3048\u307e\u3059\u304b\uff1f"
+        ),
+        # Telegram-\u56fa\u6709\u30d0\u30ea\u30a8\u30fc\u30b7\u30e7\u30f3 \u2014 Telegram\u306f\u81ea\u52d5\u30ea\u30c8\u30e9\u30a4\u3059\u308b\u305f\u3081\u3001
+        # \u30e6\u30fc\u30b6\u30fc\u306b\u624b\u52d5\u3067\u9001\u308a\u76f4\u3057\u3092\u4f9d\u983c\u305b\u305a\u3001\u914d\u4fe1\u3092\u7d04\u675f\u3059\u308b\u8868\u73fe\u306b\u3057\u3066\u3044\u307e\u3059\u3002
+        "telegram_provisioning_almost_ready": (
+            "\u30a2\u30b7\u30b9\u30bf\u30f3\u30c8\u306e\u6e96\u5099\u304c\u3082\u3046\u3059\u3050\u3067\u304d\u307e\u3059"
+            "\u2014\u30bb\u30c3\u30c8\u30a2\u30c3\u30d7\u306e\u4ed5\u4e0a\u3052\u4e2d\u3067\u3059\u3002"
+            "\u8d77\u52d5\u3057\u6b21\u7b2c\u3001\u3042\u306a\u305f\u306e\u30e1\u30c3\u30bb\u30fc\u30b8\u3092\u8ee2\u9001\u3057\u307e\u3059\uff01\U0001f331"
+        ),
+        "telegram_restarting": (
+            "\u23f3 \u73fe\u5728\u518d\u8d77\u52d5\u4e2d\u3067\u3059"
+            "\u2014\u8d77\u52d5\u304c\u5b8c\u4e86\u3057\u305f\u3089\u3001\u3042\u306a\u305f\u306e\u30e1\u30c3\u30bb\u30fc\u30b8\u3092\u9001\u4fe1\u3057\u307e\u3059\uff081\u5206\u307b\u3069\uff09\u3002"
+        ),
+        "telegram_resend_after_failed_wait": (
+            "\u623b\u3063\u3066\u304d\u307e\u3057\u305f\uff01\u3054\u3081\u3093\u306a\u3055\u3044"
+            "\u2014\u76f4\u524d\u306e\u30e1\u30c3\u30bb\u30fc\u30b8\u3092\u3082\u3046\u4e00\u5ea6\u9001\u3063\u3066\u3044\u305f\u3060\u3051\u307e\u3059\u304b\uff1f"
         ),
     },
     "es": {
