@@ -120,12 +120,45 @@ function fuelPath(api, suffix) {
 }
 
 export default function register(api) {
+  // ── Fuel Audit ──────────────────────────────────────────────────────
+  // Single tool for any "what should I do for a workout" / "deliver today's
+  // plan" / "schedule a workout" question. Cross-references three sources:
+  //   1. Today's daily-note Fuel section (the locked plan, if any).
+  //   2. Postgres Workout rows for the next 14 days.
+  //   3. The container's cron registry (_fuel:* + user-named workout crons).
+  // Returns conflicts (duplicate fires, orphan crons, orphan workouts) plus
+  // a one-line `guidance` string that tells the agent what to do.
+  api.registerTool(
+    {
+      name: "nbhd_fuel_audit",
+      description:
+        "PREFER this tool over nbhd_fuel_summary when the user asks for a workout, asks what's planned, or wants to schedule one. Returns: (a) today_plan parsed from today's daily-note Fuel section — if today_plan.exists is true, deliver THAT plan rather than inventing a new one; (b) next_14d_workouts from Postgres; (c) fuel_crons currently in the container; (d) conflicts.duplicate_fires / orphan_crons / orphan_workouts; (e) a one-line `guidance` string. If conflicts.duplicate_fires is non-empty, surface them and STOP — do not add another cron on top.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {},
+      },
+      async execute() {
+        try {
+          const payload = await callRuntime(api, {
+            path: fuelPath(api, "/audit/"),
+            method: "GET",
+          });
+          return renderPayload(payload);
+        } catch (error) {
+          return renderPayload({ error: error.message });
+        }
+      },
+    },
+    { optional: true },
+  );
+
   // ── Fuel Summary ────────────────────────────────────────────────────
   api.registerTool(
     {
       name: "nbhd_fuel_summary",
       description:
-        "Get the user's fitness context: recent workouts, planned workouts, latest body weight, and fitness profile (including onboarding status). Call this at the start of fitness conversations to understand what the user has been doing and whether they've completed their fitness profile setup.",
+        "Get the user's fitness context: recent workouts, planned workouts, latest body weight, and fitness profile (including onboarding status). Call this at the start of fitness conversations to understand what the user has been doing and whether they've completed their fitness profile setup. NOTE: for any question about *today's* workout or scheduling, prefer `nbhd_fuel_audit` — it includes everything this returns plus cron state and conflict detection.",
       parameters: {
         type: "object",
         additionalProperties: false,

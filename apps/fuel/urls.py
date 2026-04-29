@@ -2,6 +2,7 @@ from django.urls import path
 
 from .runtime_views import (
     RuntimeBodyWeightView,
+    RuntimeFuelAuditView,
     RuntimeFuelProfileView,
     RuntimeFuelSummaryView,
     RuntimeLogWorkoutView,
@@ -135,6 +136,11 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/workouts/swap/",
         RuntimeWorkoutSwapView.as_view(),
         name="runtime-fuel-workout-swap",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/audit/",
+        RuntimeFuelAuditView.as_view(),
+        name="runtime-fuel-audit",
     ),
     path(
         "runtime/<uuid:tenant_id>/summary/",

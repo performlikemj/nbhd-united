@@ -437,14 +437,28 @@ _FUEL_WORKOUT_PREP_PROMPT = (
     "do NOT message the user. Do NOT call nbhd_send_to_user.\n\n"
     "Your job is to write today's workout context into the daily note so that "
     "every other session (morning briefing, user conversations, evening check-in) "
-    "can see it without needing special Fuel instructions.\n\n"
+    "can see it without needing special Fuel instructions. **All future Fuel "
+    "sessions today MUST read what you write — there is one locked plan per day, "
+    "and you are creating it.**\n\n"
     "Steps:\n"
-    "1. Call `nbhd_fuel_summary` to get active plans, today's planned workouts, "
-    "recent workout history, and last night's sleep.\n"
-    "2. Check yesterday's planned workouts — if any were not logged as done, "
+    "1. Call `nbhd_fuel_audit` (preferred). If unavailable, fall back to "
+    "`nbhd_fuel_summary`. The audit returns today_plan, next_14d_workouts, "
+    "fuel_crons, and conflicts.\n"
+    "2. **Conflict gate.** If `conflicts.duplicate_fires` is non-empty, STOP. "
+    "Write a brief `fuel` section noting the duplicates and that the user should "
+    "review them. Do NOT add new crons. Do NOT proceed to step 4.\n"
+    "3. **Idempotence gate.** If `today_plan.exists` is true (a previous run "
+    "today already wrote the section), DO NOT rewrite it with a different plan. "
+    "You may refresh sleep/yesterday lines if they are stale, but the **Today's "
+    "workout** line must match what's already locked. Re-read `today_plan.raw_section` "
+    "and treat it as authoritative.\n"
+    "4. Check yesterday's planned workouts — if any were not logged as done, "
     "note them as missed.\n"
-    "3. Write a `fuel` section to today's daily note "
-    "(`nbhd_daily_note_set_section` with `section_slug` = `fuel`).\n\n"
+    "5. Write the `fuel` section to today's daily note "
+    "(`nbhd_daily_note_set_section` with `section_slug` = `fuel`). **If the tool "
+    "call returns an error or times out, treat the write as FAILED — do NOT "
+    "claim the section was written, and do NOT call nbhd_send_to_user with a "
+    "success message.**\n\n"
     "The fuel section should be brief (4-6 lines) and contain:\n"
     "- **Today's workout** — activity, category, estimated duration. "
     'If no workout is planned today, write "Rest day."\n'
@@ -460,10 +474,17 @@ _FUEL_WORKOUT_PREP_PROMPT = (
     "**Sleep:** 7.5h, quality 4/5 — recovery looks good\n"
     "**Yesterday:** Pull Day ✓ completed\n"
     "```\n\n"
-    "If there is no active plan, skip silently — do not write the fuel section.\n\n"
+    "If there is no active plan AND no today_plan, skip silently — do not write "
+    "the fuel section.\n\n"
     "**Do NOT message the user. Do NOT call nbhd_send_to_user. "
     "Do NOT write to tomorrow's daily note. This is a silent background run.**\n"
 )
+
+
+# NOTE: foreground (user-conversation) Fuel rule lives in the plugin tool
+# description for `nbhd_fuel_audit` itself — the agent reads tool descriptions
+# every turn during tool selection, so that's the most reliable injection
+# point. See runtime/openclaw/plugins/nbhd-fuel-tools/index.js.
 
 
 _FUEL_PREP_HOUR = {
