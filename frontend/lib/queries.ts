@@ -7,6 +7,7 @@ import {
   AuthUser,
   CronJob,
   Integration,
+  PersonalAccessToken,
   ProvisioningStatus,
   RefreshConfigStatus,
   Tenant,
@@ -128,6 +129,9 @@ import {
   updateWorkspace,
   deleteWorkspace,
   switchWorkspace,
+  fetchPATs,
+  mintPAT,
+  revokePAT,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -1462,6 +1466,50 @@ export function useCreateSleepMutation() {
     mutationFn: createSleep,
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["fuel-sleep"] });
+    },
+  });
+}
+
+// Personal Access Tokens (Connected Apps)
+
+export function usePATsQuery() {
+  return useQuery({
+    queryKey: ["pats"],
+    queryFn: fetchPATs,
+    staleTime: 30_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useMintPATMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: mintPAT,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["pats"] });
+    },
+  });
+}
+
+export function useRevokePATMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: revokePAT,
+    onMutate: async (patId: string) => {
+      await qc.cancelQueries({ queryKey: ["pats"] });
+      const previous = qc.getQueryData<PersonalAccessToken[]>(["pats"]);
+      qc.setQueryData<PersonalAccessToken[]>(["pats"], (old) =>
+        old ? old.filter((p) => p.id !== patId) : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _id, context) => {
+      if (context?.previous) {
+        qc.setQueryData(["pats"], context.previous);
+      }
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["pats"] });
     },
   });
 }

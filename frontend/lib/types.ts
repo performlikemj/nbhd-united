@@ -739,3 +739,34 @@ export interface FuelProfile {
   created_at: string;
   updated_at: string;
 }
+
+// Personal Access Tokens (Connected Apps)
+export type PATScope = "sessions:write" | "sessions:read";
+
+export interface PersonalAccessToken {
+  id: string;
+  name: string;
+  token_prefix: string;
+  scopes: PATScope[];
+  last_used_at: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+}
+
+export interface PATCreateRequest {
+  name: string;
+  scopes?: PATScope[];
+  expires_in_days?: number;
+}
+
+export interface PATCreateResponse {
+  id: string;
+  name: string;
+  token: string;
+  token_prefix: string;
+  scopes: PATScope[];
+  expires_at: string | null;
+  created_at: string;
+  warning: string;
+}

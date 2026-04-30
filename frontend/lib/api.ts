@@ -1101,3 +1101,21 @@ export function createSleep(data: {
     body: JSON.stringify(data),
   });
 }
+
+// Personal Access Tokens (Connected Apps)
+export function fetchPATs(): Promise<import("@/lib/types").PersonalAccessToken[]> {
+  return apiFetch<import("@/lib/types").PersonalAccessToken[]>("/api/v1/auth/tokens/");
+}
+
+export function mintPAT(
+  data: import("@/lib/types").PATCreateRequest,
+): Promise<import("@/lib/types").PATCreateResponse> {
+  return apiFetch<import("@/lib/types").PATCreateResponse>("/api/v1/auth/tokens/create/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function revokePAT(id: string): Promise<void> {
+  await apiFetch(`/api/v1/auth/tokens/${id}/`, { method: "DELETE" });
+}
