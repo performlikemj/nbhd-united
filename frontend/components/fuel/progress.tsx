@@ -14,11 +14,11 @@ export function Progress() {
   const progress = data?.progress as Record<string, unknown> | undefined;
 
   return (
-    <div className="space-y-5 overflow-hidden">
-      {/* Category chips — scrollable row */}
-      <div className="overflow-x-auto pb-1">
-        <div className="flex items-center gap-2 w-max">
-          <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-ink-faint mr-1 shrink-0">CATEGORY</span>
+    <div className="space-y-5">
+      {/* Category chips — wrap on mobile (all 7 always visible), inline row on sm+ */}
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+        <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-ink-faint sm:mr-1">CATEGORY</span>
+        <div className="flex flex-wrap gap-2">
           {CATEGORY_IDS.map((c) => {
             const on = cat === c;
             return (
