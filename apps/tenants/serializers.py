@@ -91,6 +91,8 @@ class TenantSerializer(serializers.ModelSerializer):
             "last_message_at",
             "provisioned_at",
             "config_refreshed_at",
+            "config_version",
+            "pending_config_version",
             "created_at",
             "pending_deletion",
             "deletion_scheduled_at",
