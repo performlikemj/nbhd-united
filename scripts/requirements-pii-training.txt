@@ -1,0 +1,12 @@
+# Training dependencies — install on your GPU machine (Colab, Azure ML, etc.)
+# NOT added to the Django requirements.txt
+
+torch>=2.1
+transformers>=4.35
+datasets>=2.14
+accelerate>=0.24
+seqeval>=1.2
+optimum[onnxruntime]>=1.14
+onnxruntime>=1.16
+numpy<2
+sentencepiece>=0.2
