@@ -15,9 +15,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# PII detection model (ONNX INT8, ~230 MB)
-COPY pii-model /app/pii-model
+# Download PII detection model (ONNX INT8, ~230 MB) from HuggingFace at build time.
+# Public repo — no token needed. Model cached in image layer.
 ENV PII_MODEL_PATH=/app/pii-model
+RUN python -c "\
+from huggingface_hub import snapshot_download; \
+snapshot_download('onbekend/nbhd-pii-model', local_dir='/app/pii-model')"
 
 RUN SECRET_KEY=build-placeholder python manage.py collectstatic --noinput
 
