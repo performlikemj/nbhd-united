@@ -1204,9 +1204,7 @@ class DocumentSaveSignalAsyncTest(TestCase):
 
         thread_instance = MagicMock()
         with (
-            _patch(
-                "apps.journal.signals.threading.Thread", return_value=thread_instance
-            ) as mock_thread_cls,
+            _patch("apps.journal.signals.threading.Thread", return_value=thread_instance) as mock_thread_cls,
             self.captureOnCommitCallbacks(execute=True),
         ):
             Document.objects.create(
