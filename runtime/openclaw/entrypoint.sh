@@ -110,6 +110,31 @@ GATEWAY_PID=$!
 node /opt/nbhd/proxy.js &
 PROXY_PID=$!
 
+# Container-started hook — fire-and-forget POST to Django so the
+# postgres-canonical reconciler can rebuild SQLite from Postgres truth
+# the moment we're ready, instead of waiting for the hourly fleet
+# reconcile. Quietly skipped if env vars are missing.
+(
+    if [ -n "${NBHD_API_BASE_URL:-}" ] && [ -n "${NBHD_INTERNAL_API_KEY:-}" ] && [ -n "${NBHD_TENANT_ID:-}" ]; then
+        # Wait for the gateway's HTTP surface to come up (max ~60s).
+        for _hook_attempt in $(seq 1 30); do
+            if curl -sS -f -m 2 "http://127.0.0.1:18789/health" >/dev/null 2>&1; then
+                break
+            fi
+            sleep 2
+        done
+        URL="${NBHD_API_BASE_URL%/}/api/cron/runtime/${NBHD_TENANT_ID}/container-started/"
+        curl -sS -X POST -m 10 \
+            -H "X-NBHD-Internal-Key: ${NBHD_INTERNAL_API_KEY}" \
+            -H "X-NBHD-Tenant-Id: ${NBHD_TENANT_ID}" \
+            -H "Content-Length: 0" \
+            "$URL" \
+            >/dev/null 2>&1 \
+            && echo "[entrypoint] container-started hook OK" \
+            || echo "[entrypoint] container-started hook failed (non-fatal)" >&2
+    fi
+) &
+
 # Forward termination signals to both children
 trap 'kill $GATEWAY_PID $PROXY_PID 2>/dev/null; wait' SIGTERM SIGINT
 

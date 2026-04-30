@@ -695,7 +695,16 @@ def restore_user_cron_jobs(tenant: Tenant, existing_job_names: set[str]) -> dict
 
 
 def seed_cron_jobs(tenant: Tenant | str) -> dict:
-    """Seed default cron jobs for a tenant through the Gateway API."""
+    """Seed default cron jobs for a tenant.
+
+    Postgres-canonical path (``tenant.postgres_cron_canonical=True``):
+    upsert ``CronJob`` rows from ``build_cron_seed_jobs`` and mark them
+    ``source='system'``, ``managed=True``. The reconciler picks up the
+    delta and pushes to the container's SQLite via signal.
+
+    Legacy path: directly call ``cron.add`` against the gateway, diffing
+    by name.
+    """
     if isinstance(tenant, str):
         tenant = Tenant.objects.select_related("user").get(id=tenant)
 
@@ -709,6 +718,42 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
             "jobs_total": len(jobs),
             "created": len(jobs),
             "errors": 0,
+        }
+
+    # Postgres-canonical path: write CronJob rows; signal triggers reconcile.
+    if getattr(tenant, "postgres_cron_canonical", False):
+        from apps.cron.models import CronJob, CronJobSource
+
+        created = 0
+        existing_names = set(
+            CronJob.objects.filter(tenant=tenant, source=CronJobSource.SYSTEM).values_list("name", flat=True)
+        )
+        for job in jobs:
+            name = job.get("name", "")
+            if not name or name.lower() in {n.lower() for n in existing_names}:
+                continue
+            CronJob.objects.create(
+                tenant=tenant,
+                name=name,
+                data=job,
+                source=CronJobSource.SYSTEM,
+                managed=True,
+                enabled=bool(job.get("enabled", True)),
+            )
+            created += 1
+        logger.info(
+            "seed_cron_jobs (postgres-canonical): tenant %s — created %d system rows (existing=%d, total=%d)",
+            tenant_id,
+            created,
+            len(existing_names),
+            len(jobs),
+        )
+        return {
+            "tenant_id": tenant_id,
+            "jobs_total": len(jobs),
+            "created": created,
+            "errors": 0,
+            "via": "postgres_canonical",
         }
 
     # Check existing jobs first with retry on transient gateway failures.
