@@ -127,7 +127,9 @@ export function DayDrawer({ iso, onClose, onNavigate, onAddWorkout, onOpenWorkou
           {restEntry && (
             <div className="rounded-xl border border-border bg-surface-elevated px-4 py-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span className="text-ink-faint text-lg">&#x1F6CC;</span>
+                <svg viewBox="0 0 24 24" className="h-4 w-4 text-ink-faint" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
                 <span className="text-sm text-ink-muted">Rest day</span>
               </div>
               <button

@@ -197,7 +197,7 @@ function NewWorkoutDialogInner({ presetDate, onClose, onCreated }: Omit<NewWorko
             <button
               onClick={handleCreate}
               disabled={createMutation.isPending}
-              className="w-full rounded-full bg-accent text-white font-medium min-h-[48px] py-3 text-sm hover:opacity-90 transition disabled:opacity-50"
+              className="w-full glow-purple rounded-full bg-accent text-white font-semibold min-h-[48px] py-3 text-sm hover:brightness-110 active:scale-[0.98] transition disabled:opacity-50"
             >
               {createMutation.isPending ? "Creating\u2026" : "Create workout"}
             </button>

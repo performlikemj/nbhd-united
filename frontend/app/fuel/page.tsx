@@ -42,7 +42,7 @@ export default function FuelPage() {
         <span className="text-accent text-xs font-bold uppercase tracking-[0.22em]">FUEL</span>
         <button
           onClick={() => setNewSheet({ open: true, date: null })}
-          className="rounded-full bg-accent text-white min-h-[44px] px-4 text-sm font-medium hover:opacity-90 transition flex items-center gap-1.5 shrink-0"
+          className="glow-purple rounded-full bg-accent text-white min-h-[44px] px-4 text-sm font-semibold hover:brightness-110 active:scale-[0.98] transition flex items-center gap-1.5 shrink-0"
         >
           <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14" /></svg>
           Log workout
@@ -64,7 +64,7 @@ export default function FuelPage() {
         </div>
         <button
           onClick={() => setNewSheet({ open: true, date: null })}
-          className="self-start sm:self-auto rounded-full bg-accent text-white min-h-[44px] px-5 py-2.5 text-sm font-medium hover:opacity-90 transition flex items-center gap-1.5 shrink-0"
+          className="self-start sm:self-auto glow-purple rounded-full bg-accent text-white min-h-[44px] px-5 py-2.5 text-sm font-semibold hover:brightness-110 active:scale-[0.98] transition flex items-center gap-1.5 shrink-0"
         >
           <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14" /></svg>
           Log workout

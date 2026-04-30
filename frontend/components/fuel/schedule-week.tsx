@@ -9,6 +9,7 @@ import {
   useSkipWorkoutMutation,
 } from "@/lib/queries";
 import type { FuelWorkout, WorkoutCategory } from "@/lib/types";
+import { StatusPill } from "@/components/status-pill";
 import { CATEGORIES } from "./category-meta";
 
 interface ScheduleWeekProps {
@@ -332,30 +333,11 @@ function SessionCard({ workout, onOpen }: SessionCardProps) {
         <div className="mt-0.5 flex items-center gap-2 text-[11px] text-ink-muted">
           <span className="capitalize">{workout.category}</span>
           {workout.duration_minutes && <span>· {workout.duration_minutes}m</span>}
-          <StatusBadge status={workout.status} />
+          {workout.status !== "planned" && <StatusPill status={workout.status} size="sm" />}
         </div>
       </button>
       <SessionMenu workout={workout} />
     </div>
-  );
-}
-
-function StatusBadge({ status }: { status: FuelWorkout["status"] }) {
-  if (status === "planned") return null;
-  const tone: Record<string, string> = {
-    done: "bg-status-emerald text-status-emerald-text",
-    in_progress: "bg-status-sky text-status-sky-text",
-    skipped: "bg-status-amber text-status-amber-text",
-    rescheduled: "bg-status-violet text-status-violet-text",
-    rest: "bg-status-slate text-status-slate-text",
-  };
-  const cls = tone[status] || "bg-status-slate text-status-slate-text";
-  return (
-    <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${cls}`}
-    >
-      {status.replace("_", " ")}
-    </span>
   );
 }
 

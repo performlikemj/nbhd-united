@@ -28,6 +28,11 @@ const tones: Record<string, StyleTuple> = {
   "thumbs-up": { bg: "var(--status-emerald-bg)", text: "var(--status-emerald-text)" },
   "thumbs-down": { bg: "var(--status-rose-bg)", text: "var(--status-rose-text)" },
   meh: { bg: "var(--status-amber-bg)", text: "var(--status-amber-text)" },
+  // Workout statuses (Fuel)
+  done: { bg: "var(--status-emerald-bg)", text: "var(--status-emerald-text)" },
+  in_progress: { bg: "var(--status-sky-bg)", text: "var(--status-sky-text)" },
+  rescheduled: { bg: "var(--status-violet-bg)", text: "var(--status-violet-text)" },
+  rest: { bg: "var(--status-slate-bg)", text: "var(--status-slate-text)" },
 };
 
 const fallbackTone: StyleTuple = {
@@ -38,15 +43,21 @@ const fallbackTone: StyleTuple = {
 // User-facing label overrides — keep internal status values but show friendlier names
 const displayLabels: Record<string, string> = {
   suspended: "paused",
+  in_progress: "in progress",
 };
 
-export function StatusPill({ status }: { status: string }) {
+const sizeClass = {
+  sm: "rounded-full px-2 py-0.5 text-[10px] font-medium capitalize",
+  md: "inline-flex rounded-full px-2.5 py-1 text-xs font-medium capitalize",
+} as const;
+
+export function StatusPill({ status, size = "md" }: { status: string; size?: "sm" | "md" }) {
   const style = useMemo(() => tones[status] ?? fallbackTone, [status]);
   const label = displayLabels[status] ?? status;
 
   return (
     <span
-      className="inline-flex rounded-full px-2.5 py-1 text-xs font-medium capitalize"
+      className={sizeClass[size]}
       style={{
         backgroundColor: style.bg,
         color: style.text,
