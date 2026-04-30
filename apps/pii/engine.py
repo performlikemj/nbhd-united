@@ -21,9 +21,12 @@ _pipeline = None
 _cc_recognizer = None
 _iban_recognizer = None
 
-# Default model path — override with PII_MODEL_PATH env var.
-# In Docker, set to /app/pii-model (baked into image).
-# Locally, point to pii-model/ in the project root.
+# HuggingFace repo for the PII model (public, Apache 2.0 compatible).
+_HF_MODEL_REPO = "onbekend/nbhd-pii-model"
+
+# Model path — override with PII_MODEL_PATH env var.
+# Docker: /app/pii-model (downloaded at build time).
+# Local dev: pii-model/ in project root, or auto-downloads from HuggingFace.
 _MODEL_PATH = os.environ.get(
     "PII_MODEL_PATH",
     os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "pii-model"),
@@ -37,9 +40,11 @@ def get_pii_pipeline():
         from optimum.onnxruntime import ORTModelForTokenClassification
         from transformers import AutoTokenizer, pipeline
 
-        tokenizer = AutoTokenizer.from_pretrained(_MODEL_PATH)
+        # Use local path if available, otherwise download from HuggingFace
+        model_path = _MODEL_PATH if os.path.isdir(_MODEL_PATH) else _HF_MODEL_REPO
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
         model = ORTModelForTokenClassification.from_pretrained(
-            _MODEL_PATH,
+            model_path,
             file_name="model_quantized.onnx",
         )
         _pipeline = pipeline(
