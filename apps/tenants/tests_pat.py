@@ -1,7 +1,9 @@
 """Tests for Personal Access Token auth and management."""
 
 from datetime import timedelta
+from unittest.mock import patch
 
+from django.core.cache import cache
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -9,6 +11,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import User
 from .pat_models import PersonalAccessToken, generate_pat, hash_token
+from .throttling import UserPATMintHourThrottle
 
 
 class PATModelTest(TestCase):
@@ -167,6 +170,36 @@ class PATManagementTest(TestCase):
         self.assertIn("warning", data)
         self.assertEqual(data["name"], "YardTalk on MacBook")
 
+    def test_create_pat_defaults_to_sessions_write_scope(self):
+        response = self.client.post(
+            "/api/v1/auth/tokens/create/",
+            {"name": "Default Scopes"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["scopes"], ["sessions:write"])
+
+    def test_create_pat_with_explicit_scopes(self):
+        response = self.client.post(
+            "/api/v1/auth/tokens/create/",
+            {"name": "Read+Write", "scopes": ["sessions:read", "sessions:write"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            sorted(response.json()["scopes"]),
+            ["sessions:read", "sessions:write"],
+        )
+
+    def test_create_pat_rejects_unknown_scope(self):
+        response = self.client.post(
+            "/api/v1/auth/tokens/create/",
+            {"name": "Bad", "scopes": ["sessions:write", "admin:everything"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("scopes", response.json())
+
     def test_create_pat_with_expiry(self):
         response = self.client.post(
             "/api/v1/auth/tokens/create/",
@@ -243,3 +276,13 @@ class PATManagementTest(TestCase):
 
         response = self.client.delete(f"/api/v1/auth/tokens/{pat.id}/")
         self.assertEqual(response.status_code, 404)
+
+    def test_mint_throttle_returns_429_after_limit(self):
+        cache.clear()
+        with patch.object(UserPATMintHourThrottle, "rate", "2/hour"):
+            r1 = self.client.post("/api/v1/auth/tokens/create/", {"name": "t1"}, format="json")
+            r2 = self.client.post("/api/v1/auth/tokens/create/", {"name": "t2"}, format="json")
+            r3 = self.client.post("/api/v1/auth/tokens/create/", {"name": "t3"}, format="json")
+        self.assertEqual(r1.status_code, 201)
+        self.assertEqual(r2.status_code, 201)
+        self.assertEqual(r3.status_code, 429)
