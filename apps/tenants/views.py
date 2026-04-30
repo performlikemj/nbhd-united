@@ -711,8 +711,15 @@ class PreferredModelView(APIView):
 
 
 def _get_allowed_models(tenant: Tenant) -> dict:
-    """Return the set of model IDs allowed for this tenant's tier."""
-    return TIER_MODEL_CONFIGS.get(tenant.model_tier, {})
+    """Return the set of model IDs allowed for this tenant's tier, plus
+    any BYO subscription extras the tenant has connected."""
+    from apps.orchestrator.config_generator import _byo_model_extras
+
+    base = TIER_MODEL_CONFIGS.get(tenant.model_tier, {})
+    extras = _byo_model_extras(tenant)
+    if extras:
+        return {**base, **extras}
+    return base
 
 
 _VALID_TASK_SLUGS = {
