@@ -7,12 +7,24 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .pat_models import PersonalAccessToken, generate_pat
+from .permissions import ALLOWED_PAT_SCOPES
+from .throttling import UserPATMintHourThrottle
+
+DEFAULT_PAT_SCOPES: list[str] = ["sessions:write"]
 
 
 class PATCreateSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=255)
     scopes = serializers.ListField(child=serializers.CharField(), required=False, default=list)
     expires_in_days = serializers.IntegerField(required=False, min_value=1, max_value=365)
+
+    def validate_scopes(self, value: list[str]) -> list[str]:
+        invalid = [s for s in value if s not in ALLOWED_PAT_SCOPES]
+        if invalid:
+            raise serializers.ValidationError(
+                f"Unknown scopes: {invalid}. Allowed: {sorted(ALLOWED_PAT_SCOPES)}"
+            )
+        return value
 
 
 class PATListSerializer(serializers.ModelSerializer):
@@ -45,6 +57,7 @@ class PATCreateView(APIView):
     """Create a new PAT. Returns the raw token exactly once."""
 
     permission_classes = [IsAuthenticated]
+    throttle_classes = [UserPATMintHourThrottle]
 
     def post(self, request):
         serializer = PATCreateSerializer(data=request.data)
@@ -59,12 +72,14 @@ class PATCreateView(APIView):
 
             expires_at = timezone.now() + timedelta(days=data["expires_in_days"])
 
+        scopes = data.get("scopes") or list(DEFAULT_PAT_SCOPES)
+
         pat = PersonalAccessToken.objects.create(
             user=request.user,
             name=data["name"],
             token_prefix=prefix,
             token_hash=token_hash,
-            scopes=data.get("scopes", []),
+            scopes=scopes,
             expires_at=expires_at,
         )
 
