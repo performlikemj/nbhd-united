@@ -1153,3 +1153,99 @@ class RuntimeDocumentAPITest(TestCase):
             **self.headers,
         )
         self.assertEqual(resp.status_code, 400)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Document post_save signal — async behavior in production
+# ═════════════════════════════════════════════════════════════════════
+
+
+class DocumentSaveSignalAsyncTest(TestCase):
+    """When QStash is configured, the post_save signal must NOT block on
+    the publish_task HTTP call — it must fire in a thread after commit.
+    When QStash is unconfigured (dev/test), the synchronous fallback is
+    preserved so existing test assertions about task side-effects work.
+    """
+
+    def setUp(self):
+        from apps.tenants.services import create_tenant
+
+        self.tenant = create_tenant(display_name="Signal Async Test", telegram_chat_id=900111)
+
+    @override_settings(QSTASH_TOKEN="", API_BASE_URL="")
+    def test_synchronous_fallback_when_qstash_unconfigured(self):
+        """Without QSTASH_TOKEN, the publish runs synchronously (no thread)."""
+        from unittest.mock import patch as _patch
+
+        from apps.journal.models import Document
+
+        with (
+            _patch("apps.cron.publish.publish_task") as mock_publish,
+            _patch("apps.journal.signals.threading.Thread") as mock_thread,
+        ):
+            with self.captureOnCommitCallbacks(execute=True):
+                Document.objects.create(
+                    tenant=self.tenant,
+                    kind="daily",
+                    slug="2026-04-30",
+                    title="Test",
+                    markdown="# Test\n",
+                )
+            mock_thread.assert_not_called()
+            mock_publish.assert_called_once_with("sync_documents_to_workspace", str(self.tenant.id))
+
+    @override_settings(QSTASH_TOKEN="t_abc", API_BASE_URL="https://example.com")
+    def test_threaded_publish_when_qstash_configured(self):
+        """With QStash configured, publish_task is invoked from a daemon thread."""
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as _patch
+
+        from apps.journal.models import Document
+
+        thread_instance = MagicMock()
+        with (
+            _patch("apps.journal.signals.threading.Thread", return_value=thread_instance) as mock_thread_cls,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            Document.objects.create(
+                tenant=self.tenant,
+                kind="daily",
+                slug="2026-05-01",
+                title="Test",
+                markdown="# Test\n",
+            )
+        mock_thread_cls.assert_called_once()
+        self.assertTrue(mock_thread_cls.call_args.kwargs.get("daemon"))
+        thread_instance.start.assert_called_once()
+
+    @override_settings(QSTASH_TOKEN="t_abc", API_BASE_URL="https://example.com")
+    def test_publish_failure_in_thread_does_not_propagate(self):
+        """An exception inside the threaded publish must not break doc.save()."""
+        from unittest.mock import patch as _patch
+
+        from apps.journal.models import Document
+
+        # Run the thread target inline so we exercise the swallow-and-log path.
+        def fake_thread_factory(target, daemon):
+            class _FakeThread:
+                def start(self_):
+                    target()
+
+            return _FakeThread()
+
+        with (
+            _patch("apps.journal.signals.threading.Thread", side_effect=fake_thread_factory),
+            _patch(
+                "apps.cron.publish.publish_task",
+                side_effect=RuntimeError("qstash unreachable"),
+            ),
+        ):
+            with self.captureOnCommitCallbacks(execute=True):
+                doc = Document.objects.create(
+                    tenant=self.tenant,
+                    kind="daily",
+                    slug="2026-05-02",
+                    title="Test",
+                    markdown="# Test\n",
+                )
+            self.assertIsNotNone(doc.id)
