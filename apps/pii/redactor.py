@@ -436,32 +436,20 @@ def _detect_pii(
     # both map to PERSON — merge into a single span covering "Sarah Chen")
     results = _merge_adjacent_spans(results)
 
-    # 2. Presidio regex — credit cards (Luhn checksum), IBANs (checksum)
-    cc_recognizer, iban_recognizer = get_pattern_recognizers()
-
-    if "CREDIT_CARD" in entities:
-        for r in cc_recognizer.analyze(text=text, entities=["CREDIT_CARD"]):
-            if r.score >= score_threshold:
-                results.append(
-                    DetectedEntity(
-                        entity_type=r.entity_type,
-                        start=r.start,
-                        end=r.end,
-                        score=r.score,
+    # 2. Presidio regex — credit cards (Luhn), IBANs (checksum), emails (regex fallback)
+    pattern_recognizers = get_pattern_recognizers()
+    for entity_type, recognizer in pattern_recognizers.items():
+        if entity_type in entities:
+            for r in recognizer.analyze(text=text, entities=[entity_type]):
+                if r.score >= score_threshold:
+                    results.append(
+                        DetectedEntity(
+                            entity_type=r.entity_type,
+                            start=r.start,
+                            end=r.end,
+                            score=r.score,
+                        )
                     )
-                )
-
-    if "IBAN_CODE" in entities:
-        for r in iban_recognizer.analyze(text=text, entities=["IBAN_CODE"]):
-            if r.score >= score_threshold:
-                results.append(
-                    DetectedEntity(
-                        entity_type=r.entity_type,
-                        start=r.start,
-                        end=r.end,
-                        score=r.score,
-                    )
-                )
 
     return results
 

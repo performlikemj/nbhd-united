@@ -18,8 +18,7 @@ import os
 logger = logging.getLogger(__name__)
 
 _pipeline = None
-_cc_recognizer = None
-_iban_recognizer = None
+_pattern_recognizers = None
 
 # HuggingFace repo for the PII model (public, Apache 2.0 compatible).
 _HF_MODEL_REPO = "onbekend/nbhd-pii-model"
@@ -58,19 +57,28 @@ def get_pii_pipeline():
 
 
 def get_pattern_recognizers():
-    """Return Presidio credit card and IBAN recognizers (no NLP engine needed).
+    """Return Presidio pattern recognizers (no NLP engine needed).
 
-    These are called directly — bypasses AnalyzerEngine entirely so we
+    Called directly — bypasses AnalyzerEngine entirely so we
     don't need a spaCy NLP engine or model installed.
+
+    Returns a dict of {entity_type: recognizer} for:
+    - CREDIT_CARD: Luhn checksum validation
+    - IBAN_CODE: Country-format + checksum validation
+    - EMAIL_ADDRESS: Regex fallback (catches emails the model misses)
     """
-    global _cc_recognizer, _iban_recognizer
-    if _cc_recognizer is None:
+    global _pattern_recognizers
+    if _pattern_recognizers is None:
         from presidio_analyzer.predefined_recognizers import (
             CreditCardRecognizer,
+            EmailRecognizer,
             IbanRecognizer,
         )
 
-        _cc_recognizer = CreditCardRecognizer()
-        _iban_recognizer = IbanRecognizer()
-        logger.info("Presidio pattern recognizers initialized (credit card, IBAN)")
-    return _cc_recognizer, _iban_recognizer
+        _pattern_recognizers = {
+            "CREDIT_CARD": CreditCardRecognizer(),
+            "IBAN_CODE": IbanRecognizer(),
+            "EMAIL_ADDRESS": EmailRecognizer(),
+        }
+        logger.info("Presidio pattern recognizers initialized (credit card, IBAN, email)")
+    return _pattern_recognizers
