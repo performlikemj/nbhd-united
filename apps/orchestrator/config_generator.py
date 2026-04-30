@@ -12,7 +12,7 @@ from typing import Any
 
 from django.conf import settings
 
-from apps.billing.constants import GEMMA_MODEL, KIMI_MODEL, MINIMAX_MODEL
+from apps.billing.constants import ANTHROPIC_SONNET_MODEL, GEMMA_MODEL, KIMI_MODEL, MINIMAX_MODEL
 from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION, generate_tool_config
 from apps.tenants.models import Tenant
 
@@ -581,6 +581,38 @@ TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     },
 }
 
+
+def _byo_model_extras(tenant: Tenant) -> dict[str, dict[str, Any]]:
+    """Extra model entries the tenant can select via BYO subscription.
+
+    Mirrors `TIER_MODEL_CONFIGS` shape (model_id → {"alias": ...}). Returns
+    an empty dict when `tenant.byo_models_enabled` is False or no
+    non-error BYO credential exists. Phase 1 only exposes Claude Sonnet
+    4.6 via the Anthropic CLI subscription path.
+    """
+    if not getattr(tenant, "byo_models_enabled", False):
+        return {}
+
+    # Late import — config_generator is imported during Django setup,
+    # before app registries are fully loaded.
+    from apps.byo_models.models import BYOCredential
+
+    extras: dict[str, dict[str, Any]] = {}
+
+    has_anthropic_cli = (
+        tenant.byo_credentials.filter(
+            provider=BYOCredential.Provider.ANTHROPIC,
+            mode=BYOCredential.Mode.CLI_SUBSCRIPTION,
+        )
+        .exclude(status=BYOCredential.Status.ERROR)
+        .exists()
+    )
+    if has_anthropic_cli:
+        extras[ANTHROPIC_SONNET_MODEL] = {"alias": "claude-sonnet"}
+
+    return extras
+
+
 WHISPER_DEFAULT_MODEL = {"provider": "openai", "model": "gpt-4o-mini-transcribe"}
 
 # Heartbeat model — always cheap, regardless of tenant tier
@@ -858,7 +890,14 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     models_config = TIER_MODELS.get(tier, TIER_MODELS["starter"])
     model_entries = TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["starter"])
 
-    # Allow user to override primary model within their tier
+    # BYO subscription extras (e.g. anthropic/claude-sonnet-4-6) — extend
+    # the tier's allowed-model dict so the user's preferred_model can
+    # land on a BYO model below.
+    byo_extras = _byo_model_extras(tenant)
+    if byo_extras:
+        model_entries = {**model_entries, **byo_extras}
+
+    # Allow user to override primary model within their tier (or BYO extras).
     if tenant.preferred_model and tenant.preferred_model in model_entries:
         models_config = {**models_config, "primary": tenant.preferred_model}
 
@@ -1122,6 +1161,17 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "baseUrl": "https://openrouter.ai/api/v1",
             "models": [],
         }
+
+    # BYO subscription: when the resolved primary is a Claude model AND
+    # the tenant has an active Anthropic CLI credential, switch
+    # OpenClaw's agent runtime to `claude-cli` so it spawns the local
+    # `claude` binary (which reads CLAUDE_CODE_OAUTH_TOKEN env). The env
+    # binding is added to the container by
+    # `apps.orchestrator.azure_client.apply_byo_credentials_to_container`.
+    if byo_extras and ANTHROPIC_SONNET_MODEL in byo_extras:
+        primary = config["agents"]["defaults"]["model"]["primary"]
+        if primary.startswith("anthropic/"):
+            config["agents"]["defaults"]["agentRuntime"] = {"id": "claude-cli"}
 
     return config
 

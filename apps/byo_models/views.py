@@ -31,7 +31,7 @@ from rest_framework.views import APIView
 
 from apps.byo_models.models import BYOCredential
 from apps.byo_models.services import delete_credential, upsert_credential
-from apps.orchestrator.azure_client import force_new_revision
+from apps.orchestrator.azure_client import apply_byo_credentials_to_container
 
 logger = logging.getLogger(__name__)
 
@@ -120,15 +120,15 @@ class BYOCredentialListView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        # Trigger a new container revision so the new env-var binding
-        # takes effect. Failure here is non-fatal — the cred is stored
-        # and a future restart will pick it up.
+        # Reconcile the container's secret/env bindings + force a new
+        # revision so KV-referenced secrets are re-fetched. Failure here
+        # is non-fatal — the cred is stored; the next config bump or
+        # natural restart will pick it up.
         try:
-            if tenant.container_id:
-                force_new_revision(tenant.container_id)
+            apply_byo_credentials_to_container(tenant)
         except Exception:
             logger.exception(
-                "force_new_revision failed for tenant=%s after credential paste",
+                "apply_byo_credentials_to_container failed for tenant=%s after paste",
                 tenant.id,
             )
 
@@ -153,11 +153,10 @@ class BYOCredentialDetailView(APIView):
         delete_credential(cred)
 
         try:
-            if tenant.container_id:
-                force_new_revision(tenant.container_id)
+            apply_byo_credentials_to_container(tenant)
         except Exception:
             logger.exception(
-                "force_new_revision failed for tenant=%s after credential delete",
+                "apply_byo_credentials_to_container failed for tenant=%s after delete",
                 tenant.id,
             )
 

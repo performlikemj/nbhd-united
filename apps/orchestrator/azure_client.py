@@ -828,39 +828,112 @@ def restart_container_app(container_name: str) -> None:
     logger.info("Restarted container app %s", container_name)
 
 
-def force_new_revision(container_name: str) -> None:
-    """Force a new Container App revision so KV-referenced secrets are re-fetched.
+def _entry_name(entry: Any) -> str | None:
+    """Extract `.name` from a Container Apps SDK Secret/EnvVar typed
+    object or a plain dict (we mix both in our spec lists)."""
+    if isinstance(entry, dict):
+        return entry.get("name")
+    return getattr(entry, "name", None)
 
-    Per microsoft/azure-container-apps#856 a plain restart of the active
-    revision keeps cached secret values; only revision creation triggers
-    Azure to re-pull the latest KV-referenced secret value. Used after
-    BYO credential mutations so the new env var binding takes effect.
 
-    Mirrors `restart_container_app` but with a `b<hash>` prefix on the
-    suffix so the two are distinguishable in revision listings.
+def apply_byo_credentials_to_container(tenant: Any) -> None:
+    """Reconcile the tenant container's BYO secret + env bindings, then
+    create a new revision so the Container Apps runtime picks up any
+    changed Key Vault references.
+
+    Per microsoft/azure-container-apps#856 a plain restart keeps cached
+    KV values; only revision creation triggers a re-fetch. Each call
+    here mutates `template.revision_suffix` (causing a new revision)
+    even when the cred state hasn't changed — that's intentional: the
+    user just pasted/disconnected and expects the change to take effect.
+
+    Phase 1 reconciliation, for Anthropic CLI subscription only:
+      - Active cred → add `CLAUDE_CODE_OAUTH_TOKEN` env (KV-backed)
+        AND remove the `ANTHROPIC_API_KEY` env binding (auth-precedence
+        shadowing — Anthropic's CLI ranks `ANTHROPIC_API_KEY` ABOVE
+        `CLAUDE_CODE_OAUTH_TOKEN`, so the platform key would win and
+        bill against API credits instead of the user's subscription).
+      - No active cred → ensure `ANTHROPIC_API_KEY` is restored
+        (re-bound to the existing `anthropic-key` secret) and
+        `CLAUDE_CODE_OAUTH_TOKEN` is removed.
+
+    Idempotent — safe to call repeatedly. No-op for tenants without a
+    container_id.
     """
     if _is_mock():
-        logger.info("[MOCK] Forced new revision for container %s", container_name)
+        logger.info("[MOCK] Applied BYO credentials for tenant=%s", tenant.id)
         return
+
+    if not tenant.container_id:
+        logger.warning(
+            "apply_byo_credentials_to_container skipped: tenant=%s has no container_id",
+            tenant.id,
+        )
+        return
+
+    # Late import to avoid circular import (byo_models -> orchestrator).
+    from apps.byo_models.models import BYOCredential
+
+    cred = (
+        tenant.byo_credentials.filter(
+            provider=BYOCredential.Provider.ANTHROPIC,
+            mode=BYOCredential.Mode.CLI_SUBSCRIPTION,
+        )
+        .exclude(status=BYOCredential.Status.ERROR)
+        .first()
+    )
 
     client = get_container_client()
     app = client.container_apps.get(
         settings.AZURE_RESOURCE_GROUP,
-        container_name,
+        tenant.container_id,
     )
+
+    BYO_SECRET = "claude-code-oauth-token"
+    BYO_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+    PLATFORM_ENV = "ANTHROPIC_API_KEY"
+
+    # Reconcile secrets list — drop any stale BYO entry, optionally re-add.
+    secrets = [s for s in (app.configuration.secrets or []) if _entry_name(s) != BYO_SECRET]
+    if cred:
+        secrets.append(
+            _build_container_secret(
+                BYO_SECRET,
+                plain_value="",
+                key_vault_secret_name=cred.key_vault_secret_name,
+                identity_id=tenant.managed_identity_id,
+            )
+        )
+    app.configuration.secrets = secrets
+
+    # Reconcile env on the openclaw container.
+    for container in app.template.containers:
+        if container.name != "openclaw":
+            continue
+        env_list = [e for e in (container.env or []) if _entry_name(e) not in (BYO_ENV, PLATFORM_ENV)]
+        if cred:
+            env_list.append({"name": BYO_ENV, "secretRef": BYO_SECRET})
+        else:
+            env_list.append({"name": PLATFORM_ENV, "secretRef": "anthropic-key"})
+        container.env = env_list
+        break
 
     import hashlib
     import time
 
-    template = app.template
-    template.revision_suffix = f"b{hashlib.sha256(f'byo-{int(time.time_ns())}'.encode()).hexdigest()[:6]}"
+    app.template.revision_suffix = f"b{hashlib.sha256(f'byo-{int(time.time_ns())}'.encode()).hexdigest()[:6]}"
 
     client.container_apps.begin_create_or_update(
         settings.AZURE_RESOURCE_GROUP,
-        container_name,
+        tenant.container_id,
         app,
     ).result()
-    logger.info("Forced new revision for container %s (suffix=%s)", container_name, template.revision_suffix)
+    logger.info(
+        "Applied BYO credentials for tenant=%s container=%s (cli_active=%s)",
+        tenant.id,
+        tenant.container_id,
+        cred is not None,
+    )
 
 
 _PLUGIN_RUNTIME_DEPS_VOLUME = "plugin-runtime-deps"

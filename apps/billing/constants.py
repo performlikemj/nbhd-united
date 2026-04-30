@@ -17,6 +17,12 @@ GEMMA_MODEL = "openrouter/google/gemma-4-31b-it"
 GEMMA_DISPLAY = "Gemma 4 31B"
 GEMMA_RATE = {"input": 0.14, "output": 0.40}
 
+# BYO subscription models — tenant pays the provider directly via their
+# Pro/Max/Plus account. Not in MODEL_RATES because NBHD doesn't bill
+# tokens for these.
+ANTHROPIC_SONNET_MODEL = "anthropic/claude-sonnet-4-6"
+ANTHROPIC_SONNET_DISPLAY = "Claude Sonnet 4.6"
+
 MODEL_RATES: dict[str, dict[str, float]] = {
     MINIMAX_MODEL: {
         **MINIMAX_RATE,
