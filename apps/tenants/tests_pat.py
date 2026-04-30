@@ -280,15 +280,9 @@ class PATManagementTest(TestCase):
     def test_mint_throttle_returns_429_after_limit(self):
         cache.clear()
         with patch.object(UserPATMintHourThrottle, "rate", "2/hour"):
-            r1 = self.client.post(
-                "/api/v1/auth/tokens/create/", {"name": "t1"}, format="json"
-            )
-            r2 = self.client.post(
-                "/api/v1/auth/tokens/create/", {"name": "t2"}, format="json"
-            )
-            r3 = self.client.post(
-                "/api/v1/auth/tokens/create/", {"name": "t3"}, format="json"
-            )
+            r1 = self.client.post("/api/v1/auth/tokens/create/", {"name": "t1"}, format="json")
+            r2 = self.client.post("/api/v1/auth/tokens/create/", {"name": "t2"}, format="json")
+            r3 = self.client.post("/api/v1/auth/tokens/create/", {"name": "t3"}, format="json")
         self.assertEqual(r1.status_code, 201)
         self.assertEqual(r2.status_code, 201)
         self.assertEqual(r3.status_code, 429)

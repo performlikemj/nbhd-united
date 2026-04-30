@@ -21,9 +21,7 @@ class PATCreateSerializer(serializers.Serializer):
     def validate_scopes(self, value: list[str]) -> list[str]:
         invalid = [s for s in value if s not in ALLOWED_PAT_SCOPES]
         if invalid:
-            raise serializers.ValidationError(
-                f"Unknown scopes: {invalid}. Allowed: {sorted(ALLOWED_PAT_SCOPES)}"
-            )
+            raise serializers.ValidationError(f"Unknown scopes: {invalid}. Allowed: {sorted(ALLOWED_PAT_SCOPES)}")
         return value
 
 

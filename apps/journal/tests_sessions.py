@@ -457,9 +457,7 @@ class SessionProjectIdentityTest(TestCase):
             summary="also match",
         )
 
-        response = self.client.get(
-            "/api/v1/sessions/?project_identity=canonical-id-X&project=display-name-1"
-        )
+        response = self.client.get("/api/v1/sessions/?project_identity=canonical-id-X&project=display-name-1")
         self.assertEqual(response.status_code, 200)
         # Identity filter wins → both sessions match (regardless of display name)
         self.assertEqual(len(response.json()), 2)
