@@ -224,8 +224,8 @@ def main():
     parser.add_argument(
         "--language",
         type=str,
-        default="en",
-        help="Filter dataset to a specific language (e.g., 'en'). Default: en.",
+        default=None,
+        help="Filter dataset to a specific language (e.g., 'en'). Default: all.",
     )
     args = parser.parse_args()
 
