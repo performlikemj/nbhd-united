@@ -666,3 +666,72 @@ class Phase2WrapHelperTest(SimpleTestCase):
         self.assertTrue(_message_has_phase2_marker(wrapped))
         self.assertFalse(_message_has_phase2_marker("base"))
         self.assertFalse(_message_has_phase2_marker(""))
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Bulk-write hibernation-wake — same pattern as the read-side cache
+# fallback. Writes against a hibernated container would otherwise return
+# the raw Azure splash to the user.
+# ═════════════════════════════════════════════════════════════════════
+
+
+class CronJobBulkWriteHibernationTest(TestCase):
+    def setUp(self):
+        self.user, self.tenant = _create_user_and_tenant()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant")
+    def test_bulk_delete_hibernated_returns_503_and_wakes(self, mock_wake):
+        from django.utils import timezone
+
+        self.tenant.hibernated_at = timezone.now()
+        self.tenant.save(update_fields=["hibernated_at"])
+
+        resp = self.client.post(
+            "/api/v1/cron-jobs/bulk-delete/",
+            {"ids": ["some-job-id"]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 503)
+        self.assertTrue(resp.json().get("container_waking"))
+        mock_wake.assert_called_once()
+
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant")
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_bulk_delete_503_on_mid_loop_azure_splash(self, mock_invoke, mock_wake):
+        """If the gateway returns the Azure splash mid-loop, abort and 503."""
+        from apps.cron.gateway_client import GatewayError
+
+        # First delete: Azure splash. We should not attempt subsequent ones.
+        mock_invoke.side_effect = GatewayError(
+            "Gateway returned 404: <title>Container App - Unavailable</title>",
+            status_code=404,
+        )
+        resp = self.client.post(
+            "/api/v1/cron-jobs/bulk-delete/",
+            {"ids": ["job-a", "job-b", "job-c"]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 503)
+        self.assertTrue(resp.json().get("container_waking"))
+        mock_wake.assert_called_once()
+        # We aborted after the first failure rather than calling cron.remove
+        # for every id.
+        self.assertEqual(mock_invoke.call_count, 1)
+
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant")
+    def test_bulk_update_foreground_hibernated_returns_503_and_wakes(self, mock_wake):
+        from django.utils import timezone
+
+        self.tenant.hibernated_at = timezone.now()
+        self.tenant.save(update_fields=["hibernated_at"])
+
+        resp = self.client.post(
+            "/api/v1/cron-jobs/bulk-update-foreground/",
+            {"ids": ["some-job-id"], "foreground": True},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 503)
+        self.assertTrue(resp.json().get("container_waking"))
+        mock_wake.assert_called_once()

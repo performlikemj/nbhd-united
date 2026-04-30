@@ -534,11 +534,35 @@ class CronJobToggleView(APIView):
         return Response(result.get("details", result))
 
 
+def _wake_and_503(tenant: Tenant, *, action: str) -> Response:
+    """Hibernated tenants can't service writes — wake the container and tell
+    the dashboard to retry in a moment. Mirrors the read-side cache fallback.
+    """
+    try:
+        from apps.orchestrator.hibernation import wake_hibernated_tenant
+
+        wake_hibernated_tenant(tenant)
+    except Exception:
+        logger.exception("bulk_%s: wake_hibernated_tenant failed for tenant %s", action, tenant.id)
+    return Response(
+        {
+            "detail": ("Your assistant container was idle and is waking up now. Retry in ~30 seconds."),
+            "container_waking": True,
+        },
+        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+
+
 class CronJobBulkDeleteView(APIView):
     """Bulk-delete multiple cron jobs atomically.
 
     Accepts: POST {"ids": ["name-or-id-1", "name-or-id-2", ...]}
     Returns 200 with per-job results, or 400 if the payload is invalid.
+
+    Hibernation-aware: if the tenant is hibernated when the request arrives
+    OR if mid-loop deletes start hitting the Azure "Container App -
+    Unavailable" splash, wake the container and return 503 with a friendly
+    "retry in a moment" message instead of surfacing raw Azure HTML.
     """
 
     permission_classes = [IsAuthenticated]
@@ -575,6 +599,11 @@ class CronJobBulkDeleteView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Hibernated → wake + 503 instead of letting writes fail with the
+        # Azure splash. Same pattern as the read-side cache fallback.
+        if tenant.hibernated_at:
+            return _wake_and_503(tenant, action="delete")
+
         try:
             _require_active_tenant(tenant)
         except GatewayError as exc:
@@ -582,6 +611,7 @@ class CronJobBulkDeleteView(APIView):
 
         results: list[dict] = []
         errors: list[dict] = []
+        container_unavailable = False
 
         for job_id in unique_ids:
             try:
@@ -589,6 +619,16 @@ class CronJobBulkDeleteView(APIView):
                 results.append({"id": job_id, "deleted": True})
                 logger.info("cron.bulk_delete: deleted job_id=%s tenant=%s", job_id, tenant.id)
             except GatewayError as exc:
+                # If even one delete trips the Azure splash, the container is
+                # effectively unavailable — abort the rest of the loop and
+                # surface the wake-and-retry response.
+                if is_container_unavailable_error(exc):
+                    container_unavailable = True
+                    logger.warning(
+                        "cron.bulk_delete: container unavailable mid-loop for tenant %s — aborting",
+                        tenant.id,
+                    )
+                    break
                 errors.append({"id": job_id, "deleted": False, "error": str(exc)})
                 logger.warning(
                     "cron.bulk_delete: failed to delete job_id=%s tenant=%s error=%s",
@@ -596,6 +636,9 @@ class CronJobBulkDeleteView(APIView):
                     tenant.id,
                     exc,
                 )
+
+        if container_unavailable:
+            return _wake_and_503(tenant, action="delete")
 
         response_status = status.HTTP_200_OK
         if errors and not results:
@@ -662,6 +705,11 @@ class CronJobBulkUpdateForegroundView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Hibernated → wake + 503 instead of letting writes fail with the
+        # Azure "Container App - Unavailable" splash.
+        if tenant.hibernated_at:
+            return _wake_and_503(tenant, action="update_foreground")
+
         try:
             _require_active_tenant(tenant)
         except GatewayError as exc:
@@ -674,6 +722,8 @@ class CronJobBulkUpdateForegroundView(APIView):
                 list_result = list_result.get("details", list_result)
             all_jobs = list_result.get("jobs", []) if isinstance(list_result, dict) else list_result
         except GatewayError as exc:
+            if is_container_unavailable_error(exc):
+                return _wake_and_503(tenant, action="update_foreground")
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
         # Build lookup
