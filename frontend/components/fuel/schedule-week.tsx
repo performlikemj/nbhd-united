@@ -82,94 +82,210 @@ export function ScheduleWeek({ onAddSession, onOpenWorkout }: ScheduleWeekProps)
       {nextUp && <NextUpBanner workout={nextUp} onOpen={() => onOpenWorkout(nextUp.id)} />}
 
       <div className="flex items-center justify-between gap-3">
-        <h2 className="font-headline text-lg font-semibold text-ink">Next 7 days</h2>
+        <h2 className="font-headline text-base sm:text-lg font-semibold text-ink">Next 7 days</h2>
         {isLoading && <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-faint">loading…</span>}
       </div>
 
-      {/*
-        Mobile: horizontal scroll-snap, one full-width card visible at a time.
-        Tablet (≥640px): 2-up grid.
-        Desktop (≥1024px): full 7-day row.
-      */}
-      <div
-        className="
-          flex snap-x snap-mandatory gap-3 overflow-x-auto pb-2
-          sm:grid sm:snap-none sm:overflow-visible sm:grid-cols-2 sm:pb-0
-          lg:grid-cols-7 lg:gap-2
-        "
-      >
-        {days.map(({ iso, date }, idx) => {
-          const sessions = byDate[iso] || [];
-          const isToday = iso === todayIso;
-          const dow = (date.getDay() + 6) % 7; // Mon = 0
-          const dayLabel = (
-            <>
-              <span className="lg:hidden">{DAY_LABEL_LONG[dow]}</span>
-              <span className="hidden lg:inline">{DAY_LABEL_SHORT[dow]}</span>
-            </>
-          );
-          return (
-            <article
-              key={iso}
-              className={`
-                snap-start shrink-0 basis-[88%] sm:basis-auto
-                rounded-panel border border-border bg-card/95 backdrop-blur-md p-4 shadow-panel
-                ${isToday ? "ring-1 ring-accent/30" : ""}
-              `}
-            >
-              <header className="flex items-baseline justify-between gap-2 mb-3">
-                <div className="flex items-baseline gap-2 min-w-0">
-                  <span
-                    className={`font-mono text-[10px] uppercase tracking-[0.2em] ${
-                      isToday ? "text-accent" : "text-ink-faint"
-                    }`}
-                  >
-                    {dayLabel}
-                  </span>
-                  <span className="font-headline text-base font-semibold text-ink">
-                    {date.getDate()}
-                  </span>
-                  {isToday && (
-                    <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-accent">today</span>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  aria-label={`Add a session on ${date.toDateString()}`}
-                  onClick={() => onAddSession(iso)}
-                  className="-mr-1.5 inline-flex h-8 w-8 items-center justify-center rounded-full text-ink-faint transition hover:bg-surface-hover hover:text-ink active:scale-95"
-                >
-                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M12 5v14M5 12h14" strokeLinecap="round" />
-                  </svg>
-                </button>
-              </header>
+      {/* Mobile: today card + compact rows for the rest of the week. All 7 days visible at once. */}
+      <div className="space-y-2 sm:hidden">
+        <DayCard
+          iso={days[0].iso}
+          date={days[0].date}
+          sessions={byDate[days[0].iso] || []}
+          isToday
+          onAddSession={onAddSession}
+          onOpenWorkout={onOpenWorkout}
+        />
+        {days.slice(1).map(({ iso, date }) => (
+          <DayRow
+            key={iso}
+            iso={iso}
+            date={date}
+            sessions={byDate[iso] || []}
+            onAddSession={onAddSession}
+            onOpenWorkout={onOpenWorkout}
+          />
+        ))}
+      </div>
 
-              <div className="space-y-2">
-                {sessions.length === 0 ? (
-                  <button
-                    type="button"
-                    onClick={() => onAddSession(iso)}
-                    className="block w-full rounded-lg border border-dashed border-border px-3 py-3 text-xs text-ink-faint transition hover:bg-surface-hover hover:text-ink"
-                  >
-                    Rest day · tap to add
-                  </button>
-                ) : (
-                  sessions.map((s, i) => (
-                    <SessionCard
-                      key={s.id}
-                      workout={s}
-                      onOpen={() => onOpenWorkout(s.id)}
-                      autoFocus={isToday && i === 0}
-                    />
-                  ))
-                )}
-              </div>
-            </article>
-          );
-        })}
+      {/* sm+: 2-up grid; lg+: full 7-day row. */}
+      <div className="hidden sm:grid sm:grid-cols-2 lg:grid-cols-7 gap-3 lg:gap-2">
+        {days.map(({ iso, date }) => (
+          <DayCard
+            key={iso}
+            iso={iso}
+            date={date}
+            sessions={byDate[iso] || []}
+            isToday={iso === todayIso}
+            onAddSession={onAddSession}
+            onOpenWorkout={onOpenWorkout}
+          />
+        ))}
       </div>
     </div>
+  );
+}
+
+interface DayCardProps {
+  iso: string;
+  date: Date;
+  sessions: FuelWorkout[];
+  isToday: boolean;
+  onAddSession: (iso: string) => void;
+  onOpenWorkout: (id: string) => void;
+}
+
+function DayCard({ iso, date, sessions, isToday, onAddSession, onOpenWorkout }: DayCardProps) {
+  const dow = (date.getDay() + 6) % 7; // Mon = 0
+  return (
+    <article
+      className={`rounded-panel border border-border bg-card/95 backdrop-blur-md p-4 shadow-panel ${
+        isToday ? "ring-1 ring-accent/30" : ""
+      }`}
+    >
+      <header className="flex items-baseline justify-between gap-2 mb-3">
+        <div className="flex items-baseline gap-2 min-w-0">
+          <span
+            className={`font-mono text-[10px] uppercase tracking-[0.2em] ${
+              isToday ? "text-accent" : "text-ink-faint"
+            }`}
+          >
+            <span className="lg:hidden">{DAY_LABEL_LONG[dow]}</span>
+            <span className="hidden lg:inline">{DAY_LABEL_SHORT[dow]}</span>
+          </span>
+          <span className="font-headline text-base font-semibold text-ink">{date.getDate()}</span>
+          {isToday && (
+            <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-accent">today</span>
+          )}
+        </div>
+        <button
+          type="button"
+          aria-label={`Add a session on ${date.toDateString()}`}
+          onClick={() => onAddSession(iso)}
+          className="-mr-1.5 inline-flex h-8 w-8 items-center justify-center rounded-full text-ink-faint transition hover:bg-surface-hover hover:text-ink active:scale-95"
+        >
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 5v14M5 12h14" strokeLinecap="round" />
+          </svg>
+        </button>
+      </header>
+
+      <div className="space-y-2">
+        {sessions.length === 0 ? (
+          <button
+            type="button"
+            onClick={() => onAddSession(iso)}
+            className="block w-full rounded-lg border border-dashed border-border px-3 py-3 text-xs text-ink-faint transition hover:bg-surface-hover hover:text-ink"
+          >
+            Rest day · tap to add
+          </button>
+        ) : (
+          sessions.map((s, i) => (
+            <SessionCard
+              key={s.id}
+              workout={s}
+              onOpen={() => onOpenWorkout(s.id)}
+              autoFocus={isToday && i === 0}
+            />
+          ))
+        )}
+      </div>
+    </article>
+  );
+}
+
+interface DayRowProps {
+  iso: string;
+  date: Date;
+  sessions: FuelWorkout[];
+  onAddSession: (iso: string) => void;
+  onOpenWorkout: (id: string) => void;
+}
+
+function DayRow({ iso, date, sessions, onAddSession, onOpenWorkout }: DayRowProps) {
+  const dow = (date.getDay() + 6) % 7;
+  const first = sessions[0];
+  const empty = !first;
+  const cat = first ? CATEGORIES[first.category as WorkoutCategory] ?? CATEGORIES.other : null;
+  const time = first?.scheduled_at ? formatTime(first.scheduled_at) : null;
+  const isDone = first?.status === "done";
+
+  const handleClick = () => {
+    if (empty) onAddSession(iso);
+    else onOpenWorkout(first.id);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      aria-label={
+        empty
+          ? `Add a session on ${date.toDateString()}`
+          : `Open ${first.activity} on ${date.toDateString()}`
+      }
+      className="group w-full flex items-center gap-3 rounded-lg border border-border bg-surface-elevated/70 px-3 py-2.5 text-left transition hover:border-border-strong hover:bg-surface-hover min-h-[56px]"
+    >
+      <div className="flex flex-col items-center justify-center w-10 shrink-0 leading-none">
+        <span className="font-mono text-[9px] uppercase tracking-[0.15em] text-ink-faint">
+          {DAY_LABEL_LONG[dow]}
+        </span>
+        <span className="mt-1 font-headline text-base font-semibold text-ink">
+          {date.getDate()}
+        </span>
+      </div>
+      {cat && (
+        <span
+          className="h-9 w-0.5 rounded-full shrink-0"
+          style={{ background: cat.accent, opacity: 0.7 }}
+          aria-hidden="true"
+        />
+      )}
+      <div className={`flex-1 min-w-0 ${isDone ? "opacity-60" : ""}`}>
+        {empty ? (
+          <span className="text-sm text-ink-faint">Rest day</span>
+        ) : (
+          <>
+            <div className="flex items-center gap-2 min-w-0">
+              {time && (
+                <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-faint shrink-0">
+                  {time}
+                </span>
+              )}
+              <span className="truncate text-sm font-medium text-ink">{first.activity}</span>
+            </div>
+            <div className="text-[11px] text-ink-muted mt-0.5 flex items-center gap-1.5 flex-wrap">
+              <span className="capitalize">{first.category}</span>
+              {first.duration_minutes && <span>· {first.duration_minutes}m</span>}
+              {sessions.length > 1 && <span>· +{sessions.length - 1} more</span>}
+            </div>
+          </>
+        )}
+      </div>
+      {empty ? (
+        <svg
+          viewBox="0 0 24 24"
+          className="shrink-0 h-4 w-4 text-ink-faint group-hover:text-ink"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          aria-hidden="true"
+        >
+          <path d="M12 5v14M5 12h14" strokeLinecap="round" />
+        </svg>
+      ) : (
+        <svg
+          viewBox="0 0 24 24"
+          className="shrink-0 h-3.5 w-3.5 text-ink-faint group-hover:text-ink"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          aria-hidden="true"
+        >
+          <path d="m9 18 6-6-6-6" />
+        </svg>
+      )}
+    </button>
   );
 }
 
