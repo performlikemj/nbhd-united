@@ -41,6 +41,9 @@ export interface Tenant {
   task_model_preferences: Record<string, string>;
   last_message_at: string | null;
   provisioned_at: string | null;
+  config_refreshed_at: string | null;
+  config_version: number;
+  pending_config_version: number;
   created_at: string;
   pending_deletion: boolean;
   deletion_scheduled_at: string | null;
