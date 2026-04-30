@@ -4,11 +4,9 @@ from django.db import migrations
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0047_backfill_pat_scopes'),
-        ('tenants', '0047_tenant_postgres_cron_canonical'),
+        ("tenants", "0047_backfill_pat_scopes"),
+        ("tenants", "0047_tenant_postgres_cron_canonical"),
     ]
 
-    operations = [
-    ]
+    operations = []
