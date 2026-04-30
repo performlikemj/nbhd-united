@@ -394,7 +394,6 @@ class HeartbeatConfigView(APIView):
             update_fields.append("updated_at")
             tenant.save(update_fields=update_fields)
 
-            # Trigger config regeneration so settings propagate
             if tenant.status == Tenant.Status.ACTIVE:
                 from apps.orchestrator.hibernation import (
                     DEFERRED,
@@ -405,9 +404,9 @@ class HeartbeatConfigView(APIView):
                     update_tenant_config,
                 )
 
-                # Bump pending FIRST so the apply_pending_configs scheduler
-                # picks this up if the synchronous calls below fail for a
-                # non-unavailability reason.
+                # Bump pending once so the apply_pending_configs scheduler
+                # reconciles drift if a synchronous call below fails for a
+                # non-availability reason. The deferral helper does not bump.
                 tenant.bump_pending_config()
 
                 try:
@@ -424,7 +423,6 @@ class HeartbeatConfigView(APIView):
                         tenant.id,
                     )
 
-                # Sync heartbeat cron job (add/remove/update schedule)
                 if any(f in ("heartbeat_enabled", "heartbeat_start_hour") for f in update_fields):
                     try:
                         result = apply_or_defer_gateway_call(
@@ -509,7 +507,6 @@ class ProfileView(APIView):
 
         applied_state = "ok"
 
-        # If location changed, trigger config refresh so weather URL updates
         location_changed = any(
             k in serializer.validated_data for k in ("location_city", "location_lat", "location_lon")
         )
@@ -517,8 +514,6 @@ class ProfileView(APIView):
             try:
                 tenant = request.user.tenant
                 if tenant and tenant.status == Tenant.Status.ACTIVE:
-                    # Bump pending FIRST so the apply_pending_configs scheduler
-                    # catches up if the gateway call fails non-fatally.
                     tenant.bump_pending_config()
                     if tenant.container_id:
                         from apps.orchestrator.hibernation import (

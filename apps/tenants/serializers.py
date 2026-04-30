@@ -93,6 +93,7 @@ class TenantSerializer(serializers.ModelSerializer):
             "config_refreshed_at",
             "config_version",
             "pending_config_version",
+            "hibernated_at",
             "created_at",
             "pending_deletion",
             "deletion_scheduled_at",

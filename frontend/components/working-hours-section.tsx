@@ -6,7 +6,6 @@ import { PendingConfigChip } from "@/components/pending-config-chip";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import {
-  useTenantQuery,
   useUpdateWorkingHoursMutation,
   useWorkingHoursQuery,
 } from "@/lib/queries";
@@ -25,7 +24,6 @@ function blockForStartHour(hour: number) {
 
 export function WorkingHoursSection({ timezone }: { timezone?: string }) {
   const { data: wh, isLoading } = useWorkingHoursQuery();
-  const { data: tenant } = useTenantQuery();
   const updateWH = useUpdateWorkingHoursMutation();
 
   const [editing, setEditing] = useState(false);
@@ -66,12 +64,7 @@ export function WorkingHoursSection({ timezone }: { timezone?: string }) {
       subtitle="When your assistant can proactively reach out to you"
       delay={150}
     >
-      <div className="mb-3">
-        <PendingConfigChip
-          pendingVersion={tenant?.pending_config_version}
-          version={tenant?.config_version}
-        />
-      </div>
+      <PendingConfigChip />
       {!editing ? (
         <div className="flex items-center justify-between">
           <div>

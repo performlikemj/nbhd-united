@@ -490,69 +490,43 @@ DEFERRED = object()
 
 
 def apply_or_defer_gateway_call(tenant: Tenant, fn, *, label: str):
-    """Run ``fn()`` if the tenant is awake, otherwise defer the gateway call.
+    """Run ``fn()`` synchronously when awake, otherwise defer the gateway call.
 
-    Behaviour:
-      - **Awake tenant** (``hibernated_at`` is None) → call ``fn()`` synchronously
-        and return its result. Existing semantics preserved.
-      - **Hibernated tenant** → skip ``fn()`` entirely, bump
-        ``pending_config_version``, write the current desired config to the
-        file share, and return ``DEFERRED``. The container will pick the new
-        config up on next wake (``apply_single_tenant_config`` is enqueued at
-        wake time).
-      - **Awake tenant whose call hits a "container unavailable"
-        ``GatewayError``** → treat as a hibernation race. Log it, fall through
-        to the deferred path, and return ``DEFERRED`` instead of bubbling 5xx.
+    The narrow awake-path fallthrough — catching ``GatewayError`` *and only*
+    when ``is_container_unavailable_error`` returns True — exists so a
+    just-hibernated container that the DB still thinks is awake doesn't surface
+    a 5xx to the user. Anything else (Azure SDK errors, real app bugs,
+    non-availability gateway flakes) propagates so we don't swallow real
+    failures.
 
-    The fall-through is **deliberately narrow**: only ``GatewayError`` is caught,
-    and only when ``is_container_unavailable_error`` returns True. Any other
-    exception (real application bug, validation error, connection error from a
-    non-gateway client like Azure SDK) propagates unchanged so we don't swallow
-    real failures.
-
-    The ``label`` is included in log lines so post-deploy ``make logs`` greps
-    for ``defer_gateway: <label>`` work for monitoring deferred-vs-applied
-    outcomes.
-
-    Caller contract: ``fn`` is a no-arg callable that performs the gateway
-    side-effect (e.g. ``lambda: sync_heartbeat_cron(tenant)``). The DB write
-    that produced the new desired state must already have happened before
-    calling this helper — the helper does not mutate domain state itself,
-    only ``pending_config_version`` and the file-share copy of the desired
-    config.
-
-    Tenant-status gating (e.g. ``Tenant.Status.ACTIVE``) is the caller's
-    responsibility — this helper does not look at ``status``.
+    Caller contract: the DB mutation that produced the new desired state must
+    already have happened (and the caller is responsible for bumping
+    ``pending_config_version`` once per request — the helper only writes the
+    file-share copy on the deferred path, deduped within the request).
     """
-    # Lazy imports — both modules ultimately reach back into orchestrator
-    # services / tenant models, so importing at module top would create
-    # circulars during Django startup.
     from apps.cron.cache import is_container_unavailable_error
     from apps.cron.gateway_client import GatewayError
 
     tid = str(tenant.id)[:8]
-    is_hibernated = tenant.hibernated_at is not None
 
-    if not is_hibernated:
+    if tenant.hibernated_at is None:
         try:
             result = fn()
         except GatewayError as exc:
             if is_container_unavailable_error(exc):
                 logger.info(
-                    "defer_gateway: %s — awake-path raised container-unavailable for tenant %s, "
-                    "treating as hibernation race; deferring",
+                    "defer_gateway: %s container-unavailable for awake tenant %s, deferring",
                     label,
                     tid,
                 )
                 _write_deferred_state(tenant, label=label)
                 return DEFERRED
-            # Real application error — let it bubble.
             raise
         logger.info("defer_gateway: %s applied for tenant %s", label, tid)
         return result
 
     logger.info(
-        "defer_gateway: %s deferred for hibernated tenant %s (will apply on next wake)",
+        "defer_gateway: %s deferred for hibernated tenant %s",
         label,
         tid,
     )
@@ -561,27 +535,28 @@ def apply_or_defer_gateway_call(tenant: Tenant, fn, *, label: str):
 
 
 def _write_deferred_state(tenant: Tenant, *, label: str) -> None:
-    """Bump pending config and write the desired state to the file share.
+    """Write the desired config to the file share so the container picks it up at wake.
 
-    The file-share path uses Azure Storage (not the Container App ingress),
-    which is reachable while the container is hibernated. Workspace files
-    and cron prompts are intentionally skipped here — they regenerate at
-    wake via ``apply_single_tenant_config``.
+    The pending-version bump is the caller's responsibility — this only handles
+    the file-share side of the defer. Deduped per-request via an instance flag
+    so endpoints with multiple deferred wraps don't re-upload the same bytes.
     """
+    if getattr(tenant, "_deferred_config_written", False):
+        return
+
     from apps.orchestrator.azure_client import upload_config_to_file_share
     from apps.orchestrator.config_generator import config_to_json, generate_openclaw_config
 
-    tenant.bump_pending_config()
     try:
         config = generate_openclaw_config(tenant)
         config_json = config_to_json(config)
         upload_config_to_file_share(str(tenant.id), config_json)
+        tenant._deferred_config_written = True
     except Exception:
-        # Don't surface to the user — the apply_pending_configs scheduler
-        # will catch up at next wake using the bumped pending_config_version.
+        # The apply_pending_configs scheduler will catch up at next wake using
+        # the bumped pending_config_version the caller already recorded.
         logger.exception(
-            "defer_gateway: %s failed to write deferred config to file share for tenant %s "
-            "(pending bump still recorded; will regenerate at wake)",
+            "defer_gateway: %s file-share write failed for tenant %s",
             label,
             tenant.id,
         )

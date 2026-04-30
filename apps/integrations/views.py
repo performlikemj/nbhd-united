@@ -186,13 +186,10 @@ class IntegrationViewSet(viewsets.ReadOnlyModelViewSet):
         tenant = integration.tenant
         disconnect_integration(tenant, integration.provider)
 
-        # Bump pending FIRST so the apply_pending_configs scheduler catches
-        # up if the synchronous gateway call below fails non-fatally.
         tenant.bump_pending_config()
 
         applied_state = "ok"
 
-        # Regenerate config to remove skills/env vars
         try:
             from apps.orchestrator.hibernation import (
                 DEFERRED,

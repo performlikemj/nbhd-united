@@ -412,7 +412,6 @@ function FuelCard() {
 function IntegrationsContent() {
   const searchParams = useSearchParams();
   const { data, isLoading, error } = useIntegrationsQuery();
-  const { data: tenantForChip } = useTenantQuery();
   const disconnect = useDisconnectIntegrationMutation();
   const authorize = useOAuthAuthorizeMutation();
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
@@ -443,12 +442,7 @@ function IntegrationsContent() {
       title="Integrations"
       subtitle="OAuth tokens are stored in tenant-scoped Azure Key Vault secrets"
     >
-      <div className="mb-3">
-        <PendingConfigChip
-          pendingVersion={tenantForChip?.pending_config_version}
-          version={tenantForChip?.config_version}
-        />
-      </div>
+      <PendingConfigChip />
 
       {connectedProvider && (
         <p className="mb-4 rounded-panel border border-emerald-text/20 bg-emerald-bg p-3 text-sm text-emerald-text">

@@ -16,7 +16,6 @@ import {
   usePreferencesQuery,
   useRefreshConfigMutation,
   useRefreshConfigStatusQuery,
-  useTenantQuery,
   useUpdateProfileMutation,
   useUpdatePreferencesMutation,
   useSetPreferredChannelMutation,
@@ -230,7 +229,6 @@ function timeAgo(dateStr: string): string {
 
 export default function SettingsPage() {
   const { data: me, isLoading } = useMeQuery();
-  const { data: tenant } = useTenantQuery();
   const { data: personas } = usePersonasQuery();
   const { data: prefs } = usePreferencesQuery();
   const { data: refreshConfigStatus, refetch: refetchRefreshConfigStatus } = useRefreshConfigStatusQuery();
@@ -440,12 +438,7 @@ export default function SettingsPage() {
   return (
     <div className="space-y-4">
       <SectionCard title="Account" subtitle="Your profile and authentication details" delay={0}>
-        <div className="mb-3">
-          <PendingConfigChip
-            pendingVersion={tenant?.pending_config_version}
-            version={tenant?.config_version}
-          />
-        </div>
+        <PendingConfigChip />
         {me ? (
           <dl className="grid min-w-0 gap-4 text-sm sm:grid-cols-2 sm:gap-3">
             {/* Display Name */}

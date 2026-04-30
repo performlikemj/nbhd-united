@@ -1,54 +1,43 @@
 "use client";
 
-/**
- * PendingConfigChip — small eyebrow-style indicator that surfaces when the
- * tenant has settings changes that are queued for the next time the
- * assistant wakes. Triggered by `pending_config_version > config_version`
- * on the tenant detail payload.
- *
- * Backed by the deferred-gateway-call flow: when a settings PATCH runs
- * while the container is hibernated, the API returns `applied: "pending"`
- * and bumps `pending_config_version`. This chip gives the user a quiet
- * confirmation that the change landed in the queue, without implying
- * anything is broken.
- *
- * Styling follows DESIGN.md eyebrow pattern: monospace, uppercase, wide
- * tracking, muted ink. No hardcoded hex; only Tailwind tokens.
- */
+import clsx from "clsx";
+
+import { useTenantQuery } from "@/lib/queries";
 
 interface PendingConfigChipProps {
-  pendingVersion: number | null | undefined;
-  version: number | null | undefined;
   className?: string;
-  /** Override default copy. */
+  /** Override the default copy. */
   label?: string;
 }
 
+/**
+ * Quiet eyebrow indicator that surfaces when a settings change has been
+ * queued because the assistant is hibernated. Gated on
+ * `hibernated_at != null` so awake tenants — whose synchronous applies
+ * have already been pushed and will be reconciled on the next
+ * `apply_pending_configs` tick — don't see "applies when wakes" copy.
+ */
 export function PendingConfigChip({
-  pendingVersion,
-  version,
-  className = "",
+  className,
   label = "Applies when assistant wakes",
 }: PendingConfigChipProps) {
-  const pending = typeof pendingVersion === "number" ? pendingVersion : 0;
-  const current = typeof version === "number" ? version : 0;
+  const { data: tenant } = useTenantQuery();
 
-  if (pending <= current) {
+  if (!tenant?.hibernated_at) return null;
+  if ((tenant.pending_config_version ?? 0) <= (tenant.config_version ?? 0)) {
     return null;
   }
 
   return (
     <span
       role="status"
-      className={[
-        "inline-flex items-center gap-1.5 rounded-full",
+      className={clsx(
+        "mb-3 inline-flex items-center gap-1.5 rounded-full",
         "border border-border bg-surface/60 px-2.5 py-1",
         "font-mono text-[10px] uppercase tracking-[0.14em] text-ink-muted",
         "backdrop-blur-sm",
         className,
-      ]
-        .filter(Boolean)
-        .join(" ")}
+      )}
     >
       <span
         aria-hidden="true"

@@ -79,9 +79,11 @@ class ApplyOrDeferHibernatedTest(TestCase):
     @mock.patch("apps.orchestrator.azure_client.upload_config_to_file_share")
     @mock.patch("apps.orchestrator.config_generator.generate_openclaw_config")
     @mock.patch("apps.orchestrator.config_generator.config_to_json", return_value="{}")
-    def test_hibernated_skips_callable_and_defers(
+    def test_hibernated_skips_callable_and_writes_file_share(
         self, mock_to_json, mock_gen, mock_upload
     ):
+        # Helper does not bump pending — that's the caller's responsibility.
+        # It only writes the desired-state copy to the file share.
         mock_gen.return_value = {"agent": {"name": "test"}}
         callable_mock = mock.Mock(return_value="should-not-run")
 
@@ -94,13 +96,34 @@ class ApplyOrDeferHibernatedTest(TestCase):
 
         self.tenant.refresh_from_db()
         self.assertEqual(
-            self.tenant.pending_config_version, self.starting_pending + 1
+            self.tenant.pending_config_version, self.starting_pending
         )
 
         mock_gen.assert_called_once()
         mock_upload.assert_called_once()
         upload_args, _ = mock_upload.call_args
         self.assertEqual(upload_args[0], str(self.tenant.id))
+
+    @mock.patch("apps.orchestrator.azure_client.upload_config_to_file_share")
+    @mock.patch("apps.orchestrator.config_generator.generate_openclaw_config")
+    @mock.patch("apps.orchestrator.config_generator.config_to_json", return_value="{}")
+    def test_multiple_defers_dedupe_file_share_write(
+        self, mock_to_json, mock_gen, mock_upload
+    ):
+        mock_gen.return_value = {"agent": {"name": "test"}}
+        callable_mock = mock.Mock()
+
+        # Two helper calls in the same request reuse the same tenant instance
+        # — the second must skip the regeneration + upload.
+        apply_or_defer_gateway_call(
+            self.tenant, callable_mock, label="unit.dedupe.first"
+        )
+        apply_or_defer_gateway_call(
+            self.tenant, callable_mock, label="unit.dedupe.second"
+        )
+
+        self.assertEqual(mock_gen.call_count, 1)
+        self.assertEqual(mock_upload.call_count, 1)
 
 
 class ApplyOrDeferAwakeFallthroughTest(TestCase):
@@ -115,8 +138,8 @@ class ApplyOrDeferAwakeFallthroughTest(TestCase):
     @mock.patch("apps.orchestrator.config_generator.config_to_json", return_value="{}")
     def test_unavailable_gateway_error_defers(self, mock_to_json, mock_gen, mock_upload):
         mock_gen.return_value = {"agent": {"name": "test"}}
-        # Build a 502-shaped GatewayError that is_container_unavailable_error
-        # recognises (status_code in {404, 502, 503, 504}).
+        # 502-shaped GatewayError satisfies is_container_unavailable_error
+        # (recognised codes: 404, 502, 503, 504).
         exc = GatewayError("boom")
         exc.status_code = 502
         callable_mock = mock.Mock(side_effect=exc)
@@ -127,11 +150,6 @@ class ApplyOrDeferAwakeFallthroughTest(TestCase):
 
         callable_mock.assert_called_once_with()
         self.assertIs(result, DEFERRED)
-
-        self.tenant.refresh_from_db()
-        self.assertEqual(
-            self.tenant.pending_config_version, self.starting_pending + 1
-        )
         mock_upload.assert_called_once()
 
     def test_real_gateway_error_bubbles_untouched(self):
@@ -165,6 +183,42 @@ class ApplyOrDeferAwakeFallthroughTest(TestCase):
         self.assertEqual(
             self.tenant.pending_config_version, self.starting_pending
         )
+
+
+class GatewayErrorPropagationThroughServicesTest(TestCase):
+    """End-to-end: container-unavailable inside the orchestrator services
+    surfaces through the helper as a deferral.
+
+    Without re-raising at the services layer, the helper's narrow awake-path
+    fallthrough never fires for these callables (they used to swallow
+    ``GatewayError`` and return a status string, masking the unavailability).
+    """
+
+    def setUp(self):
+        self.tenant = _make_active_tenant(hibernated=False, chat_id=999_000_013)
+
+    @mock.patch("apps.orchestrator.azure_client.upload_config_to_file_share")
+    @mock.patch("apps.orchestrator.config_generator.generate_openclaw_config")
+    @mock.patch("apps.orchestrator.config_generator.config_to_json", return_value="{}")
+    @mock.patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_sync_heartbeat_cron_unavailable_defers_via_helper(
+        self, mock_invoke, mock_to_json, mock_gen, mock_upload
+    ):
+        from apps.orchestrator.services import sync_heartbeat_cron
+
+        mock_gen.return_value = {"agent": {"name": "test"}}
+        exc = GatewayError("container unavailable")
+        exc.status_code = 503
+        mock_invoke.side_effect = exc
+
+        result = apply_or_defer_gateway_call(
+            self.tenant,
+            lambda: sync_heartbeat_cron(self.tenant),
+            label="e2e.heartbeat_unavailable",
+        )
+
+        self.assertIs(result, DEFERRED)
+        mock_upload.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -208,8 +262,11 @@ class HeartbeatEndpointDeferTest(TestCase):
 
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.heartbeat_start_hour, 9)
-        # Both deferred call sites bump pending; expect at least one bump.
-        self.assertGreaterEqual(self.tenant.pending_config_version, 1)
+        # Caller bumps once; helper does not bump. Two deferred wraps in the
+        # same request, but the file-share write is deduped on the tenant
+        # instance — so one bump and one upload, not two.
+        self.assertEqual(self.tenant.pending_config_version, 1)
+        self.assertEqual(mock_upload.call_count, 1)
 
 
 class IntegrationsDisconnectDeferTest(TestCase):

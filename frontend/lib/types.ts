@@ -44,6 +44,7 @@ export interface Tenant {
   config_refreshed_at: string | null;
   config_version: number;
   pending_config_version: number;
+  hibernated_at: string | null;
   created_at: string;
   pending_deletion: boolean;
   deletion_scheduled_at: string | null;
