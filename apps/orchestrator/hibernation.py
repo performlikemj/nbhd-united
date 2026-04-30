@@ -476,6 +476,118 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Hibernation-aware deferral for settings-time gateway calls
+# ---------------------------------------------------------------------------
+
+# Sentinel returned by ``apply_or_defer_gateway_call`` to signal that the
+# gateway side-effect was *not* run synchronously. The DB mutation already
+# happened; the desired state has been written to the file share, so the
+# OpenClaw container will pick it up on next startup. The existing async
+# ``apply_pending_configs`` scheduler also catches drift between
+# ``config_version`` and ``pending_config_version`` and re-runs the apply
+# at wake.
+DEFERRED = object()
+
+
+def apply_or_defer_gateway_call(tenant: Tenant, fn, *, label: str):
+    """Run ``fn()`` if the tenant is awake, otherwise defer the gateway call.
+
+    Behaviour:
+      - **Awake tenant** (``hibernated_at`` is None) → call ``fn()`` synchronously
+        and return its result. Existing semantics preserved.
+      - **Hibernated tenant** → skip ``fn()`` entirely, bump
+        ``pending_config_version``, write the current desired config to the
+        file share, and return ``DEFERRED``. The container will pick the new
+        config up on next wake (``apply_single_tenant_config`` is enqueued at
+        wake time).
+      - **Awake tenant whose call hits a "container unavailable"
+        ``GatewayError``** → treat as a hibernation race. Log it, fall through
+        to the deferred path, and return ``DEFERRED`` instead of bubbling 5xx.
+
+    The fall-through is **deliberately narrow**: only ``GatewayError`` is caught,
+    and only when ``is_container_unavailable_error`` returns True. Any other
+    exception (real application bug, validation error, connection error from a
+    non-gateway client like Azure SDK) propagates unchanged so we don't swallow
+    real failures.
+
+    The ``label`` is included in log lines so post-deploy ``make logs`` greps
+    for ``defer_gateway: <label>`` work for monitoring deferred-vs-applied
+    outcomes.
+
+    Caller contract: ``fn`` is a no-arg callable that performs the gateway
+    side-effect (e.g. ``lambda: sync_heartbeat_cron(tenant)``). The DB write
+    that produced the new desired state must already have happened before
+    calling this helper — the helper does not mutate domain state itself,
+    only ``pending_config_version`` and the file-share copy of the desired
+    config.
+
+    Tenant-status gating (e.g. ``Tenant.Status.ACTIVE``) is the caller's
+    responsibility — this helper does not look at ``status``.
+    """
+    # Lazy imports — both modules ultimately reach back into orchestrator
+    # services / tenant models, so importing at module top would create
+    # circulars during Django startup.
+    from apps.cron.cache import is_container_unavailable_error
+    from apps.cron.gateway_client import GatewayError
+
+    tid = str(tenant.id)[:8]
+    is_hibernated = tenant.hibernated_at is not None
+
+    if not is_hibernated:
+        try:
+            result = fn()
+        except GatewayError as exc:
+            if is_container_unavailable_error(exc):
+                logger.info(
+                    "defer_gateway: %s — awake-path raised container-unavailable for tenant %s, "
+                    "treating as hibernation race; deferring",
+                    label,
+                    tid,
+                )
+                _write_deferred_state(tenant, label=label)
+                return DEFERRED
+            # Real application error — let it bubble.
+            raise
+        logger.info("defer_gateway: %s applied for tenant %s", label, tid)
+        return result
+
+    logger.info(
+        "defer_gateway: %s deferred for hibernated tenant %s (will apply on next wake)",
+        label,
+        tid,
+    )
+    _write_deferred_state(tenant, label=label)
+    return DEFERRED
+
+
+def _write_deferred_state(tenant: Tenant, *, label: str) -> None:
+    """Bump pending config and write the desired state to the file share.
+
+    The file-share path uses Azure Storage (not the Container App ingress),
+    which is reachable while the container is hibernated. Workspace files
+    and cron prompts are intentionally skipped here — they regenerate at
+    wake via ``apply_single_tenant_config``.
+    """
+    from apps.orchestrator.azure_client import upload_config_to_file_share
+    from apps.orchestrator.config_generator import config_to_json, generate_openclaw_config
+
+    tenant.bump_pending_config()
+    try:
+        config = generate_openclaw_config(tenant)
+        config_json = config_to_json(config)
+        upload_config_to_file_share(str(tenant.id), config_json)
+    except Exception:
+        # Don't surface to the user — the apply_pending_configs scheduler
+        # will catch up at next wake using the bumped pending_config_version.
+        logger.exception(
+            "defer_gateway: %s failed to write deferred config to file share for tenant %s "
+            "(pending bump still recorded; will regenerate at wake)",
+            label,
+            tenant.id,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Cron-aware wake tasks
 # ---------------------------------------------------------------------------
 
