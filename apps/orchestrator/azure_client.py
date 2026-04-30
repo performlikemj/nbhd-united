@@ -828,6 +828,41 @@ def restart_container_app(container_name: str) -> None:
     logger.info("Restarted container app %s", container_name)
 
 
+def force_new_revision(container_name: str) -> None:
+    """Force a new Container App revision so KV-referenced secrets are re-fetched.
+
+    Per microsoft/azure-container-apps#856 a plain restart of the active
+    revision keeps cached secret values; only revision creation triggers
+    Azure to re-pull the latest KV-referenced secret value. Used after
+    BYO credential mutations so the new env var binding takes effect.
+
+    Mirrors `restart_container_app` but with a `b<hash>` prefix on the
+    suffix so the two are distinguishable in revision listings.
+    """
+    if _is_mock():
+        logger.info("[MOCK] Forced new revision for container %s", container_name)
+        return
+
+    client = get_container_client()
+    app = client.container_apps.get(
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+    )
+
+    import hashlib
+    import time
+
+    template = app.template
+    template.revision_suffix = f"b{hashlib.sha256(f'byo-{int(time.time_ns())}'.encode()).hexdigest()[:6]}"
+
+    client.container_apps.begin_create_or_update(
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+        app,
+    ).result()
+    logger.info("Forced new revision for container %s (suffix=%s)", container_name, template.revision_suffix)
+
+
 _PLUGIN_RUNTIME_DEPS_VOLUME = "plugin-runtime-deps"
 _PLUGIN_RUNTIME_DEPS_PATH = "/home/node/.openclaw/plugin-runtime-deps"
 
