@@ -256,7 +256,7 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
                     Mark complete
                   </button>
                 )}
-                <button onClick={save} disabled={updateMutation.isPending} className="flex-1 rounded-full bg-accent text-white font-medium min-h-[44px] py-2.5 text-sm hover:opacity-90 transition disabled:opacity-50">
+                <button onClick={save} disabled={updateMutation.isPending} className="flex-1 glow-purple rounded-full bg-accent text-white font-semibold min-h-[44px] py-2.5 text-sm hover:brightness-110 active:scale-[0.98] transition disabled:opacity-50">
                   {updateMutation.isPending ? "Saving\u2026" : draft.status === "planned" ? "Save plan" : "Save changes"}
                 </button>
               </>

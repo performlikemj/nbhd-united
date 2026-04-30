@@ -25,42 +25,40 @@ export function History({ onOpenWorkout }: HistoryProps) {
   const filtered = filter === "all" ? done : done.filter((w) => w.category === filter);
 
   if (isLoading) {
-    return <div className="text-sm text-ink-faint">Loading workouts...</div>;
+    return <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-faint">loading…</div>;
   }
 
   return (
-    <div className="space-y-4 overflow-hidden">
-      {/* Filter chips — scrollable row */}
-      <div className="overflow-x-auto pb-1">
-        <div className="flex items-center gap-1.5 w-max">
-          <button
-            onClick={() => setFilter("all")}
-            className={`rounded-full min-h-[44px] px-3 py-2 text-[11px] font-bold uppercase tracking-wider transition border whitespace-nowrap ${
-              filter === "all" ? "bg-ink text-surface border-ink" : "border-border text-ink-muted hover:text-ink"
-            }`}
-          >
-            ALL <span className="font-mono opacity-60 ml-1">{counts.total}</span>
-          </button>
-          {CATEGORY_IDS.map((c) => {
-            const n = counts[c] || 0;
-            if (n === 0) return null;
-            const on = filter === c;
-            return (
-              <button
-                key={c}
-                onClick={() => setFilter(c)}
-                className={`rounded-full min-h-[44px] px-3 py-2 text-[11px] font-bold uppercase tracking-wider transition border flex items-center gap-1.5 whitespace-nowrap ${
-                  on ? "text-ink" : "text-ink-muted"
-                }`}
-                style={on ? { background: `color-mix(in srgb, ${CATEGORIES[c].accent} 20%, transparent)`, borderColor: CATEGORIES[c].accent } : { borderColor: "var(--color-border)" }}
-              >
-                <span className="h-1.5 w-1.5 rounded-full" style={{ background: CATEGORIES[c].accent }} />
-                {CATEGORIES[c].label}
-                <span className="font-mono opacity-60">{n}</span>
-              </button>
-            );
-          })}
-        </div>
+    <div className="space-y-4">
+      {/* Filter chips — wrap on mobile, all categories visible */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <button
+          onClick={() => setFilter("all")}
+          className={`rounded-full min-h-[44px] px-3 py-2 text-[11px] font-bold uppercase tracking-wider transition border whitespace-nowrap ${
+            filter === "all" ? "bg-ink text-surface border-ink" : "border-border text-ink-muted hover:text-ink"
+          }`}
+        >
+          ALL <span className="font-mono opacity-60 ml-1">{counts.total}</span>
+        </button>
+        {CATEGORY_IDS.map((c) => {
+          const n = counts[c] || 0;
+          if (n === 0) return null;
+          const on = filter === c;
+          return (
+            <button
+              key={c}
+              onClick={() => setFilter(c)}
+              className={`rounded-full min-h-[44px] px-3 py-2 text-[11px] font-bold uppercase tracking-wider transition border flex items-center gap-1.5 whitespace-nowrap ${
+                on ? "text-ink" : "text-ink-muted"
+              }`}
+              style={on ? { background: `color-mix(in srgb, ${CATEGORIES[c].accent} 20%, transparent)`, borderColor: CATEGORIES[c].accent } : { borderColor: "var(--color-border)" }}
+            >
+              <span className="h-1.5 w-1.5 rounded-full" style={{ background: CATEGORIES[c].accent }} />
+              {CATEGORIES[c].label}
+              <span className="font-mono opacity-60">{n}</span>
+            </button>
+          );
+        })}
       </div>
 
       {/* List */}

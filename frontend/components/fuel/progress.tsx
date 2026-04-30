@@ -37,7 +37,7 @@ export function Progress() {
         </div>
       </div>
 
-      {isLoading && <div className="text-sm text-ink-faint">Loading progress...</div>}
+      {isLoading && <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-faint">loading…</div>}
 
       {!isLoading && progress && cat === "strength" && <StrengthProgress data={progress} />}
       {!isLoading && progress && cat === "cardio" && <CardioProgress data={progress} />}

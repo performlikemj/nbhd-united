@@ -77,14 +77,14 @@ export function RestingHeartRate() {
         <button
           type="submit"
           disabled={!bpm || createMutation.isPending}
-          className="rounded-lg bg-accent text-white min-h-[44px] px-4 py-2 text-sm font-medium hover:opacity-90 transition disabled:opacity-50"
+          className="glow-purple rounded-full bg-accent text-white min-h-[44px] px-4 py-2 text-sm font-semibold hover:brightness-110 active:scale-[0.98] transition disabled:opacity-50"
         >
           {createMutation.isPending ? "Logging\u2026" : "Log"}
         </button>
       </form>
 
       {isLoading ? (
-        <div className="text-sm text-ink-faint">Loading...</div>
+        <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-faint">loading…</div>
       ) : (entries || []).length > 0 ? (
         <div className="space-y-1">
           {(entries || []).slice(0, 14).map((e) => (
