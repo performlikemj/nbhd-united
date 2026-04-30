@@ -627,6 +627,61 @@ def reconcile_fuel_crons_task() -> dict:
     return totals
 
 
+def regenerate_tenant_crons_task(tenant_id: str) -> dict:
+    """Reconcile a tenant's managed crons against the Postgres CronJob table.
+
+    Enqueued (debounced 30s) by ``apps/cron/signals.py`` on CronJob writes
+    and by the container-start hook; also runnable on demand or from the
+    hourly fleet reconcile.
+
+    No-op for tenants where ``postgres_cron_canonical=False``.
+    """
+    import logging
+
+    from apps.orchestrator.cron_reconcile import regenerate_tenant_crons
+    from apps.tenants.models import Tenant
+
+    logger = logging.getLogger(__name__)
+
+    tenant = Tenant.objects.filter(id=tenant_id).select_related("user").first()
+    if not tenant or not tenant.container_fqdn:
+        return {"added": 0, "removed": 0, "unchanged": 0, "errors": 0}
+    return regenerate_tenant_crons(tenant)
+
+
+def reconcile_tenant_crons_task() -> dict:
+    """Hourly fleet-wide reconcile for all tenants on the Postgres-canonical flow.
+
+    Catches drift between Postgres ``CronJob`` rows and the container's SQLite
+    registry. Skips tenants whose ``postgres_cron_canonical`` flag is False.
+    """
+    import logging
+
+    from apps.orchestrator.cron_reconcile import regenerate_tenant_crons
+    from apps.tenants.models import Tenant
+
+    logger = logging.getLogger(__name__)
+
+    tenants = (
+        Tenant.objects.filter(postgres_cron_canonical=True, status="active")
+        .exclude(container_fqdn="")
+        .select_related("user")
+    )
+    totals = {"tenants": 0, "added": 0, "removed": 0, "errors": 0}
+    for tenant in tenants:
+        try:
+            res = regenerate_tenant_crons(tenant)
+            totals["tenants"] += 1
+            totals["added"] += res["added"]
+            totals["removed"] += res["removed"]
+            totals["errors"] += res["errors"]
+        except Exception:
+            logger.exception("reconcile_tenant_crons: tenant %s failed", tenant.id)
+            totals["errors"] += 1
+    logger.info("reconcile_tenant_crons: %s", totals)
+    return totals
+
+
 def remove_zombie_heartbeats_task() -> dict:
     """Remove Heartbeat Check-in cron jobs from tenants with heartbeat disabled."""
     import logging

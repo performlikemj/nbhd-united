@@ -21,6 +21,7 @@ from .cache import (
     upsert_jobs_to_cache,
 )
 from .gateway_client import GatewayError, invoke_gateway_tool
+from .models import CronJob
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +203,13 @@ class CronJobListCreateView(APIView):
     def get(self, request):
         tenant = _get_tenant_for_user(request.user)
 
+        # Postgres-canonical path — read directly from the CronJob table.
+        # No gateway call, no hibernation concerns, no cache-fallback.
+        if tenant.postgres_cron_canonical:
+            from . import postgres_canonical as pg
+
+            return Response(pg.list_visible_jobs(tenant))
+
         # Hibernated tenants serve from the Postgres cache directly. Calling
         # the gateway would 404 with the Azure "Container App - Unavailable"
         # splash, which surfaced as a confusing dashboard error.
@@ -251,6 +259,35 @@ class CronJobListCreateView(APIView):
         tenant = _get_tenant_for_user(request.user)
 
         data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+
+        # Postgres-canonical path — create a CronJob row, signal triggers
+        # debounced reconcile to push to the container's SQLite.
+        if tenant.postgres_cron_canonical:
+            from . import postgres_canonical as pg
+
+            if not data.get("name"):
+                return Response(
+                    {"detail": "Job name is required."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            delivery = data.get("delivery", {})
+            if isinstance(delivery, dict) and delivery.get("channel") == "telegram" and delivery.get("mode") != "none":
+                chat_id = _tenant_telegram_chat_id(tenant)
+                if chat_id and not delivery.get("to"):
+                    data = {**data, "delivery": {**delivery, "to": str(chat_id)}}
+
+            foreground = bool(data.pop("foreground", True))
+            data = _normalize_job_for_universal_isolation(data)
+
+            payload = data.get("payload") or {}
+            if isinstance(payload, dict):
+                wrapped = _wrap_message_with_phase2(payload.get("message", ""), data["name"], foreground)
+                data = {**data, "payload": {**payload, "message": wrapped}}
+
+            payload_dict, code = pg.create_job(tenant, data, max_visible=self.MAX_CRON_JOBS)
+            return Response(payload_dict, status=code)
+
         if not data.get("name"):
             return Response(
                 {"detail": "Job name is required."},
@@ -355,6 +392,38 @@ class CronJobDetailView(APIView):
         foreground_request = bool(data.pop("foreground", True))
 
         data = _normalize_job_for_universal_isolation(data)
+
+        # Postgres-canonical path — patch the CronJob row directly. Reconciler
+        # rebuilds the SQLite copy via signal. The legacy gateway delete+recreate
+        # collapses to a single Postgres update.
+        if tenant.postgres_cron_canonical:
+            from . import postgres_canonical as pg
+
+            row = (
+                CronJob.objects.filter(tenant=tenant, name=job_name).first()
+                or CronJob.objects.filter(tenant=tenant, gateway_job_id=job_name).first()
+            )
+            if not row:
+                return Response({"detail": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            # If foreground was explicit OR payload was patched, rewrap the message.
+            if foreground_explicit or "payload" in data:
+                base_payload = data.get("payload") or row.data.get("payload") or {}
+                base_message = ""
+                if isinstance(base_payload, dict):
+                    base_message = base_payload.get("message", "") or base_payload.get("text", "")
+                stripped = _strip_phase2_block(base_message)
+                if foreground_explicit:
+                    foreground_resolved = foreground_request
+                else:
+                    existing_payload = row.data.get("payload") or {}
+                    existing_message = existing_payload.get("message", "") if isinstance(existing_payload, dict) else ""
+                    foreground_resolved = _message_has_phase2_marker(existing_message)
+                rewrapped = _wrap_message_with_phase2(stripped, row.name, foreground_resolved)
+                data = {**data, "payload": {**base_payload, "kind": "agentTurn", "message": rewrapped}}
+
+            payload, code = pg.update_job(tenant, row.name, data)
+            return Response(payload, status=code)
 
         # If non-patchable fields are present (e.g. payload with message),
         # we must delete+recreate instead of patching in-place. Foreground
@@ -490,6 +559,18 @@ class CronJobDetailView(APIView):
         return Response(result.get("details", result))
 
     def delete(self, request, job_name: str):
+        tenant = _get_tenant_for_user(request.user)
+        if tenant.postgres_cron_canonical:
+            if _is_hidden_cron(job_name):
+                return Response(
+                    {"detail": "System tasks cannot be deleted."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            from . import postgres_canonical as pg
+
+            payload, code = pg.delete_job(tenant, job_name)
+            return Response(payload, status=code) if payload is not None else Response(status=code)
+
         if _is_hidden_cron(job_name):
             return Response(
                 {"detail": "System tasks cannot be deleted."},
@@ -521,6 +602,12 @@ class CronJobToggleView(APIView):
                 {"detail": "'enabled' field is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        if tenant.postgres_cron_canonical:
+            from . import postgres_canonical as pg
+
+            payload, code = pg.toggle_job(tenant, job_name, bool(enabled))
+            return Response(payload, status=code)
 
         try:
             _require_active_tenant(tenant)
@@ -598,6 +685,15 @@ class CronJobBulkDeleteView(APIView):
                 {"detail": "No valid job IDs provided."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # Postgres-canonical path — bulk-delete CronJob rows, signal fires
+        # per-row, debounced reconciler removes from SQLite.
+        if tenant.postgres_cron_canonical:
+            from . import postgres_canonical as pg
+
+            result = pg.bulk_delete_jobs(tenant, unique_ids)
+            response_status = result.pop("_status", status.HTTP_200_OK)
+            return Response(result, status=response_status)
 
         # Hibernated → wake + 503 instead of letting writes fail with the
         # Azure splash. Same pattern as the read-side cache fallback.
@@ -704,6 +800,15 @@ class CronJobBulkUpdateForegroundView(APIView):
                 {"detail": "No valid job IDs provided."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # Postgres-canonical path — bulk-update CronJob rows, signal fires
+        # per-row, debounced reconciler rebuilds in SQLite.
+        if tenant.postgres_cron_canonical:
+            from . import postgres_canonical as pg
+
+            result = pg.bulk_update_foreground(tenant, unique_ids, bool(foreground))
+            response_status = result.pop("_status", status.HTTP_200_OK)
+            return Response(result, status=response_status)
 
         # Hibernated → wake + 503 instead of letting writes fail with the
         # Azure "Container App - Unavailable" splash.

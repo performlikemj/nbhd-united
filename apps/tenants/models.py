@@ -259,11 +259,28 @@ class Tenant(models.Model):
         "Values: model IDs.",
     )
     # Cron job backup — snapshot of the last-known cron.list response.
-    # Used to restore user-created jobs after container restarts.
+    # Used to restore user-created jobs after container restarts. Retired
+    # in Phase 2 of the Postgres-canonical cutover (replaced by the CronJob
+    # table — see apps/cron/models.py).
     cron_jobs_snapshot = models.JSONField(
         default=dict,
         blank=True,
         help_text='Last-known cron job list from gateway. Format: {"jobs": [...], "snapshot_at": "ISO8601"}',
+    )
+
+    # Per-tenant flag for the Postgres-canonical cron rollout. When True,
+    # the dashboard, runtime endpoints, and provisioning paths read/write
+    # the apps.cron.CronJob table directly; the gateway's SQLite is a
+    # derived view rebuilt by apps.orchestrator.cron_reconcile.
+    # When False (default), the legacy gateway-canonical paths apply.
+    postgres_cron_canonical = models.BooleanField(
+        default=False,
+        help_text=(
+            "Cutover flag for the Postgres-canonical cron model. "
+            "When True, the CronJob table is the source of truth and "
+            "OpenClaw's SQLite is a derived view kept in sync by the "
+            "regenerate_tenant_crons reconciler."
+        ),
     )
 
     preferred_model = models.CharField(

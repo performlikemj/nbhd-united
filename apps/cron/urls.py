@@ -1,8 +1,15 @@
 from django.urls import path
 
 from . import views
+from .runtime_views import RuntimeContainerStartedView
 
 urlpatterns = [
+    # Internal runtime — called by OpenClaw container startup script.
+    path(
+        "runtime/<uuid:tenant_id>/container-started/",
+        RuntimeContainerStartedView.as_view(),
+        name="cron-runtime-container-started",
+    ),
     path("trigger/<str:task_name>/", views.trigger_task, name="cron-trigger"),
     path("trigger-debug/<str:task_name>/", views.trigger_task_debug, name="cron-trigger-debug"),
     path("tasks/", views.list_tasks, name="cron-list-tasks"),
