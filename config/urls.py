@@ -11,6 +11,7 @@ urlpatterns = [
     path("api/v1/charts/<uuid:tenant_id>/<str:filename>", serve_chart_image, name="serve-chart-image"),
     path("api/v1/auth/", include("apps.tenants.auth_urls")),
     path("api/v1/tenants/", include("apps.tenants.urls")),
+    path("api/v1/tenants/byo-credentials/", include("apps.byo_models.urls")),
     path("api/v1/billing/", include("apps.billing.urls")),
     path("api/v1/integrations/", include("apps.integrations.urls")),
     path("api/v1/automations/", include("apps.automations.urls")),
