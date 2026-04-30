@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
+import threading
 
+from django.conf import settings
+from django.db import transaction
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.utils import timezone
@@ -18,20 +21,45 @@ _EXTRACTION_KIND_MAP = {
 }
 
 
+def _qstash_configured() -> bool:
+    return bool(getattr(settings, "QSTASH_TOKEN", "")) and bool(getattr(settings, "API_BASE_URL", ""))
+
+
 @receiver(post_save, sender=Document)
 def queue_memory_sync_on_document_save(sender, instance, **kwargs):
-    """Queue a workspace memory sync whenever a Document is saved."""
-    from apps.cron.publish import publish_task
+    """Queue a workspace memory sync whenever a Document is saved.
 
+    In production (QStash configured), the actual publish runs in a daemon
+    thread *after* the document save commits — so the runtime endpoint that
+    triggered this save returns immediately rather than blocking on the
+    QStash HTTP round-trip. This is the root-cause fix for
+    `nbhd_daily_note_set_section` 20s timeouts seen in canary logs.
+
+    In dev/test (no QStash), falls back to synchronous execution so test
+    assertions about task side effects still work.
+    """
     tenant_id = str(instance.tenant_id)
-    try:
-        publish_task("sync_documents_to_workspace", tenant_id)
-    except Exception:
-        logger.warning(
-            "Failed to queue memory sync for tenant %s",
-            tenant_id,
-            exc_info=True,
-        )
+
+    def _publish() -> None:
+        from apps.cron.publish import publish_task
+
+        try:
+            publish_task("sync_documents_to_workspace", tenant_id)
+        except Exception:
+            logger.warning(
+                "Failed to queue memory sync for tenant %s",
+                tenant_id,
+                exc_info=True,
+            )
+
+    if _qstash_configured():
+        # transaction.on_commit guarantees we only publish after the save
+        # is durable. The thread keeps the request thread unblocked.
+        transaction.on_commit(lambda: threading.Thread(target=_publish, daemon=True).start())
+    else:
+        # Synchronous path preserved so tests that assert on side effects
+        # of the synchronous-fallback publish_task continue to work.
+        transaction.on_commit(_publish)
 
 
 @receiver(post_save, sender=Document)
