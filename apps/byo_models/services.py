@@ -139,3 +139,35 @@ def delete_credential(cred: BYOCredential) -> None:
     cred.delete()
     _delete_secret_from_kv(secret_name)
     logger.info("Deleted BYOCredential %s (secret=%s)", cred_id, secret_name)
+
+
+def regenerate_tenant_config(tenant: Tenant) -> None:
+    """Synchronously regenerate the tenant's openclaw.json on the file
+    share and advance `config_version` so the apply-pending-configs cron
+    doesn't re-process this transition.
+
+    Mirrors `apps.orchestrator.tasks.apply_single_tenant_config_task`
+    minus the `gateway.reload` hot-reload, because the BYO flows always
+    trigger a new container revision right after — the new revision
+    reads the updated config from the file share at startup, so a
+    hot-reload of the old revision would just create a brief
+    inconsistent state.
+
+    No-op for tenants without a container_id or in a non-active status,
+    since the underlying `update_tenant_config` would bail anyway.
+    """
+    from django.db import models as db_models
+    from django.utils import timezone as tz
+
+    from apps.orchestrator.services import update_tenant_config
+
+    if _is_mock():
+        logger.info("[MOCK] regenerate_tenant_config for tenant=%s", tenant.id)
+        return
+
+    update_tenant_config(str(tenant.id))
+    Tenant.objects.filter(id=tenant.id).update(
+        config_version=db_models.F("pending_config_version"),
+        config_refreshed_at=tz.now(),
+    )
+    logger.info("Regenerated openclaw.json for tenant=%s", tenant.id)
