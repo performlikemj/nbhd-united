@@ -16,7 +16,10 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 # CORS — production uses the explicit allowlist from CORS_ALLOWED_ORIGINS in base.py.
 # Do NOT set CORS_ALLOW_ALL_ORIGINS here (that is dev-only).
 
-# Logging — stdout/stderr goes to Container Apps Log Analytics
+# Logging — stdout/stderr goes to Container Apps Log Analytics.
+# The `redact_byo_paste_body` filter is a defensive backstop to keep
+# BYO subscription tokens out of access logs (primary defense lives in
+# the BYO views — they never log request bodies).
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -26,10 +29,16 @@ LOGGING = {
             "style": "{",
         },
     },
+    "filters": {
+        "redact_byo_paste_body": {
+            "()": "apps.byo_models.logging_filters.RedactBYOPasteBody",
+        },
+    },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "verbose",
+            "filters": ["redact_byo_paste_body"],
         },
     },
     "root": {

@@ -99,6 +99,7 @@ class TenantSerializer(serializers.ModelSerializer):
             "platform_budget_exceeded",
             "finance_enabled",
             "fuel_enabled",
+            "byo_models_enabled",
         )
         read_only_fields = fields
 

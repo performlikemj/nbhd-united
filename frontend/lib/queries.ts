@@ -132,6 +132,9 @@ import {
   fetchPATs,
   mintPAT,
   revokePAT,
+  fetchByoCredentials,
+  connectByoCredential,
+  disconnectByoCredential,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -1510,6 +1513,45 @@ export function useRevokePATMutation() {
     },
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: ["pats"] });
+    },
+  });
+}
+
+// BYO subscription credentials
+
+export function useByoCredentialsQuery() {
+  return useQuery({
+    queryKey: ["byo-credentials"],
+    queryFn: fetchByoCredentials,
+    staleTime: 30_000,
+    enabled: isLoggedIn(),
+    // 404 when the feature flag is off — return [] rather than retrying.
+    retry: (failureCount, error) => {
+      const status = (error as Error & { status?: number }).status;
+      if (status === 404) return false;
+      return failureCount < 2;
+    },
+  });
+}
+
+export function useConnectByoMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: connectByoCredential,
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["byo-credentials"] });
+      void qc.invalidateQueries({ queryKey: ["tenant"] });
+    },
+  });
+}
+
+export function useDisconnectByoMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: disconnectByoCredential,
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["byo-credentials"] });
+      void qc.invalidateQueries({ queryKey: ["tenant"] });
     },
   });
 }

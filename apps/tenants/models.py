@@ -312,6 +312,14 @@ class Tenant(models.Model):
         help_text="Enable workout tracking and fitness logging",
     )
 
+    # BYO subscription mode — Phase 1 gates Anthropic Claude Pro/Max CLI
+    # behind this flag. Default off across the fleet; flip per-tenant via
+    # `manage.py enable_byo --tenant <id>` for canary rollout.
+    byo_models_enabled = models.BooleanField(
+        default=False,
+        help_text="Enable bring-your-own Anthropic/OpenAI subscription mode for this tenant",
+    )
+
     # Idle hibernation
     hibernated_at = models.DateTimeField(
         null=True,

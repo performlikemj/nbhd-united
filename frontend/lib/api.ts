@@ -1119,3 +1119,22 @@ export function mintPAT(
 export async function revokePAT(id: string): Promise<void> {
   await apiFetch(`/api/v1/auth/tokens/${id}/`, { method: "DELETE" });
 }
+
+// BYO subscription credentials (bring-your-own Anthropic / OpenAI)
+
+export function fetchByoCredentials(): Promise<import("@/lib/types").BYOCredential[]> {
+  return apiFetch<import("@/lib/types").BYOCredential[]>("/api/v1/tenants/byo-credentials/");
+}
+
+export function connectByoCredential(
+  data: import("@/lib/types").BYOConnectRequest,
+): Promise<import("@/lib/types").BYOConnectResponse> {
+  return apiFetch<import("@/lib/types").BYOConnectResponse>("/api/v1/tenants/byo-credentials/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function disconnectByoCredential(id: string): Promise<void> {
+  await apiFetch(`/api/v1/tenants/byo-credentials/${id}/`, { method: "DELETE" });
+}
