@@ -17,7 +17,11 @@ export const MODELS: ModelUI[] = [
   { model_id: "openrouter/moonshotai/kimi-k2.6", name: "Kimi K2.6", tagline: "Balanced capability and cost", intelligence: 7, input_rate: 0.60, output_rate: 2.80 },
   { model_id: "openrouter/google/gemma-4-31b-it", name: "Gemma 4 31B", tagline: "Lightweight and affordable", intelligence: 6, input_rate: 0.14, output_rate: 0.40 },
   {
-    model_id: "anthropic/claude-sonnet-4-6",
+    // `anthropic-cli/...` prefix routes via OpenClaw's claude-cli backend
+    // (spawns the bundled `claude` binary, reads CLAUDE_CODE_OAUTH_TOKEN).
+    // Using `anthropic/...` would route via the HTTP plugin and bypass
+    // the user's Pro/Max subscription.
+    model_id: "anthropic-cli/claude-sonnet-4-6",
     name: "Claude Sonnet 4.6",
     tagline: "Bring your own subscription",
     intelligence: 9,

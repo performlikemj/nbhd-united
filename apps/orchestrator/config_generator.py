@@ -1162,16 +1162,23 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "models": [],
         }
 
-    # BYO subscription: when the resolved primary is a Claude model AND
-    # the tenant has an active Anthropic CLI credential, switch
-    # OpenClaw's agent runtime to `claude-cli` so it spawns the local
-    # `claude` binary (which reads CLAUDE_CODE_OAUTH_TOKEN env). The env
-    # binding is added to the container by
+    # BYO subscription: when the resolved primary is a Claude CLI model
+    # AND the tenant has an active Anthropic CLI credential, register
+    # the claude-cli backend and set it as the default runtime. The
+    # `anthropic-cli/...` model prefix is what actually routes via the
+    # CLI backend (mirroring `openai-codex/...` for Codex); the
+    # `agentRuntime` selector is belt-and-suspenders for older OpenClaw
+    # versions that key off the runtime id.
+    #
+    # The container env binding (CLAUDE_CODE_OAUTH_TOKEN, removal of
+    # ANTHROPIC_API_KEY for the spawned subprocess) is set by
     # `apps.orchestrator.azure_client.apply_byo_credentials_to_container`.
     if byo_extras and ANTHROPIC_SONNET_MODEL in byo_extras:
         primary = config["agents"]["defaults"]["model"]["primary"]
-        if primary.startswith("anthropic/"):
+        if primary.startswith("anthropic-cli/"):
             config["agents"]["defaults"]["agentRuntime"] = {"id": "claude-cli"}
+            cli_backends = config["agents"]["defaults"].setdefault("cliBackends", {})
+            cli_backends["claude-cli"] = {"command": "claude"}
 
     return config
 
