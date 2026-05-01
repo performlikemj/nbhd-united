@@ -20,7 +20,14 @@ GEMMA_RATE = {"input": 0.14, "output": 0.40}
 # BYO subscription models — tenant pays the provider directly via their
 # Pro/Max/Plus account. Not in MODEL_RATES because NBHD doesn't bill
 # tokens for these.
-ANTHROPIC_SONNET_MODEL = "anthropic/claude-sonnet-4-6"
+#
+# `anthropic-cli/...` prefix is the routing signal for OpenClaw's
+# claude-cli backend (mirrors `openai-codex/...` for Codex). Models
+# with this prefix make OpenClaw spawn the bundled `claude` binary,
+# which reads CLAUDE_CODE_OAUTH_TOKEN. Using `anthropic/...` would
+# route via OpenClaw's HTTP plugin, which needs ANTHROPIC_API_KEY and
+# bills the platform's API account.
+ANTHROPIC_SONNET_MODEL = "anthropic-cli/claude-sonnet-4-6"
 ANTHROPIC_SONNET_DISPLAY = "Claude Sonnet 4.6"
 
 MODEL_RATES: dict[str, dict[str, float]] = {

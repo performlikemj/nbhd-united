@@ -379,6 +379,24 @@ class BYOConfigGeneratorTest(TestCase):
         self.assertEqual(cfg["agents"]["defaults"]["agentRuntime"], {"id": "claude-cli"})
         self.assertEqual(cfg["agents"]["defaults"]["model"]["primary"], ANTHROPIC_SONNET_MODEL)
         self.assertIn(ANTHROPIC_SONNET_MODEL, cfg["agents"]["defaults"]["models"])
+        # cliBackends.claude-cli must be registered so OpenClaw knows
+        # how to spawn the bundled `claude` binary. Without this, the
+        # `anthropic-cli/...` model prefix routes nowhere.
+        self.assertEqual(
+            cfg["agents"]["defaults"]["cliBackends"]["claude-cli"],
+            {"command": "claude"},
+        )
+
+    def test_byo_anthropic_model_id_uses_cli_prefix(self):
+        """Regression guard: the BYO Anthropic model_id must use the
+        `anthropic-cli/...` prefix. Using `anthropic/...` would route
+        via OpenClaw's HTTP plugin (needing ANTHROPIC_API_KEY) and bypass
+        the user's Pro/Max subscription entirely.
+        """
+        self.assertTrue(
+            ANTHROPIC_SONNET_MODEL.startswith("anthropic-cli/"),
+            f"BYO Anthropic model id must start with 'anthropic-cli/' but got {ANTHROPIC_SONNET_MODEL!r}",
+        )
 
     def test_no_agent_runtime_when_primary_not_anthropic(self):
         # BYO Anthropic cred connected, but tenant has selected an OpenRouter
