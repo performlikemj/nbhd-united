@@ -30,16 +30,22 @@ def _is_mock() -> bool:
 def secret_name_for(tenant: Tenant, provider: str, mode: str) -> str:
     """Build the Key Vault secret name for a BYO credential.
 
-    Naming: `<tenant.key_vault_prefix>-byo-<provider>-<mode>`. Mirrors
-    `apps.integrations.services.get_key_vault_secret_name` but with a
-    `byo-` prefix and explicit mode component to disambiguate from
-    OAuth integration tokens (which use `<prefix>-<provider>-token`).
+    Naming: `<tenant.key_vault_prefix>-byo-<provider>-<sanitized-mode>`.
+    Mirrors `apps.integrations.services.get_key_vault_secret_name` but
+    with a `byo-` prefix and explicit mode component to disambiguate
+    from OAuth integration tokens (which use `<prefix>-<provider>-token`).
+
+    Azure Key Vault rejects secret names with characters outside
+    `^[0-9a-zA-Z-]+$`. The DB stores enum values like `cli_subscription`
+    (with an underscore), so we replace `_` → `-` here. Sanitization is
+    one-way and stable; the DB value is unchanged.
     """
     if not tenant.key_vault_prefix:
         raise ValueError(
             f"Tenant {tenant.id} has no key_vault_prefix — cannot build BYO secret name for {provider}/{mode}"
         )
-    return f"{tenant.key_vault_prefix}-byo-{provider}-{mode}"
+    safe_mode = mode.replace("_", "-")
+    return f"{tenant.key_vault_prefix}-byo-{provider}-{safe_mode}"
 
 
 def _write_secret_to_kv(secret_name: str, value: str) -> None:

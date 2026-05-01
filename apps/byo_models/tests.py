@@ -94,7 +94,29 @@ class BYOServiceTest(TestCase):
     def test_secret_name_for_returns_expected_format(self):
         name = secret_name_for(self.tenant, "anthropic", "cli_subscription")
         self.assertTrue(name.startswith(self.tenant.key_vault_prefix))
-        self.assertIn("byo-anthropic-cli_subscription", name)
+        # Underscore in `cli_subscription` is sanitized to a hyphen because
+        # Azure Key Vault names must match ^[0-9a-zA-Z-]+$.
+        self.assertIn("byo-anthropic-cli-subscription", name)
+        self.assertNotIn("_", name)
+
+    def test_secret_name_for_matches_kv_naming_regex(self):
+        """Azure Key Vault rejects secret names outside ^[0-9a-zA-Z-]+$.
+
+        Regression guard for the underscore bug shipped in initial PR #2:
+        Mode.CLI_SUBSCRIPTION = "cli_subscription" was concatenated raw
+        into the secret name, producing 502 BadParameter from KV.
+        """
+        import re
+
+        kv_pattern = re.compile(r"^[0-9a-zA-Z-]+$")
+        for provider, mode in [
+            ("anthropic", "cli_subscription"),
+            ("anthropic", "api_key"),
+            ("openai", "cli_subscription"),
+            ("openai", "api_key"),
+        ]:
+            name = secret_name_for(self.tenant, provider, mode)
+            self.assertRegex(name, kv_pattern, f"KV-illegal name for {provider}/{mode}: {name}")
 
     def test_secret_name_for_raises_when_no_prefix(self):
         self.tenant.key_vault_prefix = ""
