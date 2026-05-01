@@ -49,7 +49,10 @@ function statusFor(cred: BYOCredential | undefined): string {
 
 function ctaLabel(cred: BYOCredential | undefined): { label: string; tone: "primary" | "ghost" | "rose" } {
   if (!cred) return { label: "Connect →", tone: "primary" };
-  if (cred.status === "pending") return { label: "Verifying…", tone: "ghost" };
+  // Pending currently has no automatic exit (no background verifier in
+  // Phase 1), so the CTA must always offer a way out — otherwise a
+  // failed paste leaves the card stuck forever.
+  if (cred.status === "pending") return { label: "Cancel", tone: "ghost" };
   if (cred.status === "verified") return { label: "Disconnect", tone: "ghost" };
   if (cred.status === "expired" || cred.status === "error") {
     return { label: "Reconnect →", tone: "rose" };
@@ -60,12 +63,15 @@ function ctaLabel(cred: BYOCredential | undefined): { label: string; tone: "prim
 export function BYOProviderCard({ provider, cred, onConnect, onDisconnect, disabled }: Props) {
   const meta = PROVIDER_META[provider];
   const cta = ctaLabel(cred);
-  const isVerified = cred?.status === "verified";
   const isErrored = cred?.status === "error" || cred?.status === "expired";
+  // Any existing cred → primary action is disconnect (errored states
+  // route through reconnect modal, which deletes-then-pastes).
+  const isDisconnectAction =
+    cred?.status === "verified" || cred?.status === "pending";
 
   const handleClick = () => {
     if (disabled) return;
-    if (isVerified) {
+    if (isDisconnectAction) {
       onDisconnect();
     } else {
       onConnect();
@@ -118,7 +124,6 @@ export function BYOProviderCard({ provider, cred, onConnect, onDisconnect, disab
           <button
             type="button"
             onClick={handleClick}
-            disabled={cred?.status === "pending"}
             className={clsx(
               "rounded-full px-5 text-sm font-semibold transition-all min-h-[44px] min-w-[120px]",
               "disabled:cursor-not-allowed disabled:opacity-50",
