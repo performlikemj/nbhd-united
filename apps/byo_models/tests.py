@@ -180,9 +180,12 @@ class BYOServiceTest(TestCase):
             recover_poller = MagicMock()
             mock_client.begin_recover_deleted_secret.return_value = recover_poller
 
-            with patch("azure.keyvault.secrets.SecretClient", return_value=mock_client), patch(
-                "apps.orchestrator.azure_client._get_provisioner_credential",
-                return_value=MagicMock(),
+            with (
+                patch("azure.keyvault.secrets.SecretClient", return_value=mock_client),
+                patch(
+                    "apps.orchestrator.azure_client._get_provisioner_credential",
+                    return_value=MagicMock(),
+                ),
             ):
                 svc._write_secret_to_kv("tenants-test-byo-anthropic-cli-subscription", "tok-newvalue")
 
@@ -210,10 +213,14 @@ class BYOServiceTest(TestCase):
             mock_client = MagicMock()
             mock_client.set_secret.side_effect = ResourceExistsError(message="(Conflict) SomeOtherReason")
 
-            with patch("azure.keyvault.secrets.SecretClient", return_value=mock_client), patch(
-                "apps.orchestrator.azure_client._get_provisioner_credential",
-                return_value=MagicMock(),
-            ), self.assertRaises(ResourceExistsError):
+            with (
+                patch("azure.keyvault.secrets.SecretClient", return_value=mock_client),
+                patch(
+                    "apps.orchestrator.azure_client._get_provisioner_credential",
+                    return_value=MagicMock(),
+                ),
+                self.assertRaises(ResourceExistsError),
+            ):
                 svc._write_secret_to_kv("tenants-test-byo-anthropic-cli-subscription", "tok-newvalue")
 
             mock_client.begin_recover_deleted_secret.assert_not_called()
