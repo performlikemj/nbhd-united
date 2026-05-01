@@ -53,12 +53,19 @@ def _write_secret_to_kv(secret_name: str, value: str) -> None:
 
     The token never appears in logs (we log only the secret_name) and
     never flows back to Django after writing.
+
+    Auto-recovers from KV soft-delete: if a prior `delete_credential`
+    soft-deleted the same name and the 7–90 day retention window hasn't
+    elapsed, `set_secret` would 409 with `ObjectIsDeletedButRecoverable`.
+    We recover the deleted secret (which restores it with its old value)
+    and immediately overwrite with the new value.
     """
     if _is_mock():
         _BYO_MOCK_KV_STORE[secret_name] = value
         logger.info("[MOCK] Wrote BYO secret %s", secret_name)
         return
 
+    from azure.core.exceptions import ResourceExistsError
     from azure.keyvault.secrets import SecretClient
     from django.conf import settings
 
@@ -66,7 +73,15 @@ def _write_secret_to_kv(secret_name: str, value: str) -> None:
 
     vault_url = f"https://{settings.AZURE_KEY_VAULT_NAME}.vault.azure.net"
     client = SecretClient(vault_url=vault_url, credential=_get_provisioner_credential())
-    client.set_secret(secret_name, value)
+    try:
+        client.set_secret(secret_name, value)
+    except ResourceExistsError as exc:
+        if "ObjectIsDeletedButRecoverable" not in str(exc):
+            raise
+        logger.info("BYO secret %s is soft-deleted; recovering before overwrite", secret_name)
+        recover_poller = client.begin_recover_deleted_secret(secret_name)
+        recover_poller.wait()
+        client.set_secret(secret_name, value)
     logger.info("Wrote BYO secret %s", secret_name)
 
 

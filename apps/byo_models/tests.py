@@ -149,6 +149,84 @@ class BYOServiceTest(TestCase):
         self.assertFalse(BYOCredential.objects.filter(id=cred.id).exists())
         self.assertNotIn(secret_name, _BYO_MOCK_KV_STORE)
 
+    def test_write_secret_recovers_from_soft_delete(self):
+        """`set_secret` 409 with ObjectIsDeletedButRecoverable → recover, retry.
+
+        Regression guard for the disconnect/reconnect cycle. KV soft-delete
+        retains a deleted secret name for 7-90 days; without this recovery,
+        any reconnect within the retention window fails with 409.
+        """
+        from unittest.mock import MagicMock
+
+        from azure.core.exceptions import ResourceExistsError
+
+        from apps.byo_models import services as svc
+
+        # Run with real (non-mock) path so ResourceExistsError handling fires.
+        os.environ["AZURE_MOCK"] = "false"
+        try:
+            mock_client = MagicMock()
+            calls = {"n": 0}
+
+            def set_secret_side_effect(name, value):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise ResourceExistsError(
+                        message="(Conflict) ObjectIsDeletedButRecoverable: secret is currently in a deleted but recoverable state"
+                    )
+                return MagicMock()
+
+            mock_client.set_secret.side_effect = set_secret_side_effect
+            recover_poller = MagicMock()
+            mock_client.begin_recover_deleted_secret.return_value = recover_poller
+
+            with (
+                patch("azure.keyvault.secrets.SecretClient", return_value=mock_client),
+                patch(
+                    "apps.orchestrator.azure_client._get_provisioner_credential",
+                    return_value=MagicMock(),
+                ),
+            ):
+                svc._write_secret_to_kv("tenants-test-byo-anthropic-cli-subscription", "tok-newvalue")
+
+            self.assertEqual(calls["n"], 2, "set_secret should be retried once after recovery")
+            mock_client.begin_recover_deleted_secret.assert_called_once_with(
+                "tenants-test-byo-anthropic-cli-subscription"
+            )
+            recover_poller.wait.assert_called_once()
+        finally:
+            os.environ["AZURE_MOCK"] = "true"
+
+    def test_write_secret_reraises_other_resource_exists_errors(self):
+        """`ResourceExistsError` without ObjectIsDeletedButRecoverable bubbles up.
+
+        Don't silently retry on conflict reasons we don't understand.
+        """
+        from unittest.mock import MagicMock
+
+        from azure.core.exceptions import ResourceExistsError
+
+        from apps.byo_models import services as svc
+
+        os.environ["AZURE_MOCK"] = "false"
+        try:
+            mock_client = MagicMock()
+            mock_client.set_secret.side_effect = ResourceExistsError(message="(Conflict) SomeOtherReason")
+
+            with (
+                patch("azure.keyvault.secrets.SecretClient", return_value=mock_client),
+                patch(
+                    "apps.orchestrator.azure_client._get_provisioner_credential",
+                    return_value=MagicMock(),
+                ),
+                self.assertRaises(ResourceExistsError),
+            ):
+                svc._write_secret_to_kv("tenants-test-byo-anthropic-cli-subscription", "tok-newvalue")
+
+            mock_client.begin_recover_deleted_secret.assert_not_called()
+        finally:
+            os.environ["AZURE_MOCK"] = "true"
+
 
 class BYOEndpointTest(TestCase):
     """Integration tests for the REST endpoints — feature-flag gate,
