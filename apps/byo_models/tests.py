@@ -200,6 +200,55 @@ class BYOEndpointTest(TestCase):
         self.assertEqual(data["mode"], "cli_subscription")
         self.assertEqual(data["status"], "pending")
 
+    def test_post_regenerates_config_before_revision(self):
+        """Regression guard: openclaw.json must be regenerated BEFORE the
+        env reconciliation creates a new revision. Otherwise the new
+        revision boots into an inconsistent state — agentRuntime not yet
+        set, ANTHROPIC_API_KEY removed — and Anthropic calls hang.
+        """
+        self._enable_flag()
+        call_order: list[str] = []
+        with (
+            patch(
+                "apps.byo_models.views.regenerate_tenant_config",
+                side_effect=lambda *_a, **_kw: call_order.append("regenerate"),
+            ),
+            patch(
+                "apps.byo_models.views.apply_byo_credentials_to_container",
+                side_effect=lambda *_a, **_kw: call_order.append("apply_byo"),
+            ),
+        ):
+            response = self.client.post(
+                "/api/v1/tenants/byo-credentials/",
+                {
+                    "provider": "anthropic",
+                    "mode": "cli_subscription",
+                    "token": "tok-abcdefghijklmnopqrstuvwxyz12345",
+                },
+                format="json",
+            )
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(call_order, ["regenerate", "apply_byo"])
+
+    def test_delete_regenerates_config_before_revision(self):
+        """Same coupling on disconnect — config regen first, then env+revision."""
+        self._enable_flag()
+        cred = upsert_credential(self.tenant, "anthropic", "cli_subscription", "tok-deleteorder-abcdefghijkl12345")
+        call_order: list[str] = []
+        with (
+            patch(
+                "apps.byo_models.views.regenerate_tenant_config",
+                side_effect=lambda *_a, **_kw: call_order.append("regenerate"),
+            ),
+            patch(
+                "apps.byo_models.views.apply_byo_credentials_to_container",
+                side_effect=lambda *_a, **_kw: call_order.append("apply_byo"),
+            ),
+        ):
+            response = self.client.delete(f"/api/v1/tenants/byo-credentials/{cred.id}/")
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(call_order, ["regenerate", "apply_byo"])
+
     def test_post_rejects_short_token(self):
         self._enable_flag()
         response = self.client.post(

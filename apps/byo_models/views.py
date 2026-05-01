@@ -30,7 +30,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.byo_models.models import BYOCredential
-from apps.byo_models.services import delete_credential, upsert_credential
+from apps.byo_models.services import delete_credential, regenerate_tenant_config, upsert_credential
 from apps.orchestrator.azure_client import apply_byo_credentials_to_container
 
 logger = logging.getLogger(__name__)
@@ -120,10 +120,30 @@ class BYOCredentialListView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        # Reconcile the container's secret/env bindings + force a new
-        # revision so KV-referenced secrets are re-fetched. Failure here
-        # is non-fatal — the cred is stored; the next config bump or
-        # natural restart will pick it up.
+        # Two writes that MUST land together — these update the file
+        # share's openclaw.json AND the container's env+secret bindings,
+        # then force a new revision. The new revision reads the fresh
+        # openclaw.json (with `agentRuntime: claude-cli`) and the fresh
+        # env (CLAUDE_CODE_OAUTH_TOKEN bound, ANTHROPIC_API_KEY removed)
+        # at startup — a coupling failure here puts the container in an
+        # inconsistent state where it tries to call Anthropic via HTTP
+        # without an API key.
+        #
+        # Order matters: openclaw.json FIRST, then env+revision. If the
+        # env update happened first, the still-running old revision
+        # would lose its ANTHROPIC_API_KEY mid-flight before the new
+        # revision is ready.
+        try:
+            tenant.bump_pending_config()
+            regenerate_tenant_config(tenant)
+        except Exception:
+            logger.exception(
+                "regenerate_tenant_config failed for tenant=%s after paste — "
+                "cred is stored but openclaw.json is stale; the apply-pending-configs "
+                "cron will fix this on its next run",
+                tenant.id,
+            )
+
         try:
             apply_byo_credentials_to_container(tenant)
         except Exception:
@@ -151,6 +171,18 @@ class BYOCredentialDetailView(APIView):
             return Response(status=status.HTTP_404_NOT_FOUND)
 
         delete_credential(cred)
+
+        # Same two-write coupling as paste — see notes in BYOCredentialListView.post.
+        # On disconnect, openclaw.json regenerates without `agentRuntime` and
+        # the container env has ANTHROPIC_API_KEY restored.
+        try:
+            tenant.bump_pending_config()
+            regenerate_tenant_config(tenant)
+        except Exception:
+            logger.exception(
+                "regenerate_tenant_config failed for tenant=%s after delete",
+                tenant.id,
+            )
 
         try:
             apply_byo_credentials_to_container(tenant)
