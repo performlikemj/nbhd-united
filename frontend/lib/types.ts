@@ -45,6 +45,38 @@ export interface Tenant {
   platform_budget_exceeded: boolean;
   finance_enabled: boolean;
   fuel_enabled: boolean;
+  byo_models_enabled: boolean;
+}
+
+// Bring-your-own subscription credentials
+export type BYOProvider = "anthropic" | "openai";
+export type BYOMode = "api_key" | "cli_subscription";
+export type BYOStatus = "pending" | "verified" | "expired" | "error";
+
+export interface BYOCredential {
+  id: string;
+  provider: BYOProvider;
+  mode: BYOMode;
+  status: BYOStatus;
+  last_verified_at: string | null;
+  last_error: string;
+  created_at: string;
+}
+
+export interface BYOConnectRequest {
+  provider: BYOProvider;
+  mode: BYOMode;
+  token: string;
+}
+
+export interface BYOConnectResponse {
+  id: string;
+  provider: BYOProvider;
+  mode: BYOMode;
+  status: BYOStatus;
+  last_verified_at: string | null;
+  last_error: string;
+  created_at: string;
 }
 
 export interface RefreshConfigStatus {
