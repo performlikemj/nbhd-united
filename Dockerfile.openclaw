@@ -39,9 +39,10 @@ COPY agent-skills /opt/nbhd/agent-skills
 COPY templates/openclaw /opt/nbhd/templates/openclaw
 COPY runtime/openclaw/proxy.js /opt/nbhd/proxy.js
 COPY runtime/openclaw/suppress-chmod-eperm.js /opt/nbhd/suppress-chmod-eperm.js
+COPY runtime/openclaw/claude-with-token.sh /opt/nbhd/claude-with-token.sh
 COPY runtime/openclaw/entrypoint.sh /usr/local/bin/nbhd-openclaw-entrypoint
 
-RUN chmod +x /usr/local/bin/nbhd-openclaw-entrypoint \
+RUN chmod +x /usr/local/bin/nbhd-openclaw-entrypoint /opt/nbhd/claude-with-token.sh \
     && chown -R node:node /opt/nbhd /usr/local/bin/nbhd-openclaw-entrypoint
 
 USER node

@@ -466,9 +466,15 @@ class BYOConfigGeneratorTest(TestCase):
         # Both Sonnet and Opus exposed so the picker can offer either.
         self.assertIn(ANTHROPIC_SONNET_MODEL, cfg["agents"]["defaults"]["models"])
         self.assertIn(ANTHROPIC_OPUS_MODEL, cfg["agents"]["defaults"]["models"])
-        # No agentRuntime / cliBackends overrides — auth profile drives routing.
+        # cliBackends.claude-cli.command points at our wrapper so the spawned
+        # `claude` binary gets CLAUDE_CODE_OAUTH_TOKEN restored (OpenClaw's
+        # CLI backend strips that env var before spawn).
+        self.assertEqual(
+            cfg["agents"]["defaults"]["cliBackends"]["claude-cli"],
+            {"command": "/opt/nbhd/claude-with-token.sh"},
+        )
+        # We don't set agentRuntime — auth profile drives runtime selection.
         self.assertNotIn("agentRuntime", cfg["agents"]["defaults"])
-        self.assertNotIn("cliBackends", cfg["agents"]["defaults"])
 
     def test_byo_anthropic_model_ids_use_canonical_prefix(self):
         """Regression guard for PR #421: the BYO Anthropic model ids must

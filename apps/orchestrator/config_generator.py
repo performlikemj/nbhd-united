@@ -1174,19 +1174,27 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "models": [],
         }
 
-    # BYO routing note: with auth profile `anthropic:claude-cli` registered
-    # by `runtime/openclaw/entrypoint.sh` (via `openclaw models auth login
-    # --provider anthropic --method cli`), OpenClaw 2026.4.25+ routes any
+    # BYO routing: with auth profile `anthropic:claude-cli` registered by
+    # `runtime/openclaw/entrypoint.sh` (via `openclaw models auth login
+    # --provider anthropic --method cli`), OpenClaw 2026.4.25 routes any
     # `anthropic/<model>` request through the bundled `claude` binary.
-    # We do NOT need to set `agentRuntime` or `cliBackends` here — those
-    # would override the auth-profile-driven routing. The `anthropic-cli/...`
-    # prefix briefly shipped in PR #419 was a misread of the OpenClaw source
-    # (`anthropic-cli` is a UI choiceId, not a model prefix; valid prefixes
-    # are `claude-cli/...` and the canonical `anthropic/...`).
     #
-    # The container env binding (CLAUDE_CODE_OAUTH_TOKEN, removal of
-    # ANTHROPIC_API_KEY for the spawned subprocess) is set by
-    # `apps.orchestrator.azure_client.apply_byo_credentials_to_container`.
+    # Override the spawn command with our wrapper so the binary still gets
+    # `CLAUDE_CODE_OAUTH_TOKEN` in its env. OpenClaw's claude-cli backend
+    # explicitly clears that env var before spawning (see
+    # `extensions/anthropic/cli-shared.js#CLAUDE_CLI_CLEAR_ENV`); its
+    # assumption is that auth lives in `~/.claude/.credentials.json` from
+    # an interactive `claude auth login`. The BYO flow only has a bare
+    # access token from `claude setup-token` — works as the env var, not
+    # standalone in the file. The wrapper reads the file `entrypoint.sh`
+    # writes from CLAUDE_CODE_OAUTH_TOKEN and re-exports the env var
+    # before exec'ing claude.
+    #
+    # Safe for non-BYO tenants: the wrapper is a no-op when the file is
+    # absent (it just exec's claude with whatever env it inherits).
+    if byo_extras and ANTHROPIC_SONNET_MODEL in byo_extras:
+        cli_backends = config["agents"]["defaults"].setdefault("cliBackends", {})
+        cli_backends["claude-cli"] = {"command": "/opt/nbhd/claude-with-token.sh"}
 
     return config
 
