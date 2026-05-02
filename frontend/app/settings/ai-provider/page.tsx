@@ -90,7 +90,7 @@ export default function AIProviderPage() {
       {byoEnabled ? (
         <SectionCard
           title="Use your own subscription"
-          subtitle="Connect your Pro/Max account and we'll route inference through your subscription instead of charging tokens to your platform plan."
+          subtitle="Connect your Anthropic or OpenAI account. Inference routes through your account — billed via the provider's pay-as-you-go credits (Claude.ai extra usage / OpenAI Codex), not your platform plan."
         >
           <div className="grid gap-3 sm:grid-cols-2 sm:gap-4">
             <BYOProviderCard

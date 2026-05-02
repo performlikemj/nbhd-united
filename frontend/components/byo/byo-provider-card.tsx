@@ -29,8 +29,8 @@ const PROVIDER_META: Record<
     plan: "Claude Pro / Max",
     glyph: "★",
     glyphTone: "bg-accent/15 text-accent",
-    body: "Bring your own subscription. We'll route Claude Sonnet 4.6 through your account.",
-    eyebrow: "SAME TIER PRICE · YOU PAY ANTHROPIC FOR TOKENS",
+    body: "Bring your own Anthropic account. Claude Sonnet 4.6 and Opus 4.7 route through your Claude.ai extra-usage credits — top up at claude.ai/settings/usage.",
+    eyebrow: "SAME TIER PRICE · USES YOUR ANTHROPIC EXTRA USAGE",
   },
   openai: {
     name: "OpenAI",

@@ -182,9 +182,24 @@ export function ConnectAnthropicModal({ open, onClose }: Props) {
           {step === "info" ? (
             <div className="space-y-5 sm:space-y-6">
               <p className="text-sm text-ink-muted sm:text-base">
-                Bring your own Claude Pro or Max subscription. We&apos;ll route Claude
-                Sonnet 4.6 through your account, and your conversations never charge
-                tokens to your platform plan.
+                Bring your own Anthropic account. We&apos;ll route Claude Sonnet 4.6
+                and Opus 4.7 through your account so they don&apos;t charge tokens to
+                your platform plan.
+              </p>
+              <p className="rounded-xl border border-amber-border/50 bg-amber-bg/40 px-4 py-2.5 text-sm text-amber-text">
+                <span className="font-semibold">Heads up:</span> tokens from{" "}
+                <code className="font-mono text-[0.85em]">claude setup-token</code>{" "}
+                are billed against your <strong>Claude.ai extra usage</strong>, not
+                the Pro/Max chat allowance. Make sure you have credits enabled at{" "}
+                <a
+                  href="https://claude.ai/settings/usage"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline decoration-dotted hover:text-ink"
+                >
+                  claude.ai/settings/usage
+                </a>
+                .
               </p>
 
               <div>
