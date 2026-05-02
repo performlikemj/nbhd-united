@@ -77,6 +77,43 @@ for _attempt in $(seq 1 $MAX_CONFIG_RETRIES); do
     sleep $CONFIG_RETRY_DELAY
 done
 
+# --- BYO Anthropic Claude CLI: bootstrap auth state from env var ---
+#
+# When `CLAUDE_CODE_OAUTH_TOKEN` is bound (by Django via
+# `apply_byo_credentials_to_container`), seed the Claude CLI's local
+# credentials file and register the OpenClaw `anthropic:claude-cli` auth
+# profile. The auth profile (NOT a model-prefix shape like
+# `anthropic-cli/...`) is what makes OpenClaw route `anthropic/<model>`
+# requests through the bundled `claude` binary against the tenant's
+# Pro/Max subscription. Skipped silently when the env var is absent.
+#
+# `openclaw models auth login` is idempotent: re-running on subsequent
+# boots refreshes the profile if already present.
+#
+# The `--set-default` flag is intentionally OMITTED so we don't clobber
+# the per-tenant `agents.defaults.model.primary` Django writes from
+# `tenant.preferred_model`. Auth profile registration alone is enough to
+# enable CLI routing.
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    CLAUDE_CRED_DIR="$HOME/.claude"
+    CLAUDE_CRED_PATH="$CLAUDE_CRED_DIR/.credentials.json"
+    mkdir -p "$CLAUDE_CRED_DIR"
+    # Far-future expiresAt — `claude setup-token` issues long-lived tokens,
+    # but OpenClaw's parser still requires a positive finite ms timestamp.
+    BYO_EXPIRES_AT=$(node -e "process.stdout.write(String(Date.now() + 10*365*24*60*60*1000))")
+    umask 077
+    printf '{"claudeAiOauth":{"accessToken":"%s","expiresAt":%s}}\n' \
+        "$CLAUDE_CODE_OAUTH_TOKEN" "$BYO_EXPIRES_AT" > "$CLAUDE_CRED_PATH"
+    chmod 600 "$CLAUDE_CRED_PATH"
+    echo "[entrypoint] wrote $CLAUDE_CRED_PATH (BYO Anthropic CLI)"
+
+    if openclaw models auth login --provider anthropic --method cli >/dev/null 2>&1; then
+        echo "[entrypoint] registered OpenClaw auth profile anthropic:claude-cli"
+    else
+        echo "[entrypoint] openclaw models auth login failed (BYO Anthropic CLI will not route through claude binary; non-fatal)" >&2
+    fi
+fi
+
 # --- Dual-process supervisor: OpenClaw gateway + reverse proxy ---
 
 if [ "$#" -gt 0 ]; then

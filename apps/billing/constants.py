@@ -21,14 +21,20 @@ GEMMA_RATE = {"input": 0.14, "output": 0.40}
 # Pro/Max/Plus account. Not in MODEL_RATES because NBHD doesn't bill
 # tokens for these.
 #
-# `anthropic-cli/...` prefix is the routing signal for OpenClaw's
-# claude-cli backend (mirrors `openai-codex/...` for Codex). Models
-# with this prefix make OpenClaw spawn the bundled `claude` binary,
-# which reads CLAUDE_CODE_OAUTH_TOKEN. Using `anthropic/...` would
-# route via OpenClaw's HTTP plugin, which needs ANTHROPIC_API_KEY and
-# bills the platform's API account.
-ANTHROPIC_SONNET_MODEL = "anthropic-cli/claude-sonnet-4-6"
+# Model IDs use the canonical `anthropic/<model>` form (NOT `anthropic-cli/...`,
+# which we shipped briefly in PR #419 — that prefix doesn't exist in OpenClaw
+# 2026.4.25's registry). CLI routing is activated by the `anthropic:claude-cli`
+# **auth profile** (registered at container boot by `runtime/openclaw/entrypoint.sh`
+# via `openclaw models auth login --provider anthropic --method cli`). When that
+# profile is present, OpenClaw routes any `anthropic/<model>` request through the
+# bundled `claude` binary, which reads `CLAUDE_CODE_OAUTH_TOKEN` and bills the
+# tenant's Pro/Max subscription. Without the profile, the same model id falls
+# through to the HTTP plugin (which needs `ANTHROPIC_API_KEY`).
+ANTHROPIC_SONNET_MODEL = "anthropic/claude-sonnet-4-6"
 ANTHROPIC_SONNET_DISPLAY = "Claude Sonnet 4.6"
+
+ANTHROPIC_OPUS_MODEL = "anthropic/claude-opus-4-7"
+ANTHROPIC_OPUS_DISPLAY = "Claude Opus 4.7"
 
 MODEL_RATES: dict[str, dict[str, float]] = {
     MINIMAX_MODEL: {
