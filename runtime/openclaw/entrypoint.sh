@@ -88,12 +88,25 @@ done
 # Pro/Max subscription. Skipped silently when the env var is absent.
 #
 # `openclaw models auth login` is idempotent: re-running on subsequent
-# boots refreshes the profile if already present.
+# boots refreshes the profile if already present. The command checks
+# `process.stdin.isTTY` (auth-BQuNQ6PP.js:362) and exits non-zero when
+# false — fixed here by wrapping it in `script(1)` (from `bsdmainutils`)
+# which provides a pty.
 #
 # The `--set-default` flag is intentionally OMITTED so we don't clobber
 # the per-tenant `agents.defaults.model.primary` Django writes from
 # `tenant.preferred_model`. Auth profile registration alone is enough to
 # enable CLI routing.
+#
+# Persistence: ~/.claude/projects/ stores claude's per-conversation
+# session JSONL files. By default it lives on the container's writable
+# layer and is wiped on every revision bump (deploy, config change,
+# hibernation wake). We symlink it onto /home/node/.openclaw/ (which IS
+# the file share mount — see `apps/orchestrator/azure_client.py`'s
+# `volumeMounts`) so conversation context survives container restarts.
+# The auth profile itself sits under ~/.openclaw/agents/ which is an
+# EmptyDir overlay — that's intentional (PR #387, chmod EPERM mitigation)
+# but it means we MUST re-register on every boot.
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     CLAUDE_CRED_DIR="$HOME/.claude"
     CLAUDE_CRED_PATH="$CLAUDE_CRED_DIR/.credentials.json"
@@ -107,10 +120,36 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     chmod 600 "$CLAUDE_CRED_PATH"
     echo "[entrypoint] wrote $CLAUDE_CRED_PATH (BYO Anthropic CLI)"
 
-    if openclaw models auth login --provider anthropic --method cli >/dev/null 2>&1; then
-        echo "[entrypoint] registered OpenClaw auth profile anthropic:claude-cli"
+    # Persist claude session JSONLs by symlinking ~/.claude/projects to
+    # the file share. Idempotent: only creates the link when it isn't
+    # already there. If a real (non-symlink) projects dir exists from a
+    # prior boot AND it's empty, replace with the symlink; if non-empty,
+    # leave it (rare — would imply someone wrote without our setup).
+    CLAUDE_PROJECTS_PERSISTENT="$OPENCLAW_HOME/claude-state/projects"
+    mkdir -p "$CLAUDE_PROJECTS_PERSISTENT"
+    if [ ! -L "$CLAUDE_CRED_DIR/projects" ]; then
+        if [ -d "$CLAUDE_CRED_DIR/projects" ] && [ -z "$(ls -A "$CLAUDE_CRED_DIR/projects" 2>/dev/null)" ]; then
+            rmdir "$CLAUDE_CRED_DIR/projects" 2>/dev/null || true
+        fi
+        if [ ! -e "$CLAUDE_CRED_DIR/projects" ]; then
+            ln -s "$CLAUDE_PROJECTS_PERSISTENT" "$CLAUDE_CRED_DIR/projects"
+            echo "[entrypoint] symlinked $CLAUDE_CRED_DIR/projects -> $CLAUDE_PROJECTS_PERSISTENT"
+        fi
+    fi
+
+    # Register OpenClaw auth profile. `script -qfec` runs the command
+    # inside a pty so its TTY check passes. Output captured to /tmp for
+    # debug; result swallowed because the auth profile is non-critical
+    # for non-Anthropic routing (other providers keep working without it).
+    if command -v script >/dev/null 2>&1; then
+        if script -qfec "openclaw models auth login --provider anthropic --method cli" /tmp/openclaw-auth-login.log >/dev/null 2>&1; then
+            echo "[entrypoint] registered OpenClaw auth profile anthropic:claude-cli (via script-pty)"
+        else
+            echo "[entrypoint] openclaw models auth login (script-pty) failed; tail of /tmp/openclaw-auth-login.log:" >&2
+            tail -n 5 /tmp/openclaw-auth-login.log 2>/dev/null >&2 || true
+        fi
     else
-        echo "[entrypoint] openclaw models auth login failed (BYO Anthropic CLI will not route through claude binary; non-fatal)" >&2
+        echo "[entrypoint] script(1) not installed; cannot register OpenClaw auth profile non-interactively" >&2
     fi
 fi
 
