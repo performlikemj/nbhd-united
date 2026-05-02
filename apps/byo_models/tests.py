@@ -409,8 +409,15 @@ class BYOEndpointTest(TestCase):
 
 
 class BYOConfigGeneratorTest(TestCase):
-    """Tests for the agentRuntime + model_entries extension in
-    `generate_openclaw_config`."""
+    """Tests for `_byo_model_extras` integration in `generate_openclaw_config`.
+
+    Routing note: with PR #421, BYO Anthropic CLI routing is activated by an
+    OpenClaw auth profile (registered at container boot by `entrypoint.sh`),
+    NOT by the model prefix and NOT by `agentRuntime`/`cliBackends` config
+    entries. So this generator's job is simply to expose the canonical
+    `anthropic/<model>` ids in the model registry when an active credential
+    exists.
+    """
 
     def setUp(self):
         self.tenant = create_tenant(display_name="CfgTest", telegram_chat_id=10004)
@@ -432,17 +439,18 @@ class BYOConfigGeneratorTest(TestCase):
             status=BYOCredential.Status.VERIFIED,
         )
         cfg = self._generate()
-        self.assertNotIn("agentRuntime", cfg["agents"]["defaults"])
         self.assertNotIn(ANTHROPIC_SONNET_MODEL, cfg["agents"]["defaults"]["models"])
 
-    def test_no_agent_runtime_when_no_cred(self):
+    def test_no_byo_models_when_no_cred(self):
         self.tenant.byo_models_enabled = True
         self.tenant.preferred_model = ANTHROPIC_SONNET_MODEL
         self.tenant.save(update_fields=["byo_models_enabled", "preferred_model"])
         cfg = self._generate()
-        self.assertNotIn("agentRuntime", cfg["agents"]["defaults"])
+        self.assertNotIn(ANTHROPIC_SONNET_MODEL, cfg["agents"]["defaults"]["models"])
 
-    def test_agent_runtime_set_when_cred_active_and_anthropic_primary(self):
+    def test_byo_models_registered_when_cred_active(self):
+        from apps.billing.constants import ANTHROPIC_OPUS_MODEL
+
         self.tenant.byo_models_enabled = True
         self.tenant.preferred_model = ANTHROPIC_SONNET_MODEL
         self.tenant.save(update_fields=["byo_models_enabled", "preferred_model"])
@@ -454,44 +462,35 @@ class BYOConfigGeneratorTest(TestCase):
             status=BYOCredential.Status.VERIFIED,
         )
         cfg = self._generate()
-        self.assertEqual(cfg["agents"]["defaults"]["agentRuntime"], {"id": "claude-cli"})
         self.assertEqual(cfg["agents"]["defaults"]["model"]["primary"], ANTHROPIC_SONNET_MODEL)
+        # Both Sonnet and Opus exposed so the picker can offer either.
         self.assertIn(ANTHROPIC_SONNET_MODEL, cfg["agents"]["defaults"]["models"])
-        # cliBackends.claude-cli must be registered so OpenClaw knows
-        # how to spawn the bundled `claude` binary. Without this, the
-        # `anthropic-cli/...` model prefix routes nowhere.
-        self.assertEqual(
-            cfg["agents"]["defaults"]["cliBackends"]["claude-cli"],
-            {"command": "claude"},
-        )
-
-    def test_byo_anthropic_model_id_uses_cli_prefix(self):
-        """Regression guard: the BYO Anthropic model_id must use the
-        `anthropic-cli/...` prefix. Using `anthropic/...` would route
-        via OpenClaw's HTTP plugin (needing ANTHROPIC_API_KEY) and bypass
-        the user's Pro/Max subscription entirely.
-        """
-        self.assertTrue(
-            ANTHROPIC_SONNET_MODEL.startswith("anthropic-cli/"),
-            f"BYO Anthropic model id must start with 'anthropic-cli/' but got {ANTHROPIC_SONNET_MODEL!r}",
-        )
-
-    def test_no_agent_runtime_when_primary_not_anthropic(self):
-        # BYO Anthropic cred connected, but tenant has selected an OpenRouter
-        # model — no claude-cli runtime.
-        self.tenant.byo_models_enabled = True
-        self.tenant.save(update_fields=["byo_models_enabled"])
-        BYOCredential.objects.create(
-            tenant=self.tenant,
-            provider=BYOCredential.Provider.ANTHROPIC,
-            mode=BYOCredential.Mode.CLI_SUBSCRIPTION,
-            key_vault_secret_name="x",
-            status=BYOCredential.Status.VERIFIED,
-        )
-        cfg = self._generate()
+        self.assertIn(ANTHROPIC_OPUS_MODEL, cfg["agents"]["defaults"]["models"])
+        # No agentRuntime / cliBackends overrides — auth profile drives routing.
         self.assertNotIn("agentRuntime", cfg["agents"]["defaults"])
+        self.assertNotIn("cliBackends", cfg["agents"]["defaults"])
+
+    def test_byo_anthropic_model_ids_use_canonical_prefix(self):
+        """Regression guard for PR #421: the BYO Anthropic model ids must
+        use the canonical `anthropic/<model>` prefix.
+
+        OpenClaw 2026.4.25's model registry has no `anthropic-cli/...`
+        prefix (that string is a UI choiceId only — see
+        `dist/extensions/anthropic/openclaw.plugin.json`). Using
+        `anthropic-cli/...` produces "Unknown model" + fallback to
+        MiniMax — the bug PR #419 introduced.
+        """
+        from apps.billing.constants import ANTHROPIC_OPUS_MODEL
+
+        for model_id in (ANTHROPIC_SONNET_MODEL, ANTHROPIC_OPUS_MODEL):
+            self.assertTrue(
+                model_id.startswith("anthropic/"),
+                f"BYO Anthropic model id must start with 'anthropic/' but got {model_id!r}",
+            )
 
     def test_error_status_excluded_from_byo_extras(self):
+        from apps.billing.constants import ANTHROPIC_OPUS_MODEL
+
         self.tenant.byo_models_enabled = True
         self.tenant.preferred_model = ANTHROPIC_SONNET_MODEL
         self.tenant.save(update_fields=["byo_models_enabled", "preferred_model"])
@@ -503,8 +502,8 @@ class BYOConfigGeneratorTest(TestCase):
             status=BYOCredential.Status.ERROR,
         )
         cfg = self._generate()
-        self.assertNotIn("agentRuntime", cfg["agents"]["defaults"])
         self.assertNotIn(ANTHROPIC_SONNET_MODEL, cfg["agents"]["defaults"]["models"])
+        self.assertNotIn(ANTHROPIC_OPUS_MODEL, cfg["agents"]["defaults"]["models"])
 
 
 class EnableByoCommandTest(TestCase):

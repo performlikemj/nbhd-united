@@ -12,7 +12,12 @@ from typing import Any
 
 from django.conf import settings
 
-from apps.billing.constants import ANTHROPIC_SONNET_MODEL, GEMMA_MODEL, KIMI_MODEL, MINIMAX_MODEL
+from apps.billing.constants import (
+    ANTHROPIC_SONNET_MODEL,
+    GEMMA_MODEL,
+    KIMI_MODEL,
+    MINIMAX_MODEL,
+)
 from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION, generate_tool_config
 from apps.tenants.models import Tenant
 
@@ -587,9 +592,15 @@ def _byo_model_extras(tenant: Tenant) -> dict[str, dict[str, Any]]:
 
     Mirrors `TIER_MODEL_CONFIGS` shape (model_id → {"alias": ...}). Returns
     an empty dict when `tenant.byo_models_enabled` is False or no
-    non-error BYO credential exists. Phase 1 only exposes Claude Sonnet
-    4.6 via the Anthropic CLI subscription path.
+    non-error BYO credential exists.
+
+    Phase 1 exposes Claude Sonnet 4.6 and Claude Opus 4.7 via the Anthropic
+    Claude CLI subscription path. Both use the canonical `anthropic/<model>`
+    prefix; CLI routing is activated by the `anthropic:claude-cli` auth
+    profile that `runtime/openclaw/entrypoint.sh` registers at boot.
     """
+    from apps.billing.constants import ANTHROPIC_OPUS_MODEL as _OPUS_MODEL
+
     if not getattr(tenant, "byo_models_enabled", False):
         return {}
 
@@ -609,6 +620,7 @@ def _byo_model_extras(tenant: Tenant) -> dict[str, dict[str, Any]]:
     )
     if has_anthropic_cli:
         extras[ANTHROPIC_SONNET_MODEL] = {"alias": "claude-sonnet"}
+        extras[_OPUS_MODEL] = {"alias": "claude-opus"}
 
     return extras
 
@@ -1162,23 +1174,19 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "models": [],
         }
 
-    # BYO subscription: when the resolved primary is a Claude CLI model
-    # AND the tenant has an active Anthropic CLI credential, register
-    # the claude-cli backend and set it as the default runtime. The
-    # `anthropic-cli/...` model prefix is what actually routes via the
-    # CLI backend (mirroring `openai-codex/...` for Codex); the
-    # `agentRuntime` selector is belt-and-suspenders for older OpenClaw
-    # versions that key off the runtime id.
+    # BYO routing note: with auth profile `anthropic:claude-cli` registered
+    # by `runtime/openclaw/entrypoint.sh` (via `openclaw models auth login
+    # --provider anthropic --method cli`), OpenClaw 2026.4.25+ routes any
+    # `anthropic/<model>` request through the bundled `claude` binary.
+    # We do NOT need to set `agentRuntime` or `cliBackends` here — those
+    # would override the auth-profile-driven routing. The `anthropic-cli/...`
+    # prefix briefly shipped in PR #419 was a misread of the OpenClaw source
+    # (`anthropic-cli` is a UI choiceId, not a model prefix; valid prefixes
+    # are `claude-cli/...` and the canonical `anthropic/...`).
     #
     # The container env binding (CLAUDE_CODE_OAUTH_TOKEN, removal of
     # ANTHROPIC_API_KEY for the spawned subprocess) is set by
     # `apps.orchestrator.azure_client.apply_byo_credentials_to_container`.
-    if byo_extras and ANTHROPIC_SONNET_MODEL in byo_extras:
-        primary = config["agents"]["defaults"]["model"]["primary"]
-        if primary.startswith("anthropic-cli/"):
-            config["agents"]["defaults"]["agentRuntime"] = {"id": "claude-cli"}
-            cli_backends = config["agents"]["defaults"].setdefault("cliBackends", {})
-            cli_backends["claude-cli"] = {"command": "claude"}
 
     return config
 
