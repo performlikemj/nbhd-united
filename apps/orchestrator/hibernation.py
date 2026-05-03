@@ -578,10 +578,7 @@ def _claim_next_buffered_message(tenant, timeout_seconds: float):
         qs = (
             BufferedMessage.objects.select_for_update(skip_locked=True)
             .filter(tenant=tenant, delivered=False)
-            .filter(
-                models.Q(delivery_in_flight_until__isnull=True)
-                | models.Q(delivery_in_flight_until__lt=now)
-            )
+            .filter(models.Q(delivery_in_flight_until__isnull=True) | models.Q(delivery_in_flight_until__lt=now))
             .order_by("created_at")
         )
         msg = qs.first()
