@@ -1359,17 +1359,10 @@ class RuntimeUsageReportView(APIView):
 # `BYOProviderCard`). Keep these short — the banner is one line on mobile.
 _BYO_ERROR_HINT = {
     "anthropic": {
-        "billing": (
-            "Your Claude account is out of extra usage. "
-            "Top up at claude.ai/settings/usage and try again."
-        ),
-        "auth": (
-            "Your Claude session expired. "
-            "Reconnect to continue routing through your Anthropic account."
-        ),
+        "billing": ("Your Claude account is out of extra usage. Top up at claude.ai/settings/usage and try again."),
+        "auth": ("Your Claude session expired. Reconnect to continue routing through your Anthropic account."),
         "auth_permanent": (
-            "Your Claude credentials were revoked. "
-            "Reconnect to continue routing through your Anthropic account."
+            "Your Claude credentials were revoked. Reconnect to continue routing through your Anthropic account."
         ),
     },
 }
