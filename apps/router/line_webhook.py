@@ -957,9 +957,16 @@ class LineWebhookView(View):
             update_active_workspace(tenant, workspace)
 
         # Inject current time so the agent always knows "now"
-        from apps.router.services import build_datetime_context, get_forwarding_timeout
+        from apps.router.services import (
+            build_chat_context_marker,
+            build_datetime_context,
+            get_forwarding_timeout,
+        )
 
-        message_text = build_datetime_context(user_tz) + message_text
+        # Mark this as a conversational turn (not a scheduled cron run) so the
+        # agent skips the heavy AGENTS.md "Session Start" auto-context-load.
+        # See poller.py for the parallel comment.
+        message_text = build_datetime_context(user_tz) + build_chat_context_marker() + message_text
 
         # Model-aware timeout — reasoning models get more time
         chat_timeout, _is_reasoning = get_forwarding_timeout(tenant)

@@ -249,6 +249,9 @@ class TelegramPollerForwardTest(TestCase):
         content = payload["messages"][0]["content"]
         # Time header is injected before the user message
         self.assertIn("[Now: ", content)
+        # Conversational-turn marker tells the agent to skip the heavy
+        # AGENTS.md auto-context-load (huge for cold-start BYO Claude).
+        self.assertIn("[chat:", content)
         self.assertTrue(content.endswith("hi there"))
 
         # Verify AI response sent to user via Telegram

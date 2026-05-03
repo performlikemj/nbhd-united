@@ -194,7 +194,7 @@ PROXY_PID=$!
     if [ -n "${NBHD_API_BASE_URL:-}" ] && [ -n "${NBHD_INTERNAL_API_KEY:-}" ] && [ -n "${NBHD_TENANT_ID:-}" ]; then
         # Wait for the gateway's HTTP surface to come up (max ~60s).
         for _hook_attempt in $(seq 1 30); do
-            if curl -sS -f -m 2 "http://127.0.0.1:18789/health" >/dev/null 2>&1; then
+            if curl -sS -f -m 2 "http://127.0.0.1:18789/healthz" >/dev/null 2>&1; then
                 break
             fi
             sleep 2
@@ -208,6 +208,57 @@ PROXY_PID=$!
             >/dev/null 2>&1 \
             && echo "[entrypoint] container-started hook OK" \
             || echo "[entrypoint] container-started hook failed (non-fatal)" >&2
+    fi
+) &
+
+# --- BYO Anthropic pre-warm: keep the claude-cli session hot ---
+#
+# The first user turn after a cold start is brutal (~150s observed) because
+# the `claude` subprocess hasn't been spawned yet and all 7 MCP plugins
+# initialize sequentially the moment the gateway dispatches the first
+# `/v1/chat/completions` request.
+#
+# Mitigation: as soon as the gateway is reachable, fire one benign
+# /v1/chat/completions POST with a dedicated `user` param so it lands in
+# its own isolated session (NOT the user's main thread — no history
+# pollution). The model just replies "ok" or similar; what matters is the
+# `claude` binary + plugin pool stay warm for the subsequent real turn.
+#
+# Cost: BYO routes through the tenant's own Anthropic Pro/Max
+# subscription, so this counts toward their extra-usage credits — but a
+# single noop turn is ~$0.001, well below the perceived-latency value.
+#
+# Only runs when CLAUDE_CODE_OAUTH_TOKEN is set (i.e. only BYO tenants
+# pay the cost). Non-BYO tenants don't have this latency profile because
+# they hit OpenRouter/MiniMax which is always-on remote inference, not a
+# subprocess pool. Fully fire-and-forget; never blocks gateway startup.
+(
+    if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -n "${NBHD_INTERNAL_API_KEY:-}" ]; then
+        # Stagger ~5s after the container-started hook so we don't race
+        # the first real cron tick or hot-reload from Django.
+        sleep 5
+        for _warmup_attempt in $(seq 1 30); do
+            if curl -sS -f -m 2 "http://127.0.0.1:18789/healthz" >/dev/null 2>&1; then
+                break
+            fi
+            sleep 2
+        done
+        # Use a sentinel `user` value so workspace_routing on the Django
+        # side never matches it AND the conversation lands in its own
+        # isolated session/log file — invisible from the user's history.
+        # Generous timeout (180s) because the first claude spawn IS the
+        # slow path we're warming up.
+        if curl -sS -m 180 \
+            -H "Authorization: Bearer ${NBHD_INTERNAL_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "X-Channel: warmup" \
+            --data '{"model":"openclaw","user":"__nbhd_byo_warmup__","messages":[{"role":"user","content":"[warmup ping — reply with the single word OK and stop. Do not load any context, do not call any tools, do not write to memory or daily notes.]"}]}' \
+            "http://127.0.0.1:18789/v1/chat/completions" \
+            >/dev/null 2>&1; then
+            echo "[entrypoint] BYO claude-cli pre-warm OK"
+        else
+            echo "[entrypoint] BYO claude-cli pre-warm failed (non-fatal)" >&2
+        fi
     fi
 ) &
 

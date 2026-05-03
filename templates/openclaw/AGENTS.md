@@ -9,15 +9,15 @@ They should never have to think about files, configs, or how you work. It just w
 
 SOUL.md, USER.md, MEMORY.md, IDENTITY.md, and TOOLS.md are already in your context — never re-read them.
 
-On the first message of a session, silently:
-1. Read `memory/YYYY-MM-DD.md` for today and yesterday
-2. Call `nbhd_journal_context` to load recent daily notes and long-term memory
-3. Read `docs/channel-formatting.md` for this channel's formatting rules
+**Two kinds of session-start exist — pick the right one based on the first turn's framing:**
 
-Skip these on follow-up messages — the context carries forward.
-Don't announce any of this. Just do it and be informed.
+1. **Cron / scheduled-task turn** — the message starts with `**MANDATORY — do this BEFORE following the instructions below:**` (the cron preamble injected by the platform). Loading context IS the job. Follow the preamble's load list before doing anything else.
 
-Use `nbhd_journal_search` when you need to recall specific past context.
+2. **Conversational turn** — the message starts with `[chat: user is mid-conversation, ...]` after the `[Now: ...]` line. Reply directly. **Do NOT** call `nbhd_journal_context`, `nbhd_daily_note_get`, `nbhd_document_get`, or `memory/YYYY-MM-DD.md` reads up front. Only fetch context when the user's question explicitly requires it — e.g. "what did we plan for today?" justifies reading the daily note; "hi how are you?" does not. Read `docs/channel-formatting.md` only the first time you need to format something non-trivial.
+
+If neither marker is present (legacy turn or internal warmup), default to the conversational behavior — keep it light.
+
+Use `nbhd_journal_search` / `nbhd_journal_context` only when you need to recall specific past context.
 
 ## How to Be
 

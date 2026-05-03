@@ -276,11 +276,18 @@ def telegram_webhook(request):
         user_timezone = tenant.user.timezone or "UTC"
 
         # Inject current time into message text so the agent knows "now"
-        from apps.router.services import build_datetime_context, get_forwarding_timeout
+        from apps.router.services import (
+            build_chat_context_marker,
+            build_datetime_context,
+            get_forwarding_timeout,
+        )
 
         msg = update.get("message") or update.get("edited_message") or {}
         if "text" in msg:
-            msg["text"] = build_datetime_context(user_timezone) + msg["text"]
+            # Mark this as a conversational turn (not a scheduled cron run)
+            # so the agent skips the heavy AGENTS.md "Session Start"
+            # auto-context-load. See poller.py for the parallel comment.
+            msg["text"] = build_datetime_context(user_timezone) + build_chat_context_marker() + msg["text"]
 
         # Reasoning models need more time; the agent replies directly via bot
         # token even if this times out, but a longer window lets us capture

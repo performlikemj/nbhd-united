@@ -1244,9 +1244,17 @@ class TelegramPoller:
             update_active_workspace(tenant, workspace)
 
         # Inject current time so the agent always knows "now"
-        from apps.router.services import build_datetime_context, get_forwarding_timeout
+        from apps.router.services import (
+            build_chat_context_marker,
+            build_datetime_context,
+            get_forwarding_timeout,
+        )
 
-        message_text = build_datetime_context(user_tz) + message_text
+        # Mark this as a conversational turn (not a scheduled cron run) so the
+        # agent skips the heavy AGENTS.md "Session Start" auto-context-load.
+        # Cron prompts already include their own "load full context" preamble
+        # in apps/orchestrator/config_generator.py — they stay heavy on purpose.
+        message_text = build_datetime_context(user_tz) + build_chat_context_marker() + message_text
 
         # Model-aware timeout — reasoning models (e.g. Kimi K2.6) get more time
         chat_timeout, is_reasoning = get_forwarding_timeout(tenant)
