@@ -386,3 +386,209 @@ class ApologyHelperTest(TestCase):
         _send_apology_for_dropped_message(tenant, msg)
         body = mock_send_text.call_args[0][1]
         self.assertIn("Sorry", body)  # English fallback
+
+
+@override_settings(
+    NBHD_INTERNAL_API_KEY="test-key",
+    LINE_CHANNEL_ACCESS_TOKEN="test-token",
+)
+class DeliverBufferedInFlightLockTest(TestCase):
+    """Per-row in-flight lease must prevent a concurrent QStash retry of
+    ``deliver_buffered_messages_task`` from re-firing the chat completion
+    while the first attempt is still mid-POST.
+
+    Regression for the 2026-05-02 BYO Claude retry-storm incident on
+    tenant 148ccf1c, where 5+ ``cli exec`` invocations fired for a
+    single LINE prompt because the slow Claude turn timed out at 120s
+    and QStash retried while the original CLI session was still running
+    — the OpenClaw claude-cli backend rejects concurrent turns and falls
+    back off to MiniMax."""
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("httpx.post")
+    def test_concurrent_invocation_skips_message_with_live_lease(self, mock_post, _mock_send):
+        """While the first task call is mid-POST, a second concurrent call
+        must observe the live lease and skip the row instead of firing a
+        duplicate ``/v1/chat/completions``."""
+        from apps.orchestrator.hibernation import deliver_buffered_messages_task
+
+        user = _make_user(line_user_id="U_in_flight")
+        tenant = _make_tenant(user)
+        msg = BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={"events": []},
+            user_text="please reply once",
+        )
+
+        second_call_result: dict = {}
+
+        def _slow_post(*args, **kwargs):
+            # Mid-POST a second QStash retry fires. It must observe the
+            # in-flight lease and skip the row instead of firing a
+            # duplicate /v1/chat/completions at the container.
+            second_call_result["data"] = deliver_buffered_messages_task(str(tenant.id))
+            return _ok_chat_response("here you go")
+
+        mock_post.side_effect = _slow_post
+
+        result = deliver_buffered_messages_task(str(tenant.id))
+
+        # First invocation delivered the message.
+        self.assertEqual(result["delivered"], 1)
+        self.assertEqual(result["failed"], 0)
+        # Second (concurrent) invocation saw the lease and skipped.
+        self.assertEqual(second_call_result["data"]["delivered"], 0)
+        self.assertEqual(second_call_result["data"]["failed"], 0)
+        self.assertEqual(second_call_result["data"]["skipped_in_flight"], 1)
+        # Crucially: only ONE chat completion was POSTed for the message.
+        self.assertEqual(mock_post.call_count, 1)
+
+        msg.refresh_from_db()
+        self.assertTrue(msg.delivered)
+        # Lease cleared on success.
+        self.assertIsNone(msg.delivery_in_flight_until)
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("httpx.post")
+    def test_expired_lease_is_reclaimed_on_next_run(self, mock_post, _mock_send):
+        """If a previous worker died after taking the lease but before
+        clearing it, the next run (after the lease window) must reclaim
+        the row. Otherwise stuck rows would block forever."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.orchestrator.hibernation import deliver_buffered_messages_task
+
+        user = _make_user(line_user_id="U_stale_lease")
+        tenant = _make_tenant(user)
+        # Simulate a stale lease that elapsed 30 minutes ago.
+        msg = BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={"events": []},
+            user_text="hi",
+            delivery_in_flight_until=timezone.now() - timedelta(minutes=30),
+        )
+        mock_post.return_value = _ok_chat_response("ok")
+
+        result = deliver_buffered_messages_task(str(tenant.id))
+
+        self.assertEqual(result["delivered"], 1)
+        msg.refresh_from_db()
+        self.assertTrue(msg.delivered)
+        self.assertIsNone(msg.delivery_in_flight_until)
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("httpx.post")
+    def test_lease_cleared_on_failure_so_retry_can_reclaim(self, mock_post, _mock_send):
+        """On a real per-message failure the lease must be cleared so the
+        QStash retry can re-claim the row immediately rather than wait
+        for the lease to expire on its own."""
+        from apps.orchestrator.hibernation import deliver_buffered_messages_task
+
+        user = _make_user(line_user_id="U_fail_clears_lease")
+        tenant = _make_tenant(user)
+        msg = BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={"events": []},
+            user_text="hi",
+        )
+
+        with patch(
+            "apps.orchestrator.hibernation._post_chat_completion_with_backoff",
+            side_effect=RuntimeError("boom"),
+        ), self.assertRaises(RuntimeError):
+            deliver_buffered_messages_task(str(tenant.id))
+
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_attempts, 1)
+        self.assertIsNone(msg.delivery_in_flight_until)
+        self.assertFalse(msg.delivered)
+
+
+class ResolveChatTimeoutTest(TestCase):
+    """BYO Claude (anthropic/* via the CLI backend) and reasoning models
+    get the longer ``REASONING_MODEL_TIMEOUT`` so the cold-start +
+    first-turn-with-full-agent-context latency doesn't trigger the
+    short-timeout retry storm that the 2026-05-02 incident exposed."""
+
+    def test_byo_anthropic_sonnet_uses_reasoning_timeout(self):
+        from apps.billing.constants import (
+            ANTHROPIC_SONNET_MODEL,
+            REASONING_MODEL_TIMEOUT,
+        )
+        from apps.orchestrator.hibernation import _resolve_chat_timeout
+
+        user = _make_user(line_user_id="U_sonnet")
+        tenant = _make_tenant(user)
+        tenant.preferred_model = ANTHROPIC_SONNET_MODEL
+        tenant.save(update_fields=["preferred_model"])
+
+        self.assertEqual(_resolve_chat_timeout(tenant), REASONING_MODEL_TIMEOUT)
+
+    def test_byo_anthropic_opus_uses_reasoning_timeout(self):
+        from apps.billing.constants import (
+            ANTHROPIC_OPUS_MODEL,
+            REASONING_MODEL_TIMEOUT,
+        )
+        from apps.orchestrator.hibernation import _resolve_chat_timeout
+
+        user = _make_user(line_user_id="U_opus")
+        tenant = _make_tenant(user)
+        tenant.preferred_model = ANTHROPIC_OPUS_MODEL
+        tenant.save(update_fields=["preferred_model"])
+
+        self.assertEqual(_resolve_chat_timeout(tenant), REASONING_MODEL_TIMEOUT)
+
+    def test_default_minimax_keeps_default_timeout(self):
+        from apps.billing.constants import DEFAULT_CHAT_TIMEOUT, MINIMAX_MODEL
+        from apps.orchestrator.hibernation import _resolve_chat_timeout
+
+        user = _make_user(line_user_id="U_minimax")
+        tenant = _make_tenant(user)
+        tenant.preferred_model = MINIMAX_MODEL
+        tenant.save(update_fields=["preferred_model"])
+
+        self.assertEqual(_resolve_chat_timeout(tenant), DEFAULT_CHAT_TIMEOUT)
+
+    def test_empty_preferred_model_keeps_default_timeout(self):
+        from apps.billing.constants import DEFAULT_CHAT_TIMEOUT
+        from apps.orchestrator.hibernation import _resolve_chat_timeout
+
+        user = _make_user(line_user_id="U_unset")
+        tenant = _make_tenant(user)
+        # preferred_model unset (default)
+        self.assertEqual(_resolve_chat_timeout(tenant), DEFAULT_CHAT_TIMEOUT)
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("httpx.post")
+    def test_byo_tenant_post_uses_longer_timeout(self, mock_post, _mock_send):
+        """End-to-end: a BYO Claude tenant's buffered delivery must call
+        ``_post_chat_completion_with_backoff`` with the BYO timeout."""
+        from apps.billing.constants import (
+            ANTHROPIC_SONNET_MODEL,
+            REASONING_MODEL_TIMEOUT,
+        )
+        from apps.orchestrator.hibernation import deliver_buffered_messages_task
+
+        mock_post.return_value = _ok_chat_response("hi")
+
+        user = _make_user(line_user_id="U_byo_e2e")
+        tenant = _make_tenant(user)
+        tenant.preferred_model = ANTHROPIC_SONNET_MODEL
+        tenant.save(update_fields=["preferred_model"])
+        BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={"events": []},
+            user_text="hi",
+        )
+
+        deliver_buffered_messages_task(str(tenant.id))
+
+        mock_post.assert_called_once()
+        # Timeout kwarg passed through to httpx.post by the backoff helper.
+        self.assertEqual(mock_post.call_args.kwargs["timeout"], REASONING_MODEL_TIMEOUT)
