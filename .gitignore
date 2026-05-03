@@ -49,3 +49,8 @@ htmlcov/
 CONTINUITY*.md
 CONTINUITY_*.md
 CONTINUITY.md
+
+# PII model (ONNX weights — not committed, baked into Docker image)
+pii-model/
+pii-model-output/
+pii-model-test/
