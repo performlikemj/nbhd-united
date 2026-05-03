@@ -10,6 +10,7 @@ from .runtime_views import (
     RedditDisconnectView,
     RedditStatusView,
     RedditToolView,
+    RuntimeBYOErrorReportView,
     RuntimeCalendarEventsView,
     RuntimeCalendarFreeBusyView,
     RuntimeDailyNoteAppendView,
@@ -137,6 +138,13 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/usage/report/",
         RuntimeUsageReportView.as_view(),
         name="runtime-usage-report",
+    ),
+    # BYO provider error reporting — flips BYOCredential.status to error
+    # with a user-facing last_error so the AI Provider page surfaces it.
+    path(
+        "runtime/<uuid:tenant_id>/byo/error/",
+        RuntimeBYOErrorReportView.as_view(),
+        name="runtime-byo-error-report",
     ),
     # Platform issue logging
     path(

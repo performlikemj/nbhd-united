@@ -156,6 +156,55 @@ def delete_credential(cred: BYOCredential) -> None:
     logger.info("Deleted BYOCredential %s (secret=%s)", cred_id, secret_name)
 
 
+# Maximum stored length for `last_error` — the field is TextField but a
+# raw provider blob may be very large. Truncate so the rose banner stays
+# readable in `BYOProviderCard`.
+_LAST_ERROR_MAX_LEN = 240
+
+
+def mark_credential_error(
+    tenant: Tenant,
+    provider: str,
+    last_error: str,
+) -> BYOCredential | None:
+    """Flip a tenant's BYO credential into the `error` state with a
+    user-facing message.
+
+    Used by the runtime when OpenClaw reports a billing/auth failure
+    against the BYO route (e.g. claude-binary returns
+    `"out of extra usage"`). The frontend `BYOProviderCard` already
+    surfaces `last_error` in a rose banner when status is `error`,
+    so this is the join point that closes the loop between "claude
+    failed" → "user sees what to do".
+
+    Returns the updated row, or None if no matching credential exists.
+    Idempotent: safe to call repeatedly with the same message.
+    """
+    cleaned = (last_error or "").strip()
+    if len(cleaned) > _LAST_ERROR_MAX_LEN:
+        cleaned = cleaned[: _LAST_ERROR_MAX_LEN - 1].rstrip() + "…"
+    cred = (
+        BYOCredential.objects.filter(tenant=tenant, provider=provider)
+        .exclude(status=BYOCredential.Status.PENDING)
+        .first()
+    )
+    if cred is None:
+        return None
+    BYOCredential.objects.filter(pk=cred.pk).update(
+        status=BYOCredential.Status.ERROR,
+        last_error=cleaned,
+    )
+    cred.refresh_from_db()
+    logger.info(
+        "Marked BYOCredential %s (tenant=%s, provider=%s) as error: %s",
+        cred.id,
+        tenant.id,
+        provider,
+        cleaned[:80],
+    )
+    return cred
+
+
 def regenerate_tenant_config(tenant: Tenant) -> None:
     """Synchronously regenerate the tenant's openclaw.json on the file
     share and advance `config_version` so the apply-pending-configs cron

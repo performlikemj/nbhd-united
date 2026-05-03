@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.urls import include, path
 
-from apps.integrations.runtime_views import RuntimeUsageReportView
+from apps.integrations.runtime_views import RuntimeBYOErrorReportView, RuntimeUsageReportView
 from apps.router.test_workspace_sessions import force_apply_test_tenant_config, test_workspace_session
 from apps.router.views import serve_chart_image
 
@@ -27,6 +27,14 @@ urlpatterns = [
         "api/v1/internal/runtime/<uuid:tenant_id>/usage/report/",
         RuntimeUsageReportView.as_view(),
         name="runtime-usage-report-internal",
+    ),
+    # BYO provider error reporting — container→Django. Plugin POSTs here
+    # when a billing/auth error fires on a BYO route so the AI Provider
+    # page surfaces the real cause to the user.
+    path(
+        "api/v1/internal/runtime/<uuid:tenant_id>/byo/error/",
+        RuntimeBYOErrorReportView.as_view(),
+        name="runtime-byo-error-report-internal",
     ),
     # Action gating — container→Django (request + poll)
     path(

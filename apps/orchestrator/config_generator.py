@@ -913,6 +913,23 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     if tenant.preferred_model and tenant.preferred_model in model_entries:
         models_config = {**models_config, "primary": tenant.preferred_model}
 
+    # Silent-fallback guard for BYO models. When the resolved primary is a
+    # BYO model (e.g. anthropic/claude-sonnet-4-6 routed through the user's
+    # own Claude subscription), a billing failure on that account must NOT
+    # fall through to MiniMax — the user has paid Anthropic specifically to
+    # use Claude, and they expect to either get Claude or a clear error
+    # they can act on. With `fallbacks: []` OpenClaw 2026.4.25's
+    # `runWithModelFallback` raises the original billing error directly
+    # (see `throwFallbackFailureSummary`: when there's only one candidate
+    # the lastError is rethrown as-is), which the assistant then surfaces
+    # to the user via the channel router.
+    primary_model = models_config["primary"]
+    primary_is_byo = bool(byo_extras) and primary_model in byo_extras
+    if primary_is_byo:
+        fallbacks_list: list[str] = []
+    else:
+        fallbacks_list = [m for m in model_entries if m != primary_model]
+
     # Collect all configured plugins
     _plugin_defs = [
         (
@@ -998,7 +1015,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "defaults": {
                 "model": {
                     "primary": models_config["primary"],
-                    "fallbacks": [m for m in model_entries if m != models_config["primary"]],
+                    "fallbacks": fallbacks_list,
                 },
                 "models": model_entries,
                 "workspace": "/home/node/.openclaw/workspace",
