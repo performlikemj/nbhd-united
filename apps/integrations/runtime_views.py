@@ -1354,6 +1354,105 @@ class RuntimeUsageReportView(APIView):
         return Response({"status": "ok"}, status=status.HTTP_200_OK)
 
 
+# Map raw runtime "reason" tokens to user-facing copy that we can stash in
+# `BYOCredential.last_error` (rendered by the rose banner in
+# `BYOProviderCard`). Keep these short — the banner is one line on mobile.
+_BYO_ERROR_HINT = {
+    "anthropic": {
+        "billing": ("Your Claude account is out of extra usage. Top up at claude.ai/settings/usage and try again."),
+        "auth": ("Your Claude session expired. Reconnect to continue routing through your Anthropic account."),
+        "auth_permanent": (
+            "Your Claude credentials were revoked. Reconnect to continue routing through your Anthropic account."
+        ),
+    },
+}
+_BYO_REASONS_THAT_FAIL_CRED = frozenset({"billing", "auth", "auth_permanent"})
+
+
+class RuntimeBYOErrorReportView(APIView):
+    """Record a BYO provider error from the runtime so the UI can surface it.
+
+    Posted by the in-container `nbhd-usage-reporter` plugin when an
+    `agent_end` event reports a failed turn whose error matches a
+    billing/auth signature on a BYO route. The handler flips the
+    matching `BYOCredential.status` to `error` and stores a clean
+    user-facing message in `last_error` — the AI Provider page already
+    renders that field in a rose banner via `BYOProviderCard`.
+
+    Idempotent and tolerant: if no matching credential exists (e.g. the
+    user disconnected between the failure and the report), we record
+    the event in logs and return 200 — the runtime should not retry.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        if not isinstance(request.data, dict):
+            return Response(
+                {"error": "invalid_request", "detail": "invalid JSON payload"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        provider = str(request.data.get("provider", "")).strip().lower()
+        reason = str(request.data.get("reason", "")).strip().lower()
+        message = str(request.data.get("message", "")).strip()
+        model_used = str(request.data.get("model_used", "")).strip()
+
+        if provider not in _BYO_ERROR_HINT:
+            return Response(
+                {"error": "invalid_request", "detail": "unknown provider"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if reason not in _BYO_REASONS_THAT_FAIL_CRED:
+            # Not an actionable failure for the user (e.g. transient
+            # rate-limit or overload). Log and ack so the plugin doesn't
+            # retry.
+            logger.info(
+                "BYO error report ignored (non-actionable reason=%s) for tenant=%s provider=%s",
+                reason or "unknown",
+                tenant.id,
+                provider,
+            )
+            return Response({"status": "ignored"}, status=status.HTTP_200_OK)
+
+        from apps.byo_models.services import mark_credential_error
+
+        hint = _BYO_ERROR_HINT[provider].get(reason) or message[:200]
+        try:
+            cred = mark_credential_error(
+                tenant=tenant,
+                provider=provider,
+                last_error=hint,
+            )
+        except Exception as exc:  # pragma: no cover - defensive only
+            return Response(
+                {"error": "byo_error_record_failed", "detail": str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if cred is None:
+            logger.info(
+                "BYO error report: no matching cred for tenant=%s provider=%s (reason=%s, model=%s)",
+                tenant.id,
+                provider,
+                reason,
+                model_used or "?",
+            )
+            return Response({"status": "no_credential"}, status=status.HTTP_200_OK)
+
+        return Response({"status": "ok", "credential_id": str(cred.id)}, status=status.HTTP_200_OK)
+
+
 class RuntimeMemorySyncView(APIView):
     """GET files dict for workspace memory sync (agent/container access).
 

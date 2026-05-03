@@ -511,6 +511,119 @@ class BYOConfigGeneratorTest(TestCase):
         self.assertNotIn(ANTHROPIC_SONNET_MODEL, cfg["agents"]["defaults"]["models"])
         self.assertNotIn(ANTHROPIC_OPUS_MODEL, cfg["agents"]["defaults"]["models"])
 
+    def test_byo_primary_disables_fallbacks_to_avoid_silent_swap(self):
+        """When the resolved primary is a BYO model, `fallbacks` must be
+        empty so OpenClaw raises the original billing/auth error instead
+        of silently swapping to a non-BYO model. The user paid Anthropic
+        specifically for Claude — getting a MiniMax answer would feel
+        broken.
+        """
+        self.tenant.byo_models_enabled = True
+        self.tenant.preferred_model = ANTHROPIC_SONNET_MODEL
+        self.tenant.save(update_fields=["byo_models_enabled", "preferred_model"])
+        BYOCredential.objects.create(
+            tenant=self.tenant,
+            provider=BYOCredential.Provider.ANTHROPIC,
+            mode=BYOCredential.Mode.CLI_SUBSCRIPTION,
+            key_vault_secret_name="x",
+            status=BYOCredential.Status.VERIFIED,
+        )
+        cfg = self._generate()
+        self.assertEqual(cfg["agents"]["defaults"]["model"]["primary"], ANTHROPIC_SONNET_MODEL)
+        self.assertEqual(
+            cfg["agents"]["defaults"]["model"]["fallbacks"],
+            [],
+            "BYO primary must have an empty fallbacks list to surface billing errors",
+        )
+
+    def test_non_byo_primary_keeps_fallbacks_populated(self):
+        """Tier default (MiniMax) is not a BYO model — `fallbacks` should
+        still expose the rest of the tier's allowed models so
+        rate-limit/overload on the cheap model still falls through.
+        """
+        from apps.billing.constants import GEMMA_MODEL, KIMI_MODEL, MINIMAX_MODEL
+
+        # No preferred_model override — primary stays at tier default.
+        cfg = self._generate()
+        self.assertEqual(cfg["agents"]["defaults"]["model"]["primary"], MINIMAX_MODEL)
+        fallbacks = cfg["agents"]["defaults"]["model"]["fallbacks"]
+        self.assertIn(KIMI_MODEL, fallbacks)
+        self.assertIn(GEMMA_MODEL, fallbacks)
+
+
+class BYOMarkCredentialErrorTest(TestCase):
+    """Tests for `mark_credential_error` service helper."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="MarkErrTest", telegram_chat_id=10006)
+
+    def test_flips_verified_credential_to_error_with_message(self):
+        from apps.byo_models.services import mark_credential_error
+
+        BYOCredential.objects.create(
+            tenant=self.tenant,
+            provider=BYOCredential.Provider.ANTHROPIC,
+            mode=BYOCredential.Mode.CLI_SUBSCRIPTION,
+            key_vault_secret_name="x",
+            status=BYOCredential.Status.VERIFIED,
+        )
+        cred = mark_credential_error(
+            tenant=self.tenant,
+            provider=BYOCredential.Provider.ANTHROPIC,
+            last_error="Your Claude account is out of extra usage.",
+        )
+        self.assertIsNotNone(cred)
+        self.assertEqual(cred.status, BYOCredential.Status.ERROR)
+        self.assertIn("out of extra usage", cred.last_error)
+
+    def test_returns_none_when_no_credential_exists(self):
+        from apps.byo_models.services import mark_credential_error
+
+        cred = mark_credential_error(
+            tenant=self.tenant,
+            provider=BYOCredential.Provider.ANTHROPIC,
+            last_error="boom",
+        )
+        self.assertIsNone(cred)
+
+    def test_skips_pending_credentials(self):
+        # Pending creds shouldn't get flipped to error — they haven't
+        # finished their first verification.
+        from apps.byo_models.services import mark_credential_error
+
+        BYOCredential.objects.create(
+            tenant=self.tenant,
+            provider=BYOCredential.Provider.ANTHROPIC,
+            mode=BYOCredential.Mode.CLI_SUBSCRIPTION,
+            key_vault_secret_name="x",
+            status=BYOCredential.Status.PENDING,
+        )
+        cred = mark_credential_error(
+            tenant=self.tenant,
+            provider=BYOCredential.Provider.ANTHROPIC,
+            last_error="boom",
+        )
+        self.assertIsNone(cred)
+
+    def test_truncates_overlong_messages(self):
+        from apps.byo_models.services import mark_credential_error
+
+        BYOCredential.objects.create(
+            tenant=self.tenant,
+            provider=BYOCredential.Provider.ANTHROPIC,
+            mode=BYOCredential.Mode.CLI_SUBSCRIPTION,
+            key_vault_secret_name="x",
+            status=BYOCredential.Status.VERIFIED,
+        )
+        long_msg = "x" * 1000
+        cred = mark_credential_error(
+            tenant=self.tenant,
+            provider=BYOCredential.Provider.ANTHROPIC,
+            last_error=long_msg,
+        )
+        self.assertIsNotNone(cred)
+        self.assertLessEqual(len(cred.last_error), 240)
+
 
 class EnableByoCommandTest(TestCase):
     def setUp(self):
