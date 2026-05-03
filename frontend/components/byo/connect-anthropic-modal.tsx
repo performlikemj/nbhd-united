@@ -21,6 +21,12 @@ export function ConnectAnthropicModal({ open, onClose }: Props) {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // AbortController for the in-flight connect request. The user can dismiss
+  // the modal at any time; if a request is in flight we abort it so the
+  // promise rejects locally and the modal closes cleanly. The server-side
+  // write may still complete — that's fine, `onSettled` invalidates the
+  // credentials query either way.
+  const abortRef = useRef<AbortController | null>(null);
 
   const reset = useCallback(() => {
     setStep("info");
@@ -29,6 +35,16 @@ export function ConnectAnthropicModal({ open, onClose }: Props) {
     setErrorMsg(null);
   }, []);
 
+  // Close handler — always succeeds. If a mutation is in flight, abort it
+  // first so the user is never trapped behind a hung verify call.
+  const requestClose = useCallback(() => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    onClose();
+  }, [onClose]);
+
   useEffect(() => {
     if (!open) {
       const t = setTimeout(reset, 200);
@@ -36,11 +52,12 @@ export function ConnectAnthropicModal({ open, onClose }: Props) {
     }
   }, [open, reset]);
 
-  // Focus management + esc-to-close
+  // Focus management + esc-to-close. Escape always closes — pending state
+  // does not trap.
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !connect.isPending) onClose();
+      if (e.key === "Escape") requestClose();
     };
     window.addEventListener("keydown", handler);
 
@@ -49,7 +66,7 @@ export function ConnectAnthropicModal({ open, onClose }: Props) {
     );
     first?.focus();
     return () => window.removeEventListener("keydown", handler);
-  }, [open, connect.isPending, onClose]);
+  }, [open, requestClose]);
 
   // When transitioning to paste, focus the textarea
   useEffect(() => {
@@ -58,6 +75,15 @@ export function ConnectAnthropicModal({ open, onClose }: Props) {
       return () => clearTimeout(t);
     }
   }, [step, open]);
+
+  // Cleanup on unmount: if the modal disappears entirely, abort any
+  // request still in flight.
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+    };
+  }, []);
 
   const copyCommand = async () => {
     try {
@@ -78,14 +104,24 @@ export function ConnectAnthropicModal({ open, onClose }: Props) {
       );
       return;
     }
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       await connect.mutateAsync({
-        provider: "anthropic",
-        mode: "cli_subscription",
-        token: trimmed,
+        data: {
+          provider: "anthropic",
+          mode: "cli_subscription",
+          token: trimmed,
+        },
+        signal: controller.signal,
       });
+      abortRef.current = null;
       onClose();
     } catch (err) {
+      // If the user cancelled, the modal is already closing — don't
+      // resurrect it with an error message.
+      if (controller.signal.aborted) return;
+      abortRef.current = null;
       const status = (err as Error & { status?: number }).status;
       if (status === 400) {
         setErrorMsg("Token couldn't be saved — check the format and try again.");
@@ -101,15 +137,13 @@ export function ConnectAnthropicModal({ open, onClose }: Props) {
 
   if (!open) return null;
 
-  const closable = !connect.isPending;
-
   return (
     <div
       className="fixed inset-0 z-[80] flex items-end justify-center p-0 sm:items-center sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="connect-anthropic-title"
-      onClick={() => closable && onClose()}
+      onClick={requestClose}
     >
       <div className="absolute inset-0 bg-overlay backdrop-blur-md" aria-hidden="true" />
       <div
@@ -126,32 +160,33 @@ export function ConnectAnthropicModal({ open, onClose }: Props) {
           <span className="h-1 w-9 rounded-full bg-white/20" aria-hidden="true" />
         </div>
 
+        {/* Sticky close button — always reachable, even when content
+            scrolls (PR #426 callout makes step 1 taller; step 2 with an
+            error is taller still). Sits in the scroll container so it
+            stays visible above the header on tall content. */}
+        <button
+          type="button"
+          onClick={requestClose}
+          className="absolute right-3 top-3 z-10 flex min-h-[44px] min-w-[44px] items-center justify-center rounded-full bg-surface/80 text-ink-muted backdrop-blur-md transition hover:bg-surface-hover hover:text-ink sm:right-4 sm:top-4"
+          aria-label="Close"
+        >
+          <span aria-hidden="true">✕</span>
+        </button>
+
         <div className="px-6 pt-4 pb-2 sm:p-8 sm:pb-2">
-          {/* Header */}
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h2
-                id="connect-anthropic-title"
-                className="font-headline text-xl font-bold text-ink sm:text-2xl"
-              >
-                Connect Anthropic
-              </h2>
-              <p className="mt-1 text-sm text-ink-muted">
-                {step === "info"
-                  ? "Step 1 of 2 — generate a token from your Claude Code CLI."
-                  : "Step 2 of 2 — paste the token from your terminal."}
-              </p>
-            </div>
-            {closable ? (
-              <button
-                type="button"
-                onClick={onClose}
-                className="rounded-full p-2 text-ink-muted transition hover:bg-surface-hover min-h-[44px] min-w-[44px] flex items-center justify-center"
-                aria-label="Close"
-              >
-                <span aria-hidden="true">✕</span>
-              </button>
-            ) : null}
+          {/* Header — pad right so it doesn't collide with the sticky X */}
+          <div className="pr-12 sm:pr-14">
+            <h2
+              id="connect-anthropic-title"
+              className="font-headline text-xl font-bold text-ink sm:text-2xl"
+            >
+              Connect Anthropic
+            </h2>
+            <p className="mt-1 text-sm text-ink-muted">
+              {step === "info"
+                ? "Step 1 of 2 — generate a token from your Claude Code CLI."
+                : "Step 2 of 2 — paste the token from your terminal."}
+            </p>
           </div>
 
           {/* Step indicator */}
@@ -322,13 +357,16 @@ export function ConnectAnthropicModal({ open, onClose }: Props) {
           )}
         </div>
 
-        {/* Sticky footer */}
+        {/* Sticky footer. Cancel is always enabled and never trapped — even
+            during a pending verify, it cancels the request and dismisses
+            the modal. Only the destructive/forward CTAs disable on
+            pending. */}
         <div className="sticky bottom-0 border-t border-border bg-surface/95 px-6 py-4 backdrop-blur-md sm:px-8">
           {step === "info" ? (
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end sm:gap-3">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={requestClose}
                 className="rounded-full border border-border px-5 py-2.5 text-sm font-medium text-ink-muted transition hover:bg-surface-hover min-h-[44px]"
               >
                 Cancel
@@ -343,14 +381,23 @@ export function ConnectAnthropicModal({ open, onClose }: Props) {
             </div>
           ) : (
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between sm:gap-3">
-              <button
-                type="button"
-                onClick={() => setStep("info")}
-                disabled={connect.isPending}
-                className="rounded-full border border-border px-5 py-2.5 text-sm font-medium text-ink-muted transition hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px]"
-              >
-                ← Back
-              </button>
+              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:gap-3">
+                <button
+                  type="button"
+                  onClick={requestClose}
+                  className="rounded-full border border-border px-5 py-2.5 text-sm font-medium text-ink-muted transition hover:bg-surface-hover min-h-[44px]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStep("info")}
+                  disabled={connect.isPending}
+                  className="rounded-full border border-border px-5 py-2.5 text-sm font-medium text-ink-muted transition hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px]"
+                >
+                  ← Back
+                </button>
+              </div>
               <button
                 type="button"
                 onClick={submitToken}
