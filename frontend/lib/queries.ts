@@ -1537,7 +1537,13 @@ export function useByoCredentialsQuery() {
 export function useConnectByoMutation() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: connectByoCredential,
+    mutationFn: ({
+      data,
+      signal,
+    }: {
+      data: Parameters<typeof connectByoCredential>[0];
+      signal?: AbortSignal;
+    }) => connectByoCredential(data, signal),
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: ["byo-credentials"] });
       void qc.invalidateQueries({ queryKey: ["tenant"] });
@@ -1548,7 +1554,8 @@ export function useConnectByoMutation() {
 export function useDisconnectByoMutation() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: disconnectByoCredential,
+    mutationFn: ({ id, signal }: { id: string; signal?: AbortSignal }) =>
+      disconnectByoCredential(id, signal),
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: ["byo-credentials"] });
       void qc.invalidateQueries({ queryKey: ["tenant"] });

@@ -1128,13 +1128,21 @@ export function fetchByoCredentials(): Promise<import("@/lib/types").BYOCredenti
 
 export function connectByoCredential(
   data: import("@/lib/types").BYOConnectRequest,
+  signal?: AbortSignal,
 ): Promise<import("@/lib/types").BYOConnectResponse> {
   return apiFetch<import("@/lib/types").BYOConnectResponse>("/api/v1/tenants/byo-credentials/", {
     method: "POST",
     body: JSON.stringify(data),
+    signal,
   });
 }
 
-export async function disconnectByoCredential(id: string): Promise<void> {
-  await apiFetch(`/api/v1/tenants/byo-credentials/${id}/`, { method: "DELETE" });
+export async function disconnectByoCredential(
+  id: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await apiFetch(`/api/v1/tenants/byo-credentials/${id}/`, {
+    method: "DELETE",
+    signal,
+  });
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useDisconnectByoMutation } from "@/lib/queries";
 import type { BYOCredential } from "@/lib/types";
@@ -17,6 +17,20 @@ export function DisconnectModal({ open, cred, fallbackModelName, onClose }: Prop
   const disconnect = useDisconnectByoMutation();
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  // AbortController for the in-flight disconnect request. The user must
+  // always be able to dismiss the modal, even if the DELETE call hangs
+  // (e.g. slow Key Vault soft-delete). Aborting here just stops the UI
+  // from waiting; the server-side delete may still complete and
+  // `onSettled` invalidates the credentials query either way.
+  const abortRef = useRef<AbortController | null>(null);
+
+  const requestClose = useCallback(() => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    onClose();
+  }, [onClose]);
 
   useEffect(() => {
     if (!open) {
@@ -28,7 +42,7 @@ export function DisconnectModal({ open, cred, fallbackModelName, onClose }: Prop
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !disconnect.isPending) onClose();
+      if (e.key === "Escape") requestClose();
     };
     window.addEventListener("keydown", handler);
 
@@ -37,15 +51,29 @@ export function DisconnectModal({ open, cred, fallbackModelName, onClose }: Prop
     );
     first?.focus();
     return () => window.removeEventListener("keydown", handler);
-  }, [open, disconnect.isPending, onClose]);
+  }, [open, requestClose]);
+
+  // Cleanup on unmount: abort any request still in flight.
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+    };
+  }, []);
 
   const submit = async () => {
     if (!cred) return;
     setErrorMsg(null);
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
-      await disconnect.mutateAsync(cred.id);
+      await disconnect.mutateAsync({ id: cred.id, signal: controller.signal });
+      abortRef.current = null;
       onClose();
     } catch (err) {
+      // User cancelled — modal is already closing, don't surface an error.
+      if (controller.signal.aborted) return;
+      abortRef.current = null;
       setErrorMsg(
         err instanceof Error ? err.message : "Could not disconnect. Please try again.",
       );
@@ -54,15 +82,13 @@ export function DisconnectModal({ open, cred, fallbackModelName, onClose }: Prop
 
   if (!open || !cred) return null;
 
-  const closable = !disconnect.isPending;
-
   return (
     <div
       className="fixed inset-0 z-[80] flex items-end justify-center p-0 sm:items-center sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="byo-disconnect-title"
-      onClick={() => closable && onClose()}
+      onClick={requestClose}
     >
       <div className="absolute inset-0 bg-overlay backdrop-blur-md" aria-hidden="true" />
       <div
@@ -79,8 +105,20 @@ export function DisconnectModal({ open, cred, fallbackModelName, onClose }: Prop
           <span className="h-1 w-9 rounded-full bg-white/20" aria-hidden="true" />
         </div>
 
+        {/* Always-visible close button — pinned in the scroll container so
+            it stays reachable even if the body grows (error state). */}
+        <button
+          type="button"
+          onClick={requestClose}
+          className="absolute right-3 top-3 z-10 flex min-h-[44px] min-w-[44px] items-center justify-center rounded-full bg-surface/80 text-ink-muted backdrop-blur-md transition hover:bg-surface-hover hover:text-ink sm:right-4 sm:top-4"
+          aria-label="Close"
+        >
+          <span aria-hidden="true">✕</span>
+        </button>
+
         <div className="px-6 pt-4 sm:p-8 sm:pb-2">
-          <div className="flex items-start gap-3">
+          {/* Pad right so the title doesn't collide with the sticky X */}
+          <div className="flex items-start gap-3 pr-12 sm:pr-14">
             <span
               aria-hidden="true"
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-rose-bg text-rose-text"
@@ -138,13 +176,15 @@ export function DisconnectModal({ open, cred, fallbackModelName, onClose }: Prop
           ) : null}
         </div>
 
+        {/* Sticky footer. Cancel is always enabled — even during a pending
+            disconnect, it aborts and dismisses. Only the destructive
+            button disables on pending. */}
         <div className="sticky bottom-0 border-t border-border bg-surface/95 px-6 py-4 backdrop-blur-md sm:px-8">
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end sm:gap-3">
             <button
               type="button"
-              onClick={onClose}
-              disabled={disconnect.isPending}
-              className="rounded-full border border-border px-5 py-2.5 text-sm font-medium text-ink-muted transition hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px]"
+              onClick={requestClose}
+              className="rounded-full border border-border px-5 py-2.5 text-sm font-medium text-ink-muted transition hover:bg-surface-hover min-h-[44px]"
             >
               Cancel
             </button>
