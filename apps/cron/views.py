@@ -102,6 +102,11 @@ TASK_MAP = {
     # Postgres-canonical cron cutover — derived view of CronJob rows
     "regenerate_tenant_crons": "apps.orchestrator.tasks.regenerate_tenant_crons_task",
     "reconcile_tenant_crons": "apps.orchestrator.tasks.reconcile_tenant_crons_task",
+    # Per-tenant message serialization queue — drains the next pending
+    # warm-tenant message for (tenant, channel, channel_user_id) so the
+    # OpenClaw claude-cli backend never sees overlapping turns on the
+    # same live session.
+    "drain_pending_messages_for_tenant": "apps.router.pending_queue.drain_pending_messages_for_tenant_task",
 }
 
 

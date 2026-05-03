@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-import httpx
 from django.test import TestCase, override_settings
 
 from apps.router.line_flex import (
@@ -643,9 +642,15 @@ class WebhookFlexIntegrationTest(TestCase):
     """Test that structured AI responses get converted to Flex messages."""
 
     @patch("apps.router.line_webhook._send_line_messages")
-    @patch("apps.router.line_webhook.httpx.post")
+    @patch("apps.router.pending_queue.httpx.post")
     def test_structured_response_sends_flex(self, mock_httpx, mock_send):
-        """AI response with headers -> Flex message."""
+        """AI response with headers -> Flex message.
+
+        After PR #431 (per-tenant queue), ``_forward_to_container``
+        enqueues a row and the QStash drain (sync fallback in tests)
+        does the actual POST + relay. Mock target moved from
+        ``line_webhook.httpx.post`` to ``pending_queue.httpx.post``.
+        """
         from apps.router.line_webhook import LineWebhookView
         from apps.tenants.models import Tenant, User
 
@@ -693,7 +698,7 @@ class WebhookFlexIntegrationTest(TestCase):
         self.assertEqual(messages[0]["contents"]["type"], "bubble")
 
     @patch("apps.router.line_webhook._send_line_messages")
-    @patch("apps.router.line_webhook.httpx.post")
+    @patch("apps.router.pending_queue.httpx.post")
     def test_short_response_sends_flex(self, mock_httpx, mock_send):
         """Short AI response -> branded Flex bubble (not plain text)."""
         from apps.router.line_webhook import LineWebhookView
@@ -733,7 +738,7 @@ class WebhookFlexIntegrationTest(TestCase):
         self.assertEqual(messages[0]["type"], "flex")
 
     @patch("apps.router.line_webhook._send_line_messages")
-    @patch("apps.router.line_webhook.httpx.post")
+    @patch("apps.router.pending_queue.httpx.post")
     def test_response_with_buttons_gets_quick_reply(self, mock_httpx, mock_send):
         """AI response with button markers -> quick reply attached."""
         from apps.router.line_webhook import LineWebhookView
@@ -930,10 +935,18 @@ class MarkdownTableConversionTest(TestCase):
 
 
 @override_settings(LINE_CHANNEL_ACCESS_TOKEN="test-token", LINE_CHANNEL_SECRET="test-secret")
-class WebhookForwardErrorLocalizationTest(TestCase):
-    """The user-facing error/notice messages emitted by _forward_to_container
-    when the upstream container is unhappy (timeout, 5xx, restarting, empty
-    response) must respect tenant.user.language."""
+class PendingMessageApologyLocalizationTest(TestCase):
+    """After PR #431, ``_forward_to_container`` enqueues onto a per-tenant
+    queue rather than POSTing synchronously. Transient container failures
+    (502, timeout) become per-row retries; persistent failures past the
+    attempts cap surface to the user as a localized apology via
+    ``_send_apology_for_dropped_pending_message``.
+
+    The PRE-#431 ``WebhookForwardErrorLocalizationTest`` covered the
+    synchronous error-message localization. With the queue, that
+    localization is still required — but it's the apology copy that needs
+    to respect ``tenant.user.language``.
+    """
 
     def _make_user_tenant(self, lang: str, line_user_id: str):
         from apps.tenants.models import Tenant, User
@@ -951,79 +964,42 @@ class WebhookForwardErrorLocalizationTest(TestCase):
         )
         return tenant
 
-    def _last_pushed_text(self, mock_push) -> str:
-        """Pull the human-readable text out of the most recent push payload —
-        could be a Flex bubble or a status bubble. We just stringify and
-        scan."""
-        import json
+    @patch("apps.router.line_webhook._send_line_text", return_value=True)
+    def test_apology_localized_to_japanese(self, mock_send_text):
+        from apps.router.models import PendingMessage
+        from apps.router.pending_queue import _send_apology_for_dropped_pending_message
 
-        msg = mock_push.call_args[0][1][0]
-        return json.dumps(msg, ensure_ascii=False)
-
-    @patch("apps.router.line_webhook._send_line_push")
-    @patch("apps.router.line_webhook.httpx.post")
-    def test_502_restarting_message_localized_to_japanese(self, mock_httpx, mock_push):
-        from apps.router.line_webhook import LineWebhookView
-
-        tenant = self._make_user_tenant("ja", "U_loc_502")
-
-        # Force a 502 → triggers "restarting" branch
-        bad_resp = MagicMock()
-        bad_resp.status_code = 502
-        bad_resp.is_success = False
-        bad_resp.text = "Bad Gateway"
-        bad_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "Server error '502 Bad Gateway'", request=MagicMock(), response=bad_resp
+        tenant = self._make_user_tenant("ja", "U_loc_apology_ja")
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_loc_apology_ja",
+            payload={"message_text": "こんにちは"},
+            user_text="こんにちは",
         )
-        mock_httpx.return_value = bad_resp
-        mock_push.return_value = True
 
-        view = LineWebhookView()
-        view._forward_to_container("U_loc_502", tenant, "hi")
+        _send_apology_for_dropped_pending_message(tenant, msg)
 
-        mock_push.assert_called_once()
-        body = self._last_pushed_text(mock_push)
-        # Japanese marker: "再起動" (re-starting)
-        self.assertIn("\u518d\u8d77\u52d5", body)
-        # English marker must NOT leak
-        self.assertNotIn("I'm restarting", body)
+        mock_send_text.assert_called_once()
+        body = mock_send_text.call_args[0][1]
+        # Japanese apology marker — must use translated copy, not English.
+        self.assertIn("\u3054\u3081\u3093\u306a\u3055\u3044", body)
+        self.assertNotIn("Sorry", body)
 
-    @patch("apps.router.line_webhook._send_line_push")
-    @patch("apps.router.line_webhook.httpx.post")
-    def test_timeout_message_localized_to_japanese(self, mock_httpx, mock_push):
-        from apps.router.line_webhook import LineWebhookView
+    @patch("apps.router.line_webhook._send_line_text", return_value=True)
+    def test_apology_falls_back_to_english_for_untranslated_language(self, mock_send_text):
+        from apps.router.models import PendingMessage
+        from apps.router.pending_queue import _send_apology_for_dropped_pending_message
 
-        tenant = self._make_user_tenant("ja", "U_loc_timeout")
-        mock_httpx.side_effect = httpx.TimeoutException("read timeout")
-        mock_push.return_value = True
-
-        view = LineWebhookView()
-        view._forward_to_container("U_loc_timeout", tenant, "hi")
-
-        body = self._last_pushed_text(mock_push)
-        # Japanese marker: "時間" (time)
-        self.assertIn("\u6642\u9593", body)
-        self.assertNotIn("took longer than expected", body)
-
-    @patch("apps.router.line_webhook._send_line_push")
-    @patch("apps.router.line_webhook.httpx.post")
-    def test_restarting_falls_back_to_english_for_untranslated_language(self, mock_httpx, mock_push):
-        from apps.router.line_webhook import LineWebhookView
-
-        tenant = self._make_user_tenant("vi", "U_loc_vi")  # Vietnamese — falls back
-
-        bad_resp = MagicMock()
-        bad_resp.status_code = 502
-        bad_resp.is_success = False
-        bad_resp.text = "Bad Gateway"
-        bad_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "Server error '502 Bad Gateway'", request=MagicMock(), response=bad_resp
+        tenant = self._make_user_tenant("vi", "U_loc_apology_vi")  # Vietnamese — falls back
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_loc_apology_vi",
+            payload={"message_text": "hi"},
+            user_text="hi",
         )
-        mock_httpx.return_value = bad_resp
-        mock_push.return_value = True
 
-        view = LineWebhookView()
-        view._forward_to_container("U_loc_vi", tenant, "hi")
-
-        body = self._last_pushed_text(mock_push)
-        self.assertIn("I'm restarting", body)
+        _send_apology_for_dropped_pending_message(tenant, msg)
+        body = mock_send_text.call_args[0][1]
+        self.assertIn("Sorry", body)

@@ -1212,13 +1212,32 @@ class TelegramPoller:
         threading.Thread(target=_retry, daemon=True).start()
 
     def _forward_to_container(self, chat_id: int, tenant: Tenant, message_text: str) -> None:
-        """Send the message to the tenant's OpenClaw container via /v1/chat/completions and relay the response."""
+        """Pre-process the message and enqueue it on the per-tenant
+        serialization queue.
+
+        We DON'T POST to the container here anymore — that happens in
+        ``apps.router.pending_queue.drain_pending_messages_for_tenant_task``
+        (PR #431). The queue serializes per
+        ``(tenant, channel, chat_id)`` so two messages arriving in quick
+        succession from the same chat never land overlapping turns at
+        the OpenClaw claude-cli backend (which would reject the second
+        with "Claude CLI live session is already handling a turn" and
+        either silently fall back to MiniMax or — post-#427 — error
+        out).
+
+        Pre-flight state checks (provisioning, container_fqdn) stay
+        synchronous so we can give the user immediate feedback instead
+        of enqueuing a row that's guaranteed to fail. Typing indicator
+        is fired once before enqueuing; the drain task fires another
+        right before the slow POST so the user keeps seeing activity.
+        """
+        from apps.router.pending_queue import enqueue_message_for_tenant
+
         lang = getattr(tenant.user, "language", None) or "en"
         if not tenant.container_fqdn or tenant.status == "provisioning":
             self._send_message(chat_id, error_msg(lang, "provisioning_setup"))
             return
 
-        url = f"https://{tenant.container_fqdn}/v1/chat/completions"
         user_tz = tenant.user.timezone or "UTC"
 
         # Workspace routing — returns base chat_id if tenant has no workspaces
@@ -1256,125 +1275,34 @@ class TelegramPoller:
         # in apps/orchestrator/config_generator.py — they stay heavy on purpose.
         message_text = build_datetime_context(user_tz) + build_chat_context_marker() + message_text
 
-        # Model-aware timeout — reasoning models (e.g. Kimi K2.6) get more time
-        chat_timeout, is_reasoning = get_forwarding_timeout(tenant)
+        # Resolve forwarding timeout solely for the typing/nudge timing
+        # below. The drain task re-resolves the actual chat-completion
+        # timeout itself (using ``_resolve_chat_timeout`` which respects
+        # BYO Claude + reasoning models — see PR #430).
+        _chat_timeout, _is_reasoning = get_forwarding_timeout(tenant)
 
-        # Show typing indicator while waiting for AI response
+        # One typing pulse now so the user sees immediate activity. The
+        # drain task fires another pulse right before its POST.
+        # NOTE: pre-#431 this was a 5s repeating typing thread plus a
+        # 45s "still thinking" nudge for reasoning models. Both went
+        # away when forwarding moved into the queue — Telegram's typing
+        # indicator auto-clears after ~5s, so during a 30-150s BYO
+        # Claude turn the user only sees activity briefly. Restoring
+        # the heartbeat / nudge from inside the drain task is a
+        # follow-up; not blocking the warm-tenant serialization fix.
         self._send_typing(chat_id)
-        typing_stop = threading.Event()
 
-        def _keep_typing():
-            elapsed = 0.0
-            thinking_sent = False
-            while not typing_stop.wait(5.0):
-                elapsed += 5.0
-                self._send_typing(chat_id)
-                if is_reasoning and not thinking_sent and elapsed >= STILL_THINKING_DELAY:
-                    self._send_message(
-                        chat_id,
-                        "🧠 Still thinking — this model takes a bit longer for thoughtful responses.",
-                    )
-                    thinking_sent = True
-
-        typing_thread = threading.Thread(target=_keep_typing, daemon=True)
-        typing_thread.start()
-
-        try:
-            resp = httpx.post(
-                url,
-                json={
-                    "model": "openclaw",
-                    "messages": [{"role": "user", "content": message_text}],
-                    "user": user_param,
-                },
-                headers={
-                    "Authorization": f"Bearer {self.gateway_token}",
-                    "X-User-Timezone": user_tz,
-                    "X-Telegram-Chat-Id": str(chat_id),
-                    "X-Channel": "telegram",
-                },
-                timeout=chat_timeout,
-            )
-            resp.raise_for_status()
-            result = resp.json()
-        except httpx.TimeoutException:
-            logger.warning(
-                "Timeout forwarding to %s for chat_id=%s (model=%s, timeout=%.0fs)",
-                tenant.container_fqdn,
-                chat_id,
-                tenant.preferred_model or "default",
-                chat_timeout,
-            )
-            self._send_message(chat_id, error_msg(lang, "forwarding_timeout"))
-            return
-        except httpx.HTTPStatusError as e:
-            status_code = e.response.status_code if e.response else 0
-            logger.error("FWD_FAIL %s HTTP %s", tenant.container_fqdn, status_code)
-            logger.error("FWD_BODY %s", (e.response.text[:300] if e.response else "none"))
-            if status_code in (502, 503, 0):
-                # Container restarting — buffer and retry
-                self._handle_container_restart(chat_id, tenant, message_text)
-            else:
-                self._send_message(chat_id, error_msg(lang, "forwarding_error"))
-            return
-        except httpx.HTTPError as e:
-            logger.error("Error forwarding to %s: %s", tenant.container_fqdn, e)
-            self._handle_container_restart(chat_id, tenant, message_text)
-            return
-        finally:
-            typing_stop.set()
-
-        # Extract AI response text — retry once on empty
-        ai_text = self._extract_ai_response(result)
-        if not ai_text:
-            logger.warning(
-                "Empty AI response from %s: keys=%s, choices=%r",
-                tenant.container_fqdn,
-                list(result.keys()),
-                result.get("choices", [])[:1],
-            )
-            logger.warning(
-                "Empty response from container %s, retrying once",
-                tenant.container_fqdn,
-            )
-            try:
-                self._send_typing(chat_id)
-                retry_resp = httpx.post(
-                    url,
-                    json={
-                        "model": "openclaw",
-                        "messages": [{"role": "user", "content": message_text}],
-                        "user": str(chat_id),
-                    },
-                    headers={
-                        "Authorization": f"Bearer {self.gateway_token}",
-                        "X-User-Timezone": user_tz,
-                        "X-Channel": "telegram",
-                    },
-                    timeout=chat_timeout,
-                )
-                retry_resp.raise_for_status()
-                result = retry_resp.json()
-                ai_text = self._extract_ai_response(result)
-            except Exception:
-                logger.warning("Retry also failed for %s", tenant.container_fqdn)
-
-        if not ai_text:
-            logger.error(
-                "No response after retry from container %s for chat_id=%s: keys=%s, choices=%r",
-                tenant.container_fqdn,
-                chat_id,
-                list(result.keys()),
-                result.get("choices", [])[:1],
-            )
-            self._send_message(chat_id, error_msg(lang, "empty_response_after_retry"))
-            self._record_usage(tenant, result)
-            return
-
-        self._send_rich_response(chat_id, tenant, ai_text)
-
-        # Record usage
-        self._record_usage(tenant, result)
+        enqueue_message_for_tenant(
+            tenant=tenant,
+            channel="telegram",
+            channel_user_id=str(chat_id),
+            payload={
+                "message_text": message_text,
+                "user_param": user_param,
+                "user_timezone": user_tz,
+            },
+            user_text_excerpt=message_text,
+        )
 
     # Gateway error strings that should be treated as empty responses
     _GATEWAY_ERROR_STRINGS = frozenset(
