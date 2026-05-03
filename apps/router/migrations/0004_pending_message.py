@@ -22,7 +22,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("router", "0002_buffered_message_delivery_attempts"),
+        ("router", "0003_buffered_message_delivery_in_flight_until"),
         ("tenants", "0027_tenant_hibernated_at"),
     ]
 
