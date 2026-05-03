@@ -19,6 +19,7 @@ import logging
 import time
 from datetime import datetime
 
+from django.db import models
 from django.utils import timezone
 
 from apps.tenants.models import Tenant
@@ -271,7 +272,16 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
         except Exception:
             logger.exception("idle_wake: failed to queue config apply for %s", tid)
 
-    # 4. Schedule buffered message delivery (45s delay for container startup)
+    # 4. Schedule buffered message delivery (45s delay for container startup).
+    #
+    # ``retries=1`` (vs QStash's default 3) because the task already has
+    # application-level resilience (per-message attempt cap +
+    # ``delivery_in_flight_until`` lease). Letting QStash retry 3x meant
+    # a slow first turn — typical for BYO Claude with full agent context —
+    # spawned overlapping ``/v1/chat/completions`` POSTs at the container,
+    # which the claude-cli backend rejected as concurrent turns and fell
+    # back off to MiniMax. One QStash retry is enough to cover a genuine
+    # cron-trigger transport failure without re-firing for slow inference.
     try:
         from apps.cron.publish import publish_task
 
@@ -279,6 +289,7 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
             "deliver_buffered_messages",
             str(tenant.id),
             delay_seconds=45,
+            retries=1,
         )
     except Exception:
         logger.exception("idle_wake: failed to schedule buffer delivery for %s", tid)
@@ -406,6 +417,35 @@ def check_cron_wake_idle_task(tenant_id: str) -> dict:
 
 _MAX_DELIVERY_ATTEMPTS = 3
 _TRANSIENT_BACKOFFS_SECONDS: tuple[float, ...] = (5.0, 15.0, 45.0)
+# Lease padding factor: how much wall-clock the in-flight lock covers
+# beyond the per-request timeout. Slightly more than the worst-case POST
+# duration (timeout + backoffs) so a concurrent QStash retry doesn't
+# steal the row mid-flight, but bounded so a truly stuck row is freed
+# on the next task tick.
+_IN_FLIGHT_LEASE_FACTOR = 1.5
+
+
+def _resolve_chat_timeout(tenant) -> float:
+    """Return the per-attempt chat-completion timeout for a tenant.
+
+    BYO Claude (anthropic/* via the bundled CLI) and reasoning models
+    (Kimi K2.6) get the longer ``REASONING_MODEL_TIMEOUT`` because
+    cold-start of the agent runtime + first-turn tool use regularly
+    runs past the 120s default. Standard models keep
+    ``DEFAULT_CHAT_TIMEOUT``. Both stay below the 300s gunicorn worker
+    cap (CLAUDE.md gotcha).
+    """
+    from apps.billing.constants import (
+        BYO_SLOW_MODELS,
+        DEFAULT_CHAT_TIMEOUT,
+        REASONING_MODEL_TIMEOUT,
+        REASONING_MODELS,
+    )
+
+    model = (getattr(tenant, "preferred_model", "") or "").strip()
+    if model in REASONING_MODELS or model in BYO_SLOW_MODELS:
+        return REASONING_MODEL_TIMEOUT
+    return DEFAULT_CHAT_TIMEOUT
 
 
 def _post_chat_completion_with_backoff(
@@ -509,13 +549,67 @@ def _send_apology_for_dropped_message(tenant: Tenant, msg) -> None:
         )
 
 
+def _claim_next_buffered_message(tenant, timeout_seconds: float):
+    """Claim the next deliverable BufferedMessage row, honouring the
+    in-flight lease.
+
+    Returns the claimed row (with ``delivery_in_flight_until`` extended)
+    or ``None`` if no row is available — either the queue is empty for
+    this tenant or every undelivered row currently has a live lease held
+    by a concurrent task.
+
+    The claim runs inside a SELECT ... FOR UPDATE SKIP LOCKED transaction
+    so two concurrent QStash deliveries can't both grab the same row.
+    The lease prevents the second worker from re-firing the chat
+    completion while the first is still mid-POST (which is what caused
+    the OpenClaw claude-cli backend to fall back off to MiniMax during
+    the 2026-05-02 BYO Claude incident on tenant 148ccf1c).
+    """
+    from datetime import timedelta
+
+    from django.db import transaction
+
+    from apps.router.models import BufferedMessage
+
+    lease_seconds = timeout_seconds * _IN_FLIGHT_LEASE_FACTOR
+
+    with transaction.atomic():
+        now = timezone.now()
+        qs = (
+            BufferedMessage.objects.select_for_update(skip_locked=True)
+            .filter(tenant=tenant, delivered=False)
+            .filter(models.Q(delivery_in_flight_until__isnull=True) | models.Q(delivery_in_flight_until__lt=now))
+            .order_by("created_at")
+        )
+        msg = qs.first()
+        if not msg:
+            return None
+
+        # Past the cap → drop without taking a lease (no network call needed).
+        if msg.delivery_attempts >= _MAX_DELIVERY_ATTEMPTS:
+            return msg
+
+        msg.delivery_in_flight_until = now + timedelta(seconds=lease_seconds)
+        msg.save(update_fields=["delivery_in_flight_until"])
+        return msg
+
+
 def deliver_buffered_messages_task(tenant_id: str) -> dict:
     """Forward all buffered messages for a tenant to its container.
 
     Called via QStash ~45s after wake to give the container time to start.
 
     Resilience semantics (regression guard for 2026-04-28 head-of-line
-    incident):
+    incident + 2026-05-02 BYO Claude retry-storm incident):
+      - Each row is claimed inside a SELECT ... FOR UPDATE SKIP LOCKED
+        transaction with a soft ``delivery_in_flight_until`` lease, so a
+        concurrent QStash retry can't re-fire ``/v1/chat/completions``
+        while the first POST is still running. The lease is set to
+        ``timeout * 1.5`` and cleared on success / final failure / cap.
+      - Per-attempt timeout adapts to the tenant's preferred model: BYO
+        Claude (via the claude CLI backend) and reasoning models get the
+        ``REASONING_MODEL_TIMEOUT`` since cold-start of the agent runtime
+        + first-turn tool use can take 150s+ for the first reply.
       - Transient 5xx / connection errors retry inside the task with
         backoff before counting as a delivery attempt.
       - On a real per-message failure we increment ``delivery_attempts``
@@ -534,20 +628,36 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
     tenant = Tenant.objects.select_related("user").filter(id=tenant_id).first()
     if not tenant or not tenant.container_fqdn:
         logger.warning("deliver_buffered: tenant %s not found or no FQDN", tenant_id[:8])
-        return {"delivered": 0, "failed": 0, "dropped": 0}
+        return {"delivered": 0, "failed": 0, "dropped": 0, "skipped_in_flight": 0}
 
-    messages = BufferedMessage.objects.filter(
-        tenant=tenant,
-        delivered=False,
-    ).order_by("created_at")
+    chat_timeout = _resolve_chat_timeout(tenant)
 
     delivered = 0
     failed = 0
     dropped = 0
+    skipped_in_flight = 0
 
-    for msg in messages:
+    while True:
+        msg = _claim_next_buffered_message(tenant, chat_timeout)
+        if msg is None:
+            # Either the queue is drained or every remaining row has a
+            # live in-flight lease held by a concurrent task. Either way
+            # this run has nothing more to do — bail without erroring so
+            # we don't trigger another QStash retry that would just hit
+            # the same lease.
+            undelivered = BufferedMessage.objects.filter(tenant=tenant, delivered=False).count()
+            if undelivered:
+                skipped_in_flight = undelivered
+                logger.info(
+                    "deliver_buffered: tenant %s — %d msg(s) held by concurrent in-flight lease, "
+                    "letting that task complete",
+                    tenant_id[:8],
+                    undelivered,
+                )
+            break
+
         # Drop messages past the attempts cap so they don't block the
-        # queue forever, then notify the user.
+        # queue forever, then notify the user. No lease was taken.
         if msg.delivery_attempts >= _MAX_DELIVERY_ATTEMPTS:
             logger.warning(
                 "deliver_buffered: dropping msg %s for tenant %s after %d attempts",
@@ -558,7 +668,15 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
             msg.delivered = True
             msg.delivered_at = timezone.now()
             msg.delivery_status = BufferedMessage.Status.FAILED
-            msg.save(update_fields=["delivered", "delivered_at", "delivery_status"])
+            msg.delivery_in_flight_until = None
+            msg.save(
+                update_fields=[
+                    "delivered",
+                    "delivered_at",
+                    "delivery_status",
+                    "delivery_in_flight_until",
+                ]
+            )
             _send_apology_for_dropped_message(tenant, msg)
             dropped += 1
             continue
@@ -599,6 +717,7 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
                         "X-User-Timezone": user_tz,
                         "X-Line-User-Id": line_user_id,
                     },
+                    timeout=chat_timeout,
                 )
 
                 # Send response back via LINE — use the same pipeline as the
@@ -614,7 +733,15 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
             msg.delivered = True
             msg.delivered_at = timezone.now()
             msg.delivery_status = BufferedMessage.Status.DELIVERED
-            msg.save(update_fields=["delivered", "delivered_at", "delivery_status"])
+            msg.delivery_in_flight_until = None
+            msg.save(
+                update_fields=[
+                    "delivered",
+                    "delivered_at",
+                    "delivery_status",
+                    "delivery_in_flight_until",
+                ]
+            )
             delivered += 1
 
         except Exception:
@@ -626,27 +753,36 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
                 _MAX_DELIVERY_ATTEMPTS,
             )
             msg.delivery_attempts += 1
-            msg.save(update_fields=["delivery_attempts"])
+            msg.delivery_in_flight_until = None
+            msg.save(update_fields=["delivery_attempts", "delivery_in_flight_until"])
             failed += 1
             # Stop processing further messages to preserve order.
-            # QStash will retry the task; on the next cycle this message
-            # will be retried (and eventually dropped if it keeps failing).
+            # QStash will retry the task once (we set retries=1 at publish
+            # time); on that retry this message will be tried again, and
+            # eventually dropped if it keeps failing.
             break
 
     logger.info(
-        "deliver_buffered: tenant %s — delivered=%d failed=%d dropped=%d",
+        "deliver_buffered: tenant %s — delivered=%d failed=%d dropped=%d skipped_in_flight=%d",
         tenant_id[:8],
         delivered,
         failed,
         dropped,
+        skipped_in_flight,
     )
 
     if failed > 0:
         # Surface a non-2xx so QStash retries the task. Dropped messages
-        # don't count — they've already been resolved (apology sent).
+        # and in-flight skips don't count — they've already been resolved
+        # (apology sent) or are owned by another worker.
         raise RuntimeError(f"deliver_buffered: {failed} message(s) failed for tenant {tenant_id[:8]}")
 
-    return {"delivered": delivered, "failed": failed, "dropped": dropped}
+    return {
+        "delivered": delivered,
+        "failed": failed,
+        "dropped": dropped,
+        "skipped_in_flight": skipped_in_flight,
+    }
 
 
 def resume_hibernated_crons_task(tenant_id: str) -> None:
