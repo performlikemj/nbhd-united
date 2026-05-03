@@ -51,39 +51,47 @@ User messages pass through to the model unredacted. This is intentional:
 
 The high-value redaction targets are workspace context and tool results, which contain PII about **other people** (contacts, email correspondents, calendar attendees) that the user didn't explicitly share in the current message.
 
-## Technology: Microsoft Presidio
+## Technology: Custom DeBERTa Model + Presidio Pattern Recognizers
 
-[Presidio](https://github.com/microsoft/presidio) is an open-source PII detection and anonymization library developed by Microsoft. It combines:
+PII detection uses two engines:
 
-- **NLP-based detection** via spaCy language models (`en_core_web_sm`) for person names, locations, and other contextual entities
-- **Pattern-based detection** via regex and the `phonenumbers` library for structured PII (emails, phone numbers, credit cards, IBANs)
-- **Configurable confidence thresholds** to balance detection accuracy vs. false positives
+1. **Custom DeBERTa-v3-base model** (ONNX INT8, ~230 MB) — fine-tuned on the [ai4privacy/pii-masking-400k](https://huggingface.co/datasets/ai4privacy/pii-masking-400k) dataset for contextual PII detection: names, addresses, dates of birth, passwords, usernames, phone numbers, emails, IP addresses, and ID documents. Achieves 92.4% F1 on the validation set.
 
-### Why Presidio
+2. **Presidio pattern recognizers** (regex only, no spaCy) — `CreditCardRecognizer` (Luhn checksum) and `IbanRecognizer` (country-format validation) for deterministic financial PII detection.
 
-- **Python-native**: Runs in the Django process, no external services or sidecars needed
-- **Entity-type granularity**: Can enable/disable specific entity types per tier (e.g., starter gets full redaction, premium only financial)
-- **Proven at scale**: Used in enterprise Microsoft products, well-maintained, active community
-- **No data leaves the process**: Unlike cloud PII services, Presidio runs locally — the PII never leaves the Django container
+### Why this approach
+
+- **Context-aware names**: The DeBERTa model distinguishes "Jordan" (person) from "Jordan" (country) contextually, eliminating the need for a manual denylist
+- **Commercially licensed**: Base model (MIT) + training data (Apache 2.0) = fully commercial use
+- **No data leaves the process**: Both engines run in-process in the Django container
+- **Fits in 2 GiB**: The ONNX INT8 model uses ~230 MB RAM, shared across gunicorn workers via mmap
+- **Deterministic financial PII**: Presidio's Luhn checksum and IBAN validation provide near-100% detection for credit cards and IBANs
 
 ### Engine initialization
 
-The Presidio `AnalyzerEngine` loads the spaCy NLP model (~12MB) once per Django process and is reused across all requests via a lazy singleton (`apps/pii/engine.py`). First-call latency is ~2 seconds; subsequent calls are ~10-50ms per KB of text.
+The DeBERTa model loads on first use (~230 MB) via a lazy singleton in `apps/pii/engine.py`. ONNX Runtime memory-maps the weights, so they are shared across all 4 gunicorn workers via the OS page cache. First-call latency is ~2 seconds; subsequent calls are fast.
 
-The spaCy model (`en_core_web_sm`) is baked into the production Docker image during build.
+The ONNX model is baked into the production Docker image at `/app/pii-model`. Training scripts are in `scripts/train_pii_model.py` and `scripts/export_pii_model.py`.
 
 ## What gets redacted
 
 ### Entity types by tier
 
-| Entity | Starter | Premium | BYOK | Detection method |
-|--------|---------|---------|------|-----------------|
-| `PERSON` | Yes | No | No | spaCy NER |
-| `EMAIL_ADDRESS` | Yes | No | No | Regex |
-| `PHONE_NUMBER` | Yes | Yes | No | `phonenumbers` library + context words |
-| `CREDIT_CARD` | Yes | Yes | No | Luhn checksum + regex |
-| `IBAN_CODE` | Yes | Yes | No | Regex + checksum |
-| `LOCATION` | Yes | No | No | spaCy NER |
+| Entity | Starter | Detection method |
+|--------|---------|-----------------|
+| `PERSON` | Yes | DeBERTa (GIVENNAME, SURNAME, USERNAME) |
+| `EMAIL_ADDRESS` | Yes | DeBERTa (EMAIL) |
+| `PHONE_NUMBER` | Yes | DeBERTa (TELEPHONENUM) |
+| `CREDIT_CARD` | Yes | DeBERTa (CREDITCARDNUMBER) + Presidio Luhn checksum |
+| `IBAN_CODE` | Yes | Presidio regex + checksum |
+| `LOCATION` | Yes | DeBERTa (STREET, CITY, ZIPCODE, BUILDINGNUM) |
+| `DATE_OF_BIRTH` | Yes | DeBERTa (DATEOFBIRTH) |
+| `PASSWORD` | Yes | DeBERTa (PASSWORD) |
+| `IP_ADDRESS` | Yes | DeBERTa (IPV4, IPV6) |
+| `ID_DOCUMENT` | Yes | DeBERTa (DRIVERLICENSENUM, IDCARDNUM, PASSPORT) |
+| `ACCOUNT` | Yes | DeBERTa (ACCOUNTNUM) |
+| `TAX_NUMBER` | Yes | DeBERTa (TAXNUM) |
+| `SOCIAL_NUMBER` | Yes | DeBERTa (SOCIALNUM) |
 
 Configuration: `apps/pii/config.py`
 
@@ -128,11 +136,12 @@ The entity mapping is stored as a JSON field on the `Tenant` model (`pii_entity_
 
 ## False positive mitigation
 
-- **Country/city denylist**: Names like "Jordan", "Georgia", "Victoria" that Presidio misidentifies as `PERSON` are excluded via `COUNTRY_DENYLIST` in `apps/pii/config.py`
+- **Context-aware detection**: The DeBERTa model distinguishes ambiguous names (person vs. place) using surrounding context, eliminating the need for manual denylists
 - **User's own name excluded**: The tenant user's `display_name`, first name, and last name are added to an allow-list so the model can address them by name
-- **Confidence threshold**: Starter tier uses 0.7, premium uses 0.8 (higher = fewer false positives)
-- **Overlap deduplication**: When Presidio detects overlapping entities (e.g., "bob" as PERSON inside "bob@test.com" as EMAIL_ADDRESS), the higher-confidence match wins
-- **Graceful failure**: If Presidio errors, the original text is returned unredacted — redaction never blocks the user experience
+- **Confidence threshold**: Starter tier uses 0.7 (higher = fewer false positives)
+- **Adjacent span merging**: GIVENNAME + SURNAME are merged into a single PERSON entity to avoid fragmented placeholders
+- **Overlap deduplication**: When multiple engines detect overlapping entities (e.g., DeBERTa CREDITCARDNUMBER and Presidio CREDIT_CARD), the higher-confidence match wins
+- **Graceful failure**: If detection errors, the original text is returned unredacted — redaction never blocks the user experience
 
 ## What is NOT covered
 
@@ -149,8 +158,8 @@ The entity mapping is stored as a JSON field on the `Tenant` model (`pii_entity_
 |------|------|
 | `apps/pii/__init__.py` | App init |
 | `apps/pii/config.py` | Tier policies, entity types |
-| `apps/pii/engine.py` | Lazy-singleton Presidio analyzer + anonymizer |
-| `apps/pii/redactor.py` | `redact_text()`, `RedactionSession`, `rehydrate_text()`, `redact_tool_response()`, `redact_user_message()` |
+| `apps/pii/engine.py` | Lazy-singleton DeBERTa ONNX pipeline + Presidio pattern recognizers |
+| `apps/pii/redactor.py` | `redact_text()`, `RedactionSession`, `rehydrate_text()`, `redact_tool_response()`, `redact_user_message()`, `_detect_pii()` |
 | `apps/pii/tests.py` | 40 tests covering all redaction and rehydration paths |
 | `apps/orchestrator/memory_sync.py` | Workspace context redaction integration |
 | `apps/orchestrator/config_generator.py` | Coordinate quantization |
@@ -160,14 +169,19 @@ The entity mapping is stored as a JSON field on the `Tenant` model (`pii_entity_
 | `apps/router/line_webhook.py` | Rehydration for LINE replies |
 | `templates/openclaw/docs/privacy-redaction.md` | Model instructions for preserving placeholders (starter tier only) |
 | `apps/tenants/models.py` | `pii_entity_map` JSONField on Tenant |
-| `Dockerfile` | `spacy download en_core_web_sm` in production image |
+| `Dockerfile` | ONNX model baked into image at `/app/pii-model` |
+| `scripts/train_pii_model.py` | Training script for the DeBERTa PII model |
+| `scripts/export_pii_model.py` | ONNX export + INT8 quantization |
 
 ## Dependencies
 
 ```
-presidio-analyzer>=2.2
-presidio-anonymizer>=2.2
-spacy>=3.7
+presidio-analyzer>=2.2    # Pattern recognizers only (credit card, IBAN)
+onnxruntime>=1.16          # ONNX model inference
+transformers>=4.35         # Tokenizer + pipeline
+optimum[onnxruntime]>=1.14 # ORTModelForTokenClassification
+sentencepiece>=0.2         # DeBERTa tokenizer
 ```
 
-spaCy model: `en_core_web_sm` (12MB, installed at Docker build time)
+PII model: custom DeBERTa-v3-base ONNX INT8 (~230 MB, baked into Docker image at build time).
+Training guide: `docs/pii-model-training.md`

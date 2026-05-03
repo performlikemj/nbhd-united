@@ -3,15 +3,19 @@
 Detects and replaces PII in text before it's sent to model providers.
 Uses tier-based policies: starter tier gets full redaction (OpenRouter),
 premium gets financial-only (Anthropic direct), BYOK is off.
+
+Detection uses a custom DeBERTa ONNX model (contextual PII) combined
+with Presidio pattern recognizers (credit cards, IBANs).
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from apps.pii.config import COUNTRY_DENYLIST, TIER_POLICIES
+from apps.pii.config import DEBERTA_LABEL_MAP, TIER_POLICIES
 
 if TYPE_CHECKING:
     from apps.tenants.models import Tenant
@@ -20,6 +24,16 @@ logger = logging.getLogger(__name__)
 
 # Matches placeholders like [PERSON_1], [EMAIL_ADDRESS_3]
 _PLACEHOLDER_RE = re.compile(r"\[([A-Z_]+)_(\d+)\]")
+
+
+@dataclass
+class DetectedEntity:
+    """A detected PII span — unified interface for DeBERTa + Presidio results."""
+
+    entity_type: str
+    start: int
+    end: int
+    score: float
 
 
 def redact_text(
@@ -164,7 +178,7 @@ def redact_user_message(
 
     Reuses the tenant's existing entity map for consistency: known entities
     get the same placeholder they have in workspace context. New entities
-    are detected via Presidio and appended to the map.
+    are detected and appended to the map.
 
     Args:
         allow_user_name: When True (default), the tenant user's own name is
@@ -198,18 +212,16 @@ def _redact_user_message(
     allow_user_name: bool = True,
 ) -> str:
     """Internal: redact user message with known + new entity detection."""
-    from apps.pii.engine import get_analyzer
-
     existing_map = getattr(tenant, "pii_entity_map", None) or {}
 
     # Step 1: Replace known entities from the existing map (exact string match)
-    inverted = {v: k for k, v in existing_map.items()}  # original → placeholder
+    inverted = {v: k for k, v in existing_map.items()}  # original -> placeholder
     out = text
     for original, placeholder in sorted(inverted.items(), key=lambda x: -len(x[0])):
         # Replace longest matches first to avoid partial replacements
         out = out.replace(original, placeholder)
 
-    # Step 2: Run Presidio on the (partially redacted) text for NEW entities
+    # Step 2: Run detection on the (partially redacted) text for NEW entities
     # Derive current max counters from existing map
     type_counters: dict[str, int] = {}
     for placeholder_key in existing_map:
@@ -238,13 +250,7 @@ def _redact_user_message(
                 elif parts:
                     allow_names.add(parts[0])
 
-    analyzer = get_analyzer()
-    results = analyzer.analyze(
-        text=out,
-        entities=entities,
-        language="en",
-        score_threshold=score_threshold,
-    )
+    results = _detect_pii(out, entities, score_threshold)
     results = _filter_results(results, out, allow_names)
 
     # Filter out results that overlap with already-replaced placeholders
@@ -314,7 +320,7 @@ def redact_tool_response(data: Any, tenant: Tenant) -> Any:
     """Redact PII in a tool response (JSON dict/list) before returning to OpenClaw.
 
     Recursively walks the JSON structure and applies redaction to string values
-    using the tenant's entity map for known entities + Presidio for new ones.
+    using the tenant's entity map for known entities + model for new ones.
 
     Skips keys that are identifiers/metadata (id, html_link, internal_date, etc.)
     to avoid corrupting structured data.
@@ -365,7 +371,7 @@ def _redact_tool_value(
             return value
         # allow_user_name=False so the user's own name gets redacted too —
         # prevents the model from mixing the user's surname with contact
-        # placeholders (e.g., "[PERSON_1] Jones" → "Mitsumasa Jones").
+        # placeholders (e.g., "[PERSON_1] Jones" -> "Mitsumasa Jones").
         return redact_user_message(value, tenant, allow_user_name=False)
     elif isinstance(value, dict):
         return {
@@ -375,6 +381,114 @@ def _redact_tool_value(
         return [_redact_tool_value(item, tenant, policy, skip_keys) for item in value]
     else:
         return value
+
+
+# ---------------------------------------------------------------------------
+# Detection: DeBERTa model + Presidio pattern recognizers
+# ---------------------------------------------------------------------------
+
+
+def _detect_pii(
+    text: str,
+    entities: list[str],
+    score_threshold: float,
+) -> list[DetectedEntity]:
+    """Detect PII using DeBERTa (contextual) + Presidio regex (financial).
+
+    Runs the ONNX DeBERTa model for names, addresses, dates, passwords, etc.
+    Runs Presidio CreditCardRecognizer and IbanRecognizer for deterministic
+    financial PII with checksum validation.
+
+    Returns a combined list of DetectedEntity, with adjacent same-type spans
+    merged (e.g., GIVENNAME + SURNAME become a single PERSON span).
+    """
+    from apps.pii.engine import get_pattern_recognizers, get_pii_pipeline
+
+    results: list[DetectedEntity] = []
+
+    # 1. DeBERTa model — contextual PII
+    pii_pipeline = get_pii_pipeline()
+    model_results = pii_pipeline(text)
+
+    for ent in model_results:
+        if ent["score"] < score_threshold:
+            continue
+        entity_type = DEBERTA_LABEL_MAP.get(ent["entity_group"])
+        if entity_type and entity_type in entities:
+            # Trim leading/trailing whitespace from span boundaries —
+            # aggregation_strategy="simple" can include boundary spaces
+            start, end = ent["start"], ent["end"]
+            span_text = text[start:end]
+            start += len(span_text) - len(span_text.lstrip())
+            end -= len(span_text) - len(span_text.rstrip())
+            if start >= end:
+                continue
+            results.append(
+                DetectedEntity(
+                    entity_type=entity_type,
+                    start=start,
+                    end=end,
+                    score=ent["score"],
+                )
+            )
+
+    # Merge adjacent same-type spans (e.g., "Sarah" GIVENNAME + "Chen" SURNAME
+    # both map to PERSON — merge into a single span covering "Sarah Chen")
+    results = _merge_adjacent_spans(results)
+
+    # 2. Presidio regex — credit cards (Luhn), IBANs (checksum), emails (regex fallback)
+    pattern_recognizers = get_pattern_recognizers()
+    for entity_type, recognizer in pattern_recognizers.items():
+        if entity_type in entities:
+            for r in recognizer.analyze(text=text, entities=[entity_type]):
+                if r.score >= score_threshold:
+                    results.append(
+                        DetectedEntity(
+                            entity_type=r.entity_type,
+                            start=r.start,
+                            end=r.end,
+                            score=r.score,
+                        )
+                    )
+
+    return results
+
+
+def _merge_adjacent_spans(results: list[DetectedEntity]) -> list[DetectedEntity]:
+    """Merge consecutive spans of the same entity type.
+
+    After label mapping, GIVENNAME and SURNAME both become PERSON.
+    "Sarah" (PERSON, 0-5) and "Chen" (PERSON, 6-10) should merge into
+    "Sarah Chen" (PERSON, 0-10).
+
+    Spans are considered adjacent if separated by 0-1 characters (a space).
+    """
+    if len(results) <= 1:
+        return results
+
+    sorted_results = sorted(results, key=lambda r: r.start)
+    merged = [sorted_results[0]]
+
+    for current in sorted_results[1:]:
+        prev = merged[-1]
+        gap = current.start - prev.end
+        if prev.entity_type == current.entity_type and 0 <= gap <= 1:
+            # Merge: extend previous span, use minimum score
+            merged[-1] = DetectedEntity(
+                entity_type=prev.entity_type,
+                start=prev.start,
+                end=current.end,
+                score=min(prev.score, current.score),
+            )
+        else:
+            merged.append(current)
+
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# Core redaction logic (placeholder assignment + string replacement)
+# ---------------------------------------------------------------------------
 
 
 def _redact(
@@ -387,15 +501,11 @@ def _redact(
     type_counters: dict[str, int],
     entity_map: dict[str, str],
 ) -> tuple[str, dict[str, str]]:
-    """Run Presidio analysis and manual replacement with numbered placeholders.
+    """Run PII detection and replace with numbered placeholders.
 
     Mutates type_counters and entity_map in place for cross-document sessions.
     Returns (redacted_text, entity_map).
     """
-    from apps.pii.engine import get_analyzer
-
-    analyzer = get_analyzer()
-
     # Build the allow-list from tenant's display name (full, first, and last)
     if tenant is not None:
         user = getattr(tenant, "user", None)
@@ -409,13 +519,7 @@ def _redact(
                 elif parts:
                     allow_names = allow_names | {parts[0]}
 
-    results = analyzer.analyze(
-        text=text,
-        entities=entities,
-        language="en",
-        score_threshold=score_threshold,
-    )
-
+    results = _detect_pii(text, entities, score_threshold)
     results = _filter_results(results, text, allow_names)
 
     if not results:
@@ -453,10 +557,6 @@ def _filter_results(
     for result in results:
         matched_text = text[result.start : result.end].strip()
         matched_lower = matched_text.lower()
-
-        # Skip country/city names misidentified as PERSON
-        if result.entity_type == "PERSON" and matched_lower in COUNTRY_DENYLIST:
-            continue
 
         # Skip allowed names (user's own name)
         if result.entity_type == "PERSON" and any(

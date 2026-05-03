@@ -52,6 +52,17 @@ class BufferedMessage(models.Model):
         default=Status.PENDING,
         help_text="Terminal state: 'delivered' on success, 'failed' after attempts cap reached.",
     )
+    delivery_in_flight_until = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Soft lease: while now() < this timestamp, an in-progress "
+            "deliver_buffered_messages task is mid-POST for this row. "
+            "Concurrent QStash retries skip rows whose lease is still "
+            "live so we don't fire duplicate /v1/chat/completions calls "
+            "at the container while the first turn is still running."
+        ),
+    )
 
     class Meta:
         db_table = "buffered_messages"
