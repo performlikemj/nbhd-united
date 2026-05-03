@@ -37,4 +37,17 @@ urlpatterns = [
     path("dedup-crons/", views.dedup_crons, name="cron-dedup-crons"),
     path("run-health-check/", views.run_health_check, name="cron-run-health-check"),
     path("admin-health/", views.admin_health_status, name="cron-admin-health"),
+    # One-shot BYO fleet rollout endpoints (PR #434). Manual ops; the
+    # workflow_dispatch step in ci-cd.yml is the canonical caller. Routine
+    # deploys do not invoke either.
+    path(
+        "rollout-byo-image-bump/",
+        views.rollout_byo_image_bump,
+        name="cron-rollout-byo-image-bump",
+    ),
+    path(
+        "rollout-byo-persona-refresh/",
+        views.rollout_byo_persona_refresh,
+        name="cron-rollout-byo-persona-refresh",
+    ),
 ]

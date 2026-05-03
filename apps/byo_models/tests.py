@@ -246,10 +246,19 @@ class BYOEndpointTest(TestCase):
         _BYO_MOCK_KV_STORE.clear()
 
     def _enable_flag(self):
+        # No-op since 2026-05-02 fleet rollout — kept so existing call
+        # sites stay readable, and to allow tests asserting
+        # "explicitly enabled" behavior to remain self-documenting.
         self.tenant.byo_models_enabled = True
         self.tenant.save(update_fields=["byo_models_enabled"])
 
+    def _disable_flag(self):
+        # Used by tests that exercise the per-tenant opt-out path.
+        self.tenant.byo_models_enabled = False
+        self.tenant.save(update_fields=["byo_models_enabled"])
+
     def test_post_returns_404_when_flag_off(self):
+        self._disable_flag()
         response = self.client.post(
             "/api/v1/tenants/byo-credentials/",
             {
@@ -388,6 +397,7 @@ class BYOEndpointTest(TestCase):
         self.assertFalse(BYOCredential.objects.filter(id=cred.id).exists())
 
     def test_delete_returns_404_when_flag_off(self):
+        self._disable_flag()
         cred = BYOCredential.objects.create(
             tenant=self.tenant,
             provider="anthropic",
@@ -430,7 +440,11 @@ class BYOConfigGeneratorTest(TestCase):
         return generate_openclaw_config(self.tenant)
 
     def test_no_byo_when_flag_off(self):
-        # Even with a verified cred, byo_models_enabled=False keeps things off
+        # Even with a verified cred, byo_models_enabled=False keeps things off.
+        # Fleet rollout (PR #434) made True the new default — explicitly
+        # turn the flag off here to simulate a per-tenant opt-out.
+        self.tenant.byo_models_enabled = False
+        self.tenant.save(update_fields=["byo_models_enabled"])
         BYOCredential.objects.create(
             tenant=self.tenant,
             provider=BYOCredential.Provider.ANTHROPIC,
@@ -626,20 +640,47 @@ class BYOMarkCredentialErrorTest(TestCase):
 
 
 class EnableByoCommandTest(TestCase):
+    """`enable_byo` is deprecated as of PR #434 (fleet rollout).
+
+    The enable path is a no-op (BYO is fleet-wide); the disable path is the
+    only one that still mutates state and is reserved for per-tenant
+    emergency opt-out. These tests guard the deprecation contract.
+    """
+
     def setUp(self):
         self.tenant = create_tenant(display_name="CmdTest", telegram_chat_id=10005)
 
-    def test_enable_flips_flag(self):
-        self.assertFalse(self.tenant.byo_models_enabled)
-        out = StringIO()
-        call_command("enable_byo", "--tenant", str(self.tenant.id), stdout=out)
+    def test_enable_path_is_a_noop_with_deprecation_warning(self):
+        # New tenants come up with the flag True via model default;
+        # explicitly assert the pre-condition so the test stays honest.
         self.tenant.refresh_from_db()
         self.assertTrue(self.tenant.byo_models_enabled)
-        self.assertIn("enabled", out.getvalue())
+
+        out = StringIO()
+        call_command("enable_byo", "--tenant", str(self.tenant.id), stdout=out)
+
+        self.tenant.refresh_from_db()
+        self.assertTrue(self.tenant.byo_models_enabled, "Enable path must not flip the flag")
+        self.assertIn("DEPRECATED", out.getvalue())
+
+    def test_enable_path_is_noop_even_when_flag_was_false(self):
+        # An operator might explicitly have disabled a tenant's flag
+        # earlier (per-tenant opt-out). The deprecated enable path still
+        # refuses to flip it back — they need to use the migration's
+        # default, or write an explicit data update.
+        self.tenant.byo_models_enabled = False
+        self.tenant.save(update_fields=["byo_models_enabled"])
+
+        out = StringIO()
+        call_command("enable_byo", "--tenant", str(self.tenant.id), stdout=out)
+
+        self.tenant.refresh_from_db()
+        self.assertFalse(self.tenant.byo_models_enabled)
+        self.assertIn("DEPRECATED", out.getvalue())
 
     def test_disable_flips_flag(self):
-        self.tenant.byo_models_enabled = True
-        self.tenant.save(update_fields=["byo_models_enabled"])
+        # Disable is the one path that still mutates state — used for
+        # emergency per-tenant opt-out (e.g. user reports a runtime issue).
         out = StringIO()
         call_command("enable_byo", "--tenant", str(self.tenant.id), "--disable", stdout=out)
         self.tenant.refresh_from_db()
@@ -650,7 +691,9 @@ class EnableByoCommandTest(TestCase):
         with self.assertRaises(CommandError):
             call_command("enable_byo", "--tenant", "00000000-0000-0000-0000-000000000000")
 
-    def test_no_op_when_already_in_target_state(self):
+    def test_disable_no_op_when_already_disabled(self):
+        self.tenant.byo_models_enabled = False
+        self.tenant.save(update_fields=["byo_models_enabled"])
         out = StringIO()
         call_command("enable_byo", "--tenant", str(self.tenant.id), "--disable", stdout=out)
         self.assertIn("no-op", out.getvalue())
