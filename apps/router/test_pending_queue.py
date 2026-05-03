@@ -236,22 +236,22 @@ class PendingMessageOrderingTest(TestCase):
             user_text="second",
         )
 
-        # First drain — should pick up m1.
+        # First drain — should pick up m1, then re-schedule itself (sync
+        # fallback) and deliver m2 in the same call chain.
         result1 = drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_order")
         self.assertEqual(result1["delivered"], 1)
-        first_payload = mock_post.call_args.kwargs["json"]
-        self.assertEqual(first_payload["messages"][0]["content"], "first")
 
-        # The drain should have re-scheduled itself (sync fallback)
-        # and delivered m2 in the same call chain — verify by counting
-        # delivered rows.
         m1.refresh_from_db()
         m2.refresh_from_db()
         self.assertEqual(m1.delivery_status, PendingMessage.Status.DELIVERED)
         self.assertEqual(m2.delivery_status, PendingMessage.Status.DELIVERED)
 
-        # Two POSTs total, in arrival order.
+        # Two POSTs total, in arrival order. ``call_args`` reflects the
+        # last call (m2's "second"), so check ``call_args_list[0]`` for
+        # the FIFO head.
         self.assertEqual(mock_post.call_count, 2)
+        first_payload = mock_post.call_args_list[0].kwargs["json"]
+        self.assertEqual(first_payload["messages"][0]["content"], "first")
         second_payload = mock_post.call_args_list[1].kwargs["json"]
         self.assertEqual(second_payload["messages"][0]["content"], "second")
 

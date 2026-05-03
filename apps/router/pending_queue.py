@@ -389,11 +389,17 @@ def drain_pending_messages_for_tenant_task(
         )
         failed = 1
 
-    # If more pending rows remain for this key, schedule the next drain.
-    # We do this whether the current attempt succeeded or failed: on
-    # success we want to fire the next message; on failure we want a
-    # second-chance attempt (capped by ``_MAX_DELIVERY_ATTEMPTS``).
-    if _has_more_pending(tenant, channel, channel_user_id or ""):
+    # On success: if more pending rows remain for this key, schedule the
+    # next drain immediately so back-to-back messages keep flowing.
+    #
+    # On failure we deliberately do NOT re-schedule. The QStash retry
+    # (``retries=1`` set when the drain was first published) handles the
+    # second-chance attempt with QStash's natural backoff, and the
+    # per-message ``delivery_attempts`` counter still caps total attempts
+    # at ``_MAX_DELIVERY_ATTEMPTS``. Re-scheduling here would synchronously
+    # cascade through the cap in tests and burn the attempts budget on a
+    # request that's almost certainly going to keep failing.
+    if delivered and _has_more_pending(tenant, channel, channel_user_id or ""):
         _reschedule_drain(tenant, channel, channel_user_id or "")
 
     if failed:
