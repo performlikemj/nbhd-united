@@ -974,9 +974,15 @@ class LineWebhookView(View):
             update_active_workspace(tenant, workspace)
 
         # Inject current time so the agent always knows "now"
-        from apps.router.services import build_datetime_context
+        from apps.router.services import (
+            build_chat_context_marker,
+            build_datetime_context,
+        )
 
-        message_text = build_datetime_context(user_tz) + message_text
+        # Mark this as a conversational turn (not a scheduled cron run) so the
+        # agent skips the heavy AGENTS.md "Session Start" auto-context-load.
+        # See poller.py for the parallel comment.
+        message_text = build_datetime_context(user_tz) + build_chat_context_marker() + message_text
 
         # Hand off to the serialization queue. The reply_token is
         # captured but the drain task ignores it — by the time the

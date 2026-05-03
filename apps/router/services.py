@@ -41,6 +41,37 @@ def build_datetime_context(user_timezone: str) -> str:
     return f"[Now: {now.strftime('%Y-%m-%d %H:%M')} {abbrev} ({now.strftime('%A')})]\n"
 
 
+# Lightweight "this is a user chat, not a cron job" marker. AGENTS.md treats
+# this as a signal to skip the heavy session-start context-load (daily note,
+# journal_context, channel-formatting docs) which is appropriate for cron
+# turns where loading context IS the work, but pure overhead for a "hi how
+# are you" style message. Cron prompts go through `_CRON_CONTEXT_PREAMBLE`
+# in `apps/orchestrator/config_generator.py` which keeps the full
+# load-everything directive — only conversational turns get this marker.
+_CHAT_CONTEXT_MARKER = (
+    "[chat: user is mid-conversation, reply concisely without loading "
+    "workspace docs unless the question explicitly requires it]\n"
+)
+
+
+def build_chat_context_marker() -> str:
+    """Single-line marker injected before ad-hoc user messages.
+
+    Tells the agent the turn is a conversational message (LINE/Telegram chat),
+    not a scheduled-task run, so it can skip the AGENTS.md "Session Start"
+    silent context-load. The agent still has SOUL/USER/MEMORY/IDENTITY/TOOLS
+    in its context window — it just doesn't pre-fetch the daily note, journal
+    history, and formatting docs before every chat.
+
+    Significantly reduces tool-call count on first-message-of-session for
+    BYO Claude tenants: observed ~377 raw output lines on cold start
+    (mostly memory/journal/document tool calls before the actual reply);
+    with this marker the agent only fetches context when the user's message
+    actually needs it.
+    """
+    return _CHAT_CONTEXT_MARKER
+
+
 # In-memory cache: chat_id → (container_fqdn, timestamp)
 ROUTE_CACHE_TTL = 60  # seconds
 _route_cache: dict[int, tuple[str, float]] = {}

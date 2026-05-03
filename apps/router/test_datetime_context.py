@@ -1,4 +1,8 @@
-"""Tests for build_datetime_context — per-turn time header injection."""
+"""Tests for build_datetime_context — per-turn time header injection.
+
+Also covers `build_chat_context_marker` — the conversational-turn marker
+that tells the agent to skip the heavy AGENTS.md session-start context-load.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from apps.router.services import build_datetime_context
+from apps.router.services import build_chat_context_marker, build_datetime_context
 
 
 class BuildDatetimeContextTest(TestCase):
@@ -47,3 +51,34 @@ class BuildDatetimeContextTest(TestCase):
         # [Now: YYYY-MM-DD HH:MM TZ (Weekday)]
         pattern = r"^\[Now: \d{4}-\d{2}-\d{2} \d{2}:\d{2} \S+ \(\w+\)\]\n$"
         self.assertRegex(result, pattern)
+
+
+class BuildChatContextMarkerTest(TestCase):
+    """build_chat_context_marker returns the conversational-turn signal."""
+
+    def test_starts_with_chat_marker(self):
+        result = build_chat_context_marker()
+        self.assertTrue(result.startswith("[chat:"))
+
+    def test_ends_with_newline(self):
+        result = build_chat_context_marker()
+        self.assertTrue(result.endswith("\n"))
+
+    def test_mentions_skip_workspace_docs(self):
+        # The marker must explicitly tell the agent to skip the auto-context-load,
+        # otherwise AGENTS.md still triggers daily-note + journal-context fetches.
+        result = build_chat_context_marker()
+        self.assertIn("workspace docs", result)
+
+    def test_marker_is_single_line(self):
+        # The marker must be a single line so it doesn't split a [Now: ...]
+        # header from the user's actual message text.
+        result = build_chat_context_marker()
+        # Count newlines — should be exactly 1, the trailing newline.
+        self.assertEqual(result.count("\n"), 1)
+
+    def test_marker_is_compact(self):
+        # Should be short enough that we're not paying real prompt-token cost
+        # on every conversational turn — a few hundred chars at most.
+        result = build_chat_context_marker()
+        self.assertLess(len(result), 300)
