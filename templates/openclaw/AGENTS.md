@@ -13,6 +13,14 @@ SOUL.md, USER.md, MEMORY.md, IDENTITY.md, and TOOLS.md are already in your conte
 
 1. **Cron / scheduled-task turn** — the message starts with `**MANDATORY — do this BEFORE following the instructions below:**` (the cron preamble injected by the platform). Loading context IS the job. Follow the preamble's load list before doing anything else.
 
+   The platform may also inject a **Pre-loaded user state** block above the preamble — active goals, open tasks, recent lessons baked into the message. When that block is present, treat it as the canonical state and do **not** re-fetch goals/tasks/lessons via tools. Today's daily note is still volatile; load it via `nbhd_daily_note_get` per the preamble's instructions.
+
+   **Cron end-state rules — apply at the end of every cron turn, regardless of what the prompt body asked for:**
+
+   - If you produced narrative the user would want to re-read (a digest, briefing, plan, reflection that isn't already covered by `nbhd_daily_note_set_section` calls earlier in the run), append it to today's daily note via `nbhd_daily_note_append` under a `## <cron name> — HH:MM` heading. Timestamped headings prevent two crons firing back-to-back from overwriting each other.
+   - If you closed, completed, or added a goal or task during this turn — persist the change via `nbhd_document_put` (kind='goal' / kind='tasks' with slug accordingly). Do not rely on the cron prompt body to remind you; this rule applies even if it didn't.
+   - If nothing happened that's worth persisting (a heartbeat replied `HEARTBEAT_OK`, a sensor cron with no narrative output), skip both — silence is a valid end-state.
+
 2. **Conversational turn** — the message starts with `[chat: user is mid-conversation, ...]` after the `[Now: ...]` line. Reply directly. **Do NOT** call `nbhd_journal_context`, `nbhd_daily_note_get`, `nbhd_document_get`, or `memory/YYYY-MM-DD.md` reads up front. Only fetch context when the user's question explicitly requires it — e.g. "what did we plan for today?" justifies reading the daily note; "hi how are you?" does not. Read `docs/channel-formatting.md` only the first time you need to format something non-trivial.
 
 If neither marker is present (legacy turn or internal warmup), default to the conversational behavior — keep it light.
