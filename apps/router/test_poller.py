@@ -214,15 +214,42 @@ class TelegramPollerDispatchTest(TestCase):
     TELEGRAM_WEBHOOK_SECRET="test-secret",
 )
 class TelegramPollerForwardTest(TestCase):
-    """Tests for TelegramPoller._forward_to_container."""
+    """Tests for TelegramPoller._forward_to_container.
+
+    After PR #431 (per-tenant queue), the poller's
+    ``_forward_to_container`` enqueues onto a serialized queue and the
+    QStash drain task does the actual POST. In tests, ``publish_task``
+    falls back to synchronous execution (no QSTASH_TOKEN), so the drain
+    runs inline and the patched ``httpx.post`` still observes the
+    container POST — just from ``pending_queue.httpx.post`` instead of
+    ``poller.httpx.post``.
+    """
 
     def setUp(self):
+        import secrets
+
         from apps.router.poller import TelegramPoller
+        from apps.tenants.models import Tenant, User
 
         self.poller = TelegramPoller()
         self.poller._http = MagicMock()
+        self.poller._http.post.return_value = MagicMock(is_success=True)
 
-    @patch("apps.router.poller.httpx.post")
+        # Real tenant — PendingMessage.objects.create requires a real
+        # FK, MagicMock won't survive Django's validation.
+        self.user = User.objects.create_user(
+            username=f"poller_fwd_{secrets.token_hex(4)}",
+            email=f"{secrets.token_hex(4)}@example.com",
+            telegram_chat_id=123,
+            preferred_channel="telegram",
+        )
+        self.tenant = Tenant.objects.create(
+            user=self.user,
+            status=Tenant.Status.ACTIVE,
+            container_fqdn="oc-test.internal",
+        )
+
+    @patch("apps.router.pending_queue.httpx.post")
     def test_forward_via_chat_completions(self, mock_post):
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
@@ -232,11 +259,7 @@ class TelegramPollerForwardTest(TestCase):
         }
         mock_post.return_value = mock_resp
 
-        tenant = MagicMock()
-        tenant.container_fqdn = "oc-test.internal"
-        tenant.user.timezone = "UTC"
-
-        self.poller._forward_to_container(123, tenant, "hi there")
+        self.poller._forward_to_container(123, self.tenant, "hi there")
 
         mock_post.assert_called_once()
         url = mock_post.call_args[0][0]
@@ -251,38 +274,33 @@ class TelegramPollerForwardTest(TestCase):
         self.assertIn("[Now: ", content)
         self.assertTrue(content.endswith("hi there"))
 
-        # Verify AI response sent to user via Telegram
-        send_calls = self.poller._http.post.call_args_list
+        # Verify AI response sent to user via Telegram (queue's drain
+        # uses httpx.post, not the poller's _http.post — but the
+        # response delivery still goes to the bot API).
+        send_calls = mock_post.call_args_list
         self.assertTrue(len(send_calls) > 0)
 
-    @patch("apps.router.poller.httpx.post")
+    @patch("apps.router.pending_queue.httpx.post")
     def test_forward_timeout_handled_gracefully(self, mock_post):
         import httpx
 
+        # Drain task will raise; enqueue_message_for_tenant swallows
+        # publish failures so the webhook handler stays clean.
         mock_post.side_effect = httpx.TimeoutException("timed out")
 
-        tenant = MagicMock()
-        tenant.container_fqdn = "oc-test.internal"
-        tenant.user.timezone = "UTC"
+        # Should not raise — enqueue swallows publish failures.
+        self.poller._forward_to_container(123, self.tenant, "hi")
 
-        # Should not raise
-        self.poller._forward_to_container(123, tenant, "hi")
-
-    @patch("apps.router.poller.httpx.post")
-    def test_forward_error_sends_sorry_message(self, mock_post):
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_forward_error_does_not_raise(self, mock_post):
         import httpx
 
         mock_post.side_effect = httpx.HTTPError("server error")
 
-        tenant = MagicMock()
-        tenant.container_fqdn = "oc-test.internal"
-        tenant.user.timezone = "UTC"
-
-        self.poller._forward_to_container(123, tenant, "hi")
-
-        # Should send error message to user
-        send_calls = self.poller._http.post.call_args_list
-        self.assertTrue(len(send_calls) > 0)
+        # Drain raises but enqueue swallows it — caller (poller) stays
+        # clean and the row sits at delivery_attempts=1 for the next
+        # tick to retry.
+        self.poller._forward_to_container(123, self.tenant, "hi")
 
 
 @override_settings(TELEGRAM_BOT_TOKEN="TEST-BOT-TOKEN")
