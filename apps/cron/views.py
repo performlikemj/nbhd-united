@@ -1347,3 +1347,132 @@ def admin_health_status(request):
             "results": results,
         }
     )
+
+
+@csrf_exempt
+@require_POST
+def rollout_byo_image_bump(request):
+    """One-shot: bump every active tenant to the current OpenClaw image.
+
+    URL: /api/cron/rollout-byo-image-bump/
+    Auth: X-Deploy-Secret header.
+
+    Wraps the ``bump_all_tenant_images`` management command. Intended to
+    be called manually (or by a workflow_dispatch CI run) after PR #434
+    ships, then never again — the routine ``apply_pending_configs`` cron
+    handles future image rollouts via the per-message bump path.
+
+    POST body (optional):
+      ``{"include_hibernated": true}`` to also bump hibernated tenants.
+
+    Returns JSON: ``{"succeeded": N, "failed": N, "skipped_idempotent": N}``.
+    """
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    if not deploy_secret:
+        return JsonResponse({"error": "DEPLOY_SECRET not configured"}, status=503)
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not provided or provided != deploy_secret:
+        logger.warning("Unauthorized rollout_byo_image_bump attempt")
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    body = {}
+    if request.body:
+        try:
+            body = json.loads(request.body)
+        except Exception:
+            body = {}
+    include_hibernated = bool(body.get("include_hibernated", False))
+
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    out = StringIO()
+    err = StringIO()
+    args = []
+    if include_hibernated:
+        args.append("--include-hibernated")
+
+    try:
+        call_command("bump_all_tenant_images", *args, stdout=out, stderr=err)
+        return JsonResponse(
+            {
+                "ok": True,
+                "include_hibernated": include_hibernated,
+                "stdout_tail": out.getvalue()[-2000:],
+            }
+        )
+    except Exception as exc:
+        logger.exception("rollout_byo_image_bump failed")
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": str(exc),
+                "stdout_tail": out.getvalue()[-2000:],
+                "stderr_tail": err.getvalue()[-2000:],
+            },
+            status=500,
+        )
+
+
+@csrf_exempt
+@require_POST
+def rollout_byo_persona_refresh(request):
+    """One-shot: re-render workspace/AGENTS.md to every active tenant.
+
+    URL: /api/cron/rollout-byo-persona-refresh/
+    Auth: X-Deploy-Secret header.
+
+    Wraps the ``refresh_persona_agents_md`` management command. Same
+    one-shot semantics as ``rollout_byo_image_bump`` — manual op, not a
+    deploy-time hook.
+
+    POST body (optional):
+      ``{"include_hibernated": true}``.
+    """
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    if not deploy_secret:
+        return JsonResponse({"error": "DEPLOY_SECRET not configured"}, status=503)
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not provided or provided != deploy_secret:
+        logger.warning("Unauthorized rollout_byo_persona_refresh attempt")
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    body = {}
+    if request.body:
+        try:
+            body = json.loads(request.body)
+        except Exception:
+            body = {}
+    include_hibernated = bool(body.get("include_hibernated", False))
+
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    out = StringIO()
+    err = StringIO()
+    args = []
+    if include_hibernated:
+        args.append("--include-hibernated")
+
+    try:
+        call_command("refresh_persona_agents_md", *args, stdout=out, stderr=err)
+        return JsonResponse(
+            {
+                "ok": True,
+                "include_hibernated": include_hibernated,
+                "stdout_tail": out.getvalue()[-2000:],
+            }
+        )
+    except Exception as exc:
+        logger.exception("rollout_byo_persona_refresh failed")
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": str(exc),
+                "stdout_tail": out.getvalue()[-2000:],
+                "stderr_tail": err.getvalue()[-2000:],
+            },
+            status=500,
+        )

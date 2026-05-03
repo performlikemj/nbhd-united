@@ -313,10 +313,11 @@ class Tenant(models.Model):
     )
 
     # BYO subscription mode — Phase 1 gates Anthropic Claude Pro/Max CLI
-    # behind this flag. Default off across the fleet; flip per-tenant via
-    # `manage.py enable_byo --tenant <id>` for canary rollout.
+    # behind this flag. After fleet rollout (PR #434, 2026-05-02) the default
+    # is True; existing rows are flipped via migration 0051. Newly provisioned
+    # tenants are auto-enabled and can connect from day one.
     byo_models_enabled = models.BooleanField(
-        default=False,
+        default=True,
         help_text="Enable bring-your-own Anthropic/OpenAI subscription mode for this tenant",
     )
 
