@@ -497,10 +497,13 @@ class DeliverBufferedInFlightLockTest(TestCase):
             user_text="hi",
         )
 
-        with patch(
-            "apps.orchestrator.hibernation._post_chat_completion_with_backoff",
-            side_effect=RuntimeError("boom"),
-        ), self.assertRaises(RuntimeError):
+        with (
+            patch(
+                "apps.orchestrator.hibernation._post_chat_completion_with_backoff",
+                side_effect=RuntimeError("boom"),
+            ),
+            self.assertRaises(RuntimeError),
+        ):
             deliver_buffered_messages_task(str(tenant.id))
 
         msg.refresh_from_db()
