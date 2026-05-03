@@ -10,7 +10,7 @@ from .pat_models import PersonalAccessToken, generate_pat
 from .permissions import ALLOWED_PAT_SCOPES
 from .throttling import UserPATMintHourThrottle
 
-DEFAULT_PAT_SCOPES: list[str] = ["sessions:write"]
+DEFAULT_PAT_SCOPES: list[str] = ["sessions:write", "sessions:read"]
 
 
 class PATCreateSerializer(serializers.Serializer):

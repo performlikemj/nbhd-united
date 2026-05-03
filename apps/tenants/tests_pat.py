@@ -170,14 +170,24 @@ class PATManagementTest(TestCase):
         self.assertIn("warning", data)
         self.assertEqual(data["name"], "YardTalk on MacBook")
 
-    def test_create_pat_defaults_to_sessions_write_scope(self):
+    def test_create_pat_defaults_to_full_session_scopes(self):
+        """Default PAT mint grants both read and write on sessions.
+
+        Why: a write-only default broke the typical integrator flow —
+        clients couldn't verify their own ingest via GET. Default to the
+        full session scope set so the no-trap path is the easy path.
+        Callers can still pin a narrower scope by passing `scopes` explicitly.
+        """
         response = self.client.post(
             "/api/v1/auth/tokens/create/",
             {"name": "Default Scopes"},
             format="json",
         )
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json()["scopes"], ["sessions:write"])
+        self.assertEqual(
+            sorted(response.json()["scopes"]),
+            ["sessions:read", "sessions:write"],
+        )
 
     def test_create_pat_with_explicit_scopes(self):
         response = self.client.post(
