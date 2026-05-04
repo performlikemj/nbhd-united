@@ -353,7 +353,7 @@ onnxruntime==1.25.1
     # via
     #   -r requirements.in
     #   optimum
-openai==2.33.0
+openai==2.34.0
     # via
     #   -r requirements.in
     #   composio
