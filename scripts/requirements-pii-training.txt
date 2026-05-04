@@ -8,5 +8,5 @@ accelerate>=0.24
 seqeval>=1.2
 optimum[onnxruntime]>=1.14
 onnxruntime>=1.16
-numpy<2
+numpy<3
 sentencepiece>=0.2
