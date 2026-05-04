@@ -408,9 +408,7 @@ class BuildCronMessageTest(TestCase):
         self.assertNotIn("FINAL STEP — conditional sync to the main session", out)
 
     def test_with_envelope_false_skips_envelope(self):
-        out = _build_cron_message(
-            "BODY", "TestJob", foreground=False, tenant=self.tenant, with_envelope=False
-        )
+        out = _build_cron_message("BODY", "TestJob", foreground=False, tenant=self.tenant, with_envelope=False)
         self.assertNotIn("Pre-loaded user state", out)
         self.assertIn(_CRON_CONTEXT_PREAMBLE, out)
 

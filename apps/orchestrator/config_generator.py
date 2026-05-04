@@ -142,9 +142,7 @@ def _envelope_goals(tenant: Tenant, *, max_chars: int = 1500) -> str:
     """
     from apps.journal.models import Document
 
-    doc = (
-        Document.objects.filter(tenant=tenant, kind=Document.Kind.GOAL, slug="goals").first()
-    )
+    doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.GOAL, slug="goals").first()
     if not doc:
         return ""
     md = (doc.markdown or "").strip()
@@ -169,9 +167,7 @@ def _starter_task_lines() -> frozenset[str]:
     if not _STARTER_TASK_LINES:
         seed_md = _starter_markdown("tasks")
         _STARTER_TASK_LINES = frozenset(
-            line.strip()
-            for line in seed_md.splitlines()
-            if line.lstrip().startswith("- [ ]")
+            line.strip() for line in seed_md.splitlines() if line.lstrip().startswith("- [ ]")
         )
     return _STARTER_TASK_LINES
 
@@ -185,9 +181,7 @@ def _envelope_open_tasks(tenant: Tenant, *, max_items: int = 25) -> str:
     """
     from apps.journal.models import Document
 
-    doc = (
-        Document.objects.filter(tenant=tenant, kind=Document.Kind.TASKS, slug="tasks").first()
-    )
+    doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.TASKS, slug="tasks").first()
     if not doc:
         return ""
     starter_lines = _starter_task_lines()
@@ -208,10 +202,7 @@ def _envelope_recent_lessons(tenant: Tenant, *, limit: int = 3) -> str:
     """Most recent approved lessons as one-line summaries."""
     from apps.lessons.models import Lesson
 
-    lessons = list(
-        Lesson.objects.filter(tenant=tenant, status="approved")
-        .order_by("-created_at")[:limit]
-    )
+    lessons = list(Lesson.objects.filter(tenant=tenant, status="approved").order_by("-created_at")[:limit])
     if not lessons:
         return ""
     out: list[str] = []
