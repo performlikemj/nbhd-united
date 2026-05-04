@@ -94,24 +94,178 @@ def _phase2_sync_block(job_name: str) -> str:
     )
 
 
-def _build_cron_message(prompt: str, job_name: str, foreground: bool, tenant: Tenant) -> str:
-    """Compose a cron job's message: date preamble + prompt + (optional) Phase 2 sync.
+def _build_cron_message(
+    prompt: str,
+    job_name: str,
+    foreground: bool,
+    tenant: Tenant,
+    *,
+    with_envelope: bool = True,
+) -> str:
+    """Compose a cron job's message: date preamble + envelope + shared preamble + prompt + (optional) Phase 2 sync.
 
     Centralizes the message-building so seed jobs and tests stay consistent.
+
+    ``with_envelope`` controls whether the pre-loaded user-state envelope is
+    injected. Defaults to True; opt out for sensor crons that don't need
+    goals/tasks/lessons context.
     """
-    base = _prepare_cron_prompt(prompt, tenant)
+    base = _prepare_cron_prompt(prompt, tenant, with_envelope=with_envelope)
     if foreground:
         return base + _phase2_sync_block(job_name)
     return base
 
 
-def _prepare_cron_prompt(prompt: str, tenant: Tenant) -> str:
-    """Prepend date context and shared preamble to a cron prompt.
+_STARTER_MARKDOWN_CACHE: dict[str, str] = {}
+
+
+def _starter_markdown(slug: str) -> str:
+    """Return the unmodified seed markdown for a given starter doc slug.
+
+    Cached to avoid repeated imports. Returns empty string if the slug isn't
+    a known starter template.
+    """
+    global _STARTER_MARKDOWN_CACHE
+    if not _STARTER_MARKDOWN_CACHE:
+        from apps.journal.services import STARTER_DOCUMENT_TEMPLATES
+
+        _STARTER_MARKDOWN_CACHE = {t["slug"]: t["markdown"] for t in STARTER_DOCUMENT_TEMPLATES}
+    return _STARTER_MARKDOWN_CACHE.get(slug, "")
+
+
+def _envelope_goals(tenant: Tenant, *, max_chars: int = 1500) -> str:
+    """Active goals from ``Document(kind=goal, slug=goals)``, char-capped.
+
+    Returns empty when the doc is missing, blank, or still contains the
+    unmodified starter seed (the agent and tenant haven't curated real goals
+    yet — injecting placeholder text would mislead downstream cron logic).
+    """
+    from apps.journal.models import Document
+
+    doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.GOAL, slug="goals").first()
+    if not doc:
+        return ""
+    md = (doc.markdown or "").strip()
+    if not md:
+        return ""
+    starter = _starter_markdown("goals").strip()
+    if starter and md == starter:
+        return ""
+    if len(md) > max_chars:
+        return md[:max_chars].rstrip() + "\n_(truncated — see goals doc for full text)_"
+    return md
+
+
+# Lines from the starter tasks template that should be filtered out of the
+# envelope — they're tutorial placeholders, not real tasks.
+_STARTER_TASK_LINES: frozenset[str] = frozenset()
+
+
+def _starter_task_lines() -> frozenset[str]:
+    """Stripped open-task lines from the starter tasks template."""
+    global _STARTER_TASK_LINES
+    if not _STARTER_TASK_LINES:
+        seed_md = _starter_markdown("tasks")
+        _STARTER_TASK_LINES = frozenset(
+            line.strip() for line in seed_md.splitlines() if line.lstrip().startswith("- [ ]")
+        )
+    return _STARTER_TASK_LINES
+
+
+def _envelope_open_tasks(tenant: Tenant, *, max_items: int = 25) -> str:
+    """Open tasks (`- [ ]` items) from ``Document(kind=tasks, slug=tasks)``.
+
+    Skips the placeholder bullets seeded by ``seed_default_documents_for_tenant``
+    — those are tutorial prompts, not real tasks. A tenant who has only the
+    starter tasks contributes no open tasks to the envelope.
+    """
+    from apps.journal.models import Document
+
+    doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.TASKS, slug="tasks").first()
+    if not doc:
+        return ""
+    starter_lines = _starter_task_lines()
+    open_items = [
+        line
+        for line in (doc.markdown or "").splitlines()
+        if line.lstrip().startswith("- [ ]") and line.strip() not in starter_lines
+    ]
+    if not open_items:
+        return ""
+    if len(open_items) > max_items:
+        kept = open_items[:max_items]
+        return "\n".join(kept) + f"\n_(+{len(open_items) - max_items} more open tasks in tasks doc)_"
+    return "\n".join(open_items)
+
+
+def _envelope_recent_lessons(tenant: Tenant, *, limit: int = 3) -> str:
+    """Most recent approved lessons as one-line summaries."""
+    from apps.lessons.models import Lesson
+
+    lessons = list(Lesson.objects.filter(tenant=tenant, status="approved").order_by("-created_at")[:limit])
+    if not lessons:
+        return ""
+    out: list[str] = []
+    for lesson in lessons:
+        text = (lesson.text or "").strip()
+        if not text:
+            continue
+        first_line = text.splitlines()[0]
+        if len(first_line) > 140:
+            first_line = first_line[:137].rstrip() + "..."
+        out.append(f"- {first_line}")
+    return "\n".join(out)
+
+
+def _build_context_envelope(tenant: Tenant) -> str:
+    """Pre-loaded user-state envelope for cron messages.
+
+    Replaces the agent's tool-call-on-demand pattern for slow-changing state
+    (active goals, open tasks, recent lessons) by baking the data into the
+    cron message at seed/refresh time. Today's daily note is *not* in the
+    envelope — it's volatile within a day, so the existing preamble's load
+    instruction handles it via ``nbhd_daily_note_get``.
+
+    Envelope is rebaked on every ``update_system_cron_prompts`` refresh, so
+    goals/tasks/lessons stay reasonably fresh (within one refresh cycle).
+
+    Returns an empty string when the tenant has no goals, tasks, or lessons —
+    no point injecting an empty block.
+    """
+    goals = _envelope_goals(tenant)
+    tasks = _envelope_open_tasks(tenant)
+    lessons = _envelope_recent_lessons(tenant)
+
+    if not (goals or tasks or lessons):
+        return ""
+
+    parts: list[str] = [
+        "**Pre-loaded user state — use these directly; do not re-fetch goals/tasks/lessons via tools:**\n",
+    ]
+    if goals:
+        parts.append(f"\n### Active goals\n{goals}\n")
+    if tasks:
+        parts.append(f"\n### Open tasks\n{tasks}\n")
+    if lessons:
+        parts.append(f"\n### Recent lessons\n{lessons}\n")
+    parts.append("\n---\n\n")
+    return "".join(parts)
+
+
+def _prepare_cron_prompt(prompt: str, tenant: Tenant, *, with_envelope: bool = True) -> str:
+    """Prepend date context, optional pre-loaded state envelope, and shared preamble.
 
     Every cron job gets:
-    1. Current date/time (cheap models struggle with date math)
-    2. Shared preamble: load daily note + tasks + goals first, cross-reference
-       before acting — prevents repeating information across cron sessions.
+    1. Current date/time (cheap models struggle with date math).
+    2. Pre-loaded user-state envelope (when ``with_envelope=True``): active
+       goals, open tasks, recent lessons. Replaces the agent's
+       tool-call-on-demand pattern for these — they're baked into the message
+       deterministically rather than depending on the agent following the
+       preamble's load instructions.
+    3. Shared preamble: cross-reference instructions; load today's daily note
+       (still volatile, agent fetches via tool).
+
+    Sensor/maintenance crons can pass ``with_envelope=False`` to skip step 2.
     """
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
     try:
@@ -126,7 +280,8 @@ def _prepare_cron_prompt(prompt: str, tenant: Tenant) -> str:
         f"event_date minus {now.strftime('%Y-%m-%d')} = X days from now. "
         f"Never say 'tomorrow' unless the math confirms exactly 1 day away.\n\n"
     )
-    return date_line + _CRON_CONTEXT_PREAMBLE + prompt
+    envelope = _build_context_envelope(tenant) if with_envelope else ""
+    return date_line + envelope + _CRON_CONTEXT_PREAMBLE + prompt
 
 
 _MORNING_BRIEFING_PROMPT_TEMPLATE = (
