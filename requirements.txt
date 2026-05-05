@@ -191,7 +191,7 @@ fsspec[http]==2026.2.0
     #   evaluate
     #   huggingface-hub
     #   torch
-gunicorn==25.3.0
+gunicorn==26.0.0
     # via -r requirements.in
 h11==0.16.0
     # via httpcore
