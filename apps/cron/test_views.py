@@ -188,3 +188,126 @@ class RestartTenantContainerTest(TestCase):
         response = self.client.post("/api/v1/cron/restart-tenant-container/")
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["error"], "Invalid signature")
+
+
+class ExpireTrialsEntitlementTest(TestCase):
+    """Regression guards for the broadened entitlement query.
+
+    The bug this prevents: production had 17 tenants with
+    ``is_trial=False, status='active', no Stripe sub`` and trial_ends_at
+    in the past. The earlier query filtered on ``is_trial=True`` so
+    these ghost tenants were silently skipped on every daily sweep,
+    accumulating LLM cost. The new query matches by ENTITLEMENT, not
+    the ``is_trial`` flag.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _make_tenant(self, *, suffix: str, **kwargs) -> Tenant:
+        user = User.objects.create_user(username=f"ent-{suffix}", password="x")
+        defaults = dict(
+            user=user,
+            status=Tenant.Status.ACTIVE,
+            model_tier=Tenant.ModelTier.STARTER,
+            container_id=f"oc-{suffix}",
+            container_fqdn=f"oc-{suffix}.internal.azurecontainerapps.io",
+        )
+        defaults.update(kwargs)
+        return Tenant.objects.create(**defaults)
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    @patch("apps.orchestrator.azure_client.hibernate_container_app", return_value=None)
+    @patch("apps.cron.suspension.suspend_tenant_crons", return_value={"disabled": 3, "errors": 0})
+    def test_matches_ghost_state_unentitled_active(self, mock_suspend, mock_hibernate, mock_verify):
+        """Tenant with is_trial=False, active, no sub, trial_ended is matched."""
+        ghost = self._make_tenant(
+            suffix="ghost",
+            is_trial=False,
+            trial_ends_at=timezone.now() - timedelta(days=20),
+            stripe_subscription_id="",
+        )
+        response = self.client.post("/api/v1/cron/expire-trials/")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["updated"], 1)
+
+        ghost.refresh_from_db()
+        self.assertEqual(ghost.status, Tenant.Status.SUSPENDED)
+        self.assertFalse(ghost.is_trial)
+        mock_suspend.assert_called_once()
+        mock_hibernate.assert_called_once_with(ghost.container_id)
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    @patch("apps.orchestrator.azure_client.hibernate_container_app", return_value=None)
+    @patch("apps.cron.suspension.suspend_tenant_crons", return_value={"disabled": 0, "errors": 0})
+    def test_matches_classic_trial_expired(self, mock_suspend, mock_hibernate, mock_verify):
+        """Original behavior preserved: is_trial=True with trial_ended is matched."""
+        trial_user = self._make_tenant(
+            suffix="trial",
+            is_trial=True,
+            trial_ends_at=timezone.now() - timedelta(days=1),
+            stripe_subscription_id="",
+        )
+        response = self.client.post("/api/v1/cron/expire-trials/")
+        self.assertEqual(response.json()["updated"], 1)
+
+        trial_user.refresh_from_db()
+        self.assertEqual(trial_user.status, Tenant.Status.SUSPENDED)
+        self.assertFalse(trial_user.is_trial)
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    @patch("apps.orchestrator.azure_client.hibernate_container_app", return_value=None)
+    @patch("apps.cron.suspension.suspend_tenant_crons", return_value={"disabled": 0, "errors": 0})
+    def test_skips_paid_tenant(self, mock_suspend, mock_hibernate, mock_verify):
+        """Tenant with a Stripe subscription is skipped regardless of trial state."""
+        paid = self._make_tenant(
+            suffix="paid",
+            is_trial=False,
+            trial_ends_at=timezone.now() - timedelta(days=20),
+            stripe_subscription_id="sub_real",
+        )
+        response = self.client.post("/api/v1/cron/expire-trials/")
+        self.assertEqual(response.json()["updated"], 0)
+
+        paid.refresh_from_db()
+        self.assertEqual(paid.status, Tenant.Status.ACTIVE)
+        mock_suspend.assert_not_called()
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    @patch("apps.orchestrator.azure_client.hibernate_container_app", return_value=None)
+    @patch("apps.cron.suspension.suspend_tenant_crons", return_value={"disabled": 0, "errors": 0})
+    def test_skips_active_trial(self, mock_suspend, mock_hibernate, mock_verify):
+        """Tenant on a valid (unexpired) trial is skipped."""
+        active_trial = self._make_tenant(
+            suffix="onTrial",
+            is_trial=True,
+            trial_ends_at=timezone.now() + timedelta(days=5),
+            stripe_subscription_id="",
+        )
+        response = self.client.post("/api/v1/cron/expire-trials/")
+        self.assertEqual(response.json()["updated"], 0)
+
+        active_trial.refresh_from_db()
+        self.assertEqual(active_trial.status, Tenant.Status.ACTIVE)
+        self.assertTrue(active_trial.is_trial)
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    @patch("apps.orchestrator.azure_client.hibernate_container_app", return_value=None)
+    @patch("apps.cron.suspension.suspend_tenant_crons", return_value={"disabled": 0, "errors": 0})
+    def test_reports_already_hibernated_separately(self, mock_suspend, mock_hibernate, mock_verify):
+        """Ghost tenants that are already hibernated are counted separately."""
+        ghost = self._make_tenant(
+            suffix="ghosthibe",
+            is_trial=False,
+            trial_ends_at=timezone.now() - timedelta(days=20),
+            stripe_subscription_id="",
+            hibernated_at=timezone.now() - timedelta(days=7),
+        )
+        response = self.client.post("/api/v1/cron/expire-trials/")
+        body = response.json()
+        self.assertEqual(body["updated"], 1)
+        self.assertEqual(body["already_hibernated"], 1)
+
+        ghost.refresh_from_db()
+        self.assertEqual(ghost.status, Tenant.Status.SUSPENDED)
