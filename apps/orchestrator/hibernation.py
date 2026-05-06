@@ -94,6 +94,15 @@ def _capture_tenant_cron_schedules(tenant: Tenant) -> list[dict]:
     """Query tenant's enabled cron jobs and save a snapshot.
 
     Returns the raw job list for use by ``_schedule_next_cron_wake``.
+
+    Resilience: when the live gateway call fails (typical case: the
+    per-tenant container is in an inactive revision state at the moment
+    of hibernation and Azure returns an HTML 404), fall back to the
+    persisted ``tenant.cron_jobs_snapshot`` or, failing that, the
+    ``build_cron_seed_jobs`` recomputation. This keeps the wake chain
+    intact even when the upstream is unreachable — without the fallback,
+    a single failed ``cron.list`` would silently leave the tenant with
+    no future wake scheduled.
     """
     if not tenant.container_fqdn:
         return []
@@ -111,11 +120,60 @@ def _capture_tenant_cron_schedules(tenant: Tenant) -> list[dict]:
         )
         return jobs
     except Exception:
+        logger.warning(
+            "idle_hibernate: live cron.list failed for tenant %s — falling back to snapshot/seed",
+            str(tenant.id)[:8],
+            exc_info=True,
+        )
+        return _load_fallback_cron_jobs(tenant)
+
+
+def _load_fallback_cron_jobs(tenant: Tenant) -> list[dict]:
+    """Return cron jobs from the persisted snapshot or, failing that,
+    from a fresh seed-job recomputation.
+
+    Used when the live gateway is unreachable. Jobs returned from the
+    snapshot path retain whatever ``nextRunAtMs`` the gateway last
+    reported; jobs returned from the seed path have no ``nextRunAtMs``,
+    so the caller's ``_find_earliest_next_run`` will fall back to
+    computing from the cron expression via ``_next_run_from_expr``.
+    """
+    snapshot = tenant.cron_jobs_snapshot or {}
+    snapshot_jobs = snapshot.get("jobs") if isinstance(snapshot, dict) else None
+    if snapshot_jobs:
+        enabled = [j for j in snapshot_jobs if isinstance(j, dict) and j.get("enabled", True)]
+        if enabled:
+            logger.info(
+                "idle_hibernate: using cron_jobs_snapshot for tenant %s (%d enabled jobs)",
+                str(tenant.id)[:8],
+                len(enabled),
+            )
+            return enabled
+
+    try:
+        from apps.orchestrator.config_generator import build_cron_seed_jobs
+
+        seed = build_cron_seed_jobs(tenant)
+        enabled_seed = [j for j in seed if isinstance(j, dict) and j.get("enabled", True)]
+        if enabled_seed:
+            logger.info(
+                "idle_hibernate: using build_cron_seed_jobs for tenant %s (%d jobs, no live snapshot)",
+                str(tenant.id)[:8],
+                len(enabled_seed),
+            )
+            return enabled_seed
+    except Exception:
         logger.exception(
-            "idle_hibernate: failed to capture cron schedules for %s",
+            "idle_hibernate: seed-job fallback failed for tenant %s",
             str(tenant.id)[:8],
         )
-        return []
+
+    logger.warning(
+        "idle_hibernate: no cron jobs available for tenant %s "
+        "(gateway, snapshot, and seed all empty) — wake will NOT be scheduled",
+        str(tenant.id)[:8],
+    )
+    return []
 
 
 def _schedule_next_cron_wake(tenant: Tenant, cron_jobs: list[dict]) -> None:
