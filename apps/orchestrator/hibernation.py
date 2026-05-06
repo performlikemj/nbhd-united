@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 
 from django.db import models
 from django.utils import timezone
@@ -206,7 +206,7 @@ def _schedule_next_cron_wake(tenant: Tenant, cron_jobs: list[dict]) -> None:
             "idle_hibernate: scheduled cron wake for tenant %s in %ds (next cron ~%s)",
             str(tenant.id)[:8],
             delay_seconds,
-            datetime.fromtimestamp(earliest_ms / 1000, tz=timezone.utc).isoformat(),
+            datetime.fromtimestamp(earliest_ms / 1000, tz=UTC).isoformat(),
         )
     except Exception:
         logger.exception(
