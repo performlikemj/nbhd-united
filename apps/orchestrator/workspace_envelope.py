@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from django.conf import settings
 from django.core.cache import cache
 
+from apps.orchestrator.azure_client import download_workspace_file, upload_workspace_file
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -333,8 +334,6 @@ def push_user_md(
             tenant_obj = Tenant.objects.select_related("user").get(id=tenant_id)
 
         managed = render_managed_region(tenant_obj)
-
-        from apps.orchestrator.azure_client import download_workspace_file, upload_workspace_file
 
         try:
             existing = download_workspace_file(tenant_id, "workspace/USER.md")

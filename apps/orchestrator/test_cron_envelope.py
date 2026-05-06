@@ -279,11 +279,19 @@ class EnvelopeRecentLessonsTest(TestCase):
 
 
 class RenderProfileSectionTest(TestCase):
-    def test_omits_block_when_no_meaningful_fields(self):
+    def test_minimal_tenant_only_shows_preferred_channel(self):
         # Default tenant: display_name="Friend", timezone="UTC", language="en",
-        # no city. None of those should produce a Profile block.
+        # no city. preferred_channel always has a default ("telegram") and
+        # is meaningful for routing/formatting decisions, so it always shows.
         tenant = create_tenant(display_name="Friend", telegram_chat_id=910100)
-        self.assertEqual(render_profile_section(tenant), "")
+        out = render_profile_section(tenant)
+        self.assertIn("## Profile", out)
+        self.assertIn("Preferred channel: telegram", out)
+        # Defaults that should be skipped
+        self.assertNotIn("Display name: Friend", out)
+        self.assertNotIn("Timezone: UTC", out)
+        self.assertNotIn("Language: en", out)
+        self.assertNotIn("Location:", out)
 
     def test_includes_set_fields_only(self):
         tenant = create_tenant(display_name="Mike", telegram_chat_id=910101)
