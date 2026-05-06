@@ -317,6 +317,15 @@ def provision_tenant(tenant_id: str) -> None:
         except Exception:
             logger.warning("Could not send welcome message for tenant %s", tenant_id, exc_info=True)
 
+    # 4c. Seed USER.md with the platform-managed envelope so the container
+    # picks up profile + state on first boot. force=True bypasses debounce.
+    try:
+        from .workspace_envelope import push_user_md
+
+        push_user_md(tenant, force=True)
+    except Exception:
+        logger.warning("Could not seed USER.md for tenant %s", tenant_id, exc_info=True)
+
     # 5. Seed default cron jobs to Gateway (delayed for container warm-up)
     try:
         from apps.cron.views import _schedule_qstash_task
@@ -421,6 +430,16 @@ def update_tenant_config(tenant_id: str) -> None:
             )
     except Exception:
         logger.exception("Failed to upload workspace files for tenant %s", tenant_id)
+
+    # Refresh USER.md (platform-managed envelope region merged with any
+    # agent-written content). force=True so config refresh always pushes
+    # current state regardless of debounce window.
+    try:
+        from .workspace_envelope import push_user_md
+
+        push_user_md(tenant, force=True)
+    except Exception:
+        logger.exception("Failed to refresh USER.md for tenant %s (non-fatal)", tenant_id)
 
     # Update system cron job prompts to match current config_generator
     try:
@@ -1106,6 +1125,20 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
 
     # --- Heartbeat add/remove drift correction ---
     sync_heartbeat_cron(tenant, existing_by_name)
+
+    # Push fresh USER.md alongside cron-prompt refreshes. force=True so the
+    # management command and HTTP refresh paths always emit a current
+    # envelope, not gated by the post-save signal debounce window.
+    try:
+        from .workspace_envelope import push_user_md
+
+        push_user_md(tenant, force=True)
+    except Exception:
+        logger.warning(
+            "update_system_cron_prompts: USER.md refresh failed for tenant %s (non-fatal)",
+            tenant_id,
+            exc_info=True,
+        )
 
     return {"tenant_id": tenant_id, "updated": updated, "skipped": skipped, "errors": errors}
 

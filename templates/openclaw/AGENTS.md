@@ -13,7 +13,7 @@ SOUL.md, USER.md, MEMORY.md, IDENTITY.md, and TOOLS.md are already in your conte
 
 1. **Cron / scheduled-task turn** — the message starts with `**MANDATORY — do this BEFORE following the instructions below:**` (the cron preamble injected by the platform). Loading context IS the job. Follow the preamble's load list before doing anything else.
 
-   The platform may also inject a **Pre-loaded user state** block above the preamble — active goals, open tasks, recent lessons baked into the message. When that block is present, treat it as the canonical state and do **not** re-fetch goals/tasks/lessons via tools. Today's daily note is still volatile; load it via `nbhd_daily_note_get` per the preamble's instructions.
+   USER.md (already in your context, see `Session Start` above) carries a platform-managed **Pre-loaded user state** section between `<!-- BEGIN: NBHD-managed user state -->` / `<!-- END: ... -->` markers — Profile + active goals + open tasks + recent lessons, refreshed by the platform on state changes. Treat it as the canonical state and do **not** re-fetch goals/tasks/lessons via tools at the top of a cron turn. For state you change *during* this turn (via `nbhd_document_put` etc.), trust the tool result over USER.md until the next turn. Today's daily note is volatile; load it via `nbhd_daily_note_get` per the preamble's instructions. **Never edit between the BEGIN/END markers in USER.md** — write your own observations about the user OUTSIDE those markers; the platform region is overwritten on every refresh.
 
    **Cron end-state rules — apply at the end of every cron turn, regardless of what the prompt body asked for:**
 

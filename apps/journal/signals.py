@@ -63,6 +63,38 @@ def queue_memory_sync_on_document_save(sender, instance, **kwargs):
 
 
 @receiver(post_save, sender=Document)
+def refresh_user_md_on_envelope_doc_save(sender, instance, **kwargs):
+    """Refresh ``workspace/USER.md`` whenever a goals/tasks doc is saved.
+
+    USER.md carries the platform-managed envelope (Profile + active goals +
+    open tasks + recent lessons) that OpenClaw injects into every agent turn
+    via the bootstrap mechanism. ``push_user_md`` is debounced (60s leading-
+    edge by default) so rapid edits collapse into a single file-share write.
+    """
+    if instance.kind not in (Document.Kind.GOAL, Document.Kind.TASKS):
+        return
+
+    tenant_id = str(instance.tenant_id)
+
+    def _push() -> None:
+        from apps.orchestrator.workspace_envelope import push_user_md
+
+        try:
+            push_user_md(tenant_id)
+        except Exception:
+            logger.warning(
+                "USER.md refresh after Document save failed for tenant %s",
+                tenant_id,
+                exc_info=True,
+            )
+
+    # transaction.on_commit + daemon thread mirrors the QStash publish
+    # pattern above: the request thread returns without blocking on the
+    # file-share write, but only after the document save has committed.
+    transaction.on_commit(lambda: threading.Thread(target=_push, daemon=True).start())
+
+
+@receiver(post_save, sender=Document)
 def auto_resolve_pending_extractions(sender, instance, **kwargs):
     """When a Tasks or Goals document is saved, auto-approve any pending
     extractions whose text appears in the document content."""
