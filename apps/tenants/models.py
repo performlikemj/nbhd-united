@@ -312,6 +312,19 @@ class Tenant(models.Model):
         help_text="Enable workout tracking and fitness logging",
     )
 
+    # Welcome-cron delivery telemetry. Keys are feature names ("fuel",
+    # "finance"), values are ISO-8601 timestamps of successful welcome
+    # delivery. The welcome prompt instructs the agent to call
+    # /api/internal/welcomes/mark/<feature>/ after nbhd_send_to_user
+    # succeeds; the deploy-time backfill skips tenants where the flag is
+    # set and re-schedules for those where it isn't (closing the
+    # "scheduled but failed silently" gap).
+    welcomes_sent = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Per-feature welcome-delivery timestamps (e.g. {'fuel': '2026-05-07T...', 'finance': ...})",
+    )
+
     # BYO subscription mode — Phase 1 gates Anthropic Claude Pro/Max CLI
     # behind this flag. After fleet rollout (PR #434, 2026-05-02) the default
     # is True; existing rows are flipped via migration 0051. Newly provisioned

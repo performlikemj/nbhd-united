@@ -2,6 +2,7 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .line_views import line_generate_link, line_set_preferred_channel, line_status, line_unlink
+from .runtime_views import RuntimeWelcomeMarkView
 from .telegram_views import telegram_generate_link, telegram_status, telegram_unlink
 from .views import (
     CancelDeletionView,
@@ -42,5 +43,11 @@ urlpatterns = [
     path("cancel-deletion/", CancelDeletionView.as_view(), name="cancel-deletion"),
     path("settings/preferred-model/", PreferredModelView.as_view(), name="preferred-model"),
     path("settings/task-model-preferences/", TaskModelPreferencesView.as_view(), name="task-model-preferences"),
+    # Internal runtime endpoint for the agent to acknowledge welcome delivery.
+    path(
+        "runtime/<uuid:tenant_id>/welcomes/<str:feature>/",
+        RuntimeWelcomeMarkView.as_view(),
+        name="runtime-welcome-mark",
+    ),
     path("", include(router.urls)),
 ]
