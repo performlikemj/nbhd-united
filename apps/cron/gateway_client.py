@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any
 
 import requests
@@ -104,7 +104,6 @@ def _next_fire_at(schedule: dict[str, Any]) -> datetime | None:
     expression cannot be parsed (caller should treat unknown as "fresh enough").
     """
     import zoneinfo
-    from datetime import datetime
 
     from croniter import croniter
 
@@ -159,8 +158,6 @@ def cron_exists(
         jobs = inner
     else:
         jobs = []
-
-    from datetime import datetime
 
     for job in jobs:
         if not (isinstance(job, dict) and job.get("name") == cron_name):

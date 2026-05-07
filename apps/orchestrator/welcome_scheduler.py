@@ -19,10 +19,10 @@ counter even when the scheduling actually skipped or failed.
 
 from __future__ import annotations
 
-import enum
 import logging
 import zoneinfo
 from datetime import datetime, timedelta
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class WelcomeStatus(str, enum.Enum):
+class WelcomeStatus(StrEnum):
     SCHEDULED = "scheduled"
     REPLACED_STALE = "replaced_stale"
     SKIPPED_PENDING = "skipped_pending"
