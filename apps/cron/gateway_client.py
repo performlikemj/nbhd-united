@@ -93,3 +93,29 @@ def invoke_gateway_tool(tenant: Tenant, tool: str, args: dict[str, Any]) -> dict
         raise GatewayError(data.get("error", "Unknown gateway error"))
 
     return data.get("result", {})
+
+
+def cron_exists(tenant: Tenant, cron_name: str, *, include_disabled: bool = True) -> bool:
+    """Check whether a cron with the given name is currently scheduled.
+
+    Used by welcome-scheduler dedup so re-toggling a feature flag doesn't
+    create duplicate ``_finance:welcome`` / ``_fuel:welcome`` jobs while
+    one is still pending.
+
+    On any gateway error, returns False (conservative — caller will
+    proceed with scheduling, which is preferable to silently swallowing
+    a needed welcome).
+    """
+    try:
+        result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": include_disabled})
+    except GatewayError:
+        return False
+
+    inner = result.get("details", result) if isinstance(result, dict) else result
+    if isinstance(inner, dict):
+        jobs = inner.get("jobs", [])
+    elif isinstance(inner, list):
+        jobs = inner
+    else:
+        jobs = []
+    return any((isinstance(j, dict) and j.get("name") == cron_name) for j in jobs)

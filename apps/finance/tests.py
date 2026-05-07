@@ -1349,3 +1349,54 @@ class FinanceWelcomePromptTests(UnitTestCase):
         self.assertIn("nbhd_send_to_user", _FINANCE_WELCOME_PROMPT)
         # Explicit instruction to not ask questions in welcome.
         self.assertIn("Do NOT ask questions", _FINANCE_WELCOME_PROMPT)
+
+
+class FinanceWelcomeIdempotencyTests(TestCase):
+    """``_schedule_finance_welcome`` skips when a welcome cron already exists.
+
+    Re-toggling the feature flag (off→on) while a previous welcome is still
+    pending would otherwise create a duplicate cron in the container.
+    """
+
+    def setUp(self):
+        from unittest.mock import patch as _patch
+
+        self.tenant = create_tenant(display_name="Idem", telegram_chat_id=900250)
+        self.tenant.container_fqdn = "oc-test.example.com"
+        self.tenant.save(update_fields=["container_fqdn"])
+        self._patch = _patch
+
+    def test_skips_when_welcome_already_pending(self):
+        from apps.finance.views import _schedule_finance_welcome
+
+        with (
+            self._patch(
+                "apps.cron.gateway_client.cron_exists",
+                return_value=True,
+            ) as mock_exists,
+            self._patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
+        ):
+            _schedule_finance_welcome(self.tenant)
+
+        mock_exists.assert_called_once_with(self.tenant, "_finance:welcome")
+        # cron.add was NOT called because welcome is already pending.
+        for call in mock_invoke.call_args_list:
+            self.assertNotEqual(call.args[1] if len(call.args) > 1 else call.kwargs.get("tool"), "cron.add")
+
+    def test_schedules_when_no_welcome_pending(self):
+        from apps.finance.views import _schedule_finance_welcome
+
+        with (
+            self._patch(
+                "apps.cron.gateway_client.cron_exists",
+                return_value=False,
+            ),
+            self._patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
+        ):
+            _schedule_finance_welcome(self.tenant)
+
+        mock_invoke.assert_called_once()
+        args, _kwargs = mock_invoke.call_args
+        # invoke_gateway_tool(tenant, "cron.add", {"job": {...}})
+        self.assertEqual(args[1], "cron.add")
+        self.assertEqual(args[2]["job"]["name"], "_finance:welcome")

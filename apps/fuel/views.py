@@ -73,13 +73,28 @@ def _schedule_fuel_welcome(tenant):
     Fires ~5 minutes after enablement (gives config time to deploy).
     Uses a date-specific cron expression so it fires exactly once,
     then the prompt instructs the agent to self-remove the cron.
+
+    Idempotent: skips when a ``_fuel:welcome`` cron is already scheduled.
+    Re-toggling the feature flag (off→on) while a previous welcome is
+    still pending becomes a no-op; once that pending cron has fired and
+    self-removed, a future toggle re-schedules cleanly. This makes the
+    backfill command (``python manage.py backfill_welcomes``) safe to
+    re-run without spamming users.
+
     Best-effort — failures are logged, not raised.
     """
     import zoneinfo
     from datetime import datetime, timedelta
 
     try:
-        from apps.cron.gateway_client import invoke_gateway_tool
+        from apps.cron.gateway_client import cron_exists, invoke_gateway_tool
+
+        if cron_exists(tenant, "_fuel:welcome"):
+            _logger.info(
+                "Fuel welcome already pending for tenant %s — skipping (idempotent)",
+                tenant.id,
+            )
+            return
 
         user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
         try:
