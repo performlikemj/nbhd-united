@@ -171,7 +171,6 @@ filelock==3.25.2
     #   huggingface-hub
     #   tldextract
     #   torch
-    #   transformers
 flatbuffers==25.12.19
     # via onnxruntime
 fonttools==4.62.1
@@ -199,12 +198,13 @@ httpx==0.28.1
     #   -r requirements.in
     #   composio-client
     #   datasets
+    #   huggingface-hub
     #   litellm
     #   openai
     #   python-telegram-bot
     #   qstash
     #   weasel
-huggingface-hub==0.36.2
+huggingface-hub==1.8.0
     # via
     #   datasets
     #   evaluate
@@ -433,7 +433,6 @@ requests==2.32.5
     #   azure-core
     #   datasets
     #   evaluate
-    #   huggingface-hub
     #   msal
     #   msrest
     #   pysher
@@ -443,7 +442,6 @@ requests==2.32.5
     #   stripe
     #   tiktoken
     #   tldextract
-    #   transformers
 requests-file==3.0.1
     # via tldextract
 requests-oauthlib==2.0.0
@@ -513,13 +511,15 @@ tqdm==4.67.3
     #   openai
     #   spacy
     #   transformers
-transformers[sentencepiece]==4.57.6
+transformers[sentencepiece]==5.8.0
     # via
     #   -r requirements.in
     #   optimum
 typer==0.24.1
     # via
+    #   huggingface-hub
     #   spacy
+    #   transformers
     #   weasel
 typing-extensions==4.15.0
     # via

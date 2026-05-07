@@ -30,14 +30,20 @@ pgvector
 # PII redaction (outgoing LLM traffic)
 presidio-analyzer>=2.2    # Pattern recognizers only (credit card Luhn, IBAN checksum)
 onnxruntime>=1.16
-# Pinned <5.0 — transformers 5.x removed `is_tf_available` from
-# `transformers.utils` as part of decoupling TF support, but optimum 1.17.1
-# (latest as of 2026-05-07) still imports it via
-# `optimum.utils.input_generators`. The resulting ImportError makes the
-# PII redactor crash on every message. Original pin was >=4.35 — restoring
-# that ceiling. Re-evaluate when optimum publishes a 5.x-compatible release.
-# Reference: PR #447 dependabot bump → prod breakage 2026-05-07.
-transformers>=4.35,<5.0
+# NOTE on the transformers/optimum chain (2026-05-07):
+#   - transformers 5.x removed `is_tf_available` from `transformers.utils`,
+#     which optimum 1.17.1 still imports.
+#   - The published HuggingFace ONNX PII model also has a tokenizer/model
+#     mismatch (tokenizer emits `token_type_ids`, model has no such input).
+#     This makes neural redaction non-functional regardless of versions.
+#   Net effect: neural PII detection has been off in prod since the model
+#   shipped. Pattern recognizers (credit card / IBAN / email regex) still
+#   run and cover financial PII. We keep `transformers>=5.8.0` so the
+#   import error path triggers cleanly — the engine caches the exception,
+#   the redactor logs it once per process, and behavior degrades to
+#   pattern-only without spam. Re-evaluate the whole chain when a
+#   compatible model + optimum + transformers tuple is established.
+transformers>=5.8.0
 optimum[onnxruntime]>=1.14
 sentencepiece>=0.2
 
