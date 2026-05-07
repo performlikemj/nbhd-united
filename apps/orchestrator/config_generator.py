@@ -12,7 +12,12 @@ from typing import Any
 
 from django.conf import settings
 
-from apps.billing.constants import GEMMA_MODEL, KIMI_MODEL, MINIMAX_MODEL
+from apps.billing.constants import (
+    ANTHROPIC_SONNET_MODEL,
+    GEMMA_MODEL,
+    KIMI_MODEL,
+    MINIMAX_MODEL,
+)
 from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION, generate_tool_config
 from apps.tenants.models import Tenant
 
@@ -89,10 +94,21 @@ def _phase2_sync_block(job_name: str) -> str:
     )
 
 
-def _build_cron_message(prompt: str, job_name: str, foreground: bool, tenant: Tenant) -> str:
-    """Compose a cron job's message: date preamble + prompt + (optional) Phase 2 sync.
+def _build_cron_message(
+    prompt: str,
+    job_name: str,
+    foreground: bool,
+    tenant: Tenant,
+) -> str:
+    """Compose a cron job's message: date preamble + shared preamble + prompt + (optional) Phase 2 sync.
 
     Centralizes the message-building so seed jobs and tests stay consistent.
+
+    Pre-loaded user state (goals, tasks, lessons, profile) is no longer baked
+    into the cron message itself — it lives in ``workspace/USER.md`` and is
+    auto-loaded by OpenClaw on every agent turn. See
+    ``apps.orchestrator.workspace_envelope`` for the merge logic and refresh
+    triggers.
     """
     base = _prepare_cron_prompt(prompt, tenant)
     if foreground:
@@ -104,9 +120,13 @@ def _prepare_cron_prompt(prompt: str, tenant: Tenant) -> str:
     """Prepend date context and shared preamble to a cron prompt.
 
     Every cron job gets:
-    1. Current date/time (cheap models struggle with date math)
-    2. Shared preamble: load daily note + tasks + goals first, cross-reference
-       before acting — prevents repeating information across cron sessions.
+    1. Current date/time (cheap models struggle with date math).
+    2. Shared preamble: cross-reference instructions; load today's daily note
+       (still volatile, agent fetches via tool).
+
+    Pre-loaded user state (goals, tasks, lessons, profile) is delivered via
+    ``workspace/USER.md`` — refreshed by Django on signal-driven post_save
+    events and force-pushed by ``update_system_cron_prompts``.
     """
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
     try:
@@ -487,6 +507,38 @@ _FUEL_WORKOUT_PREP_PROMPT = (
 # point. See runtime/openclaw/plugins/nbhd-fuel-tools/index.js.
 
 
+_GRAVITY_WEEKLY_PROMPT = (
+    "Sunday-evening Gravity check-in. The user has finance tracking enabled.\n\n"
+    "USER.md (already in your context) carries the Gravity finance section: "
+    "active accounts + total debt, active payoff plan, top-priority debt by "
+    "the user's chosen strategy, upcoming due dates, recent transactions. "
+    "Do NOT call `nbhd_finance_summary` at the top — USER.md already has the "
+    "snapshot. Only call finance tools when you need detail USER.md doesn't "
+    "carry (full transaction history, mid-strategy comparisons, etc.).\n\n"
+    "Send the user exactly ONE message via `nbhd_send_to_user` that:\n"
+    "  - Opens with a brief acknowledgement of progress this week (debt down, "
+    "payment made, milestone hit) OR a flag if something needs attention "
+    "(missed payment, due date in next 7 days)\n"
+    "  - Surfaces the top-priority debt + the next concrete payment they "
+    "should make\n"
+    "  - If a due date falls within the coming week, name it explicitly\n"
+    "  - Keeps it conversational and short — 4-6 lines max, no data dump\n\n"
+    "Cross-reference the snapshot:\n"
+    "  - If goals contains a finance-related goal (debt-free target, savings "
+    "target), tie progress to it\n"
+    "  - If recent journal mentions money stress / windfall, acknowledge it\n"
+    "  - If a planned workout or other commitment competes with payment "
+    "timing this week, name the trade-off honestly\n\n"
+    "If nothing has changed materially since last week's check-in (no "
+    "payments, no new accounts, no due dates approaching), it is OK to "
+    "send a shorter check-in: 'Quiet week on the Gravity side — you're on "
+    "track with [strategy]. Anything to adjust?' Don't pad with stale "
+    "content.\n\n"
+    "**Send exactly ONE user-facing message via `nbhd_send_to_user`. After "
+    "that message is sent, proceed to the FINAL STEP described below.**\n"
+)
+
+
 _FUEL_PREP_HOUR = {
     "morning": 6,  # 6:00am — before a morning workout
     "afternoon": 11,  # 11:00am — before an afternoon workout
@@ -580,6 +632,45 @@ TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
         GEMMA_MODEL: {"alias": "gemma"},
     },
 }
+
+
+def _byo_model_extras(tenant: Tenant) -> dict[str, dict[str, Any]]:
+    """Extra model entries the tenant can select via BYO subscription.
+
+    Mirrors `TIER_MODEL_CONFIGS` shape (model_id → {"alias": ...}). Returns
+    an empty dict when `tenant.byo_models_enabled` is False or no
+    non-error BYO credential exists.
+
+    Phase 1 exposes Claude Sonnet 4.6 and Claude Opus 4.7 via the Anthropic
+    Claude CLI subscription path. Both use the canonical `anthropic/<model>`
+    prefix; CLI routing is activated by the `anthropic:claude-cli` auth
+    profile that `runtime/openclaw/entrypoint.sh` registers at boot.
+    """
+    from apps.billing.constants import ANTHROPIC_OPUS_MODEL as _OPUS_MODEL
+
+    if not getattr(tenant, "byo_models_enabled", False):
+        return {}
+
+    # Late import — config_generator is imported during Django setup,
+    # before app registries are fully loaded.
+    from apps.byo_models.models import BYOCredential
+
+    extras: dict[str, dict[str, Any]] = {}
+
+    has_anthropic_cli = (
+        tenant.byo_credentials.filter(
+            provider=BYOCredential.Provider.ANTHROPIC,
+            mode=BYOCredential.Mode.CLI_SUBSCRIPTION,
+        )
+        .exclude(status=BYOCredential.Status.ERROR)
+        .exists()
+    )
+    if has_anthropic_cli:
+        extras[ANTHROPIC_SONNET_MODEL] = {"alias": "claude-sonnet"}
+        extras[_OPUS_MODEL] = {"alias": "claude-opus"}
+
+    return extras
+
 
 WHISPER_DEFAULT_MODEL = {"provider": "openai", "model": "gpt-4o-mini-transcribe"}
 
@@ -758,6 +849,28 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
         # See apps/journal/extraction_views.py.
     ]
 
+    # Gravity Weekly Check-in — Sunday 19:00 user TZ when finance is enabled.
+    # Different hour from Weekly Reflection (20:00) so they don't collide.
+    if getattr(tenant, "finance_enabled", False):
+        jobs.append(
+            {
+                "name": "Gravity Weekly Check-in",
+                "schedule": {"kind": "cron", "expr": "0 19 * * 0", "tz": user_tz},
+                "sessionTarget": "isolated",
+                "payload": {
+                    "kind": "agentTurn",
+                    "message": _build_cron_message(
+                        _GRAVITY_WEEKLY_PROMPT,
+                        "Gravity Weekly Check-in",
+                        foreground=True,
+                        tenant=tenant,
+                    ),
+                },
+                "delivery": {"mode": "none"},
+                "enabled": True,
+            }
+        )
+
     # Heartbeat cron — hourly during user's chosen window, cheap model
     heartbeat_job = _build_heartbeat_cron(tenant)
     if heartbeat_job is not None:
@@ -858,9 +971,33 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     models_config = TIER_MODELS.get(tier, TIER_MODELS["starter"])
     model_entries = TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["starter"])
 
-    # Allow user to override primary model within their tier
+    # BYO subscription extras (e.g. anthropic/claude-sonnet-4-6) — extend
+    # the tier's allowed-model dict so the user's preferred_model can
+    # land on a BYO model below.
+    byo_extras = _byo_model_extras(tenant)
+    if byo_extras:
+        model_entries = {**model_entries, **byo_extras}
+
+    # Allow user to override primary model within their tier (or BYO extras).
     if tenant.preferred_model and tenant.preferred_model in model_entries:
         models_config = {**models_config, "primary": tenant.preferred_model}
+
+    # Silent-fallback guard for BYO models. When the resolved primary is a
+    # BYO model (e.g. anthropic/claude-sonnet-4-6 routed through the user's
+    # own Claude subscription), a billing failure on that account must NOT
+    # fall through to MiniMax — the user has paid Anthropic specifically to
+    # use Claude, and they expect to either get Claude or a clear error
+    # they can act on. With `fallbacks: []` OpenClaw 2026.4.25's
+    # `runWithModelFallback` raises the original billing error directly
+    # (see `throwFallbackFailureSummary`: when there's only one candidate
+    # the lastError is rethrown as-is), which the assistant then surfaces
+    # to the user via the channel router.
+    primary_model = models_config["primary"]
+    primary_is_byo = bool(byo_extras) and primary_model in byo_extras
+    if primary_is_byo:
+        fallbacks_list: list[str] = []
+    else:
+        fallbacks_list = [m for m in model_entries if m != primary_model]
 
     # Collect all configured plugins
     _plugin_defs = [
@@ -947,7 +1084,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "defaults": {
                 "model": {
                     "primary": models_config["primary"],
-                    "fallbacks": [m for m in model_entries if m != models_config["primary"]],
+                    "fallbacks": fallbacks_list,
                 },
                 "models": model_entries,
                 "workspace": "/home/node/.openclaw/workspace",
@@ -1122,6 +1259,28 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "baseUrl": "https://openrouter.ai/api/v1",
             "models": [],
         }
+
+    # BYO routing: with auth profile `anthropic:claude-cli` registered by
+    # `runtime/openclaw/entrypoint.sh` (via `openclaw models auth login
+    # --provider anthropic --method cli`), OpenClaw 2026.4.25 routes any
+    # `anthropic/<model>` request through the bundled `claude` binary.
+    #
+    # Override the spawn command with our wrapper so the binary still gets
+    # `CLAUDE_CODE_OAUTH_TOKEN` in its env. OpenClaw's claude-cli backend
+    # explicitly clears that env var before spawning (see
+    # `extensions/anthropic/cli-shared.js#CLAUDE_CLI_CLEAR_ENV`); its
+    # assumption is that auth lives in `~/.claude/.credentials.json` from
+    # an interactive `claude auth login`. The BYO flow only has a bare
+    # access token from `claude setup-token` — works as the env var, not
+    # standalone in the file. The wrapper reads the file `entrypoint.sh`
+    # writes from CLAUDE_CODE_OAUTH_TOKEN and re-exports the env var
+    # before exec'ing claude.
+    #
+    # Safe for non-BYO tenants: the wrapper is a no-op when the file is
+    # absent (it just exec's claude with whatever env it inherits).
+    if byo_extras and ANTHROPIC_SONNET_MODEL in byo_extras:
+        cli_backends = config["agents"]["defaults"].setdefault("cliBackends", {})
+        cli_backends["claude-cli"] = {"command": "/opt/nbhd/claude-with-token.sh"}
 
     return config
 

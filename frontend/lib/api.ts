@@ -1101,3 +1101,48 @@ export function createSleep(data: {
     body: JSON.stringify(data),
   });
 }
+
+// Personal Access Tokens (Connected Apps)
+export function fetchPATs(): Promise<import("@/lib/types").PersonalAccessToken[]> {
+  return apiFetch<import("@/lib/types").PersonalAccessToken[]>("/api/v1/auth/tokens/");
+}
+
+export function mintPAT(
+  data: import("@/lib/types").PATCreateRequest,
+): Promise<import("@/lib/types").PATCreateResponse> {
+  return apiFetch<import("@/lib/types").PATCreateResponse>("/api/v1/auth/tokens/create/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function revokePAT(id: string): Promise<void> {
+  await apiFetch(`/api/v1/auth/tokens/${id}/`, { method: "DELETE" });
+}
+
+// BYO subscription credentials (bring-your-own Anthropic / OpenAI)
+
+export function fetchByoCredentials(): Promise<import("@/lib/types").BYOCredential[]> {
+  return apiFetch<import("@/lib/types").BYOCredential[]>("/api/v1/tenants/byo-credentials/");
+}
+
+export function connectByoCredential(
+  data: import("@/lib/types").BYOConnectRequest,
+  signal?: AbortSignal,
+): Promise<import("@/lib/types").BYOConnectResponse> {
+  return apiFetch<import("@/lib/types").BYOConnectResponse>("/api/v1/tenants/byo-credentials/", {
+    method: "POST",
+    body: JSON.stringify(data),
+    signal,
+  });
+}
+
+export async function disconnectByoCredential(
+  id: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await apiFetch(`/api/v1/tenants/byo-credentials/${id}/`, {
+    method: "DELETE",
+    signal,
+  });
+}

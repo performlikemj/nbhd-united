@@ -60,3 +60,9 @@ def workout_deleted_regen_fuel_crons(sender, instance, **kwargs):
     if not _tenant_uses_session_scheduling(instance):
         return
     _enqueue_regen(str(instance.tenant_id))
+
+
+# USER.md refresh on Fuel state changes is auto-wired by the envelope
+# registry (apps/fuel/envelope.py registers Workout / BodyWeightLog /
+# SleepLog as ``refresh_on`` triggers). Don't add USER.md push handlers
+# here — that path is owned by the registry.

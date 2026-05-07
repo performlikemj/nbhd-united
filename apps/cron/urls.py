@@ -1,8 +1,15 @@
 from django.urls import path
 
 from . import views
+from .runtime_views import RuntimeContainerStartedView
 
 urlpatterns = [
+    # Internal runtime — called by OpenClaw container startup script.
+    path(
+        "runtime/<uuid:tenant_id>/container-started/",
+        RuntimeContainerStartedView.as_view(),
+        name="cron-runtime-container-started",
+    ),
     path("trigger/<str:task_name>/", views.trigger_task, name="cron-trigger"),
     path("trigger-debug/<str:task_name>/", views.trigger_task_debug, name="cron-trigger-debug"),
     path("tasks/", views.list_tasks, name="cron-list-tasks"),
@@ -26,8 +33,22 @@ urlpatterns = [
     path("run-reseed-lessons/", views.run_reseed_lessons, name="cron-run-reseed-lessons"),
     path("verify-gateway-tools/", views.verify_gateway_tools, name="cron-verify-gateway-tools"),
     path("register-system-crons/", views.register_system_crons, name="cron-register-system-crons"),
+    path("backfill-welcomes/", views.backfill_welcomes, name="cron-backfill-welcomes"),
     path("broadcast-message/", views.broadcast_message, name="cron-broadcast-message"),
     path("dedup-crons/", views.dedup_crons, name="cron-dedup-crons"),
     path("run-health-check/", views.run_health_check, name="cron-run-health-check"),
     path("admin-health/", views.admin_health_status, name="cron-admin-health"),
+    # One-shot BYO fleet rollout endpoints (PR #434). Manual ops; the
+    # workflow_dispatch step in ci-cd.yml is the canonical caller. Routine
+    # deploys do not invoke either.
+    path(
+        "rollout-byo-image-bump/",
+        views.rollout_byo_image_bump,
+        name="cron-rollout-byo-image-bump",
+    ),
+    path(
+        "rollout-byo-persona-refresh/",
+        views.rollout_byo_persona_refresh,
+        name="cron-rollout-byo-persona-refresh",
+    ),
 ]

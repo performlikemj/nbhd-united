@@ -16,8 +16,11 @@ ENV NODE_ENV=production
 ENV NODE_OPTIONS="--max-old-space-size=512 --dns-result-order=ipv4first --no-network-family-autoselection"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
+    && apt-get install -y --no-install-recommends git ca-certificates bsdmainutils \
     && rm -rf /var/lib/apt/lists/*
+# bsdmainutils provides `script(1)`, used by entrypoint.sh to fake a TTY
+# around `openclaw models auth login` (its CLI handler hard-checks
+# `process.stdin.isTTY` — see `auth-BQuNQ6PP.js:362`).
 
 RUN npm install --global \
         "openclaw@${OPENCLAW_VERSION}" \
@@ -39,9 +42,10 @@ COPY agent-skills /opt/nbhd/agent-skills
 COPY templates/openclaw /opt/nbhd/templates/openclaw
 COPY runtime/openclaw/proxy.js /opt/nbhd/proxy.js
 COPY runtime/openclaw/suppress-chmod-eperm.js /opt/nbhd/suppress-chmod-eperm.js
+COPY runtime/openclaw/claude-with-token.sh /opt/nbhd/claude-with-token.sh
 COPY runtime/openclaw/entrypoint.sh /usr/local/bin/nbhd-openclaw-entrypoint
 
-RUN chmod +x /usr/local/bin/nbhd-openclaw-entrypoint \
+RUN chmod +x /usr/local/bin/nbhd-openclaw-entrypoint /opt/nbhd/claude-with-token.sh \
     && chown -R node:node /opt/nbhd /usr/local/bin/nbhd-openclaw-entrypoint
 
 USER node

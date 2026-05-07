@@ -1,5 +1,5 @@
 # Core
-Django>=5.1,<5.3
+Django>=6.0.5,<6.1
 djangorestframework>=3.15
 django-cors-headers
 django-environ
@@ -30,7 +30,7 @@ pgvector
 # PII redaction (outgoing LLM traffic)
 presidio-analyzer>=2.2    # Pattern recognizers only (credit card Luhn, IBAN checksum)
 onnxruntime>=1.16
-transformers>=4.35
+transformers>=5.8.0
 optimum[onnxruntime]>=1.14
 sentencepiece>=0.2
 

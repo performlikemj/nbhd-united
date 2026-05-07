@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     "apps.actions",
     "apps.finance",
     "apps.fuel",
+    "apps.byo_models",
 ]
 
 MIDDLEWARE = [
@@ -196,6 +197,13 @@ ROUTER_RATE_LIMIT_PER_MINUTE = env.int("ROUTER_RATE_LIMIT_PER_MINUTE", default=3
 # because tenant containers are internal-only (external: false) — not reachable
 # from the public internet.
 NBHD_INTERNAL_API_KEY = env("NBHD_INTERNAL_API_KEY", default="")
+
+# Disable daemon-thread side effects (USER.md push from envelope registry,
+# QStash publish in journal post_save, etc.) for synchronous execution.
+# Production: false → threads run in background so request handlers don't
+# block on file-share writes. Tests + dev: set to true so test teardown
+# doesn't race with leftover daemon threads holding DB connections.
+NBHD_DISABLE_BACKGROUND_THREADS = env.bool("NBHD_DISABLE_BACKGROUND_THREADS", default=False)
 
 # LINE Messaging API (shared bot)
 LINE_CHANNEL_ACCESS_TOKEN = env("LINE_CHANNEL_ACCESS_TOKEN", default="")

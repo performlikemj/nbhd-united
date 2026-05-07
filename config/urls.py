@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.urls import include, path
 
-from apps.integrations.runtime_views import RuntimeUsageReportView
+from apps.integrations.runtime_views import RuntimeBYOErrorReportView, RuntimeUsageReportView
 from apps.router.test_workspace_sessions import force_apply_test_tenant_config, test_workspace_session
 from apps.router.views import serve_chart_image
 
@@ -10,6 +10,10 @@ urlpatterns = [
     # Chart images — unauthenticated, served for LINE image messages
     path("api/v1/charts/<uuid:tenant_id>/<str:filename>", serve_chart_image, name="serve-chart-image"),
     path("api/v1/auth/", include("apps.tenants.auth_urls")),
+    # `byo-credentials/` MUST come before `tenants/` — the latter's
+    # DefaultRouter has a catch-all `<pk>/` route that would otherwise
+    # interpret `byo-credentials` as a tenant PK lookup.
+    path("api/v1/tenants/byo-credentials/", include("apps.byo_models.urls")),
     path("api/v1/tenants/", include("apps.tenants.urls")),
     path("api/v1/billing/", include("apps.billing.urls")),
     path("api/v1/integrations/", include("apps.integrations.urls")),
@@ -23,6 +27,14 @@ urlpatterns = [
         "api/v1/internal/runtime/<uuid:tenant_id>/usage/report/",
         RuntimeUsageReportView.as_view(),
         name="runtime-usage-report-internal",
+    ),
+    # BYO provider error reporting — container→Django. Plugin POSTs here
+    # when a billing/auth error fires on a BYO route so the AI Provider
+    # page surfaces the real cause to the user.
+    path(
+        "api/v1/internal/runtime/<uuid:tenant_id>/byo/error/",
+        RuntimeBYOErrorReportView.as_view(),
+        name="runtime-byo-error-report-internal",
     ),
     # Action gating — container→Django (request + poll)
     path(

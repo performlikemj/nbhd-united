@@ -916,11 +916,25 @@ class LineWebhookView(View):
         reply_token: str | None = None,
         is_voice: bool = False,
     ) -> None:
-        """Forward message to tenant's OpenClaw container and relay response via LINE.
+        """Pre-process the message and enqueue it on the per-tenant
+        serialization queue.
 
-        Uses Flex Messages for structured content, quick replies for buttons,
-        and Reply API (free) with Push fallback.
+        We DON'T POST to the container here anymore — that happens in
+        ``apps.router.pending_queue.drain_pending_messages_for_tenant_task``
+        (PR #431). Doing the POST inline meant a second message arriving
+        while the first was still in flight would land an overlapping
+        turn at the OpenClaw claude-cli backend, which rejects concurrent
+        turns and (pre-#427) silently fell back to MiniMax. Serializing
+        per ``(tenant, channel, line_user_id)`` keeps the live claude
+        session intact and preserves conversation context across
+        rapid-fire messages.
+
+        Pre-flight state checks (provisioning, container_fqdn) stay
+        synchronous so we can give the user immediate feedback instead
+        of enqueuing a row that's guaranteed to fail.
         """
+        from apps.router.pending_queue import enqueue_message_for_tenant
+
         lang = tenant.user.language or "en"
 
         if not tenant.container_fqdn or tenant.status == "provisioning":
@@ -930,11 +944,14 @@ class LineWebhookView(View):
             )
             return
 
-        url = f"https://{tenant.container_fqdn}/v1/chat/completions"
         user_tz = tenant.user.timezone or "UTC"
-        gateway_token = getattr(settings, "NBHD_INTERNAL_API_KEY", "").strip()
 
-        # Workspace routing — returns base line_user_id if tenant has no workspaces
+        # Workspace routing — returns base line_user_id if tenant has no workspaces.
+        # We resolve workspace at enqueue time (not drain time) because routing
+        # depends on the user's *current* workspace context — by the time the
+        # drain runs, the user may have switched. Serializing per
+        # (tenant, channel, line_user_id) ensures these decisions still get
+        # made in arrival order.
         from apps.router.workspace_routing import (
             build_transition_marker,
             build_workspace_context_marker,
@@ -957,138 +974,34 @@ class LineWebhookView(View):
             update_active_workspace(tenant, workspace)
 
         # Inject current time so the agent always knows "now"
-        from apps.router.services import build_datetime_context, get_forwarding_timeout
+        from apps.router.services import (
+            build_chat_context_marker,
+            build_datetime_context,
+        )
 
-        message_text = build_datetime_context(user_tz) + message_text
+        # Mark this as a conversational turn (not a scheduled cron run) so the
+        # agent skips the heavy AGENTS.md "Session Start" auto-context-load.
+        # See poller.py for the parallel comment.
+        message_text = build_datetime_context(user_tz) + build_chat_context_marker() + message_text
 
-        # Model-aware timeout — reasoning models get more time
-        chat_timeout, _is_reasoning = get_forwarding_timeout(tenant)
-        if is_voice:
-            chat_timeout += VOICE_CHAT_TIMEOUT_EXTRA
-
-        try:
-            resp = httpx.post(
-                url,
-                json={
-                    "model": "openclaw",
-                    "messages": [{"role": "user", "content": message_text}],
-                    "user": user_param,
-                },
-                headers={
-                    "Authorization": f"Bearer {gateway_token}",
-                    "X-User-Timezone": user_tz,
-                    "X-Line-User-Id": line_user_id,
-                    "X-Channel": "line",
-                },
-                timeout=chat_timeout,
-            )
-            resp.raise_for_status()
-            result = resp.json()
-        except httpx.TimeoutException:
-            logger.warning(
-                "Timeout forwarding to %s for line_user_id=%s (model=%s, timeout=%.0fs)",
-                tenant.container_fqdn,
-                line_user_id,
-                tenant.preferred_model or "default",
-                chat_timeout,
-            )
-            _send_line_flex(
-                line_user_id,
-                build_status_bubble(error_msg(lang, "forwarding_timeout"), tone="warning"),
-            )
-            return
-        except httpx.HTTPStatusError as e:
-            status_code = e.response.status_code if e.response else 0
-            logger.error("LINE FWD_FAIL %s HTTP %s", tenant.container_fqdn, status_code)
-            if status_code in (502, 503):
-                # Check if this is a brand new tenant still starting up
-                tenant.refresh_from_db(fields=["status"])
-                if tenant.status == "provisioning":
-                    _send_line_flex(
-                        line_user_id,
-                        build_short_bubble(error_msg(lang, "provisioning_almost_ready")),
-                    )
-                else:
-                    _send_line_flex(
-                        line_user_id,
-                        build_status_bubble(error_msg(lang, "restarting"), tone="warning"),
-                    )
-            else:
-                _send_line_flex(
-                    line_user_id,
-                    build_status_bubble(error_msg(lang, "forwarding_error"), tone="error"),
-                )
-            return
-        except httpx.HTTPError as e:
-            logger.error("LINE forward error: %s", e)
-            tenant.refresh_from_db(fields=["status"])
-            if tenant.status == "provisioning":
-                _send_line_flex(
-                    line_user_id,
-                    build_short_bubble(error_msg(lang, "provisioning_almost_ready")),
-                )
-            else:
-                _send_line_flex(
-                    line_user_id,
-                    build_status_bubble(error_msg(lang, "restarting"), tone="warning"),
-                )
-            return
-
-        # Extract AI response — retry once on empty
-        ai_text = self._extract_ai_response(result)
-        if not ai_text:
-            logger.warning(
-                "Empty AI response from %s: keys=%s, choices=%r",
-                tenant.container_fqdn,
-                list(result.keys()),
-                result.get("choices", [])[:1],
-            )
-            logger.warning(
-                "Empty response from container %s, retrying once",
-                tenant.container_fqdn,
-            )
-            try:
-                retry_resp = httpx.post(
-                    url,
-                    json={
-                        "model": "openclaw",
-                        "messages": [{"role": "user", "content": message_text}],
-                        "user": user_param,
-                    },
-                    headers={
-                        "Authorization": f"Bearer {gateway_token}",
-                        "X-User-Timezone": user_tz,
-                        "X-Line-User-Id": line_user_id,
-                        "X-Channel": "line",
-                    },
-                    timeout=chat_timeout,
-                )
-                retry_resp.raise_for_status()
-                result = retry_resp.json()
-                ai_text = self._extract_ai_response(result)
-            except Exception:
-                logger.warning("Retry also failed for %s", tenant.container_fqdn)
-
-        if not ai_text:
-            logger.error(
-                "No response after retry from container %s for line_user_id=%s: keys=%s, choices=%r",
-                tenant.container_fqdn,
-                line_user_id,
-                list(result.keys()),
-                result.get("choices", [])[:1],
-            )
-            _send_line_flex(
-                line_user_id,
-                build_short_bubble(error_msg(lang, "empty_response_after_retry")),
-            )
-            self._record_usage(tenant, result)
-            return
-
-        if ai_text:
-            relay_ai_response_to_line(tenant, line_user_id, ai_text, reply_token=reply_token)
-
-        # Record usage
-        self._record_usage(tenant, result)
+        # Hand off to the serialization queue. The reply_token is
+        # captured but the drain task ignores it — by the time the
+        # queue runs (potentially many seconds after the webhook),
+        # LINE's reply window has typically closed and we have to
+        # Push anyway. Captured here for forensic logging only.
+        enqueue_message_for_tenant(
+            tenant=tenant,
+            channel="line",
+            channel_user_id=line_user_id,
+            payload={
+                "message_text": message_text,
+                "user_param": user_param,
+                "user_timezone": user_tz,
+                "is_voice": bool(is_voice),
+                "reply_token": reply_token,
+            },
+            user_text_excerpt=message_text,
+        )
 
     def _handle_postback(self, event: dict) -> None:
         """Handle postback events (inline button callbacks).

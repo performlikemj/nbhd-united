@@ -2,11 +2,11 @@
 # NOT added to the Django requirements.txt
 
 torch>=2.1
-transformers>=4.35
+transformers>=5.8.0
 datasets>=2.14
-accelerate>=0.24
-seqeval>=1.2
+accelerate>=1.13.0
+seqeval>=1.2.2
 optimum[onnxruntime]>=1.14
 onnxruntime>=1.16
-numpy<2
+numpy<3
 sentencepiece>=0.2

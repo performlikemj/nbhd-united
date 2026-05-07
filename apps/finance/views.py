@@ -1,5 +1,6 @@
 """Consumer-facing finance API views (JWT auth, frontend)."""
 
+import logging
 from decimal import Decimal
 
 from rest_framework import status
@@ -8,6 +9,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import FinanceAccount, FinanceSnapshot, FinanceTransaction, PayoffPlan
+
+logger = logging.getLogger(__name__)
 from .serializers import (
     FinanceAccountSerializer,
     FinanceDashboardSerializer,
@@ -164,8 +167,123 @@ class FinanceDashboardView(APIView):
         return Response(serializer.data)
 
 
+_FINANCE_WELCOME_PROMPT_TEMPLATE = (
+    "Gravity (the user's finance-tracking module) was just enabled. Send them "
+    "a brief, warm welcome via `nbhd_send_to_user` letting them know their "
+    "finance assistant is ready. Keep it to 2-3 sentences — mention you can "
+    "help track debts and savings, build payoff strategies (snowball / "
+    "avalanche / hybrid), and surface upcoming due dates. Invite them to "
+    "share what they'd like to start with whenever they're ready. Don't "
+    "start a full questionnaire in this message — just open the door.\n\n"
+    "**Do NOT ask questions in this message.** Just welcome them and let "
+    "them know you're here when they want to set things up.\n\n"
+    "**After `nbhd_send_to_user` succeeds**, mark the welcome as delivered "
+    "so the deploy-time backfill knows not to re-send. Run via Bash:\n"
+    "  curl -fsS -X POST \\\n"
+    '    "$NBHD_API_BASE_URL/api/v1/tenants/runtime/{tenant_id}/welcomes/finance/" \\\n'
+    '    -H "X-NBHD-Internal-Key: $NBHD_INTERNAL_API_KEY" \\\n'
+    '    -H "X-NBHD-Tenant-Id: {tenant_id}"\n\n'
+    "If `nbhd_send_to_user` returned an error (timeout, channel rejection, "
+    "etc.), DO NOT run the curl — leave the welcome unmarked so the next "
+    "deploy's backfill retries."
+)
+
+
+# Backwards-compat alias for ``_KNOWN_DEFAULT_PREFIXES``-style heuristics.
+_FINANCE_WELCOME_PROMPT = _FINANCE_WELCOME_PROMPT_TEMPLATE
+
+
+def _schedule_finance_welcome(tenant) -> None:
+    """Create a one-shot cron that sends a Gravity welcome message.
+
+    Fires ~5 minutes after enablement (gives the container time to pick up
+    the new finance plugin if a config refresh is in flight). Mirrors the
+    fuel welcome pattern in ``apps/fuel/views.py``.
+
+    Idempotent: skips when a ``_finance:welcome`` cron is already scheduled.
+    Re-toggling the feature flag (off→on) while a previous welcome is still
+    pending becomes a no-op; once that pending cron has fired and
+    self-removed, a future toggle re-schedules cleanly. This makes the
+    backfill command (``python manage.py backfill_welcomes``) safe to
+    re-run without spamming users.
+
+    Best-effort — failures are logged, not raised. The tenant still gets
+    organic onboarding on their next message.
+    """
+    import zoneinfo
+    from datetime import datetime, timedelta
+
+    try:
+        from apps.cron.gateway_client import cron_exists, invoke_gateway_tool
+
+        if cron_exists(tenant, "_finance:welcome"):
+            logger.info(
+                "Finance welcome already pending for tenant %s — skipping (idempotent)",
+                tenant.id,
+            )
+            return
+
+        # Already-delivered check via Tenant.welcomes_sent. The agent
+        # marks delivery via /api/v1/tenants/runtime/<id>/welcomes/finance/
+        # after a successful nbhd_send_to_user — see prompt template.
+        sent = (tenant.welcomes_sent or {}).get("finance")
+        if sent:
+            logger.info(
+                "Finance welcome already delivered for tenant %s at %s — skipping",
+                tenant.id,
+                sent,
+            )
+            return
+
+        user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
+        try:
+            tz = zoneinfo.ZoneInfo(user_tz)
+        except Exception:
+            tz = zoneinfo.ZoneInfo("UTC")
+
+        fire_at = datetime.now(tz) + timedelta(minutes=5)
+        # Date-specific cron expr fires exactly once.
+        cron_expr = f"{fire_at.minute} {fire_at.hour} {fire_at.day} {fire_at.month} *"
+
+        welcome_message = (
+            _FINANCE_WELCOME_PROMPT_TEMPLATE.format(tenant_id=tenant.id)
+            + "\n\n---\n"
+            + "After sending the welcome (and marking it delivered if the send succeeded), "
+            + "remove this cron: `cron remove _finance:welcome`"
+        )
+
+        invoke_gateway_tool(
+            tenant,
+            "cron.add",
+            {
+                "job": {
+                    "name": "_finance:welcome",
+                    "schedule": {"kind": "cron", "expr": cron_expr, "tz": user_tz},
+                    "sessionTarget": "isolated",
+                    "payload": {
+                        "kind": "agentTurn",
+                        "message": welcome_message,
+                    },
+                    "delivery": {"mode": "none"},
+                    "enabled": True,
+                }
+            },
+        )
+        logger.info("Scheduled finance welcome cron for tenant %s (fires at %s)", tenant.id, fire_at.isoformat())
+    except Exception:
+        logger.warning(
+            "Failed to schedule finance welcome for tenant %s (user will get onboarding on next message)",
+            tenant.id,
+        )
+
+
 class FinanceSettingsView(APIView):
-    """PATCH: toggle finance_enabled for the tenant."""
+    """PATCH: toggle finance_enabled for the tenant.
+
+    Enabling Gravity (finance) schedules a one-shot welcome cron 90s out
+    so the agent introduces the feature shortly after the toggle. Idempotent:
+    re-enabling an already-enabled tenant doesn't re-schedule the welcome.
+    """
 
     permission_classes = [IsAuthenticated]
 
@@ -179,7 +297,37 @@ class FinanceSettingsView(APIView):
                 {"error": "finance_enabled is required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        was_enabled = tenant.finance_enabled
         tenant.finance_enabled = bool(finance_enabled)
-        tenant.save(update_fields=["finance_enabled"])
+        update_fields = ["finance_enabled"]
+
+        # On a fresh enable (off → on), clear any previous delivery
+        # marker so the welcome re-fires. This is the supported path for
+        # users who want to re-experience the welcome — disable, then
+        # re-enable. The delivery-tracking idempotency check would
+        # otherwise skip them.
+        if tenant.finance_enabled and not was_enabled:
+            marks = dict(tenant.welcomes_sent or {})
+            if marks.pop("finance", None) is not None:
+                tenant.welcomes_sent = marks
+                update_fields.append("welcomes_sent")
+
+        tenant.save(update_fields=update_fields)
         tenant.bump_pending_config()
+
+        # First-enable: schedule the welcome cron via QStash with a delay
+        # so the container has a moment to pick up the latest config.
+        if tenant.finance_enabled and not was_enabled:
+            try:
+                from apps.cron.publish import publish_task
+
+                publish_task(
+                    "schedule_finance_welcome",
+                    str(tenant.id),
+                    delay_seconds=90,
+                )
+            except Exception:
+                logger.warning("Failed to enqueue finance welcome for tenant %s", tenant.id)
+
         return Response({"finance_enabled": tenant.finance_enabled})

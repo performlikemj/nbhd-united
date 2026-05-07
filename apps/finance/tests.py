@@ -1241,3 +1241,267 @@ class SnapshotServiceTests(TestCase):
         create_monthly_snapshots(date(2026, 4, 1))
         snap = FinanceSnapshot.objects.get(tenant=self.tenant)
         self.assertEqual(snap.total_payments_this_month, Decimal("500"))
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 7. Phase 1 — Gravity proactive parity (welcome cron + weekly check-in)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class FinanceSettingsViewTests(TestCase):
+    """Toggling finance_enabled schedules a welcome cron via QStash."""
+
+    def setUp(self):
+        from unittest.mock import patch as _patch
+
+        self.tenant = create_tenant(display_name="GravityToggle", telegram_chat_id=900200)
+        self.client = APIClient()
+        token = RefreshToken.for_user(self.tenant.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.access_token}")
+        self._patch = _patch
+        # Tenant defaults to finance_enabled=False — flip it explicitly when needed.
+        self.tenant.finance_enabled = False
+        self.tenant.save(update_fields=["finance_enabled"])
+
+    def test_first_enable_schedules_welcome(self):
+        with self._patch("apps.cron.publish.publish_task") as mock_publish:
+            response = self.client.patch(
+                "/api/v1/finance/settings/",
+                {"finance_enabled": True},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["finance_enabled"])
+        # Welcome scheduling enqueued via QStash (delayed 90s).
+        mock_publish.assert_called_once_with(
+            "schedule_finance_welcome",
+            str(self.tenant.id),
+            delay_seconds=90,
+        )
+
+    def test_re_enable_does_not_reschedule_welcome(self):
+        # Already enabled — toggling on a second time shouldn't fire QStash.
+        self.tenant.finance_enabled = True
+        self.tenant.save(update_fields=["finance_enabled"])
+
+        with self._patch("apps.cron.publish.publish_task") as mock_publish:
+            response = self.client.patch(
+                "/api/v1/finance/settings/",
+                {"finance_enabled": True},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 200)
+        mock_publish.assert_not_called()
+
+    def test_disable_does_not_schedule_welcome(self):
+        self.tenant.finance_enabled = True
+        self.tenant.save(update_fields=["finance_enabled"])
+
+        with self._patch("apps.cron.publish.publish_task") as mock_publish:
+            response = self.client.patch(
+                "/api/v1/finance/settings/",
+                {"finance_enabled": False},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 200)
+        mock_publish.assert_not_called()
+
+
+class GravityWeeklyCheckinSeedJobTests(TestCase):
+    """The weekly cron is gated on tenant.finance_enabled at seed-time."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="GravityCron", telegram_chat_id=900201)
+
+    def test_absent_when_finance_disabled(self):
+        from apps.orchestrator.config_generator import build_cron_seed_jobs
+
+        self.tenant.finance_enabled = False
+        self.tenant.save(update_fields=["finance_enabled"])
+        jobs = build_cron_seed_jobs(self.tenant)
+        names = {j["name"] for j in jobs}
+        self.assertNotIn("Gravity Weekly Check-in", names)
+
+    def test_present_when_finance_enabled(self):
+        from apps.orchestrator.config_generator import build_cron_seed_jobs
+
+        self.tenant.finance_enabled = True
+        self.tenant.save(update_fields=["finance_enabled"])
+        jobs = build_cron_seed_jobs(self.tenant)
+        weekly = next((j for j in jobs if j["name"] == "Gravity Weekly Check-in"), None)
+        self.assertIsNotNone(weekly)
+        # Sunday at 19:00 in user's timezone.
+        self.assertEqual(weekly["schedule"]["expr"], "0 19 * * 0")
+        # Foreground (Phase 2 sync) so summary lands in main session.
+        self.assertIn("FINAL STEP", weekly["payload"]["message"])
+        # Prompt mentions the Gravity terminology and pulls from USER.md.
+        self.assertIn("Gravity", weekly["payload"]["message"])
+        self.assertIn("USER.md", weekly["payload"]["message"])
+
+
+class FinanceWelcomePromptTests(UnitTestCase):
+    """Sanity-check the static welcome prompt content (no DB)."""
+
+    def test_welcome_prompt_avoids_questions(self):
+        from apps.finance.views import _FINANCE_WELCOME_PROMPT
+
+        self.assertIn("Gravity", _FINANCE_WELCOME_PROMPT)
+        self.assertIn("nbhd_send_to_user", _FINANCE_WELCOME_PROMPT)
+        # Explicit instruction to not ask questions in welcome.
+        self.assertIn("Do NOT ask questions", _FINANCE_WELCOME_PROMPT)
+
+
+class FinanceWelcomeIdempotencyTests(TestCase):
+    """``_schedule_finance_welcome`` skips when a welcome cron already exists.
+
+    Re-toggling the feature flag (off→on) while a previous welcome is still
+    pending would otherwise create a duplicate cron in the container.
+    """
+
+    def setUp(self):
+        from unittest.mock import patch as _patch
+
+        self.tenant = create_tenant(display_name="Idem", telegram_chat_id=900250)
+        self.tenant.container_fqdn = "oc-test.example.com"
+        self.tenant.save(update_fields=["container_fqdn"])
+        self._patch = _patch
+
+    def test_skips_when_welcome_already_pending(self):
+        from apps.finance.views import _schedule_finance_welcome
+
+        with (
+            self._patch(
+                "apps.cron.gateway_client.cron_exists",
+                return_value=True,
+            ) as mock_exists,
+            self._patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
+        ):
+            _schedule_finance_welcome(self.tenant)
+
+        mock_exists.assert_called_once_with(self.tenant, "_finance:welcome")
+        # cron.add was NOT called because welcome is already pending.
+        for call in mock_invoke.call_args_list:
+            self.assertNotEqual(call.args[1] if len(call.args) > 1 else call.kwargs.get("tool"), "cron.add")
+
+    def test_skips_when_welcome_already_delivered(self):
+        """welcomes_sent['finance'] set → no re-schedule even if no pending cron."""
+        from apps.finance.views import _schedule_finance_welcome
+
+        self.tenant.welcomes_sent = {"finance": "2026-05-07T03:00:00+00:00"}
+        self.tenant.save(update_fields=["welcomes_sent"])
+
+        with (
+            self._patch(
+                "apps.cron.gateway_client.cron_exists",
+                return_value=False,
+            ),
+            self._patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
+        ):
+            _schedule_finance_welcome(self.tenant)
+
+        # No cron.add — already delivered.
+        for call in mock_invoke.call_args_list:
+            self.assertNotEqual(call.args[1] if len(call.args) > 1 else call.kwargs.get("tool"), "cron.add")
+
+    def test_schedules_when_no_welcome_pending(self):
+        from apps.finance.views import _schedule_finance_welcome
+
+        with (
+            self._patch(
+                "apps.cron.gateway_client.cron_exists",
+                return_value=False,
+            ),
+            self._patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
+        ):
+            _schedule_finance_welcome(self.tenant)
+
+        mock_invoke.assert_called_once()
+        args, _kwargs = mock_invoke.call_args
+        # invoke_gateway_tool(tenant, "cron.add", {"job": {...}})
+        self.assertEqual(args[1], "cron.add")
+        self.assertEqual(args[2]["job"]["name"], "_finance:welcome")
+        # Prompt has been formatted with the tenant id (no unfilled placeholders).
+        message = args[2]["job"]["payload"]["message"]
+        self.assertIn(str(self.tenant.id), message)
+        self.assertNotIn("{tenant_id}", message)
+
+
+class FinanceSettingsViewClearsDeliveryFlagTests(TestCase):
+    """Re-enabling Gravity (off→on) clears any prior welcomes_sent['finance']
+    so the welcome re-fires for users who want to retest the experience.
+    """
+
+    def setUp(self):
+        from unittest.mock import patch as _patch
+
+        self.tenant = create_tenant(display_name="Toggle", telegram_chat_id=900260)
+        self.client = APIClient()
+        token = RefreshToken.for_user(self.tenant.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.access_token}")
+        self._patch = _patch
+
+    def test_off_to_on_clears_delivery_marker(self):
+        # Pretend a previous welcome was delivered, then user disabled.
+        self.tenant.finance_enabled = False
+        self.tenant.welcomes_sent = {"finance": "2026-05-07T03:00:00+00:00"}
+        self.tenant.save(update_fields=["finance_enabled", "welcomes_sent"])
+
+        with self._patch("apps.cron.publish.publish_task"):
+            response = self.client.patch(
+                "/api/v1/finance/settings/",
+                {"finance_enabled": True},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.tenant.refresh_from_db()
+        self.assertNotIn("finance", self.tenant.welcomes_sent)
+
+
+class RuntimeWelcomeMarkViewTests(TestCase):
+    """The agent calls /api/v1/tenants/runtime/<id>/welcomes/<feature>/ after
+    a successful nbhd_send_to_user, which sets the delivery timestamp.
+    """
+
+    def setUp(self):
+        from django.test import override_settings
+
+        self.tenant = create_tenant(display_name="MarkAck", telegram_chat_id=900270)
+        self.client = APIClient()
+        self._override = override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+        self._override.enable()
+
+    def tearDown(self):
+        self._override.disable()
+
+    def _post(self, feature: str, *, key="test-internal-key", tenant_id=None):
+        return self.client.post(
+            f"/api/v1/tenants/runtime/{tenant_id or self.tenant.id}/welcomes/{feature}/",
+            format="json",
+            HTTP_X_NBHD_INTERNAL_KEY=key,
+            HTTP_X_NBHD_TENANT_ID=str(tenant_id or self.tenant.id),
+        )
+
+    def test_marks_finance_delivered(self):
+        response = self._post("finance")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["feature"], "finance")
+        self.tenant.refresh_from_db()
+        self.assertIn("finance", self.tenant.welcomes_sent)
+
+    def test_marks_fuel_delivered(self):
+        response = self._post("fuel")
+        self.assertEqual(response.status_code, 200)
+        self.tenant.refresh_from_db()
+        self.assertIn("fuel", self.tenant.welcomes_sent)
+
+    def test_unknown_feature_400(self):
+        response = self._post("widgets")
+        self.assertEqual(response.status_code, 400)
+
+    def test_missing_internal_key_401(self):
+        response = self._post("finance", key="")
+        self.assertEqual(response.status_code, 401)
+
+    def test_wrong_internal_key_401(self):
+        response = self._post("finance", key="wrong-key")
+        self.assertEqual(response.status_code, 401)

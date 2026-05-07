@@ -259,11 +259,28 @@ class Tenant(models.Model):
         "Values: model IDs.",
     )
     # Cron job backup — snapshot of the last-known cron.list response.
-    # Used to restore user-created jobs after container restarts.
+    # Used to restore user-created jobs after container restarts. Retired
+    # in Phase 2 of the Postgres-canonical cutover (replaced by the CronJob
+    # table — see apps/cron/models.py).
     cron_jobs_snapshot = models.JSONField(
         default=dict,
         blank=True,
         help_text='Last-known cron job list from gateway. Format: {"jobs": [...], "snapshot_at": "ISO8601"}',
+    )
+
+    # Per-tenant flag for the Postgres-canonical cron rollout. When True,
+    # the dashboard, runtime endpoints, and provisioning paths read/write
+    # the apps.cron.CronJob table directly; the gateway's SQLite is a
+    # derived view rebuilt by apps.orchestrator.cron_reconcile.
+    # When False (default), the legacy gateway-canonical paths apply.
+    postgres_cron_canonical = models.BooleanField(
+        default=False,
+        help_text=(
+            "Cutover flag for the Postgres-canonical cron model. "
+            "When True, the CronJob table is the source of truth and "
+            "OpenClaw's SQLite is a derived view kept in sync by the "
+            "regenerate_tenant_crons reconciler."
+        ),
     )
 
     preferred_model = models.CharField(
@@ -293,6 +310,28 @@ class Tenant(models.Model):
     fuel_enabled = models.BooleanField(
         default=False,
         help_text="Enable workout tracking and fitness logging",
+    )
+
+    # Welcome-cron delivery telemetry. Keys are feature names ("fuel",
+    # "finance"), values are ISO-8601 timestamps of successful welcome
+    # delivery. The welcome prompt instructs the agent to call
+    # /api/internal/welcomes/mark/<feature>/ after nbhd_send_to_user
+    # succeeds; the deploy-time backfill skips tenants where the flag is
+    # set and re-schedules for those where it isn't (closing the
+    # "scheduled but failed silently" gap).
+    welcomes_sent = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Per-feature welcome-delivery timestamps (e.g. {'fuel': '2026-05-07T...', 'finance': ...})",
+    )
+
+    # BYO subscription mode — Phase 1 gates Anthropic Claude Pro/Max CLI
+    # behind this flag. After fleet rollout (PR #434, 2026-05-02) the default
+    # is True; existing rows are flipped via migration 0051. Newly provisioned
+    # tenants are auto-enabled and can connect from day one.
+    byo_models_enabled = models.BooleanField(
+        default=True,
+        help_text="Enable bring-your-own Anthropic/OpenAI subscription mode for this tenant",
     )
 
     # Idle hibernation

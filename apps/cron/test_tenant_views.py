@@ -666,3 +666,392 @@ class Phase2WrapHelperTest(SimpleTestCase):
         self.assertTrue(_message_has_phase2_marker(wrapped))
         self.assertFalse(_message_has_phase2_marker("base"))
         self.assertFalse(_message_has_phase2_marker(""))
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Bulk-write hibernation-wake — same pattern as the read-side cache
+# fallback. Writes against a hibernated container would otherwise return
+# the raw Azure splash to the user.
+# ═════════════════════════════════════════════════════════════════════
+
+
+class CronJobBulkWriteHibernationTest(TestCase):
+    def setUp(self):
+        self.user, self.tenant = _create_user_and_tenant()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant")
+    def test_bulk_delete_hibernated_returns_503_and_wakes(self, mock_wake):
+        from django.utils import timezone
+
+        self.tenant.hibernated_at = timezone.now()
+        self.tenant.save(update_fields=["hibernated_at"])
+
+        resp = self.client.post(
+            "/api/v1/cron-jobs/bulk-delete/",
+            {"ids": ["some-job-id"]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 503)
+        self.assertTrue(resp.json().get("container_waking"))
+        mock_wake.assert_called_once()
+
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant")
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_bulk_delete_503_on_mid_loop_azure_splash(self, mock_invoke, mock_wake):
+        """If the gateway returns the Azure splash mid-loop, abort and 503."""
+        from apps.cron.gateway_client import GatewayError
+
+        # First delete: Azure splash. We should not attempt subsequent ones.
+        mock_invoke.side_effect = GatewayError(
+            "Gateway returned 404: <title>Container App - Unavailable</title>",
+            status_code=404,
+        )
+        resp = self.client.post(
+            "/api/v1/cron-jobs/bulk-delete/",
+            {"ids": ["job-a", "job-b", "job-c"]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 503)
+        self.assertTrue(resp.json().get("container_waking"))
+        mock_wake.assert_called_once()
+        # We aborted after the first failure rather than calling cron.remove
+        # for every id.
+        self.assertEqual(mock_invoke.call_count, 1)
+
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant")
+    def test_bulk_update_foreground_hibernated_returns_503_and_wakes(self, mock_wake):
+        from django.utils import timezone
+
+        self.tenant.hibernated_at = timezone.now()
+        self.tenant.save(update_fields=["hibernated_at"])
+
+        resp = self.client.post(
+            "/api/v1/cron-jobs/bulk-update-foreground/",
+            {"ids": ["some-job-id"], "foreground": True},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 503)
+        self.assertTrue(resp.json().get("container_waking"))
+        mock_wake.assert_called_once()
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Postgres-canonical cron flow — flag-gated, one cohesive surface
+# ═════════════════════════════════════════════════════════════════════
+
+
+class PostgresCanonicalReadTest(TestCase):
+    """Read paths must serve Postgres without touching the gateway when
+    `postgres_cron_canonical=True`."""
+
+    def setUp(self):
+        from apps.cron.models import CronJob, CronJobSource
+
+        self.user, self.tenant = _create_user_and_tenant()
+        self.tenant.postgres_cron_canonical = True
+        self.tenant.save(update_fields=["postgres_cron_canonical"])
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        CronJob.objects.create(
+            tenant=self.tenant,
+            name="My Task",
+            data={
+                "name": "My Task",
+                "schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "UTC"},
+                "payload": {"kind": "agentTurn", "message": "hi"},
+            },
+            source=CronJobSource.USER,
+            managed=True,
+            enabled=True,
+        )
+        # Hidden system cron — must not appear in dashboard list.
+        CronJob.objects.create(
+            tenant=self.tenant,
+            name="Background Tasks",
+            data={"name": "Background Tasks"},
+            source=CronJobSource.SYSTEM,
+            managed=True,
+            enabled=True,
+        )
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_list_serves_postgres_no_gateway_call(self, mock_invoke):
+        resp = self.client.get("/api/v1/cron-jobs/")
+        self.assertEqual(resp.status_code, 200)
+        names = [j["name"] for j in resp.json()["jobs"]]
+        self.assertEqual(names, ["My Task"])  # hidden cron excluded
+        mock_invoke.assert_not_called()
+
+
+class PostgresCanonicalWriteTest(TestCase):
+    """Write paths mutate Postgres + fire signal; gateway is untouched."""
+
+    def setUp(self):
+        self.user, self.tenant = _create_user_and_tenant()
+        self.tenant.postgres_cron_canonical = True
+        self.tenant.save(update_fields=["postgres_cron_canonical"])
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_create_creates_row_no_gateway(self, mock_invoke):
+        from apps.cron.models import CronJob
+
+        resp = self.client.post(
+            "/api/v1/cron-jobs/",
+            {
+                "name": "Daily Reminder",
+                "schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "UTC"},
+                "payload": {"kind": "agentTurn", "message": "Hi"},
+                "delivery": {"mode": "none"},
+                "foreground": False,
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(CronJob.objects.filter(tenant=self.tenant, name="Daily Reminder").exists())
+        mock_invoke.assert_not_called()
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_delete_removes_row_no_gateway(self, mock_invoke):
+        from apps.cron.models import CronJob, CronJobSource
+
+        CronJob.objects.create(
+            tenant=self.tenant,
+            name="Throwaway",
+            data={"name": "Throwaway"},
+            source=CronJobSource.USER,
+        )
+        resp = self.client.delete("/api/v1/cron-jobs/Throwaway/")
+        self.assertEqual(resp.status_code, 204)
+        self.assertFalse(CronJob.objects.filter(tenant=self.tenant, name="Throwaway").exists())
+        mock_invoke.assert_not_called()
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_toggle_flips_enabled_column(self, mock_invoke):
+        from apps.cron.models import CronJob, CronJobSource
+
+        row = CronJob.objects.create(
+            tenant=self.tenant,
+            name="Daily",
+            data={"name": "Daily", "enabled": True},
+            source=CronJobSource.USER,
+            enabled=True,
+        )
+        resp = self.client.post(
+            f"/api/v1/cron-jobs/{row.name}/toggle/",
+            {"enabled": False},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        row.refresh_from_db()
+        self.assertFalse(row.enabled)
+        mock_invoke.assert_not_called()
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_bulk_delete_removes_rows_no_gateway(self, mock_invoke):
+        from apps.cron.models import CronJob, CronJobSource
+
+        for n in ("a", "b", "c"):
+            CronJob.objects.create(
+                tenant=self.tenant,
+                name=n,
+                data={"name": n},
+                source=CronJobSource.USER,
+            )
+        resp = self.client.post(
+            "/api/v1/cron-jobs/bulk-delete/",
+            {"ids": ["a", "b"]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["deleted"], 2)
+        self.assertCountEqual(
+            list(CronJob.objects.filter(tenant=self.tenant).values_list("name", flat=True)),
+            ["c"],
+        )
+        mock_invoke.assert_not_called()
+
+
+class PostgresCanonicalSignalTest(TestCase):
+    """post_save / post_delete on CronJob enqueue the debounced regen,
+    only when the tenant is on the new flow."""
+
+    def setUp(self):
+        self.user, self.tenant = _create_user_and_tenant()
+
+    @patch("apps.cron.publish.publish_task")
+    def test_no_publish_when_flag_off(self, mock_publish):
+        from apps.cron.models import CronJob, CronJobSource
+
+        CronJob.objects.create(
+            tenant=self.tenant,
+            name="Foo",
+            data={},
+            source=CronJobSource.USER,
+        )
+        mock_publish.assert_not_called()
+
+    @patch("apps.cron.publish.publish_task")
+    def test_publishes_debounced_regen_when_flag_on(self, mock_publish):
+        from apps.cron.models import CronJob, CronJobSource
+
+        self.tenant.postgres_cron_canonical = True
+        self.tenant.save(update_fields=["postgres_cron_canonical"])
+        CronJob.objects.create(
+            tenant=self.tenant,
+            name="Bar",
+            data={},
+            source=CronJobSource.USER,
+        )
+        mock_publish.assert_called()
+        call = mock_publish.call_args
+        self.assertEqual(call[0][0], "regenerate_tenant_crons")
+        self.assertEqual(call[1]["delay_seconds"], 30)
+        self.assertEqual(call[1]["idempotency_key"], f"regen-cron:{self.tenant.id}")
+
+    @patch("apps.cron.publish.publish_task")
+    def test_publishes_on_delete(self, mock_publish):
+        from apps.cron.models import CronJob, CronJobSource
+
+        self.tenant.postgres_cron_canonical = True
+        self.tenant.save(update_fields=["postgres_cron_canonical"])
+        row = CronJob.objects.create(
+            tenant=self.tenant,
+            name="Bar",
+            data={},
+            source=CronJobSource.USER,
+        )
+        mock_publish.reset_mock()
+        row.delete()
+        mock_publish.assert_called_once()
+
+
+class RegenerateTenantCronsTest(TestCase):
+    """Reconciler diff-and-apply against gateway."""
+
+    def setUp(self):
+        self.user, self.tenant = _create_user_and_tenant()
+        self.tenant.postgres_cron_canonical = True
+        self.tenant.container_fqdn = "oc-test.example.com"
+        self.tenant.save(update_fields=["postgres_cron_canonical", "container_fqdn"])
+
+    def test_skips_when_flag_off(self):
+        from apps.orchestrator.cron_reconcile import regenerate_tenant_crons
+
+        self.tenant.postgres_cron_canonical = False
+        self.tenant.save(update_fields=["postgres_cron_canonical"])
+        result = regenerate_tenant_crons(self.tenant)
+        self.assertEqual(result, {"added": 0, "removed": 0, "unchanged": 0, "errors": 0})
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_adds_missing_jobs(self, mock_invoke):
+        from apps.cron.models import CronJob, CronJobSource
+        from apps.orchestrator.cron_reconcile import regenerate_tenant_crons
+
+        CronJob.objects.create(
+            tenant=self.tenant,
+            name="Morning Briefing",
+            data={
+                "name": "Morning Briefing",
+                "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": "UTC"},
+                "sessionTarget": "isolated",
+                "payload": {"kind": "agentTurn", "message": "x"},
+                "delivery": {"mode": "none"},
+            },
+            source=CronJobSource.SYSTEM,
+            managed=True,
+        )
+        mock_invoke.side_effect = lambda tenant, tool, args: {"details": {"jobs": []}} if tool == "cron.list" else None
+        result = regenerate_tenant_crons(self.tenant)
+        self.assertEqual(result["added"], 1)
+        self.assertEqual(result["removed"], 0)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_removes_stale_managed_jobs(self, mock_invoke):
+        from apps.orchestrator.cron_reconcile import regenerate_tenant_crons
+
+        # No CronJob rows = empty desired. Container has one job that we
+        # consider managed (no underscore prefix).
+        mock_invoke.side_effect = lambda tenant, tool, args: (
+            {"details": {"jobs": [{"name": "Old Task", "id": "j1"}]}} if tool == "cron.list" else None
+        )
+        result = regenerate_tenant_crons(self.tenant)
+        self.assertEqual(result["removed"], 1)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_leaves_sync_prefix_alone(self, mock_invoke):
+        """`_sync:*` agent-created crons must survive reconciliation."""
+        from apps.orchestrator.cron_reconcile import regenerate_tenant_crons
+
+        mock_invoke.side_effect = lambda tenant, tool, args: (
+            {"details": {"jobs": [{"name": "_sync:Morning Briefing", "id": "sync-1"}]}} if tool == "cron.list" else None
+        )
+        result = regenerate_tenant_crons(self.tenant)
+        self.assertEqual(result["removed"], 0)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_unmanaged_rows_dont_drive_adds(self, mock_invoke):
+        from apps.cron.models import CronJob, CronJobSource
+        from apps.orchestrator.cron_reconcile import regenerate_tenant_crons
+
+        CronJob.objects.create(
+            tenant=self.tenant,
+            name="_sync:foo",
+            data={"name": "_sync:foo"},
+            source=CronJobSource.AGENT,
+            managed=False,
+        )
+        mock_invoke.side_effect = lambda tenant, tool, args: {"details": {"jobs": []}} if tool == "cron.list" else None
+        result = regenerate_tenant_crons(self.tenant)
+        self.assertEqual(result["added"], 0)
+
+
+class RuntimeContainerStartedTest(TestCase):
+    """The container-start hook fires the reconciler immediately."""
+
+    def setUp(self):
+        from django.test import override_settings as _ovr
+
+        self.user, self.tenant = _create_user_and_tenant()
+        self.tenant.postgres_cron_canonical = True
+        self.tenant.container_fqdn = "oc-test.example.com"
+        self.tenant.save(update_fields=["postgres_cron_canonical", "container_fqdn"])
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+        self._override = _ovr(NBHD_INTERNAL_API_KEY="test-internal-key")
+        self._override.enable()
+
+    def tearDown(self):
+        self._override.disable()
+
+    @patch("apps.orchestrator.cron_reconcile.regenerate_tenant_crons")
+    def test_hook_invokes_reconciler(self, mock_regen):
+        mock_regen.return_value = {"added": 0, "removed": 0, "unchanged": 0, "errors": 0}
+        resp = self.client.post(
+            f"/api/cron/runtime/{self.tenant.id}/container-started/",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        mock_regen.assert_called_once()
+
+    @patch("apps.orchestrator.cron_reconcile.regenerate_tenant_crons")
+    def test_hook_skipped_when_flag_off(self, mock_regen):
+        self.tenant.postgres_cron_canonical = False
+        self.tenant.save(update_fields=["postgres_cron_canonical"])
+        resp = self.client.post(
+            f"/api/cron/runtime/{self.tenant.id}/container-started/",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json().get("skipped"))
+        mock_regen.assert_not_called()
+
+    def test_hook_unauthorized(self):
+        resp = self.client.post(f"/api/cron/runtime/{self.tenant.id}/container-started/")
+        self.assertEqual(resp.status_code, 401)

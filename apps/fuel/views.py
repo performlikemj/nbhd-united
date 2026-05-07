@@ -53,7 +53,7 @@ from .services import (
     detect_prs,
 )
 
-_FUEL_WELCOME_PROMPT = (
+_FUEL_WELCOME_PROMPT_TEMPLATE = (
     "Fuel was just enabled for this user. Send them a brief, warm welcome "
     "via `nbhd_send_to_user` letting them know their fitness assistant is "
     "ready. Keep it to 2-3 sentences — invite them to start a conversation "
@@ -61,8 +61,23 @@ _FUEL_WELCOME_PROMPT = (
     "onboarding questionnaire in this message — just let them know the "
     "feature is live and you're here when they want to set things up.\n\n"
     "**Do NOT ask questions in this message.** Just welcome them and let "
-    "them know they can come to you when ready."
+    "them know they can come to you when ready.\n\n"
+    "**After `nbhd_send_to_user` succeeds**, mark the welcome as delivered "
+    "so the deploy-time backfill knows not to re-send. Run via Bash:\n"
+    "  curl -fsS -X POST \\\n"
+    '    "$NBHD_API_BASE_URL/api/v1/tenants/runtime/{tenant_id}/welcomes/fuel/" \\\n'
+    '    -H "X-NBHD-Internal-Key: $NBHD_INTERNAL_API_KEY" \\\n'
+    '    -H "X-NBHD-Tenant-Id: {tenant_id}"\n\n'
+    "If `nbhd_send_to_user` returned an error (timeout, channel rejection, "
+    "etc.), DO NOT run the curl — leave the welcome unmarked so the next "
+    "deploy's backfill retries."
 )
+
+
+# Backwards-compat alias — older deployed welcome crons reference this name
+# in ``_KNOWN_DEFAULT_PREFIXES``-style heuristics. The template version is
+# what the scheduler actually formats per-tenant.
+_FUEL_WELCOME_PROMPT = _FUEL_WELCOME_PROMPT_TEMPLATE
 
 _logger = logging.getLogger(__name__)
 
@@ -73,13 +88,42 @@ def _schedule_fuel_welcome(tenant):
     Fires ~5 minutes after enablement (gives config time to deploy).
     Uses a date-specific cron expression so it fires exactly once,
     then the prompt instructs the agent to self-remove the cron.
+
+    Idempotent: skips when a ``_fuel:welcome`` cron is already scheduled.
+    Re-toggling the feature flag (off→on) while a previous welcome is
+    still pending becomes a no-op; once that pending cron has fired and
+    self-removed, a future toggle re-schedules cleanly. This makes the
+    backfill command (``python manage.py backfill_welcomes``) safe to
+    re-run without spamming users.
+
     Best-effort — failures are logged, not raised.
     """
     import zoneinfo
     from datetime import datetime, timedelta
 
     try:
-        from apps.cron.gateway_client import invoke_gateway_tool
+        from apps.cron.gateway_client import cron_exists, invoke_gateway_tool
+
+        if cron_exists(tenant, "_fuel:welcome"):
+            _logger.info(
+                "Fuel welcome already pending for tenant %s — skipping (idempotent)",
+                tenant.id,
+            )
+            return
+
+        # Already-delivered check: the agent calls
+        # /api/v1/tenants/runtime/<id>/welcomes/fuel/ after a successful
+        # nbhd_send_to_user, which sets ``Tenant.welcomes_sent['fuel']``.
+        # If that timestamp is set we don't re-send. (Re-toggling the
+        # feature flag intentionally clears it — see FuelSettingsView.)
+        sent = (tenant.welcomes_sent or {}).get("fuel")
+        if sent:
+            _logger.info(
+                "Fuel welcome already delivered for tenant %s at %s — skipping",
+                tenant.id,
+                sent,
+            )
+            return
 
         user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
         try:
@@ -92,9 +136,10 @@ def _schedule_fuel_welcome(tenant):
         cron_expr = f"{fire_at.minute} {fire_at.hour} {fire_at.day} {fire_at.month} *"
 
         welcome_message = (
-            _FUEL_WELCOME_PROMPT
+            _FUEL_WELCOME_PROMPT_TEMPLATE.format(tenant_id=tenant.id)
             + "\n\n---\n"
-            + "After sending the welcome, remove this cron: `cron remove _fuel:welcome`"
+            + "After sending the welcome (and marking it delivered if the send succeeded), "
+            + "remove this cron: `cron remove _fuel:welcome`"
         )
 
         invoke_gateway_tool(
@@ -146,7 +191,18 @@ class FuelSettingsView(APIView):
 
         was_enabled = tenant.fuel_enabled
         tenant.fuel_enabled = bool(fuel_enabled)
-        tenant.save(update_fields=["fuel_enabled"])
+        update_fields = ["fuel_enabled"]
+
+        # On a fresh enable (off → on), clear the welcome-delivery marker
+        # so the welcome re-fires. Supports the "disable then re-enable
+        # to retest the welcome" flow.
+        if tenant.fuel_enabled and not was_enabled:
+            marks = dict(tenant.welcomes_sent or {})
+            if marks.pop("fuel", None) is not None:
+                tenant.welcomes_sent = marks
+                update_fields.append("welcomes_sent")
+
+        tenant.save(update_fields=update_fields)
         tenant.bump_pending_config()
 
         # Create profile on enable (no-op if already exists)

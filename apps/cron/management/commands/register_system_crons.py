@@ -44,6 +44,10 @@ SYSTEM_CRONS = [
     # Every hour — reconcile derived Fuel session crons against Postgres truth
     # for tenants on the new per-session scheduling flow (catches drift).
     ("reconcile-fuel-crons", "0 * * * *", "/api/cron/trigger/reconcile_fuel_crons/"),
+    # Every hour (offset 5 min) — reconcile all managed crons against the
+    # Postgres CronJob table for tenants on the postgres-cron-canonical flow.
+    # Offset to avoid colliding with reconcile-fuel-crons.
+    ("reconcile-tenant-crons", "5 * * * *", "/api/cron/trigger/reconcile_tenant_crons/"),
 ]
 
 

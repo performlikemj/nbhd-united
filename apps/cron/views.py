@@ -96,9 +96,19 @@ TASK_MAP = {
     "nightly_extraction": "apps.orchestrator.tasks.nightly_extraction_task",
     # Fuel welcome cron — delayed after container restart
     "schedule_fuel_welcome": "apps.fuel.tasks.schedule_fuel_welcome_task",
+    # Gravity (finance) welcome cron — delayed after finance toggle
+    "schedule_finance_welcome": "apps.finance.tasks.schedule_finance_welcome_task",
     # Fuel session-scheduling cutover — derived from Workout.scheduled_at
     "regenerate_fuel_crons": "apps.orchestrator.tasks.regenerate_fuel_crons_task",
     "reconcile_fuel_crons": "apps.orchestrator.tasks.reconcile_fuel_crons_task",
+    # Postgres-canonical cron cutover — derived view of CronJob rows
+    "regenerate_tenant_crons": "apps.orchestrator.tasks.regenerate_tenant_crons_task",
+    "reconcile_tenant_crons": "apps.orchestrator.tasks.reconcile_tenant_crons_task",
+    # Per-tenant message serialization queue — drains the next pending
+    # warm-tenant message for (tenant, channel, channel_user_id) so the
+    # OpenClaw claude-cli backend never sees overlapping turns on the
+    # same live session.
+    "drain_pending_messages_for_tenant": "apps.router.pending_queue.drain_pending_messages_for_tenant_task",
 }
 
 
@@ -546,64 +556,110 @@ def restart_tenant_container(request):
     return JsonResponse({"restarted": True, "container": tenant.container_id})
 
 
+def _unentitled_active_tenants():
+    """Return queryset of active tenants without entitlement.
+
+    Entitled = paid (Stripe subscription) OR on a valid (unexpired) trial.
+    The inverse is "active but no current entitlement" — these are the
+    accounts the daily sweep should suspend.
+
+    Note: this does NOT filter on ``is_trial=True``. The earlier query did,
+    which silently let through any tenant whose ``is_trial`` was flipped
+    to False at some prior point without their status moving to SUSPENDED.
+    Production had 17 such ghost tenants accumulating LLM cost since their
+    trials ended 2026-04-15.
+    """
+    now = timezone.now()
+    return Tenant.objects.filter(status=Tenant.Status.ACTIVE).exclude(
+        models.Q(stripe_subscription_id__gt="") | models.Q(is_trial=True, trial_ends_at__gt=now),
+    )
+
+
+def _suspend_unentitled_tenant(tenant):
+    """Disable crons, flip status to SUSPENDED, hibernate container.
+
+    Order matters: disable while gateway still reachable, then mark
+    suspended (the visible state change for the user), then hibernate
+    (which stops Azure costs). Reused by ``expire_trials`` and the
+    ``enforce_entitlement`` management command.
+    """
+    from apps.cron.suspension import suspend_tenant_crons
+    from apps.orchestrator.azure_client import hibernate_container_app
+
+    crons_disabled = 0
+    hibernated = False
+
+    if tenant.container_fqdn:
+        try:
+            cron_result = suspend_tenant_crons(tenant)
+            crons_disabled = cron_result.get("disabled", 0)
+        except Exception:
+            logger.exception("enforce_entitlement: failed to suspend crons for tenant %s", tenant.id)
+
+    tenant.is_trial = False
+    tenant.status = Tenant.Status.SUSPENDED
+    tenant.save(update_fields=["is_trial", "status", "updated_at"])
+
+    if tenant.container_id:
+        try:
+            hibernate_container_app(tenant.container_id)
+            hibernated = True
+        except Exception:
+            logger.exception(
+                "enforce_entitlement: failed to hibernate container %s for tenant %s",
+                tenant.container_id,
+                tenant.id,
+            )
+
+    return {"crons_disabled": crons_disabled, "hibernated": hibernated}
+
+
 @csrf_exempt
 @require_POST
 def expire_trials(request):
-    """Suspend trials that have reached their end date and are unpaid.
+    """Suspend any active tenant that lacks entitlement.
 
-    Disables all cron jobs (not deleted — so they can be re-enabled on
-    subscription) and hibernates the container to stop resource costs.
+    Daily QStash cron. Catches both:
+      - Trials that have reached their end date with no paid conversion.
+      - Ghost tenants (``is_trial=False, status='active', no stripe_sub``)
+        that slipped past prior sweeps because the previous query filtered
+        on ``is_trial=True``.
 
-    URL: /api/v1/cron/expire-trials/
+    Disables cron jobs (so they can be re-enabled on subscription, not
+    deleted) and hibernates the container.
+
+    URL: /api/v1/cron/expire-trials/ (kept for QStash schedule continuity)
     """
     if not verify_qstash_signature(request):
         logger.warning("Unauthorized expire-trials cron attempt")
         return JsonResponse({"error": "Invalid signature"}, status=401)
 
-    from apps.cron.suspension import suspend_tenant_crons
-    from apps.orchestrator.azure_client import hibernate_container_app
-
-    now = timezone.now()
-    query = Tenant.objects.filter(
-        is_trial=True,
-        trial_ends_at__lte=now,
-    ).filter(
-        models.Q(stripe_subscription_id__isnull=True) | models.Q(stripe_subscription_id=""),
-    )
-
     updated = 0
     crons_disabled = 0
     hibernated = 0
-    for tenant in query:
-        # 1. Disable all cron jobs (before hibernating — gateway must be reachable)
-        if tenant.container_fqdn:
-            try:
-                cron_result = suspend_tenant_crons(tenant)
-                crons_disabled += cron_result.get("disabled", 0)
-            except Exception:
-                logger.exception("expire_trials: failed to suspend crons for tenant %s", tenant.id)
+    already_hibernated = 0
 
-        # 2. Mark as suspended
-        tenant.is_trial = False
-        tenant.status = Tenant.Status.SUSPENDED
-        tenant.save(update_fields=["is_trial", "status", "updated_at"])
+    for tenant in _unentitled_active_tenants():
+        if tenant.hibernated_at is not None:
+            already_hibernated += 1
+        result = _suspend_unentitled_tenant(tenant)
         updated += 1
+        crons_disabled += result["crons_disabled"]
+        if result["hibernated"]:
+            hibernated += 1
 
-        # 3. Hibernate container (deactivate revision to stop Azure costs)
-        if tenant.container_id:
-            try:
-                hibernate_container_app(tenant.container_id)
-                hibernated += 1
-            except Exception:
-                logger.exception(
-                    "expire_trials: failed to hibernate container %s for tenant %s",
-                    tenant.container_id,
-                    tenant.id,
-                )
+    logger.info(
+        "expire_trials: suspended %d tenants (%d already hibernated, %d crons disabled, %d new hibernations)",
+        updated,
+        already_hibernated,
+        crons_disabled,
+        hibernated,
+    )
 
     return JsonResponse(
         {
             "updated": updated,
+            "already_hibernated": already_hibernated,
             "crons_disabled": crons_disabled,
             "hibernated": hibernated,
         }
@@ -669,6 +725,59 @@ def bump_all_pending_configs(request):
 
     logger.info("bump_all_pending_configs: marked %d tenant(s) for config update", count)
     return JsonResponse({"queued": count})
+
+
+@csrf_exempt
+def backfill_welcomes(request):
+    """Schedule Fuel/Gravity welcome crons for active tenants who never got one.
+
+    Called by CI after deploy to cover the SOL gap: tenants who enabled a
+    feature *before* the welcome cron mechanism shipped, plus tenants whose
+    welcome failed transiently on a prior deploy. The underlying schedulers
+    (``_schedule_fuel_welcome`` / ``_schedule_finance_welcome``) are
+    idempotent — they check the container's cron list for a pending
+    ``_<feature>:welcome`` and skip when one exists, so re-running is safe.
+
+    Auth: X-Deploy-Secret header must match DEPLOY_SECRET setting.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    if not deploy_secret:
+        logger.error("DEPLOY_SECRET not configured — backfill_welcomes rejected")
+        return JsonResponse({"error": "Not configured"}, status=503)
+
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not provided or provided != deploy_secret:
+        logger.warning("Unauthorized backfill_welcomes attempt")
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    tenants = list(Tenant.objects.select_related("user").filter(status=Tenant.Status.ACTIVE).exclude(container_id=""))
+    counts = {"fuel": 0, "finance": 0, "errors": 0}
+
+    for tenant in tenants:
+        if tenant.fuel_enabled:
+            try:
+                from apps.fuel.views import _schedule_fuel_welcome
+
+                _schedule_fuel_welcome(tenant)
+                counts["fuel"] += 1
+            except Exception:
+                counts["errors"] += 1
+                logger.warning("backfill_welcomes: fuel failed for %s", str(tenant.id)[:8], exc_info=True)
+        if tenant.finance_enabled:
+            try:
+                from apps.finance.views import _schedule_finance_welcome
+
+                _schedule_finance_welcome(tenant)
+                counts["finance"] += 1
+            except Exception:
+                counts["errors"] += 1
+                logger.warning("backfill_welcomes: finance failed for %s", str(tenant.id)[:8], exc_info=True)
+
+    logger.info("backfill_welcomes: %s", counts)
+    return JsonResponse({"tenants_walked": len(tenants), **counts})
 
 
 @csrf_exempt
@@ -1339,3 +1448,132 @@ def admin_health_status(request):
             "results": results,
         }
     )
+
+
+@csrf_exempt
+@require_POST
+def rollout_byo_image_bump(request):
+    """One-shot: bump every active tenant to the current OpenClaw image.
+
+    URL: /api/cron/rollout-byo-image-bump/
+    Auth: X-Deploy-Secret header.
+
+    Wraps the ``bump_all_tenant_images`` management command. Intended to
+    be called manually (or by a workflow_dispatch CI run) after PR #434
+    ships, then never again — the routine ``apply_pending_configs`` cron
+    handles future image rollouts via the per-message bump path.
+
+    POST body (optional):
+      ``{"include_hibernated": true}`` to also bump hibernated tenants.
+
+    Returns JSON: ``{"succeeded": N, "failed": N, "skipped_idempotent": N}``.
+    """
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    if not deploy_secret:
+        return JsonResponse({"error": "DEPLOY_SECRET not configured"}, status=503)
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not provided or provided != deploy_secret:
+        logger.warning("Unauthorized rollout_byo_image_bump attempt")
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    body = {}
+    if request.body:
+        try:
+            body = json.loads(request.body)
+        except Exception:
+            body = {}
+    include_hibernated = bool(body.get("include_hibernated", False))
+
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    out = StringIO()
+    err = StringIO()
+    args = []
+    if include_hibernated:
+        args.append("--include-hibernated")
+
+    try:
+        call_command("bump_all_tenant_images", *args, stdout=out, stderr=err)
+        return JsonResponse(
+            {
+                "ok": True,
+                "include_hibernated": include_hibernated,
+                "stdout_tail": out.getvalue()[-2000:],
+            }
+        )
+    except Exception as exc:
+        logger.exception("rollout_byo_image_bump failed")
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": str(exc),
+                "stdout_tail": out.getvalue()[-2000:],
+                "stderr_tail": err.getvalue()[-2000:],
+            },
+            status=500,
+        )
+
+
+@csrf_exempt
+@require_POST
+def rollout_byo_persona_refresh(request):
+    """One-shot: re-render workspace/AGENTS.md to every active tenant.
+
+    URL: /api/cron/rollout-byo-persona-refresh/
+    Auth: X-Deploy-Secret header.
+
+    Wraps the ``refresh_persona_agents_md`` management command. Same
+    one-shot semantics as ``rollout_byo_image_bump`` — manual op, not a
+    deploy-time hook.
+
+    POST body (optional):
+      ``{"include_hibernated": true}``.
+    """
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    if not deploy_secret:
+        return JsonResponse({"error": "DEPLOY_SECRET not configured"}, status=503)
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not provided or provided != deploy_secret:
+        logger.warning("Unauthorized rollout_byo_persona_refresh attempt")
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    body = {}
+    if request.body:
+        try:
+            body = json.loads(request.body)
+        except Exception:
+            body = {}
+    include_hibernated = bool(body.get("include_hibernated", False))
+
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    out = StringIO()
+    err = StringIO()
+    args = []
+    if include_hibernated:
+        args.append("--include-hibernated")
+
+    try:
+        call_command("refresh_persona_agents_md", *args, stdout=out, stderr=err)
+        return JsonResponse(
+            {
+                "ok": True,
+                "include_hibernated": include_hibernated,
+                "stdout_tail": out.getvalue()[-2000:],
+            }
+        )
+    except Exception as exc:
+        logger.exception("rollout_byo_persona_refresh failed")
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": str(exc),
+                "stdout_tail": out.getvalue()[-2000:],
+                "stderr_tail": err.getvalue()[-2000:],
+            },
+            status=500,
+        )

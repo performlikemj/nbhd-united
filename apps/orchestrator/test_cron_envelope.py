@@ -1,0 +1,1046 @@
+"""Tests for the workspace envelope and the slimmed-down cron prompt builder.
+
+The envelope used to be baked into every cron message via
+``_build_context_envelope`` in ``config_generator``. Phase 2.5 moved it into
+``apps/orchestrator/workspace_envelope.py``, which renders the data into
+``workspace/USER.md`` — auto-loaded by OpenClaw on every agent turn — and
+delegates write-back to the file share with a leading-edge debounce.
+
+Coverage here:
+
+* State fetchers: ``envelope_goals``, ``envelope_open_tasks``,
+  ``envelope_recent_lessons`` (former private helpers, promoted to public).
+* ``render_profile_section`` (new — Profile block from ``tenant.user`` fields).
+* ``render_managed_region`` (replaces ``_build_context_envelope``).
+* ``merge_into_user_md`` — three-case algorithm + idempotency + round-trip.
+* ``push_user_md`` — debounce, force, mocked file-share calls.
+* ``_prepare_cron_prompt`` / ``_build_cron_message`` — envelope is no longer
+  in the cron message body; verify date line + preamble + prompt only.
+"""
+
+from __future__ import annotations
+
+from unittest import mock
+
+from django.core.cache import cache
+from django.test import TestCase, override_settings
+
+from apps.finance.envelope import render_finance as envelope_finance_state
+from apps.fuel.envelope import render_fuel as envelope_fuel_state
+from apps.journal.envelope import render_goals as envelope_goals
+from apps.journal.envelope import render_open_tasks as envelope_open_tasks
+from apps.journal.envelope import render_recent_journal as envelope_recent_journal
+from apps.journal.models import Document
+from apps.journal.services import STARTER_DOCUMENT_TEMPLATES
+from apps.lessons.envelope import render_recent_lessons as envelope_recent_lessons
+from apps.lessons.models import Lesson
+from apps.orchestrator.config_generator import (
+    _CRON_CONTEXT_PREAMBLE,
+    _build_cron_message,
+    _prepare_cron_prompt,
+)
+from apps.orchestrator.workspace_envelope import (
+    BEGIN_MARKER,
+    END_MARKER,
+    merge_into_user_md,
+    push_user_md,
+    render_managed_region,
+)
+from apps.tenants.envelope import render_profile as render_profile_section
+from apps.tenants.services import create_tenant
+
+
+def _clear_seed_docs(tenant) -> None:
+    """Strip the placeholder Documents that ``create_tenant`` seeds."""
+    Document.objects.filter(tenant=tenant).delete()
+
+
+def _starter_md(slug: str) -> str:
+    for tmpl in STARTER_DOCUMENT_TEMPLATES:
+        if tmpl["slug"] == slug:
+            return tmpl["markdown"]
+    raise KeyError(slug)
+
+
+# ─── State fetchers ────────────────────────────────────────────────────────
+
+
+class EnvelopeGoalsTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="EnvGoals", telegram_chat_id=910001)
+        _clear_seed_docs(self.tenant)
+
+    def test_returns_empty_when_no_goals_doc(self):
+        self.assertEqual(envelope_goals(self.tenant), "")
+
+    def test_returns_empty_when_goals_doc_blank(self):
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="goals",
+            title="Goals",
+            markdown="   \n  \n",
+        )
+        self.assertEqual(envelope_goals(self.tenant), "")
+
+    def test_returns_full_markdown_under_cap(self):
+        md = "## Active\n- Ship the envelope\n- Run the canary"
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="goals",
+            title="Goals",
+            markdown=md,
+        )
+        self.assertEqual(envelope_goals(self.tenant), md)
+
+    def test_truncates_when_over_cap(self):
+        md = "x" * 2000
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="goals",
+            title="Goals",
+            markdown=md,
+        )
+        out = envelope_goals(self.tenant, max_chars=1500)
+        self.assertTrue(out.startswith("x" * 1500))
+        self.assertIn("truncated", out)
+        self.assertLess(len(out), 2000)
+
+    def test_only_picks_goals_doc_for_this_tenant(self):
+        other = create_tenant(display_name="Other", telegram_chat_id=910002)
+        _clear_seed_docs(other)
+        Document.objects.create(
+            tenant=other,
+            kind=Document.Kind.GOAL,
+            slug="goals",
+            title="Other goals",
+            markdown="other tenant content",
+        )
+        self.assertEqual(envelope_goals(self.tenant), "")
+
+    def test_skips_unmodified_starter_seed(self):
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="goals",
+            title="Goals",
+            markdown=_starter_md("goals"),
+        )
+        self.assertEqual(envelope_goals(self.tenant), "")
+
+    def test_treats_user_addition_as_real_content(self):
+        custom = _starter_md("goals") + "\n- Train for half-marathon\n"
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="goals",
+            title="Goals",
+            markdown=custom,
+        )
+        out = envelope_goals(self.tenant)
+        self.assertIn("Train for half-marathon", out)
+
+
+class EnvelopeOpenTasksTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="EnvTasks", telegram_chat_id=910010)
+        _clear_seed_docs(self.tenant)
+
+    def test_returns_empty_when_no_tasks_doc(self):
+        self.assertEqual(envelope_open_tasks(self.tenant), "")
+
+    def test_returns_only_open_items(self):
+        md = (
+            "## Tasks\n"
+            "- [ ] First open task\n"
+            "- [x] Already done\n"
+            "- [ ] Second open task\n"
+            "Some prose that isn't a task line\n"
+            "  - [ ] Indented open task\n"
+        )
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.TASKS,
+            slug="tasks",
+            title="Tasks",
+            markdown=md,
+        )
+        out = envelope_open_tasks(self.tenant)
+        self.assertIn("- [ ] First open task", out)
+        self.assertIn("- [ ] Second open task", out)
+        self.assertIn("- [ ] Indented open task", out)
+        self.assertNotIn("Already done", out)
+        self.assertNotIn("Some prose", out)
+
+    def test_returns_empty_when_no_open_items(self):
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.TASKS,
+            slug="tasks",
+            title="Tasks",
+            markdown="- [x] Done one\n- [x] Done two\n",
+        )
+        self.assertEqual(envelope_open_tasks(self.tenant), "")
+
+    def test_caps_at_max_items_with_overflow_hint(self):
+        lines = "\n".join(f"- [ ] Task {i}" for i in range(40))
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.TASKS,
+            slug="tasks",
+            title="Tasks",
+            markdown=lines,
+        )
+        out = envelope_open_tasks(self.tenant, max_items=10)
+        self.assertEqual(out.count("- [ ] Task"), 10)
+        self.assertIn("+30 more open tasks", out)
+
+    def test_skips_starter_placeholder_tasks(self):
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.TASKS,
+            slug="tasks",
+            title="Tasks",
+            markdown=_starter_md("tasks"),
+        )
+        self.assertEqual(envelope_open_tasks(self.tenant), "")
+
+    def test_keeps_real_tasks_alongside_starter(self):
+        md = _starter_md("tasks") + "\n- [ ] Real task the user added\n"
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.TASKS,
+            slug="tasks",
+            title="Tasks",
+            markdown=md,
+        )
+        out = envelope_open_tasks(self.tenant)
+        self.assertIn("Real task the user added", out)
+
+
+class EnvelopeRecentLessonsTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="EnvLessons", telegram_chat_id=910020)
+
+    def test_returns_empty_when_none(self):
+        self.assertEqual(envelope_recent_lessons(self.tenant), "")
+
+    def test_returns_approved_only(self):
+        Lesson.objects.create(
+            tenant=self.tenant,
+            text="Pending lesson — should be skipped",
+            source_type="conversation",
+            status="pending",
+        )
+        Lesson.objects.create(
+            tenant=self.tenant,
+            text="Dismissed lesson — should be skipped",
+            source_type="conversation",
+            status="dismissed",
+        )
+        Lesson.objects.create(
+            tenant=self.tenant,
+            text="Approved insight worth surfacing",
+            source_type="conversation",
+            status="approved",
+        )
+        out = envelope_recent_lessons(self.tenant)
+        self.assertIn("Approved insight worth surfacing", out)
+        self.assertNotIn("Pending", out)
+        self.assertNotIn("Dismissed", out)
+
+    def test_limits_to_most_recent(self):
+        for i in range(5):
+            Lesson.objects.create(
+                tenant=self.tenant,
+                text=f"Lesson {i}",
+                source_type="conversation",
+                status="approved",
+            )
+        out = envelope_recent_lessons(self.tenant, limit=3)
+        self.assertEqual(out.count("- Lesson"), 3)
+        self.assertIn("Lesson 4", out)
+        self.assertIn("Lesson 3", out)
+        self.assertIn("Lesson 2", out)
+        self.assertNotIn("Lesson 0", out)
+
+    def test_truncates_long_text_to_one_line(self):
+        Lesson.objects.create(
+            tenant=self.tenant,
+            text="line one of a multi-line lesson\nline two should be dropped",
+            source_type="conversation",
+            status="approved",
+        )
+        out = envelope_recent_lessons(self.tenant)
+        self.assertIn("line one of a multi-line lesson", out)
+        self.assertNotIn("line two", out)
+
+
+# ─── Pillar fetchers (Phase 2.6) ───────────────────────────────────────────
+
+
+class EnvelopeFuelStateTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="EnvFuel", telegram_chat_id=910500)
+
+    def test_returns_empty_when_no_fuel_data(self):
+        self.assertEqual(envelope_fuel_state(self.tenant), "")
+
+    def test_includes_planned_workout_today(self):
+        from datetime import date as _date
+
+        from apps.fuel.models import Workout, WorkoutStatus
+
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=_date.today(),
+            status=WorkoutStatus.PLANNED,
+            category="strength",
+            activity="Push — Chest & Shoulders",
+            duration_minutes=45,
+        )
+        out = envelope_fuel_state(self.tenant)
+        self.assertIn("Today", out)
+        self.assertIn("Push — Chest & Shoulders", out)
+        self.assertIn("strength", out)
+        self.assertIn("45 min", out)
+
+    def test_includes_recent_done_workouts(self):
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        from apps.fuel.models import Workout, WorkoutStatus
+
+        for i in range(4):
+            Workout.objects.create(
+                tenant=self.tenant,
+                date=_date.today() - _td(days=i + 1),
+                status=WorkoutStatus.DONE,
+                category="strength",
+                activity=f"Session {i}",
+                rpe=7,
+                duration_minutes=30,
+            )
+        out = envelope_fuel_state(self.tenant)
+        self.assertIn("Recent sessions", out)
+        # Limited to 3 most recent
+        self.assertEqual(out.count("Session "), 3)
+        self.assertIn("RPE 7", out)
+
+    def test_includes_body_weight_with_delta(self):
+        from datetime import date as _date
+        from datetime import timedelta as _td
+        from decimal import Decimal
+
+        from apps.fuel.models import BodyWeightLog
+
+        BodyWeightLog.objects.create(
+            tenant=self.tenant,
+            date=_date.today() - _td(days=10),
+            weight_kg=Decimal("80.50"),
+        )
+        BodyWeightLog.objects.create(
+            tenant=self.tenant,
+            date=_date.today(),
+            weight_kg=Decimal("79.30"),
+        )
+        out = envelope_fuel_state(self.tenant)
+        self.assertIn("79.30 kg", out)
+        self.assertIn("-1.2 kg", out)
+
+    def test_includes_last_sleep(self):
+        from datetime import date as _date
+        from decimal import Decimal
+
+        from apps.fuel.models import SleepLog
+
+        SleepLog.objects.create(
+            tenant=self.tenant,
+            date=_date.today(),
+            duration_hours=Decimal("7.50"),
+            quality=4,
+        )
+        out = envelope_fuel_state(self.tenant)
+        self.assertIn("7.50h", out)
+        self.assertIn("quality 4/5", out)
+
+    def test_truncates_when_over_cap(self):
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        from apps.fuel.models import Workout, WorkoutStatus
+
+        # Three displayed sessions × ~80 chars each + recent-sessions header
+        # easily exceeds max_chars=100, forcing truncation. Activity stays
+        # under the 128-char model limit.
+        for i in range(5):
+            Workout.objects.create(
+                tenant=self.tenant,
+                date=_date.today() - _td(days=i + 1),
+                status=WorkoutStatus.DONE,
+                category="strength",
+                activity=f"Long activity description with many details {i:03d}",
+                duration_minutes=30,
+                rpe=8,
+            )
+        out = envelope_fuel_state(self.tenant, max_chars=100)
+        self.assertIn("truncated", out)
+        # Truncation suffix adds ~50 chars; final string should stay within
+        # max_chars + suffix overhead.
+        self.assertLessEqual(len(out), 200)
+
+
+class EnvelopeFinanceStateTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="EnvFinance", telegram_chat_id=910600)
+
+    def test_returns_empty_when_no_accounts(self):
+        self.assertEqual(envelope_finance_state(self.tenant), "")
+
+    def test_summary_with_active_debt(self):
+        from decimal import Decimal
+
+        from apps.finance.models import FinanceAccount
+
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Big CC",
+            current_balance=Decimal("5000.00"),
+            interest_rate=Decimal("18.00"),
+            minimum_payment=Decimal("150.00"),
+            is_active=True,
+        )
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Student Loan",
+            current_balance=Decimal("12000.00"),
+            interest_rate=Decimal("6.50"),
+            minimum_payment=Decimal("240.90"),
+            is_active=True,
+        )
+        out = envelope_finance_state(self.tenant)
+        self.assertIn("Active accounts", out)
+        self.assertIn("2", out)  # 2 accounts, 2 debts
+        self.assertIn("$17,000.00", out)  # total debt
+
+    def test_top_priority_snowball_default(self):
+        from decimal import Decimal
+
+        from apps.finance.models import FinanceAccount
+
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Small CC",
+            current_balance=Decimal("500.00"),
+            interest_rate=Decimal("18.00"),
+            is_active=True,
+        )
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Big Loan",
+            current_balance=Decimal("12000.00"),
+            interest_rate=Decimal("3.50"),
+            is_active=True,
+        )
+        out = envelope_finance_state(self.tenant)
+        self.assertIn("snowball", out)
+        # Snowball picks lowest balance debt
+        self.assertIn("Small CC", out)
+
+    def test_top_priority_avalanche_with_active_plan(self):
+        from datetime import date as _date
+        from decimal import Decimal
+
+        from apps.finance.models import FinanceAccount, PayoffPlan
+
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="High Rate CC",
+            current_balance=Decimal("2000.00"),
+            interest_rate=Decimal("24.00"),
+            is_active=True,
+        )
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Low Rate Loan",
+            current_balance=Decimal("12000.00"),
+            interest_rate=Decimal("3.50"),
+            is_active=True,
+        )
+        PayoffPlan.objects.create(
+            tenant=self.tenant,
+            strategy=PayoffPlan.Strategy.AVALANCHE,
+            monthly_budget=Decimal("500.00"),
+            total_debt=Decimal("14000.00"),
+            total_interest=Decimal("3000.00"),
+            payoff_months=36,
+            payoff_date=_date.today(),
+            is_active=True,
+        )
+        out = envelope_finance_state(self.tenant)
+        self.assertIn("avalanche", out)
+        self.assertIn("High Rate CC", out)
+        self.assertIn("24.00% APR", out)
+
+    def test_recent_transactions(self):
+        from datetime import date as _date
+        from datetime import timedelta as _td
+        from decimal import Decimal
+
+        from apps.finance.models import FinanceAccount, FinanceTransaction
+
+        acct = FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="My Card",
+            current_balance=Decimal("1000.00"),
+            is_active=True,
+        )
+        FinanceTransaction.objects.create(
+            tenant=self.tenant,
+            account=acct,
+            transaction_type="payment",
+            amount=Decimal("250.00"),
+            date=_date.today() - _td(days=2),
+        )
+        out = envelope_finance_state(self.tenant)
+        self.assertIn("Recent transactions", out)
+        self.assertIn("payment $250.00", out)
+        self.assertIn("My Card", out)
+
+    def test_skips_inactive_accounts(self):
+        from decimal import Decimal
+
+        from apps.finance.models import FinanceAccount
+
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Archived Card",
+            current_balance=Decimal("100.00"),
+            is_active=False,
+        )
+        # Only inactive → returns empty
+        self.assertEqual(envelope_finance_state(self.tenant), "")
+
+
+class EnvelopeRecentJournalTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="EnvJournal", telegram_chat_id=910700)
+        _clear_seed_docs(self.tenant)
+
+    def test_returns_empty_when_no_daily_notes(self):
+        self.assertEqual(envelope_recent_journal(self.tenant), "")
+
+    def test_excludes_today(self):
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.DAILY,
+            slug=_date.today().isoformat(),
+            title="Today",
+            markdown="# Today's note\nSome content here.",
+        )
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.DAILY,
+            slug=(_date.today() - _td(days=1)).isoformat(),
+            title="Yesterday",
+            markdown="# Yesterday\nWhat happened yesterday.",
+        )
+        out = envelope_recent_journal(self.tenant)
+        self.assertIn("Yesterday", out)
+        self.assertNotIn("Today's note", out)
+
+    def test_limits_to_last_three(self):
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        for i in range(1, 6):
+            Document.objects.create(
+                tenant=self.tenant,
+                kind=Document.Kind.DAILY,
+                slug=(_date.today() - _td(days=i)).isoformat(),
+                title=f"Day -{i}",
+                markdown=f"# Day -{i}\nContent for day {i}.",
+            )
+        out = envelope_recent_journal(self.tenant, limit=3)
+        # Three most recently updated
+        self.assertEqual(out.count("**Day -"), 3)
+
+    def test_truncates_long_preview(self):
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.DAILY,
+            slug=(_date.today() - _td(days=1)).isoformat(),
+            title="Yesterday",
+            markdown="# Yesterday\n" + ("x " * 500),
+        )
+        out = envelope_recent_journal(self.tenant, preview_chars=100)
+        self.assertLessEqual(len(out), 200)
+        self.assertIn("…", out)
+
+
+# ─── Profile section ───────────────────────────────────────────────────────
+
+
+class RenderProfileSectionTest(TestCase):
+    """The Profile fetcher returns body only — the ``## Profile`` heading is
+    added by ``render_managed_region`` from the registered section's
+    ``heading`` attribute, not by the fetcher itself.
+    """
+
+    def test_minimal_tenant_only_shows_preferred_channel(self):
+        # Default tenant: display_name="Friend", timezone="UTC", language="en",
+        # no city. preferred_channel always has a default ("telegram") and
+        # is meaningful for routing/formatting decisions, so it always shows.
+        tenant = create_tenant(display_name="Friend", telegram_chat_id=910100)
+        out = render_profile_section(tenant)
+        self.assertIn("Preferred channel: telegram", out)
+        # Defaults that should be skipped
+        self.assertNotIn("Display name: Friend", out)
+        self.assertNotIn("Timezone: UTC", out)
+        self.assertNotIn("Language: en", out)
+        self.assertNotIn("Location:", out)
+
+    def test_includes_set_fields_only(self):
+        tenant = create_tenant(display_name="Mike", telegram_chat_id=910101)
+        tenant.user.timezone = "Asia/Tokyo"
+        tenant.user.preferred_channel = "line"
+        tenant.user.location_city = "Osaka"
+        tenant.user.save()
+
+        out = render_profile_section(tenant)
+        self.assertIn("Display name: Mike", out)
+        self.assertIn("Timezone: Asia/Tokyo", out)
+        self.assertIn("Preferred channel: line", out)
+        self.assertIn("Location: Osaka", out)
+        # Default language not included
+        self.assertNotIn("Language:", out)
+
+    def test_full_profile_section_appears_in_managed_region(self):
+        """End-to-end: the ## Profile heading is added by render_managed_region."""
+        tenant = create_tenant(display_name="Mike", telegram_chat_id=910102)
+        tenant.user.timezone = "Asia/Tokyo"
+        tenant.user.preferred_channel = "line"
+        tenant.user.save()
+
+        out = render_managed_region(tenant)
+        self.assertIn("## Profile", out)
+        self.assertIn("Display name: Mike", out)
+
+
+# ─── Managed region ────────────────────────────────────────────────────────
+
+
+class RenderManagedRegionTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="EnvBuild", telegram_chat_id=910030)
+        _clear_seed_docs(self.tenant)
+
+    def test_always_includes_markers_even_when_state_empty(self):
+        out = render_managed_region(self.tenant)
+        self.assertIn(BEGIN_MARKER, out)
+        self.assertIn(END_MARKER, out)
+        self.assertIn("Last refreshed:", out)
+        # Profile always renders preferred_channel default, so the managed
+        # region is never *truly* empty for an active tenant. The agent's
+        # signal that there's no domain state is the absence of section
+        # headings (## Active goals, ## Open tasks, etc.) below Profile.
+        self.assertNotIn("## Active goals", out)
+        self.assertNotIn("## Open tasks", out)
+
+    def test_includes_synthesis_hint(self):
+        out = render_managed_region(self.tenant)
+        self.assertIn("coherent snapshot", out)
+
+    def test_includes_all_three_when_all_present(self):
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="goals",
+            title="Goals",
+            markdown="- Ship envelope to canary",
+        )
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.TASKS,
+            slug="tasks",
+            title="Tasks",
+            markdown="- [ ] Run unit tests\n- [x] Read hook site",
+        )
+        Lesson.objects.create(
+            tenant=self.tenant,
+            text="Pre-fetched state beats agent tool reliance",
+            source_type="conversation",
+            status="approved",
+        )
+        out = render_managed_region(self.tenant)
+        self.assertIn(BEGIN_MARKER, out)
+        self.assertIn("# Pre-loaded user state", out)
+        self.assertIn("## Active goals", out)
+        self.assertIn("Ship envelope to canary", out)
+        self.assertIn("## Open tasks", out)
+        self.assertIn("- [ ] Run unit tests", out)
+        self.assertNotIn("Read hook site", out)  # closed task excluded
+        self.assertIn("## Recent lessons", out)
+        self.assertIn("Pre-fetched state beats agent tool reliance", out)
+        self.assertIn(END_MARKER, out)
+
+    def test_skips_missing_sections_but_keeps_present_ones(self):
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.TASKS,
+            slug="tasks",
+            title="Tasks",
+            markdown="- [ ] Solo task",
+        )
+        out = render_managed_region(self.tenant)
+        self.assertIn("## Open tasks", out)
+        self.assertIn("Solo task", out)
+        self.assertNotIn("## Active goals", out)
+        self.assertNotIn("## Recent lessons", out)
+
+    def test_fuel_section_appears_when_enabled_and_has_data(self):
+        from datetime import date as _date
+
+        from apps.fuel.models import Workout, WorkoutStatus
+
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=_date.today(),
+            status=WorkoutStatus.PLANNED,
+            category="strength",
+            activity="Push day",
+            duration_minutes=45,
+        )
+        out = render_managed_region(self.tenant)
+        self.assertIn("## Fuel — fitness state", out)
+        self.assertIn("Push day", out)
+
+    def test_fuel_section_omitted_when_feature_disabled(self):
+        from datetime import date as _date
+
+        from apps.fuel.models import Workout, WorkoutStatus
+
+        # fuel_enabled defaults to False; data exists but flag is off
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=_date.today(),
+            status=WorkoutStatus.PLANNED,
+            category="strength",
+            activity="Push day",
+            duration_minutes=45,
+        )
+        out = render_managed_region(self.tenant)
+        self.assertNotIn("## Fuel — fitness state", out)
+        self.assertNotIn("Push day", out)
+
+    def test_finance_section_appears_when_enabled_and_has_data(self):
+        from decimal import Decimal
+
+        from apps.finance.models import FinanceAccount
+
+        self.tenant.finance_enabled = True
+        self.tenant.save(update_fields=["finance_enabled"])
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Main Card",
+            current_balance=Decimal("3000.00"),
+            is_active=True,
+        )
+        out = render_managed_region(self.tenant)
+        self.assertIn("## Gravity — finance state", out)
+        self.assertIn("Main Card", out)
+
+    def test_finance_section_omitted_when_feature_disabled(self):
+        from decimal import Decimal
+
+        from apps.finance.models import FinanceAccount
+
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Main Card",
+            current_balance=Decimal("3000.00"),
+            is_active=True,
+        )
+        out = render_managed_region(self.tenant)
+        self.assertNotIn("## Gravity — finance state", out)
+
+    def test_journal_section_appears_when_recent_daily_notes_exist(self):
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.DAILY,
+            slug=(_date.today() - _td(days=1)).isoformat(),
+            title="Yesterday",
+            markdown="# Yesterday\nMet with team about Q3 plans.",
+        )
+        out = render_managed_region(self.tenant)
+        self.assertIn("## Recent journal", out)
+        self.assertIn("Yesterday", out)
+
+
+# ─── Merge algorithm ───────────────────────────────────────────────────────
+
+
+class MergeIntoUserMdTest(TestCase):
+    def setUp(self):
+        # A simple managed block is enough for merge tests — we don't need
+        # real envelope rendering here.
+        self.managed = (
+            f"{BEGIN_MARKER}\n"
+            "\n"
+            "# Pre-loaded user state\n"
+            "\n"
+            "_Last refreshed: 2026-05-07T00:00:00+00:00_\n"
+            "\n"
+            "_(No active goals, open tasks, or recent lessons yet.)_\n"
+            "\n"
+            f"{END_MARKER}\n"
+        )
+
+    def test_case1_empty_returns_managed_alone(self):
+        self.assertEqual(merge_into_user_md(None, self.managed), self.managed)
+        self.assertEqual(merge_into_user_md("", self.managed), self.managed)
+        self.assertEqual(merge_into_user_md("   \n\n  ", self.managed), self.managed)
+
+    def test_case1_openclaw_boilerplate_treated_as_empty(self):
+        from apps.orchestrator.workspace_envelope import _OPENCLAW_DEFAULT_USER_MD
+
+        merged = merge_into_user_md(_OPENCLAW_DEFAULT_USER_MD, self.managed)
+        self.assertEqual(merged, self.managed)
+
+    def test_case2_replaces_existing_managed_region(self):
+        existing = self.managed + "\n## Agent's notes\n\n- Mike prefers concise replies.\n"
+        new_managed = self.managed.replace("No active goals", "Has stuff now")
+        merged = merge_into_user_md(existing, new_managed)
+        # New managed content present
+        self.assertIn("Has stuff now", merged)
+        # Stale managed content gone
+        self.assertNotIn("No active goals", merged)
+        # Agent's notes preserved
+        self.assertIn("Agent's notes", merged)
+        self.assertIn("Mike prefers concise replies", merged)
+
+    def test_case3_first_migration_prepends_with_markers(self):
+        agent_only = "## Agent's notes\n\n- Mike likes to plan workouts on weekends.\n"
+        merged = merge_into_user_md(agent_only, self.managed)
+        # Managed block at the top
+        self.assertTrue(merged.startswith(BEGIN_MARKER))
+        # Managed END marker present
+        self.assertIn(END_MARKER, merged)
+        # Agent's content preserved (verbatim) below the managed block
+        self.assertIn("Agent's notes", merged)
+        self.assertIn("Mike likes to plan workouts", merged)
+        # Sentinel order: managed END comes before the agent content
+        self.assertLess(merged.index(END_MARKER), merged.index("Agent's notes"))
+
+    def test_idempotent(self):
+        # Applying the same merge twice should produce the same output.
+        agent_only = "## Agent's notes\n\nFoo.\n"
+        once = merge_into_user_md(agent_only, self.managed)
+        twice = merge_into_user_md(once, self.managed)
+        self.assertEqual(once, twice)
+
+    def test_round_trip_after_managed_refresh(self):
+        # Initial: agent has content, no markers
+        existing = "## Agent's notes\n\nfirst observation\n"
+
+        # First migration: prepends managed
+        v1 = merge_into_user_md(existing, self.managed)
+        # Second refresh: replaces only the managed region
+        new_managed = self.managed.replace(
+            "_Last refreshed: 2026-05-07T00:00:00+00:00_",
+            "_Last refreshed: 2026-05-07T01:00:00+00:00_",
+        )
+        v2 = merge_into_user_md(v1, new_managed)
+
+        # Agent content survives the second refresh
+        self.assertIn("first observation", v2)
+        # Managed region updated
+        self.assertIn("01:00:00", v2)
+        self.assertNotIn("00:00:00", v2)
+
+
+# ─── push_user_md ──────────────────────────────────────────────────────────
+
+
+class PushUserMdTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="EnvPush", telegram_chat_id=910200)
+        cache.clear()
+
+    def tearDown(self):
+        cache.clear()
+
+    @mock.patch("apps.orchestrator.workspace_envelope.upload_workspace_file")
+    @mock.patch("apps.orchestrator.workspace_envelope.download_workspace_file")
+    def test_writes_managed_region_when_file_missing(self, mock_download, mock_upload):
+        mock_download.return_value = None
+        result = push_user_md(self.tenant, force=True)
+        self.assertTrue(result)
+        mock_upload.assert_called_once()
+        args, _kwargs = mock_upload.call_args
+        self.assertEqual(args[0], str(self.tenant.id))
+        self.assertEqual(args[1], "workspace/USER.md")
+        body = args[2]
+        self.assertIn(BEGIN_MARKER, body)
+        self.assertIn(END_MARKER, body)
+
+    @mock.patch("apps.orchestrator.workspace_envelope.upload_workspace_file")
+    @mock.patch("apps.orchestrator.workspace_envelope.download_workspace_file")
+    def test_debounces_within_window(self, mock_download, mock_upload):
+        mock_download.return_value = None
+        # First call writes
+        self.assertTrue(push_user_md(self.tenant, debounce_seconds=60))
+        # Second call within window is dropped
+        self.assertFalse(push_user_md(self.tenant, debounce_seconds=60))
+        self.assertEqual(mock_upload.call_count, 1)
+
+    @mock.patch("apps.orchestrator.workspace_envelope.upload_workspace_file")
+    @mock.patch("apps.orchestrator.workspace_envelope.download_workspace_file")
+    def test_force_bypasses_debounce(self, mock_download, mock_upload):
+        mock_download.return_value = None
+        push_user_md(self.tenant, debounce_seconds=60)
+        push_user_md(self.tenant, debounce_seconds=60, force=True)
+        self.assertEqual(mock_upload.call_count, 2)
+
+    @mock.patch("apps.orchestrator.workspace_envelope.upload_workspace_file")
+    @mock.patch("apps.orchestrator.workspace_envelope.download_workspace_file")
+    def test_preserves_agent_content_on_existing_user_md(self, mock_download, mock_upload):
+        agent_authored = "## Agent's notes\n\nfondly remembers fishing trip\n"
+        mock_download.return_value = agent_authored
+
+        push_user_md(self.tenant, force=True)
+        args, _ = mock_upload.call_args
+        body = args[2]
+        self.assertIn("fondly remembers fishing trip", body)
+        self.assertIn(BEGIN_MARKER, body)
+
+
+# ─── Cron prompt builder — envelope is GONE ────────────────────────────────
+
+
+class PrepareCronPromptTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="EnvPrepare", telegram_chat_id=910040)
+        _clear_seed_docs(self.tenant)
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="goals",
+            title="Goals",
+            markdown="- Ship the canary",
+        )
+
+    def test_does_not_inject_envelope_into_message(self):
+        # Phase 2.5: envelope content lives in workspace/USER.md, not in the
+        # cron message body.
+        out = _prepare_cron_prompt("BODY", self.tenant)
+        self.assertIn("Current date and time:", out)
+        self.assertIn(_CRON_CONTEXT_PREAMBLE, out)
+        self.assertNotIn("Pre-loaded user state", out)
+        self.assertNotIn("Ship the canary", out)
+        self.assertTrue(out.endswith("BODY"))
+
+    def test_message_still_starts_with_date_line_so_default_prefix_match_holds(self):
+        out = _prepare_cron_prompt("BODY", self.tenant)
+        self.assertTrue(out.startswith("Current date and time:"))
+
+    def test_structural_order_date_then_preamble_then_body(self):
+        out = _prepare_cron_prompt("THE_BODY", self.tenant)
+        idx_date = out.index("Current date and time:")
+        idx_preamble = out.index("MANDATORY")
+        idx_body = out.index("THE_BODY")
+        self.assertLess(idx_date, idx_preamble)
+        self.assertLess(idx_preamble, idx_body)
+
+
+class BuildCronMessageTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="EnvBuildMsg", telegram_chat_id=910050)
+        _clear_seed_docs(self.tenant)
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="goals",
+            title="Goals",
+            markdown="- Goal A",
+        )
+
+    def test_foreground_appends_phase2_block(self):
+        out = _build_cron_message("BODY", "TestJob", foreground=True, tenant=self.tenant)
+        self.assertIn("FINAL STEP — conditional sync to the main session", out)
+
+    def test_background_omits_phase2_block(self):
+        out = _build_cron_message("BODY", "TestJob", foreground=False, tenant=self.tenant)
+        self.assertNotIn("FINAL STEP — conditional sync to the main session", out)
+
+    def test_message_does_not_include_envelope(self):
+        out = _build_cron_message("BODY", "TestJob", foreground=True, tenant=self.tenant)
+        self.assertNotIn("Pre-loaded user state", out)
+        self.assertNotIn("Goal A", out)
+
+
+# ─── audit_user_md classifier ──────────────────────────────────────────────
+
+
+class AuditClassifierTest(TestCase):
+    """Quick coverage of the audit command's classification helper.
+
+    The helper lives in the management command module and is intentionally
+    pure — testing it directly is much cheaper than spinning up the full
+    command output.
+    """
+
+    def test_classifications(self):
+        from apps.orchestrator.management.commands.audit_user_md import _classify
+        from apps.orchestrator.workspace_envelope import _OPENCLAW_DEFAULT_USER_MD
+
+        self.assertEqual(_classify(None), "missing")
+        self.assertEqual(_classify(""), "empty")
+        self.assertEqual(_classify("   \n\n"), "empty")
+        self.assertEqual(_classify(_OPENCLAW_DEFAULT_USER_MD), "boilerplate")
+        self.assertEqual(_classify(f"{BEGIN_MARKER}\nstuff\n{END_MARKER}\n"), "managed")
+        self.assertEqual(_classify("## Agent notes\n- foo"), "agent")
+
+
+@override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)
+class PushUserMdInBackgroundTest(TestCase):
+    """When NBHD_DISABLE_BACKGROUND_THREADS is set, the helper runs synchronously."""
+
+    def setUp(self):
+        cache.clear()
+        self.tenant = create_tenant(display_name="EnvBg", telegram_chat_id=910300)
+
+    def tearDown(self):
+        cache.clear()
+
+    @mock.patch("apps.orchestrator.workspace_envelope.upload_workspace_file")
+    @mock.patch("apps.orchestrator.workspace_envelope.download_workspace_file")
+    def test_synchronous_when_disabled(self, mock_download, mock_upload):
+        from apps.orchestrator.workspace_envelope import push_user_md_in_background
+
+        mock_download.return_value = None
+        push_user_md_in_background(self.tenant)
+        mock_upload.assert_called_once()

@@ -6,6 +6,28 @@ on:
   pull_request:
     branches: ['**']
   workflow_dispatch:
+    # One-shot fleet rollout knobs. Default false on every dispatch — these
+    # ops are intended to run once after PR #434 ships and then never again.
+    # See `apps/orchestrator/management/commands/bump_all_tenant_images.py`
+    # and `apps/orchestrator/management/commands/refresh_persona_agents_md.py`
+    # for details on what each flag does.
+    inputs:
+      rollout_byo_image_bump:
+        description: 'One-shot: bump every active tenant to current OpenClaw image'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      rollout_byo_persona_refresh:
+        description: 'One-shot: re-render workspace/AGENTS.md to every active tenant'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 defaults:
   run:
@@ -110,6 +132,16 @@ jobs:
           DEBUG: "True"
           DATABASE_URL: postgres://test_user:test_password@localhost:5432/test_db
           ALLOWED_HOSTS: "*"
+          # Force on_commit callbacks to run synchronously in tests so
+          # daemon-thread USER.md pushes (envelope registry) and QStash
+          # publishes (journal post_save) don't outlive the test runner
+          # and hold DB connections open during teardown.
+          NBHD_DISABLE_BACKGROUND_THREADS: "True"
+          # Tests trigger model post_save → registry → push_user_md, which
+          # would otherwise call real Azure storage. Mock keeps tests fast
+          # (otherwise each save burns ~30s on DefaultAzureCredential
+          # timeouts).
+          AZURE_MOCK: "true"
         run: |
           python manage.py makemigrations --check --dry-run
           python manage.py migrate --noinput
@@ -303,6 +335,49 @@ jobs:
             -d "{\"base_url\": \"$DJANGO_URL\"}" \
             "$DJANGO_URL/api/cron/register-system-crons/" \
             || echo "Warning: register-system-crons failed (non-fatal)"
+
+      - name: Backfill Fuel/Gravity welcome crons
+        run: |
+          # Schedule welcome crons for active tenants who enabled the
+          # feature before the welcome mechanism shipped (or whose welcome
+          # failed transiently on a prior deploy). The endpoint calls
+          # _schedule_fuel_welcome / _schedule_finance_welcome which are
+          # idempotent — they skip when a _<feature>:welcome cron is
+          # already pending in the container. Re-running is safe.
+          DJANGO_URL="https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io"
+          curl -sf -X POST \
+            -H "X-Deploy-Secret: ${{ secrets.DEPLOY_SECRET }}" \
+            -H "Content-Type: application/json" \
+            "$DJANGO_URL/api/cron/backfill-welcomes/" \
+            || echo "Warning: backfill-welcomes failed (non-fatal — manual: python manage.py backfill_welcomes)"
+
+      - name: One-shot — fleet OpenClaw image bump (BYO rollout)
+        if: github.event_name == 'workflow_dispatch' && inputs.rollout_byo_image_bump == 'true'
+        run: |
+          # Manual fleet rollout: bump every active tenant onto the just-
+          # deployed OpenClaw image. NOT a routine deploy step — the regular
+          # apply-pending-configs cron handles future bumps lazily. This
+          # path exists for PR #434's one-shot BYO Anthropic rollout.
+          DJANGO_URL="https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io"
+          curl -sf -X POST \
+            -H "X-Deploy-Secret: ${{ secrets.DEPLOY_SECRET }}" \
+            -H "Content-Type: application/json" \
+            -d '{"include_hibernated": false}' \
+            "$DJANGO_URL/api/cron/rollout-byo-image-bump/"
+
+      - name: One-shot — fleet AGENTS.md refresh (BYO rollout)
+        if: github.event_name == 'workflow_dispatch' && inputs.rollout_byo_persona_refresh == 'true'
+        run: |
+          # Manual fleet rollout: re-render workspace/AGENTS.md from the
+          # current template + per-tenant persona/extras and push to every
+          # tenant's file share. Same one-shot semantics as the image bump
+          # above — only fires on workflow_dispatch.
+          DJANGO_URL="https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io"
+          curl -sf -X POST \
+            -H "X-Deploy-Secret: ${{ secrets.DEPLOY_SECRET }}" \
+            -H "Content-Type: application/json" \
+            -d '{"include_hibernated": false}' \
+            "$DJANGO_URL/api/cron/rollout-byo-persona-refresh/"
 
   # ==========================================================================
   # Deploy Frontend to Azure Static Web App (push to main only)

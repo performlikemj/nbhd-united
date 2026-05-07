@@ -317,6 +317,15 @@ def provision_tenant(tenant_id: str) -> None:
         except Exception:
             logger.warning("Could not send welcome message for tenant %s", tenant_id, exc_info=True)
 
+    # 4c. Seed USER.md with the platform-managed envelope so the container
+    # picks up profile + state on first boot. force=True bypasses debounce.
+    try:
+        from .workspace_envelope import push_user_md
+
+        push_user_md(tenant, force=True)
+    except Exception:
+        logger.warning("Could not seed USER.md for tenant %s", tenant_id, exc_info=True)
+
     # 5. Seed default cron jobs to Gateway (delayed for container warm-up)
     try:
         from apps.cron.views import _schedule_qstash_task
@@ -421,6 +430,16 @@ def update_tenant_config(tenant_id: str) -> None:
             )
     except Exception:
         logger.exception("Failed to upload workspace files for tenant %s", tenant_id)
+
+    # Refresh USER.md (platform-managed envelope region merged with any
+    # agent-written content). force=True so config refresh always pushes
+    # current state regardless of debounce window.
+    try:
+        from .workspace_envelope import push_user_md
+
+        push_user_md(tenant, force=True)
+    except Exception:
+        logger.exception("Failed to refresh USER.md for tenant %s (non-fatal)", tenant_id)
 
     # Update system cron job prompts to match current config_generator
     try:
@@ -695,7 +714,16 @@ def restore_user_cron_jobs(tenant: Tenant, existing_job_names: set[str]) -> dict
 
 
 def seed_cron_jobs(tenant: Tenant | str) -> dict:
-    """Seed default cron jobs for a tenant through the Gateway API."""
+    """Seed default cron jobs for a tenant.
+
+    Postgres-canonical path (``tenant.postgres_cron_canonical=True``):
+    upsert ``CronJob`` rows from ``build_cron_seed_jobs`` and mark them
+    ``source='system'``, ``managed=True``. The reconciler picks up the
+    delta and pushes to the container's SQLite via signal.
+
+    Legacy path: directly call ``cron.add`` against the gateway, diffing
+    by name.
+    """
     if isinstance(tenant, str):
         tenant = Tenant.objects.select_related("user").get(id=tenant)
 
@@ -709,6 +737,42 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
             "jobs_total": len(jobs),
             "created": len(jobs),
             "errors": 0,
+        }
+
+    # Postgres-canonical path: write CronJob rows; signal triggers reconcile.
+    if getattr(tenant, "postgres_cron_canonical", False):
+        from apps.cron.models import CronJob, CronJobSource
+
+        created = 0
+        existing_names = set(
+            CronJob.objects.filter(tenant=tenant, source=CronJobSource.SYSTEM).values_list("name", flat=True)
+        )
+        for job in jobs:
+            name = job.get("name", "")
+            if not name or name.lower() in {n.lower() for n in existing_names}:
+                continue
+            CronJob.objects.create(
+                tenant=tenant,
+                name=name,
+                data=job,
+                source=CronJobSource.SYSTEM,
+                managed=True,
+                enabled=bool(job.get("enabled", True)),
+            )
+            created += 1
+        logger.info(
+            "seed_cron_jobs (postgres-canonical): tenant %s — created %d system rows (existing=%d, total=%d)",
+            tenant_id,
+            created,
+            len(existing_names),
+            len(jobs),
+        )
+        return {
+            "tenant_id": tenant_id,
+            "jobs_total": len(jobs),
+            "created": created,
+            "errors": 0,
+            "via": "postgres_canonical",
         }
 
     # Check existing jobs first with retry on transient gateway failures.
@@ -926,6 +990,7 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
         "It's Monday morning. Run the Week Ahead Review",
         "Background maintenance run.",
         "You received a scheduled check-in.",
+        "Sunday-evening Gravity check-in.",
         # Date-injected variants (added 2026-03-08):
         "Current date and time:",
     ]
@@ -943,6 +1008,7 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
         "Background Tasks",
         "Project Check-in",
         "Heartbeat Check-in",
+        "Gravity Weekly Check-in",
     }
 
     def _is_default_prompt(existing_message: str) -> bool:
@@ -1061,6 +1127,20 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
 
     # --- Heartbeat add/remove drift correction ---
     sync_heartbeat_cron(tenant, existing_by_name)
+
+    # Push fresh USER.md alongside cron-prompt refreshes. force=True so the
+    # management command and HTTP refresh paths always emit a current
+    # envelope, not gated by the post-save signal debounce window.
+    try:
+        from .workspace_envelope import push_user_md
+
+        push_user_md(tenant, force=True)
+    except Exception:
+        logger.warning(
+            "update_system_cron_prompts: USER.md refresh failed for tenant %s (non-fatal)",
+            tenant_id,
+            exc_info=True,
+        )
 
     return {"tenant_id": tenant_id, "updated": updated, "skipped": skipped, "errors": errors}
 

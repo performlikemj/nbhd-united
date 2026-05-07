@@ -62,6 +62,12 @@ def queue_memory_sync_on_document_save(sender, instance, **kwargs):
         transaction.on_commit(_publish)
 
 
+# USER.md refresh on Document changes is auto-wired by the envelope
+# registry (apps/journal/envelope.py registers Document as a refresh
+# trigger for the goals + open-tasks + recent-journal sections). Don't
+# add a USER.md push handler here — that path is owned by the registry.
+
+
 @receiver(post_save, sender=Document)
 def auto_resolve_pending_extractions(sender, instance, **kwargs):
     """When a Tasks or Goals document is saved, auto-approve any pending

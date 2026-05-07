@@ -493,6 +493,48 @@ def upload_workspace_file_binary(tenant_id: str, file_path: str, data: bytes) ->
     logger.info("Uploaded binary %s (%d bytes) to file share %s", file_path, len(data), share_name)
 
 
+def download_workspace_file(tenant_id: str, file_path: str) -> str | None:
+    """Read a workspace file from the tenant's Azure File Share.
+
+    file_path is relative to the workspace root, e.g. 'workspace/USER.md'.
+    Returns the file's UTF-8 decoded content, or None if the file does not
+    exist. Used by workspace_envelope to merge platform-managed regions into
+    files that may already contain agent-written content.
+    """
+    share_name = f"ws-{str(tenant_id)[:20]}"
+
+    if _is_mock():
+        logger.info("[MOCK] Download of %s from file share %s", file_path, share_name)
+        return None
+
+    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
+    if not account_name:
+        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
+
+    from azure.core.exceptions import ResourceNotFoundError
+    from azure.storage.fileshare import ShareFileClient
+
+    storage_client = get_storage_client()
+    keys = storage_client.storage_accounts.list_keys(
+        settings.AZURE_RESOURCE_GROUP,
+        account_name,
+    )
+    account_key = keys.keys[0].value
+
+    file_client = ShareFileClient(
+        account_url=f"https://{account_name}.file.core.windows.net",
+        share_name=share_name,
+        file_path=file_path,
+        credential=account_key,
+    )
+    try:
+        downloader = file_client.download_file()
+        data = downloader.readall()
+    except ResourceNotFoundError:
+        return None
+    return data.decode("utf-8", errors="replace")
+
+
 def register_environment_storage(tenant_id: str) -> None:
     """Register a tenant's file share with the Container Apps Environment."""
     if _is_mock():
@@ -826,6 +868,114 @@ def restart_container_app(container_name: str) -> None:
         app,
     ).result()
     logger.info("Restarted container app %s", container_name)
+
+
+def _entry_name(entry: Any) -> str | None:
+    """Extract `.name` from a Container Apps SDK Secret/EnvVar typed
+    object or a plain dict (we mix both in our spec lists)."""
+    if isinstance(entry, dict):
+        return entry.get("name")
+    return getattr(entry, "name", None)
+
+
+def apply_byo_credentials_to_container(tenant: Any) -> None:
+    """Reconcile the tenant container's BYO secret + env bindings, then
+    create a new revision so the Container Apps runtime picks up any
+    changed Key Vault references.
+
+    Per microsoft/azure-container-apps#856 a plain restart keeps cached
+    KV values; only revision creation triggers a re-fetch. Each call
+    here mutates `template.revision_suffix` (causing a new revision)
+    even when the cred state hasn't changed — that's intentional: the
+    user just pasted/disconnected and expects the change to take effect.
+
+    Phase 1 reconciliation, for Anthropic CLI subscription only:
+      - Active cred → add `CLAUDE_CODE_OAUTH_TOKEN` env (KV-backed)
+        AND remove the `ANTHROPIC_API_KEY` env binding (auth-precedence
+        shadowing — Anthropic's CLI ranks `ANTHROPIC_API_KEY` ABOVE
+        `CLAUDE_CODE_OAUTH_TOKEN`, so the platform key would win and
+        bill against API credits instead of the user's subscription).
+      - No active cred → ensure `ANTHROPIC_API_KEY` is restored
+        (re-bound to the existing `anthropic-key` secret) and
+        `CLAUDE_CODE_OAUTH_TOKEN` is removed.
+
+    Idempotent — safe to call repeatedly. No-op for tenants without a
+    container_id.
+    """
+    if _is_mock():
+        logger.info("[MOCK] Applied BYO credentials for tenant=%s", tenant.id)
+        return
+
+    if not tenant.container_id:
+        logger.warning(
+            "apply_byo_credentials_to_container skipped: tenant=%s has no container_id",
+            tenant.id,
+        )
+        return
+
+    # Late import to avoid circular import (byo_models -> orchestrator).
+    from apps.byo_models.models import BYOCredential
+
+    cred = (
+        tenant.byo_credentials.filter(
+            provider=BYOCredential.Provider.ANTHROPIC,
+            mode=BYOCredential.Mode.CLI_SUBSCRIPTION,
+        )
+        .exclude(status=BYOCredential.Status.ERROR)
+        .first()
+    )
+
+    client = get_container_client()
+    app = client.container_apps.get(
+        settings.AZURE_RESOURCE_GROUP,
+        tenant.container_id,
+    )
+
+    BYO_SECRET = "claude-code-oauth-token"
+    BYO_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+    PLATFORM_ENV = "ANTHROPIC_API_KEY"
+
+    # Reconcile secrets list — drop any stale BYO entry, optionally re-add.
+    secrets = [s for s in (app.configuration.secrets or []) if _entry_name(s) != BYO_SECRET]
+    if cred:
+        secrets.append(
+            _build_container_secret(
+                BYO_SECRET,
+                plain_value="",
+                key_vault_secret_name=cred.key_vault_secret_name,
+                identity_id=tenant.managed_identity_id,
+            )
+        )
+    app.configuration.secrets = secrets
+
+    # Reconcile env on the openclaw container.
+    for container in app.template.containers:
+        if container.name != "openclaw":
+            continue
+        env_list = [e for e in (container.env or []) if _entry_name(e) not in (BYO_ENV, PLATFORM_ENV)]
+        if cred:
+            env_list.append({"name": BYO_ENV, "secretRef": BYO_SECRET})
+        else:
+            env_list.append({"name": PLATFORM_ENV, "secretRef": "anthropic-key"})
+        container.env = env_list
+        break
+
+    import hashlib
+    import time
+
+    app.template.revision_suffix = f"b{hashlib.sha256(f'byo-{int(time.time_ns())}'.encode()).hexdigest()[:6]}"
+
+    client.container_apps.begin_create_or_update(
+        settings.AZURE_RESOURCE_GROUP,
+        tenant.container_id,
+        app,
+    ).result()
+    logger.info(
+        "Applied BYO credentials for tenant=%s container=%s (cli_active=%s)",
+        tenant.id,
+        tenant.container_id,
+        cred is not None,
+    )
 
 
 _PLUGIN_RUNTIME_DEPS_VOLUME = "plugin-runtime-deps"
