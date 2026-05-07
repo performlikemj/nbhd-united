@@ -1266,7 +1266,7 @@ class FinanceSettingsViewTests(TestCase):
     def test_first_enable_schedules_welcome(self):
         with self._patch("apps.cron.publish.publish_task") as mock_publish:
             response = self.client.patch(
-                "/api/v1/settings/finance/",
+                "/api/v1/finance/settings/",
                 {"finance_enabled": True},
                 format="json",
             )
@@ -1286,7 +1286,7 @@ class FinanceSettingsViewTests(TestCase):
 
         with self._patch("apps.cron.publish.publish_task") as mock_publish:
             response = self.client.patch(
-                "/api/v1/settings/finance/",
+                "/api/v1/finance/settings/",
                 {"finance_enabled": True},
                 format="json",
             )
@@ -1299,7 +1299,7 @@ class FinanceSettingsViewTests(TestCase):
 
         with self._patch("apps.cron.publish.publish_task") as mock_publish:
             response = self.client.patch(
-                "/api/v1/settings/finance/",
+                "/api/v1/finance/settings/",
                 {"finance_enabled": False},
                 format="json",
             )
