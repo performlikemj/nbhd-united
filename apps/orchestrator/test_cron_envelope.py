@@ -36,8 +36,11 @@ from apps.orchestrator.config_generator import (
 from apps.orchestrator.workspace_envelope import (
     BEGIN_MARKER,
     END_MARKER,
+    envelope_finance_state,
+    envelope_fuel_state,
     envelope_goals,
     envelope_open_tasks,
+    envelope_recent_journal,
     envelope_recent_lessons,
     merge_into_user_md,
     push_user_md,
@@ -275,6 +278,315 @@ class EnvelopeRecentLessonsTest(TestCase):
         self.assertNotIn("line two", out)
 
 
+# ─── Pillar fetchers (Phase 2.6) ───────────────────────────────────────────
+
+
+class EnvelopeFuelStateTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="EnvFuel", telegram_chat_id=910500)
+
+    def test_returns_empty_when_no_fuel_data(self):
+        self.assertEqual(envelope_fuel_state(self.tenant), "")
+
+    def test_includes_planned_workout_today(self):
+        from datetime import date as _date
+
+        from apps.fuel.models import Workout, WorkoutStatus
+
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=_date.today(),
+            status=WorkoutStatus.PLANNED,
+            category="strength",
+            activity="Push — Chest & Shoulders",
+            duration_minutes=45,
+        )
+        out = envelope_fuel_state(self.tenant)
+        self.assertIn("Today", out)
+        self.assertIn("Push — Chest & Shoulders", out)
+        self.assertIn("strength", out)
+        self.assertIn("45 min", out)
+
+    def test_includes_recent_done_workouts(self):
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        from apps.fuel.models import Workout, WorkoutStatus
+
+        for i in range(4):
+            Workout.objects.create(
+                tenant=self.tenant,
+                date=_date.today() - _td(days=i + 1),
+                status=WorkoutStatus.DONE,
+                category="strength",
+                activity=f"Session {i}",
+                rpe=7,
+                duration_minutes=30,
+            )
+        out = envelope_fuel_state(self.tenant)
+        self.assertIn("Recent sessions", out)
+        # Limited to 3 most recent
+        self.assertEqual(out.count("Session "), 3)
+        self.assertIn("RPE 7", out)
+
+    def test_includes_body_weight_with_delta(self):
+        from datetime import date as _date
+        from datetime import timedelta as _td
+        from decimal import Decimal
+
+        from apps.fuel.models import BodyWeightLog
+
+        BodyWeightLog.objects.create(
+            tenant=self.tenant,
+            date=_date.today() - _td(days=10),
+            weight_kg=Decimal("80.50"),
+        )
+        BodyWeightLog.objects.create(
+            tenant=self.tenant,
+            date=_date.today(),
+            weight_kg=Decimal("79.30"),
+        )
+        out = envelope_fuel_state(self.tenant)
+        self.assertIn("79.30 kg", out)
+        self.assertIn("-1.2 kg", out)
+
+    def test_includes_last_sleep(self):
+        from datetime import date as _date
+        from decimal import Decimal
+
+        from apps.fuel.models import SleepLog
+
+        SleepLog.objects.create(
+            tenant=self.tenant,
+            date=_date.today(),
+            duration_hours=Decimal("7.50"),
+            quality=4,
+        )
+        out = envelope_fuel_state(self.tenant)
+        self.assertIn("7.50h", out)
+        self.assertIn("quality 4/5", out)
+
+    def test_truncates_when_over_cap(self):
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        from apps.fuel.models import Workout, WorkoutStatus
+
+        for i in range(10):
+            Workout.objects.create(
+                tenant=self.tenant,
+                date=_date.today() - _td(days=i + 1),
+                status=WorkoutStatus.DONE,
+                category="strength",
+                activity="x" * 200 + str(i),
+                duration_minutes=30,
+            )
+        out = envelope_fuel_state(self.tenant, max_chars=200)
+        self.assertLessEqual(len(out), 350)  # accounts for truncation suffix
+
+
+class EnvelopeFinanceStateTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="EnvFinance", telegram_chat_id=910600)
+
+    def test_returns_empty_when_no_accounts(self):
+        self.assertEqual(envelope_finance_state(self.tenant), "")
+
+    def test_summary_with_active_debt(self):
+        from decimal import Decimal
+
+        from apps.finance.models import FinanceAccount
+
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Big CC",
+            current_balance=Decimal("5000.00"),
+            interest_rate=Decimal("18.00"),
+            minimum_payment=Decimal("150.00"),
+            is_active=True,
+        )
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Student Loan",
+            current_balance=Decimal("12000.00"),
+            interest_rate=Decimal("6.50"),
+            minimum_payment=Decimal("240.90"),
+            is_active=True,
+        )
+        out = envelope_finance_state(self.tenant)
+        self.assertIn("Active accounts", out)
+        self.assertIn("2", out)  # 2 accounts, 2 debts
+        self.assertIn("$17,000.00", out)  # total debt
+
+    def test_top_priority_snowball_default(self):
+        from decimal import Decimal
+
+        from apps.finance.models import FinanceAccount
+
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Small CC",
+            current_balance=Decimal("500.00"),
+            interest_rate=Decimal("18.00"),
+            is_active=True,
+        )
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Big Loan",
+            current_balance=Decimal("12000.00"),
+            interest_rate=Decimal("3.50"),
+            is_active=True,
+        )
+        out = envelope_finance_state(self.tenant)
+        self.assertIn("snowball", out)
+        # Snowball picks lowest balance debt
+        self.assertIn("Small CC", out)
+
+    def test_top_priority_avalanche_with_active_plan(self):
+        from datetime import date as _date
+        from decimal import Decimal
+
+        from apps.finance.models import FinanceAccount, PayoffPlan
+
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="High Rate CC",
+            current_balance=Decimal("2000.00"),
+            interest_rate=Decimal("24.00"),
+            is_active=True,
+        )
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Low Rate Loan",
+            current_balance=Decimal("12000.00"),
+            interest_rate=Decimal("3.50"),
+            is_active=True,
+        )
+        PayoffPlan.objects.create(
+            tenant=self.tenant,
+            strategy=PayoffPlan.Strategy.AVALANCHE,
+            monthly_budget=Decimal("500.00"),
+            total_debt=Decimal("14000.00"),
+            total_interest=Decimal("3000.00"),
+            payoff_months=36,
+            payoff_date=_date.today(),
+            is_active=True,
+        )
+        out = envelope_finance_state(self.tenant)
+        self.assertIn("avalanche", out)
+        self.assertIn("High Rate CC", out)
+        self.assertIn("24.00% APR", out)
+
+    def test_recent_transactions(self):
+        from datetime import date as _date
+        from datetime import timedelta as _td
+        from decimal import Decimal
+
+        from apps.finance.models import FinanceAccount, FinanceTransaction
+
+        acct = FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="My Card",
+            current_balance=Decimal("1000.00"),
+            is_active=True,
+        )
+        FinanceTransaction.objects.create(
+            tenant=self.tenant,
+            account=acct,
+            transaction_type="payment",
+            amount=Decimal("250.00"),
+            date=_date.today() - _td(days=2),
+        )
+        out = envelope_finance_state(self.tenant)
+        self.assertIn("Recent transactions", out)
+        self.assertIn("payment $250.00", out)
+        self.assertIn("My Card", out)
+
+    def test_skips_inactive_accounts(self):
+        from decimal import Decimal
+
+        from apps.finance.models import FinanceAccount
+
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Archived Card",
+            current_balance=Decimal("100.00"),
+            is_active=False,
+        )
+        # Only inactive → returns empty
+        self.assertEqual(envelope_finance_state(self.tenant), "")
+
+
+class EnvelopeRecentJournalTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="EnvJournal", telegram_chat_id=910700)
+        _clear_seed_docs(self.tenant)
+
+    def test_returns_empty_when_no_daily_notes(self):
+        self.assertEqual(envelope_recent_journal(self.tenant), "")
+
+    def test_excludes_today(self):
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.DAILY,
+            slug=_date.today().isoformat(),
+            title="Today",
+            markdown="# Today's note\nSome content here.",
+        )
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.DAILY,
+            slug=(_date.today() - _td(days=1)).isoformat(),
+            title="Yesterday",
+            markdown="# Yesterday\nWhat happened yesterday.",
+        )
+        out = envelope_recent_journal(self.tenant)
+        self.assertIn("Yesterday", out)
+        self.assertNotIn("Today's note", out)
+
+    def test_limits_to_last_three(self):
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        for i in range(1, 6):
+            Document.objects.create(
+                tenant=self.tenant,
+                kind=Document.Kind.DAILY,
+                slug=(_date.today() - _td(days=i)).isoformat(),
+                title=f"Day -{i}",
+                markdown=f"# Day -{i}\nContent for day {i}.",
+            )
+        out = envelope_recent_journal(self.tenant, limit=3)
+        # Three most recently updated
+        self.assertEqual(out.count("**Day -"), 3)
+
+    def test_truncates_long_preview(self):
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.DAILY,
+            slug=(_date.today() - _td(days=1)).isoformat(),
+            title="Yesterday",
+            markdown="# Yesterday\n" + ("x " * 500),
+        )
+        out = envelope_recent_journal(self.tenant, preview_chars=100)
+        self.assertLessEqual(len(out), 200)
+        self.assertIn("…", out)
+
+
 # ─── Profile section ───────────────────────────────────────────────────────
 
 
@@ -324,7 +636,11 @@ class RenderManagedRegionTest(TestCase):
         self.assertIn(END_MARKER, out)
         self.assertIn("Last refreshed:", out)
         # Friendly placeholder when no real state
-        self.assertIn("No active goals, open tasks, or recent lessons", out)
+        self.assertIn("No active goals, tasks, lessons, fuel, finance, or journal", out)
+
+    def test_includes_synthesis_hint(self):
+        out = render_managed_region(self.tenant)
+        self.assertIn("coherent snapshot", out)
 
     def test_includes_all_three_when_all_present(self):
         Document.objects.create(
@@ -372,6 +688,91 @@ class RenderManagedRegionTest(TestCase):
         self.assertIn("Solo task", out)
         self.assertNotIn("## Active goals", out)
         self.assertNotIn("## Recent lessons", out)
+
+    def test_fuel_section_appears_when_enabled_and_has_data(self):
+        from datetime import date as _date
+
+        from apps.fuel.models import Workout, WorkoutStatus
+
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=_date.today(),
+            status=WorkoutStatus.PLANNED,
+            category="strength",
+            activity="Push day",
+            duration_minutes=45,
+        )
+        out = render_managed_region(self.tenant)
+        self.assertIn("## Fuel — fitness state", out)
+        self.assertIn("Push day", out)
+
+    def test_fuel_section_omitted_when_feature_disabled(self):
+        from datetime import date as _date
+
+        from apps.fuel.models import Workout, WorkoutStatus
+
+        # fuel_enabled defaults to False; data exists but flag is off
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=_date.today(),
+            status=WorkoutStatus.PLANNED,
+            category="strength",
+            activity="Push day",
+            duration_minutes=45,
+        )
+        out = render_managed_region(self.tenant)
+        self.assertNotIn("## Fuel — fitness state", out)
+        self.assertNotIn("Push day", out)
+
+    def test_finance_section_appears_when_enabled_and_has_data(self):
+        from decimal import Decimal
+
+        from apps.finance.models import FinanceAccount
+
+        self.tenant.finance_enabled = True
+        self.tenant.save(update_fields=["finance_enabled"])
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Main Card",
+            current_balance=Decimal("3000.00"),
+            is_active=True,
+        )
+        out = render_managed_region(self.tenant)
+        self.assertIn("## Gravity — finance state", out)
+        self.assertIn("Main Card", out)
+
+    def test_finance_section_omitted_when_feature_disabled(self):
+        from decimal import Decimal
+
+        from apps.finance.models import FinanceAccount
+
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Main Card",
+            current_balance=Decimal("3000.00"),
+            is_active=True,
+        )
+        out = render_managed_region(self.tenant)
+        self.assertNotIn("## Gravity — finance state", out)
+
+    def test_journal_section_appears_when_recent_daily_notes_exist(self):
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.DAILY,
+            slug=(_date.today() - _td(days=1)).isoformat(),
+            title="Yesterday",
+            markdown="# Yesterday\nMet with team about Q3 plans.",
+        )
+        out = render_managed_region(self.tenant)
+        self.assertIn("## Recent journal", out)
+        self.assertIn("Yesterday", out)
 
 
 # ─── Merge algorithm ───────────────────────────────────────────────────────
