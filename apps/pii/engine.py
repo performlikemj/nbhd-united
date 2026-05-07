@@ -17,9 +17,8 @@ import os
 
 logger = logging.getLogger(__name__)
 
-# Sentinel so we can distinguish "not loaded yet" (None) from
-# "loading previously failed, don't keep retrying" (False).
-_pipeline: object | None | bool = None
+_pipeline = None
+_pipeline_failure_logged = False
 _pattern_recognizers = None
 
 # HuggingFace repo for the PII model (public, Apache 2.0 compatible).
@@ -37,19 +36,19 @@ _MODEL_PATH = os.environ.get(
 def get_pii_pipeline():
     """Return a shared token-classification pipeline, initializing on first call.
 
-    Caches both success and failure: if the import or model load raises
-    once (typically a transformers/optimum ABI mismatch — see PR #447 →
-    prod breakage 2026-05-07), the sentinel is set to False so subsequent
-    calls return None immediately. This prevents the redactor from
-    spamming hundreds of identical tracebacks per second when a
-    dependency is misaligned.
+    On load failure, returns ``None`` so callers fall back to pattern
+    recognizers. Logs the underlying error at most once per process to
+    avoid spamming tracebacks when a dependency is misaligned (see
+    PR #447 → prod breakage 2026-05-07: transformers 5.8 / optimum 1.17
+    ABI mismatch caused ~5 tracebacks/sec).
 
-    Returns ``None`` when the pipeline is unavailable; callers must
-    fall back to pattern recognizers + return-original-text.
+    Subsequent calls retry the load. This is a deliberate trade-off:
+    - In prod under a persistent ABI mismatch, the throttled log keeps
+      noise low (one-time error, not per-call).
+    - In tests / dev where the failure may be a transient network blip
+      against HuggingFace, retries succeed once the blip clears.
     """
-    global _pipeline
-    if _pipeline is False:
-        return None
+    global _pipeline, _pipeline_failure_logged
     if _pipeline is not None:
         return _pipeline
 
@@ -70,17 +69,17 @@ def get_pii_pipeline():
             tokenizer=tokenizer,
             aggregation_strategy="simple",
         )
+        _pipeline_failure_logged = False
         logger.info("PII detection model loaded (ONNX INT8) from %s", _MODEL_PATH)
     except Exception:
-        # Cache the failure so we don't retry on every redaction call.
-        # Logged once at error level; further calls return None silently.
-        logger.error(
-            "PII detection model failed to initialize — disabling neural PII detection "
-            "for this process; falling back to pattern recognizers only. Restart the "
-            "container after fixing the dependency to retry.",
-            exc_info=True,
-        )
-        _pipeline = False
+        if not _pipeline_failure_logged:
+            logger.error(
+                "PII detection model failed to initialize — falling back to "
+                "pattern recognizers only. Will retry on next call but not "
+                "re-log this traceback for the lifetime of this process.",
+                exc_info=True,
+            )
+            _pipeline_failure_logged = True
         return None
 
     return _pipeline
