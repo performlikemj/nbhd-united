@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date
 from decimal import Decimal
 from unittest import TestCase as UnitTestCase
 
@@ -1366,22 +1366,44 @@ class FinanceWelcomeIdempotencyTests(TestCase):
         self.tenant.save(update_fields=["container_fqdn"])
         self._patch = _patch
 
+    def _fresh_welcome_cron(self):
+        """Build a cron job dict whose next fire is within the 1-day window."""
+        from datetime import datetime, timedelta
+
+        soon = datetime.now(UTC) + timedelta(minutes=2)
+        expr = f"{soon.minute} {soon.hour} {soon.day} {soon.month} *"
+        return {
+            "name": "_finance:welcome",
+            "schedule": {"kind": "cron", "expr": expr, "tz": "UTC"},
+        }
+
+    def _stale_welcome_cron(self):
+        """Build a cron job whose next fire is ~1 year away (annual recurrence
+        kicked in because the date already passed)."""
+        from datetime import datetime, timedelta
+
+        past = datetime.now(UTC) - timedelta(days=7)
+        expr = f"{past.minute} {past.hour} {past.day} {past.month} *"
+        return {
+            "name": "_finance:welcome",
+            "schedule": {"kind": "cron", "expr": expr, "tz": "UTC"},
+        }
+
     def test_skips_when_welcome_already_pending(self):
+        """A cron whose next fire is within the 1-day window means a welcome
+        is queued and we should not re-schedule."""
         from apps.finance.views import _schedule_finance_welcome
         from apps.orchestrator.welcome_scheduler import WelcomeStatus
 
         with (
             self._patch(
-                "apps.cron.gateway_client.cron_exists",
-                return_value=True,
-            ) as mock_exists,
+                "apps.cron.gateway_client.cron_get",
+                return_value=self._fresh_welcome_cron(),
+            ),
             self._patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
         ):
             status = _schedule_finance_welcome(self.tenant)
 
-        # First call uses require_future_fire=True; if that's True we
-        # short-circuit and never make the second (stale-check) call.
-        mock_exists.assert_called_once_with(self.tenant, "_finance:welcome", require_future_fire=True)
         self.assertEqual(status, WelcomeStatus.SKIPPED_PENDING)
         # cron.add was NOT called because welcome is already pending.
         for call in mock_invoke.call_args_list:
@@ -1396,10 +1418,7 @@ class FinanceWelcomeIdempotencyTests(TestCase):
         self.tenant.save(update_fields=["welcomes_sent"])
 
         with (
-            self._patch(
-                "apps.cron.gateway_client.cron_exists",
-                return_value=False,
-            ),
+            self._patch("apps.cron.gateway_client.cron_get", return_value=None),
             self._patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
         ):
             status = _schedule_finance_welcome(self.tenant)
@@ -1414,10 +1433,7 @@ class FinanceWelcomeIdempotencyTests(TestCase):
         from apps.orchestrator.welcome_scheduler import WelcomeStatus
 
         with (
-            self._patch(
-                "apps.cron.gateway_client.cron_exists",
-                return_value=False,
-            ),
+            self._patch("apps.cron.gateway_client.cron_get", return_value=None),
             self._patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
         ):
             status = _schedule_finance_welcome(self.tenant)
@@ -1434,7 +1450,9 @@ class FinanceWelcomeIdempotencyTests(TestCase):
         self.assertNotIn("{tenant_id}", message)
 
     def test_replaces_stale_welcome_cron(self):
-        """A pending cron whose next-fire is in the past gets removed and re-added.
+        """A welcome cron whose next fire is far in the future (annual
+        recurrence picked up because the original date already passed)
+        gets removed and re-added.
 
         Reproduces the canary incident on 2026-05-07: the original Apr 25
         one-shot fired but the agent crashed mid-turn and never self-removed
@@ -1444,14 +1462,11 @@ class FinanceWelcomeIdempotencyTests(TestCase):
         from apps.finance.views import _schedule_finance_welcome
         from apps.orchestrator.welcome_scheduler import WelcomeStatus
 
-        # Two-phase mock: cron_exists returns False with require_future_fire=True
-        # (no pending future cron) but True with require_future_fire=False
-        # (a row exists, but its next fire is in the past).
-        def fake_exists(_tenant, _name, *, include_disabled=True, require_future_fire=False):
-            return not require_future_fire
-
         with (
-            self._patch("apps.cron.gateway_client.cron_exists", side_effect=fake_exists),
+            self._patch(
+                "apps.cron.gateway_client.cron_get",
+                return_value=self._stale_welcome_cron(),
+            ),
             self._patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
         ):
             status = _schedule_finance_welcome(self.tenant)
@@ -1477,7 +1492,7 @@ class FinanceWelcomeIdempotencyTests(TestCase):
         from apps.finance.views import _schedule_finance_welcome
 
         with (
-            self._patch("apps.cron.gateway_client.cron_exists", return_value=False),
+            self._patch("apps.cron.gateway_client.cron_get", return_value=None),
             self._patch(
                 "apps.cron.gateway_client.invoke_gateway_tool",
                 side_effect=GatewayError("simulated transport failure"),
