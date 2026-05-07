@@ -1481,7 +1481,8 @@ class FinanceWelcomeIdempotencyTests(TestCase):
             self._patch(
                 "apps.cron.gateway_client.invoke_gateway_tool",
                 side_effect=GatewayError("simulated transport failure"),
-            ),self.assertRaises(GatewayError)
+            ),
+            self.assertRaises(GatewayError),
         ):
             _schedule_finance_welcome(self.tenant)
 
