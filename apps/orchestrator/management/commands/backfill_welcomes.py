@@ -6,10 +6,10 @@ intro. This command walks active tenants with the feature flag set and
 calls the same ``_schedule_fuel_welcome`` / ``_schedule_finance_welcome``
 helpers used by the live toggle path.
 
-The schedulers are idempotent (they check ``cron.list`` for an existing
-``_fuel:welcome`` / ``_finance:welcome`` job and skip when one is
-pending), so re-running this command is safe — it won't double-schedule
-tenants that already have a welcome queued or have already received one.
+The schedulers are self-healing: a stale one-shot cron whose fire date
+already passed (without successful agent self-removal) is replaced with
+a fresh one. ``Tenant.welcomes_sent[feature]`` short-circuits when the
+agent has confirmed delivery. So re-running this command is safe.
 
 Usage:
     python manage.py backfill_welcomes                         # both features, all active tenants
@@ -21,8 +21,11 @@ Usage:
 
 from __future__ import annotations
 
+from collections import Counter
+
 from django.core.management.base import BaseCommand
 
+from apps.orchestrator.welcome_scheduler import WelcomeStatus
 from apps.tenants.models import Tenant
 
 
@@ -54,41 +57,38 @@ class Command(BaseCommand):
         tenants = list(qs)
         self.stdout.write(f"Backfilling welcomes for {len(tenants)} tenant(s) (feature={feature})...")
 
-        scheduled_fuel = 0
-        scheduled_finance = 0
-        failed = 0
+        per_feature: dict[str, Counter] = {"fuel": Counter(), "finance": Counter()}
 
         for tenant in tenants:
             short = str(tenant.id)[:8]
 
             if feature in ("fuel", "both") and tenant.fuel_enabled:
-                try:
-                    from apps.fuel.views import _schedule_fuel_welcome
-
-                    _schedule_fuel_welcome(tenant)
-                    scheduled_fuel += 1
-                    self.stdout.write(f"  fuel:    {short}")
-                except Exception as exc:
-                    failed += 1
-                    self.stdout.write(self.style.ERROR(f"  fuel:    {short} — {exc}"))
+                self._run_one(tenant, short, "fuel", per_feature["fuel"])
 
             if feature in ("finance", "both") and tenant.finance_enabled:
-                try:
-                    from apps.finance.views import _schedule_finance_welcome
+                self._run_one(tenant, short, "finance", per_feature["finance"])
 
-                    _schedule_finance_welcome(tenant)
-                    scheduled_finance += 1
-                    self.stdout.write(f"  finance: {short}")
-                except Exception as exc:
-                    failed += 1
-                    self.stdout.write(self.style.ERROR(f"  finance: {short} — {exc}"))
+        self.stdout.write(self.style.SUCCESS("Done."))
+        for feat, counts in per_feature.items():
+            if not counts:
+                continue
+            parts = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+            self.stdout.write(f"  {feat}: {parts}")
 
-        self.stdout.write(
-            self.style.SUCCESS(f"Done: fuel={scheduled_fuel}, finance={scheduled_finance}, errors={failed}")
-        )
-        self.stdout.write(
-            "Note: idempotency means a tenant whose welcome cron is already "
-            "pending or has already fired and self-removed won't get another "
-            "scheduled here — output above counts schedule attempts, not "
-            "necessarily fresh welcomes."
-        )
+    def _run_one(self, tenant, short: str, feature: str, counts: Counter) -> None:
+        if feature == "fuel":
+            from apps.fuel.views import _schedule_fuel_welcome as helper
+        else:
+            from apps.finance.views import _schedule_finance_welcome as helper
+
+        try:
+            status = helper(tenant)
+        except Exception as exc:
+            counts["failed"] += 1
+            self.stdout.write(self.style.ERROR(f"  {feature:7s} {short} — failed: {exc}"))
+            return
+
+        # status is a WelcomeStatus enum; .value is the string key.
+        key = status.value if isinstance(status, WelcomeStatus) else str(status)
+        counts[key] += 1
+        self.stdout.write(f"  {feature:7s} {short} — {key}")

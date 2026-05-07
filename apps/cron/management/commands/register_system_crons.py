@@ -48,6 +48,10 @@ SYSTEM_CRONS = [
     # Postgres CronJob table for tenants on the postgres-cron-canonical flow.
     # Offset to avoid colliding with reconcile-fuel-crons.
     ("reconcile-tenant-crons", "5 * * * *", "/api/cron/trigger/reconcile_tenant_crons/"),
+    # Daily at 01:30 UTC — watchdog for orphaned Fuel/Gravity welcome crons.
+    # Re-invokes the self-healing schedulers so a tenant whose welcome was
+    # missed (gateway hiccup, agent crash mid-turn) gets retried within 24h.
+    ("reconcile-welcomes", "30 1 * * *", "/api/cron/trigger/reconcile_welcomes/"),
 ]
 
 

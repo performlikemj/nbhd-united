@@ -104,6 +104,10 @@ TASK_MAP = {
     # Postgres-canonical cron cutover — derived view of CronJob rows
     "regenerate_tenant_crons": "apps.orchestrator.tasks.regenerate_tenant_crons_task",
     "reconcile_tenant_crons": "apps.orchestrator.tasks.reconcile_tenant_crons_task",
+    # Welcome-cron watchdog — daily fleet-wide reconcile for missing or
+    # stale Fuel/Gravity welcome crons. Closes the gap when both the
+    # deploy backfill and the live toggle path fail to deliver.
+    "reconcile_welcomes": "apps.orchestrator.tasks.reconcile_welcomes_task",
     # Per-tenant message serialization queue — drains the next pending
     # warm-tenant message for (tenant, channel, channel_user_id) so the
     # OpenClaw claude-cli backend never sees overlapping turns on the
@@ -753,31 +757,51 @@ def backfill_welcomes(request):
         logger.warning("Unauthorized backfill_welcomes attempt")
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
+    from collections import Counter
+
+    from apps.orchestrator.welcome_scheduler import WelcomeStatus
+
     tenants = list(Tenant.objects.select_related("user").filter(status=Tenant.Status.ACTIVE).exclude(container_id=""))
-    counts = {"fuel": 0, "finance": 0, "errors": 0}
+    per_feature: dict[str, Counter] = {"fuel": Counter(), "finance": Counter()}
 
     for tenant in tenants:
         if tenant.fuel_enabled:
-            try:
-                from apps.fuel.views import _schedule_fuel_welcome
+            from apps.fuel.views import _schedule_fuel_welcome
 
-                _schedule_fuel_welcome(tenant)
-                counts["fuel"] += 1
-            except Exception:
-                counts["errors"] += 1
-                logger.warning("backfill_welcomes: fuel failed for %s", str(tenant.id)[:8], exc_info=True)
+            _tally(_schedule_fuel_welcome, tenant, per_feature["fuel"], "fuel")
         if tenant.finance_enabled:
-            try:
-                from apps.finance.views import _schedule_finance_welcome
+            from apps.finance.views import _schedule_finance_welcome
 
-                _schedule_finance_welcome(tenant)
-                counts["finance"] += 1
-            except Exception:
-                counts["errors"] += 1
-                logger.warning("backfill_welcomes: finance failed for %s", str(tenant.id)[:8], exc_info=True)
+            _tally(_schedule_finance_welcome, tenant, per_feature["finance"], "finance")
 
-    logger.info("backfill_welcomes: %s", counts)
-    return JsonResponse({"tenants_walked": len(tenants), **counts})
+    response = {
+        "tenants_walked": len(tenants),
+        "fuel": dict(per_feature["fuel"]),
+        "finance": dict(per_feature["finance"]),
+    }
+    logger.info("backfill_welcomes: %s", response)
+    # WelcomeStatus is referenced for symmetry — surfacing the enum in
+    # logs makes it easier to grep deploy output for outcome categories.
+    response["statuses"] = [s.value for s in WelcomeStatus]
+    return JsonResponse(response)
+
+
+def _tally(helper, tenant, counts, feature: str) -> None:
+    """Invoke a welcome scheduler and tally its outcome.
+
+    Distinguishes scheduled / replaced_stale / skipped_pending /
+    skipped_already_delivered / failed. Raises are caught and counted as
+    "failed" so a single tenant's gateway hiccup doesn't abort the
+    whole backfill loop.
+    """
+    try:
+        status = helper(tenant)
+    except Exception:
+        counts["failed"] += 1
+        logger.warning("backfill_welcomes: %s failed for %s", feature, str(tenant.id)[:8], exc_info=True)
+        return
+    key = getattr(status, "value", str(status))
+    counts[key] += 1
 
 
 @csrf_exempt

@@ -1368,6 +1368,7 @@ class FinanceWelcomeIdempotencyTests(TestCase):
 
     def test_skips_when_welcome_already_pending(self):
         from apps.finance.views import _schedule_finance_welcome
+        from apps.orchestrator.welcome_scheduler import WelcomeStatus
 
         with (
             self._patch(
@@ -1376,9 +1377,12 @@ class FinanceWelcomeIdempotencyTests(TestCase):
             ) as mock_exists,
             self._patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
         ):
-            _schedule_finance_welcome(self.tenant)
+            status = _schedule_finance_welcome(self.tenant)
 
-        mock_exists.assert_called_once_with(self.tenant, "_finance:welcome")
+        # First call uses require_future_fire=True; if that's True we
+        # short-circuit and never make the second (stale-check) call.
+        mock_exists.assert_called_once_with(self.tenant, "_finance:welcome", require_future_fire=True)
+        self.assertEqual(status, WelcomeStatus.SKIPPED_PENDING)
         # cron.add was NOT called because welcome is already pending.
         for call in mock_invoke.call_args_list:
             self.assertNotEqual(call.args[1] if len(call.args) > 1 else call.kwargs.get("tool"), "cron.add")
@@ -1386,6 +1390,7 @@ class FinanceWelcomeIdempotencyTests(TestCase):
     def test_skips_when_welcome_already_delivered(self):
         """welcomes_sent['finance'] set → no re-schedule even if no pending cron."""
         from apps.finance.views import _schedule_finance_welcome
+        from apps.orchestrator.welcome_scheduler import WelcomeStatus
 
         self.tenant.welcomes_sent = {"finance": "2026-05-07T03:00:00+00:00"}
         self.tenant.save(update_fields=["welcomes_sent"])
@@ -1397,14 +1402,16 @@ class FinanceWelcomeIdempotencyTests(TestCase):
             ),
             self._patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
         ):
-            _schedule_finance_welcome(self.tenant)
+            status = _schedule_finance_welcome(self.tenant)
 
+        self.assertEqual(status, WelcomeStatus.SKIPPED_ALREADY_DELIVERED)
         # No cron.add — already delivered.
         for call in mock_invoke.call_args_list:
             self.assertNotEqual(call.args[1] if len(call.args) > 1 else call.kwargs.get("tool"), "cron.add")
 
     def test_schedules_when_no_welcome_pending(self):
         from apps.finance.views import _schedule_finance_welcome
+        from apps.orchestrator.welcome_scheduler import WelcomeStatus
 
         with (
             self._patch(
@@ -1413,8 +1420,9 @@ class FinanceWelcomeIdempotencyTests(TestCase):
             ),
             self._patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
         ):
-            _schedule_finance_welcome(self.tenant)
+            status = _schedule_finance_welcome(self.tenant)
 
+        self.assertEqual(status, WelcomeStatus.SCHEDULED)
         mock_invoke.assert_called_once()
         args, _kwargs = mock_invoke.call_args
         # invoke_gateway_tool(tenant, "cron.add", {"job": {...}})
@@ -1424,6 +1432,58 @@ class FinanceWelcomeIdempotencyTests(TestCase):
         message = args[2]["job"]["payload"]["message"]
         self.assertIn(str(self.tenant.id), message)
         self.assertNotIn("{tenant_id}", message)
+
+    def test_replaces_stale_welcome_cron(self):
+        """A pending cron whose next-fire is in the past gets removed and re-added.
+
+        Reproduces the canary incident on 2026-05-07: the original Apr 25
+        one-shot fired but the agent crashed mid-turn and never self-removed
+        the cron. Without freshness-aware idempotency, the stale cron blocks
+        re-scheduling for a year (next fire = Apr 25, 2027).
+        """
+        from apps.finance.views import _schedule_finance_welcome
+        from apps.orchestrator.welcome_scheduler import WelcomeStatus
+
+        # Two-phase mock: cron_exists returns False with require_future_fire=True
+        # (no pending future cron) but True with require_future_fire=False
+        # (a row exists, but its next fire is in the past).
+        def fake_exists(_tenant, _name, *, include_disabled=True, require_future_fire=False):
+            return not require_future_fire
+
+        with (
+            self._patch("apps.cron.gateway_client.cron_exists", side_effect=fake_exists),
+            self._patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
+        ):
+            status = _schedule_finance_welcome(self.tenant)
+
+        self.assertEqual(status, WelcomeStatus.REPLACED_STALE)
+        tools_called = [call.args[1] for call in mock_invoke.call_args_list if len(call.args) > 1]
+        # Both remove (to clear the stale row) and add (fresh schedule).
+        self.assertIn("cron.remove", tools_called)
+        self.assertIn("cron.add", tools_called)
+        # Order matters: remove must precede add so the gateway doesn't
+        # see a name collision.
+        self.assertLess(tools_called.index("cron.remove"), tools_called.index("cron.add"))
+
+    def test_raises_on_gateway_failure(self):
+        """Transport failures bubble up so backfill telemetry is honest.
+
+        Phase 1 swallowed all exceptions inside the helper, which made the
+        deploy backfill report ``finance: 1`` even when scheduling silently
+        failed. The watchdog and the management command both need real
+        exceptions to count "failed" correctly.
+        """
+        from apps.cron.gateway_client import GatewayError
+        from apps.finance.views import _schedule_finance_welcome
+
+        with (
+            self._patch("apps.cron.gateway_client.cron_exists", return_value=False),
+            self._patch(
+                "apps.cron.gateway_client.invoke_gateway_tool",
+                side_effect=GatewayError("simulated transport failure"),
+            ),self.assertRaises(GatewayError)
+        ):
+            _schedule_finance_welcome(self.tenant)
 
 
 class FinanceSettingsViewClearsDeliveryFlagTests(TestCase):

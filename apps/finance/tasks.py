@@ -31,4 +31,9 @@ def schedule_finance_welcome_task(tenant_id: str) -> None:
     if not tenant.finance_enabled:
         return
 
-    _schedule_finance_welcome(tenant)
+    try:
+        _schedule_finance_welcome(tenant)
+    except Exception:
+        # Fire-and-forget for the live toggle path. The daily
+        # reconcile_welcomes watchdog will retry on failure.
+        logger.exception("schedule_finance_welcome_task failed for tenant %s", tenant_id)

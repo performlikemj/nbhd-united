@@ -682,6 +682,64 @@ def reconcile_tenant_crons_task() -> dict:
     return totals
 
 
+def reconcile_welcomes_task() -> dict:
+    """Daily fleet-wide reconcile for missing or stale welcome crons.
+
+    Watchdog backstop for the welcome flow. Walks active tenants and,
+    for each enabled feature (Fuel, Gravity), re-invokes the scheduler.
+    The schedulers are self-healing: they replace stale one-shots whose
+    fire date already passed without successful self-removal, skip
+    tenants whose welcome was confirmed delivered, and surface
+    transport failures as a "failed" tally.
+
+    The original Phase 1 design relied on the deploy-time backfill plus
+    the live toggle path to deliver welcomes, with no recovery path
+    when both failed (e.g. agent crashed mid-turn during the original
+    fire). This task closes that gap — a tenant whose welcome got
+    orphaned will be re-queued within 24h.
+    """
+    import logging
+    from collections import Counter
+
+    from apps.orchestrator.welcome_scheduler import WelcomeStatus
+    from apps.tenants.models import Tenant
+
+    logger = logging.getLogger(__name__)
+
+    tenants = list(Tenant.objects.select_related("user").filter(status=Tenant.Status.ACTIVE).exclude(container_id=""))
+    per_feature: dict[str, Counter] = {"fuel": Counter(), "finance": Counter()}
+
+    for tenant in tenants:
+        if tenant.fuel_enabled:
+            from apps.fuel.views import _schedule_fuel_welcome
+
+            _tally_welcome(_schedule_fuel_welcome, tenant, per_feature["fuel"], "fuel", logger)
+        if tenant.finance_enabled:
+            from apps.finance.views import _schedule_finance_welcome
+
+            _tally_welcome(_schedule_finance_welcome, tenant, per_feature["finance"], "finance", logger)
+
+    totals = {
+        "tenants": len(tenants),
+        "fuel": dict(per_feature["fuel"]),
+        "finance": dict(per_feature["finance"]),
+        "statuses": [s.value for s in WelcomeStatus],
+    }
+    logger.info("reconcile_welcomes: %s", totals)
+    return totals
+
+
+def _tally_welcome(helper, tenant, counts, feature: str, logger) -> None:
+    try:
+        status = helper(tenant)
+    except Exception:
+        counts["failed"] += 1
+        logger.warning("reconcile_welcomes: %s failed for %s", feature, str(tenant.id)[:8], exc_info=True)
+        return
+    key = getattr(status, "value", str(status))
+    counts[key] += 1
+
+
 def remove_zombie_heartbeats_task() -> dict:
     """Remove Heartbeat Check-in cron jobs from tenants with heartbeat disabled."""
     import logging

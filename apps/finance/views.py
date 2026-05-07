@@ -193,88 +193,24 @@ _FINANCE_WELCOME_PROMPT_TEMPLATE = (
 _FINANCE_WELCOME_PROMPT = _FINANCE_WELCOME_PROMPT_TEMPLATE
 
 
-def _schedule_finance_welcome(tenant) -> None:
+def _schedule_finance_welcome(tenant):
     """Create a one-shot cron that sends a Gravity welcome message.
 
-    Fires ~5 minutes after enablement (gives the container time to pick up
-    the new finance plugin if a config refresh is in flight). Mirrors the
-    fuel welcome pattern in ``apps/fuel/views.py``.
+    Fires ~5 minutes after enablement. Self-healing: a previously stale
+    welcome cron (date already passed without successful self-removal)
+    is replaced.
 
-    Idempotent: skips when a ``_finance:welcome`` cron is already scheduled.
-    Re-toggling the feature flag (off→on) while a previous welcome is still
-    pending becomes a no-op; once that pending cron has fired and
-    self-removed, a future toggle re-schedules cleanly. This makes the
-    backfill command (``python manage.py backfill_welcomes``) safe to
-    re-run without spamming users.
-
-    Best-effort — failures are logged, not raised. The tenant still gets
-    organic onboarding on their next message.
+    Returns the ``WelcomeStatus`` enum. Raises on transport failure;
+    callers that want fire-and-forget semantics should wrap.
     """
-    import zoneinfo
-    from datetime import datetime, timedelta
+    from apps.orchestrator.welcome_scheduler import schedule_welcome
 
-    try:
-        from apps.cron.gateway_client import cron_exists, invoke_gateway_tool
-
-        if cron_exists(tenant, "_finance:welcome"):
-            logger.info(
-                "Finance welcome already pending for tenant %s — skipping (idempotent)",
-                tenant.id,
-            )
-            return
-
-        # Already-delivered check via Tenant.welcomes_sent. The agent
-        # marks delivery via /api/v1/tenants/runtime/<id>/welcomes/finance/
-        # after a successful nbhd_send_to_user — see prompt template.
-        sent = (tenant.welcomes_sent or {}).get("finance")
-        if sent:
-            logger.info(
-                "Finance welcome already delivered for tenant %s at %s — skipping",
-                tenant.id,
-                sent,
-            )
-            return
-
-        user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
-        try:
-            tz = zoneinfo.ZoneInfo(user_tz)
-        except Exception:
-            tz = zoneinfo.ZoneInfo("UTC")
-
-        fire_at = datetime.now(tz) + timedelta(minutes=5)
-        # Date-specific cron expr fires exactly once.
-        cron_expr = f"{fire_at.minute} {fire_at.hour} {fire_at.day} {fire_at.month} *"
-
-        welcome_message = (
-            _FINANCE_WELCOME_PROMPT_TEMPLATE.format(tenant_id=tenant.id)
-            + "\n\n---\n"
-            + "After sending the welcome (and marking it delivered if the send succeeded), "
-            + "remove this cron: `cron remove _finance:welcome`"
-        )
-
-        invoke_gateway_tool(
-            tenant,
-            "cron.add",
-            {
-                "job": {
-                    "name": "_finance:welcome",
-                    "schedule": {"kind": "cron", "expr": cron_expr, "tz": user_tz},
-                    "sessionTarget": "isolated",
-                    "payload": {
-                        "kind": "agentTurn",
-                        "message": welcome_message,
-                    },
-                    "delivery": {"mode": "none"},
-                    "enabled": True,
-                }
-            },
-        )
-        logger.info("Scheduled finance welcome cron for tenant %s (fires at %s)", tenant.id, fire_at.isoformat())
-    except Exception:
-        logger.warning(
-            "Failed to schedule finance welcome for tenant %s (user will get onboarding on next message)",
-            tenant.id,
-        )
+    return schedule_welcome(
+        tenant,
+        feature="finance",
+        cron_name="_finance:welcome",
+        prompt_template=_FINANCE_WELCOME_PROMPT_TEMPLATE,
+    )
 
 
 class FinanceSettingsView(APIView):
