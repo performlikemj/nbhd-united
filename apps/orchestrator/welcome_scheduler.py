@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import zoneinfo
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -36,6 +36,13 @@ class WelcomeStatus(StrEnum):
     REPLACED_STALE = "replaced_stale"
     SKIPPED_PENDING = "skipped_pending"
     SKIPPED_ALREADY_DELIVERED = "skipped_already_delivered"
+
+
+# Welcomes are encoded as date-pattern crons (``M H D M *``) which are
+# annual recurring. A "still pending" welcome should fire within the
+# next day — anything beyond that is the annual-recurrence picking up
+# because the original fire happened without successful self-removal.
+_ONE_SHOT_WINDOW = timedelta(days=1)
 
 
 def schedule_welcome(
@@ -56,7 +63,7 @@ def schedule_welcome(
     swallow (live toggle path, async tasks) should wrap; the backfill
     and watchdog paths surface failures so telemetry is honest.
     """
-    from apps.cron.gateway_client import cron_exists, cron_remove, invoke_gateway_tool
+    from apps.cron.gateway_client import _next_fire_at, cron_get, cron_remove, invoke_gateway_tool
 
     sent = (tenant.welcomes_sent or {}).get(feature)
     if sent:
@@ -68,21 +75,32 @@ def schedule_welcome(
         )
         return WelcomeStatus.SKIPPED_ALREADY_DELIVERED
 
-    has_pending = cron_exists(tenant, cron_name, require_future_fire=True)
-    has_stale = (not has_pending) and cron_exists(tenant, cron_name, require_future_fire=False)
-    if has_pending:
-        logger.info(
-            "%s welcome already pending for tenant %s — skipping (idempotent)",
-            feature,
-            tenant.id,
-        )
-        return WelcomeStatus.SKIPPED_PENDING
-    if has_stale:
+    existing = cron_get(tenant, cron_name)
+    has_stale = False
+    if existing is not None:
+        # A welcome is "still pending" only if its next fire is within the
+        # one-shot window. The encoding ``M H D M *`` is annual recurring,
+        # so a welcome whose date already passed without successful
+        # self-removal will report next_fire ~1 year in the future. That's
+        # the canary 2026-05-07 incident: April 25 fire → agent crashed
+        # mid-turn → cron stayed registered with next_fire = April 25, 2027.
+        nxt = _next_fire_at(existing.get("schedule") or {})
+        if nxt is not None and nxt.tzinfo is None:
+            nxt = nxt.replace(tzinfo=UTC)
+        if nxt is None or (nxt - datetime.now(nxt.tzinfo)) <= _ONE_SHOT_WINDOW:
+            logger.info(
+                "%s welcome already pending for tenant %s — skipping (idempotent)",
+                feature,
+                tenant.id,
+            )
+            return WelcomeStatus.SKIPPED_PENDING
         cron_remove(tenant, cron_name)
+        has_stale = True
         logger.info(
-            "%s welcome cron for tenant %s was stale — removed before reschedule",
+            "%s welcome cron for tenant %s was stale (next fire %s) — removed before reschedule",
             feature,
             tenant.id,
+            nxt.isoformat(),
         )
 
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")

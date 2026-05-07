@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 import requests
@@ -126,30 +126,36 @@ def cron_exists(
     cron_name: str,
     *,
     include_disabled: bool = True,
-    require_future_fire: bool = False,
 ) -> bool:
     """Check whether a cron with the given name is currently scheduled.
 
-    Used by welcome-scheduler dedup so re-toggling a feature flag doesn't
-    create duplicate ``_finance:welcome`` / ``_fuel:welcome`` jobs while
-    one is still pending.
-
-    With ``require_future_fire=True``, a job whose next fire time is in
-    the past (e.g., a date-pattern one-shot whose date already passed
-    without successful self-removal) is treated as not-existing — letting
-    the caller replace it. This is the right invariant for one-shot
-    welcome crons: an annual-recurring date pattern (``25 23 25 4 *``)
-    that didn't get cleaned up after firing would otherwise block
-    rescheduling for a year.
+    Returns True iff the gateway lists a job with the matching name.
+    Callers that need staleness semantics (welcome-scheduler) should
+    use ``cron_get`` and inspect the schedule directly.
 
     On any gateway error, returns False (conservative — caller will
     proceed with scheduling, which is preferable to silently swallowing
-    a needed welcome).
+    a needed action).
+    """
+    return cron_get(tenant, cron_name, include_disabled=include_disabled) is not None
+
+
+def cron_get(
+    tenant: Tenant,
+    cron_name: str,
+    *,
+    include_disabled: bool = True,
+) -> dict[str, Any] | None:
+    """Return the gateway's job dict for ``cron_name`` (or None).
+
+    Used by welcome-scheduler to inspect the schedule of an existing
+    cron and decide whether it's still pending or stale (a date-pattern
+    one-shot whose date already passed without successful self-removal).
     """
     try:
         result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": include_disabled})
     except GatewayError:
-        return False
+        return None
 
     inner = result.get("details", result) if isinstance(result, dict) else result
     if isinstance(inner, dict):
@@ -160,22 +166,9 @@ def cron_exists(
         jobs = []
 
     for job in jobs:
-        if not (isinstance(job, dict) and job.get("name") == cron_name):
-            continue
-        if not require_future_fire:
-            return True
-        schedule = job.get("schedule") or {}
-        nxt = _next_fire_at(schedule)
-        if nxt is None:
-            # Unknown schedule shape — treat as fresh to avoid spurious
-            # replacement; humans can clean up the rare unparseable case.
-            return True
-        # croniter returns a naive datetime in the requested tz; normalize.
-        if nxt.tzinfo is None:
-            nxt = nxt.replace(tzinfo=UTC)
-        if nxt > datetime.now(nxt.tzinfo):
-            return True
-    return False
+        if isinstance(job, dict) and job.get("name") == cron_name:
+            return job
+    return None
 
 
 def cron_remove(tenant: Tenant, cron_name: str) -> None:
