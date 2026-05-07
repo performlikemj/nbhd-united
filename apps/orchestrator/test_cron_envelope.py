@@ -372,17 +372,24 @@ class EnvelopeFuelStateTest(TestCase):
 
         from apps.fuel.models import Workout, WorkoutStatus
 
-        for i in range(10):
+        # Three displayed sessions × ~80 chars each + recent-sessions header
+        # easily exceeds max_chars=100, forcing truncation. Activity stays
+        # under the 128-char model limit.
+        for i in range(5):
             Workout.objects.create(
                 tenant=self.tenant,
                 date=_date.today() - _td(days=i + 1),
                 status=WorkoutStatus.DONE,
                 category="strength",
-                activity="x" * 200 + str(i),
+                activity=f"Long activity description with many details {i:03d}",
                 duration_minutes=30,
+                rpe=8,
             )
-        out = envelope_fuel_state(self.tenant, max_chars=200)
-        self.assertLessEqual(len(out), 350)  # accounts for truncation suffix
+        out = envelope_fuel_state(self.tenant, max_chars=100)
+        self.assertIn("truncated", out)
+        # Truncation suffix adds ~50 chars; final string should stay within
+        # max_chars + suffix overhead.
+        self.assertLessEqual(len(out), 200)
 
 
 class EnvelopeFinanceStateTest(TestCase):
