@@ -598,13 +598,17 @@ class EnvelopeRecentJournalTest(TestCase):
 
 
 class RenderProfileSectionTest(TestCase):
+    """The Profile fetcher returns body only — the ``## Profile`` heading is
+    added by ``render_managed_region`` from the registered section's
+    ``heading`` attribute, not by the fetcher itself.
+    """
+
     def test_minimal_tenant_only_shows_preferred_channel(self):
         # Default tenant: display_name="Friend", timezone="UTC", language="en",
         # no city. preferred_channel always has a default ("telegram") and
         # is meaningful for routing/formatting decisions, so it always shows.
         tenant = create_tenant(display_name="Friend", telegram_chat_id=910100)
         out = render_profile_section(tenant)
-        self.assertIn("## Profile", out)
         self.assertIn("Preferred channel: telegram", out)
         # Defaults that should be skipped
         self.assertNotIn("Display name: Friend", out)
@@ -620,13 +624,23 @@ class RenderProfileSectionTest(TestCase):
         tenant.user.save()
 
         out = render_profile_section(tenant)
-        self.assertIn("## Profile", out)
         self.assertIn("Display name: Mike", out)
         self.assertIn("Timezone: Asia/Tokyo", out)
         self.assertIn("Preferred channel: line", out)
         self.assertIn("Location: Osaka", out)
         # Default language not included
         self.assertNotIn("Language:", out)
+
+    def test_full_profile_section_appears_in_managed_region(self):
+        """End-to-end: the ## Profile heading is added by render_managed_region."""
+        tenant = create_tenant(display_name="Mike", telegram_chat_id=910102)
+        tenant.user.timezone = "Asia/Tokyo"
+        tenant.user.preferred_channel = "line"
+        tenant.user.save()
+
+        out = render_managed_region(tenant)
+        self.assertIn("## Profile", out)
+        self.assertIn("Display name: Mike", out)
 
 
 # ─── Managed region ────────────────────────────────────────────────────────
@@ -642,8 +656,12 @@ class RenderManagedRegionTest(TestCase):
         self.assertIn(BEGIN_MARKER, out)
         self.assertIn(END_MARKER, out)
         self.assertIn("Last refreshed:", out)
-        # Friendly placeholder when no real state
-        self.assertIn("No active goals, tasks, lessons, fuel, finance, or journal", out)
+        # Profile always renders preferred_channel default, so the managed
+        # region is never *truly* empty for an active tenant. The agent's
+        # signal that there's no domain state is the absence of section
+        # headings (## Active goals, ## Open tasks, etc.) below Profile.
+        self.assertNotIn("## Active goals", out)
+        self.assertNotIn("## Open tasks", out)
 
     def test_includes_synthesis_hint(self):
         out = render_managed_region(self.tenant)

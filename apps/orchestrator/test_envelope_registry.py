@@ -12,7 +12,7 @@ from __future__ import annotations
 from unittest import mock
 
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from apps.orchestrator.envelope_registry import (
     _reset_registry_for_tests,
@@ -125,8 +125,14 @@ class TenantIdResolutionTest(TestCase):
         self.assertEqual(_resolve_tenant_id(_Bare()), None)
 
 
+@override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)
 class UniversalRefreshReceiverTest(TestCase):
-    """post_save / post_delete handler triggers push_user_md after commit."""
+    """post_save / post_delete handler triggers push_user_md after commit.
+
+    Runs with ``NBHD_DISABLE_BACKGROUND_THREADS=True`` so the registry
+    handler's on_commit callback executes synchronously — gives us
+    deterministic assertions on ``upload_workspace_file``.
+    """
 
     def setUp(self):
         cache.clear()
@@ -135,19 +141,20 @@ class UniversalRefreshReceiverTest(TestCase):
     def tearDown(self):
         cache.clear()
 
-    @mock.patch("apps.orchestrator.envelope_registry.threading.Thread")
-    def test_no_op_when_instance_has_no_tenant(self, mock_thread):
-        class _Orphan:
-            pass
+    def test_no_op_when_instance_has_no_tenant(self):
+        with mock.patch("apps.orchestrator.envelope_registry.threading.Thread") as mock_thread:
 
-        with self.captureOnCommitCallbacks(execute=True):
-            _universal_refresh_receiver(sender=_Orphan, instance=_Orphan())
-        mock_thread.assert_not_called()
+            class _Orphan:
+                pass
+
+            with self.captureOnCommitCallbacks(execute=True):
+                _universal_refresh_receiver(sender=_Orphan, instance=_Orphan())
+            mock_thread.assert_not_called()
 
     @mock.patch("apps.orchestrator.workspace_envelope.upload_workspace_file")
     @mock.patch("apps.orchestrator.workspace_envelope.download_workspace_file")
     def test_schedules_push_for_real_tenant_save(self, mock_download, mock_upload):
-        """A real instance with tenant_id triggers a debounced push."""
+        """A real instance with tenant_id triggers a synchronous push."""
         from apps.lessons.models import Lesson
 
         mock_download.return_value = None
@@ -158,7 +165,6 @@ class UniversalRefreshReceiverTest(TestCase):
                 source_type="conversation",
                 status="approved",
             )
-        # The receiver schedules a daemon-thread push; in the test runner
-        # the thread runs and ends up calling upload_workspace_file at
-        # least once (cache may debounce subsequent attempts).
+        # With background threads disabled, the on_commit callback runs
+        # push_user_md inline → upload_workspace_file fires synchronously.
         self.assertGreaterEqual(mock_upload.call_count, 1)

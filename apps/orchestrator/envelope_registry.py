@@ -144,6 +144,10 @@ def _universal_refresh_receiver(sender, instance, **kwargs) -> None:
     ``push_user_md`` on commit. Debounce + idempotency live in
     ``push_user_md``; the receiver just spawns a daemon thread so the
     request thread isn't blocked on the file-share write.
+
+    When ``settings.NBHD_DISABLE_BACKGROUND_THREADS`` is true (tests +
+    dev) the push runs synchronously inside the on_commit callback — no
+    thread, behavior is deterministic.
     """
     tenant_id = _resolve_tenant_id(instance)
     if tenant_id is None:
@@ -163,7 +167,12 @@ def _universal_refresh_receiver(sender, instance, **kwargs) -> None:
                 exc_info=True,
             )
 
-    transaction.on_commit(lambda: threading.Thread(target=_push, daemon=True).start())
+    from django.conf import settings
+
+    if getattr(settings, "NBHD_DISABLE_BACKGROUND_THREADS", False):
+        transaction.on_commit(_push)
+    else:
+        transaction.on_commit(lambda: threading.Thread(target=_push, daemon=True).start())
 
 
 def _resolve_tenant_id(instance) -> str | None:

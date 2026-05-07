@@ -60,8 +60,6 @@ _SYNTHESIS_HINT = (
     "interact — don't reason about them as siloed lists._"
 )
 
-_EMPTY_PLACEHOLDER = "_(No active goals, tasks, lessons, fuel, finance, or journal state yet.)_"
-
 
 def render_managed_region(tenant: Tenant) -> str:
     """The full managed block, sentinel markers included.
@@ -87,7 +85,6 @@ def render_managed_region(tenant: Tenant) -> str:
         "",
     ]
 
-    rendered_any = False
     for section in all_sections():
         try:
             if not section.enabled(tenant):
@@ -106,11 +103,6 @@ def render_managed_region(tenant: Tenant) -> str:
             continue
         parts.append(section.heading)
         parts.append(body)
-        parts.append("")
-        rendered_any = True
-
-    if not rendered_any:
-        parts.append(_EMPTY_PLACEHOLDER)
         parts.append("")
 
     parts.append(END_MARKER)
