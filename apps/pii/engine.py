@@ -17,7 +17,9 @@ import os
 
 logger = logging.getLogger(__name__)
 
-_pipeline = None
+# Sentinel so we can distinguish "not loaded yet" (None) from
+# "loading previously failed, don't keep retrying" (False).
+_pipeline: object | None | bool = None
 _pattern_recognizers = None
 
 # HuggingFace repo for the PII model (public, Apache 2.0 compatible).
@@ -33,9 +35,25 @@ _MODEL_PATH = os.environ.get(
 
 
 def get_pii_pipeline():
-    """Return a shared token-classification pipeline, initializing on first call."""
+    """Return a shared token-classification pipeline, initializing on first call.
+
+    Caches both success and failure: if the import or model load raises
+    once (typically a transformers/optimum ABI mismatch — see PR #447 →
+    prod breakage 2026-05-07), the sentinel is set to False so subsequent
+    calls return None immediately. This prevents the redactor from
+    spamming hundreds of identical tracebacks per second when a
+    dependency is misaligned.
+
+    Returns ``None`` when the pipeline is unavailable; callers must
+    fall back to pattern recognizers + return-original-text.
+    """
     global _pipeline
-    if _pipeline is None:
+    if _pipeline is False:
+        return None
+    if _pipeline is not None:
+        return _pipeline
+
+    try:
         from optimum.onnxruntime import ORTModelForTokenClassification
         from transformers import AutoTokenizer, pipeline
 
@@ -53,6 +71,18 @@ def get_pii_pipeline():
             aggregation_strategy="simple",
         )
         logger.info("PII detection model loaded (ONNX INT8) from %s", _MODEL_PATH)
+    except Exception:
+        # Cache the failure so we don't retry on every redaction call.
+        # Logged once at error level; further calls return None silently.
+        logger.error(
+            "PII detection model failed to initialize — disabling neural PII detection "
+            "for this process; falling back to pattern recognizers only. Restart the "
+            "container after fixing the dependency to retry.",
+            exc_info=True,
+        )
+        _pipeline = False
+        return None
+
     return _pipeline
 
 
