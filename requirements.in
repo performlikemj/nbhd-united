@@ -30,7 +30,12 @@ pgvector
 # PII redaction (outgoing LLM traffic)
 presidio-analyzer>=2.2    # Pattern recognizers only (credit card Luhn, IBAN checksum)
 onnxruntime>=1.16
-transformers>=5.8.0
+# Pinned <5.8 because transformers 5.8.0 removed `is_tf_available` from
+# `transformers.utils`, which optimum 1.14's `optimum.utils.input_generators`
+# imports. The resulting ImportError makes the PII redactor crash on every
+# message (PR #447 dependabot bump → prod breakage 2026-05-07).
+# Re-bump only after optimum publishes a 5.8-compatible release.
+transformers>=5.7.0,<5.8.0
 optimum[onnxruntime]>=1.14
 sentencepiece>=0.2
 
