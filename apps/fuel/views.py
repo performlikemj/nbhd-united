@@ -85,86 +85,26 @@ _logger = logging.getLogger(__name__)
 def _schedule_fuel_welcome(tenant):
     """Create a one-shot cron that sends a Fuel welcome message.
 
-    Fires ~5 minutes after enablement (gives config time to deploy).
-    Uses a date-specific cron expression so it fires exactly once,
-    then the prompt instructs the agent to self-remove the cron.
+    Fires ~5 minutes after enablement. Self-healing: if a previous
+    welcome cron is still registered with a fire date in the past
+    (e.g., the original scheduled fire happened during an outage and
+    the agent never self-removed), it is replaced with a fresh one.
 
-    Idempotent: skips when a ``_fuel:welcome`` cron is already scheduled.
-    Re-toggling the feature flag (off→on) while a previous welcome is
-    still pending becomes a no-op; once that pending cron has fired and
-    self-removed, a future toggle re-schedules cleanly. This makes the
-    backfill command (``python manage.py backfill_welcomes``) safe to
-    re-run without spamming users.
-
-    Best-effort — failures are logged, not raised.
+    Returns the ``WelcomeStatus`` enum so callers can distinguish
+    fresh schedule / stale replacement / pending skip / already
+    delivered. Raises on transport failure — callers that want
+    fire-and-forget semantics (live toggle path, QStash tasks)
+    should wrap; backfill and the watchdog surface failures so
+    telemetry is honest.
     """
-    import zoneinfo
-    from datetime import datetime, timedelta
+    from apps.orchestrator.welcome_scheduler import schedule_welcome
 
-    try:
-        from apps.cron.gateway_client import cron_exists, invoke_gateway_tool
-
-        if cron_exists(tenant, "_fuel:welcome"):
-            _logger.info(
-                "Fuel welcome already pending for tenant %s — skipping (idempotent)",
-                tenant.id,
-            )
-            return
-
-        # Already-delivered check: the agent calls
-        # /api/v1/tenants/runtime/<id>/welcomes/fuel/ after a successful
-        # nbhd_send_to_user, which sets ``Tenant.welcomes_sent['fuel']``.
-        # If that timestamp is set we don't re-send. (Re-toggling the
-        # feature flag intentionally clears it — see FuelSettingsView.)
-        sent = (tenant.welcomes_sent or {}).get("fuel")
-        if sent:
-            _logger.info(
-                "Fuel welcome already delivered for tenant %s at %s — skipping",
-                tenant.id,
-                sent,
-            )
-            return
-
-        user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
-        try:
-            tz = zoneinfo.ZoneInfo(user_tz)
-        except Exception:
-            tz = zoneinfo.ZoneInfo("UTC")
-
-        fire_at = datetime.now(tz) + timedelta(minutes=5)
-        # Date-specific cron expr: fires once (minute hour day month *)
-        cron_expr = f"{fire_at.minute} {fire_at.hour} {fire_at.day} {fire_at.month} *"
-
-        welcome_message = (
-            _FUEL_WELCOME_PROMPT_TEMPLATE.format(tenant_id=tenant.id)
-            + "\n\n---\n"
-            + "After sending the welcome (and marking it delivered if the send succeeded), "
-            + "remove this cron: `cron remove _fuel:welcome`"
-        )
-
-        invoke_gateway_tool(
-            tenant,
-            "cron.add",
-            {
-                "job": {
-                    "name": "_fuel:welcome",
-                    "schedule": {"kind": "cron", "expr": cron_expr, "tz": user_tz},
-                    "sessionTarget": "isolated",
-                    "payload": {
-                        "kind": "agentTurn",
-                        "message": welcome_message,
-                    },
-                    "delivery": {"mode": "none"},
-                    "enabled": True,
-                }
-            },
-        )
-        _logger.info("Scheduled fuel welcome cron for tenant %s (fires at %s)", tenant.id, fire_at.isoformat())
-    except Exception:
-        _logger.warning(
-            "Failed to schedule fuel welcome for tenant %s (user will get onboarding on next message)",
-            tenant.id,
-        )
+    return schedule_welcome(
+        tenant,
+        feature="fuel",
+        cron_name="_fuel:welcome",
+        prompt_template=_FUEL_WELCOME_PROMPT_TEMPLATE,
+    )
 
 
 class FuelSettingsView(APIView):

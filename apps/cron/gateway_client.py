@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC
 from typing import Any
 
 import requests
@@ -95,12 +96,52 @@ def invoke_gateway_tool(tenant: Tenant, tool: str, args: dict[str, Any]) -> dict
     return data.get("result", {})
 
 
-def cron_exists(tenant: Tenant, cron_name: str, *, include_disabled: bool = True) -> bool:
+def _next_fire_at(schedule: dict[str, Any]) -> datetime | None:
+    """Compute the next scheduled fire time for a cron schedule dict.
+
+    Accepts the gateway's schedule shape ``{"kind": "cron", "expr": ..., "tz": ...}``.
+    Returns a timezone-aware datetime in the schedule's tz, or ``None`` if the
+    expression cannot be parsed (caller should treat unknown as "fresh enough").
+    """
+    import zoneinfo
+    from datetime import datetime
+
+    from croniter import croniter
+
+    expr = schedule.get("expr") if isinstance(schedule, dict) else None
+    if not expr:
+        return None
+    tz_name = (schedule.get("tz") if isinstance(schedule, dict) else None) or "UTC"
+    try:
+        tz = zoneinfo.ZoneInfo(tz_name)
+    except Exception:
+        tz = zoneinfo.ZoneInfo("UTC")
+    try:
+        return croniter(expr, datetime.now(tz)).get_next(datetime)
+    except Exception:
+        return None
+
+
+def cron_exists(
+    tenant: Tenant,
+    cron_name: str,
+    *,
+    include_disabled: bool = True,
+    require_future_fire: bool = False,
+) -> bool:
     """Check whether a cron with the given name is currently scheduled.
 
     Used by welcome-scheduler dedup so re-toggling a feature flag doesn't
     create duplicate ``_finance:welcome`` / ``_fuel:welcome`` jobs while
     one is still pending.
+
+    With ``require_future_fire=True``, a job whose next fire time is in
+    the past (e.g., a date-pattern one-shot whose date already passed
+    without successful self-removal) is treated as not-existing — letting
+    the caller replace it. This is the right invariant for one-shot
+    welcome crons: an annual-recurring date pattern (``25 23 25 4 *``)
+    that didn't get cleaned up after firing would otherwise block
+    rescheduling for a year.
 
     On any gateway error, returns False (conservative — caller will
     proceed with scheduling, which is preferable to silently swallowing
@@ -118,4 +159,44 @@ def cron_exists(tenant: Tenant, cron_name: str, *, include_disabled: bool = True
         jobs = inner
     else:
         jobs = []
-    return any((isinstance(j, dict) and j.get("name") == cron_name) for j in jobs)
+
+    from datetime import datetime
+
+    for job in jobs:
+        if not (isinstance(job, dict) and job.get("name") == cron_name):
+            continue
+        if not require_future_fire:
+            return True
+        schedule = job.get("schedule") or {}
+        nxt = _next_fire_at(schedule)
+        if nxt is None:
+            # Unknown schedule shape — treat as fresh to avoid spurious
+            # replacement; humans can clean up the rare unparseable case.
+            return True
+        # croniter returns a naive datetime in the requested tz; normalize.
+        if nxt.tzinfo is None:
+            nxt = nxt.replace(tzinfo=UTC)
+        if nxt > datetime.now(nxt.tzinfo):
+            return True
+    return False
+
+
+def cron_remove(tenant: Tenant, cron_name: str) -> None:
+    """Remove a cron job by name from the tenant's gateway.
+
+    Used by welcome schedulers to clear a stale one-shot before adding a
+    fresh one. Idempotent at the gateway level — a missing job is not
+    treated as an error.
+
+    Raises ``GatewayError`` only on transport failure; missing-job
+    responses are swallowed.
+    """
+    try:
+        invoke_gateway_tool(tenant, "cron.remove", {"name": cron_name})
+    except GatewayError as exc:
+        # The gateway returns ok=false with "not found" when the cron is
+        # already gone. Anything else is a real failure worth raising.
+        msg = str(exc).lower()
+        if "not found" in msg or "no such" in msg:
+            return
+        raise

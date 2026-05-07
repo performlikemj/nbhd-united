@@ -34,4 +34,11 @@ def schedule_fuel_welcome_task(tenant_id: str) -> None:
     except FuelProfile.DoesNotExist:
         return
 
-    _schedule_fuel_welcome(tenant)
+    try:
+        _schedule_fuel_welcome(tenant)
+    except Exception:
+        # Fire-and-forget for the live toggle path: a failure here means
+        # the user gets organic onboarding on their next message instead
+        # of a proactive welcome. The daily reconcile_welcomes watchdog
+        # will retry. Logged so we have visibility.
+        logger.exception("schedule_fuel_welcome_task failed for tenant %s", tenant_id)
