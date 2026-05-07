@@ -62,39 +62,10 @@ def queue_memory_sync_on_document_save(sender, instance, **kwargs):
         transaction.on_commit(_publish)
 
 
-@receiver(post_save, sender=Document)
-def refresh_user_md_on_envelope_doc_save(sender, instance, **kwargs):
-    """Refresh ``workspace/USER.md`` whenever a goals/tasks doc is saved.
-
-    USER.md carries the platform-managed envelope (Profile + active goals +
-    open tasks + recent lessons) that OpenClaw injects into every agent turn
-    via the bootstrap mechanism. ``push_user_md`` is debounced (60s leading-
-    edge by default) so rapid edits collapse into a single file-share write.
-    """
-    # GOAL / TASKS feed envelope_goals / envelope_open_tasks. DAILY feeds
-    # envelope_recent_journal (Phase 2.6) — refresh on those too so the
-    # day-by-day preview line stays fresh.
-    if instance.kind not in (Document.Kind.GOAL, Document.Kind.TASKS, Document.Kind.DAILY):
-        return
-
-    tenant_id = str(instance.tenant_id)
-
-    def _push() -> None:
-        from apps.orchestrator.workspace_envelope import push_user_md
-
-        try:
-            push_user_md(tenant_id)
-        except Exception:
-            logger.warning(
-                "USER.md refresh after Document save failed for tenant %s",
-                tenant_id,
-                exc_info=True,
-            )
-
-    # transaction.on_commit + daemon thread mirrors the QStash publish
-    # pattern above: the request thread returns without blocking on the
-    # file-share write, but only after the document save has committed.
-    transaction.on_commit(lambda: threading.Thread(target=_push, daemon=True).start())
+# USER.md refresh on Document changes is auto-wired by the envelope
+# registry (apps/journal/envelope.py registers Document as a refresh
+# trigger for the goals + open-tasks + recent-journal sections). Don't
+# add a USER.md push handler here — that path is owned by the registry.
 
 
 @receiver(post_save, sender=Document)
