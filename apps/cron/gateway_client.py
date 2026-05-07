@@ -182,7 +182,11 @@ def cron_remove(tenant: Tenant, cron_name: str) -> None:
     responses are swallowed.
     """
     try:
-        invoke_gateway_tool(tenant, "cron.remove", {"name": cron_name})
+        # Gateway's cron.remove expects ``jobId`` (which accepts either
+        # the gateway's UUID or the cron's name field) — see existing
+        # usages in apps/cron/tenant_views.py. Passing ``name`` returns
+        # an HTTP 500 "tool execution failed" from the gateway.
+        invoke_gateway_tool(tenant, "cron.remove", {"jobId": cron_name})
     except GatewayError as exc:
         # The gateway returns ok=false with "not found" when the cron is
         # already gone. Anything else is a real failure worth raising.
