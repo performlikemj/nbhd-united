@@ -71,7 +71,10 @@ def refresh_user_md_on_envelope_doc_save(sender, instance, **kwargs):
     via the bootstrap mechanism. ``push_user_md`` is debounced (60s leading-
     edge by default) so rapid edits collapse into a single file-share write.
     """
-    if instance.kind not in (Document.Kind.GOAL, Document.Kind.TASKS):
+    # GOAL / TASKS feed envelope_goals / envelope_open_tasks. DAILY feeds
+    # envelope_recent_journal (Phase 2.6) — refresh on those too so the
+    # day-by-day preview line stays fresh.
+    if instance.kind not in (Document.Kind.GOAL, Document.Kind.TASKS, Document.Kind.DAILY):
         return
 
     tenant_id = str(instance.tenant_id)

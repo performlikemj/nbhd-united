@@ -1174,7 +1174,14 @@ class DocumentSaveSignalAsyncTest(TestCase):
 
     @override_settings(QSTASH_TOKEN="", API_BASE_URL="")
     def test_synchronous_fallback_when_qstash_unconfigured(self):
-        """Without QSTASH_TOKEN, the publish runs synchronously (no thread)."""
+        """Without QSTASH_TOKEN, the QStash publish runs synchronously.
+
+        Since Phase 2.6 added a separate USER.md refresh handler that always
+        uses ``threading.Thread`` (independent of QStash config), we can no
+        longer assert on the bare Thread mock. Instead we verify the QStash
+        publish ran in-thread (synchronous) by confirming the publish target
+        function name doesn't appear in any Thread() call.
+        """
         from unittest.mock import patch as _patch
 
         from apps.journal.models import Document
@@ -1191,12 +1198,23 @@ class DocumentSaveSignalAsyncTest(TestCase):
                     title="Test",
                     markdown="# Test\n",
                 )
-            mock_thread.assert_not_called()
+            # QStash publish handler should NOT have used a thread.
+            qstash_thread_calls = [
+                c
+                for c in mock_thread.call_args_list
+                if (target := c.kwargs.get("target")) is not None and target.__name__ == "_publish"
+            ]
+            self.assertEqual(qstash_thread_calls, [])
             mock_publish.assert_called_once_with("sync_documents_to_workspace", str(self.tenant.id))
 
     @override_settings(QSTASH_TOKEN="t_abc", API_BASE_URL="https://example.com")
     def test_threaded_publish_when_qstash_configured(self):
-        """With QStash configured, publish_task is invoked from a daemon thread."""
+        """With QStash configured, publish_task is invoked from a daemon thread.
+
+        Phase 2.6 added a USER.md refresh handler that ALSO uses Thread, so
+        we filter the mock's calls to just the QStash publish handler's
+        target (the inner ``_publish`` closure).
+        """
         from unittest.mock import MagicMock
         from unittest.mock import patch as _patch
 
@@ -1214,9 +1232,15 @@ class DocumentSaveSignalAsyncTest(TestCase):
                 title="Test",
                 markdown="# Test\n",
             )
-        mock_thread_cls.assert_called_once()
-        self.assertTrue(mock_thread_cls.call_args.kwargs.get("daemon"))
-        thread_instance.start.assert_called_once()
+        # Filter to the QStash publish handler's thread call.
+        qstash_thread_calls = [
+            c
+            for c in mock_thread_cls.call_args_list
+            if (target := c.kwargs.get("target")) is not None and target.__name__ == "_publish"
+        ]
+        self.assertEqual(len(qstash_thread_calls), 1)
+        self.assertTrue(qstash_thread_calls[0].kwargs.get("daemon"))
+        thread_instance.start.assert_called()
 
     @override_settings(QSTASH_TOKEN="t_abc", API_BASE_URL="https://example.com")
     def test_publish_failure_in_thread_does_not_propagate(self):

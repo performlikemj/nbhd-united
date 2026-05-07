@@ -151,6 +151,203 @@ def envelope_recent_lessons(tenant: Tenant, *, limit: int = 3) -> str:
     return "\n".join(out)
 
 
+# ─── Pillar fetchers (Phase 2.6) ───────────────────────────────────────────
+#
+# Each returns markdown for its section, or empty string when there's nothing
+# meaningful to show. Gating by feature flag (``tenant.fuel_enabled`` /
+# ``tenant.finance_enabled``) is handled in ``render_managed_region`` so the
+# helpers themselves stay simple and unit-testable in isolation.
+
+
+def envelope_fuel_state(tenant: Tenant, *, max_chars: int = 1000) -> str:
+    """Today's planned workout, recent done workouts, body weight, sleep.
+
+    Designed to fit two usage patterns:
+    - Forward-planners: shows today's planned session prominently.
+    - Retrospective loggers: shows recent done sessions so the agent can
+      reason about cadence and recovery.
+    """
+    from datetime import date as _date
+    from datetime import timedelta as _timedelta
+
+    from apps.fuel.models import BodyWeightLog, SleepLog, Workout, WorkoutStatus
+
+    today = _date.today()
+    sections: list[str] = []
+
+    planned_today = Workout.objects.filter(
+        tenant=tenant,
+        status=WorkoutStatus.PLANNED,
+        date=today,
+    ).first()
+    if planned_today:
+        bits = [f"- **Today**: {planned_today.activity} ({planned_today.category})"]
+        if planned_today.scheduled_at:
+            bits[0] += f" at {planned_today.scheduled_at.astimezone().strftime('%H:%M %Z')}"
+        if planned_today.duration_minutes:
+            bits[0] += f" — {planned_today.duration_minutes} min"
+        sections.append("\n".join(bits))
+
+    recent_done = list(
+        Workout.objects.filter(
+            tenant=tenant,
+            status=WorkoutStatus.DONE,
+            date__gte=today - _timedelta(days=14),
+        ).order_by("-date")[:3]
+    )
+    if recent_done:
+        lines = ["**Recent sessions** (last 14d):"]
+        for w in recent_done:
+            line = f"- {w.date.isoformat()} — {w.activity} ({w.category}"
+            if w.rpe:
+                line += f", RPE {w.rpe}"
+            if w.duration_minutes:
+                line += f", {w.duration_minutes}m"
+            line += ")"
+            lines.append(line)
+        sections.append("\n".join(lines))
+
+    last_weight = BodyWeightLog.objects.filter(tenant=tenant).order_by("-date").first()
+    if last_weight:
+        weight_line = f"- **Body weight**: {last_weight.weight_kg} kg ({last_weight.date.isoformat()})"
+        prior = (
+            BodyWeightLog.objects.filter(tenant=tenant, date__lte=last_weight.date - _timedelta(days=6))
+            .order_by("-date")
+            .first()
+        )
+        if prior and prior.weight_kg != last_weight.weight_kg:
+            delta = float(last_weight.weight_kg) - float(prior.weight_kg)
+            sign = "+" if delta > 0 else ""
+            weight_line += f" — {sign}{delta:.1f} kg vs {prior.date.isoformat()}"
+        sections.append(weight_line)
+
+    last_sleep = SleepLog.objects.filter(tenant=tenant).order_by("-date").first()
+    if last_sleep:
+        sleep_line = f"- **Last sleep**: {last_sleep.duration_hours}h ({last_sleep.date.isoformat()})"
+        if last_sleep.quality is not None:
+            sleep_line += f", quality {last_sleep.quality}/5"
+        sections.append(sleep_line)
+
+    if not sections:
+        return ""
+
+    body = "\n\n".join(sections)
+    if len(body) > max_chars:
+        body = body[:max_chars].rstrip() + "\n_(truncated — call nbhd_fuel_summary for full state)_"
+    return body
+
+
+def envelope_finance_state(tenant: Tenant, *, max_chars: int = 1000) -> str:
+    """Total debt, active payoff plan, top-priority account, recent payment."""
+    from datetime import date as _date
+    from datetime import timedelta as _timedelta
+    from decimal import Decimal
+
+    from apps.finance.models import FinanceAccount, FinanceTransaction, PayoffPlan
+
+    sections: list[str] = []
+
+    active_accounts = list(FinanceAccount.objects.filter(tenant=tenant, is_active=True))
+    if not active_accounts:
+        return ""
+
+    debts = [a for a in active_accounts if a.is_debt]
+    total_debt = sum((a.current_balance for a in debts), Decimal("0"))
+
+    summary_line = f"- **Active accounts**: {len(active_accounts)} ({len(debts)} debts)"
+    if debts:
+        summary_line += f", total debt **${total_debt:,.2f}**"
+    sections.append(summary_line)
+
+    plan = PayoffPlan.objects.filter(tenant=tenant, is_active=True).order_by("-created_at").first()
+    if plan:
+        plan_line = (
+            f"- **Active plan**: {plan.strategy} — {plan.payoff_months} months, "
+            f"payoff by {plan.payoff_date.isoformat()}, "
+            f"${plan.monthly_budget:,.2f}/mo"
+        )
+        sections.append(plan_line)
+
+    if debts:
+        if plan and plan.strategy == PayoffPlan.Strategy.AVALANCHE:
+            priority = max(debts, key=lambda a: a.interest_rate or Decimal("0"))
+            priority_line = (
+                f"- **Top-priority debt** (avalanche): {priority.nickname} — ${priority.current_balance:,.2f}"
+            )
+            if priority.interest_rate:
+                priority_line += f" @ {priority.interest_rate}% APR"
+        else:
+            priority = min(debts, key=lambda a: a.current_balance)
+            priority_line = (
+                f"- **Top-priority debt** (snowball): {priority.nickname} — ${priority.current_balance:,.2f}"
+            )
+            if priority.minimum_payment:
+                priority_line += f", min ${priority.minimum_payment:,.2f}/mo"
+        sections.append(priority_line)
+
+    today = _date.today()
+    upcoming = [a for a in debts if a.due_day and 0 <= ((a.due_day - today.day) % 31) <= 7 and a.minimum_payment]
+    if upcoming:
+        due_lines = ["**Upcoming due dates** (next 7 days):"]
+        for a in upcoming[:5]:
+            due_lines.append(f"- {a.nickname} — ${a.minimum_payment:,.2f} on day {a.due_day}")
+        sections.append("\n".join(due_lines))
+
+    recent_tx = (
+        FinanceTransaction.objects.filter(tenant=tenant, date__gte=today - _timedelta(days=14))
+        .select_related("account")
+        .order_by("-date", "-created_at")[:3]
+    )
+    recent_list = list(recent_tx)
+    if recent_list:
+        tx_lines = ["**Recent transactions**:"]
+        for t in recent_list:
+            tx_lines.append(f"- {t.date.isoformat()} — {t.transaction_type} ${t.amount:,.2f} → {t.account.nickname}")
+        sections.append("\n".join(tx_lines))
+
+    body = "\n\n".join(sections)
+    if len(body) > max_chars:
+        body = body[:max_chars].rstrip() + "\n_(truncated — call nbhd_finance_summary for full state)_"
+    return body
+
+
+def envelope_recent_journal(tenant: Tenant, *, limit: int = 3, preview_chars: int = 250) -> str:
+    """Last few daily-note documents, excluding today (still volatile).
+
+    Today's daily note is the agent's working canvas during a turn — pre-baking
+    a stale snapshot would mislead. The preamble's load instruction handles
+    today's note via ``nbhd_daily_note_get``. This section gives the agent a
+    glance of the last ~3 days for trend awareness.
+    """
+    from datetime import date as _date
+
+    from apps.journal.models import Document
+
+    today_iso = _date.today().isoformat()
+    docs = list(
+        Document.objects.filter(tenant=tenant, kind=Document.Kind.DAILY)
+        .exclude(slug=today_iso)
+        .order_by("-updated_at")[:limit]
+    )
+    if not docs:
+        return ""
+
+    lines: list[str] = []
+    for doc in docs:
+        title = (doc.title or doc.slug or "(untitled)").strip()
+        body = (doc.markdown or "").strip()
+        if not body:
+            continue
+        first = body.splitlines()[0].strip().lstrip("# ").strip()
+        rest = " ".join(body.replace(first, "", 1).split())
+        preview = (first + " — " + rest).strip(" —")
+        if len(preview) > preview_chars:
+            preview = preview[: preview_chars - 1].rstrip() + "…"
+        lines.append(f"- **{title}**: {preview}")
+
+    return "\n".join(lines)
+
+
 def render_profile_section(tenant: Tenant) -> str:
     """Compact profile block — lines for fields the user has actually set.
 
@@ -197,11 +394,18 @@ def render_managed_region(tenant: Tenant) -> str:
     Always present, even when the tenant has no envelope state — so the agent
     can rely on the markers existing in USER.md and so subsequent merges have
     something deterministic to replace.
+
+    Pillar sections (Fuel, Finance) are gated by per-tenant feature flags so
+    a tenant that hasn't enabled Gravity doesn't see a finance section taking
+    up tokens for nothing.
     """
     profile = render_profile_section(tenant)
     goals = envelope_goals(tenant)
     tasks = envelope_open_tasks(tenant)
     lessons = envelope_recent_lessons(tenant)
+    fuel = envelope_fuel_state(tenant) if getattr(tenant, "fuel_enabled", False) else ""
+    finance = envelope_finance_state(tenant) if getattr(tenant, "finance_enabled", False) else ""
+    journal = envelope_recent_journal(tenant)
 
     refreshed_at = datetime.now(UTC).replace(microsecond=0).isoformat()
 
@@ -212,12 +416,18 @@ def render_managed_region(tenant: Tenant) -> str:
         "",
         f"_Last refreshed: {refreshed_at}_",
         "",
+        "_Treat the sections below as a coherent snapshot. When responding, "
+        "consider how Goals, Open tasks, Fuel, Finance, and recent Journal "
+        "interact — don't reason about them as siloed lists._",
+        "",
     ]
 
     if profile:
         parts.append(profile)
 
-    if goals or tasks or lessons:
+    has_state = any([goals, tasks, lessons, fuel, finance, journal])
+
+    if has_state:
         if goals:
             parts.append("## Active goals")
             parts.append(goals)
@@ -226,12 +436,24 @@ def render_managed_region(tenant: Tenant) -> str:
             parts.append("## Open tasks")
             parts.append(tasks)
             parts.append("")
+        if fuel:
+            parts.append("## Fuel — fitness state")
+            parts.append(fuel)
+            parts.append("")
+        if finance:
+            parts.append("## Gravity — finance state")
+            parts.append(finance)
+            parts.append("")
         if lessons:
             parts.append("## Recent lessons")
             parts.append(lessons)
             parts.append("")
+        if journal:
+            parts.append("## Recent journal")
+            parts.append(journal)
+            parts.append("")
     else:
-        parts.append("_(No active goals, open tasks, or recent lessons yet.)_")
+        parts.append("_(No active goals, tasks, lessons, fuel, finance, or journal state yet.)_")
         parts.append("")
 
     parts.append(END_MARKER)
