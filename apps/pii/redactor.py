@@ -406,9 +406,16 @@ def _detect_pii(
 
     results: list[DetectedEntity] = []
 
-    # 1. DeBERTa model — contextual PII
-    pii_pipeline = get_pii_pipeline()
-    model_results = pii_pipeline(text)
+    # 1. DeBERTa model — contextual PII (best effort).
+    # If the model failed to load (ABI mismatch, missing weights), the
+    # engine raises the cached load error. We swallow it here without
+    # logging — the engine logs once at error level on first failure.
+    # Pattern recognizers below still run, so financial PII stays redacted.
+    try:
+        pii_pipeline = get_pii_pipeline()
+        model_results = pii_pipeline(text)
+    except Exception:
+        model_results = []
 
     for ent in model_results:
         if ent["score"] < score_threshold:
