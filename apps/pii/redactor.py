@@ -26,6 +26,33 @@ logger = logging.getLogger(__name__)
 _PLACEHOLDER_RE = re.compile(r"\[([A-Z_]+)_(\d+)\]")
 
 
+# Set once per process when redaction first encounters an exception type.
+# Prevents the same dependency-mismatch traceback from being logged on every
+# message — a single line is enough signal that the model is unavailable.
+_logged_redaction_error_types: set[type] = set()
+
+
+def _log_redaction_failure_throttled(message: str, exc: BaseException) -> None:
+    """Log a redaction failure once per exception type per process.
+
+    Subsequent failures of the same exception type are suppressed so the
+    fallback-to-original path doesn't spam tracebacks. First occurrence
+    is logged with full traceback; later occurrences are debug-level
+    only (and visible if the logger is configured to debug).
+    """
+    exc_type = type(exc)
+    if exc_type not in _logged_redaction_error_types:
+        _logged_redaction_error_types.add(exc_type)
+        logger.error(
+            "%s (first occurrence in this process; further %s tracebacks suppressed)",
+            message,
+            exc_type.__name__,
+            exc_info=exc,
+        )
+    else:
+        logger.debug("%s (%s suppressed)", message, exc_type.__name__)
+
+
 @dataclass
 class DetectedEntity:
     """A detected PII span — unified interface for DeBERTa + Presidio results."""
@@ -79,8 +106,8 @@ def redact_text(
             entity_map={},
         )
         return result
-    except Exception:
-        logger.exception("PII redaction failed — returning original text")
+    except Exception as exc:
+        _log_redaction_failure_throttled("PII redaction failed — returning original text", exc)
         return text
 
 
@@ -139,8 +166,8 @@ class RedactionSession:
                 entity_map=self.entity_map,
             )
             return result
-        except Exception:
-            logger.exception("PII redaction failed — returning original text")
+        except Exception as exc:
+            _log_redaction_failure_throttled("PII redaction failed — returning original text", exc)
             return text
 
 
@@ -199,8 +226,8 @@ def redact_user_message(
 
     try:
         return _redact_user_message(text, tenant, policy, allow_user_name=allow_user_name)
-    except Exception:
-        logger.exception("User message PII redaction failed — returning original")
+    except Exception as exc:
+        _log_redaction_failure_throttled("User message PII redaction failed — returning original", exc)
         return text
 
 
@@ -332,8 +359,8 @@ def redact_tool_response(data: Any, tenant: Tenant) -> Any:
 
     try:
         return _redact_tool_value(data, tenant, policy, _TOOL_SKIP_KEYS)
-    except Exception:
-        logger.exception("Tool response PII redaction failed — returning original")
+    except Exception as exc:
+        _log_redaction_failure_throttled("Tool response PII redaction failed — returning original", exc)
         return data
 
 
