@@ -33,6 +33,7 @@ urlpatterns = [
     path("run-reseed-lessons/", views.run_reseed_lessons, name="cron-run-reseed-lessons"),
     path("verify-gateway-tools/", views.verify_gateway_tools, name="cron-verify-gateway-tools"),
     path("register-system-crons/", views.register_system_crons, name="cron-register-system-crons"),
+    path("backfill-welcomes/", views.backfill_welcomes, name="cron-backfill-welcomes"),
     path("broadcast-message/", views.broadcast_message, name="cron-broadcast-message"),
     path("dedup-crons/", views.dedup_crons, name="cron-dedup-crons"),
     path("run-health-check/", views.run_health_check, name="cron-run-health-check"),

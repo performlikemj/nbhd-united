@@ -84,9 +84,7 @@ class Command(BaseCommand):
                     self.stdout.write(self.style.ERROR(f"  finance: {short} — {exc}"))
 
         self.stdout.write(
-            self.style.SUCCESS(
-                f"Done: fuel={scheduled_fuel}, finance={scheduled_finance}, errors={failed}"
-            )
+            self.style.SUCCESS(f"Done: fuel={scheduled_fuel}, finance={scheduled_finance}, errors={failed}")
         )
         self.stdout.write(
             "Note: idempotency means a tenant whose welcome cron is already "

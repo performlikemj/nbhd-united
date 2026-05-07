@@ -728,6 +728,59 @@ def bump_all_pending_configs(request):
 
 
 @csrf_exempt
+def backfill_welcomes(request):
+    """Schedule Fuel/Gravity welcome crons for active tenants who never got one.
+
+    Called by CI after deploy to cover the SOL gap: tenants who enabled a
+    feature *before* the welcome cron mechanism shipped, plus tenants whose
+    welcome failed transiently on a prior deploy. The underlying schedulers
+    (``_schedule_fuel_welcome`` / ``_schedule_finance_welcome``) are
+    idempotent — they check the container's cron list for a pending
+    ``_<feature>:welcome`` and skip when one exists, so re-running is safe.
+
+    Auth: X-Deploy-Secret header must match DEPLOY_SECRET setting.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    if not deploy_secret:
+        logger.error("DEPLOY_SECRET not configured — backfill_welcomes rejected")
+        return JsonResponse({"error": "Not configured"}, status=503)
+
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not provided or provided != deploy_secret:
+        logger.warning("Unauthorized backfill_welcomes attempt")
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    tenants = list(Tenant.objects.select_related("user").filter(status=Tenant.Status.ACTIVE).exclude(container_id=""))
+    counts = {"fuel": 0, "finance": 0, "errors": 0}
+
+    for tenant in tenants:
+        if tenant.fuel_enabled:
+            try:
+                from apps.fuel.views import _schedule_fuel_welcome
+
+                _schedule_fuel_welcome(tenant)
+                counts["fuel"] += 1
+            except Exception:
+                counts["errors"] += 1
+                logger.warning("backfill_welcomes: fuel failed for %s", str(tenant.id)[:8], exc_info=True)
+        if tenant.finance_enabled:
+            try:
+                from apps.finance.views import _schedule_finance_welcome
+
+                _schedule_finance_welcome(tenant)
+                counts["finance"] += 1
+            except Exception:
+                counts["errors"] += 1
+                logger.warning("backfill_welcomes: finance failed for %s", str(tenant.id)[:8], exc_info=True)
+
+    logger.info("backfill_welcomes: %s", counts)
+    return JsonResponse({"tenants_walked": len(tenants), **counts})
+
+
+@csrf_exempt
 def register_system_crons(request):
     """Register system QStash cron schedules from CI after deploy.
 

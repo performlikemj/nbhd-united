@@ -326,6 +326,21 @@ jobs:
             "$DJANGO_URL/api/cron/register-system-crons/" \
             || echo "Warning: register-system-crons failed (non-fatal)"
 
+      - name: Backfill Fuel/Gravity welcome crons
+        run: |
+          # Schedule welcome crons for active tenants who enabled the
+          # feature before the welcome mechanism shipped (or whose welcome
+          # failed transiently on a prior deploy). The endpoint calls
+          # _schedule_fuel_welcome / _schedule_finance_welcome which are
+          # idempotent — they skip when a _<feature>:welcome cron is
+          # already pending in the container. Re-running is safe.
+          DJANGO_URL="https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io"
+          curl -sf -X POST \
+            -H "X-Deploy-Secret: ${{ secrets.DEPLOY_SECRET }}" \
+            -H "Content-Type: application/json" \
+            "$DJANGO_URL/api/cron/backfill-welcomes/" \
+            || echo "Warning: backfill-welcomes failed (non-fatal — manual: python manage.py backfill_welcomes)"
+
       - name: One-shot — fleet OpenClaw image bump (BYO rollout)
         if: github.event_name == 'workflow_dispatch' && inputs.rollout_byo_image_bump == 'true'
         run: |
