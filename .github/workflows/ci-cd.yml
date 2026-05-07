@@ -132,6 +132,16 @@ jobs:
           DEBUG: "True"
           DATABASE_URL: postgres://test_user:test_password@localhost:5432/test_db
           ALLOWED_HOSTS: "*"
+          # Force on_commit callbacks to run synchronously in tests so
+          # daemon-thread USER.md pushes (envelope registry) and QStash
+          # publishes (journal post_save) don't outlive the test runner
+          # and hold DB connections open during teardown.
+          NBHD_DISABLE_BACKGROUND_THREADS: "True"
+          # Tests trigger model post_save → registry → push_user_md, which
+          # would otherwise call real Azure storage. Mock keeps tests fast
+          # (otherwise each save burns ~30s on DefaultAzureCredential
+          # timeouts).
+          AZURE_MOCK: "true"
         run: |
           python manage.py makemigrations --check --dry-run
           python manage.py migrate --noinput
