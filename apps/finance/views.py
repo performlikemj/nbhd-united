@@ -167,7 +167,7 @@ class FinanceDashboardView(APIView):
         return Response(serializer.data)
 
 
-_FINANCE_WELCOME_PROMPT = (
+_FINANCE_WELCOME_PROMPT_TEMPLATE = (
     "Gravity (the user's finance-tracking module) was just enabled. Send them "
     "a brief, warm welcome via `nbhd_send_to_user` letting them know their "
     "finance assistant is ready. Keep it to 2-3 sentences — mention you can "
@@ -176,8 +176,21 @@ _FINANCE_WELCOME_PROMPT = (
     "share what they'd like to start with whenever they're ready. Don't "
     "start a full questionnaire in this message — just open the door.\n\n"
     "**Do NOT ask questions in this message.** Just welcome them and let "
-    "them know you're here when they want to set things up."
+    "them know you're here when they want to set things up.\n\n"
+    "**After `nbhd_send_to_user` succeeds**, mark the welcome as delivered "
+    "so the deploy-time backfill knows not to re-send. Run via Bash:\n"
+    "  curl -fsS -X POST \\\n"
+    '    "$NBHD_API_BASE_URL/api/v1/tenants/runtime/{tenant_id}/welcomes/finance/" \\\n'
+    '    -H "X-NBHD-Internal-Key: $NBHD_INTERNAL_API_KEY" \\\n'
+    '    -H "X-NBHD-Tenant-Id: {tenant_id}"\n\n'
+    "If `nbhd_send_to_user` returned an error (timeout, channel rejection, "
+    "etc.), DO NOT run the curl — leave the welcome unmarked so the next "
+    "deploy's backfill retries."
 )
+
+
+# Backwards-compat alias for ``_KNOWN_DEFAULT_PREFIXES``-style heuristics.
+_FINANCE_WELCOME_PROMPT = _FINANCE_WELCOME_PROMPT_TEMPLATE
 
 
 def _schedule_finance_welcome(tenant) -> None:
@@ -210,6 +223,18 @@ def _schedule_finance_welcome(tenant) -> None:
             )
             return
 
+        # Already-delivered check via Tenant.welcomes_sent. The agent
+        # marks delivery via /api/v1/tenants/runtime/<id>/welcomes/finance/
+        # after a successful nbhd_send_to_user — see prompt template.
+        sent = (tenant.welcomes_sent or {}).get("finance")
+        if sent:
+            logger.info(
+                "Finance welcome already delivered for tenant %s at %s — skipping",
+                tenant.id,
+                sent,
+            )
+            return
+
         user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
         try:
             tz = zoneinfo.ZoneInfo(user_tz)
@@ -221,9 +246,10 @@ def _schedule_finance_welcome(tenant) -> None:
         cron_expr = f"{fire_at.minute} {fire_at.hour} {fire_at.day} {fire_at.month} *"
 
         welcome_message = (
-            _FINANCE_WELCOME_PROMPT
+            _FINANCE_WELCOME_PROMPT_TEMPLATE.format(tenant_id=tenant.id)
             + "\n\n---\n"
-            + "After sending the welcome, remove this cron: `cron remove _finance:welcome`"
+            + "After sending the welcome (and marking it delivered if the send succeeded), "
+            + "remove this cron: `cron remove _finance:welcome`"
         )
 
         invoke_gateway_tool(
@@ -274,7 +300,20 @@ class FinanceSettingsView(APIView):
 
         was_enabled = tenant.finance_enabled
         tenant.finance_enabled = bool(finance_enabled)
-        tenant.save(update_fields=["finance_enabled"])
+        update_fields = ["finance_enabled"]
+
+        # On a fresh enable (off → on), clear any previous delivery
+        # marker so the welcome re-fires. This is the supported path for
+        # users who want to re-experience the welcome — disable, then
+        # re-enable. The delivery-tracking idempotency check would
+        # otherwise skip them.
+        if tenant.finance_enabled and not was_enabled:
+            marks = dict(tenant.welcomes_sent or {})
+            if marks.pop("finance", None) is not None:
+                tenant.welcomes_sent = marks
+                update_fields.append("welcomes_sent")
+
+        tenant.save(update_fields=update_fields)
         tenant.bump_pending_config()
 
         # First-enable: schedule the welcome cron via QStash with a delay

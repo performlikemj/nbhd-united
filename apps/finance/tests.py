@@ -1383,6 +1383,26 @@ class FinanceWelcomeIdempotencyTests(TestCase):
         for call in mock_invoke.call_args_list:
             self.assertNotEqual(call.args[1] if len(call.args) > 1 else call.kwargs.get("tool"), "cron.add")
 
+    def test_skips_when_welcome_already_delivered(self):
+        """welcomes_sent['finance'] set → no re-schedule even if no pending cron."""
+        from apps.finance.views import _schedule_finance_welcome
+
+        self.tenant.welcomes_sent = {"finance": "2026-05-07T03:00:00+00:00"}
+        self.tenant.save(update_fields=["welcomes_sent"])
+
+        with (
+            self._patch(
+                "apps.cron.gateway_client.cron_exists",
+                return_value=False,
+            ),
+            self._patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
+        ):
+            _schedule_finance_welcome(self.tenant)
+
+        # No cron.add — already delivered.
+        for call in mock_invoke.call_args_list:
+            self.assertNotEqual(call.args[1] if len(call.args) > 1 else call.kwargs.get("tool"), "cron.add")
+
     def test_schedules_when_no_welcome_pending(self):
         from apps.finance.views import _schedule_finance_welcome
 
@@ -1400,3 +1420,88 @@ class FinanceWelcomeIdempotencyTests(TestCase):
         # invoke_gateway_tool(tenant, "cron.add", {"job": {...}})
         self.assertEqual(args[1], "cron.add")
         self.assertEqual(args[2]["job"]["name"], "_finance:welcome")
+        # Prompt has been formatted with the tenant id (no unfilled placeholders).
+        message = args[2]["job"]["payload"]["message"]
+        self.assertIn(str(self.tenant.id), message)
+        self.assertNotIn("{tenant_id}", message)
+
+
+class FinanceSettingsViewClearsDeliveryFlagTests(TestCase):
+    """Re-enabling Gravity (off→on) clears any prior welcomes_sent['finance']
+    so the welcome re-fires for users who want to retest the experience.
+    """
+
+    def setUp(self):
+        from unittest.mock import patch as _patch
+
+        self.tenant = create_tenant(display_name="Toggle", telegram_chat_id=900260)
+        self.client = APIClient()
+        token = RefreshToken.for_user(self.tenant.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.access_token}")
+        self._patch = _patch
+
+    def test_off_to_on_clears_delivery_marker(self):
+        # Pretend a previous welcome was delivered, then user disabled.
+        self.tenant.finance_enabled = False
+        self.tenant.welcomes_sent = {"finance": "2026-05-07T03:00:00+00:00"}
+        self.tenant.save(update_fields=["finance_enabled", "welcomes_sent"])
+
+        with self._patch("apps.cron.publish.publish_task"):
+            response = self.client.patch(
+                "/api/v1/finance/settings/",
+                {"finance_enabled": True},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.tenant.refresh_from_db()
+        self.assertNotIn("finance", self.tenant.welcomes_sent)
+
+
+class RuntimeWelcomeMarkViewTests(TestCase):
+    """The agent calls /api/v1/tenants/runtime/<id>/welcomes/<feature>/ after
+    a successful nbhd_send_to_user, which sets the delivery timestamp.
+    """
+
+    def setUp(self):
+        from django.test import override_settings
+
+        self.tenant = create_tenant(display_name="MarkAck", telegram_chat_id=900270)
+        self.client = APIClient()
+        self._override = override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+        self._override.enable()
+
+    def tearDown(self):
+        self._override.disable()
+
+    def _post(self, feature: str, *, key="test-internal-key", tenant_id=None):
+        return self.client.post(
+            f"/api/v1/tenants/runtime/{tenant_id or self.tenant.id}/welcomes/{feature}/",
+            format="json",
+            HTTP_X_NBHD_INTERNAL_KEY=key,
+            HTTP_X_NBHD_TENANT_ID=str(tenant_id or self.tenant.id),
+        )
+
+    def test_marks_finance_delivered(self):
+        response = self._post("finance")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["feature"], "finance")
+        self.tenant.refresh_from_db()
+        self.assertIn("finance", self.tenant.welcomes_sent)
+
+    def test_marks_fuel_delivered(self):
+        response = self._post("fuel")
+        self.assertEqual(response.status_code, 200)
+        self.tenant.refresh_from_db()
+        self.assertIn("fuel", self.tenant.welcomes_sent)
+
+    def test_unknown_feature_400(self):
+        response = self._post("widgets")
+        self.assertEqual(response.status_code, 400)
+
+    def test_missing_internal_key_401(self):
+        response = self._post("finance", key="")
+        self.assertEqual(response.status_code, 401)
+
+    def test_wrong_internal_key_401(self):
+        response = self._post("finance", key="wrong-key")
+        self.assertEqual(response.status_code, 401)
