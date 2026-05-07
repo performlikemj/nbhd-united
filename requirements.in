@@ -1,5 +1,5 @@
 # Core
-Django>=5.1,<5.3
+Django>=6.0.5,<6.1
 djangorestframework>=3.15
 django-cors-headers
 django-environ
