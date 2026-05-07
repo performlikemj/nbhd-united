@@ -25,8 +25,14 @@ from unittest import mock
 from django.core.cache import cache
 from django.test import TestCase, override_settings
 
+from apps.finance.envelope import render_finance as envelope_finance_state
+from apps.fuel.envelope import render_fuel as envelope_fuel_state
+from apps.journal.envelope import render_goals as envelope_goals
+from apps.journal.envelope import render_open_tasks as envelope_open_tasks
+from apps.journal.envelope import render_recent_journal as envelope_recent_journal
 from apps.journal.models import Document
 from apps.journal.services import STARTER_DOCUMENT_TEMPLATES
+from apps.lessons.envelope import render_recent_lessons as envelope_recent_lessons
 from apps.lessons.models import Lesson
 from apps.orchestrator.config_generator import (
     _CRON_CONTEXT_PREAMBLE,
@@ -36,17 +42,11 @@ from apps.orchestrator.config_generator import (
 from apps.orchestrator.workspace_envelope import (
     BEGIN_MARKER,
     END_MARKER,
-    envelope_finance_state,
-    envelope_fuel_state,
-    envelope_goals,
-    envelope_open_tasks,
-    envelope_recent_journal,
-    envelope_recent_lessons,
     merge_into_user_md,
     push_user_md,
     render_managed_region,
-    render_profile_section,
 )
+from apps.tenants.envelope import render_profile as render_profile_section
 from apps.tenants.services import create_tenant
 
 

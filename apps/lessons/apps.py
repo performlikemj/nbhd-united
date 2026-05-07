@@ -6,4 +6,6 @@ class LessonsConfig(AppConfig):
     name = "apps.lessons"
 
     def ready(self):
-        import apps.lessons.signals  # noqa: F401
+        # Register the Recent lessons section in the envelope registry.
+        # Signal handlers are auto-wired by ``register_section``.
+        import apps.lessons.envelope  # noqa: F401
