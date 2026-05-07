@@ -571,13 +571,19 @@ class LineWebhookView(View):
         events = body.get("events", [])
 
         # 3. Process each event asynchronously
-        # LINE requires 200 within 1 second — never block here
+        # LINE requires 200 within 1 second — never block here.
+        # In tests we run handlers inline so daemon threads don't hold DB
+        # connections past test_db teardown.
+        disable_threads = getattr(settings, "NBHD_DISABLE_BACKGROUND_THREADS", False)
         for event in events:
-            threading.Thread(
-                target=self._handle_event,
-                args=(event,),
-                daemon=True,
-            ).start()
+            if disable_threads:
+                self._handle_event(event)
+            else:
+                threading.Thread(
+                    target=self._handle_event,
+                    args=(event,),
+                    daemon=True,
+                ).start()
 
         return HttpResponse(status=200)
 
