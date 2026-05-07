@@ -507,6 +507,38 @@ _FUEL_WORKOUT_PREP_PROMPT = (
 # point. See runtime/openclaw/plugins/nbhd-fuel-tools/index.js.
 
 
+_GRAVITY_WEEKLY_PROMPT = (
+    "Sunday-evening Gravity check-in. The user has finance tracking enabled.\n\n"
+    "USER.md (already in your context) carries the Gravity finance section: "
+    "active accounts + total debt, active payoff plan, top-priority debt by "
+    "the user's chosen strategy, upcoming due dates, recent transactions. "
+    "Do NOT call `nbhd_finance_summary` at the top — USER.md already has the "
+    "snapshot. Only call finance tools when you need detail USER.md doesn't "
+    "carry (full transaction history, mid-strategy comparisons, etc.).\n\n"
+    "Send the user exactly ONE message via `nbhd_send_to_user` that:\n"
+    "  - Opens with a brief acknowledgement of progress this week (debt down, "
+    "payment made, milestone hit) OR a flag if something needs attention "
+    "(missed payment, due date in next 7 days)\n"
+    "  - Surfaces the top-priority debt + the next concrete payment they "
+    "should make\n"
+    "  - If a due date falls within the coming week, name it explicitly\n"
+    "  - Keeps it conversational and short — 4-6 lines max, no data dump\n\n"
+    "Cross-reference the snapshot:\n"
+    "  - If goals contains a finance-related goal (debt-free target, savings "
+    "target), tie progress to it\n"
+    "  - If recent journal mentions money stress / windfall, acknowledge it\n"
+    "  - If a planned workout or other commitment competes with payment "
+    "timing this week, name the trade-off honestly\n\n"
+    "If nothing has changed materially since last week's check-in (no "
+    "payments, no new accounts, no due dates approaching), it is OK to "
+    "send a shorter check-in: 'Quiet week on the Gravity side — you're on "
+    "track with [strategy]. Anything to adjust?' Don't pad with stale "
+    "content.\n\n"
+    "**Send exactly ONE user-facing message via `nbhd_send_to_user`. After "
+    "that message is sent, proceed to the FINAL STEP described below.**\n"
+)
+
+
 _FUEL_PREP_HOUR = {
     "morning": 6,  # 6:00am — before a morning workout
     "afternoon": 11,  # 11:00am — before an afternoon workout
@@ -816,6 +848,28 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
         # Django endpoint (/api/v1/journal/extract/) triggered via QStash.
         # See apps/journal/extraction_views.py.
     ]
+
+    # Gravity Weekly Check-in — Sunday 19:00 user TZ when finance is enabled.
+    # Different hour from Weekly Reflection (20:00) so they don't collide.
+    if getattr(tenant, "finance_enabled", False):
+        jobs.append(
+            {
+                "name": "Gravity Weekly Check-in",
+                "schedule": {"kind": "cron", "expr": "0 19 * * 0", "tz": user_tz},
+                "sessionTarget": "isolated",
+                "payload": {
+                    "kind": "agentTurn",
+                    "message": _build_cron_message(
+                        _GRAVITY_WEEKLY_PROMPT,
+                        "Gravity Weekly Check-in",
+                        foreground=True,
+                        tenant=tenant,
+                    ),
+                },
+                "delivery": {"mode": "none"},
+                "enabled": True,
+            }
+        )
 
     # Heartbeat cron — hourly during user's chosen window, cheap model
     heartbeat_job = _build_heartbeat_cron(tenant)
