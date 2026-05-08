@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("tenants", "0052_welcomes_sent"),
+        ("tenants", "0054_openclaw_version_5_7"),
     ]
 
     operations = [
