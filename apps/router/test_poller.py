@@ -344,6 +344,33 @@ class TelegramPollerForwardTest(TestCase):
         # tick to retry.
         self.poller._forward_to_container(123, self.tenant, "hi")
 
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_pending_user_text_excludes_agent_markers(self, mock_post):
+        """The dropped-message apology quotes ``PendingMessage.user_text``;
+        it must contain the user's actual words, not the agent-only
+        ``[Now: …]`` / ``[chat: …]`` preambles. Otherwise the apology
+        looks like ``It started with: '[Now: 2026-05-08 22:40 JST …'``
+        which is useless for jogging memory."""
+        import httpx
+
+        from apps.router.models import PendingMessage
+
+        # Make the drain POST blow up so the row is left enqueued (we
+        # only care about what got persisted, not the drain outcome).
+        mock_post.side_effect = httpx.HTTPError("not relevant to this test")
+
+        self.poller._forward_to_container(123, self.tenant, "what time is my next meeting?")
+
+        msg = PendingMessage.objects.filter(tenant=self.tenant).order_by("-created_at").first()
+        self.assertIsNotNone(msg)
+        self.assertNotIn("[Now:", msg.user_text)
+        self.assertNotIn("[chat:", msg.user_text)
+        self.assertEqual(msg.user_text, "what time is my next meeting?")
+        # The agent-facing payload still has the markers — the queue is
+        # dumb and forwards the prepared text verbatim.
+        self.assertIn("[Now:", msg.payload["message_text"])
+        self.assertIn("[chat:", msg.payload["message_text"])
+
 
 @override_settings(TELEGRAM_BOT_TOKEN="TEST-BOT-TOKEN")
 class TelegramPollerSendMessageTest(TestCase):
