@@ -546,4 +546,21 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
     except Exception:
         logger.exception("extraction: embedding failed for tenant %s (non-fatal)", str(tenant.id)[:8])
 
+    # Phase C: cross-domain agenda-hint pass — given today's journal +
+    # the tenant's open agenda threads, classify which threads were
+    # mentioned and how. Best-effort, fail-graceful — a hint-pass error
+    # never affects the main extraction return.
+    try:
+        from apps.journal.agenda_hints import run_agenda_hint_pass
+
+        hint_summary = run_agenda_hint_pass(tenant, content)
+        if hint_summary.get("matches", 0):
+            logger.info(
+                "extraction: tenant=%s agenda hints %s",
+                str(tenant.id)[:8],
+                hint_summary,
+            )
+    except Exception:
+        logger.exception("extraction: agenda-hint pass failed for tenant %s (non-fatal)", str(tenant.id)[:8])
+
     return {**counts, "skipped": None}
