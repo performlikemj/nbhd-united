@@ -386,30 +386,52 @@ class HeartbeatConfigView(APIView):
         if "feature_tips" in data:
             tenant.feature_tips_enabled = data["feature_tips"]
             update_fields.append("feature_tips_enabled")
+
+        applied_state = "ok"
+
         if update_fields:
             tenant.full_clean()
             update_fields.append("updated_at")
             tenant.save(update_fields=update_fields)
 
-            # Trigger config regeneration so settings propagate
             if tenant.status == Tenant.Status.ACTIVE:
-                tenant.bump_pending_config()
-                try:
-                    from apps.orchestrator.services import update_tenant_config
+                from apps.orchestrator.hibernation import (
+                    DEFERRED,
+                    apply_or_defer_gateway_call,
+                )
+                from apps.orchestrator.services import (
+                    sync_heartbeat_cron,
+                    update_tenant_config,
+                )
 
-                    update_tenant_config(str(tenant.id))
+                # Bump pending once so the apply_pending_configs scheduler
+                # reconciles drift if a synchronous call below fails for a
+                # non-availability reason. The deferral helper does not bump.
+                tenant.bump_pending_config()
+
+                try:
+                    result = apply_or_defer_gateway_call(
+                        tenant,
+                        lambda: update_tenant_config(str(tenant.id)),
+                        label="heartbeat.update_tenant_config",
+                    )
+                    if result is DEFERRED:
+                        applied_state = "pending"
                 except Exception:
                     logger.exception(
                         "Failed to push config for tenant %s (will apply on next cycle)",
                         tenant.id,
                     )
 
-                # Sync heartbeat cron job (add/remove/update schedule)
                 if any(f in ("heartbeat_enabled", "heartbeat_start_hour") for f in update_fields):
                     try:
-                        from apps.orchestrator.services import sync_heartbeat_cron
-
-                        sync_heartbeat_cron(tenant)
+                        result = apply_or_defer_gateway_call(
+                            tenant,
+                            lambda: sync_heartbeat_cron(tenant),
+                            label="heartbeat.sync_heartbeat_cron",
+                        )
+                        if result is DEFERRED:
+                            applied_state = "pending"
                     except Exception:
                         logger.exception(
                             "Failed to sync heartbeat cron for tenant %s",
@@ -422,6 +444,7 @@ class HeartbeatConfigView(APIView):
                 "start_hour": tenant.heartbeat_start_hour,
                 "window_hours": tenant.heartbeat_window_hours,
                 "feature_tips": tenant.feature_tips_enabled,
+                "applied": applied_state,
             }
         )
 
@@ -482,7 +505,8 @@ class ProfileView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
-        # If location changed, trigger config refresh so weather URL updates
+        applied_state = "ok"
+
         location_changed = any(
             k in serializer.validated_data for k in ("location_city", "location_lat", "location_lon")
         )
@@ -492,10 +516,20 @@ class ProfileView(APIView):
                 if tenant and tenant.status == Tenant.Status.ACTIVE:
                     tenant.bump_pending_config()
                     if tenant.container_id:
+                        from apps.orchestrator.hibernation import (
+                            DEFERRED,
+                            apply_or_defer_gateway_call,
+                        )
                         from apps.orchestrator.services import update_tenant_config
 
                         try:
-                            update_tenant_config(str(tenant.id))
+                            result = apply_or_defer_gateway_call(
+                                tenant,
+                                lambda: update_tenant_config(str(tenant.id)),
+                                label="profile.location.update_tenant_config",
+                            )
+                            if result is DEFERRED:
+                                applied_state = "pending"
                         except Exception:
                             logger.exception(
                                 "Failed to refresh config after location update for tenant %s",
@@ -510,22 +544,33 @@ class ProfileView(APIView):
                 if tenant and tenant.status == Tenant.Status.ACTIVE:
                     tenant.bump_pending_config()
                     if tenant.container_id:
+                        from apps.orchestrator.hibernation import (
+                            DEFERRED,
+                            apply_or_defer_gateway_call,
+                        )
                         from apps.orchestrator.services import update_tenant_config
 
                         try:
-                            update_tenant_config(str(tenant.id))
+                            result = apply_or_defer_gateway_call(
+                                tenant,
+                                lambda: update_tenant_config(str(tenant.id)),
+                                label="profile.timezone.update_tenant_config",
+                            )
+                            if result is DEFERRED:
+                                applied_state = "pending"
                         except Exception:
                             logger.exception(
                                 "Failed to refresh config after tz update for tenant %s",
                                 tenant.id,
                             )
+
                         # Sync timezone on all existing cron jobs
-                        try:
+                        def _sync_cron_timezones() -> None:
                             from apps.cron.gateway_client import invoke_gateway_tool
 
                             new_tz = request.user.timezone
                             list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-                            jobs = []
+                            jobs: list = []
                             if isinstance(list_result, dict):
                                 jobs = list_result.get("jobs", [])
                             elif isinstance(list_result, list):
@@ -537,7 +582,10 @@ class ProfileView(APIView):
                                     invoke_gateway_tool(
                                         tenant,
                                         "cron.update",
-                                        {"jobId": job_id, "patch": {"schedule": {**schedule, "tz": new_tz}}},
+                                        {
+                                            "jobId": job_id,
+                                            "patch": {"schedule": {**schedule, "tz": new_tz}},
+                                        },
                                     )
                             logger.info(
                                 "Synced %d cron job timezone(s) to %s for tenant %s",
@@ -545,6 +593,15 @@ class ProfileView(APIView):
                                 new_tz,
                                 tenant.id,
                             )
+
+                        try:
+                            result = apply_or_defer_gateway_call(
+                                tenant,
+                                _sync_cron_timezones,
+                                label="profile.timezone.cron_sweep",
+                            )
+                            if result is DEFERRED:
+                                applied_state = "pending"
                         except Exception:
                             logger.exception(
                                 "Failed to sync cron timezones for tenant %s",
@@ -553,7 +610,9 @@ class ProfileView(APIView):
             except Tenant.DoesNotExist:
                 pass
 
-        return Response(serializer.data)
+        response_data = dict(serializer.data)
+        response_data["applied"] = applied_state
+        return Response(response_data)
 
 
 def _do_hard_delete(user) -> None:

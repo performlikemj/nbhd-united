@@ -3,6 +3,7 @@
 import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
+import { PendingConfigChip } from "@/components/pending-config-chip";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
@@ -441,6 +442,8 @@ function IntegrationsContent() {
       title="Integrations"
       subtitle="OAuth tokens are stored in tenant-scoped Azure Key Vault secrets"
     >
+      <PendingConfigChip />
+
       {connectedProvider && (
         <p className="mb-4 rounded-panel border border-emerald-text/20 bg-emerald-bg p-3 text-sm text-emerald-text">
           Successfully connected {connectedProvider}.

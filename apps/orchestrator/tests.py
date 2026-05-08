@@ -779,8 +779,14 @@ class ProvisioningTest(TestCase):
         self.assertEqual(self.tenant.status, Tenant.Status.DELETED)
         self.assertEqual(self.tenant.container_id, "")
 
+    @patch("apps.orchestrator.services.update_system_cron_prompts")
     @patch("apps.orchestrator.services.upload_config_to_file_share")
-    def test_update_tenant_config_pushes_new_config(self, mock_upload):
+    def test_update_tenant_config_pushes_new_config(self, mock_upload, mock_cron_prompts):
+        # Cron-prompts is a separate gateway-touching call inside
+        # update_tenant_config; container-unavailable errors now propagate so
+        # the deferral helper can detect them. Mock it for this test which
+        # only cares about the file-share write.
+        mock_cron_prompts.return_value = {"updated": 0, "skipped": 0, "errors": 0}
         provision_tenant(str(self.tenant.id))
         self.tenant.refresh_from_db()
 

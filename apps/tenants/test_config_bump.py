@@ -53,6 +53,9 @@ class TenantConfigVersionBumpTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
+        # Caller bumps once; the deferral helper doesn't bump (it only writes
+        # the file-share copy on the deferred path). One logical change → one
+        # version bump.
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.pending_config_version, 1)
         mock_update_tenant_config.assert_called_once_with(str(self.tenant.id))

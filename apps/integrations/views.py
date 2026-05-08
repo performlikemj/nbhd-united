@@ -186,11 +186,24 @@ class IntegrationViewSet(viewsets.ReadOnlyModelViewSet):
         tenant = integration.tenant
         disconnect_integration(tenant, integration.provider)
 
-        # Regenerate config to remove skills/env vars
+        tenant.bump_pending_config()
+
+        applied_state = "ok"
+
         try:
+            from apps.orchestrator.hibernation import (
+                DEFERRED,
+                apply_or_defer_gateway_call,
+            )
             from apps.orchestrator.services import update_tenant_config
 
-            update_tenant_config(str(tenant.id))
+            result = apply_or_defer_gateway_call(
+                tenant,
+                lambda: update_tenant_config(str(tenant.id)),
+                label="integrations.disconnect.update_tenant_config",
+            )
+            if result is DEFERRED:
+                applied_state = "pending"
         except Exception:
             logger.warning(
                 "Config regen after disconnect failed for tenant %s (non-fatal)",
@@ -198,7 +211,10 @@ class IntegrationViewSet(viewsets.ReadOnlyModelViewSet):
                 exc_info=True,
             )
 
-        return Response({"status": "disconnected"}, status=status.HTTP_200_OK)
+        return Response(
+            {"status": "disconnected", "applied": applied_state},
+            status=status.HTTP_200_OK,
+        )
 
 
 class OAuthAuthorizeView(APIView):

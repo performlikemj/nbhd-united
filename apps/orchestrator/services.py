@@ -446,6 +446,11 @@ def update_tenant_config(tenant_id: str) -> None:
         result = update_system_cron_prompts(tenant)
         if result["updated"]:
             logger.info("Updated %d cron prompts for tenant %s", result["updated"], tenant_id)
+    except GatewayError:
+        # Container-unavailable from update_system_cron_prompts must propagate
+        # so the deferral helper can detect it; other gateway errors are
+        # already absorbed inside that function.
+        raise
     except Exception:
         logger.exception("Failed to update cron prompts for tenant %s (non-fatal)", tenant_id)
 
@@ -958,7 +963,13 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
     # Get existing jobs
     try:
         list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-    except GatewayError:
+    except GatewayError as exc:
+        # Container-unavailable signals a wake/race the deferral helper handles —
+        # let it propagate. Other gateway flakes are non-fatal here.
+        from apps.cron.cache import is_container_unavailable_error
+
+        if is_container_unavailable_error(exc):
+            raise
         logger.exception("update_system_cron_prompts: failed to list jobs for %s", tenant_id)
         return {"tenant_id": tenant_id, "updated": 0, "skipped": 0, "errors": 1}
 
@@ -1108,7 +1119,11 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
                     tenant_id,
                 )
                 continue
-            except GatewayError:
+            except GatewayError as exc:
+                from apps.cron.cache import is_container_unavailable_error
+
+                if is_container_unavailable_error(exc):
+                    raise
                 logger.exception(
                     "update_system_cron_prompts: delete+create failed for '%s' tenant %s",
                     name,
@@ -1121,7 +1136,11 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
             invoke_gateway_tool(tenant, "cron.update", {"jobId": job_id, "patch": patch})
             updated += 1
             logger.info("update_system_cron_prompts: updated '%s' for tenant %s", name, tenant_id)
-        except GatewayError:
+        except GatewayError as exc:
+            from apps.cron.cache import is_container_unavailable_error
+
+            if is_container_unavailable_error(exc):
+                raise
             logger.exception("update_system_cron_prompts: failed to update '%s' for %s", name, tenant_id)
             errors += 1
 
@@ -1170,7 +1189,13 @@ def sync_heartbeat_cron(
     if existing_by_name is None:
         try:
             list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-        except GatewayError:
+        except GatewayError as exc:
+            # Container-unavailable propagates so the deferral helper can see it;
+            # other flakes degrade to "error" status as before.
+            from apps.cron.cache import is_container_unavailable_error
+
+            if is_container_unavailable_error(exc):
+                raise
             logger.exception("sync_heartbeat_cron: cannot list jobs for %s", tenant.id)
             return "error"
 
@@ -1229,7 +1254,11 @@ def sync_heartbeat_cron(
                 )
                 return "updated"
 
-    except GatewayError:
+    except GatewayError as exc:
+        from apps.cron.cache import is_container_unavailable_error
+
+        if is_container_unavailable_error(exc):
+            raise
         logger.exception("sync_heartbeat_cron: failed for tenant %s", tenant.id)
         return "error"
 

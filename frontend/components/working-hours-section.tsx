@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { PendingConfigChip } from "@/components/pending-config-chip";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import {
@@ -63,6 +64,7 @@ export function WorkingHoursSection({ timezone }: { timezone?: string }) {
       subtitle="When your assistant can proactively reach out to you"
       delay={150}
     >
+      <PendingConfigChip />
       {!editing ? (
         <div className="flex items-center justify-between">
           <div>

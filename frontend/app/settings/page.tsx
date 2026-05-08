@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
+import { PendingConfigChip } from "@/components/pending-config-chip";
 import { PersonaSelector } from "@/components/persona-selector";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
@@ -437,6 +438,7 @@ export default function SettingsPage() {
   return (
     <div className="space-y-4">
       <SectionCard title="Account" subtitle="Your profile and authentication details" delay={0}>
+        <PendingConfigChip />
         {me ? (
           <dl className="grid min-w-0 gap-4 text-sm sm:grid-cols-2 sm:gap-3">
             {/* Display Name */}
