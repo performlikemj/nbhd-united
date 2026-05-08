@@ -35,7 +35,15 @@ _CRON_CONTEXT_PREAMBLE = (
     "   - Is it brand new — not in any section of today's note? → include it\n"
     "   If nothing new or updated survives this check, that is a VALID outcome — "
     "say so briefly or reply HEARTBEAT_OK (for heartbeats) rather than "
-    "padding with stale content.\n\n"
+    "padding with stale content.\n"
+    "4. Glance at the **Agenda — Open threads with this user** section in "
+    "USER.md. If any open thread (an untouched feature introduction, a "
+    "planned workout coming up, a financial plan in motion) naturally "
+    "fits the moment — based on tone of the daily note, what the user "
+    "just signaled, the prescribed task — weave it in lightly. If "
+    "nothing fits, stay focused. Surface at most one or two threads, "
+    "chosen for fit, never coverage. Never enumerate the agenda to "
+    "the user.\n\n"
 )
 
 
