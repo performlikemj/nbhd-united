@@ -40,9 +40,7 @@ def update_tenant_config_task(tenant_id: str) -> None:
     update_tenant_config(tenant_id)
 
 
-def bump_openclaw_atomic_per_tenant_task(
-    tenant_id: str, target_version: str, image_tag: str
-) -> None:
+def bump_openclaw_atomic_per_tenant_task(tenant_id: str, target_version: str, image_tag: str) -> None:
     """Atomic per-tenant OC version bump (config + image + DB) for fleet rollout.
 
     QStash fan-out target for the rollout-atomic-bump endpoint. Each task

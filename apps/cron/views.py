@@ -1730,10 +1730,7 @@ def rollout_atomic_bump(request):
 
         from apps.cron.publish import publish_batch
 
-        tasks = [
-            ("bump_openclaw_atomic_per_tenant", (tid, oc_version, image_tag), {})
-            for tid in tenant_ids
-        ]
+        tasks = [("bump_openclaw_atomic_per_tenant", (tid, oc_version, image_tag), {}) for tid in tenant_ids]
         queued = publish_batch(tasks)
         logger.info(
             "rollout_atomic_bump queued %d task(s) -> oc_version=%s image_tag=%s",
