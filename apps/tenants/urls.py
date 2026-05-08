@@ -2,7 +2,11 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .line_views import line_generate_link, line_set_preferred_channel, line_status, line_unlink
-from .runtime_views import RuntimeAgendaEngagementView, RuntimeWelcomeMarkView
+from .runtime_views import (
+    RuntimeAgendaEngagementView,
+    RuntimeCommitmentRecordView,
+    RuntimeWelcomeMarkView,
+)
 from .telegram_views import telegram_generate_link, telegram_status, telegram_unlink
 from .views import (
     CancelDeletionView,
@@ -56,6 +60,13 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/agenda/<str:kind>/<str:item_id>/",
         RuntimeAgendaEngagementView.as_view(),
         name="runtime-agenda-engagement",
+    ),
+    # Phase D — record an assistant-written future-aware commitment.
+    # Called by the nbhd_record_commitment plugin tool.
+    path(
+        "runtime/<uuid:tenant_id>/commitments/",
+        RuntimeCommitmentRecordView.as_view(),
+        name="runtime-commitment-record",
     ),
     path("", include(router.urls)),
 ]

@@ -57,6 +57,11 @@ class AgendaEngagement(models.Model):
         PAYOFF_PLAN = "payoff_plan", "Payoff plan"
         TASK = "task", "Task (markdown)"
         GOAL = "goal", "Goal (markdown)"
+        # Phase D — assistant-written future-aware commitments. The
+        # ``about`` / ``why`` text lives in ``metadata``. ``surface_after``
+        # gates when the renderer becomes willing to suggest the agent
+        # weave it into a turn.
+        ASSISTANT_COMMITMENT = "assistant_commitment", "Assistant commitment"
 
     class State(models.TextChoices):
         NASCENT = "nascent", "Not yet introduced"
@@ -103,6 +108,15 @@ class AgendaEngagement(models.Model):
             "Append-only log of {at, signal} dicts. Signal vocabulary: "
             "'warm' (engaged positively), 'redirect' (changed subject), "
             "'ignore' (no response), 'organic' (user brought it up first)."
+        ),
+    )
+    metadata = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Per-kind extra data. For ASSISTANT_COMMITMENT: "
+            "{'about': str, 'why': str}. For other kinds: empty by "
+            "default — extension point for kind-specific fields."
         ),
     )
 

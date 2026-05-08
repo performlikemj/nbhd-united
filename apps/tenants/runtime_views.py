@@ -184,3 +184,81 @@ class RuntimeAgendaEngagementView(APIView):
             action,
         )
         return Response({"kind": kind, "item_id": item_id, "action": action})
+
+
+class RuntimeCommitmentRecordView(APIView):
+    """POST /api/v1/tenants/runtime/<tenant_id>/commitments/
+
+    Phase D — the agent records a future-aware commitment to follow up
+    with the user. Body:
+
+        {
+          "about": "<topic>",
+          "surface_after": "2026-05-21T00:00:00Z",
+          "why": "<reasoning, for future context>"
+        }
+
+    Returns ``{kind, item_id}`` so the agent (or its plugin layer) can
+    reference the commitment later if needed. Idempotent on
+    ``about``-text content hash — same about-text reuses the row
+    rather than duplicating.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, tenant_id):
+        from datetime import datetime
+
+        from apps.tenants.agenda_models import AgendaEngagement
+        from apps.tenants.agenda_service import record_commitment
+
+        auth_error = _internal_auth_or_401(request, tenant_id)
+        if auth_error:
+            return auth_error
+
+        about = (request.data.get("about") or "").strip()
+        why = (request.data.get("why") or "").strip()
+        surface_after_raw = request.data.get("surface_after")
+
+        if not about:
+            return Response(
+                {"error": "missing_about", "detail": "'about' is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not surface_after_raw:
+            return Response(
+                {"error": "missing_surface_after", "detail": "'surface_after' is required (ISO-8601)"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            surface_after = datetime.fromisoformat(str(surface_after_raw).replace("Z", "+00:00"))
+        except ValueError:
+            return Response(
+                {"error": "invalid_surface_after", "detail": "must be ISO-8601 timestamp"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            tenant = Tenant.objects.get(id=tenant_id)
+        except Tenant.DoesNotExist:
+            return Response({"error": "tenant_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        commitment = record_commitment(
+            tenant,
+            about=about,
+            surface_after=surface_after,
+            why=why,
+        )
+        logger.info(
+            "Commitment recorded: tenant=%s about=%r surface_after=%s",
+            str(tenant.id)[:8],
+            about[:80],
+            surface_after.isoformat(),
+        )
+        return Response(
+            {
+                "kind": AgendaEngagement.Kind.ASSISTANT_COMMITMENT,
+                "item_id": commitment.item_id,
+                "surface_after": commitment.surface_after.isoformat() if commitment.surface_after else None,
+            }
+        )

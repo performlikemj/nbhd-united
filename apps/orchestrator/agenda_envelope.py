@@ -39,6 +39,7 @@ else stacks on.
 
 from __future__ import annotations
 
+from datetime import UTC
 from datetime import date as _date
 from datetime import timedelta as _timedelta
 
@@ -47,6 +48,7 @@ from apps.fuel.models import FuelGoal, Workout, WorkoutStatus
 from apps.journal.models import Document
 from apps.orchestrator.envelope_registry import register_section
 from apps.tenants.agenda_models import AgendaEngagement
+from apps.tenants.agenda_service import is_eligible_now
 from apps.tenants.models import Tenant
 
 # Features tracked under ``Tenant.welcomes_sent``. Each entry maps the
@@ -96,6 +98,10 @@ def render_agenda(tenant: Tenant) -> str:
     intros = _render_untouched_intros(tenant)
     if intros:
         parts.append(intros)
+
+    commitments = _render_assistant_commitments(tenant)
+    if commitments:
+        parts.append(commitments)
 
     # All-empty state is rare (a tenant with zero open work and every
     # feature already engaged) — render nothing rather than just the
@@ -170,6 +176,55 @@ def _render_untouched_intros(tenant: Tenant) -> str:
         return ""
 
     return "**Untouched introductions:**\n" + "\n".join(lines)
+
+
+def _render_assistant_commitments(tenant: Tenant) -> str:
+    """Phase D: surface assistant-written commitments whose
+    ``surface_after`` has passed AND whose state is NASCENT or
+    INTRODUCED.
+
+    Once a commitment goes ACTIVE (user raised it organically) or
+    COMPLETED, it drops out — the assistant's role for that thread
+    is no longer to introduce it. The renderer shows the about-text
+    and why-text so the agent has full context when deciding whether
+    to weave the commitment into the current moment.
+    """
+    from datetime import datetime
+
+    now = datetime.now(UTC)
+    rows = AgendaEngagement.objects.filter(
+        tenant=tenant,
+        kind=AgendaEngagement.Kind.ASSISTANT_COMMITMENT,
+        state__in=(AgendaEngagement.State.NASCENT, AgendaEngagement.State.INTRODUCED),
+    ).order_by("surface_after")
+
+    lines: list[str] = []
+    for row in rows:
+        if row.surface_after and row.surface_after > now:
+            continue
+        if not is_eligible_now(row):
+            continue
+        meta = row.metadata or {}
+        about = (meta.get("about") or "").strip()
+        why = (meta.get("why") or "").strip()
+        if not about:
+            continue
+        bullet = f"- **{about}**"
+        if why:
+            bullet += f" — _{why}_"
+        if row.surface_after:
+            bullet += f" (ready since {row.surface_after.date().isoformat()})"
+        lines.append(bullet)
+
+    if not lines:
+        return ""
+
+    return (
+        "**Commitments you (the assistant) made to follow up on:**\n"
+        + "\n".join(lines)
+        + "\n\n_Surface only when the moment fits — these are reminders to yourself, "
+        + "not alarms to deliver verbatim._"
+    )
 
 
 # ---------------------------------------------------------------------------
