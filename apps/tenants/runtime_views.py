@@ -87,3 +87,100 @@ class RuntimeWelcomeMarkView(APIView):
 
         logger.info("Welcome marked sent: tenant=%s feature=%s", str(tenant.id)[:8], feature)
         return Response({"feature": feature, "sent_at": marks[feature]})
+
+
+_VALID_ENGAGEMENT_ACTIONS = {"surfaced", "abandoned", "completed", "active", "dormant", "defer"}
+
+
+class RuntimeAgendaEngagementView(APIView):
+    """POST /api/v1/tenants/runtime/<tenant_id>/agenda/<kind>/<item_id>/
+
+    Records an engagement event for an agenda thread (Phase B). Called by
+    OpenClaw plugins or any other source that has signal about how the
+    agent surfaced a thread or how the user responded.
+
+    Body shape::
+
+        {"action": "surfaced", "signal": "warm" | "redirect" | ...}
+        {"action": "abandoned"}
+        {"action": "completed"}
+        {"action": "defer", "until": "2026-05-21T00:00:00Z"}
+
+    Authentication mirrors the welcome endpoint: shared internal API
+    key + per-tenant header. ``kind`` and ``item_id`` come from the URL
+    so callers don't have to deal with body validation gymnastics for
+    the common case.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, tenant_id, kind, item_id):
+        from apps.tenants.agenda_models import AgendaEngagement
+        from apps.tenants.agenda_service import (
+            defer_until,
+            mark_state,
+            mark_surfaced,
+            record_signal,
+        )
+
+        auth_error = _internal_auth_or_401(request, tenant_id)
+        if auth_error:
+            return auth_error
+
+        if kind not in AgendaEngagement.Kind.values:
+            return Response(
+                {"error": "unknown_kind", "valid": list(AgendaEngagement.Kind.values)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        action = (request.data.get("action") or "").lower().strip()
+        if action not in _VALID_ENGAGEMENT_ACTIONS:
+            return Response(
+                {"error": "unknown_action", "valid": sorted(_VALID_ENGAGEMENT_ACTIONS)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            tenant = Tenant.objects.get(id=tenant_id)
+        except Tenant.DoesNotExist:
+            return Response({"error": "tenant_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        signal = request.data.get("signal")
+        if action == "surfaced":
+            mark_surfaced(tenant, kind=kind, item_id=item_id, signal=signal)
+            if signal:
+                # ``mark_surfaced`` already logged the surface; this captures
+                # any concurrent response signal in the same call.
+                pass
+        elif action == "defer":
+            until_raw = request.data.get("until")
+            if not until_raw:
+                return Response(
+                    {"error": "missing_until", "detail": "defer requires 'until' (ISO-8601 timestamp)"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            from datetime import datetime
+
+            try:
+                until = datetime.fromisoformat(str(until_raw).replace("Z", "+00:00"))
+            except ValueError:
+                return Response(
+                    {"error": "invalid_until", "detail": "must be ISO-8601 timestamp"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            defer_until(tenant, kind=kind, item_id=item_id, when=until)
+        elif action in ("abandoned", "completed", "active", "dormant"):
+            # State-shaped actions translate one-to-one to the State enum.
+            state_value = AgendaEngagement.State(action).value
+            mark_state(tenant, kind=kind, item_id=item_id, state=state_value)
+            if signal:
+                record_signal(tenant, kind=kind, item_id=item_id, signal=signal)
+
+        logger.info(
+            "Agenda engagement recorded: tenant=%s kind=%s item=%s action=%s",
+            str(tenant.id)[:8],
+            kind,
+            item_id,
+            action,
+        )
+        return Response({"kind": kind, "item_id": item_id, "action": action})
