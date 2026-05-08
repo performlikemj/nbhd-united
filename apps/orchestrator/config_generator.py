@@ -1128,17 +1128,6 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                         ),
                     },
                 },
-                "llm": {
-                    # OpenClaw 2026.4.5 introduced a 60s default idle-token
-                    # watchdog that aborts the LLM stream if no token arrives
-                    # within 60s.  Slower models (minimax-m2.7) on heavy
-                    # prompts routinely exceed that, causing cron runs to
-                    # timeout and cascading into container crashes via the
-                    # chmod EPERM in the task-registry sweep.  Set to 5 min
-                    # so slow cold-starts and heavy tool-calling prompts
-                    # have room.
-                    "idleTimeoutSeconds": 300,
-                },
                 "memorySearch": {
                     "enabled": True,
                     # Auto-detects OpenAI for embeddings via OPENAI_API_KEY
@@ -1278,6 +1267,21 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             "baseUrl": "https://openrouter.ai/api/v1",
             "models": [],
         }
+
+    # OpenClaw 2026.5.2 retired the 60s default idle-token watchdog config
+    # that lived under agents.defaults.llm. Boot fails with "Unrecognized
+    # key: llm" if we keep emitting it. The replacement is per-provider
+    # timeoutSeconds. Slower OpenRouter models (e.g. minimax-m2.7) on heavy
+    # prompts routinely need more than 60s between tokens, so set 300s.
+    if _parse_version(oc_version) >= (2026, 5, 0):
+        models_section = config.setdefault("models", {})
+        providers = models_section.setdefault("providers", {})
+        openrouter_provider = providers.setdefault("openrouter", {})
+        openrouter_provider["timeoutSeconds"] = 300
+    else:
+        # Legacy schema for OC < 5.0 — agents.defaults.llm.idleTimeoutSeconds
+        # was the only way to override the LLM idle watchdog.
+        config["agents"]["defaults"]["llm"] = {"idleTimeoutSeconds": 300}
 
     # BYO routing: with auth profile `anthropic:claude-cli` registered by
     # `runtime/openclaw/entrypoint.sh` (via `openclaw models auth login
