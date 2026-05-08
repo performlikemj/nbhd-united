@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("tenants", "0053_agenda_engagement"),
+        ("tenants", "0055_agenda_engagement"),
     ]
 
     operations = [
