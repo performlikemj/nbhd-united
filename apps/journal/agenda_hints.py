@@ -34,7 +34,8 @@ import re
 import requests
 from django.conf import settings
 
-from apps.tenants.agenda_service import record_signal
+from apps.tenants.agenda_models import AgendaEngagement
+from apps.tenants.agenda_service import mark_organic, record_signal
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,12 @@ def run_agenda_hint_pass(tenant: Tenant, journal_content: str) -> dict[str, int]
 
         try:
             record_signal(tenant, kind=kind, item_id=item_id, signal=signal)
+            # Phase D: an 'organic' signal on an assistant commitment
+            # means the user re-raised the committed topic before the
+            # assistant did — the state machine moves to ACTIVE so the
+            # assistant supports rather than introduces.
+            if signal == "organic" and kind == AgendaEngagement.Kind.ASSISTANT_COMMITMENT:
+                mark_organic(tenant, kind=kind, item_id=item_id)
         except Exception:
             logger.exception(
                 "agenda_hints: failed to record signal for tenant=%s kind=%s item=%s",

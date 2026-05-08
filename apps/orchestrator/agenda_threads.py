@@ -22,6 +22,7 @@ classifier output maps cleanly back to engagement rows.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC
 from datetime import date as _date
 from datetime import timedelta as _timedelta
 from typing import TYPE_CHECKING
@@ -66,7 +67,8 @@ def open_threads(tenant: Tenant) -> list[ThreadSpec]:
     Honors the same filters as the renderer: untouched feature intros
     only when ``welcomes_sent[key]`` is null AND ``is_eligible_now``
     passes; planned workouts within the next 7 days; active fuel goals
-    and payoff plans. Classifier-facing — never raises; on a per-thread
+    and payoff plans; assistant commitments whose surface_after has
+    passed (Phase D). Classifier-facing — never raises; on a per-thread
     error returns the partial list (degrade gracefully so a bad row
     doesn't kill the whole hint pass).
     """
@@ -75,7 +77,47 @@ def open_threads(tenant: Tenant) -> list[ThreadSpec]:
     threads.extend(_planned_workouts(tenant))
     threads.extend(_fuel_goals(tenant))
     threads.extend(_payoff_plans(tenant))
+    threads.extend(_assistant_commitments(tenant))
     return threads
+
+
+def _assistant_commitments(tenant: Tenant) -> list[ThreadSpec]:
+    """Phase D — assistant-written commitments past their surface_after.
+
+    Visible to the cross-domain extractor so that a journal mention
+    of a committed-to topic produces an ``organic`` signal — the
+    state machine can then transition the commitment to ACTIVE
+    (user re-raised it before the assistant got to).
+    """
+    from datetime import datetime
+
+    now = datetime.now(UTC)
+    rows = AgendaEngagement.objects.filter(
+        tenant=tenant,
+        kind=AgendaEngagement.Kind.ASSISTANT_COMMITMENT,
+        state__in=(AgendaEngagement.State.NASCENT, AgendaEngagement.State.INTRODUCED),
+    )
+
+    out: list[ThreadSpec] = []
+    for row in rows:
+        if row.surface_after and row.surface_after > now:
+            continue
+        if not is_eligible_now(row):
+            continue
+        meta = row.metadata or {}
+        about = (meta.get("about") or "").strip()
+        if not about:
+            continue
+        why = (meta.get("why") or "").strip()
+        out.append(
+            ThreadSpec(
+                kind=AgendaEngagement.Kind.ASSISTANT_COMMITMENT,
+                item_id=row.item_id,
+                label=about,
+                context=why or "assistant commitment",
+            )
+        )
+    return out
 
 
 def _feature_intros(tenant: Tenant) -> list[ThreadSpec]:

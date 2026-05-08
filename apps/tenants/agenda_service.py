@@ -155,6 +155,77 @@ def defer_until(
     return obj
 
 
+def record_commitment(
+    tenant: Tenant,
+    *,
+    about: str,
+    surface_after: datetime,
+    why: str,
+    item_id: str | None = None,
+) -> AgendaEngagement:
+    """Phase D: record an assistant-written commitment to follow up.
+
+    Creates an ``ASSISTANT_COMMITMENT`` engagement row in ``NASCENT``
+    state. The ``about`` and ``why`` strings live in ``metadata`` so
+    the renderer can show the topic + reasoning when surfacing the
+    commitment back to the agent.
+
+    ``surface_after`` is the *earliest* time the renderer will treat
+    the commitment as eligible. The renderer + agenda evaluator still
+    decide based on context fit, not just time — a commitment that's
+    'eligible' isn't guaranteed to be surfaced; the agent picks per
+    moment.
+
+    ``item_id`` defaults to a stable hash of the about-text so
+    repeated commitments about the same topic don't duplicate. Caller
+    can pass an explicit id for fine-grained control.
+    """
+    import hashlib
+
+    if item_id is None:
+        digest = hashlib.sha256(about.encode("utf-8")).hexdigest()
+        item_id = digest[:32]
+
+    obj, created = AgendaEngagement.objects.get_or_create(
+        tenant=tenant,
+        kind=AgendaEngagement.Kind.ASSISTANT_COMMITMENT,
+        item_id=item_id,
+    )
+    obj.surface_after = surface_after
+    obj.metadata = {"about": about, "why": why}
+    if created or obj.state == AgendaEngagement.State.NASCENT:
+        obj.state = AgendaEngagement.State.NASCENT
+    obj.save()
+    return obj
+
+
+def mark_organic(
+    tenant: Tenant,
+    *,
+    kind: str,
+    item_id: str,
+    when: datetime | None = None,
+) -> AgendaEngagement:
+    """Mark that the user raised this thread organically (before the
+    assistant did). Transitions state to ACTIVE — the assistant's role
+    becomes 'support' rather than 'introduce'.
+
+    Called when the cross-domain extractor (Phase C) detects an
+    'organic' signal, or when an explicit detector matches a user
+    message to a pending commitment.
+    """
+    when = when or datetime.now(UTC)
+    obj, _ = AgendaEngagement.objects.get_or_create(
+        tenant=tenant,
+        kind=kind,
+        item_id=item_id,
+    )
+    obj.state = AgendaEngagement.State.ACTIVE
+    obj.response_signals = list(obj.response_signals or []) + [{"at": when.isoformat(), "signal": "organic"}]
+    obj.save()
+    return obj
+
+
 # ---------------------------------------------------------------------------
 # Renderer-facing helpers
 # ---------------------------------------------------------------------------
