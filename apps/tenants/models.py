@@ -10,6 +10,7 @@ from django.db import models
 
 from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION  # noqa: I001
 
+from .agenda_models import AgendaEngagement  # noqa: F401
 from .line_models import LineLinkToken  # noqa: F401
 
 # Import so Django discovers the models for migrations

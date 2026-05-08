@@ -46,6 +46,7 @@ from apps.finance.models import PayoffPlan
 from apps.fuel.models import FuelGoal, Workout, WorkoutStatus
 from apps.journal.models import Document
 from apps.orchestrator.envelope_registry import register_section
+from apps.tenants.agenda_models import AgendaEngagement
 from apps.tenants.models import Tenant
 
 # Features tracked under ``Tenant.welcomes_sent``. Each entry maps the
@@ -56,6 +57,11 @@ _FEATURE_INTROS: tuple[tuple[str, str, str], ...] = (
     ("fuel", "fuel_enabled", "Fuel — fitness assistant"),
     ("finance", "finance_enabled", "Gravity — finance assistant"),
 )
+
+# Engagement kind used when reading AgendaEngagement rows for feature
+# intros. Stored as a constant so the renderer + service helpers stay
+# in lock-step on the kind string.
+_FEATURE_INTRO_KIND = AgendaEngagement.Kind.FEATURE_INTRO
 
 
 _HEADER_GUIDANCE = (
@@ -131,19 +137,32 @@ def _render_summary(tenant: Tenant) -> str:
 
 
 def _render_untouched_intros(tenant: Tenant) -> str:
-    """Features enabled but never engaged with.
+    """Features enabled but never engaged with — eligibility-filtered.
 
-    The lone source of this signal — no pillar section surfaces it
-    today. Each line names the feature, when it was enabled (best-guess
-    from tenant timestamps), and that the user hasn't engaged yet. The
-    agent decides when surfacing one fits the moment.
+    Phase A surfaced any feature whose ``welcomes_sent[key]`` was unset.
+    Phase B layers ``AgendaEngagement`` checks on top: a feature whose
+    engagement row is in ``ABANDONED`` / ``COMPLETED``, was surfaced
+    within the recent cooldown window, or has ``surface_after`` set in
+    the future, drops out of the rendered list.
+
+    The combination of both filters is the right thing — ``welcomes_sent``
+    is set when delivery succeeds (the platform's source of truth for
+    "we did the welcome"), and engagement state captures more nuanced
+    signals (a tenant who hits "abandon" on the welcome flow shouldn't
+    keep seeing it).
     """
+    from apps.tenants.agenda_service import engagements_by_item, is_eligible_now
+
     welcomes_sent = tenant.welcomes_sent or {}
+    engagements = engagements_by_item(tenant, kind=_FEATURE_INTRO_KIND)
     lines: list[str] = []
+
     for key, enabled_attr, label in _FEATURE_INTROS:
         if not getattr(tenant, enabled_attr, False):
             continue
         if welcomes_sent.get(key):
+            continue
+        if not is_eligible_now(engagements.get(key)):
             continue
         lines.append(f"- **{label}** — enabled, no engagement yet. Open thread for an organic introduction.")
 

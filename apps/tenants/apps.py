@@ -8,3 +8,13 @@ class TenantsConfig(AppConfig):
     def ready(self):
         # Register the Profile section in the envelope registry.
         import apps.tenants.envelope  # noqa: F401
+
+        # Wire the AgendaEngagement signal handlers (Phase B). The
+        # pre_save snapshot can't be a @receiver — it needs to read the
+        # prior row state, which means it must connect explicitly.
+        from apps.tenants.agenda_signals import connect_signals
+
+        connect_signals()
+        # Importing the module also activates @receiver-decorated
+        # post_save handlers.
+        import apps.tenants.agenda_signals  # noqa: F401
