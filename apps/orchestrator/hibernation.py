@@ -34,6 +34,15 @@ _CRON_WAKE_LEAD_SECONDS = 120
 # re-hibernating if no user messages arrive.
 _CRON_WAKE_IDLE_SECONDS = 1800  # 30 minutes
 
+# Look-ahead window used by ``check_cron_wake_idle_task`` to decide whether
+# to defer re-hibernation. If another cron is due to fire within this
+# window from "now" (i.e. when the idle check fires), keep the container
+# awake instead of re-hibernating just to cold-start again for the next
+# fire. 90 min covers typical morning patterns (e.g. 7 AM Morning
+# Briefing + 8:30 AM Project Check-in) without holding tenants awake
+# unnecessarily for sparse cron schedules.
+_CRON_LOOKAHEAD_WINDOW_SECONDS = 5400  # 90 minutes
+
 
 def hibernate_idle_tenant(tenant: Tenant) -> bool:
     """Hibernate a single idle tenant's container.
@@ -260,6 +269,81 @@ def _next_run_from_expr(expr: str, tz_name: str) -> int | None:
         return None
 
 
+def _next_cron_within_window(
+    tenant: Tenant,
+    *,
+    window_seconds: int = _CRON_LOOKAHEAD_WINDOW_SECONDS,
+) -> int | None:
+    """Return ``state.nextRunAtMs`` of the earliest enabled cron firing within
+    ``[now, now + window_seconds]``, or ``None`` if no qualifying cron exists.
+
+    Used by ``check_cron_wake_idle_task`` to decide whether to defer
+    re-hibernation when another cron is about to fire — avoids forcing
+    back-to-back crons through cold-start cycles when ``last_message_at``
+    can't be used to keep the container awake (cron output never moves it).
+
+    Source order, mirroring ``_capture_tenant_cron_schedules``:
+
+    1. Live ``cron.list`` against the gateway. The tenant is awake at this
+       point (the idle check only runs after a successful cron wake), so
+       the gateway should respond. This catches schedule changes that
+       happened during the wake window — the snapshot would miss them.
+    2. ``tenant.cron_jobs_snapshot`` if the live call raises. Stale by
+       design (point-in-time at the last hibernation), but better than
+       nothing if the gateway is briefly unreachable.
+    3. ``None`` if both fail. Caller hibernates conservatively.
+
+    Reads ``state.nextRunAtMs`` directly (the gateway's actual field
+    location — see plugin-sdk's ``Cron.JobState``) rather than calling
+    ``_find_earliest_next_run`` so this helper doesn't inherit that
+    function's wrong-field-path bug. Skips jobs without a valid future
+    ``state.nextRunAtMs`` instead of falling back to croniter — for
+    look-ahead semantics, "no fire time we can read" means "not about
+    to fire from our perspective", which is the right conservative
+    answer here.
+    """
+    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
+    from apps.orchestrator.services import _extract_cron_jobs
+
+    jobs: list | None = None
+
+    try:
+        result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": False})
+        jobs = _extract_cron_jobs(result)
+    except GatewayError:
+        logger.warning(
+            "lookahead: live cron.list failed for tenant %s — falling back to snapshot",
+            str(tenant.id)[:8],
+            exc_info=True,
+        )
+
+    if not jobs:
+        snapshot = tenant.cron_jobs_snapshot or {}
+        snapshot_jobs = snapshot.get("jobs") if isinstance(snapshot, dict) else None
+        if isinstance(snapshot_jobs, list):
+            jobs = snapshot_jobs
+
+    if not jobs:
+        return None
+
+    now_ms = int(timezone.now().timestamp() * 1000)
+    cutoff_ms = now_ms + window_seconds * 1000
+
+    candidates: list[int] = []
+    for job in jobs:
+        if not isinstance(job, dict) or not job.get("enabled", True):
+            continue
+        state = job.get("state") or {}
+        next_run = state.get("nextRunAtMs")
+        if not isinstance(next_run, int):
+            continue
+        if next_run <= now_ms or next_run > cutoff_ms:
+            continue
+        candidates.append(next_run)
+
+    return min(candidates) if candidates else None
+
+
 def wake_hibernated_tenant(tenant: Tenant) -> bool:
     """Wake a hibernated tenant's container and schedule follow-up tasks.
 
@@ -461,7 +545,44 @@ def check_cron_wake_idle_task(tenant_id: str) -> dict:
         )
         return {"status": "user_active"}
 
-    # No user activity — re-hibernate (this also schedules the next cron wake)
+    # Look-ahead: if another cron is due to fire soon, defer re-hibernation
+    # so that cron lands on the warm container instead of forcing a
+    # cold-start cycle. ``last_message_at`` doesn't move on cron output, so
+    # without this check a back-to-back pattern (e.g. 7am + 8:30am) always
+    # paid two cold-starts.
+    upcoming_cron_ms = _next_cron_within_window(tenant)
+    if upcoming_cron_ms is not None:
+        now_ms = int(timezone.now().timestamp() * 1000)
+        # Re-check 30 min after the upcoming cron fires. If by then no
+        # further cron is due and the user hasn't messaged, we'll
+        # re-hibernate then.
+        delay_seconds = (upcoming_cron_ms - now_ms) // 1000 + _CRON_WAKE_IDLE_SECONDS
+        try:
+            from apps.cron.publish import publish_task
+
+            publish_task(
+                "check_cron_wake_idle",
+                str(tenant.id),
+                delay_seconds=delay_seconds,
+            )
+        except Exception:
+            logger.exception(
+                "check_cron_wake_idle: failed to schedule deferred check for %s",
+                tenant_id[:8],
+            )
+            # Fall through to re-hibernate so we don't end up in a state
+            # with no future check pending.
+        else:
+            logger.info(
+                "check_cron_wake_idle: tenant %s — upcoming cron in %ds, deferring re-hibernation (next check in %ds)",
+                tenant_id[:8],
+                (upcoming_cron_ms - now_ms) // 1000,
+                delay_seconds,
+            )
+            return {"status": "deferred_for_upcoming_cron"}
+
+    # No user activity, no upcoming cron — re-hibernate (this also
+    # schedules the next cron wake).
     logger.info(
         "check_cron_wake_idle: tenant %s idle after cron wake, re-hibernating",
         tenant_id[:8],
