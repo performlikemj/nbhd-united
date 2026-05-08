@@ -1249,7 +1249,16 @@ class SnapshotServiceTests(TestCase):
 
 
 class FinanceSettingsViewTests(TestCase):
-    """Toggling finance_enabled schedules a welcome cron via QStash."""
+    """Toggling finance_enabled writes the config and signals restart_required.
+
+    Mirrors the Fuel toggle UX (apps/fuel/views.py). The plugin allow-list
+    in the OpenClaw config flips when this flag flips, which means the
+    running session can't see the new tools until the container restarts.
+    The settings endpoint queues an apply_single_tenant_config so the
+    file share is current; the frontend then prompts the user and POSTs
+    to /api/v1/finance/restart/ which performs the actual restart and
+    schedules the welcome.
+    """
 
     def setUp(self):
         from unittest.mock import patch as _patch
@@ -1261,9 +1270,10 @@ class FinanceSettingsViewTests(TestCase):
         self._patch = _patch
         # Tenant defaults to finance_enabled=False — flip it explicitly when needed.
         self.tenant.finance_enabled = False
-        self.tenant.save(update_fields=["finance_enabled"])
+        self.tenant.container_id = "oc-test-gravity"
+        self.tenant.save(update_fields=["finance_enabled", "container_id"])
 
-    def test_first_enable_schedules_welcome(self):
+    def test_first_enable_writes_config_and_signals_restart(self):
         with self._patch("apps.cron.publish.publish_task") as mock_publish:
             response = self.client.patch(
                 "/api/v1/finance/settings/",
@@ -1271,38 +1281,120 @@ class FinanceSettingsViewTests(TestCase):
                 format="json",
             )
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json()["finance_enabled"])
-        # Welcome scheduling enqueued via QStash (delayed 90s).
+        payload = response.json()
+        self.assertTrue(payload["finance_enabled"])
+        self.assertTrue(payload["restart_required"])
+        # Config file written to the share so the next revision picks it up.
+        # Welcome is NOT scheduled here — that fires from /restart/ AFTER the
+        # container has come back, so the plugin is loaded when it lands.
+        mock_publish.assert_called_once_with(
+            "apply_single_tenant_config",
+            str(self.tenant.id),
+        )
+
+    def test_first_enable_without_container_does_not_signal_restart(self):
+        # Pre-provisioned tenants have no container_id; nothing to restart.
+        self.tenant.container_id = ""
+        self.tenant.save(update_fields=["container_id"])
+        with self._patch("apps.cron.publish.publish_task"):
+            response = self.client.patch(
+                "/api/v1/finance/settings/",
+                {"finance_enabled": True},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["restart_required"])
+
+    def test_re_enable_idempotent_does_not_signal_restart(self):
+        # Already enabled — toggling on a second time is a no-op for the plugin
+        # allow list, so the frontend should not prompt for a restart.
+        self.tenant.finance_enabled = True
+        self.tenant.save(update_fields=["finance_enabled"])
+
+        with self._patch("apps.cron.publish.publish_task"):
+            response = self.client.patch(
+                "/api/v1/finance/settings/",
+                {"finance_enabled": True},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["restart_required"])
+
+    def test_disable_signals_restart(self):
+        # Disabling also flips the allow list (plugin must be unloaded), so
+        # restart is required just like enable.
+        self.tenant.finance_enabled = True
+        self.tenant.save(update_fields=["finance_enabled"])
+
+        with self._patch("apps.cron.publish.publish_task"):
+            response = self.client.patch(
+                "/api/v1/finance/settings/",
+                {"finance_enabled": False},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["restart_required"])
+
+
+class FinanceRestartViewTests(TestCase):
+    """POST /api/v1/finance/restart/ performs the container restart that
+    actually picks up plugin allow-list changes, then schedules the welcome
+    cron once the container has had time to come back up.
+    """
+
+    def setUp(self):
+        from unittest.mock import patch as _patch
+
+        self.tenant = create_tenant(display_name="GravityRestart", telegram_chat_id=900201)
+        self.client = APIClient()
+        token = RefreshToken.for_user(self.tenant.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.access_token}")
+        self._patch = _patch
+        self.tenant.finance_enabled = True
+        self.tenant.container_id = "oc-test-gravity-restart"
+        self.tenant.save(update_fields=["finance_enabled", "container_id"])
+
+    def test_restart_calls_azure_and_schedules_welcome(self):
+        with (
+            self._patch("apps.orchestrator.azure_client.restart_container_app") as mock_restart,
+            self._patch("apps.cron.publish.publish_task") as mock_publish,
+        ):
+            response = self.client.post("/api/v1/finance/restart/")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["restarted"])
+        mock_restart.assert_called_once_with(self.tenant.container_id)
+        # Welcome scheduled 90s out so the container has time for cold start
+        # before the agent is asked to fire it.
         mock_publish.assert_called_once_with(
             "schedule_finance_welcome",
             str(self.tenant.id),
             delay_seconds=90,
         )
 
-    def test_re_enable_does_not_reschedule_welcome(self):
-        # Already enabled — toggling on a second time shouldn't fire QStash.
-        self.tenant.finance_enabled = True
+    def test_restart_no_container_returns_400(self):
+        self.tenant.container_id = ""
+        self.tenant.save(update_fields=["container_id"])
+        response = self.client.post("/api/v1/finance/restart/")
+        self.assertEqual(response.status_code, 400)
+
+    def test_restart_failure_returns_502(self):
+        with self._patch(
+            "apps.orchestrator.azure_client.restart_container_app",
+            side_effect=Exception("simulated Azure error"),
+        ):
+            response = self.client.post("/api/v1/finance/restart/")
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["error"], "restart_failed")
+
+    def test_restart_when_disabled_does_not_schedule_welcome(self):
+        # User disabled Gravity → restarted to drop the plugin → no welcome.
+        self.tenant.finance_enabled = False
         self.tenant.save(update_fields=["finance_enabled"])
-
-        with self._patch("apps.cron.publish.publish_task") as mock_publish:
-            response = self.client.patch(
-                "/api/v1/finance/settings/",
-                {"finance_enabled": True},
-                format="json",
-            )
-        self.assertEqual(response.status_code, 200)
-        mock_publish.assert_not_called()
-
-    def test_disable_does_not_schedule_welcome(self):
-        self.tenant.finance_enabled = True
-        self.tenant.save(update_fields=["finance_enabled"])
-
-        with self._patch("apps.cron.publish.publish_task") as mock_publish:
-            response = self.client.patch(
-                "/api/v1/finance/settings/",
-                {"finance_enabled": False},
-                format="json",
-            )
+        with (
+            self._patch("apps.orchestrator.azure_client.restart_container_app"),
+            self._patch("apps.cron.publish.publish_task") as mock_publish,
+        ):
+            response = self.client.post("/api/v1/finance/restart/")
         self.assertEqual(response.status_code, 200)
         mock_publish.assert_not_called()
 

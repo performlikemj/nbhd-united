@@ -13,6 +13,7 @@ from .views import (
     FinanceAccountDetailView,
     FinanceAccountListView,
     FinanceDashboardView,
+    FinanceRestartView,
     FinanceSettingsView,
     FinanceSnapshotListView,
     FinanceTransactionListView,
@@ -22,6 +23,7 @@ from .views import (
 urlpatterns = [
     # Consumer-facing (frontend, JWT auth)
     path("settings/", FinanceSettingsView.as_view(), name="finance-settings"),
+    path("restart/", FinanceRestartView.as_view(), name="finance-restart"),
     path("dashboard/", FinanceDashboardView.as_view(), name="finance-dashboard"),
     path("accounts/", FinanceAccountListView.as_view(), name="finance-accounts"),
     path(

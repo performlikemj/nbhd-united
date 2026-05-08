@@ -853,10 +853,18 @@ export function fetchFinanceSnapshots(): Promise<import("@/lib/types").FinanceSn
   return apiFetch<import("@/lib/types").FinanceSnapshot[]>("/api/v1/finance/snapshots/");
 }
 
-export function updateFinanceSettings(data: { finance_enabled: boolean }): Promise<{ finance_enabled: boolean }> {
-  return apiFetch<{ finance_enabled: boolean }>("/api/v1/finance/settings/", {
+export function updateFinanceSettings(
+  data: { finance_enabled: boolean },
+): Promise<{ finance_enabled: boolean; restart_required: boolean }> {
+  return apiFetch<{ finance_enabled: boolean; restart_required: boolean }>("/api/v1/finance/settings/", {
     method: "PATCH",
     body: JSON.stringify(data),
+  });
+}
+
+export function restartFinanceAssistant(): Promise<{ restarted: boolean }> {
+  return apiFetch<{ restarted: boolean }>("/api/v1/finance/restart/", {
+    method: "POST",
   });
 }
 
