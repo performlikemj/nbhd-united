@@ -349,7 +349,7 @@ oauthlib==3.3.1
     # via requests-oauthlib
 onnx==1.21.0
     # via optimum
-onnxruntime==1.25.1
+onnxruntime==1.26.0
     # via
     #   -r requirements.in
     #   optimum
