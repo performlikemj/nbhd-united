@@ -242,7 +242,8 @@ class AgendaSummaryLineTest(TestCase):
             markdown="- [ ] One thing",
         )
         out = _render_summary(self.tenant)
-        self.assertIn("1 open task", out)
+        # Counts are bold-wrapped: ``**1** open task``
+        self.assertIn("**1** open task", out)
         # Singular form — no trailing 's'
         self.assertNotIn("open tasks", out)
         self.assertNotIn("goal", out)
@@ -257,7 +258,7 @@ class AgendaSummaryLineTest(TestCase):
             markdown="- [ ] One\n- [ ] Two\n- [ ] Three",
         )
         out = _render_summary(self.tenant)
-        self.assertIn("3 open tasks", out)
+        self.assertIn("**3** open tasks", out)
 
 
 class AgendaFullRenderTest(TestCase):
@@ -285,7 +286,7 @@ class AgendaFullRenderTest(TestCase):
         self.assertIn("## Agenda — Open threads with this user", managed)
         self.assertIn("Untouched introductions", managed)
         self.assertIn("Fuel", managed)
-        self.assertIn("1 open task", managed)
+        self.assertIn("**1** open task", managed)
 
     def test_agenda_renders_before_goals_and_tasks(self):
         """Order=15 places agenda above goals (20) and tasks (30)."""
