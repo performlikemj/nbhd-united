@@ -24,9 +24,14 @@ RUN apt-get update \
 
 RUN npm install --global \
         "openclaw@${OPENCLAW_VERSION}" \
+        "@openclaw/line@${OPENCLAW_VERSION}" \
         "@googleworkspace/cli" \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force
+# OpenClaw 5.2 externalized the LINE channel plugin out of core. Pin
+# @openclaw/line to the same OPENCLAW_VERSION so the manifest's
+# minHostVersion check passes (see dist/manifest-registry-*.js).
+# Telegram, memory-core, openrouter, anthropic remain bundled in core.
 
 WORKDIR /opt/nbhd
 

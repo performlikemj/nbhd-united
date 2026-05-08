@@ -1207,6 +1207,17 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         if paths:
             plugin_config["load"] = {"paths": paths}
 
+        # OC 5.2 tightened plugins.allow into a hard allowlist that gates
+        # bundled-provider discovery too (anthropic, openrouter, memory-core,
+        # telegram). We don't allowlist those — they activate via channel/
+        # provider auto-discovery. "compat" preserves the pre-5.2 behavior
+        # so bundled providers stay loadable without enumeration.
+        # See dist/legacy-config-migrations-*.js (bundledDiscovery migration).
+        from apps.orchestrator.tool_policy import _parse_version as _pv
+
+        if _pv(oc_version) >= (2026, 5, 0):
+            plugin_config["bundledDiscovery"] = "compat"
+
         config["plugins"] = plugin_config
         # Merge group:plugins into the existing allow list (not alsoAllow)
         # to avoid the allow/alsoAllow conflict that OpenClaw rejects.
