@@ -701,6 +701,7 @@ class PreferredModelView(APIView):
         tenant.preferred_model = model_id
         tenant.save(update_fields=["preferred_model"])
         tenant.bump_pending_config()
+        _enqueue_immediate_apply(tenant)
 
         return Response(
             {
@@ -720,6 +721,37 @@ def _get_allowed_models(tenant: Tenant) -> dict:
     if extras:
         return {**base, **extras}
     return base
+
+
+def _enqueue_immediate_apply(tenant: Tenant) -> None:
+    """Fire-and-forget: enqueue an apply_single_tenant_config task right now
+    so picker/per-task model changes land within ~5–30s instead of waiting
+    for the hourly apply-pending-configs cron (which also skips actively-
+    chatting tenants via a 15-min idle filter).
+
+    Idempotency-keyed so rapid clicks coalesce. Publish failure is logged
+    but never raised — the hourly cron is the safety net.
+    """
+    if not tenant.container_id or tenant.status != Tenant.Status.ACTIVE:
+        return
+    if tenant.hibernated_at:
+        return
+    try:
+        from apps.cron.publish import publish_task
+
+        publish_task(
+            "apply_single_tenant_config",
+            str(tenant.id),
+            idempotency_key=f"apply-config-{tenant.id}",
+        )
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Failed to enqueue immediate apply for tenant %s — falling back to hourly cron",
+            str(tenant.id)[:8],
+            exc_info=True,
+        )
 
 
 _VALID_TASK_SLUGS = {
@@ -770,6 +802,7 @@ class TaskModelPreferencesView(APIView):
         tenant.task_model_preferences = current
         tenant.save(update_fields=["task_model_preferences"])
         tenant.bump_pending_config()
+        _enqueue_immediate_apply(tenant)
 
         return Response({"task_model_preferences": current})
 

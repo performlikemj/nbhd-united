@@ -163,6 +163,20 @@ export function useTenantQuery() {
     queryFn: fetchTenant,
     staleTime: 5 * 60_000,
     enabled: isLoggedIn(),
+    // Poll while a picker change is in flight so the AI provider page can
+    // transition the "Switching…" badge to "Active" once the container
+    // adopts the change. `applied_model` is stamped only after a successful
+    // gateway.reload (apps/orchestrator/tasks.py); when it equals
+    // `preferred_model`, we stop polling.
+    refetchInterval: (query) => {
+      const data = query.state.data as Tenant | undefined;
+      if (!data) return false;
+      if (!data.preferred_model || data.preferred_model === data.applied_model) {
+        return false;
+      }
+      return 5000;
+    },
+    refetchIntervalInBackground: false,
   });
 }
 

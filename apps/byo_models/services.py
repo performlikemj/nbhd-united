@@ -230,8 +230,17 @@ def regenerate_tenant_config(tenant: Tenant) -> None:
         return
 
     update_tenant_config(str(tenant.id))
+    # BYO connect/disconnect drives a container revision restart (via
+    # apply_byo_credentials_to_container right after this), so we don't get
+    # to confirm adoption via gateway.reload like the picker path does.
+    # Stamp applied_model optimistically — matches the existing optimism
+    # around config_version. Worst case the new revision fails to start;
+    # the dashboard reads 'Active' on a model that isn't actually serving,
+    # which is no worse than today's config_version semantics.
     Tenant.objects.filter(id=tenant.id).update(
         config_version=db_models.F("pending_config_version"),
         config_refreshed_at=tz.now(),
+        applied_model=tenant.preferred_model,
+        applied_model_at=tz.now(),
     )
     logger.info("Regenerated openclaw.json for tenant=%s", tenant.id)
