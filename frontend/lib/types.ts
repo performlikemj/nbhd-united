@@ -36,6 +36,8 @@ export interface Tenant {
   monthly_token_budget: number;
   monthly_cost_budget: string;
   preferred_model: string;
+  applied_model: string;
+  applied_model_at: string | null;
   task_model_preferences: Record<string, string>;
   last_message_at: string | null;
   provisioned_at: string | null;

@@ -62,6 +62,12 @@ export default function AIProviderPage() {
   const openaiCred = useMemo(() => findCred(byoCreds, "openai"), [byoCreds]);
 
   const activeModel = tenant?.preferred_model || DEFAULT_MODEL;
+  // The model the running container is actually serving (stamped after a
+  // successful gateway.reload by apply_single_tenant_config_task). When it
+  // diverges from `activeModel`, a picker change is in flight — render the
+  // "Switching…" badge instead of "Active" so the UI stops lying.
+  const appliedModel = tenant?.applied_model || activeModel;
+
   const fallbackModelName = useMemo(() => {
     const m = ACTIVE_MODELS.find((x) => x.model_id === DEFAULT_MODEL);
     return m?.name ?? "MiniMax M2.7";
@@ -119,7 +125,10 @@ export default function AIProviderPage() {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {MODELS.map((model) => {
               const available = isModelAvailable(model, anthropicCred);
-              const isActive = !model.comingSoon && available && activeModel === model.model_id;
+              const isSelected = activeModel === model.model_id;
+              const isApplied = appliedModel === model.model_id;
+              const isPending = isSelected && !isApplied && available && !model.comingSoon;
+              const isActive = isSelected && isApplied && available && !model.comingSoon;
               const requiresLabel =
                 model.requires === "byo-anthropic" ? "Requires Anthropic connect" : "";
 
@@ -137,7 +146,9 @@ export default function AIProviderPage() {
                         ? "border-dashed border-border bg-surface-elevated/60 hover:border-accent/40"
                         : isActive
                           ? "border-accent bg-accent/5"
-                          : "border-border hover:border-accent/40",
+                          : isPending
+                            ? "border-amber-border bg-amber-bg/50"
+                            : "border-border hover:border-accent/40",
                     !model.comingSoon && preferredModelMutation.isPending && "opacity-60",
                   )}
                   aria-label={
@@ -153,6 +164,17 @@ export default function AIProviderPage() {
                     ) : !available ? (
                       <span className="rounded-full border border-border bg-surface px-2 py-0.5 text-xs font-medium text-ink-faint">
                         Locked
+                      </span>
+                    ) : isPending ? (
+                      <span
+                        aria-live="polite"
+                        className="inline-flex items-center gap-1.5 rounded-full bg-amber-bg border border-amber-border px-2 py-0.5 text-xs font-medium text-amber-text"
+                      >
+                        <span
+                          className="h-1.5 w-1.5 rounded-full bg-amber-text animate-pulse"
+                          aria-hidden
+                        />
+                        Switching…
                       </span>
                     ) : isActive ? (
                       <span className="rounded-full bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent">
@@ -220,7 +242,7 @@ export default function AIProviderPage() {
             );
           })}
           <p className="text-xs text-ink-muted">
-            Use a lighter model for routine tasks to stretch your budget. Changes apply within an hour.
+            Use a lighter model for routine tasks to stretch your budget. Changes apply within ~30 seconds.
           </p>
         </div>
       </SectionCard>

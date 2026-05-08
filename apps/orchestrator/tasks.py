@@ -78,10 +78,13 @@ def apply_single_tenant_config_task(tenant_id: str, _is_followup_retry: bool = F
       2. Ask the running gateway to reload (with bounded retry — see
          ``_RELOAD_BACKOFFS_SECONDS``). Skipped for hibernated tenants
          (the gateway is unreachable; wake reads the file directly).
-      3. Advance ``config_version`` only after the running session has
-         actually been told about the new config — either via a
-         successful reload, or because the tenant is hibernated and the
-         file is the source of truth at wake time.
+      3. Advance ``config_version`` and stamp ``applied_model`` only
+         after the running session has actually been told about the new
+         config — either via a successful reload, or because the tenant
+         is hibernated and the file is the source of truth at wake time.
+         The dashboard reads ``applied_model`` vs ``preferred_model`` to
+         render an honest "Switching…" badge while a picker change is
+         in flight.
 
     On persistent reload failure we leave ``config_version`` behind
     ``pending_config_version`` and queue ONE delayed retry so a fresh
@@ -118,11 +121,14 @@ def apply_single_tenant_config_task(tenant_id: str, _is_followup_retry: bool = F
 
     # Hibernated containers have no reachable gateway. The file is on
     # the share and ``wake_hibernated_tenant`` reads it directly, so
-    # treat the file write as the authoritative apply.
+    # treat the file write as the authoritative apply — including the
+    # applied_model stamp, since the wake will adopt the new file.
     if tenant.hibernated_at:
         Tenant.objects.filter(id=tenant_id).update(
             config_version=db_models.F("pending_config_version"),
             config_refreshed_at=tz.now(),
+            applied_model=tenant.preferred_model,
+            applied_model_at=tz.now(),
         )
         logger.info(
             "Config written for hibernated tenant %s — wake will pick it up",
@@ -152,13 +158,16 @@ def apply_single_tenant_config_task(tenant_id: str, _is_followup_retry: bool = F
         Tenant.objects.filter(id=tenant_id).update(
             config_version=db_models.F("pending_config_version"),
             config_refreshed_at=tz.now(),
+            applied_model=tenant.preferred_model,
+            applied_model_at=tz.now(),
         )
         logger.info("Config hot-reloaded for tenant %s", str(tenant_id)[:8])
         return
 
-    # Reload kept failing — leave pending > current so the dashboard
-    # doesn't lie. The next layer of recovery depends on whether this
-    # was the original attempt or a follow-up.
+    # Reload kept failing — leave pending > current and applied_model
+    # behind so the dashboard's "Switching…" badge stays honest. The
+    # next layer of recovery depends on whether this was the original
+    # attempt or a follow-up.
     logger.error(
         "gateway.reload exhausted %d attempts for %s (last error: %s)",
         len(_RELOAD_BACKOFFS_SECONDS) + 1,

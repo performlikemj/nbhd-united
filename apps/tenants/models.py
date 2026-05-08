@@ -289,6 +289,25 @@ class Tenant(models.Model):
         default="",
         help_text="User's preferred primary model (overrides tier default when set)",
     )
+    applied_model = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=(
+            "Model the running container is currently serving, stamped after a "
+            "successful gateway.reload. Diverges from preferred_model while a "
+            "switch is in flight; the frontend uses the difference to render a "
+            "'Switching…' state instead of an immediate 'Active' badge."
+        ),
+    )
+    applied_model_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Timestamp of the last successful applied_model write. Used by the "
+            "frontend to detect 'still applying, taking longer than usual'."
+        ),
+    )
 
     # Action gating
     gate_all_actions = models.BooleanField(
