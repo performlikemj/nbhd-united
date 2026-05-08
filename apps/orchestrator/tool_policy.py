@@ -17,7 +17,7 @@ from typing import Any
 # Bump this constant + Dockerfile.openclaw ARG when rolling out a new
 # OpenClaw release.  Everything else (model default, config fallback,
 # function defaults, tests) imports this value.
-OPENCLAW_CURRENT_VERSION = "2026.4.25"
+OPENCLAW_CURRENT_VERSION = "2026.5.7"
 
 
 def _parse_version(v: str) -> tuple[int, ...]:
