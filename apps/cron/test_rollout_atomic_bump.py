@@ -49,7 +49,7 @@ class RolloutAtomicBumpEndpointTest(TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertIn("latest", resp.json()["error"])
 
-    @patch("apps.cron.views.publish_batch", return_value=0)
+    @patch("apps.cron.publish.publish_batch", return_value=0)
     def test_dry_run_does_not_publish(self, mock_publish):
         resp = self._post(body={"dry_run": True, "oc_version": "2026.99.0", "image_tag": "futuresha"})
         self.assertEqual(resp.status_code, 200)
