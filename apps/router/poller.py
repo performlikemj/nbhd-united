@@ -846,6 +846,12 @@ class TelegramPoller:
                 ).start()
                 return
 
+        # Capture the user's original text before we decorate it with
+        # photo prefix / session context / workspace+datetime markers.
+        # Used for the dropped-message apology excerpt — see
+        # ``_forward_to_container``.
+        raw_user_text = message_text
+
         # Upload photo to tenant workspace if present
         image_path = None
         msg_data = update.get("message") or update.get("edited_message") or {}
@@ -862,7 +868,7 @@ class TelegramPoller:
         if self._is_new_session(tenant):
             message_text = self._build_session_context(tenant, message_text)
 
-        self._forward_to_container(chat_id, tenant, message_text)
+        self._forward_to_container(chat_id, tenant, message_text, raw_user_text=raw_user_text)
 
     # ── Contextual recall ──────────────────────────────────────────────────
 
@@ -1211,7 +1217,13 @@ class TelegramPoller:
 
         threading.Thread(target=_retry, daemon=True).start()
 
-    def _forward_to_container(self, chat_id: int, tenant: Tenant, message_text: str) -> None:
+    def _forward_to_container(
+        self,
+        chat_id: int,
+        tenant: Tenant,
+        message_text: str,
+        raw_user_text: str | None = None,
+    ) -> None:
         """Pre-process the message and enqueue it on the per-tenant
         serialization queue.
 
@@ -1232,6 +1244,13 @@ class TelegramPoller:
         right before the slow POST so the user keeps seeing activity.
         """
         from apps.router.pending_queue import enqueue_message_for_tenant
+
+        # Preserve the user-meaningful text for the dropped-message apology.
+        # ``message_text`` accumulates workspace/transition/datetime/chat markers
+        # below, all of which are agent-only metadata. If we let it stand in
+        # for the excerpt, the apology shows "It started with: '[Now: …'"
+        # which is useless for jogging the user's memory.
+        raw_user_text = raw_user_text if raw_user_text is not None else message_text
 
         lang = getattr(tenant.user, "language", None) or "en"
         if not tenant.container_fqdn or tenant.status == "provisioning":
@@ -1301,7 +1320,7 @@ class TelegramPoller:
                 "user_param": user_param,
                 "user_timezone": user_tz,
             },
-            user_text_excerpt=message_text,
+            user_text_excerpt=raw_user_text,
         )
 
     # Gateway error strings that should be treated as empty responses

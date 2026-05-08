@@ -933,6 +933,7 @@ class LineWebhookView(View):
         message_text: str,
         reply_token: str | None = None,
         is_voice: bool = False,
+        raw_user_text: str | None = None,
     ) -> None:
         """Pre-process the message and enqueue it on the per-tenant
         serialization queue.
@@ -952,6 +953,12 @@ class LineWebhookView(View):
         of enqueuing a row that's guaranteed to fail.
         """
         from apps.router.pending_queue import enqueue_message_for_tenant
+
+        # Preserve the user-meaningful text for the dropped-message apology.
+        # ``message_text`` accumulates workspace/transition/datetime/chat
+        # markers below — agent-only metadata that would render the apology
+        # excerpt useless ("It started with: '[Now: …'").
+        raw_user_text = raw_user_text if raw_user_text is not None else message_text
 
         lang = tenant.user.language or "en"
 
@@ -1018,7 +1025,7 @@ class LineWebhookView(View):
                 "is_voice": bool(is_voice),
                 "reply_token": reply_token,
             },
-            user_text_excerpt=message_text,
+            user_text_excerpt=raw_user_text,
         )
 
     def _handle_postback(self, event: dict) -> None:
