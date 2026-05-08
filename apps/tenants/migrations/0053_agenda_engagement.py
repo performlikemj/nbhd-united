@@ -103,12 +103,19 @@ class Migration(migrations.Migration):
             ],
             options={
                 "indexes": [
-                    # Auto-named so Django's ``makemigrations --check`` is
-                    # happy in CI. Hand-coded names diverge from Django's
-                    # deterministic naming and trigger spurious ``rename
-                    # index`` migrations on each check.
-                    models.Index(fields=["tenant", "state"]),
-                    models.Index(fields=["tenant", "kind", "last_surfaced_at"]),
+                    # Names match Django's deterministic autoname — picked
+                    # from the ``makemigrations --check`` rename suggestion
+                    # that CI surfaced when names were omitted. Migration
+                    # state requires names; matching the autoname keeps
+                    # ``--check`` quiet.
+                    models.Index(
+                        fields=["tenant", "state"],
+                        name="tenants_age_tenant__38043c_idx",
+                    ),
+                    models.Index(
+                        fields=["tenant", "kind", "last_surfaced_at"],
+                        name="tenants_age_tenant__44649e_idx",
+                    ),
                 ],
                 "constraints": [
                     models.UniqueConstraint(
