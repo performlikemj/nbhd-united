@@ -57,9 +57,7 @@ class ApplyOrDeferAwakeTest(TestCase):
     def test_awake_invokes_callable_and_returns_result(self, mock_defer):
         callable_mock = mock.Mock(return_value="ok-result")
 
-        result = apply_or_defer_gateway_call(
-            self.tenant, callable_mock, label="unit.awake"
-        )
+        result = apply_or_defer_gateway_call(self.tenant, callable_mock, label="unit.awake")
 
         callable_mock.assert_called_once_with()
         self.assertEqual(result, "ok-result")
@@ -79,25 +77,19 @@ class ApplyOrDeferHibernatedTest(TestCase):
     @mock.patch("apps.orchestrator.azure_client.upload_config_to_file_share")
     @mock.patch("apps.orchestrator.config_generator.generate_openclaw_config")
     @mock.patch("apps.orchestrator.config_generator.config_to_json", return_value="{}")
-    def test_hibernated_skips_callable_and_writes_file_share(
-        self, mock_to_json, mock_gen, mock_upload
-    ):
+    def test_hibernated_skips_callable_and_writes_file_share(self, mock_to_json, mock_gen, mock_upload):
         # Helper does not bump pending — that's the caller's responsibility.
         # It only writes the desired-state copy to the file share.
         mock_gen.return_value = {"agent": {"name": "test"}}
         callable_mock = mock.Mock(return_value="should-not-run")
 
-        result = apply_or_defer_gateway_call(
-            self.tenant, callable_mock, label="unit.hibernated"
-        )
+        result = apply_or_defer_gateway_call(self.tenant, callable_mock, label="unit.hibernated")
 
         callable_mock.assert_not_called()
         self.assertIs(result, DEFERRED)
 
         self.tenant.refresh_from_db()
-        self.assertEqual(
-            self.tenant.pending_config_version, self.starting_pending
-        )
+        self.assertEqual(self.tenant.pending_config_version, self.starting_pending)
 
         mock_gen.assert_called_once()
         mock_upload.assert_called_once()
@@ -107,20 +99,14 @@ class ApplyOrDeferHibernatedTest(TestCase):
     @mock.patch("apps.orchestrator.azure_client.upload_config_to_file_share")
     @mock.patch("apps.orchestrator.config_generator.generate_openclaw_config")
     @mock.patch("apps.orchestrator.config_generator.config_to_json", return_value="{}")
-    def test_multiple_defers_dedupe_file_share_write(
-        self, mock_to_json, mock_gen, mock_upload
-    ):
+    def test_multiple_defers_dedupe_file_share_write(self, mock_to_json, mock_gen, mock_upload):
         mock_gen.return_value = {"agent": {"name": "test"}}
         callable_mock = mock.Mock()
 
         # Two helper calls in the same request reuse the same tenant instance
         # — the second must skip the regeneration + upload.
-        apply_or_defer_gateway_call(
-            self.tenant, callable_mock, label="unit.dedupe.first"
-        )
-        apply_or_defer_gateway_call(
-            self.tenant, callable_mock, label="unit.dedupe.second"
-        )
+        apply_or_defer_gateway_call(self.tenant, callable_mock, label="unit.dedupe.first")
+        apply_or_defer_gateway_call(self.tenant, callable_mock, label="unit.dedupe.second")
 
         self.assertEqual(mock_gen.call_count, 1)
         self.assertEqual(mock_upload.call_count, 1)
@@ -144,9 +130,7 @@ class ApplyOrDeferAwakeFallthroughTest(TestCase):
         exc.status_code = 502
         callable_mock = mock.Mock(side_effect=exc)
 
-        result = apply_or_defer_gateway_call(
-            self.tenant, callable_mock, label="unit.unavailable"
-        )
+        result = apply_or_defer_gateway_call(self.tenant, callable_mock, label="unit.unavailable")
 
         callable_mock.assert_called_once_with()
         self.assertIs(result, DEFERRED)
@@ -161,28 +145,20 @@ class ApplyOrDeferAwakeFallthroughTest(TestCase):
         callable_mock = mock.Mock(side_effect=exc)
 
         with self.assertRaises(GatewayError):
-            apply_or_defer_gateway_call(
-                self.tenant, callable_mock, label="unit.real-error"
-            )
+            apply_or_defer_gateway_call(self.tenant, callable_mock, label="unit.real-error")
 
         self.tenant.refresh_from_db()
-        self.assertEqual(
-            self.tenant.pending_config_version, self.starting_pending
-        )
+        self.assertEqual(self.tenant.pending_config_version, self.starting_pending)
 
     def test_non_gateway_exception_bubbles_untouched(self):
         # Catches must be narrow — a ValueError must not be swallowed.
         callable_mock = mock.Mock(side_effect=ValueError("logic bug"))
 
         with self.assertRaises(ValueError):
-            apply_or_defer_gateway_call(
-                self.tenant, callable_mock, label="unit.non-gateway"
-            )
+            apply_or_defer_gateway_call(self.tenant, callable_mock, label="unit.non-gateway")
 
         self.tenant.refresh_from_db()
-        self.assertEqual(
-            self.tenant.pending_config_version, self.starting_pending
-        )
+        self.assertEqual(self.tenant.pending_config_version, self.starting_pending)
 
 
 class GatewayErrorPropagationThroughServicesTest(TestCase):
@@ -201,9 +177,7 @@ class GatewayErrorPropagationThroughServicesTest(TestCase):
     @mock.patch("apps.orchestrator.config_generator.generate_openclaw_config")
     @mock.patch("apps.orchestrator.config_generator.config_to_json", return_value="{}")
     @mock.patch("apps.orchestrator.services.invoke_gateway_tool")
-    def test_sync_heartbeat_cron_unavailable_defers_via_helper(
-        self, mock_invoke, mock_to_json, mock_gen, mock_upload
-    ):
+    def test_sync_heartbeat_cron_unavailable_defers_via_helper(self, mock_invoke, mock_to_json, mock_gen, mock_upload):
         from apps.orchestrator.services import sync_heartbeat_cron
 
         mock_gen.return_value = {"agent": {"name": "test"}}
@@ -321,9 +295,7 @@ class ProfileTimezoneEndpointDeferTest(TestCase):
     @mock.patch("apps.orchestrator.azure_client.upload_config_to_file_share")
     @mock.patch("apps.orchestrator.config_generator.generate_openclaw_config")
     @mock.patch("apps.orchestrator.services.update_tenant_config")
-    def test_hibernated_timezone_change_defers(
-        self, mock_update_cfg, mock_gen, mock_upload, mock_gateway
-    ):
+    def test_hibernated_timezone_change_defers(self, mock_update_cfg, mock_gen, mock_upload, mock_gateway):
         mock_gen.return_value = {"agent": {"name": "test"}}
 
         response = self.client.patch(
@@ -354,9 +326,7 @@ class ProfileLocationEndpointDeferTest(TestCase):
     @mock.patch("apps.orchestrator.azure_client.upload_config_to_file_share")
     @mock.patch("apps.orchestrator.config_generator.generate_openclaw_config")
     @mock.patch("apps.orchestrator.services.update_tenant_config")
-    def test_hibernated_location_change_defers(
-        self, mock_update_cfg, mock_gen, mock_upload
-    ):
+    def test_hibernated_location_change_defers(self, mock_update_cfg, mock_gen, mock_upload):
         mock_gen.return_value = {"agent": {"name": "test"}}
 
         response = self.client.patch(

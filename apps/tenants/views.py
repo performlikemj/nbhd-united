@@ -569,9 +569,7 @@ class ProfileView(APIView):
                             from apps.cron.gateway_client import invoke_gateway_tool
 
                             new_tz = request.user.timezone
-                            list_result = invoke_gateway_tool(
-                                tenant, "cron.list", {"includeDisabled": True}
-                            )
+                            list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
                             jobs: list = []
                             if isinstance(list_result, dict):
                                 jobs = list_result.get("jobs", [])
