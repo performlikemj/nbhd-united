@@ -7,6 +7,7 @@ import httpx
 from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
 
 from .services import (
+    bump_openclaw_version_for_tenant,
     deprovision_tenant,
     provision_tenant,
     repair_stale_tenant_provisioning,
@@ -37,6 +38,38 @@ def deprovision_tenant_task(tenant_id: str) -> None:
 def update_tenant_config_task(tenant_id: str) -> None:
     """Update an active tenant's OpenClaw container config."""
     update_tenant_config(tenant_id)
+
+
+def bump_openclaw_atomic_per_tenant_task(
+    tenant_id: str, target_version: str, image_tag: str
+) -> None:
+    """Atomic per-tenant OC version bump (config + image + DB) for fleet rollout.
+
+    QStash fan-out target for the rollout-atomic-bump endpoint. Each task
+    runs in <30s wall-time so it stays well within the gunicorn 300s
+    request budget — unlike a sequential management command call which
+    would time out for any fleet >10 tenants.
+
+    Idempotent: skips if tenant is already at target_version (the most
+    likely cause is a duplicate QStash delivery from retry).
+    """
+    from django.conf import settings
+
+    from apps.tenants.models import Tenant
+
+    try:
+        tenant = Tenant.objects.get(id=tenant_id)
+    except Tenant.DoesNotExist:
+        return  # Tenant deprovisioned between endpoint and task — no-op.
+
+    if tenant.openclaw_version == target_version and tenant.container_image_tag == image_tag:
+        return  # Already at target; QStash retry or stale enqueue.
+
+    if tenant.status != Tenant.Status.ACTIVE or not tenant.container_id:
+        return  # Suspended / deprovisioning — out of scope.
+
+    registry = getattr(settings, "AZURE_ACR_SERVER", "nbhdunited.azurecr.io")
+    bump_openclaw_version_for_tenant(tenant, target_version, image_tag, registry)
 
 
 def seed_cron_jobs_task(tenant_id: str) -> None:

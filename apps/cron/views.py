@@ -113,6 +113,13 @@ TASK_MAP = {
     # OpenClaw claude-cli backend never sees overlapping turns on the
     # same live session.
     "drain_pending_messages_for_tenant": "apps.router.pending_queue.drain_pending_messages_for_tenant_task",
+    # Atomic fleet-bump fan-out (rollout-atomic-bump endpoint). Per-tenant
+    # version + config + image bump that survives gunicorn 300s budget
+    # for any fleet size. Differs from apply_single_tenant_image (image-only,
+    # config refreshed lazily by apply_pending_configs cron) in that this
+    # bumps config AND image atomically — required when a release crosses
+    # an OpenClaw config schema boundary (e.g. 4.x → 5.x).
+    "bump_openclaw_atomic_per_tenant": "apps.orchestrator.tasks.bump_openclaw_atomic_per_tenant_task",
 }
 
 
@@ -1601,3 +1608,189 @@ def rollout_byo_persona_refresh(request):
             },
             status=500,
         )
+
+
+# Per-tenant bump tasks for atomic fleet rollout. The endpoint below fans
+# out one task per eligible tenant via QStash so each runs in its own
+# Django worker invocation, well within the 300s gunicorn budget. Sized
+# to handle arbitrary fleet sizes (sequential `bump_openclaw_version --all`
+# inside a request handler would time out for fleets >10 tenants).
+_ATOMIC_BUMP_LOCK_KEY = "rollout_atomic_bump:in_flight"
+_ATOMIC_BUMP_LOCK_TTL_SECONDS = 60 * 30  # 30 min — covers slowest fleet rollout
+
+
+@csrf_exempt
+@require_POST
+def rollout_atomic_bump(request):
+    """Atomic fleet bump: fan out per-tenant config + image + version updates.
+
+    URL: /api/cron/rollout-atomic-bump/
+    Auth: X-Deploy-Secret header.
+
+    Unlike ``rollout-byo-image-bump`` (which only updates the image and
+    relies on the ``apply_pending_configs`` cron to lazily refresh
+    configs), this endpoint enqueues a per-tenant QStash task that
+    atomically updates the version field, openclaw.json on the file
+    share, and the container image — required when a release crosses an
+    OpenClaw config schema boundary.
+
+    POST body (all optional):
+        {
+            "oc_version": "2026.5.7",   // default: settings.OPENCLAW_CURRENT_VERSION
+            "image_tag":  "<sha>",       // default: settings.OPENCLAW_IMAGE_TAG
+            "tenant_id":  "<uuid>",      // optional canary mode — bump only this tenant
+            "dry_run":    false
+        }
+
+    Returns:
+        {"queued": N, "oc_version": "...", "image_tag": "...",
+         "tenant_ids": [...], "dry_run": bool}
+
+    Each per-tenant task uses ``bump_openclaw_version_for_tenant`` (see
+    apps/orchestrator/services.py) which provides:
+      - File-share snapshot before write + best-effort restore on
+        image-push failure (closes the boot-failure window for partial
+        failures across schema crossings).
+      - DB rollback of ``tenant.openclaw_version`` on any exception.
+      - Idempotency on the per-tenant level (version+image_tag check).
+
+    Concurrency-locked via Django cache so two operators can't kick off
+    simultaneous fleet rollouts.
+    """
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    if not deploy_secret:
+        return JsonResponse({"error": "DEPLOY_SECRET not configured"}, status=503)
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not provided or provided != deploy_secret:
+        logger.warning("Unauthorized rollout_atomic_bump attempt")
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    body: dict = {}
+    if request.body:
+        try:
+            body = json.loads(request.body)
+        except Exception:
+            body = {}
+
+    from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION
+
+    oc_version = str(body.get("oc_version") or OPENCLAW_CURRENT_VERSION).strip()
+    image_tag = str(body.get("image_tag") or getattr(settings, "OPENCLAW_IMAGE_TAG", "") or "").strip()
+    tenant_filter = str(body.get("tenant_id") or "").strip()
+    dry_run = bool(body.get("dry_run", False))
+
+    if not image_tag or image_tag == "latest":
+        return JsonResponse(
+            {
+                "error": (
+                    "Refusing to roll out the 'latest' tag — pass image_tag explicitly "
+                    "or set OPENCLAW_IMAGE_TAG. The endpoint can't compute idempotence otherwise."
+                )
+            },
+            status=400,
+        )
+
+    # Concurrency lock — Django cache. Best-effort; expires automatically.
+    from django.core.cache import cache
+
+    if not dry_run and cache.add(_ATOMIC_BUMP_LOCK_KEY, "1", timeout=_ATOMIC_BUMP_LOCK_TTL_SECONDS):
+        lock_acquired = True
+    elif dry_run:
+        lock_acquired = False  # Don't acquire lock for dry-run
+    else:
+        return JsonResponse(
+            {"error": "Another atomic bump is in flight; try again in a few minutes"},
+            status=409,
+        )
+
+    try:
+        eligible = Tenant.objects.filter(
+            status=Tenant.Status.ACTIVE,
+            container_id__gt="",
+        )
+        if tenant_filter:
+            eligible = eligible.filter(id=tenant_filter)
+        # Idempotency: skip tenants already at target on BOTH version + image_tag.
+        # A version-only match isn't enough (a prior partial failure could leave
+        # version=target but image_tag stale).
+        eligible = eligible.exclude(openclaw_version=oc_version, container_image_tag=image_tag)
+
+        tenant_ids = [str(t.id) for t in eligible]
+
+        if dry_run or not tenant_ids:
+            return JsonResponse(
+                {
+                    "queued": 0,
+                    "oc_version": oc_version,
+                    "image_tag": image_tag,
+                    "tenant_ids": tenant_ids,
+                    "dry_run": dry_run,
+                }
+            )
+
+        from apps.cron.publish import publish_batch
+
+        tasks = [
+            ("bump_openclaw_atomic_per_tenant", (tid, oc_version, image_tag), {})
+            for tid in tenant_ids
+        ]
+        queued = publish_batch(tasks)
+        logger.info(
+            "rollout_atomic_bump queued %d task(s) -> oc_version=%s image_tag=%s",
+            queued,
+            oc_version,
+            image_tag,
+        )
+        return JsonResponse(
+            {
+                "queued": queued,
+                "oc_version": oc_version,
+                "image_tag": image_tag,
+                "tenant_ids": tenant_ids,
+                "dry_run": False,
+            }
+        )
+    finally:
+        if lock_acquired:
+            cache.delete(_ATOMIC_BUMP_LOCK_KEY)
+
+
+def atomic_bump_status(request):
+    """Report current openclaw_version + container_image_tag per active tenant.
+
+    URL: /api/cron/atomic-bump-status/
+    Auth: X-Deploy-Secret header.
+
+    Read-only post-rollout audit endpoint. The caller filters the response
+    against their target values to find tenants where the rollout didn't
+    take (drift signal). Server-side filtering would need to know the
+    target — which the caller already has.
+
+    Returns:
+        {
+            "tenants": [{tenant_id, oc_version, image_tag, hibernated}, ...],
+            "count":   N
+        }
+    """
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    if not deploy_secret:
+        return JsonResponse({"error": "DEPLOY_SECRET not configured"}, status=503)
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not provided or provided != deploy_secret:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    rows = Tenant.objects.filter(
+        status=Tenant.Status.ACTIVE,
+        container_id__gt="",
+    ).values("id", "openclaw_version", "container_image_tag", "hibernated_at")
+
+    tenants = [
+        {
+            "tenant_id": str(row["id"]),
+            "oc_version": row["openclaw_version"] or "",
+            "image_tag": row["container_image_tag"] or "",
+            "hibernated": row["hibernated_at"] is not None,
+        }
+        for row in rows
+    ]
+    return JsonResponse({"tenants": tenants, "count": len(tenants)})

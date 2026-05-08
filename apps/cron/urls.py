@@ -51,4 +51,17 @@ urlpatterns = [
         views.rollout_byo_persona_refresh,
         name="cron-rollout-byo-persona-refresh",
     ),
+    # Atomic fleet bump (config + image + version, fan-out per tenant).
+    # See docs/infrastructure/openclaw-5-7-migration.md for usage and the
+    # design rationale (gunicorn 300s budget, Option C QStash fan-out).
+    path(
+        "rollout-atomic-bump/",
+        views.rollout_atomic_bump,
+        name="cron-rollout-atomic-bump",
+    ),
+    path(
+        "atomic-bump-status/",
+        views.atomic_bump_status,
+        name="cron-atomic-bump-status",
+    ),
 ]
