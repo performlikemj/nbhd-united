@@ -28,8 +28,7 @@ from __future__ import annotations
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
-from apps.orchestrator.azure_client import update_container_image
-from apps.orchestrator.services import update_tenant_config
+from apps.orchestrator.services import bump_openclaw_version_for_tenant
 from apps.tenants.models import Tenant
 
 
@@ -98,41 +97,8 @@ class Command(BaseCommand):
             self.stdout.write(f"Done: {succeeded} succeeded, {failed} failed")
 
     def _bump_tenant(self, tenant: Tenant, target_version: str, image_tag: str, registry: str) -> None:
-        # Hibernated tenants are NOT skipped. Containers run in single-revision
-        # mode, so update_container_image creates a new active revision — both
-        # waking the container AND landing it on the new image. Without this,
-        # hibernated tenants would silently never receive fleet rollouts (the
-        # auto-rollout in apply_pending_configs skips them too) and would wake
-        # back onto stale images. The cron-aware hibernation system will
-        # re-hibernate the tenant on its next idle pass.
-        was_hibernated = bool(tenant.hibernated_at)
-        old_version = tenant.openclaw_version
-
-        # 1. Set version so config generator produces version-correct output
-        tenant.openclaw_version = target_version
-        tenant.save(update_fields=["openclaw_version"])
-
-        try:
-            # 2. Regenerate and push config + workspace files. For hibernated
-            #    tenants the gateway-dependent step (cron prompt update) will
-            #    log-and-swallow because the container isn't reachable — that's
-            #    fine; apply_single_tenant_config picks them up post-wake.
-            update_tenant_config(str(tenant.id))
-
-            # 3. Update container image (creates new revision; in single-revision
-            #    mode this auto-activates and wakes hibernated containers).
-            image = f"{registry}/nbhd-openclaw:{image_tag}"
-            update_container_image(tenant.container_id, image)
-
-            # 4. Record image tag and clear hibernation flag if applicable.
-            tenant.container_image_tag = image_tag
-            update_fields = ["container_image_tag"]
-            if was_hibernated:
-                tenant.hibernated_at = None
-                update_fields.append("hibernated_at")
-            tenant.save(update_fields=update_fields)
-        except Exception:
-            # Rollback version so tenant stays consistent
-            tenant.openclaw_version = old_version
-            tenant.save(update_fields=["openclaw_version"])
-            raise
+        # Delegates to the shared service function so the QStash fleet-bump
+        # task uses identical per-tenant semantics. See
+        # apps/orchestrator/services.py:bump_openclaw_version_for_tenant
+        # for atomicity guarantees (file-share snapshot/restore + DB rollback).
+        bump_openclaw_version_for_tenant(tenant, target_version, image_tag, registry)

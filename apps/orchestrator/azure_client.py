@@ -313,6 +313,47 @@ def create_tenant_file_share(tenant_id: str) -> dict[str, str]:
     return {"share_name": share_name, "account_name": account_name}
 
 
+def download_config_from_file_share(tenant_id: str) -> bytes | None:
+    """Download openclaw.json from the tenant's Azure File Share.
+
+    Returns None if the file doesn't exist (e.g., never provisioned). Used
+    by the atomic fleet-bump path to snapshot the prior config before a
+    schema-crossing rewrite, so we can best-effort restore it if the
+    image push fails. See bump_openclaw_version_for_tenant in services.py.
+    """
+    share_name = f"ws-{str(tenant_id)[:20]}"
+
+    if _is_mock():
+        logger.info("[MOCK] download_config_from_file_share %s", share_name)
+        return None
+
+    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
+    if not account_name:
+        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
+
+    from azure.core.exceptions import ResourceNotFoundError
+    from azure.storage.fileshare import ShareFileClient
+
+    storage_client = get_storage_client()
+    keys = storage_client.storage_accounts.list_keys(
+        settings.AZURE_RESOURCE_GROUP,
+        account_name,
+    )
+    account_key = keys.keys[0].value
+    account_url = f"https://{account_name}.file.core.windows.net"
+
+    file_client = ShareFileClient(
+        account_url=account_url,
+        share_name=share_name,
+        file_path="openclaw.json",
+        credential=account_key,
+    )
+    try:
+        return file_client.download_file().readall()
+    except ResourceNotFoundError:
+        return None
+
+
 def upload_config_to_file_share(tenant_id: str, config_json: str) -> None:
     """Upload openclaw.json to the tenant's Azure File Share.
 

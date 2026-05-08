@@ -22,7 +22,9 @@ from .azure_client import (
     delete_container_app,
     delete_managed_identity,
     delete_tenant_file_share,
+    download_config_from_file_share,
     register_environment_storage,
+    update_container_image,
     upload_config_to_file_share,
 )
 from .config_generator import build_cron_seed_jobs, config_to_json, generate_openclaw_config
@@ -346,6 +348,102 @@ def provision_tenant(tenant_id: str) -> None:
                 tenant_id,
                 exc_info=True,
             )
+
+
+def bump_openclaw_version_for_tenant(
+    tenant: Tenant,
+    target_version: str,
+    image_tag: str,
+    registry: str,
+) -> None:
+    """Atomically bump one tenant's OpenClaw version + config + image.
+
+    Single-tenant primitive shared by:
+      - the ``bump_openclaw_version`` management command (sequential CLI use)
+      - the ``bump_openclaw_atomic_per_tenant_task`` QStash task (fleet
+        fan-out via ``rollout-atomic-bump`` endpoint)
+
+    Atomicity guarantees:
+      - On image-push failure, the prior ``openclaw.json`` snapshot is
+        restored to the file share (best-effort — log-and-swallow if the
+        restore upload itself fails). This closes the window where a
+        partial failure would leave the tenant with new config + old image,
+        causing boot-failure if the schemas crossed.
+      - DB ``tenant.openclaw_version`` is rolled back on any exception.
+      - ``container_image_tag`` and ``hibernated_at`` are only updated
+        after image push succeeds, so they reflect the actual deployed
+        state.
+
+    Hibernated tenants are NOT skipped — Container Apps single-revision
+    mode means ``update_container_image`` creates a new active revision
+    that auto-wakes the container.
+
+    Raises on any per-tenant failure so the caller can record it.
+    """
+    was_hibernated = bool(tenant.hibernated_at)
+    old_version = tenant.openclaw_version
+
+    # Snapshot current config so we can restore on partial failure. None
+    # means the tenant doesn't have a config yet (fresh provision); the
+    # restore path skips when there's nothing to restore.
+    config_snapshot: bytes | None
+    try:
+        config_snapshot = download_config_from_file_share(str(tenant.id))
+    except Exception:
+        logger.warning(
+            "Could not snapshot config for tenant %s before bump (proceeding without restore safety)",
+            str(tenant.id)[:8],
+            exc_info=True,
+        )
+        config_snapshot = None
+
+    # 1. Set version so config generator produces version-correct output.
+    tenant.openclaw_version = target_version
+    tenant.save(update_fields=["openclaw_version"])
+
+    try:
+        # 2. Regenerate and push config + workspace files. For hibernated
+        #    tenants the gateway-dependent step (cron prompt update) will
+        #    log-and-swallow because the container isn't reachable — that's
+        #    fine; apply_single_tenant_config picks them up post-wake.
+        update_tenant_config(str(tenant.id))
+
+        # 3. Update container image (creates new revision; in single-revision
+        #    mode this auto-activates and wakes hibernated containers).
+        image = f"{registry}/nbhd-openclaw:{image_tag}"
+        update_container_image(tenant.container_id, image)
+
+        # 4. Record image tag and clear hibernation flag if applicable.
+        tenant.container_image_tag = image_tag
+        update_fields = ["container_image_tag"]
+        if was_hibernated:
+            tenant.hibernated_at = None
+            update_fields.append("hibernated_at")
+        tenant.save(update_fields=update_fields)
+    except Exception:
+        # Best-effort restore the prior config so the old image can still
+        # boot. If the failure was BEFORE update_tenant_config wrote, the
+        # restore is a no-op (snapshot bytes == current bytes). If the
+        # restore itself fails, we log and continue with the version
+        # rollback — a tenant left with new config + old image is still
+        # better-known than left with new version + new config + old image.
+        if config_snapshot is not None:
+            try:
+                upload_config_to_file_share(str(tenant.id), config_snapshot.decode("utf-8"))
+                logger.info(
+                    "Restored prior openclaw.json for tenant %s after bump failure",
+                    str(tenant.id)[:8],
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to restore prior openclaw.json for tenant %s — manual file-share fix may be needed",
+                    str(tenant.id)[:8],
+                )
+
+        # Rollback the version field so the tenant stays consistent in DB.
+        tenant.openclaw_version = old_version
+        tenant.save(update_fields=["openclaw_version"])
+        raise
 
 
 def update_tenant_config(tenant_id: str) -> None:
