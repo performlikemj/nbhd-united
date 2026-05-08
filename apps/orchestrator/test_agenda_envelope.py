@@ -113,6 +113,44 @@ class AgendaUntouchedIntrosTest(TestCase):
         self.assertIn("Untouched introductions", out)
         self.assertIn("Fuel", out)
 
+    def test_abandoned_engagement_suppresses_intro(self):
+        """Phase B integration: a feature_intro with state=ABANDONED
+        drops out of the rendered list even though welcomes_sent[key]
+        is still null."""
+        from apps.tenants.agenda_models import AgendaEngagement
+        from apps.tenants.agenda_service import mark_state
+
+        self.tenant.fuel_enabled = True
+        self.tenant.save()
+        # Without engagement: intro renders.
+        self.assertIn("Fuel", _render_untouched_intros(self.tenant))
+
+        # Mark ABANDONED → intro suppressed.
+        mark_state(
+            self.tenant,
+            kind=AgendaEngagement.Kind.FEATURE_INTRO,
+            item_id="fuel",
+            state=AgendaEngagement.State.ABANDONED,
+        )
+        self.assertNotIn("Fuel", _render_untouched_intros(self.tenant))
+
+    def test_recent_surface_suppresses_intro(self):
+        """A freshly-surfaced intro is suppressed for the cooldown window
+        even when welcomes_sent is still null."""
+        from apps.tenants.agenda_models import AgendaEngagement
+        from apps.tenants.agenda_service import mark_surfaced
+
+        self.tenant.fuel_enabled = True
+        self.tenant.save()
+
+        mark_surfaced(
+            self.tenant,
+            kind=AgendaEngagement.Kind.FEATURE_INTRO,
+            item_id="fuel",
+        )
+        # Surfaced just now → suppressed by the 6-hour cooldown.
+        self.assertNotIn("Fuel", _render_untouched_intros(self.tenant))
+
 
 class AgendaCountersTest(TestCase):
     def setUp(self):
