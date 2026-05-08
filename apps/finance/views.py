@@ -216,9 +216,16 @@ def _schedule_finance_welcome(tenant):
 class FinanceSettingsView(APIView):
     """PATCH: toggle finance_enabled for the tenant.
 
-    Enabling Gravity (finance) schedules a one-shot welcome cron 90s out
-    so the agent introduces the feature shortly after the toggle. Idempotent:
-    re-enabling an already-enabled tenant doesn't re-schedule the welcome.
+    Enabling or disabling Gravity flips the ``nbhd-finance-tools`` plugin
+    in the OpenClaw config allow-list. The running session's tool manifest
+    is built once at session start, so a hot-reload of the file isn't
+    enough — the container must restart for the agent to actually see the
+    new tools (or stop seeing them on disable). Mirrors the Fuel toggle:
+    we queue an ``apply_single_tenant_config`` so the file share is current
+    before the restart, then return ``restart_required`` so the frontend
+    can confirm and call ``POST /api/v1/finance/restart/``. The welcome
+    cron is scheduled from the restart endpoint, AFTER the container has
+    had time to come back up with the new plugin loaded.
     """
 
     permission_classes = [IsAuthenticated]
@@ -252,9 +259,58 @@ class FinanceSettingsView(APIView):
         tenant.save(update_fields=update_fields)
         tenant.bump_pending_config()
 
-        # First-enable: schedule the welcome cron via QStash with a delay
-        # so the container has a moment to pick up the latest config.
-        if tenant.finance_enabled and not was_enabled:
+        # Write config to file share so it's ready when the container restarts.
+        try:
+            from apps.cron.publish import publish_task
+
+            publish_task("apply_single_tenant_config", str(tenant.id))
+        except Exception:
+            logger.warning("Failed to enqueue config deploy for tenant %s", tenant.id)
+
+        plugin_changed = was_enabled != tenant.finance_enabled
+        restart_required = plugin_changed and bool(tenant.container_id)
+
+        return Response(
+            {
+                "finance_enabled": tenant.finance_enabled,
+                "restart_required": restart_required,
+            }
+        )
+
+
+class FinanceRestartView(APIView):
+    """POST: restart the assistant to pick up Gravity plugin changes.
+
+    Called after the user confirms the restart in the frontend. Mirrors
+    ``FuelRestartView`` — ``restart_container_app`` mints a new revision
+    that reads the latest ``openclaw.json`` from the file share at boot,
+    then we schedule the welcome cron 90s out so the cold-started
+    container has time to be reachable when the cron fires.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        if not tenant.container_id:
+            return Response({"error": "no_container"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            from apps.orchestrator.azure_client import restart_container_app
+
+            restart_container_app(tenant.container_id)
+        except Exception:
+            logger.exception("Container restart failed for tenant %s", tenant.id)
+            return Response(
+                {"error": "restart_failed", "detail": "Could not restart your assistant. Try again in a moment."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        # Schedule welcome cron AFTER the container is back up (~90s for
+        # cold start). We can't call the Gateway API on a restarting container.
+        if tenant.finance_enabled:
             try:
                 from apps.cron.publish import publish_task
 
@@ -266,4 +322,4 @@ class FinanceSettingsView(APIView):
             except Exception:
                 logger.warning("Failed to enqueue finance welcome for tenant %s", tenant.id)
 
-        return Response({"finance_enabled": tenant.finance_enabled})
+        return Response({"restarted": True})

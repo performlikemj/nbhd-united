@@ -1,6 +1,10 @@
 """Tasks for async provisioning/deprovisioning (executed via QStash)."""
 
+import time
+
 import httpx
+
+from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
 
 from .services import (
     deprovision_tenant,
@@ -9,6 +13,15 @@ from .services import (
     seed_cron_jobs,
     update_tenant_config,
 )
+
+# gateway.reload retry budget: three attempts in ~7s wall-clock. Azure Files
+# (SMB) doesn't fire inotify events, so this POST is the only signal that
+# tells the running gateway to re-read openclaw.json from the share. A
+# transient 502 / connection blip during a revision flip used to silently
+# drop the reload; we retry inline here, then fall back to a delayed
+# follow-up apply if the gateway stays unreachable.
+_RELOAD_BACKOFFS_SECONDS: tuple[float, ...] = (2.0, 5.0)
+_RELOAD_FOLLOWUP_DELAY_SECONDS = 120
 
 
 def provision_tenant_task(tenant_id: str) -> None:
@@ -57,10 +70,26 @@ def hibernate_suspended_task() -> dict:
     return {"hibernated": hibernated, "failed": failed, "total": tenants.count()}
 
 
-def apply_single_tenant_config_task(tenant_id: str) -> None:
+def apply_single_tenant_config_task(tenant_id: str, _is_followup_retry: bool = False) -> None:
     """Apply pending config for a single tenant (enqueued by apply-pending-configs).
 
-    Updates the tenant's OpenClaw config and bumps config_version.
+    Three-stage flow:
+      1. Regenerate ``openclaw.json`` and write it to the file share.
+      2. Ask the running gateway to reload (with bounded retry — see
+         ``_RELOAD_BACKOFFS_SECONDS``). Skipped for hibernated tenants
+         (the gateway is unreachable; wake reads the file directly).
+      3. Advance ``config_version`` only after the running session has
+         actually been told about the new config — either via a
+         successful reload, or because the tenant is hibernated and the
+         file is the source of truth at wake time.
+
+    On persistent reload failure we leave ``config_version`` behind
+    ``pending_config_version`` and queue ONE delayed retry so a fresh
+    container revision (or a recovered gateway) gets a second shot
+    sooner than the hourly apply-pending-configs sweep would. That
+    follow-up is bounded by ``_is_followup_retry`` to prevent a recursion
+    loop in dev where ``publish_task`` falls back to synchronous
+    execution when QStash isn't configured.
     """
     import logging
 
@@ -85,22 +114,88 @@ def apply_single_tenant_config_task(tenant_id: str) -> None:
         logger.exception("apply_single_tenant_config failed for %s", tenant_id)
         return
 
-    Tenant.objects.filter(id=tenant_id).update(
-        config_version=db_models.F("pending_config_version"),
-        config_refreshed_at=tz.now(),
+    tenant.refresh_from_db()
+
+    # Hibernated containers have no reachable gateway. The file is on
+    # the share and ``wake_hibernated_tenant`` reads it directly, so
+    # treat the file write as the authoritative apply.
+    if tenant.hibernated_at:
+        Tenant.objects.filter(id=tenant_id).update(
+            config_version=db_models.F("pending_config_version"),
+            config_refreshed_at=tz.now(),
+        )
+        logger.info(
+            "Config written for hibernated tenant %s — wake will pick it up",
+            str(tenant_id)[:8],
+        )
+        return
+
+    # Bounded retry against transient gateway hiccups (revision flip,
+    # 502, momentary network blip).
+    last_error: Exception | None = None
+    for attempt_index, backoff in enumerate((0.0, *_RELOAD_BACKOFFS_SECONDS)):
+        if backoff:
+            time.sleep(backoff)
+        try:
+            invoke_gateway_tool(tenant, "gateway.reload", {})
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "gateway.reload attempt %d/%d failed for %s: %s",
+                attempt_index + 1,
+                len(_RELOAD_BACKOFFS_SECONDS) + 1,
+                str(tenant_id)[:8],
+                exc,
+            )
+            continue
+
+        Tenant.objects.filter(id=tenant_id).update(
+            config_version=db_models.F("pending_config_version"),
+            config_refreshed_at=tz.now(),
+        )
+        logger.info("Config hot-reloaded for tenant %s", str(tenant_id)[:8])
+        return
+
+    # Reload kept failing — leave pending > current so the dashboard
+    # doesn't lie. The next layer of recovery depends on whether this
+    # was the original attempt or a follow-up.
+    logger.error(
+        "gateway.reload exhausted %d attempts for %s (last error: %s)",
+        len(_RELOAD_BACKOFFS_SECONDS) + 1,
+        str(tenant_id)[:8],
+        last_error,
     )
 
-    # Trigger hot-reload — Azure Files (SMB) doesn't fire inotify events,
-    # so the container's file watcher won't detect the config change.
-    # gateway.reload reads the updated file and applies it without restart.
-    try:
-        from apps.cron.gateway_client import invoke_gateway_tool
+    if _is_followup_retry:
+        # Already on a retry attempt — don't queue another. The hourly
+        # apply-pending-configs sweep will pick this up; a container
+        # restart on user action also re-reads the file at boot.
+        logger.error(
+            "Follow-up apply also failed for %s; deferring to apply-pending sweep / next restart",
+            str(tenant_id)[:8],
+        )
+        return
 
-        tenant.refresh_from_db()
-        invoke_gateway_tool(tenant, "gateway.reload", {})
-        logger.info("Config hot-reloaded for tenant %s", str(tenant_id)[:8])
+    try:
+        from apps.cron.publish import publish_task
+
+        publish_task(
+            "apply_single_tenant_config",
+            str(tenant_id),
+            _is_followup_retry=True,
+            delay_seconds=_RELOAD_FOLLOWUP_DELAY_SECONDS,
+            idempotency_key=f"apply-config-followup-{tenant_id}-{tenant.pending_config_version}",
+        )
+        logger.info(
+            "Queued follow-up apply for %s in %ds",
+            str(tenant_id)[:8],
+            _RELOAD_FOLLOWUP_DELAY_SECONDS,
+        )
     except Exception:
-        logger.warning("Config written but hot-reload failed for %s — will apply on next restart", str(tenant_id)[:8])
+        logger.exception(
+            "Failed to enqueue follow-up apply for %s — relying on next apply-pending sweep",
+            str(tenant_id)[:8],
+        )
 
 
 def apply_single_tenant_image_task(tenant_id: str, desired_tag: str) -> None:
@@ -196,7 +291,11 @@ def restore_crons_after_image_update_task(tenant_id: str) -> None:
     """
     import logging
 
-    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
+    # Deferred import (re-importing names also available at module level) so
+    # tests that patch ``apps.cron.gateway_client.invoke_gateway_tool`` /
+    # ``GatewayError`` keep working — the local rebind happens at call time
+    # and picks up the patched object.
+    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool  # noqa: F811
     from apps.orchestrator.services import _extract_cron_jobs, dedup_tenant_cron_jobs, seed_cron_jobs
     from apps.tenants.models import Tenant
 
@@ -304,7 +403,11 @@ def force_reseed_crons_task() -> dict:
     """
     import logging
 
-    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
+    # Deferred import (re-importing names also available at module level) so
+    # tests that patch ``apps.cron.gateway_client.invoke_gateway_tool`` /
+    # ``GatewayError`` keep working — the local rebind happens at call time
+    # and picks up the patched object.
+    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool  # noqa: F811
     from apps.orchestrator.config_generator import build_cron_seed_jobs
     from apps.tenants.models import Tenant
 
@@ -743,9 +846,8 @@ def _tally_welcome(helper, tenant, counts, feature: str, logger) -> None:
 def remove_zombie_heartbeats_task() -> dict:
     """Remove Heartbeat Check-in cron jobs from tenants with heartbeat disabled."""
     import logging
-    import time
 
-    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
+    from apps.cron.gateway_client import invoke_gateway_tool
     from apps.tenants.models import Tenant
 
     logger = logging.getLogger(__name__)

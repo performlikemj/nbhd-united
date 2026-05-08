@@ -227,6 +227,39 @@ function GravityCard() {
   const { data: tenant } = useTenantQuery();
   const mutation = useUpdateFinanceSettingsMutation();
   const enabled = tenant?.finance_enabled ?? false;
+  const [showRestartPrompt, setShowRestartPrompt] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+
+  const handleToggle = () => {
+    mutation.mutate(
+      { finance_enabled: !enabled },
+      {
+        onSuccess: (data) => {
+          // The plugin allow-list flipped — the running session won't see
+          // the change until the container restarts.  Show the confirmation
+          // panel; user can restart now or postpone.
+          if (data.restart_required) {
+            setShowRestartPrompt(true);
+          }
+        },
+      },
+    );
+  };
+
+  const handleRestart = async () => {
+    setRestarting(true);
+    try {
+      const { restartFinanceAssistant } = await import("@/lib/api");
+      await restartFinanceAssistant();
+    } catch {
+      // Restart failed — user can retry from the same panel.
+    } finally {
+      setRestarting(false);
+      setShowRestartPrompt(false);
+    }
+  };
+
+  const handleDismiss = () => setShowRestartPrompt(false);
 
   return (
     <article
@@ -245,24 +278,53 @@ function GravityCard() {
             — powered by your AI assistant.
           </p>
         </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={enabled}
-          aria-label={enabled ? "Disable Gravity" : "Enable Gravity"}
-          onClick={() => mutation.mutate({ finance_enabled: !enabled })}
-          disabled={mutation.isPending}
-          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-            enabled ? "bg-accent" : "bg-border"
-          } ${mutation.isPending ? "opacity-50" : ""}`}
-        >
-          <span
-            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-              enabled ? "translate-x-5" : "translate-x-0"
-            }`}
-          />
-        </button>
+        {!showRestartPrompt && (
+          <button
+            type="button"
+            role="switch"
+            aria-checked={enabled}
+            aria-label={enabled ? "Disable Gravity" : "Enable Gravity"}
+            onClick={handleToggle}
+            disabled={mutation.isPending || restarting}
+            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+              enabled ? "bg-accent" : "bg-border"
+            } ${mutation.isPending || restarting ? "opacity-50" : ""}`}
+          >
+            <span
+              className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                enabled ? "translate-x-5" : "translate-x-0"
+              }`}
+            />
+          </button>
+        )}
       </div>
+      {showRestartPrompt && (
+        <div className="mt-3 rounded-xl border border-amber-border bg-amber-bg p-3">
+          <p className="text-sm text-amber-text">
+            {enabled
+              ? "Enabling Gravity requires restarting your assistant so the finance tools come online. Active conversations will be briefly interrupted."
+              : "Disabling Gravity requires restarting your assistant so the finance tools are unloaded. Active conversations will be briefly interrupted."}
+          </p>
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              onClick={handleRestart}
+              disabled={restarting}
+              className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white transition-all hover:brightness-110 disabled:opacity-50"
+            >
+              {restarting ? "Restarting..." : "Restart now"}
+            </button>
+            <button
+              type="button"
+              onClick={handleDismiss}
+              disabled={restarting}
+              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-ink-muted transition-all hover:bg-surface-hover disabled:opacity-50"
+            >
+              Not now
+            </button>
+          </div>
+        </div>
+      )}
     </article>
   );
 }
