@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from rest_framework.test import APIClient
 
 from apps.tenants.agenda_models import AgendaEngagement
@@ -161,10 +161,15 @@ class EngagementsByItemTest(TestCase):
         self.assertEqual(result["finance"].state, "abandoned")
 
 
-class WelcomesSentMirrorTest(TestCase):
+class WelcomesSentMirrorTest(TransactionTestCase):
     """When ``Tenant.welcomes_sent`` flips null → timestamp, the matching
     AgendaEngagement row should be marked COMPLETED with
-    last_surfaced_at = the timestamp."""
+    last_surfaced_at = the timestamp.
+
+    Uses ``TransactionTestCase`` because the mirror runs via
+    ``transaction.on_commit``: ``TestCase`` rolls back transactions and
+    the on_commit callbacks never fire, masking the mirror entirely.
+    """
 
     def test_setting_welcomes_creates_completed_engagement(self):
         tenant = create_tenant(display_name="Mirror", telegram_chat_id=930010)

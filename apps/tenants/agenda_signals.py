@@ -57,49 +57,68 @@ def _mirror_welcomes_to_engagement(sender, instance: Tenant, created: bool, **_k
     """post_save: when a welcomes_sent key flips null → timestamp,
     mirror that into the corresponding AgendaEngagement row.
 
-    Only the *transition* counts. A welcomes_sent value that's been set
-    for a while doesn't trigger anything on every Tenant.save; we diff
-    against the pre-save snapshot.
+    Only the *transition* counts. A welcomes_sent value that's been
+    set for a while doesn't trigger anything on every Tenant.save;
+    we diff against the pre-save snapshot.
+
+    Mirror writes are deferred to ``transaction.on_commit`` so they
+    happen *after* the outer Tenant.save transaction commits — avoids
+    nested savepoint accumulation that contributed to the
+    2026-05-08 test-database teardown flake. In ``TestCase`` tests
+    (transactional, rolled back), on_commit doesn't fire — the mirror
+    is best-effort, and tests that exercise it use TransactionTestCase.
     """
+    from django.db import transaction
+
     pk = str(instance.pk)
     prior = _PRE_SAVE_WELCOMES.pop(pk, {})
     current = dict(instance.welcomes_sent or {})
 
+    transitions: list[tuple[str, str]] = []
     for feature, ts_raw in current.items():
         if not ts_raw:
             continue
         if prior.get(feature):
             # Was already set — not a fresh transition.
             continue
+        transitions.append((feature, str(ts_raw)))
 
-        # Newly set — record on the engagement row.
-        try:
-            when = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
-        except ValueError:
-            from django.utils import timezone
+    if not transitions:
+        return
 
-            when = timezone.now()
+    instance_id = str(instance.id)[:8]
 
-        try:
-            mark_surfaced(
-                instance,
-                kind=AgendaEngagement.Kind.FEATURE_INTRO,
-                item_id=feature,
-                when=when,
-                signal="welcome_delivered",
-            )
-            mark_state(
-                instance,
-                kind=AgendaEngagement.Kind.FEATURE_INTRO,
-                item_id=feature,
-                state=AgendaEngagement.State.COMPLETED,
-            )
-        except Exception:
-            logger.exception(
-                "agenda_signals: failed to mirror welcomes_sent[%s] for tenant %s",
-                feature,
-                str(instance.id)[:8],
-            )
+    def _apply_mirror() -> None:
+        from django.utils import timezone
+
+        for feature, ts_raw in transitions:
+            try:
+                when = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            except ValueError:
+                when = timezone.now()
+
+            try:
+                mark_surfaced(
+                    instance,
+                    kind=AgendaEngagement.Kind.FEATURE_INTRO,
+                    item_id=feature,
+                    when=when,
+                    signal="welcome_delivered",
+                )
+                mark_state(
+                    instance,
+                    kind=AgendaEngagement.Kind.FEATURE_INTRO,
+                    item_id=feature,
+                    state=AgendaEngagement.State.COMPLETED,
+                )
+            except Exception:
+                logger.exception(
+                    "agenda_signals: failed to mirror welcomes_sent[%s] for tenant %s",
+                    feature,
+                    instance_id,
+                )
+
+    transaction.on_commit(_apply_mirror)
 
 
 def connect_signals() -> None:

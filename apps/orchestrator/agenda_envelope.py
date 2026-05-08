@@ -79,7 +79,17 @@ _HEADER_GUIDANCE = (
     key="agenda",
     heading="## Agenda — Open threads with this user",
     enabled=lambda t: True,
-    refresh_on=(Document, Workout, FuelGoal, PayoffPlan, Tenant),
+    # ``Tenant`` was originally listed here, but ``Tenant.save()`` fires
+    # for most lifecycle events (token usage, last_message_at, container
+    # status, etc.) — every save scheduled a USER.md push, accumulating
+    # transactional savepoints in tests and contributing to the
+    # 2026-05-08 ``test_test_db is being accessed by other users``
+    # teardown flake. The agenda renderer still reads Tenant fields
+    # (welcomes_sent, fuel_enabled, finance_enabled), but those changes
+    # are rare; the next save on Document/Workout/FuelGoal/PayoffPlan,
+    # or the hourly apply-pending-configs cron, will refresh USER.md
+    # within the freshness window the agent cares about.
+    refresh_on=(Document, Workout, FuelGoal, PayoffPlan),
     order=15,  # right after profile (10), before goals (20)
 )
 def render_agenda(tenant: Tenant) -> str:
