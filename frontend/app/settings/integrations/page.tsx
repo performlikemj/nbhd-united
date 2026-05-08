@@ -227,39 +227,35 @@ function GravityCard() {
   const { data: tenant } = useTenantQuery();
   const mutation = useUpdateFinanceSettingsMutation();
   const enabled = tenant?.finance_enabled ?? false;
-  const [showRestartPrompt, setShowRestartPrompt] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleToggle = () => {
-    mutation.mutate(
-      { finance_enabled: !enabled },
-      {
-        onSuccess: (data) => {
-          // The plugin allow-list flipped — the running session won't see
-          // the change until the container restarts.  Show the confirmation
-          // panel; user can restart now or postpone.
-          if (data.restart_required) {
-            setShowRestartPrompt(true);
-          }
-        },
-      },
-    );
-  };
-
-  const handleRestart = async () => {
-    setRestarting(true);
+  const handleToggle = async () => {
+    setError(null);
     try {
-      const { restartFinanceAssistant } = await import("@/lib/api");
-      await restartFinanceAssistant();
+      const result = await mutation.mutateAsync({ finance_enabled: !enabled });
+      if (result.restart_required) {
+        // The plugin allow-list flipped — the running session won't see the
+        // change until the container restarts. Restart immediately rather
+        // than asking again; the user already chose to flip the toggle.
+        setRestarting(true);
+        try {
+          const { restartFinanceAssistant } = await import("@/lib/api");
+          await restartFinanceAssistant();
+        } catch {
+          setError(
+            "Saved, but couldn't restart your assistant. Toggle off and back on to retry.",
+          );
+        } finally {
+          setRestarting(false);
+        }
+      }
     } catch {
-      // Restart failed — user can retry from the same panel.
-    } finally {
-      setRestarting(false);
-      setShowRestartPrompt(false);
+      setError("Couldn't update Gravity. Please try again.");
     }
   };
 
-  const handleDismiss = () => setShowRestartPrompt(false);
+  const busy = mutation.isPending || restarting;
 
   return (
     <article
@@ -277,54 +273,35 @@ function GravityCard() {
             Budget tracking, debt payoff strategies, and financial progress
             — powered by your AI assistant.
           </p>
+          {restarting && (
+            <p className="mt-2 text-xs text-amber-text" role="status">
+              Configuring your assistant... this takes about a minute.
+            </p>
+          )}
+          {error && (
+            <p className="mt-2 text-xs text-rose-text" role="alert">
+              {error}
+            </p>
+          )}
         </div>
-        {!showRestartPrompt && (
-          <button
-            type="button"
-            role="switch"
-            aria-checked={enabled}
-            aria-label={enabled ? "Disable Gravity" : "Enable Gravity"}
-            onClick={handleToggle}
-            disabled={mutation.isPending || restarting}
-            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-              enabled ? "bg-accent" : "bg-border"
-            } ${mutation.isPending || restarting ? "opacity-50" : ""}`}
-          >
-            <span
-              className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-                enabled ? "translate-x-5" : "translate-x-0"
-              }`}
-            />
-          </button>
-        )}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          aria-label={enabled ? "Disable Gravity" : "Enable Gravity"}
+          onClick={handleToggle}
+          disabled={busy}
+          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+            enabled ? "bg-accent" : "bg-border"
+          } ${busy ? "opacity-50" : ""}`}
+        >
+          <span
+            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+              enabled ? "translate-x-5" : "translate-x-0"
+            }`}
+          />
+        </button>
       </div>
-      {showRestartPrompt && (
-        <div className="mt-3 rounded-xl border border-amber-border bg-amber-bg p-3">
-          <p className="text-sm text-amber-text">
-            {enabled
-              ? "Enabling Gravity requires restarting your assistant so the finance tools come online. Active conversations will be briefly interrupted."
-              : "Disabling Gravity requires restarting your assistant so the finance tools are unloaded. Active conversations will be briefly interrupted."}
-          </p>
-          <div className="mt-2 flex gap-2">
-            <button
-              type="button"
-              onClick={handleRestart}
-              disabled={restarting}
-              className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white transition-all hover:brightness-110 disabled:opacity-50"
-            >
-              {restarting ? "Restarting..." : "Restart now"}
-            </button>
-            <button
-              type="button"
-              onClick={handleDismiss}
-              disabled={restarting}
-              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-ink-muted transition-all hover:bg-surface-hover disabled:opacity-50"
-            >
-              Not now
-            </button>
-          </div>
-        </div>
-      )}
     </article>
   );
 }
@@ -351,43 +328,35 @@ function FuelCard() {
   const { data: tenant } = useTenantQuery();
   const mutation = useUpdateFuelSettingsMutation();
   const enabled = tenant?.fuel_enabled ?? false;
-  const [showRestartPrompt, setShowRestartPrompt] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleToggle = async () => {
-    if (enabled) {
-      mutation.mutate({ fuel_enabled: false });
-      return;
-    }
-    mutation.mutate(
-      { fuel_enabled: true },
-      {
-        onSuccess: (data) => {
-          if (data.restart_required) {
-            setShowRestartPrompt(true);
-          }
-        },
-      },
-    );
-  };
-
-  const handleRestart = async () => {
-    setRestarting(true);
+    setError(null);
     try {
-      const { restartFuelAssistant } = await import("@/lib/api");
-      await restartFuelAssistant();
+      const result = await mutation.mutateAsync({ fuel_enabled: !enabled });
+      if (result.restart_required) {
+        // Plugin allow-list flipped — restart immediately so the running
+        // session sees the new state. Disable also flips the allow-list
+        // (plugin must be unloaded) so the same path applies.
+        setRestarting(true);
+        try {
+          const { restartFuelAssistant } = await import("@/lib/api");
+          await restartFuelAssistant();
+        } catch {
+          setError(
+            "Saved, but couldn't restart your assistant. Toggle off and back on to retry.",
+          );
+        } finally {
+          setRestarting(false);
+        }
+      }
     } catch {
-      // Restart failed — user can retry
-    } finally {
-      setRestarting(false);
-      setShowRestartPrompt(false);
+      setError("Couldn't update Fuel. Please try again.");
     }
   };
 
-  const handleDecline = () => {
-    mutation.mutate({ fuel_enabled: false });
-    setShowRestartPrompt(false);
-  };
+  const busy = mutation.isPending || restarting;
 
   return (
     <article
@@ -405,53 +374,36 @@ function FuelCard() {
             Workout tracking, fitness logging, and progress trends
             — powered by your AI assistant.
           </p>
-          {enabled && !showRestartPrompt && <FuelProfileStatus />}
+          {enabled && !restarting && !error && <FuelProfileStatus />}
+          {restarting && (
+            <p className="mt-2 text-xs text-amber-text" role="status">
+              Configuring your assistant... this takes about a minute.
+            </p>
+          )}
+          {error && (
+            <p className="mt-2 text-xs text-rose-text" role="alert">
+              {error}
+            </p>
+          )}
         </div>
-        {!showRestartPrompt && (
-          <button
-            type="button"
-            role="switch"
-            aria-checked={enabled}
-            aria-label={enabled ? "Disable Fuel" : "Enable Fuel"}
-            onClick={handleToggle}
-            disabled={mutation.isPending || restarting}
-            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-              enabled ? "bg-accent" : "bg-border"
-            } ${mutation.isPending || restarting ? "opacity-50" : ""}`}
-          >
-            <span
-              className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-                enabled ? "translate-x-5" : "translate-x-0"
-              }`}
-            />
-          </button>
-        )}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          aria-label={enabled ? "Disable Fuel" : "Enable Fuel"}
+          onClick={handleToggle}
+          disabled={busy}
+          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+            enabled ? "bg-accent" : "bg-border"
+          } ${busy ? "opacity-50" : ""}`}
+        >
+          <span
+            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+              enabled ? "translate-x-5" : "translate-x-0"
+            }`}
+          />
+        </button>
       </div>
-      {showRestartPrompt && (
-        <div className="mt-3 rounded-xl border border-amber-border bg-amber-bg p-3">
-          <p className="text-sm text-amber-text">
-            Enabling Fuel requires restarting your assistant. Active conversations will be briefly interrupted.
-          </p>
-          <div className="mt-2 flex gap-2">
-            <button
-              type="button"
-              onClick={handleRestart}
-              disabled={restarting}
-              className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white transition-all hover:brightness-110 disabled:opacity-50"
-            >
-              {restarting ? "Restarting..." : "Restart now"}
-            </button>
-            <button
-              type="button"
-              onClick={handleDecline}
-              disabled={restarting}
-              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-ink-muted transition-all hover:bg-surface-hover disabled:opacity-50"
-            >
-              Not now
-            </button>
-          </div>
-        </div>
-      )}
     </article>
   );
 }
