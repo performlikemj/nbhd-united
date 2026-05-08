@@ -218,8 +218,20 @@ def _schedule_next_cron_wake(tenant: Tenant, cron_jobs: list[dict]) -> None:
 def _find_earliest_next_run(cron_jobs: list[dict], now_ms: int) -> int | None:
     """Return the earliest ``nextRunAtMs`` from the job list.
 
-    Falls back to computing the next run from the cron expression if
-    ``nextRunAtMs`` is missing.
+    OpenClaw's ``cron.list`` returns each job with its mutable runtime
+    state nested under ``state`` (see plugin-sdk's ``Cron.JobState``):
+
+        {"id": ..., "name": ..., "schedule": {...}, "enabled": true,
+         "state": {"nextRunAtMs": ..., "lastRunAtMs": ..., ...}}
+
+    Reading the top-level ``nextRunAtMs`` (where it doesn't live) always
+    returned ``None``, sending every job through the croniter fallback.
+    That hid the bug for ``cron``-kind schedules (croniter recomputed)
+    but skipped ``every`` and ``at`` kinds entirely (no ``expr`` to
+    recompute from), so those tenants got no cron-aware wake scheduled.
+
+    Falls back to computing the next run from ``schedule.expr`` only
+    when ``state.nextRunAtMs`` is missing or already in the past.
     """
     candidates: list[int] = []
 
@@ -227,7 +239,8 @@ def _find_earliest_next_run(cron_jobs: list[dict], now_ms: int) -> int | None:
         if not job.get("enabled", True):
             continue
 
-        next_run = job.get("nextRunAtMs")
+        state = job.get("state") or {}
+        next_run = state.get("nextRunAtMs")
         if next_run and next_run > now_ms:
             candidates.append(next_run)
             continue

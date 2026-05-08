@@ -1253,12 +1253,17 @@ class RuntimeFuelAuditView(APIView):
                 is_fuel_session = name.startswith(_FUEL_SESSION_PREFIX)
                 is_workout_hint = any(h in lname for h in workout_hints) and not lname.startswith("_sync:")
                 if is_fuel_session or is_workout_hint:
+                    # ``nextRunAtMs`` lives under ``state`` in the gateway's
+                    # cron.list response — reading it from the top level
+                    # always returned None and hid the cron's actual fire
+                    # time from the audit response.
+                    job_state = j.get("state") or {}
                     fuel_crons.append(
                         {
                             "name": name,
                             "id": j.get("id") or j.get("jobId"),
                             "schedule": j.get("schedule"),
-                            "next_fire_at_ms": j.get("nextRunAtMs"),
+                            "next_fire_at_ms": job_state.get("nextRunAtMs"),
                             "kind": "fuel_session" if is_fuel_session else "user_named",
                             "enabled": j.get("enabled", True),
                         }
