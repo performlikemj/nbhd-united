@@ -27,8 +27,18 @@ from apps.tenants.models import Tenant
 logger = logging.getLogger(__name__)
 
 # How early (seconds) to wake the container before a cron fires.
-# Container needs ~60s to start + ~60s for crons to resume.
-_CRON_WAKE_LEAD_SECONDS = 120
+#
+# Worst-case cold-start path observed in production: revision flip +
+# image pull + node startup + plugin-runtime-deps install on EmptyDir
+# (PR #387) + first plugin spawn. Image refresh on wake (PR #384)
+# stacks on top when ``container_image_tag`` is stale. End-to-end this
+# regularly runs past 2 minutes and has hit 3 in the worst case.
+#
+# 240s leaves a ~60s buffer past the typical worst case before the
+# cron's intended fire time. Marginal cost (the container is awake
+# slightly earlier each cycle); the alternative — a missed cron — is
+# user-visible.
+_CRON_WAKE_LEAD_SECONDS = 240
 
 # How long (seconds) to keep a cron-woken container alive before
 # re-hibernating if no user messages arrive.
@@ -399,7 +409,26 @@ def wake_for_cron_task(tenant_id: str) -> dict:
         return {"status": "tenant_not_found"}
 
     if not tenant.hibernated_at:
-        logger.info("wake_for_cron: tenant %s already awake, skipping", tenant_id[:8])
+        # Tenant is already awake — the local gateway will fire the cron
+        # itself, no wake-up needed. But re-arm the next cron-aware wake
+        # so the chain doesn't break if the tenant later hibernates and
+        # the next idle-hibernation cycle fails to re-arm (e.g. gateway
+        # 404 at hibernation time exhausts the snapshot fallback). QStash
+        # idempotency on the wake key dedupes this against the eventual
+        # idle-hibernation arming.
+        logger.info(
+            "wake_for_cron: tenant %s already awake, re-arming next cron wake",
+            tenant_id[:8],
+        )
+        try:
+            cron_jobs = _capture_tenant_cron_schedules(tenant)
+            _schedule_next_cron_wake(tenant, cron_jobs)
+        except Exception:
+            logger.warning(
+                "wake_for_cron: re-arm failed for awake tenant %s — relying on next idle-hibernation",
+                tenant_id[:8],
+                exc_info=True,
+            )
         return {"status": "already_awake"}
 
     if tenant.status != Tenant.Status.ACTIVE:
