@@ -69,9 +69,7 @@ class NextCronWithinWindowTests(_Base):
             result = _next_cron_within_window(self.tenant, window_seconds=5400)
 
         self.assertEqual(result, in_30min_ms)
-        mock_invoke.assert_called_once_with(
-            self.tenant, "cron.list", {"includeDisabled": False}
-        )
+        mock_invoke.assert_called_once_with(self.tenant, "cron.list", {"includeDisabled": False})
 
     def test_snapshot_fallback_when_gateway_fails(self):
         in_45min_ms = int(timezone.now().timestamp() * 1000) + 45 * 60 * 1000
@@ -116,9 +114,7 @@ class NextCronWithinWindowTests(_Base):
         in_30min_ms = int(timezone.now().timestamp() * 1000) + 30 * 60 * 1000
         with patch(
             "apps.cron.gateway_client.invoke_gateway_tool",
-            return_value={
-                "jobs": [self._job(name="Disabled", next_run_ms=in_30min_ms, enabled=False)]
-            },
+            return_value={"jobs": [self._job(name="Disabled", next_run_ms=in_30min_ms, enabled=False)]},
         ):
             result = _next_cron_within_window(self.tenant, window_seconds=5400)
         self.assertIsNone(result)
