@@ -744,6 +744,87 @@ export default function register(api) {
     { optional: true },
   );
 
+  // ── Sessions: undistilled YardTalk pushes ─────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_sessions_pending",
+      description:
+        "List YardTalk work sessions that have not yet been distilled into the journal/tasks/goals/memory primitives. " +
+        "For each returned session, decide where its content belongs and write it using existing tools: " +
+        "`nbhd_daily_note_append` for the work log of the session date; " +
+        "`nbhd_document_put` / `nbhd_document_append` for tasks (kind='tasks'), goals (kind='goal'), ideas, or per-project notes (kind='project'); " +
+        "`nbhd_memory_update` for cross-session context worth carrying forward. " +
+        "Then call `nbhd_session_mark_processed` once per session with a brief record of what you wrote. " +
+        "Skip a session (call mark with `skip_reason`) if it's a stub under ~30s, has no actionable content, or is purely a duplicate of something already filed. " +
+        "Returns ordered by session_start desc, default limit 10, max 25.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          limit: {
+            type: "number",
+            description: "Max sessions to return (default 10, max 25).",
+          },
+        },
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/sessions/pending/"),
+          method: "GET",
+          query: {
+            limit: parseInteger(input.limit, { defaultValue: 10, min: 1, max: 25 }),
+          },
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
+  // ── Sessions: mark distilled ──────────────────────────────────────────
+  api.registerTool(
+    {
+      name: "nbhd_session_mark_processed",
+      description:
+        "Mark a YardTalk session as distilled, recording what you wrote (or why you skipped). " +
+        "Call this AFTER you've written the session's content into journal/tasks/goals/memory via the appropriate write tools. " +
+        "The processed_summary is free-form but should record what you actually did, e.g. " +
+        "`{daily_note_date: '2026-05-08', tasks_added: ['<task ids>'], goals_referenced: ['<goal ids>'], memory_updated: true, notes: 'short rationale'}`. " +
+        "If skipping, set `{skipped: true, skip_reason: '<reason>'}`. " +
+        "Idempotent — calling on an already-processed session returns the existing record without overwriting.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          session_id: {
+            type: "string",
+            description: "The session id (UUID) returned by nbhd_sessions_pending.",
+          },
+          processed_summary: {
+            type: "object",
+            description:
+              "Free-form record of what you wrote during distillation, or why you skipped. Stored as JSON.",
+          },
+        },
+        required: ["session_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const sessionId = asTrimmedString(input.session_id);
+        if (!sessionId) throw new Error("session_id is required");
+        const summary = asObject(input.processed_summary);
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/sessions/${encodeURIComponent(sessionId)}/mark-processed/`),
+          method: "POST",
+          body: { processed_summary: summary },
+        });
+        return renderPayload(payload);
+      },
+    },
+    { optional: true },
+  );
+
   // ── Platform Issue Report ────────────────────────────────────────────
   api.registerTool(
     {

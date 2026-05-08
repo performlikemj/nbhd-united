@@ -91,12 +91,31 @@ class Session(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # Distillation: set when the assistant has distilled this session into
+    # primitives (journal/tasks/goals/memory). NULL means pending. Used by
+    # heartbeat to find sessions that still need filing.
+    processed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Set when the assistant has distilled this session into primitives. NULL = pending.",
+    )
+    processed_summary = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Free-form record of what the assistant created during distillation: "
+            "task ids, journal doc ids, memory updates, skip reason, etc."
+        ),
+    )
+
     class Meta:
         db_table = "journal_sessions"
         ordering = ["-session_start"]
         indexes = [
             models.Index(fields=["tenant", "project", "-session_start"]),
             models.Index(fields=["tenant", "-session_start"]),
+            models.Index(fields=["tenant", "processed_at"]),
         ]
         constraints = [
             models.UniqueConstraint(

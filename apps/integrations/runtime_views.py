@@ -28,6 +28,7 @@ from apps.journal.services import (
     get_or_seed_note_template,
     parse_daily_sections,
 )
+from apps.journal.session_models import Session
 from apps.lessons.models import Lesson
 from apps.lessons.serializers import LessonSerializer
 from apps.lessons.services import search_lessons
@@ -920,6 +921,138 @@ class RuntimeJournalContextView(APIView):
                 "recent_notes_count": len(notes_data),
                 "days_back": days,
                 "backbone": backbone_data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+def _serialize_session_for_runtime(session: Session) -> dict:
+    return {
+        "id": str(session.id),
+        "source": session.source,
+        "project": session.project,
+        "project_identity": session.project_identity,
+        "project_type": session.project_type,
+        "session_start": session.session_start.isoformat(),
+        "session_end": session.session_end.isoformat(),
+        "summary": session.summary,
+        "accomplishments": session.accomplishments,
+        "blockers": session.blockers,
+        "next_steps": session.next_steps,
+        "references": session.references,
+        "created_at": session.created_at.isoformat(),
+    }
+
+
+class RuntimeSessionsPendingView(APIView):
+    """List undistilled work sessions for the tenant.
+
+    Returns sessions that have not yet been distilled into journal/tasks/goals/memory
+    by the assistant. Excludes ``test_mode`` sessions. Ordered by session_start desc.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        try:
+            limit = _parse_positive_int(
+                request.query_params.get("limit"),
+                default=10,
+                max_value=25,
+            )
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": f"limit {exc}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        qs = Session.objects.filter(
+            tenant=tenant,
+            processed_at__isnull=True,
+            test_mode=False,
+        ).order_by("-session_start")[:limit]
+
+        sessions_data = [_serialize_session_for_runtime(s) for s in qs]
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "count": len(sessions_data),
+                "sessions": sessions_data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class RuntimeSessionMarkProcessedView(APIView):
+    """Mark a session as distilled.
+
+    Idempotent: if the session is already processed, returns the existing
+    ``processed_at``/``processed_summary`` without overwriting them. The
+    assistant is expected to have already written content to the appropriate
+    primitives (journal/tasks/goals/memory) before calling this endpoint.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id, session_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        session = Session.objects.filter(tenant=tenant, id=session_id).first()
+        if session is None:
+            return Response(
+                {"error": "session_not_found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Idempotency: already-processed sessions return current state without overwrite.
+        if session.processed_at is not None:
+            return Response(
+                {
+                    "session_id": str(session.id),
+                    "processed_at": session.processed_at.isoformat(),
+                    "processed_summary": session.processed_summary,
+                    "already_processed": True,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        raw_summary = request.data.get("processed_summary", {})
+        if not isinstance(raw_summary, dict):
+            return Response(
+                {
+                    "error": "invalid_request",
+                    "detail": "processed_summary must be an object",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        session.processed_at = tz.now()
+        session.processed_summary = raw_summary
+        session.save(update_fields=["processed_at", "processed_summary"])
+
+        return Response(
+            {
+                "session_id": str(session.id),
+                "processed_at": session.processed_at.isoformat(),
+                "processed_summary": session.processed_summary,
+                "already_processed": False,
             },
             status=status.HTTP_200_OK,
         )

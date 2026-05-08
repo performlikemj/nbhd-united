@@ -1156,3 +1156,32 @@ class FuelEndToEndTest(TestCase):
         remove_calls = [c for c in mock_invoke.call_args_list if c[0][1] == "cron.remove"]
         self.assertGreaterEqual(len(remove_calls), 1)
         self.assertEqual(remove_calls[0][0][2]["jobId"], "job-id-existing")
+
+
+class HeartbeatPromptDistillationStepTest(TestCase):
+    """Heartbeat prompt directs the assistant to distill pending YardTalk sessions."""
+
+    def test_heartbeat_prompt_includes_distillation_step(self):
+        from .config_generator import _HEARTBEAT_CHECKIN_PROMPT
+
+        # The Step 0 distillation block must reference both runtime tools by
+        # name so the assistant can call them. Position must be before Step 1
+        # so distilled content is filed into the daily note BEFORE the
+        # cross-reference scan, otherwise the heartbeat would re-surface
+        # session content as proactive nudges.
+        self.assertIn("Step 0", _HEARTBEAT_CHECKIN_PROMPT)
+        self.assertIn("nbhd_sessions_pending", _HEARTBEAT_CHECKIN_PROMPT)
+        self.assertIn("nbhd_session_mark_processed", _HEARTBEAT_CHECKIN_PROMPT)
+
+        step_0_pos = _HEARTBEAT_CHECKIN_PROMPT.index("Step 0")
+        step_1_pos = _HEARTBEAT_CHECKIN_PROMPT.index("Step 1")
+        self.assertLess(step_0_pos, step_1_pos)
+
+    def test_heartbeat_prompt_marks_distillation_silent(self):
+        """Distillation must not produce a user-facing message."""
+        from .config_generator import _HEARTBEAT_CHECKIN_PROMPT
+
+        # The 'silent' instruction prevents distillation from triggering the
+        # Phase 2 sync block (which only fires when nbhd_send_to_user was
+        # called). It also prevents accidental user spam.
+        self.assertIn("SILENT", _HEARTBEAT_CHECKIN_PROMPT)
