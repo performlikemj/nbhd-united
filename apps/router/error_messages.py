@@ -17,6 +17,7 @@ Follows the same MESSAGES dict + helper pattern as onboarding.py.
 #   budget_unavailable:      (none)
 #   waking_up:               (none)
 #   hibernation_waking:      (none)
+#   hibernation_reconnecting:(none)
 #   suspended:               {billing_url}
 # ---------------------------------------------------------------------------
 
@@ -50,6 +51,10 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             "Your assistant is waking up from a break! \u2600\ufe0f"
             " Your message has been received and will be delivered shortly."
             " This usually takes about a minute."
+        ),
+        "hibernation_reconnecting": (
+            "Reconnecting your assistant \u2014 sorry for the delay."
+            " Your message has been received and will be delivered shortly."
         ),
         "suspended": (
             "Your assistant is paused."

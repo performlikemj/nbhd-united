@@ -17,7 +17,12 @@ from django.test import TestCase
 from django.utils import timezone
 
 from apps.router.models import BufferedMessage
-from apps.router.wake_on_message import handle_hibernated_message
+from apps.router.wake_on_message import (
+    ACK_FRESH,
+    ACK_RECONNECT,
+    SILENT,
+    handle_hibernated_message,
+)
 from apps.tenants.models import Tenant, User
 
 
@@ -60,7 +65,7 @@ class HandleHibernatedMessageTest(TestCase):
 
         result = handle_hibernated_message(tenant, "line", {"events": []}, "first message")
 
-        self.assertTrue(result)  # caller should send waking-up ack
+        self.assertEqual(result, ACK_FRESH)  # caller should send waking-up ack
         self.assertEqual(BufferedMessage.objects.filter(tenant=tenant, delivered=False).count(), 1)
         mock_wake.assert_called_once_with(tenant)
 
@@ -80,7 +85,7 @@ class HandleHibernatedMessageTest(TestCase):
 
         result = handle_hibernated_message(tenant, "line", {"events": []}, "second message")
 
-        self.assertFalse(result)  # caller should stay silent
+        self.assertEqual(result, SILENT)  # caller should stay silent
         # Wake was NOT re-fired since the prior wake is still considered in flight.
         mock_wake.assert_not_called()
         # Both messages buffered.
@@ -112,8 +117,9 @@ class WakeWatchdogTest(TestCase):
 
         # Watchdog should re-fire wake.
         mock_wake.assert_called_once_with(tenant)
-        # Don't ack again — user already saw waking-up message earlier.
-        self.assertFalse(result)
+        # The prior wake silently failed so the user almost certainly never
+        # saw the original "waking up" ack — send a "reconnecting" ack now.
+        self.assertEqual(result, ACK_RECONNECT)
 
     @patch("apps.orchestrator.hibernation.wake_hibernated_tenant", return_value=True)
     def test_old_buffered_message_clears_hibernated_at_defensively(self, mock_wake):
