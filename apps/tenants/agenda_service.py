@@ -31,6 +31,17 @@ threshold is the renderer's only soft-suppress signal — explicit state
 (``ABANDONED`` / ``COMPLETED``) and ``surface_after`` are hard rules.
 """
 
+_REDIRECT_SUPPRESS_WINDOW = timedelta(days=7)
+"""How long a 'redirect' or 'ignore' signal suppresses re-surfacing.
+
+Phase C: when the cross-domain extractor detects the user pushing back
+on a thread (mentioned in journal but actively avoided / dismissed),
+the renderer should respect that pushback for a week before
+considering the thread again. Absent stronger state transitions, this
+gives the user breathing room without permanently abandoning the
+thread.
+"""
+
 
 def mark_surfaced(
     tenant: Tenant,
@@ -156,10 +167,12 @@ def is_eligible_now(engagement: AgendaEngagement | None) -> bool:
     when the row's state and timing allow surfacing. Renderer applies
     this filter per-thread.
 
-    Hard skip:
+    Hard skips:
       - state in {ABANDONED, COMPLETED}
       - surface_after in the future
       - last_surfaced_at within _SUPPRESS_AFTER_SURFACE (soft cooldown)
+      - recent ``redirect`` or ``ignore`` signal within
+        _REDIRECT_SUPPRESS_WINDOW (Phase C — respect the user's pushback)
     """
     if engagement is None:
         return True
@@ -175,7 +188,44 @@ def is_eligible_now(engagement: AgendaEngagement | None) -> bool:
         return False
     if engagement.last_surfaced_at and now - engagement.last_surfaced_at < _SUPPRESS_AFTER_SURFACE:
         return False
+    if _has_recent_pushback(engagement, now):
+        return False
     return True
+
+
+def _has_recent_pushback(engagement: AgendaEngagement, now: datetime) -> bool:
+    """Did the user signal pushback (redirect/ignore) within the
+    suppression window?
+
+    Checks the response_signals log in reverse-chrono order (newest
+    first). Returns True on the first redirect/ignore signal whose
+    timestamp falls inside ``_REDIRECT_SUPPRESS_WINDOW``. A subsequent
+    'warm' or 'organic' signal *after* a redirect cancels the
+    suppression (the user came back around).
+    """
+    signals = engagement.response_signals or []
+    cutoff = now - _REDIRECT_SUPPRESS_WINDOW
+
+    for entry in reversed(signals):
+        if not isinstance(entry, dict):
+            continue
+        signal = (entry.get("signal") or "").lower()
+        ts_raw = entry.get("at")
+        if not ts_raw:
+            continue
+        try:
+            when = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if when < cutoff:
+            # Walked back past the window — no suppression hits.
+            return False
+        if signal in ("warm", "organic"):
+            # User re-engaged after any prior redirect; suppression cleared.
+            return False
+        if signal in ("redirect", "ignore"):
+            return True
+    return False
 
 
 def engagements_by_item(

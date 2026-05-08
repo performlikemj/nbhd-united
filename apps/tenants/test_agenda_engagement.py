@@ -104,6 +104,48 @@ class IsEligibleNowTest(TestCase):
         e = self._row(surface_after=datetime.now(UTC) - timedelta(days=1))
         self.assertTrue(is_eligible_now(e))
 
+    def test_recent_redirect_signal_suppresses(self):
+        """Phase C: a recent redirect signal in response_signals
+        suppresses the thread for the redirect-suppress window."""
+        recent = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+        e = self._row(response_signals=[{"at": recent, "signal": "redirect"}])
+        self.assertFalse(is_eligible_now(e))
+
+    def test_recent_ignore_signal_suppresses(self):
+        recent = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+        e = self._row(response_signals=[{"at": recent, "signal": "ignore"}])
+        self.assertFalse(is_eligible_now(e))
+
+    def test_old_redirect_signal_does_not_suppress(self):
+        """Past the redirect window — eligibility restored."""
+        old = (datetime.now(UTC) - timedelta(days=14)).isoformat()
+        e = self._row(response_signals=[{"at": old, "signal": "redirect"}])
+        self.assertTrue(is_eligible_now(e))
+
+    def test_warm_signal_after_redirect_clears_suppression(self):
+        """If the user re-engaged after pushing back, suppression lifts."""
+        old_redirect = (datetime.now(UTC) - timedelta(days=3)).isoformat()
+        recent_warm = (datetime.now(UTC) - timedelta(hours=12)).isoformat()
+        e = self._row(
+            response_signals=[
+                {"at": old_redirect, "signal": "redirect"},
+                {"at": recent_warm, "signal": "warm"},
+            ],
+        )
+        self.assertTrue(is_eligible_now(e))
+
+    def test_malformed_signal_entries_skipped(self):
+        """Defensive: garbage in the JSON log doesn't crash the filter."""
+        e = self._row(
+            response_signals=[
+                {"signal": "redirect"},  # missing 'at'
+                "not-a-dict",
+                {"at": "not-a-date", "signal": "redirect"},
+            ],
+        )
+        # Nothing parseable → no constraint applied → eligible
+        self.assertTrue(is_eligible_now(e))
+
 
 class EngagementsByItemTest(TestCase):
     def test_returns_dict_keyed_by_item_id(self):
