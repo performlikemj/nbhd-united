@@ -246,7 +246,12 @@ def telegram_webhook(request):
         return JsonResponse(_build_budget_exhausted_message(chat_id, tenant, budget_reason))
 
     # Hibernated tenant — buffer message and wake container
-    from apps.router.wake_on_message import handle_hibernated_message
+    from apps.router.wake_on_message import (
+        ACK_FRESH,
+        ACK_RECONNECT,
+        SILENT,
+        handle_hibernated_message,
+    )
 
     msg_text = (update.get("message") or {}).get("text", "")
     wake_result = handle_hibernated_message(
@@ -255,7 +260,7 @@ def telegram_webhook(request):
         update,
         msg_text,
     )
-    if wake_result is True:
+    if wake_result == ACK_FRESH:
         lang = tenant.user.language or "en"
         return JsonResponse(
             {
@@ -264,7 +269,16 @@ def telegram_webhook(request):
                 "text": error_msg(lang, "hibernation_waking"),
             }
         )
-    elif wake_result is False:
+    elif wake_result == ACK_RECONNECT:
+        lang = tenant.user.language or "en"
+        return JsonResponse(
+            {
+                "method": "sendMessage",
+                "chat_id": chat_id,
+                "text": error_msg(lang, "hibernation_reconnecting"),
+            }
+        )
+    elif wake_result == SILENT:
         return HttpResponse("ok")
 
     tenant.last_message_at = timezone.now()

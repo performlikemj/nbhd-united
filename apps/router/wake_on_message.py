@@ -1,7 +1,8 @@
 """Handle incoming messages for hibernated tenants.
 
 Shared by both Telegram and LINE webhook handlers. Buffers the message,
-triggers container wake, and returns whether to send the "waking up" ack.
+triggers container wake, and returns a signal telling the caller which
+ack message to send (or to stay silent).
 """
 
 from __future__ import annotations
@@ -25,19 +26,27 @@ logger = logging.getLogger(__name__)
 # silently buffering forever.
 _WAKE_STALL_THRESHOLD = timedelta(minutes=5)
 
+# Return signals from handle_hibernated_message — drives the caller's ack.
+ACK_FRESH = "fresh"  # first msg in a fresh wake → "waking up" ack
+ACK_RECONNECT = "reconnect"  # stall-recovery wake → "reconnecting" ack
+SILENT = "silent"  # additional msg during in-flight wake → no ack
+
 
 def handle_hibernated_message(
     tenant: Tenant,
     channel: str,
     payload: dict,
     user_text: str,
-) -> bool | None:
+) -> str | None:
     """Handle a message for a potentially hibernated tenant.
 
-    Returns:
-        True  — first message during hibernation; caller should send ack
-        False — subsequent message; caller should stay silent (already acking)
-        None  — tenant is NOT hibernated; caller should proceed normally
+    Returns one of:
+        ACK_FRESH      — first message in a fresh wake; send "waking up" ack
+        ACK_RECONNECT  — stall-recovery wake; the prior wake silently failed
+                         so the user almost certainly never saw any ack —
+                         send a "reconnecting, sorry for the delay" ack
+        SILENT         — additional message during an in-flight wake; no ack
+        None           — tenant is NOT hibernated; proceed with the live path
     """
     if not tenant.hibernated_at:
         return None
@@ -82,18 +91,19 @@ def handle_hibernated_message(
         wake_hibernated_tenant(tenant)
 
         if stuck:
-            # Don't ack a second time — the user already saw the original
-            # waking-up message; saying it again is noisy.
-            return False
+            # The prior wake silently failed, so the user almost certainly
+            # never saw the original "waking up" ack. Send a different ack
+            # now so they know we noticed and are recovering.
+            return ACK_RECONNECT
 
         logger.info(
             "wake_on_message: tenant %s — first message, waking container",
             str(tenant.id)[:8],
         )
-        return True
+        return ACK_FRESH
 
     logger.info(
         "wake_on_message: tenant %s — additional message buffered while waking",
         str(tenant.id)[:8],
     )
-    return False
+    return SILENT

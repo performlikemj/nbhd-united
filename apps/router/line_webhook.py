@@ -816,17 +816,29 @@ class LineWebhookView(View):
             return
 
         # Hibernated tenant — buffer message and wake container
-        from apps.router.wake_on_message import handle_hibernated_message
+        from apps.router.wake_on_message import (
+            ACK_FRESH,
+            ACK_RECONNECT,
+            SILENT,
+            handle_hibernated_message,
+        )
 
         wake_result = handle_hibernated_message(tenant, "line", event, text)
-        if wake_result is True:
+        if wake_result == ACK_FRESH:
             lang = tenant.user.language or "en"
             _send_line_flex(
                 line_user_id,
                 build_short_bubble(error_msg(lang, "hibernation_waking")),
             )
             return
-        elif wake_result is False:
+        elif wake_result == ACK_RECONNECT:
+            lang = tenant.user.language or "en"
+            _send_line_flex(
+                line_user_id,
+                build_short_bubble(error_msg(lang, "hibernation_reconnecting")),
+            )
+            return
+        elif wake_result == SILENT:
             return
 
         # Onboarding / re-introduction gate
