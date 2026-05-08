@@ -108,9 +108,7 @@ class RuntimeSessionsPendingViewTest(TestCase):
             _make_session(
                 self.tenant,
                 project=f"p{i}",
-                session_start=datetime(2026, 4, 1, 0, 0, tzinfo=UTC).replace(
-                    minute=i % 60
-                ),
+                session_start=datetime(2026, 4, 1, 0, 0, tzinfo=UTC).replace(minute=i % 60),
             )
 
         response = self.client.get(self._url(), {"limit": 999}, **self._headers())
