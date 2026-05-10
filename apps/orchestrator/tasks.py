@@ -22,7 +22,15 @@ from .services import (
 # drop the reload; we retry inline here, then fall back to a delayed
 # follow-up apply if the gateway stays unreachable.
 _RELOAD_BACKOFFS_SECONDS: tuple[float, ...] = (2.0, 5.0)
-_RELOAD_FOLLOWUP_DELAY_SECONDS = 120
+# Why 600s: the previous 120s landed the follow-up retry inside the
+# wake-for-cron window (PR #478 defers re-hibernation for 30 min after a
+# scheduled-cron wake), where it collided with the about-to-fire cron and
+# crashed the gateway under cron-mutation churn (canary 2026-05-10 SIGTERM).
+# 600s clears typical foreground cron runtimes (1–3 min) and still leaves
+# ~20 min of the 30-min defer window for the retry to complete before any
+# re-hibernation. Don't push past ~1500s without re-checking the defer
+# ceiling in ``apps/orchestrator/hibernation.py:check_cron_wake_idle_task``.
+_RELOAD_FOLLOWUP_DELAY_SECONDS = 600
 
 
 def provision_tenant_task(tenant_id: str) -> None:
