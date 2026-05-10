@@ -232,6 +232,7 @@ class ConfigGeneratorTest(TestCase):
         foreground_names = {
             "Morning Briefing",
             "Evening Check-in",
+            "Personal Question",
             "Weekly Reflection",
             "Week Ahead Review",
             "Heartbeat Check-in",

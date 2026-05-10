@@ -250,6 +250,7 @@ class SeedCronJobsTest(TestCase):
             {"jobs": []},  # initial cron.list
             {"name": "Morning Briefing", "enabled": True},
             {"name": "Evening Check-in", "enabled": True},
+            {"name": "Personal Question", "enabled": True},
             {"name": "Weekly Reflection", "enabled": True},
             {"name": "Week Ahead Review", "enabled": True},
             {"name": "Project Check-in", "enabled": True},
@@ -261,10 +262,10 @@ class SeedCronJobsTest(TestCase):
 
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 7)
+        self.assertEqual(result["created"], 8)
         self.assertEqual(result["errors"], 0)
         self.assertEqual(mock_invoke.call_args_list[0].args[1], "cron.list")
-        for i in range(1, 8):
+        for i in range(1, 9):
             self.assertEqual(mock_invoke.call_args_list[i].args[1], "cron.add")
         mock_sleep.assert_not_called()
 
@@ -279,6 +280,7 @@ class SeedCronJobsTest(TestCase):
             "jobs": [
                 {"name": "Morning Briefing"},
                 {"name": "Evening Check-in"},
+                {"name": "Personal Question"},
                 {"name": "Weekly Reflection"},
                 {"name": "Week Ahead Review"},
                 {"name": "Project Check-in"},
@@ -308,7 +310,7 @@ class SeedCronJobsTest(TestCase):
     ):
         """When some jobs already exist, only the missing ones are created."""
         mock_invoke.side_effect = [
-            # initial cron.list — 3 of 7 already exist
+            # initial cron.list — 3 of 8 already exist
             {
                 "jobs": [
                     {"name": "Morning Briefing"},
@@ -316,7 +318,8 @@ class SeedCronJobsTest(TestCase):
                     {"name": "Week Ahead Review"},
                 ]
             },
-            # cron.add for the 4 missing jobs
+            # cron.add for the 5 missing jobs (in seed-jobs iteration order)
+            {"name": "Personal Question", "enabled": True},
             {"name": "Weekly Reflection", "enabled": True},
             {"name": "Project Check-in", "enabled": True},
             {"name": "Background Tasks", "enabled": True},
@@ -329,13 +332,13 @@ class SeedCronJobsTest(TestCase):
 
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 4)
+        self.assertEqual(result["created"], 5)
         self.assertEqual(result["errors"], 0)
         self.assertEqual(result["skipped_existing"], 3)
-        # 1 list + 4 adds + 1 dedup list + 1 restore list = 7
-        self.assertEqual(mock_invoke.call_count, 7)
+        # 1 list + 5 adds + 1 dedup list + 1 restore list = 8
+        self.assertEqual(mock_invoke.call_count, 8)
         # Verify the add calls are for the right tool
-        for i in range(1, 5):
+        for i in range(1, 6):
             self.assertEqual(mock_invoke.call_args_list[i].args[1], "cron.add")
         mock_sleep.assert_not_called()
 
@@ -352,6 +355,7 @@ class SeedCronJobsTest(TestCase):
             {"jobs": []},
             {"name": "Morning Briefing", "enabled": True},
             GatewayError("temporary API error"),
+            {"name": "Personal Question", "enabled": True},
             {"name": "Weekly Reflection", "enabled": True},
             {"name": "Week Ahead Review", "enabled": True},
             {"name": "Project Check-in", "enabled": True},
@@ -363,7 +367,7 @@ class SeedCronJobsTest(TestCase):
 
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 6)
+        self.assertEqual(result["created"], 7)
         self.assertEqual(result["errors"], 1)
         mock_sleep.assert_not_called()
 
@@ -381,6 +385,7 @@ class SeedCronJobsTest(TestCase):
             GatewayError("temporary", status_code=502),
             {"name": "Morning Briefing", "enabled": True},
             {"name": "Evening Check-in", "enabled": True},
+            {"name": "Personal Question", "enabled": True},
             {"name": "Weekly Reflection", "enabled": True},
             {"name": "Week Ahead Review", "enabled": True},
             {"name": "Project Check-in", "enabled": True},
@@ -392,7 +397,7 @@ class SeedCronJobsTest(TestCase):
 
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 7)
+        self.assertEqual(result["created"], 8)
         self.assertEqual(result["errors"], 0)
         mock_sleep.assert_called_once_with(5)
 
@@ -407,7 +412,7 @@ class SeedCronJobsTest(TestCase):
     ):
         result = seed_cron_jobs(self.tenant)
 
-        self.assertEqual(result["created"], 7)
+        self.assertEqual(result["created"], 8)
         self.assertEqual(result["errors"], 0)
         self.assertFalse(result.get("skipped", False))
         mock_invoke.assert_not_called()
