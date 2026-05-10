@@ -340,21 +340,109 @@ _EVENING_CHECKIN_PROMPT = (
     "1. Top priority\n"
     "2. Second priority\n"
     "3. Third priority\n\n"
-    "5b. REQUIRED: Update the 'energy-mood' section. Check if the user already shared "
-    "their mood or energy today (read the existing `energy-mood` section from the daily "
-    "note loaded in the preamble). If a value is already set, use it. If the user mentioned "
-    "mood/energy during evening conversation, use that. Otherwise leave as '?'. "
-    "Call `nbhd_daily_note_set_section` with section='energy-mood' and the value "
-    "(e.g., '- 6/10 — tired but productive').\n\n"
+    "5b. PROACTIVE energy-mood capture (replaces the old 'leave as ?' passive rule). "
+    "The goal is to actually GET this data, not just record what surfaced.\n"
+    "    **Today's slot.** Read the existing `energy-mood` section from today's daily "
+    "note (loaded in the preamble). If the user already shared a value (any non-`?`, "
+    "non-empty entry), use it as-is and call `nbhd_daily_note_set_section` "
+    "section='energy-mood' to confirm. Skip the rest of 5b.\n"
+    "    If the value is `?`, empty, or missing, decide whether to ask in the step-6 "
+    "message. Ask ONLY when the user has been reachable today — there must be at least "
+    "one inbound chat message or user-authored daily-note entry visible in the "
+    "preamble or `nbhd_journal_context` from today. If the user has been silent today "
+    "(no inbound traffic, voice journals, or replies), do NOT ask; call "
+    "`nbhd_daily_note_set_section` with value='?' and skip to 5c.\n"
+    "    If you decide to ask, do NOT write the section yet — leave it as `?`. The user's "
+    "answer (if it comes) will be captured next time we sync. The energy ask itself "
+    "is composed inline in step 6 below — do not send a separate message.\n"
+    "5c. YESTERDAY follow-up — at most one retry, never further back. From "
+    "`nbhd_journal_context` (or by re-reading the daily-note via "
+    "`nbhd_daily_note_get` with yesterday's date), inspect yesterday's "
+    "`energy-mood` section. If yesterday's value is `?` or empty AND you decided "
+    "in 5b to ask the user about today, you may append a soft secondary clause to "
+    "the step-6 message: 'and yesterday was a blank — any rough sense in hindsight?'. "
+    "If yesterday is filled, or you decided NOT to ask in 5b, do not chase it. Never "
+    "look further back than one day.\n\n"
     "Use the local user date when writing with date arguments to avoid timezone drift.\n"
     "Fill in what you know from the day's conversations. Leave gaps for what you don't know.\n\n"
     "6. Send the user exactly ONE message via `nbhd_send_to_user`. Keep it short and casual:\n"
     "- Brief recap of their day (2-3 lines max)\n"
     "- If any active goals saw progress, mention it (one line)\n"
-    "- One prompt: 'Anything to add or adjust before tomorrow?'\n"
-    "- If you suggested lessons, mention it briefly\n\n"
+    "- If you suggested lessons, mention it briefly\n"
+    "- If 5b decided to ask: append ONE short clause asking about today's energy, "
+    "  e.g. 'Quick one — where did energy land today, 1-10?'. One sentence, no emoji.\n"
+    "- If 5c is also appending: include the soft yesterday clause too "
+    "  ('and yesterday was a blank — any rough sense in hindsight?').\n"
+    "- If neither 5b nor 5c is asking: close with 'Anything to add or adjust before tomorrow?'\n\n"
     "**IMPORTANT: Send exactly ONE user-facing message via `nbhd_send_to_user`. "
     "After that message is sent, proceed to the FINAL STEP described below.**\n"
+)
+
+_PERSONAL_QUESTION_PROMPT = (
+    "Personal-question cron. Pick ONE thoughtful, contextual question that "
+    "deepens the user's long-term memory document — the kind of question that "
+    "catches the stuff they'd never think to volunteer. This runs as a "
+    "scheduled task, single turn — execute every step in order.\n\n"
+    "Steps:\n"
+    "1. Load context: call `nbhd_journal_context` (returns last 7 days of "
+    "daily notes plus the long-term memory document). The memory doc has "
+    "sections `## Preferences`, `## Goals`, `## Decisions`, `## Lessons "
+    "Learned`, and `## People & Context`.\n"
+    "2. YESTERDAY-QUESTION CHECK (do this first). Look in yesterday's daily "
+    "note for a marker line written by step 6: `Personal-question asked: "
+    "<question>`. If you find one, decide:\n"
+    "   - Did the user reply on that topic at any point yesterday or today? "
+    "Search recent notes and memory for any related update. If YES, the "
+    "question landed — pick a NEW gap in step 3.\n"
+    "   - If NO reply AND the user wasn't clearly silent yesterday (look for "
+    "evening-check-in entries, voice journals, normal chat traffic) AND "
+    "fewer than 2 unanswered personal questions sit in the rolling 7-day "
+    "window, re-ask the SAME question with slightly softer phrasing. Skip "
+    "to step 4.\n"
+    "   - Otherwise (user was silent, question has decayed in relevance, or "
+    "2 unanswered questions are already pending) drop it quietly and pick "
+    "a new gap in step 3.\n"
+    "3. FIND A GAP. Scan memory + recent notes for ONE of these in priority "
+    "order:\n"
+    "   a. A NAMED person, place, or thing the user mentioned recently (in "
+    "`## People & Context` or in the last 7 days of notes) with no "
+    "follow-up detail. Example: memory says 'daughter into stained glass' "
+    "but no context — ask 'how'd she get into that?'.\n"
+    "   b. An active goal in `## Goals` with no recorded WHY.\n"
+    "   c. A decision in `## Decisions` with no recorded tradeoff.\n"
+    "   d. A lesson in `## Lessons Learned` with no recorded origin story.\n"
+    "   e. A preference in `## Preferences` whose ROOT isn't captured.\n"
+    "   AVOID: generic favorites ('what's your favorite color'), anything "
+    "already answered in memory, anything you've asked in the last 14 days. "
+    "The question must be specific to THIS user, drawn from THEIR existing "
+    "data.\n"
+    "4. Compose ONE short question. Constraints: a single sentence, no "
+    "emoji, mobile-friendly, conversational, references the specific thing. "
+    "Good: 'You mentioned your daughter is into stained glass — how'd she "
+    "get into that?'. Bad: 'What hobbies does your family have?'.\n"
+    "5. REACHABILITY GATE. If the last 7 days of notes show NO user-"
+    "authored content (no voice journals, no chat replies, no evening-"
+    "check-in entries written by the user), the user is silent — STOP. "
+    "Reply with the literal token `PERSONAL_QUESTION_SKIPPED` and do NOT "
+    "send. The Phase 2 sync guard will skip the sync block too.\n"
+    "6. Send the question via `nbhd_send_to_user` (exactly one message). "
+    "Then call `nbhd_daily_note_append` for today with the line "
+    "`Personal-question asked: <verbatim question>` so tomorrow's run can "
+    "detect it. Use today's date (the local user date from the preamble).\n"
+    "7. WHEN THE ANSWER ARRIVES (in a later main-session reply, not in this "
+    "cron turn): the main session is responsible for routing it. The "
+    "convention is to call `nbhd_memory_update`, slot the new info under "
+    "the most-fitting section header — usually `## People & Context` for "
+    "relationship details, `## Preferences` for habits, `## Goals` for "
+    "ambitions, `## Decisions` for choices, `## Lessons Learned` for "
+    "hard-won insights — and write back the full updated markdown. Keep "
+    "edits tight: one or two lines, not a paragraph. This step is "
+    "documentation for the main session, NOT something this cron turn "
+    "performs.\n\n"
+    "**IMPORTANT: Send at most ONE user-facing message via "
+    "`nbhd_send_to_user`. If step 5 short-circuits, send NO message and "
+    "reply `PERSONAL_QUESTION_SKIPPED`. After your message is sent (or "
+    "skipped), proceed to the FINAL STEP described below.**\n"
 )
 
 _WEEK_AHEAD_REVIEW_PROMPT = (
@@ -801,6 +889,26 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "enabled": True,
         },
         {
+            "name": "Personal Question",
+            "schedule": {
+                "kind": "cron",
+                "expr": f"0 {tenant.heartbeat_start_hour % 24} * * *",
+                "tz": user_tz,
+            },
+            "sessionTarget": "isolated",
+            "payload": {
+                "kind": "agentTurn",
+                "message": _build_cron_message(
+                    _PERSONAL_QUESTION_PROMPT,
+                    "Personal Question",
+                    foreground=True,
+                    tenant=tenant,
+                ),
+            },
+            "delivery": {"mode": "none"},
+            "enabled": True,
+        },
+        {
             "name": "Weekly Reflection",
             "schedule": {"kind": "cron", "expr": "0 20 * * 0", "tz": user_tz},
             "sessionTarget": "isolated",
@@ -932,6 +1040,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     _TASK_SLUG_MAP = {
         "Morning Briefing": "morning_briefing",
         "Evening Check-in": "evening_checkin",
+        "Personal Question": "personal_question",
         "Weekly Reflection": "weekly_reflection",
         "Week Ahead Review": "week_review",
         "Background Tasks": "background_tasks",

@@ -1126,6 +1126,7 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
         "Background maintenance run.",
         "You received a scheduled check-in.",
         "Sunday-evening Gravity check-in.",
+        "Personal-question cron. Pick ONE thoughtful",
         # Date-injected variants (added 2026-03-08):
         "Current date and time:",
     ]
@@ -1138,6 +1139,7 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
     _SYSTEM_JOB_NAMES = {
         "Morning Briefing",
         "Evening Check-in",
+        "Personal Question",
         "Weekly Reflection",
         "Week Ahead Review",
         "Background Tasks",
@@ -1280,6 +1282,36 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
             if is_container_unavailable_error(exc):
                 raise
             logger.exception("update_system_cron_prompts: failed to update '%s' for %s", name, tenant_id)
+            errors += 1
+
+    # --- Seed missing system jobs ---
+    # The patch loop above only updates EXISTING jobs (line ~1179: continues
+    # when `name not in existing_by_name`). New system jobs added to the
+    # default set won't reach existing tenants without an explicit add pass.
+    for desired in desired_jobs:
+        name = desired.get("name", "")
+        if name in existing_by_name:
+            continue
+        if name not in _SYSTEM_JOB_NAMES:
+            continue
+        try:
+            invoke_gateway_tool(tenant, "cron.add", {"job": desired})
+            updated += 1
+            logger.info(
+                "update_system_cron_prompts: seeded missing '%s' for tenant %s",
+                name,
+                tenant_id,
+            )
+        except GatewayError as exc:
+            from apps.cron.cache import is_container_unavailable_error
+
+            if is_container_unavailable_error(exc):
+                raise
+            logger.exception(
+                "update_system_cron_prompts: failed to seed '%s' for tenant %s",
+                name,
+                tenant_id,
+            )
             errors += 1
 
     # --- Heartbeat add/remove drift correction ---
