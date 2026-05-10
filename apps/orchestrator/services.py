@@ -1158,6 +1158,15 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
         cron message, which means existing-vs-desired comparison would
         otherwise differ every day and trigger churn. Compare the
         structural body only.
+
+        Stability of this comparison also depends on
+        ``_build_cron_message`` returning a string that matches what
+        OpenClaw stores back via ``cron.list``. OC strips trailing
+        whitespace on store (``coercePayload`` → ``normalizeOptionalString``
+        → ``value?.trim()``), so ``_build_cron_message`` calls ``.strip()``
+        on its output to mirror that. If a future OpenClaw bump adds more
+        normalization (e.g., line-ending conversion, NFC unicode),
+        ``project_openclaw_cron_payload_shape.md`` lists the audit step.
         """
         if not isinstance(message, str):
             return ""
@@ -1223,10 +1232,15 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
         if not patch:
             continue  # Nothing to update
 
-        # OpenClaw's cron.update rejects payload changes — patching prompts
-        # in-place is silently broken. When a system job needs a new payload,
-        # delete it and re-add the desired version (which already carries the
-        # correct shape and Phase 2 wrapper from build_cron_seed_jobs).
+        # Historical context: pre-5.x OpenClaw rejected payload changes via
+        # cron.update. 2026.5.7's `mergeCronPayload` (jobs-DIMVdW2S.js:715)
+        # actually accepts payload patches now, including kind transitions —
+        # but we keep the delete+create path here because it's the proven
+        # migration channel for legacy systemEvent → agentTurn shape changes
+        # and the in-flight churn fix is one source of risk at a time. If
+        # you flip this to cron.update + payload patch, also drop the
+        # delete+create branch and the now-defensive `kind` check, and add
+        # a test that asserts a single mutation per job (vs the current 2).
         if "payload" in patch and name in _SYSTEM_JOB_NAMES:
             try:
                 gateway_job_id = existing.get("id") or existing.get("jobId") or job_id

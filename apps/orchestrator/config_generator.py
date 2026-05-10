@@ -117,11 +117,18 @@ def _build_cron_message(
     auto-loaded by OpenClaw on every agent turn. See
     ``apps.orchestrator.workspace_envelope`` for the merge logic and refresh
     triggers.
+
+    The trailing ``.strip()`` mirrors OpenClaw's ``coercePayload`` (see
+    ``openclaw-tools-*.js`` ``normalizeOptionalString`` → ``value?.trim()``):
+    OC strips leading/trailing whitespace on store, so any newline tail
+    here would create a single-byte mismatch on the next ``cron.list`` and
+    cause ``update_system_cron_prompts`` to recreate every system cron on
+    every wake. See ``project_openclaw_cron_payload_shape.md`` for the
+    full saga and the audit step to run on the next OpenClaw bump.
     """
     base = _prepare_cron_prompt(prompt, tenant)
-    if foreground:
-        return base + _phase2_sync_block(job_name)
-    return base
+    full = base + _phase2_sync_block(job_name) if foreground else base
+    return full.strip()
 
 
 def _prepare_cron_prompt(prompt: str, tenant: Tenant) -> str:
