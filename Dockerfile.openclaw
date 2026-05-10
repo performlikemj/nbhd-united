@@ -55,9 +55,10 @@ RUN chmod +x /usr/local/bin/nbhd-openclaw-entrypoint /opt/nbhd/claude-with-token
 
 USER node
 
-# --require: load chmod EPERM handler before OpenClaw starts. Uses OpenClaw's
-# public plugin SDK API (registerUnhandledRejectionHandler) to suppress the
-# crash. See runtime/openclaw/suppress-chmod-eperm.js.
+# --require: load chmod EPERM/EACCES suppression before OpenClaw starts.
+# Two layers — fs.chmodSync monkey-patch (handles 2026.5.7+ sync throws;
+# essential for cron firing) AND the legacy plugin-SDK unhandledRejection
+# handler. See runtime/openclaw/suppress-chmod-eperm.js for the full why.
 ENV NODE_OPTIONS="${NODE_OPTIONS} --require /opt/nbhd/suppress-chmod-eperm.js"
 
 # Disable mDNS/bonjour — useless on Azure Container Apps (containers are
