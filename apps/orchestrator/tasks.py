@@ -590,7 +590,20 @@ def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
 
 
 def hibernate_idle_tenants_task() -> dict:
-    """Find active tenants idle >24h and hibernate their containers."""
+    """Find active tenants idle >2h and hibernate their containers.
+
+    Excludes tenants with a recent ``cron_wake_at`` so this hourly sweep
+    doesn't race with ``wake_for_cron_task`` and kill a container right
+    when its scheduled cron is about to fire. Without this guard, a
+    morning briefing scheduled at the top of the hour was silently killed
+    by the same-minute hibernate sweep (canary 2026-05-11 07:00 JST
+    incident — wake_for_cron at :56, hibernate-idle at :00 → ManuallyStopped
+    at :00:47, briefing never delivered). Cron-wake re-hibernation belongs
+    to ``check_cron_wake_idle_task``, which knows about upcoming crons and
+    decides correctly. If ``cron_wake_at`` ever gets stuck (QStash drop,
+    etc.), the same 2h cutoff still lets us reclaim the container — we
+    just defer to the cron-aware path while it's fresh.
+    """
     import logging
     from datetime import timedelta
 
@@ -608,6 +621,7 @@ def hibernate_idle_tenants_task() -> dict:
 
     hibernated = 0
     failed = 0
+    skipped_cron_wake = 0
     with transaction.atomic():
         idle_tenants = (
             Tenant.objects.filter(
@@ -616,15 +630,23 @@ def hibernate_idle_tenants_task() -> dict:
                 hibernated_at__isnull=True,
             )
             .filter(Q(last_message_at__lt=cutoff) | Q(last_message_at__isnull=True, provisioned_at__lt=cutoff))
+            .filter(Q(cron_wake_at__isnull=True) | Q(cron_wake_at__lt=cutoff))
             .select_for_update(skip_locked=True)
         )
 
         for tenant in idle_tenants:
-            # Re-check last_message_at to avoid TOCTOU race
-            tenant.refresh_from_db(fields=["last_message_at", "hibernated_at"])
+            # Re-check last_message_at + cron_wake_at to avoid TOCTOU race
+            # with wake_for_cron_task (which sets cron_wake_at) and inbound
+            # user messages.
+            tenant.refresh_from_db(fields=["last_message_at", "hibernated_at", "cron_wake_at"])
             if tenant.hibernated_at:
                 continue
             if tenant.last_message_at and tenant.last_message_at >= cutoff:
+                continue
+            if tenant.cron_wake_at and tenant.cron_wake_at >= cutoff:
+                # A cron wake landed between the queryset and the refresh
+                # — let check_cron_wake_idle handle it.
+                skipped_cron_wake += 1
                 continue
 
             if hibernate_idle_tenant(tenant):
@@ -633,11 +655,12 @@ def hibernate_idle_tenants_task() -> dict:
                 failed += 1
 
     logger.info(
-        "hibernate_idle_tenants: hibernated=%d failed=%d",
+        "hibernate_idle_tenants: hibernated=%d failed=%d skipped_cron_wake=%d",
         hibernated,
         failed,
+        skipped_cron_wake,
     )
-    return {"hibernated": hibernated, "failed": failed}
+    return {"hibernated": hibernated, "failed": failed, "skipped_cron_wake": skipped_cron_wake}
 
 
 def nightly_extraction_task() -> dict:

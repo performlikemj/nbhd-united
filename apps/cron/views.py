@@ -301,7 +301,14 @@ def apply_pending_configs(request):
         config_tasks.append(("apply_single_tenant_config", (str(tenant.id),), {}))
         config_count += 1
 
-    # 2. Image updates for tenants on stale image
+    # 2. Image updates for tenants on stale image. Same cron_wake_at guard
+    # as hibernate_idle_tenants_task — pushing a new image triggers a
+    # revision update that terminates the running container, which would
+    # kill an about-to-fire scheduled cron in the wake-for-cron window.
+    # Wake_hibernated_tenant already refreshes to current OPENCLAW_IMAGE_TAG
+    # at wake time, so genuinely-stale cron-woken tenants don't exist in
+    # practice; skipping them here is just defense-in-depth for the rare
+    # edge case where a fleet bump lands between wake and apply-pending.
     desired_tag = getattr(settings, "OPENCLAW_IMAGE_TAG", "latest")
     image_count = 0
     if desired_tag and desired_tag != "latest":
@@ -316,6 +323,9 @@ def apply_pending_configs(request):
             )
             .filter(
                 models.Q(last_message_at__isnull=True) | models.Q(last_message_at__lt=cutoff),
+            )
+            .filter(
+                models.Q(cron_wake_at__isnull=True) | models.Q(cron_wake_at__lt=cutoff),
             )
         )
 
