@@ -333,6 +333,25 @@ export interface CronJob {
   foreground?: boolean;
 }
 
+// Pending one-off reminder (schedule.kind === "at"). Lives only in the
+// gateway — auto-deletes after firing. Surfaced through a separate API
+// endpoint from CronJob so the canonical-tenant recurring read stays
+// Postgres-only.
+export interface PendingReminder {
+  jobId?: string;
+  name: string;
+  firesAtMs: number | null;
+  schedule: CronJobSchedule;
+  payload: CronJobPayload;
+  delivery: CronJobDelivery;
+}
+
+export interface PendingRemindersResponse {
+  jobs: PendingReminder[];
+  soft_cap: number;
+  stale: boolean;
+}
+
 // Workspaces — separate conversation contexts per topic domain
 export interface Workspace {
   id: string;

@@ -7,6 +7,8 @@ import {
   CronJobDelivery,
   CronJobPayload,
   CronJobSchedule,
+  PendingReminder,
+  PendingRemindersResponse,
   DashboardData,
   DocumentListItem,
   DocumentResponse,
@@ -711,6 +713,40 @@ export function bulkUpdateForeground(ids: string[], foreground: boolean): Promis
   return apiFetch<BulkUpdateForegroundResult>("/api/v1/cron-jobs/bulk-update-foreground/", {
     method: "POST",
     body: JSON.stringify({ ids, foreground }),
+  });
+}
+
+// Pending one-off reminders (schedule.kind === "at"). Always fetched from
+// the gateway; lives outside the canonical-tenant Postgres read path.
+function normalizePendingReminder(raw: Record<string, unknown>): PendingReminder {
+  const schedule = (raw.schedule as Partial<CronJobSchedule>) ?? {};
+  const payload = (raw.payload as Partial<CronJobPayload>) ?? {};
+  const delivery = (raw.delivery as Partial<CronJobDelivery>) ?? {};
+  return {
+    jobId: (raw.jobId as string) ?? undefined,
+    name: (raw.name as string) ?? "Untitled",
+    firesAtMs: typeof raw.firesAtMs === "number" ? raw.firesAtMs : null,
+    schedule: { kind: schedule.kind ?? "at", expr: schedule.expr ?? "", tz: schedule.tz ?? "UTC" },
+    payload: { kind: payload.kind ?? "agentTurn", message: payload.message ?? "" },
+    delivery: { mode: delivery.mode ?? "none", channel: delivery.channel },
+  };
+}
+
+export async function fetchPendingReminders(): Promise<PendingRemindersResponse> {
+  const data = await apiFetch<{ jobs?: unknown[]; soft_cap?: number; stale?: boolean }>(
+    "/api/v1/cron-jobs/pending-at/",
+  );
+  const rawJobs = Array.isArray(data.jobs) ? data.jobs : [];
+  return {
+    jobs: rawJobs.map((j) => normalizePendingReminder(j as Record<string, unknown>)),
+    soft_cap: typeof data.soft_cap === "number" ? data.soft_cap : 20,
+    stale: Boolean(data.stale),
+  };
+}
+
+export function cancelPendingReminder(name: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/cron-jobs/pending-at/${encodeURIComponent(name)}/`, {
+    method: "DELETE",
   });
 }
 

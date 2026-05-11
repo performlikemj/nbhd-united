@@ -9,9 +9,17 @@ crons stored as ``apps/cron/models.CronJob`` rows: system schedules
 
 Postgres ``CronJob`` rows where ``managed=True`` are the desired set.
 ``cron.list`` against the gateway gives current SQLite state. Diff by name;
-``cron.add`` for missing, ``cron.remove`` for stale. Unmanaged prefixes
-(``_sync:*`` — agent-created Phase 2 sync crons) are explicitly skipped so
-agent-side writes survive reconciliation.
+``cron.add`` for missing, ``cron.remove`` for stale.
+
+Unmanaged jobs — agent-created and self-cleaning — are explicitly skipped:
+  * Name-prefix matches (``_sync:*`` — Phase-2 sync crons)
+  * Schedule-kind matches (``kind:"at"`` — one-shot reminders that the
+    gateway auto-deletes via ``deleteAfterRun=true`` after firing)
+
+The reconciler also runs a janitor pass that reaps ``kind:"at"`` jobs
+whose fire time is more than one hour in the past — covers the cases
+where an agent crashed mid-fire or the container was hibernated through
+the scheduled time.
 
 The reconciler is gated by ``Tenant.postgres_cron_canonical``. While that
 flag is False (cutover-day default), the legacy gateway-canonical paths
@@ -21,6 +29,7 @@ remain authoritative and this function is a no-op.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -34,11 +43,143 @@ logger = logging.getLogger(__name__)
 # remove them mid-flight.
 _UNMANAGED_PREFIXES: tuple[str, ...] = ("_sync:",)
 
+# Schedule kinds that the reconciler treats as unmanaged. ``kind:"at"`` is
+# a one-shot whose gateway-side default is ``deleteAfterRun=true`` — the
+# job vanishes after firing. Reconciling against Postgres truth would race
+# that auto-delete and remove the job before it fires.
+_UNMANAGED_SCHEDULE_KINDS: frozenset[str] = frozenset({"at"})
 
-def _is_unmanaged_cron(name: str) -> bool:
+# Grace period after an ``at`` job's fire time before the janitor reaps
+# it. If the job is still in the gateway this long after its scheduled
+# fire, either it fired and didn't auto-delete (gateway bug) or the
+# container was down through the fire time. Either way it's stale.
+_AT_CRON_REAP_GRACE_MS = 60 * 60 * 1000  # 1 hour
+
+# Concurrent-``at``-cron caps. Three tiers:
+#  * Soft (20) — enforced by the agent itself via its docs (see
+#    ``templates/openclaw/docs/cron-management.md``). No backend action.
+#  * Hard (50) — reconciler logs a ``PlatformIssueLog`` of severity
+#    MEDIUM. No reaping; the user's queued intent is respected.
+#  * Catastrophic (200) — reconciler reaps newest-first back to 200
+#    and logs severity HIGH. Real users do not accumulate 200 pending
+#    one-offs; this only fires on abuse.
+# Real creation-time enforcement requires routing ``cron.add`` through
+# Django (Phase 3 — wrapping plugin). Until then, this is the backstop.
+_AT_CRON_HARD_CAP = 50
+_AT_CRON_CATASTROPHIC_CAP = 200
+
+
+def _is_unmanaged_cron(job: dict | str) -> bool:
+    """Return True if the reconciler must not own this gateway-side cron.
+
+    Accepts either a gateway job dict (preferred — lets us inspect
+    ``schedule.kind``) or a bare name string (back-compat for callers
+    that only have a name).
+    """
+    if isinstance(job, str):
+        return not job or job.startswith(_UNMANAGED_PREFIXES)
+    if not isinstance(job, dict):
+        return True
+    name = job.get("name") or ""
     if not name:
         return True
-    return name.startswith(_UNMANAGED_PREFIXES)
+    if name.startswith(_UNMANAGED_PREFIXES):
+        return True
+    schedule = job.get("schedule")
+    if isinstance(schedule, dict) and schedule.get("kind") in _UNMANAGED_SCHEDULE_KINDS:
+        return True
+    return False
+
+
+def _at_cron_fire_ms(job: dict) -> int | None:
+    """Return the fire time (epoch ms) for an ``at`` cron, or None.
+
+    Prefers ``state.nextRunAtMs`` (the gateway's resolved value) and
+    falls back to parsing ``schedule.at`` as ISO 8601.
+    """
+    state = job.get("state")
+    if isinstance(state, dict):
+        next_run = state.get("nextRunAtMs")
+        if isinstance(next_run, int):
+            return next_run
+    schedule = job.get("schedule")
+    if isinstance(schedule, dict):
+        at_value = schedule.get("at")
+        if isinstance(at_value, str):
+            try:
+                parsed = datetime.fromisoformat(at_value.replace("Z", "+00:00"))
+                return int(parsed.timestamp() * 1000)
+            except ValueError:
+                return None
+    return None
+
+
+def _is_past_due_at_cron(job: dict, now_ms: int, grace_ms: int = _AT_CRON_REAP_GRACE_MS) -> bool:
+    """Whether an ``at`` cron is stale enough that the janitor should reap it."""
+    if not isinstance(job, dict):
+        return False
+    schedule = job.get("schedule")
+    if not isinstance(schedule, dict) or schedule.get("kind") != "at":
+        return False
+    fire_ms = _at_cron_fire_ms(job)
+    if fire_ms is None:
+        return False
+    return fire_ms + grace_ms < now_ms
+
+
+def _pending_at_crons(jobs: list[dict], reaped_ids: set[str]) -> list[dict]:
+    """Return ``at`` crons that are still pending (excludes those just reaped)."""
+    return [
+        j
+        for j in jobs
+        if isinstance(j, dict)
+        and isinstance(j.get("schedule"), dict)
+        and j["schedule"].get("kind") == "at"
+        and str(j.get("id") or j.get("jobId") or "") not in reaped_ids
+    ]
+
+
+def _newest_first(jobs: list[dict]) -> list[dict]:
+    """Sort gateway jobs newest-first by ``createdAtMs`` (missing → very old).
+
+    Used for reap-newest selection when a tenant blows past the
+    catastrophic cap: the burst of abuse is most likely the recently-added
+    set, and reaping newest preserves the user's older queue.
+    """
+    return sorted(jobs, key=lambda j: j.get("createdAtMs") or 0, reverse=True)
+
+
+def _log_at_cron_cap_breach(tenant: Tenant, *, severity: str, summary: str, detail: str) -> None:
+    """Record a one-off cap breach, deduped to one unresolved log per tenant.
+
+    Skips re-logging if an unresolved ``RATE_LIMIT`` entry already exists
+    for this tenant — that record IS the "still ongoing" marker. After an
+    operator resolves the entry, the next breach will create a fresh one.
+    """
+    try:
+        from apps.platform_logs.models import PlatformIssueLog
+
+        if PlatformIssueLog.objects.filter(
+            tenant=tenant,
+            category=PlatformIssueLog.Category.RATE_LIMIT,
+            tool_name="cron.add",
+            resolved=False,
+        ).exists():
+            return
+        PlatformIssueLog.objects.create(
+            tenant=tenant,
+            category=PlatformIssueLog.Category.RATE_LIMIT,
+            severity=severity,
+            tool_name="cron.add",
+            summary=summary,
+            detail=detail,
+        )
+    except Exception:
+        # Telemetry must never break the reconciler. Best-effort only.
+        logger.exception(
+            "regenerate_tenant_crons: failed to record at-cron cap breach for tenant %s",
+            tenant.id,
+        )
 
 
 def _row_to_cron_dict(row) -> dict:
@@ -82,7 +223,15 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
 
     from .services import _extract_cron_jobs
 
-    summary = {"added": 0, "removed": 0, "unchanged": 0, "errors": 0}
+    summary = {
+        "added": 0,
+        "removed": 0,
+        "unchanged": 0,
+        "errors": 0,
+        "stuck_reaped": 0,
+        "cap_reaped": 0,
+        "at_pending": 0,
+    }
 
     if not getattr(tenant, "postgres_cron_canonical", False):
         logger.debug(
@@ -103,13 +252,17 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
         return summary
 
     current_jobs = _extract_cron_jobs(list_result) or []
-    current_managed = {
-        j.get("name", ""): j for j in current_jobs if isinstance(j, dict) and not _is_unmanaged_cron(j.get("name", ""))
-    }
+    current_managed = {j.get("name", ""): j for j in current_jobs if isinstance(j, dict) and not _is_unmanaged_cron(j)}
 
     to_add = [desired_by_name[n] for n in desired_by_name if n not in current_managed]
     to_remove = [current_managed[n] for n in current_managed if n not in desired_by_name]
     summary["unchanged"] = len(desired_by_name) - len(to_add)
+
+    # Janitor: reap ``kind:"at"`` jobs whose fire time is more than the grace
+    # window in the past. Covers agent-crashed-mid-fire and
+    # container-down-through-fire-time cases that auto-delete misses.
+    now_ms = int(django_tz.now().timestamp() * 1000)
+    stuck_at_jobs = [j for j in current_jobs if isinstance(j, dict) and _is_past_due_at_cron(j, now_ms)]
 
     pushed_at = django_tz.now()
 
@@ -145,17 +298,89 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
             )
             summary["errors"] += 1
 
+    reaped_ids: set[str] = set()
+    for job in stuck_at_jobs:
+        job_id = job.get("id") or job.get("jobId", "")
+        if not job_id:
+            continue
+        try:
+            invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
+            summary["stuck_reaped"] += 1
+            reaped_ids.add(str(job_id))
+        except GatewayError:
+            logger.warning(
+                "regenerate_tenant_crons: stuck-at janitor cron.remove failed for %s on tenant %s",
+                str(job_id)[:12],
+                tenant.id,
+                exc_info=True,
+            )
+            summary["errors"] += 1
+
+    # Cap enforcement on concurrent ``at`` jobs.
+    pending_at = _pending_at_crons(current_jobs, reaped_ids)
+    summary["at_pending"] = len(pending_at)
+
+    if len(pending_at) >= _AT_CRON_CATASTROPHIC_CAP:
+        # Reap newest-first back to the cap. Real users do not stack 200+
+        # pending one-offs — at this point we're handling abuse, not intent.
+        excess = _newest_first(pending_at)[: len(pending_at) - _AT_CRON_CATASTROPHIC_CAP]
+        for job in excess:
+            job_id = job.get("id") or job.get("jobId", "")
+            if not job_id:
+                continue
+            try:
+                invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
+                summary["cap_reaped"] += 1
+                reaped_ids.add(str(job_id))
+            except GatewayError:
+                logger.warning(
+                    "regenerate_tenant_crons: cap-reap cron.remove failed for %s on tenant %s",
+                    str(job_id)[:12],
+                    tenant.id,
+                    exc_info=True,
+                )
+                summary["errors"] += 1
+        _log_at_cron_cap_breach(
+            tenant,
+            severity="high",
+            summary=f"Catastrophic cap: {len(pending_at)} pending at-crons (cap {_AT_CRON_CATASTROPHIC_CAP})",
+            detail=(
+                f"Reaped {summary['cap_reaped']} newest at-crons to enforce the "
+                f"catastrophic cap. Investigate whether the agent has been prompted to "
+                f"create unbounded one-offs."
+            ),
+        )
+    elif len(pending_at) > _AT_CRON_HARD_CAP:
+        _log_at_cron_cap_breach(
+            tenant,
+            severity="medium",
+            summary=f"Hard cap exceeded: {len(pending_at)} pending at-crons (cap {_AT_CRON_HARD_CAP})",
+            detail=(
+                f"Tenant has {len(pending_at)} concurrent kind:'at' crons, above the "
+                f"documented soft cap of 20 and the hard cap of {_AT_CRON_HARD_CAP}. "
+                f"No reaping — user queue preserved. Resolve this log once cleaned up."
+            ),
+        )
+
     logger.info(
-        "regenerate_tenant_crons: tenant %s — added=%d removed=%d unchanged=%d errors=%d",
+        "regenerate_tenant_crons: tenant %s — added=%d removed=%d unchanged=%d "
+        "stuck_reaped=%d cap_reaped=%d at_pending=%d errors=%d",
         str(tenant.id)[:8],
         summary["added"],
         summary["removed"],
         summary["unchanged"],
+        summary["stuck_reaped"],
+        summary.get("cap_reaped", 0),
+        summary["at_pending"],
         summary["errors"],
     )
     return summary
 
 
-# Standalone helper for tests + ad-hoc calls. The signal-driven debounced
-# wrapper lives in apps/orchestrator/tasks.py.
-__all__ = ["regenerate_tenant_crons", "_is_unmanaged_cron", "_row_to_cron_dict"]
+__all__ = [
+    "regenerate_tenant_crons",
+    "_is_unmanaged_cron",
+    "_is_past_due_at_cron",
+    "_pending_at_crons",
+    "_row_to_cron_dict",
+]

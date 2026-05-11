@@ -7,6 +7,7 @@ import {
   AuthUser,
   CronJob,
   Integration,
+  PendingRemindersResponse,
   PersonalAccessToken,
   ProvisioningStatus,
   RefreshConfigStatus,
@@ -18,6 +19,8 @@ import {
   appendToDocument,
   bulkDeleteCronJobs,
   bulkUpdateForeground,
+  cancelPendingReminder,
+  fetchPendingReminders,
   createAutomation,
   createCronJob,
   createDocument,
@@ -951,6 +954,31 @@ export function useBulkUpdateForegroundMutation() {
     },
     onError: () => {
       void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
+    },
+  });
+}
+
+// Pending one-off reminders (separate from recurring crons — different
+// lifecycle, gateway-only source of truth, auto-deleting). Polled on a
+// 30s interval so reminders that fire while the dashboard is open vanish
+// without a manual refresh.
+export function usePendingRemindersQuery() {
+  return useQuery<PendingRemindersResponse>({
+    queryKey: ["pending-reminders"],
+    queryFn: fetchPendingReminders,
+    staleTime: 10_000,
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useCancelPendingReminderMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => cancelPendingReminder(name),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["pending-reminders"] });
     },
   });
 }
