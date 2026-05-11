@@ -252,9 +252,7 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
         return summary
 
     current_jobs = _extract_cron_jobs(list_result) or []
-    current_managed = {
-        j.get("name", ""): j for j in current_jobs if isinstance(j, dict) and not _is_unmanaged_cron(j)
-    }
+    current_managed = {j.get("name", ""): j for j in current_jobs if isinstance(j, dict) and not _is_unmanaged_cron(j)}
 
     to_add = [desired_by_name[n] for n in desired_by_name if n not in current_managed]
     to_remove = [current_managed[n] for n in current_managed if n not in desired_by_name]

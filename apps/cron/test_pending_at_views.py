@@ -210,8 +210,6 @@ class PendingAtCronCancelViewTest(TestCase):
 
     @patch("apps.cron.pending_at_views.invoke_gateway_tool")
     def test_cancel_nonexistent_returns_404(self, mock_invoke):
-        mock_invoke.side_effect = lambda tenant, tool, args: (
-            {"details": {"jobs": []}} if tool == "cron.list" else None
-        )
+        mock_invoke.side_effect = lambda tenant, tool, args: {"details": {"jobs": []}} if tool == "cron.list" else None
         resp = self.client.delete("/api/v1/cron-jobs/pending-at/ghost/")
         self.assertEqual(resp.status_code, 404)

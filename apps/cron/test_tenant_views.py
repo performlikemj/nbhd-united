@@ -1249,9 +1249,7 @@ class RegenerateTenantCronsTest(TestCase):
         result = regenerate_tenant_crons(self.tenant)
         self.assertEqual(result["cap_reaped"], 0)
         self.assertEqual(result["at_pending"], _AT_CRON_HARD_CAP + 5)
-        log = PlatformIssueLog.objects.get(
-            tenant=self.tenant, category=PlatformIssueLog.Category.RATE_LIMIT
-        )
+        log = PlatformIssueLog.objects.get(tenant=self.tenant, category=PlatformIssueLog.Category.RATE_LIMIT)
         self.assertEqual(log.severity, PlatformIssueLog.Severity.MEDIUM)
         self.assertFalse(log.resolved)
 
@@ -1294,16 +1292,9 @@ class RegenerateTenantCronsTest(TestCase):
         result = regenerate_tenant_crons(self.tenant)
         self.assertEqual(result["cap_reaped"], excess)
         # Reaped ids are the newest (highest indices).
-        expected_reaped = {
-            f"at-{i}"
-            for i in range(
-                _AT_CRON_CATASTROPHIC_CAP, _AT_CRON_CATASTROPHIC_CAP + excess
-            )
-        }
+        expected_reaped = {f"at-{i}" for i in range(_AT_CRON_CATASTROPHIC_CAP, _AT_CRON_CATASTROPHIC_CAP + excess)}
         self.assertEqual(set(remove_calls), expected_reaped)
-        log = PlatformIssueLog.objects.get(
-            tenant=self.tenant, category=PlatformIssueLog.Category.RATE_LIMIT
-        )
+        log = PlatformIssueLog.objects.get(tenant=self.tenant, category=PlatformIssueLog.Category.RATE_LIMIT)
         self.assertEqual(log.severity, PlatformIssueLog.Severity.HIGH)
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
@@ -1339,9 +1330,7 @@ class RegenerateTenantCronsTest(TestCase):
         )
         regenerate_tenant_crons(self.tenant)
         self.assertEqual(
-            PlatformIssueLog.objects.filter(
-                tenant=self.tenant, category=PlatformIssueLog.Category.RATE_LIMIT
-            ).count(),
+            PlatformIssueLog.objects.filter(tenant=self.tenant, category=PlatformIssueLog.Category.RATE_LIMIT).count(),
             1,
         )
 
