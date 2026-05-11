@@ -130,12 +130,15 @@ function saveBase64Image(b64Data, outputDir) {
 
 // --- Plugin entry point ---
 
+const { wrapTool } = require("../../tool-logger.js");
+const wrap = (def) => wrapTool(def, { plugin: "nbhd-image-gen" });
+
 module.exports = function register(api) {
   const pluginConfig = (api.pluginConfig && typeof api.pluginConfig === "object") ? api.pluginConfig : {};
   const tier = (pluginConfig.tier || process.env.NBHD_TIER || "starter").toLowerCase();
   const limit = TIER_LIMITS[tier] || TIER_LIMITS.starter;
 
-  api.registerTool({
+  api.registerTool(wrap({
     name: "nbhd_generate_image",
     description: `Generate an image from a text prompt using AI (OpenAI gpt-image-1). Rate limited to ${limit} images per day. The generated image will be automatically sent to the user in Telegram.`,
     parameters: {
@@ -229,5 +232,5 @@ module.exports = function register(api) {
         return { content: [{ type: "text", text: `Image generation failed: ${msg}` }] };
       }
     },
-  });
+  }));
 };

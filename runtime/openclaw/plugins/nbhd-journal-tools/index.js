@@ -1,3 +1,6 @@
+import { wrapTool } from "../../tool-logger.js";
+const wrap = (def) => wrapTool(def, { plugin: "nbhd-journal-tools" });
+
 /**
  * NBHD Journal Tools Plugin (v2)
  *
@@ -121,8 +124,7 @@ function tenantPath(api, suffix) {
 
 export default function register(api) {
   // ── Document: Get ────────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_document_get",
       description:
         "Get a document by kind and slug. Works for any document type: daily notes, goals, tasks, ideas, projects, memory, weekly/monthly reviews. Returns the full markdown content.",
@@ -153,13 +155,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Document: Create or Replace ──────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_document_put",
       description:
         "Create or replace a document. Use for writing full documents like goals, project notes, weekly reviews. For daily notes, prefer nbhd_daily_note_set_section or nbhd_daily_note_append.",
@@ -200,13 +201,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Weekly Review: Create (structured) ───────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_weekly_review_create",
       description:
         "Save a structured weekly review so it appears on the Horizons Weekly Pulse card. " +
@@ -284,13 +284,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Document: Append ─────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_document_append",
       description:
         "Append timestamped content to a document. Creates the document if it doesn't exist. Useful for adding entries to any document type.",
@@ -328,13 +327,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Daily Note: Get (legacy-compatible) ──────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_daily_note_get",
       description:
         "Get the daily note for a specific date. Returns the full collaborative document (morning report, log entries, evening check-in). Uses the legacy endpoint which also returns template sections.",
@@ -357,13 +355,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Daily Note: Set Section (legacy-compatible) ─────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_daily_note_set_section",
       description:
         "Set the content of a specific section in the daily note. Use for writing structured sections like Morning Report, Weather, News, Focus, or Evening Check-in.",
@@ -403,13 +400,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Daily Note: Append Log Entry (legacy-compatible) ─────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_daily_note_append",
       description:
         "Append a quick timestamped log entry to the daily note. Auto-timestamps with current time and author=agent.",
@@ -442,13 +438,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Long-Term Memory: Get ────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_memory_get",
       description:
         "Get the user's long-term memory document (raw markdown). Contains curated preferences, goals, decisions, and lessons.",
@@ -464,13 +459,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Long-Term Memory: Update ─────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_memory_update",
       description:
         "Replace the user's long-term memory document. Use after reviewing daily notes to curate preferences, goals, decisions, and lessons learned.",
@@ -495,13 +489,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Journal Context (Session Init) ───────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_journal_context",
       description:
         "Load recent daily notes and long-term memory in one call. Use at the start of every session to get caught up.",
@@ -530,13 +523,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Evening Check-in (deprecated, kept for compat) ───────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_journal_evening_checkin",
       description:
         "[DEPRECATED: Use nbhd_daily_note_set_section with section_slug='evening-check-in' instead.]",
@@ -570,13 +562,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Journal Search ───────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_journal_search",
       description:
         "Search across all journal documents (daily notes, goals, projects, memory, reviews, etc.) by keyword or phrase. Uses full-text search. Use this to find past entries, recall what was written about a topic, or locate specific notes.",
@@ -614,13 +605,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Lessons: suggest/search/pending ─────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_lesson_suggest",
       description:
         "Suggest a candidate lesson for user approval. Creates a pending lesson with user-facing text, optional context, source metadata, and auto-generated tags.",
@@ -679,13 +669,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Lessons: text similarity search ────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_lesson_search",
       description:
         "Search lessons by text or semantic similarity. Use for recall during conversation and review workflows.",
@@ -718,13 +707,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Lessons: pending queue ────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_lessons_pending",
       description:
         "Get the current count and list of pending lessons waiting for user approval.",
@@ -740,13 +728,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Sessions: undistilled YardTalk pushes ─────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_sessions_pending",
       description:
         "List YardTalk work sessions that have not yet been distilled into the journal/tasks/goals/memory primitives. " +
@@ -778,13 +765,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Sessions: mark distilled ──────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_session_mark_processed",
       description:
         "Mark a YardTalk session as distilled, recording what you wrote (or why you skipped). " +
@@ -821,13 +807,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Platform Issue Report ────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_platform_issue_report",
       description:
         "Silently report a platform issue (missing capability, tool error, config problem) for operator troubleshooting. NEVER mention these issues to the user. Use this tool, then gracefully degrade or skip the affected feature.",
@@ -877,12 +862,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Send message to user (for cron jobs / proactive messages) ──────
-  api.registerTool({
+  api.registerTool(wrap({
     name: "nbhd_send_to_user",
     description:
       "Send a message to the user via Telegram. Use this in cron sessions " +
@@ -909,10 +894,10 @@ export default function register(api) {
       });
       return renderPayload(payload);
     },
-  });
+  }));
 
   // ── Update user profile (timezone, display_name, language) ─────────
-  api.registerTool({
+  api.registerTool(wrap({
     name: "nbhd_update_profile",
     description:
       "Update the user's profile settings. Use ONLY after the user has " +
@@ -972,11 +957,10 @@ export default function register(api) {
       });
       return renderPayload(payload);
     },
-  });
+  }));
 
   // ── Workspace: List ──────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_workspace_list",
       description:
         "List the user's conversation workspaces. Each workspace is a separate context (e.g. Work, Personal, Translation) with its own conversation history. Returns name, slug, description, is_default, is_active, last_used_at for each.",
@@ -992,13 +976,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Workspace: Create ────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_workspace_create",
       description:
         "Create a new conversation workspace. Use when the user explicitly asks (e.g. 'create a workspace for translation work') OR when you've detected a recurring topic that deserves its own focused context. The first workspace creation also auto-creates a 'General' default workspace as a catch-all. Maximum 4 workspaces per user. The new workspace becomes active immediately.",
@@ -1033,13 +1016,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Workspace: Update ────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_workspace_update",
       description:
         "Update a workspace's name or description. Re-embeds the description for routing classification when changed. Use to refine a workspace as the user's needs evolve.",
@@ -1079,13 +1061,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Workspace: Delete ────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_workspace_delete",
       description:
         "Delete a workspace. The default workspace cannot be deleted. If the deleted workspace was active, the active workspace falls back to General. The conversation history in the deleted workspace's session will no longer be reachable. Always confirm with the user before deleting.",
@@ -1110,13 +1091,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Workspace: Switch ────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_workspace_switch",
       description:
         "Switch the active workspace. Call this whenever the user asks to switch workspaces — either explicitly ('switch to X', 'go to my X workspace', 'open X', 'change to X') or implicitly ('this is work stuff', 'let's talk about translation'). VERBALLY confirming a switch is NOT enough — you must call this tool, otherwise the database doesn't update, the dashboard stays on the old workspace, and routing keeps sending messages to the old session. The user's NEXT message will route to the new workspace's session. After calling, add the [WorkspaceName] chip indicator on your response.",
@@ -1142,7 +1122,7 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 }

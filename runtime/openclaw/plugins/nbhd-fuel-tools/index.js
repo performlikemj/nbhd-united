@@ -1,3 +1,6 @@
+import { wrapTool } from "../../tool-logger.js";
+const wrap = (def) => wrapTool(def, { plugin: "nbhd-fuel-tools" });
+
 /**
  * NBHD Fuel Tools Plugin
  *
@@ -128,8 +131,7 @@ export default function register(api) {
   //   3. The container's cron registry (_fuel:* + user-named workout crons).
   // Returns conflicts (duplicate fires, orphan crons, orphan workouts) plus
   // a one-line `guidance` string that tells the agent what to do.
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_fuel_audit",
       description:
         "PREFER this tool over nbhd_fuel_summary when the user asks for a workout, asks what's planned, or wants to schedule one. Returns: (a) today_plan parsed from today's daily-note Fuel section — if today_plan.exists is true, deliver THAT plan rather than inventing a new one; (b) next_14d_workouts from Postgres; (c) fuel_crons currently in the container; (d) conflicts.duplicate_fires / orphan_crons / orphan_workouts; (e) a one-line `guidance` string. If conflicts.duplicate_fires is non-empty, surface them and STOP — do not add another cron on top.",
@@ -149,13 +151,12 @@ export default function register(api) {
           return renderPayload({ error: error.message });
         }
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Fuel Summary ────────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_fuel_summary",
       description:
         "Get the user's fitness context: recent workouts, planned workouts, latest body weight, and fitness profile (including onboarding status). Call this at the start of fitness conversations to understand what the user has been doing and whether they've completed their fitness profile setup. NOTE: for any question about *today's* workout or scheduling, prefer `nbhd_fuel_audit` — it includes everything this returns plus cron state and conflict detection.",
@@ -175,13 +176,12 @@ export default function register(api) {
           return renderPayload({ error: error.message });
         }
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Log Workout ─────────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_fuel_log_workout",
       description:
         'Log a workout from natural language. Infer the category from the activity name (e.g. "deadlift" → strength, "ran" → cardio, "yoga" → mobility). Default to today\'s date and status "done". Do NOT ask follow-up questions — log what the user gave you and confirm briefly.',
@@ -336,13 +336,12 @@ export default function register(api) {
           return renderPayload({ error: error.message });
         }
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Update Workout ───────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_fuel_update_workout",
       description:
         'Update an existing workout. Use when the user wants to correct a logged workout — wrong date, wrong exercise, change status from planned to done, adjust rpe, etc. Get the workout_id from nbhd_fuel_summary or from the response when logging a workout. Only send the fields that need changing.',
@@ -403,13 +402,12 @@ export default function register(api) {
           return renderPayload({ error: error.message });
         }
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Delete Workout ──────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_fuel_delete_workout",
       description:
         "Delete a workout. Use when the user wants to remove a logged workout entirely — duplicates, mistakes, or workouts they don't want tracked. Confirm with the user before deleting. Get the workout_id from nbhd_fuel_summary.",
@@ -439,13 +437,12 @@ export default function register(api) {
           return renderPayload({ error: error.message });
         }
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Log Body Weight ─────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_fuel_log_body_weight",
       description:
         "Log the user's body weight. Upserts by date — if an entry already exists for that date, it's updated.",
@@ -482,13 +479,12 @@ export default function register(api) {
           return renderPayload({ error: error.message });
         }
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Delete Body Weight ──────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_fuel_delete_body_weight",
       description:
         "Delete a body weight entry by date. Use when the user wants to remove a logged weight — typos, mistakes, or duplicates. Confirm with the user before deleting.",
@@ -519,13 +515,12 @@ export default function register(api) {
           return renderPayload({ error: error.message });
         }
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Log Sleep ───────────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_fuel_log_sleep",
       description:
         "Log the user's sleep duration. Upserts by date. Include quality (1-5) if the user mentions how they slept.",
@@ -575,13 +570,12 @@ export default function register(api) {
           return renderPayload({ error: error.message });
         }
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Update Fitness Profile ──────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_fuel_update_profile",
       description:
         "Update the user's fitness profile progressively. Call with any subset of fields as you learn them during onboarding conversation. List fields (goals, limitations, equipment) replace the full list each call — send the complete current list, not just additions. Set onboarding_status to 'in_progress' when starting, 'completed' when done, or 'declined' if the user opts out.",
@@ -667,13 +661,12 @@ export default function register(api) {
           return renderPayload({ error: error.message });
         }
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Create Workout Plan ─────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_fuel_create_plan",
       description:
         "Create a structured workout plan. Design the full program based on the user's profile, journal context, sleep trends, lessons, and goals — not just fitness data. Each entry in schedule_json maps a weekday (0=Monday through 6=Sunday) to a workout definition. The backend auto-generates all individual planned workouts on the calendar. Check nbhd_fuel_summary for existing active plans before creating a new one.",
@@ -752,13 +745,12 @@ export default function register(api) {
           return renderPayload({ error: error.message });
         }
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Update Workout Plan ─────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_fuel_update_plan",
       description:
         "Update an existing workout plan. Can change name, status (active/paused/completed/archived), notes, or schedule. If schedule_json or weeks change, future planned workouts are deleted and regenerated from the new template. Use this for swapping exercises, changing frequency, pausing, or completing a plan.",
@@ -822,13 +814,12 @@ export default function register(api) {
           return renderPayload({ error: error.message });
         }
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Delete Workout Plan ─────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_fuel_delete_plan",
       description:
         "Delete a workout plan. Removes all future planned workouts. Completed workouts are preserved but unlinked from the plan. Always confirm with the user before calling this.",
@@ -858,7 +849,7 @@ export default function register(api) {
           return renderPayload({ error: error.message });
         }
       },
-    },
+    }),
     { optional: true },
   );
 }

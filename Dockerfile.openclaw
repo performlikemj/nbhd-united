@@ -48,6 +48,7 @@ COPY templates/openclaw /opt/nbhd/templates/openclaw
 COPY runtime/openclaw/proxy.js /opt/nbhd/proxy.js
 COPY runtime/openclaw/suppress-chmod-eperm.js /opt/nbhd/suppress-chmod-eperm.js
 COPY runtime/openclaw/redact-stdout.js /opt/nbhd/redact-stdout.js
+COPY runtime/openclaw/tool-logger.js /opt/nbhd/tool-logger.js
 COPY runtime/openclaw/claude-with-token.sh /opt/nbhd/claude-with-token.sh
 COPY runtime/openclaw/entrypoint.sh /usr/local/bin/nbhd-openclaw-entrypoint
 
