@@ -115,17 +115,21 @@ def _message_has_phase2_marker(message: str) -> bool:
 # Two categories live in here:
 #   1. Infrastructure tasks the user gains nothing from seeing (Background
 #      Tasks, Heartbeat Check-in, Project Check-in).
-#   2. Core data-unearthing tasks — the assistant's job is to actively
-#      capture energy/mood/state and deepen long-term user context. Letting
-#      users disable or retime them defeats a core product feature. Evening
-#      Check-in now actively asks for missing energy data; Personal Question
-#      pursues one gap from long-term memory per day.
+#   2. Core data-unearthing tasks whose timing is already governed by a
+#      separate tenant setting — Personal Question fires at
+#      `tenant.heartbeat_start_hour`, so the user controls *when* via the
+#      heartbeat window without owning the cron row itself. Letting them
+#      delete or disable this cron would defeat a core product feature
+#      (gap-finding over long-term memory).
+# Evening Check-in is intentionally NOT hidden: its 21:00 schedule is
+# hard-coded, and the user has a legitimate need to retime it ("after
+# dinner" vs "before bed") or pause it entirely. Until the schedule is
+# wired to a tenant field, it stays user-editable.
 # Hidden crons are also excluded from MAX_CRON_JOBS counting (see
 # `_filter_visible_jobs` and `postgres_canonical.create_job`).
 HIDDEN_SYSTEM_CRONS = frozenset(
     {
         "Background Tasks",
-        "Evening Check-in",
         "Heartbeat Check-in",
         "Personal Question",
         "Project Check-in",
