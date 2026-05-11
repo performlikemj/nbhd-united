@@ -48,6 +48,12 @@ SYSTEM_CRONS = [
     # Postgres CronJob table for tenants on the postgres-cron-canonical flow.
     # Offset to avoid colliding with reconcile-fuel-crons.
     ("reconcile-tenant-crons", "5 * * * *", "/api/cron/trigger/reconcile_tenant_crons/"),
+    # Every 5 min — backstop wake scheduling for kind:"at" one-off crons.
+    # The hibernation path only schedules wakes when Django hibernates a
+    # tenant; this sweep ensures every at-cron firing within 2h has a
+    # QStash wake task queued (idempotency-keyed on fire_time so duplicates
+    # collapse), so an out-of-band container restart can't cause a missed fire.
+    ("ensure-at-cron-wakes", "*/5 * * * *", "/api/cron/trigger/ensure_at_cron_wakes/"),
     # Daily at 01:30 UTC — watchdog for orphaned Fuel/Gravity welcome crons.
     # Re-invokes the self-healing schedulers so a tenant whose welcome was
     # missed (gateway hiccup, agent crash mid-turn) gets retried within 24h.

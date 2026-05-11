@@ -978,3 +978,103 @@ def remove_zombie_heartbeats_task() -> dict:
         time.sleep(1)
 
     return {"removed": removed, "skipped": skipped, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# At-cron wake sweep
+# ---------------------------------------------------------------------------
+
+
+# Look-ahead window for proactive wake scheduling. An at-cron firing more than
+# this far in the future doesn't need a wake task yet — the next sweep will
+# pick it up. Bounding the window keeps QStash scheduled-task count proportional
+# to imminent work rather than the tenant's full reminder queue.
+_AT_WAKE_LOOKAHEAD_SECONDS = 2 * 60 * 60  # 2 hours
+
+
+def ensure_at_cron_wakes_task() -> dict:
+    """Backstop wake scheduling for one-off ``kind:"at"`` crons.
+
+    Background: Django only schedules ``wake_for_cron`` tasks via
+    ``hibernate_idle_tenants`` — i.e. when it cleanly hibernates a tenant.
+    For an ``at`` cron created mid-conversation, that path doesn't run
+    until the next hourly idle sweep, and even then only if the tenant is
+    actually idle. If the container goes down out-of-band (Azure replica
+    recycle, OOM, crash) between cron creation and fire time, the fire
+    is missed because nothing wakes the tenant.
+
+    This task runs every 5 minutes. For each active tenant on the
+    postgres-cron-canonical flow it asks the gateway for current
+    ``kind:"at"`` jobs, computes the fire time, and publishes a
+    ``wake_for_cron`` task idempotency-keyed on ``(tenant, fire_time_ms)``
+    so duplicates collapse. Hibernated tenants are skipped — the
+    hibernation snapshot path already covers them.
+
+    Worst-case window: 5 minutes between cron creation and wake
+    registration. Acceptable for ``at`` reminders, which typically have
+    horizons of minutes-to-hours; a sub-5-minute reminder is firing while
+    the user is still in conversation and the container is awake anyway.
+    """
+    import logging
+    import time as _time
+
+    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
+    from apps.cron.pending_at_views import _at_fires_at_ms
+    from apps.cron.publish import publish_task
+    from apps.orchestrator.hibernation import _CRON_WAKE_LEAD_SECONDS
+    from apps.orchestrator.services import _extract_cron_jobs
+    from apps.tenants.models import Tenant
+
+    logger = logging.getLogger(__name__)
+
+    now_ms = int(_time.time() * 1000)
+    cutoff_ms = now_ms + _AT_WAKE_LOOKAHEAD_SECONDS * 1000
+    totals = {"tenants": 0, "scheduled": 0, "errors": 0, "skipped": 0}
+
+    tenants = (
+        Tenant.objects.filter(status="active")
+        .exclude(container_fqdn="")
+        .exclude(hibernated_at__isnull=False)  # hibernated path is owned by hibernate_idle_tenants
+        .select_related("user")
+    )
+    for tenant in tenants:
+        totals["tenants"] += 1
+        try:
+            list_result = invoke_gateway_tool(tenant, "cron.list", {})
+        except GatewayError:
+            totals["skipped"] += 1
+            continue
+
+        # Iterate the raw gateway response — we don't need the dashboard
+        # decoration from ``_extract_at_jobs``, just fire times.
+        for job in _extract_cron_jobs(list_result) or []:
+            if not isinstance(job, dict):
+                continue
+            schedule = job.get("schedule")
+            if not isinstance(schedule, dict) or schedule.get("kind") != "at":
+                continue
+            if job.get("enabled") is False:
+                continue
+            fires_at_ms = _at_fires_at_ms(job)
+            if not isinstance(fires_at_ms, int):
+                continue
+            if fires_at_ms <= now_ms or fires_at_ms > cutoff_ms:
+                continue
+            delay = max(60, (fires_at_ms - now_ms) // 1000 - _CRON_WAKE_LEAD_SECONDS)
+            try:
+                publish_task(
+                    "wake_for_cron",
+                    str(tenant.id),
+                    delay_seconds=delay,
+                    idempotency_key=f"wake-cron-{tenant.id}-{fires_at_ms}",
+                )
+                totals["scheduled"] += 1
+            except Exception:
+                logger.exception(
+                    "ensure_at_cron_wakes: publish_task failed for tenant %s",
+                    str(tenant.id)[:8],
+                )
+                totals["errors"] += 1
+
+    logger.info("ensure_at_cron_wakes: %s", totals)
+    return totals

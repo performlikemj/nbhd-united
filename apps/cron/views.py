@@ -104,6 +104,11 @@ TASK_MAP = {
     # Postgres-canonical cron cutover — derived view of CronJob rows
     "regenerate_tenant_crons": "apps.orchestrator.tasks.regenerate_tenant_crons_task",
     "reconcile_tenant_crons": "apps.orchestrator.tasks.reconcile_tenant_crons_task",
+    # At-cron wake sweep — backstop wake scheduling for one-off kind:"at"
+    # crons. The hibernation path only schedules wakes for tenants Django
+    # is actively hibernating; this sweep covers out-of-band container
+    # restarts between cron creation and fire time.
+    "ensure_at_cron_wakes": "apps.orchestrator.tasks.ensure_at_cron_wakes_task",
     # Welcome-cron watchdog — daily fleet-wide reconcile for missing or
     # stale Fuel/Gravity welcome crons. Closes the gap when both the
     # deploy backfill and the live toggle path fail to deliver.
