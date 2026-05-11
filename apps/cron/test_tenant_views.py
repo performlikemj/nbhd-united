@@ -246,14 +246,17 @@ class HiddenSystemCronsTest(TestCase):
         # Infrastructure crons are hidden
         self.assertNotIn("Background Tasks", names)
         self.assertNotIn("Heartbeat Check-in", names)
-        # Core data-unearthing crons are also hidden — they're a product
-        # feature, not a user preference.
-        self.assertNotIn("Evening Check-in", names)
+        # Personal Question is a core unearthing task — timing is governed by
+        # tenant.heartbeat_start_hour, so the user already controls *when*
+        # without owning the cron row itself.
         self.assertNotIn("Personal Question", names)
-        # User-controllable system crons still appear
+        # User-controllable system crons still appear — including Evening
+        # Check-in, whose 21:00 schedule is hard-coded and which the user
+        # has a legitimate need to retime or pause.
         self.assertIn("Morning Briefing", names)
+        self.assertIn("Evening Check-in", names)
         self.assertIn("Week Ahead Review", names)
-        self.assertEqual(len(names), 2)
+        self.assertEqual(len(names), 3)
 
     def test_delete_blocked_for_system_crons(self):
         resp = self.client.delete("/api/v1/cron-jobs/Background Tasks/")
@@ -567,11 +570,16 @@ class HiddenCronHelperTest(SimpleTestCase):
         self.assertTrue(_is_hidden_cron("Project Check-in"))
 
     def test_core_unearthing_crons_are_hidden(self):
-        # Evening Check-in actively asks for missing energy/mood; Personal
-        # Question pursues one long-term-memory gap per day. Both are
-        # core product behavior, not user-tunable schedules.
-        self.assertTrue(_is_hidden_cron("Evening Check-in"))
+        # Personal Question pursues one long-term-memory gap per day. Its
+        # timing is governed by tenant.heartbeat_start_hour, so the user
+        # already controls *when* without owning the cron row.
         self.assertTrue(_is_hidden_cron("Personal Question"))
+
+    def test_evening_checkin_is_visible(self):
+        # Evening Check-in's 21:00 schedule is hard-coded; the user has a
+        # legitimate need to retime or pause it. Until the schedule is
+        # wired to a tenant field, it stays in the user-editable cron list.
+        self.assertFalse(_is_hidden_cron("Evening Check-in"))
 
     def test_sync_prefix_jobs_are_hidden(self):
         self.assertTrue(_is_hidden_cron("_sync:Morning Briefing"))
@@ -893,11 +901,10 @@ class PostgresCanonicalWriteTest(TestCase):
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_hidden_crons_do_not_count_toward_user_quota(self, mock_invoke):
-        """Personal Question, Evening Check-in, and other hidden system crons
-        must not consume the user's MAX_CRON_JOBS slots — otherwise a tenant
-        with all five hidden system crons (Background Tasks, Heartbeat,
-        Project, Evening, Personal) would only have 5 user-creatable slots
-        left instead of 10.
+        """Personal Question and infrastructure crons must not consume the
+        user's MAX_CRON_JOBS slots — otherwise a tenant with all hidden
+        system crons (Background Tasks, Heartbeat, Project, Personal) would
+        have 4 slots silently consumed.
         """
         from apps.cron.models import CronJob, CronJobSource
 
@@ -912,7 +919,6 @@ class PostgresCanonicalWriteTest(TestCase):
             )
         for hidden in (
             "Background Tasks",
-            "Evening Check-in",
             "Heartbeat Check-in",
             "Personal Question",
             "Project Check-in",
@@ -923,8 +929,8 @@ class PostgresCanonicalWriteTest(TestCase):
                 data={"name": hidden},
                 source=CronJobSource.SYSTEM,
             )
-        # Sanity: 14 total rows but only 9 should be visible.
-        self.assertEqual(CronJob.objects.filter(tenant=self.tenant).count(), 14)
+        # Sanity: 13 total rows but only 9 should be visible.
+        self.assertEqual(CronJob.objects.filter(tenant=self.tenant).count(), 13)
 
         # The 10th user cron must succeed — hidden crons don't consume slots.
         resp = self.client.post(
