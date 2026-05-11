@@ -12,6 +12,7 @@ import { StatusPill } from "@/components/status-pill";
 import { Toast, useToast } from "@/components/toast";
 import TimezoneSelector from "@/components/timezone-selector";
 import { FeatureTipsSection } from "@/components/feature-tips-section";
+import { PendingRemindersSection } from "@/components/pending-reminders-section";
 import SessionModeSelector from "@/components/session-mode-selector";
 import { WorkingHoursSection } from "@/components/working-hours-section";
 import { CronJob } from "@/lib/types";
@@ -1131,6 +1132,8 @@ export default function SettingsCronJobsPage() {
           <p className="text-sm text-ink-muted">No scheduled tasks configured yet.</p>
         </SectionCard>
       )}
+
+      <PendingRemindersSection userTz={me?.timezone} />
     </div>
   );
 }

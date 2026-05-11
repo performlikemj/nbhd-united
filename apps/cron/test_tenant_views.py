@@ -1025,7 +1025,18 @@ class RegenerateTenantCronsTest(TestCase):
         self.tenant.postgres_cron_canonical = False
         self.tenant.save(update_fields=["postgres_cron_canonical"])
         result = regenerate_tenant_crons(self.tenant)
-        self.assertEqual(result, {"added": 0, "removed": 0, "unchanged": 0, "errors": 0})
+        self.assertEqual(
+            result,
+            {
+                "added": 0,
+                "removed": 0,
+                "unchanged": 0,
+                "errors": 0,
+                "stuck_reaped": 0,
+                "cap_reaped": 0,
+                "at_pending": 0,
+            },
+        )
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
     def test_adds_missing_jobs(self, mock_invoke):
@@ -1088,6 +1099,293 @@ class RegenerateTenantCronsTest(TestCase):
         mock_invoke.side_effect = lambda tenant, tool, args: {"details": {"jobs": []}} if tool == "cron.list" else None
         result = regenerate_tenant_crons(self.tenant)
         self.assertEqual(result["added"], 0)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_leaves_at_kind_alone(self, mock_invoke):
+        """``kind:"at"`` one-shots are unmanaged — the gateway auto-deletes
+        them on success, so the reconciler must not race that."""
+        import time
+
+        from apps.orchestrator.cron_reconcile import regenerate_tenant_crons
+
+        future_ms = int(time.time() * 1000) + 60 * 60 * 1000  # 1h from now
+        mock_invoke.side_effect = lambda tenant, tool, args: (
+            {
+                "details": {
+                    "jobs": [
+                        {
+                            "name": "Take out laundry",
+                            "id": "at-1",
+                            "schedule": {"kind": "at", "at": "2030-01-01T00:00:00Z"},
+                            "state": {"nextRunAtMs": future_ms},
+                            "enabled": True,
+                        }
+                    ]
+                }
+            }
+            if tool == "cron.list"
+            else None
+        )
+        result = regenerate_tenant_crons(self.tenant)
+        self.assertEqual(result["removed"], 0)
+        self.assertEqual(result["stuck_reaped"], 0)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_reaps_past_due_at_cron(self, mock_invoke):
+        """Past-due ``at`` jobs older than the grace window get reaped by
+        the janitor — covers crashed-mid-fire and slept-through-fire cases."""
+        import time
+
+        from apps.orchestrator.cron_reconcile import regenerate_tenant_crons
+
+        stale_ms = int(time.time() * 1000) - 2 * 60 * 60 * 1000  # 2h ago
+        calls: list[tuple[str, dict]] = []
+
+        def _stub(tenant, tool, args):
+            calls.append((tool, args))
+            if tool == "cron.list":
+                return {
+                    "details": {
+                        "jobs": [
+                            {
+                                "name": "Forgotten reminder",
+                                "id": "at-stale",
+                                "schedule": {"kind": "at", "at": "2024-01-01T00:00:00Z"},
+                                "state": {"nextRunAtMs": stale_ms},
+                                "enabled": True,
+                            }
+                        ]
+                    }
+                }
+            return None
+
+        mock_invoke.side_effect = _stub
+        result = regenerate_tenant_crons(self.tenant)
+        self.assertEqual(result["stuck_reaped"], 1)
+        self.assertEqual(result["removed"], 0)
+        # Ensure the janitor actually issued cron.remove with the job id.
+        remove_calls = [c for c in calls if c[0] == "cron.remove"]
+        self.assertEqual(len(remove_calls), 1)
+        self.assertEqual(remove_calls[0][1], {"jobId": "at-stale"})
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_fresh_at_cron_not_reaped(self, mock_invoke):
+        """An ``at`` job that hasn't fired yet must not be reaped by the
+        janitor even though it has no corresponding Postgres row."""
+        import time
+
+        from apps.orchestrator.cron_reconcile import regenerate_tenant_crons
+
+        future_ms = int(time.time() * 1000) + 20 * 60 * 1000  # 20m from now
+        mock_invoke.side_effect = lambda tenant, tool, args: (
+            {
+                "details": {
+                    "jobs": [
+                        {
+                            "name": "Drink water",
+                            "id": "at-fresh",
+                            "schedule": {"kind": "at", "at": "2030-01-01T00:00:00Z"},
+                            "state": {"nextRunAtMs": future_ms},
+                            "enabled": True,
+                        }
+                    ]
+                }
+            }
+            if tool == "cron.list"
+            else None
+        )
+        result = regenerate_tenant_crons(self.tenant)
+        self.assertEqual(result["removed"], 0)
+        self.assertEqual(result["stuck_reaped"], 0)
+
+    def test_is_past_due_at_cron_parses_iso_fallback(self):
+        """If ``state.nextRunAtMs`` is missing, the janitor falls back to
+        parsing ``schedule.at`` directly."""
+        import time
+
+        from apps.orchestrator.cron_reconcile import _is_past_due_at_cron
+
+        now_ms = int(time.time() * 1000)
+        stale_job = {
+            "name": "iso-stale",
+            "schedule": {"kind": "at", "at": "2020-01-01T00:00:00Z"},
+        }
+        fresh_job = {
+            "name": "iso-fresh",
+            "schedule": {"kind": "at", "at": "2099-01-01T00:00:00Z"},
+        }
+        not_an_at_job = {
+            "name": "recurring",
+            "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": "UTC"},
+        }
+        self.assertTrue(_is_past_due_at_cron(stale_job, now_ms))
+        self.assertFalse(_is_past_due_at_cron(fresh_job, now_ms))
+        self.assertFalse(_is_past_due_at_cron(not_an_at_job, now_ms))
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_hard_cap_logs_but_does_not_reap(self, mock_invoke):
+        """At 51+ pending at-crons: log a PlatformIssueLog, no reaping —
+        respect the user's queued intent."""
+        import time
+
+        from apps.orchestrator.cron_reconcile import _AT_CRON_HARD_CAP, regenerate_tenant_crons
+        from apps.platform_logs.models import PlatformIssueLog
+
+        future_ms = int(time.time() * 1000) + 60 * 60 * 1000
+        jobs = [
+            {
+                "name": f"reminder-{i}",
+                "id": f"at-{i}",
+                "schedule": {"kind": "at", "at": "2099-01-01T00:00:00Z"},
+                "state": {"nextRunAtMs": future_ms + i},
+                "createdAtMs": 1_700_000_000_000 + i,
+                "enabled": True,
+            }
+            for i in range(_AT_CRON_HARD_CAP + 5)  # 55 pending
+        ]
+        mock_invoke.side_effect = lambda tenant, tool, args: (
+            {"details": {"jobs": jobs}} if tool == "cron.list" else None
+        )
+        result = regenerate_tenant_crons(self.tenant)
+        self.assertEqual(result["cap_reaped"], 0)
+        self.assertEqual(result["at_pending"], _AT_CRON_HARD_CAP + 5)
+        log = PlatformIssueLog.objects.get(
+            tenant=self.tenant, category=PlatformIssueLog.Category.RATE_LIMIT
+        )
+        self.assertEqual(log.severity, PlatformIssueLog.Severity.MEDIUM)
+        self.assertFalse(log.resolved)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_catastrophic_cap_reaps_newest_first(self, mock_invoke):
+        """At 200+ pending at-crons: reap newest-first back to 200 and
+        log severity HIGH. The user's older queue is preserved."""
+        import time
+
+        from apps.orchestrator.cron_reconcile import (
+            _AT_CRON_CATASTROPHIC_CAP,
+            regenerate_tenant_crons,
+        )
+        from apps.platform_logs.models import PlatformIssueLog
+
+        future_ms = int(time.time() * 1000) + 60 * 60 * 1000
+        excess = 7
+        jobs = [
+            {
+                "name": f"reminder-{i}",
+                "id": f"at-{i}",
+                "schedule": {"kind": "at", "at": "2099-01-01T00:00:00Z"},
+                "state": {"nextRunAtMs": future_ms + i},
+                # ``createdAtMs`` ascends with i — so the highest-i jobs are newest.
+                "createdAtMs": 1_700_000_000_000 + i,
+                "enabled": True,
+            }
+            for i in range(_AT_CRON_CATASTROPHIC_CAP + excess)
+        ]
+        remove_calls: list[str] = []
+
+        def _stub(tenant, tool, args):
+            if tool == "cron.list":
+                return {"details": {"jobs": jobs}}
+            if tool == "cron.remove":
+                remove_calls.append(args["jobId"])
+            return None
+
+        mock_invoke.side_effect = _stub
+        result = regenerate_tenant_crons(self.tenant)
+        self.assertEqual(result["cap_reaped"], excess)
+        # Reaped ids are the newest (highest indices).
+        expected_reaped = {
+            f"at-{i}"
+            for i in range(
+                _AT_CRON_CATASTROPHIC_CAP, _AT_CRON_CATASTROPHIC_CAP + excess
+            )
+        }
+        self.assertEqual(set(remove_calls), expected_reaped)
+        log = PlatformIssueLog.objects.get(
+            tenant=self.tenant, category=PlatformIssueLog.Category.RATE_LIMIT
+        )
+        self.assertEqual(log.severity, PlatformIssueLog.Severity.HIGH)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_cap_breach_log_is_deduped(self, mock_invoke):
+        """A pre-existing unresolved RATE_LIMIT log suppresses re-logging
+        — the existing entry IS the still-ongoing marker."""
+        import time
+
+        from apps.orchestrator.cron_reconcile import _AT_CRON_HARD_CAP, regenerate_tenant_crons
+        from apps.platform_logs.models import PlatformIssueLog
+
+        PlatformIssueLog.objects.create(
+            tenant=self.tenant,
+            category=PlatformIssueLog.Category.RATE_LIMIT,
+            severity=PlatformIssueLog.Severity.MEDIUM,
+            tool_name="cron.add",
+            summary="prior breach",
+        )
+        future_ms = int(time.time() * 1000) + 60 * 60 * 1000
+        jobs = [
+            {
+                "name": f"reminder-{i}",
+                "id": f"at-{i}",
+                "schedule": {"kind": "at", "at": "2099-01-01T00:00:00Z"},
+                "state": {"nextRunAtMs": future_ms + i},
+                "createdAtMs": 1_700_000_000_000 + i,
+                "enabled": True,
+            }
+            for i in range(_AT_CRON_HARD_CAP + 5)
+        ]
+        mock_invoke.side_effect = lambda tenant, tool, args: (
+            {"details": {"jobs": jobs}} if tool == "cron.list" else None
+        )
+        regenerate_tenant_crons(self.tenant)
+        self.assertEqual(
+            PlatformIssueLog.objects.filter(
+                tenant=self.tenant, category=PlatformIssueLog.Category.RATE_LIMIT
+            ).count(),
+            1,
+        )
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_resolved_log_does_not_block_new_breach(self, mock_invoke):
+        """If the prior cap-breach log was resolved, a new breach should
+        create a fresh entry — the resolved log is no longer the active
+        marker."""
+        import time
+
+        from apps.orchestrator.cron_reconcile import _AT_CRON_HARD_CAP, regenerate_tenant_crons
+        from apps.platform_logs.models import PlatformIssueLog
+
+        PlatformIssueLog.objects.create(
+            tenant=self.tenant,
+            category=PlatformIssueLog.Category.RATE_LIMIT,
+            severity=PlatformIssueLog.Severity.MEDIUM,
+            tool_name="cron.add",
+            summary="prior breach",
+            resolved=True,
+        )
+        future_ms = int(time.time() * 1000) + 60 * 60 * 1000
+        jobs = [
+            {
+                "name": f"reminder-{i}",
+                "id": f"at-{i}",
+                "schedule": {"kind": "at", "at": "2099-01-01T00:00:00Z"},
+                "state": {"nextRunAtMs": future_ms + i},
+                "createdAtMs": 1_700_000_000_000 + i,
+                "enabled": True,
+            }
+            for i in range(_AT_CRON_HARD_CAP + 5)
+        ]
+        mock_invoke.side_effect = lambda tenant, tool, args: (
+            {"details": {"jobs": jobs}} if tool == "cron.list" else None
+        )
+        regenerate_tenant_crons(self.tenant)
+        self.assertEqual(
+            PlatformIssueLog.objects.filter(
+                tenant=self.tenant,
+                category=PlatformIssueLog.Category.RATE_LIMIT,
+            ).count(),
+            2,
+        )
 
 
 class RuntimeContainerStartedTest(TestCase):

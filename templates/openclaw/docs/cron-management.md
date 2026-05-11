@@ -49,7 +49,16 @@ job: system crons, user-created reminders, everything.
 instructs. Do not assume normal memory hooks will cover it — they will not, and the
 Journal app will be empty if you skip the explicit calls.
 
-## Creating a task
+## Two flavours of scheduling
+
+Pick the right shape for the user's intent:
+
+- **Recurring task** — repeats on a pattern ("every weekday at 8am", "every Monday morning"). Use `schedule: {kind: "cron", expr: "...", tz: "..."}`. Counts toward the 10-task cap. Requires explicit approval before creation.
+- **One-off reminder** — fires once at a specific moment ("remind me in 20 minutes", "ping me at 4pm today", "tomorrow morning"). Use `schedule: {kind: "at", at: "..."}`. Does NOT count toward the 10-task cap. Auto-deletes after firing. Lighter approval — confirm in text, no buttons needed.
+
+If the user's request is ambiguous, ask: *"Is this a one-time reminder or something you want me to repeat?"*
+
+## Creating a recurring task
 
 1. Call `cron list` — check for duplicates first
 2. Present a draft with approval buttons:
@@ -64,27 +73,62 @@ Journal app will be empty if you skip the explicit calls.
    ```
 3. Only call `cron add` after the user approves
 4. Use these parameters for user-created crons:
+   - `schedule: {kind: "cron", expr: <5-field expr>, tz: <userTimezone>}`
    - `sessionTarget: "main"` — runs in the main session so you have conversation context
    - `delivery: {mode: "none"}` — do NOT use `announce` with `sessionTarget: main`
    - `payload.kind: "agentTurn"` — you run a full turn: read context, decide what to say, call `nbhd_send_to_user`
    - `payload.text`: the instruction for what the cron should do (include ALL intended actions — the conversation that created the cron may not be in active context when it fires)
 5. **Always deliver via `nbhd_send_to_user`** in the cron prompt, never via `delivery: {mode: "announce"}` or the native `message` tool
 
+## Creating a one-off reminder
+
+For one-time reminders, skip the buttons and just confirm in text:
+
+> "Sure — I'll remind you to take out the laundry in 20 minutes. ✓"
+
+Then call `cron add` with:
+
+- `name`: a short descriptive label (does not need to be unique — two "Drink water" reminders are fine)
+- `schedule: {kind: "at", at: "<value>"}` where `<value>` is either:
+  - A relative duration: `"20m"`, `"2h"`, `"1d"` (preferred for "in N minutes/hours" requests)
+  - An ISO 8601 timestamp with explicit timezone: `"2026-05-12T16:00:00-04:00"` — **always include the offset**, never bare `"2026-05-12T16:00:00"` (the gateway treats no-offset timestamps as UTC, which is almost never what the user meant)
+- `sessionTarget: "main"` — so you have conversation context when it fires
+- `delivery: {mode: "none"}`
+- `payload: {kind: "agentTurn", message: "<what to do when this fires>"}` — phrase the message as an instruction to your future self, including everything the future-you needs to know (the original chat won't be in active context)
+
+The gateway auto-deletes one-off crons after they fire successfully — no cleanup needed from your side. If you need to cancel one before it fires, use `cron remove <name>`.
+
+### One-off caps (anti-abuse)
+
+Before adding a one-off, call `cron list` and count jobs with `schedule.kind == "at"`:
+
+- **20 pending one-offs** is the per-tenant ceiling you must respect. At or above this, decline politely: *"You have a lot of pending reminders already — want me to cancel some first, or wait until a few fire?"*
+- Avoid creating bursts (e.g. "remind me every 5 minutes for the next 2 hours" should be a recurring `every` schedule, not 24 separate `at` jobs)
+
+The platform also enforces hard backstops you should never reach: a logged
+warning at 50 pending one-offs, and automatic reaping of the newest crons
+back to 200 if the count somehow climbs that high. These are abuse
+detectors — operating in their range means you have stopped following the
+soft cap above.
+
 ## Editing or disabling
 
 - Always explain what you're changing and why before doing it
-- Present changes with approve/reject buttons
+- Present changes with approve/reject buttons (for recurring tasks)
 - Never silently modify or disable a user's tasks
+- One-off reminders are typically not edited — just cancel and create a new one
 
 ## Timezone
 
 - Always use `userTimezone` from your config
 - Never default to UTC — if unknown, ask the user
+- For `kind: "at"` ISO timestamps, include an explicit offset matching the user's timezone
 
 ## Hard limits
 
-- Max 10 scheduled tasks per account (4 system tasks count toward this)
-- If at the limit, tell the user and suggest removing one first
+- Max 10 **recurring** scheduled tasks per account (4 system tasks count toward this). One-off `kind:"at"` reminders do NOT count.
+- Soft cap: 20 concurrent one-off reminders. If hit, ask the user before adding more.
+- If at the recurring limit, tell the user and suggest removing one first
 
 ## System tasks (do NOT recreate, delete, or disable)
 
