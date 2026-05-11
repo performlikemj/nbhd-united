@@ -776,15 +776,31 @@ def create_container_app(
                             # NODE_OPTIONS must be set explicitly here because
                             # Container Apps caches Dockerfile ENV on first
                             # provisioning and never re-reads it on image
-                            # updates. The --require loads a targeted handler
-                            # for OpenClaw's chmod EPERM on root-owned volumes.
+                            # updates. Keep this value in sync with the
+                            # `Dockerfile.openclaw` ENV NODE_OPTIONS — if a
+                            # new --require is added there, mirror it here.
+                            #
+                            # Note: `apply_single_tenant_config_task` and
+                            # `update_container_image` do NOT rewrite env
+                            # vars, so changes here only affect newly
+                            # provisioned tenants. Existing tenants need a
+                            # one-shot ops update if you change this.
+                            #
+                            # --require shims:
+                            #   suppress-chmod-eperm.js → swallows chmod EPERM
+                            #     on root-owned Azure volume mounts (essential
+                            #     for cron firing in 2026.5.7+).
+                            #   redact-stdout.js → wraps process.{stdout,
+                            #     stderr}.write to mask tenant content
+                            #     before it ships to shared Log Analytics.
                             {
                                 "name": "NODE_OPTIONS",
                                 "value": (
                                     "--max-old-space-size=512 "
                                     "--dns-result-order=ipv4first "
                                     "--no-network-family-autoselection "
-                                    "--require /opt/nbhd/suppress-chmod-eperm.js"
+                                    "--require /opt/nbhd/suppress-chmod-eperm.js "
+                                    "--require /opt/nbhd/redact-stdout.js"
                                 ),
                             },
                             # Disable mDNS/bonjour — useless on Container Apps
