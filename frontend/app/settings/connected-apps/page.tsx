@@ -143,13 +143,11 @@ function EmptyState({ onConnect }: { onConnect: () => void }) {
 function Modal({
   open,
   onClose,
-  closable,
   children,
   labelledBy,
 }: {
   open: boolean;
   onClose: () => void;
-  closable: boolean;
   children: React.ReactNode;
   labelledBy: string;
 }) {
@@ -158,18 +156,15 @@ function Modal({
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && closable) {
-        onClose();
-      }
+      if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", handler);
-    // Focus first focusable element inside the modal
     const first = containerRef.current?.querySelector<HTMLElement>(
-      "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])",
+      "button:not([data-modal-close]), [href], input, select, textarea, [tabindex]:not([tabindex='-1'])",
     );
     first?.focus();
     return () => window.removeEventListener("keydown", handler);
-  }, [open, closable, onClose]);
+  }, [open, onClose]);
 
   if (!open) return null;
 
@@ -179,7 +174,7 @@ function Modal({
       role="dialog"
       aria-modal="true"
       aria-labelledby={labelledBy}
-      onClick={() => closable && onClose()}
+      onClick={onClose}
     >
       <div className="absolute inset-0 bg-overlay backdrop-blur-md" aria-hidden="true" />
       <div
@@ -187,6 +182,15 @@ function Modal({
         onClick={(e) => e.stopPropagation()}
         className="glass-card-horizons relative w-full max-w-lg rounded-xl p-6 shadow-panel animate-reveal sm:p-8"
       >
+        <button
+          type="button"
+          data-modal-close
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute right-3 top-3 z-10 flex min-h-[44px] min-w-[44px] items-center justify-center rounded-full bg-surface/80 text-ink-muted backdrop-blur-md transition hover:bg-surface-hover hover:text-ink sm:right-4 sm:top-4"
+        >
+          <span aria-hidden="true">✕</span>
+        </button>
         {children}
       </div>
     </div>
@@ -286,17 +290,17 @@ function ConnectAppModal({ open, onClose }: { open: boolean; onClose: () => void
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);
     } catch {
-      setErrorMsg("Couldn't copy automatically. Select the token and copy manually.");
+      setErrorMsg(
+        "Couldn't copy automatically. Click inside the token field above and press ⌘C (or Ctrl+C) to copy it.",
+      );
     }
   };
 
-  const closable = step !== "reveal" || copied;
-
   return (
-    <Modal open={open} onClose={onClose} closable={closable} labelledBy="connect-app-title">
+    <Modal open={open} onClose={onClose} labelledBy="connect-app-title">
       {step === "preset" ? (
         <>
-          <h2 id="connect-app-title" className="font-headline text-xl font-bold text-ink">
+          <h2 id="connect-app-title" className="font-headline text-xl font-bold text-ink pr-10">
             Connect an app
           </h2>
           <p className="mt-1 text-sm text-ink-muted">
@@ -338,7 +342,7 @@ function ConnectAppModal({ open, onClose }: { open: boolean; onClose: () => void
 
       {step === "form" ? (
         <>
-          <h2 id="connect-app-title" className="font-headline text-xl font-bold text-ink">
+          <h2 id="connect-app-title" className="font-headline text-xl font-bold text-ink pr-10">
             {preset === "yardtalk" ? "Connect YardTalk" : "Connect a custom app"}
           </h2>
           <p className="mt-1 text-sm text-ink-muted">
@@ -456,7 +460,7 @@ function ConnectAppModal({ open, onClose }: { open: boolean; onClose: () => void
 
       {step === "reveal" && minted ? (
         <>
-          <h2 id="connect-app-title" className="font-headline text-xl font-bold text-ink">
+          <h2 id="connect-app-title" className="font-headline text-xl font-bold text-ink pr-10">
             Save your token
           </h2>
           <p className="mt-1 text-sm text-rose-text">
@@ -506,10 +510,9 @@ function ConnectAppModal({ open, onClose }: { open: boolean; onClose: () => void
             <button
               type="button"
               onClick={onClose}
-              disabled={!copied}
-              className="glow-purple rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px]"
+              className="glow-purple rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-[0.98] min-h-[44px]"
             >
-              {copied ? "I've saved it" : "Copy first"}
+              I&apos;ve saved it
             </button>
           </div>
         </>
@@ -577,8 +580,8 @@ function RevokeConfirmModal({
   };
 
   return (
-    <Modal open={true} onClose={onClose} closable={!revoke.isPending} labelledBy="revoke-title">
-      <h2 id="revoke-title" className="font-headline text-xl font-bold text-ink">
+    <Modal open={true} onClose={onClose} labelledBy="revoke-title">
+      <h2 id="revoke-title" className="font-headline text-xl font-bold text-ink pr-10">
         Revoke this token?
       </h2>
       <p className="mt-2 text-sm text-ink-muted">
@@ -596,8 +599,7 @@ function RevokeConfirmModal({
         <button
           type="button"
           onClick={onClose}
-          disabled={revoke.isPending}
-          className="rounded-full border border-border px-4 py-2 text-sm text-ink-muted transition hover:bg-surface-hover disabled:opacity-50 min-h-[36px]"
+          className="rounded-full border border-border px-4 py-2 text-sm text-ink-muted transition hover:bg-surface-hover min-h-[36px]"
         >
           Cancel
         </button>
