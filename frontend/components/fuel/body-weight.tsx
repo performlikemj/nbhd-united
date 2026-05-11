@@ -207,8 +207,7 @@ function DeleteConfirmDialog({
           <button
             type="button"
             onClick={onCancel}
-            disabled={isPending}
-            className="rounded-lg border border-border bg-transparent text-ink-muted min-h-[44px] px-4 py-2 text-sm font-medium hover:bg-surface-hover hover:text-ink transition disabled:opacity-50"
+            className="rounded-lg border border-border bg-transparent text-ink-muted min-h-[44px] px-4 py-2 text-sm font-medium hover:bg-surface-hover hover:text-ink transition"
           >
             Cancel
           </button>

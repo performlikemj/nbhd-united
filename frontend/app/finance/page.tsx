@@ -399,8 +399,7 @@ function ConfirmArchiveDialog({
           <button
             type="button"
             onClick={onCancel}
-            disabled={isPending}
-            className="inline-flex h-11 items-center justify-center rounded-lg border border-white/10 px-4 text-sm font-medium text-ink transition hover:border-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
+            className="inline-flex h-11 items-center justify-center rounded-lg border border-white/10 px-4 text-sm font-medium text-ink transition hover:border-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           >
             Cancel
           </button>
