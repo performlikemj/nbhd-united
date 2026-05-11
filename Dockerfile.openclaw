@@ -47,6 +47,7 @@ COPY agent-skills /opt/nbhd/agent-skills
 COPY templates/openclaw /opt/nbhd/templates/openclaw
 COPY runtime/openclaw/proxy.js /opt/nbhd/proxy.js
 COPY runtime/openclaw/suppress-chmod-eperm.js /opt/nbhd/suppress-chmod-eperm.js
+COPY runtime/openclaw/redact-stdout.js /opt/nbhd/redact-stdout.js
 COPY runtime/openclaw/claude-with-token.sh /opt/nbhd/claude-with-token.sh
 COPY runtime/openclaw/entrypoint.sh /usr/local/bin/nbhd-openclaw-entrypoint
 
@@ -55,11 +56,18 @@ RUN chmod +x /usr/local/bin/nbhd-openclaw-entrypoint /opt/nbhd/claude-with-token
 
 USER node
 
-# --require: load chmod EPERM/EACCES suppression before OpenClaw starts.
-# Two layers — fs.chmodSync monkey-patch (handles 2026.5.7+ sync throws;
-# essential for cron firing) AND the legacy plugin-SDK unhandledRejection
-# handler. See runtime/openclaw/suppress-chmod-eperm.js for the full why.
-ENV NODE_OPTIONS="${NODE_OPTIONS} --require /opt/nbhd/suppress-chmod-eperm.js"
+# --require: load shims before OpenClaw starts.
+#   1. suppress-chmod-eperm.js — chmod EPERM/EACCES suppression. Two
+#      layers: fs.chmodSync monkey-patch (handles 2026.5.7+ sync throws;
+#      essential for cron firing) AND legacy plugin-SDK unhandledRejection
+#      handler. See runtime/openclaw/suppress-chmod-eperm.js for full why.
+#   2. redact-stdout.js — tenant-content redaction on stdout/stderr.
+#      Required because openclaw@2026.5.7's gateway fast path skips
+#      enableConsoleCapture(), so console writes hit the streams un-
+#      redacted. Wraps process.{stdout,stderr}.write to mask known JSON
+#      content shapes (raw_params, "message":"...") and drop non-
+#      operational prose lines. See runtime/openclaw/redact-stdout.js.
+ENV NODE_OPTIONS="${NODE_OPTIONS} --require /opt/nbhd/suppress-chmod-eperm.js --require /opt/nbhd/redact-stdout.js"
 
 # Disable mDNS/bonjour — useless on Azure Container Apps (containers are
 # accessed via FQDN, not local network discovery) and causes intermittent

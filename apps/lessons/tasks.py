@@ -19,8 +19,17 @@ def dedup_lessons_task() -> dict:
     out = StringIO()
     call_command("dedup_lessons", stdout=out)
     output = out.getvalue()
-    logger.info("dedup_lessons_task: %s", output[-1000:])
-    return {"ok": True, "output_tail": output[-1000:]}
+    # `dedup_lessons` prints "Duplicate group (keeping: {lesson.text[:80]})"
+    # and "REMOVE: {dup.text[:80]}" lines that contain lesson text derived
+    # from user daily notes. Container logs ship to a shared workspace and
+    # task return values can surface in QStash dashboards / failure logs;
+    # keep tenant content out of both.
+    logger.info(
+        "dedup_lessons_task: completed (%d bytes, %d lines output)",
+        len(output),
+        output.count("\n"),
+    )
+    return {"ok": True, "output_bytes": len(output), "output_lines": output.count("\n")}
 
 
 def reseed_lessons_task() -> dict:

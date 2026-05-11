@@ -1094,6 +1094,65 @@ def _build_channels_config(tenant: Tenant) -> dict[str, Any]:
     return channels
 
 
+def _build_logging_config() -> dict[str, Any]:
+    """Tenant-content redaction patterns for OpenClaw's built-in `redactToolDetail`.
+
+    This is layer 1 of the redaction stack — patterns here run inside
+    `formatToolParamPreview`/`redactToolDetail` (openclaw@2026.5.7
+    `dist/redact-*.js` :: `resolveConfigRedaction` → `resolvePatterns`),
+    redacting JSON values inside the `raw_params={...}` / `effective_params=
+    {...}` blocks of `[tools] X failed: ...` error lines BEFORE they reach
+    stderr. The `runtime/openclaw/redact-stdout.js` sidecar is layer 2,
+    catching anything that bypasses this layer (notably bare assistant
+    reply text on stdout, since the gateway fast path skips
+    `enableConsoleCapture` — see memory
+    project_openclaw_gateway_skips_console_capture.md).
+
+    Upstream behavior to know:
+      - `resolvePatterns(value)` returns `value` if non-empty, else
+        `DEFAULT_REDACT_PATTERNS`. It does NOT merge — providing our own
+        list fully replaces the upstream auth/token defaults for this path.
+        We include a maintained subset of those defaults below so auth
+        tokens stay masked.
+      - Patterns are JS regex strings; OpenClaw compiles them via
+        `compileSafeRegex` with `gi` flags. The matched group is masked
+        via `maskToken` (first 6 + … + last 4 chars) when the value is
+        ≥18 chars, else `***`.
+
+    Verify on every OpenClaw version bump: re-pull
+    `npm pack openclaw@<v>` and diff `DEFAULT_REDACT_PATTERNS` in
+    `dist/redact-*.js` against the auth subset below. See memory
+    reference_openclaw_source_extraction.md for the extraction recipe.
+    """
+    return {
+        "redactSensitive": "tools",
+        "redactPatterns": [
+            # ── NBHD content-field redaction (the actual leak being closed) ──
+            # Matches "message":"value" / "text":"value" / etc inside the
+            # tool-call raw_params or effective_params JSON. Captures the
+            # value group so it's the part that gets masked.
+            r'"(?:message|text|content|prompt|response|reply|body|caption|user_text|userText|assistantText)"\s*:\s*"((?:[^"\\]|\\.)*)"',
+            # ── Auth/secret subset from openclaw@2026.5.7 DEFAULT_REDACT_PATTERNS ──
+            # Maintained here because providing redactPatterns replaces the
+            # upstream defaults for the `redactToolDetail` path. Only the
+            # high-signal patterns are kept (tokens, bearer, well-known
+            # provider key prefixes); the long-tail provider patterns
+            # (npm_, hf_, r8_, etc.) are dropped to keep this list short —
+            # the layer-2 sidecar still catches anything that slips past.
+            r'"(?:apiKey|token|secret|password|passwd|accessToken|refreshToken)"\s*:\s*"([^"]+)"',
+            r"Authorization\s*[:=]\s*Bearer\s+([A-Za-z0-9._\-+=]+)",
+            r"\bBearer\s+([A-Za-z0-9._\-+=]{18,})\b",
+            r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+?-----END [A-Z ]*PRIVATE KEY-----",
+            r"\b(sk-[A-Za-z0-9_-]{8,})\b",
+            r"\b(ghp_[A-Za-z0-9]{20,})\b",
+            r"\b(github_pat_[A-Za-z0-9_]{20,})\b",
+            r"\b(xox[baprs]-[A-Za-z0-9-]{10,})\b",
+            r"\b(AIza[0-9A-Za-z\-_]{20,})\b",
+            r"\bbot(\d{6,}:[A-Za-z0-9_-]{20,})\b",
+        ],
+    }
+
+
 def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     """Generate a complete openclaw.json for a tenant's container.
 
@@ -1301,6 +1360,8 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         },
         # Cron runtime settings (job definitions seeded via Gateway API)
         "cron": {"enabled": True},
+        # Layer-1 log redaction — see _build_logging_config docstring.
+        "logging": _build_logging_config(),
     }
 
     # Note: BRAVE_API_KEY is injected as a container env var via Key Vault
