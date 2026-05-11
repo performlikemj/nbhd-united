@@ -51,6 +51,20 @@ class ToolPolicyTest(TestCase):
         self.assertIn("deny", config)
         self.assertIn("elevated", config)
 
+    def test_web_fetch_ssrf_pins_private_network_block(self):
+        """SSRF guard must explicitly disallow private networks.
+
+        On Container Apps Consumption the MI token endpoint is served at
+        localhost (127.0.0.1) — without this pin a future upstream change
+        to the default could silently expose KV-token theft via a private-
+        network fetch.
+        """
+        config = generate_tool_config("starter")
+        self.assertEqual(
+            config["web"]["fetch"]["ssrf"]["allowPrivateNetwork"],
+            False,
+        )
+
 
 class VersionAwareToolPolicyTest(TestCase):
     """Tool policy must vary by OpenClaw version."""

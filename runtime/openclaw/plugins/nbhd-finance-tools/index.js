@@ -1,3 +1,6 @@
+import { wrapTool } from "../../tool-logger.js";
+const wrap = (def) => wrapTool(def, { plugin: "nbhd-finance-tools" });
+
 /**
  * NBHD Finance Tools Plugin
  *
@@ -122,8 +125,7 @@ function financePath(api, suffix) {
 
 export default function register(api) {
   // ── Add Account ──────────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_finance_add_account",
       description:
         "Add or update a financial account (debt or savings). If an account with the same nickname already exists, it will be updated. Use for tracking credit cards, loans, savings accounts, etc.",
@@ -187,13 +189,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── List Accounts ────────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_finance_list_accounts",
       description:
         "List financial accounts with current balances, interest rates, and payment info. By default returns only active accounts. Set archived_only=true to see accounts the user has archived (so they can restore one), or include_archived=true to see everything.",
@@ -228,13 +229,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Record Payment ───────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_finance_record_payment",
       description:
         "Record a payment toward an account. Automatically updates the account balance. Fuzzy-matches account by nickname.",
@@ -283,13 +283,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Update Balance ───────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_finance_update_balance",
       description:
         'Directly update an account\'s current balance. Use when the user reports a new statement balance, e.g. "my Chase card is now $3,800".',
@@ -320,13 +319,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Archive Account ──────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_finance_archive_account",
       description:
         "Archive a financial account. Hides it from the Gravity dashboard and removes it from debt totals and payoff calculations, while preserving the record and its transaction history. Use this when the user has a duplicate, stale, consolidated, or paid-off account they want out of their view. This is NOT a delete — the account can be restored later with nbhd_finance_unarchive_account. Fuzzy-matches account by nickname.",
@@ -352,13 +350,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Unarchive Account ────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_finance_unarchive_account",
       description:
         "Restore a previously archived financial account. It will reappear on the Gravity dashboard and be included in totals and payoff calculations again. If unsure of the exact nickname, call nbhd_finance_list_accounts with archived_only=true first. Returns an error if an active account already exists with the same nickname — in that case, rename the active one first.",
@@ -385,13 +382,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Calculate Payoff ─────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_finance_calculate_payoff",
       description:
         "Calculate and compare debt payoff strategies. If no strategy is specified, compares all three: snowball (smallest balance first), avalanche (highest interest first), and hybrid. Returns timelines, total interest, and month-by-month schedules. IMPORTANT: When the user chooses or confirms a strategy, ALWAYS set save=true so the plan appears on their Gravity dashboard. Only omit save when doing an initial comparison.",
@@ -433,13 +429,12 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 
   // ── Financial Summary ────────────────────────────────────────────────
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_finance_summary",
       description:
         "Get a complete financial overview: total debt, total savings, all account details, active payoff plan, and monthly minimums. Use this at the start of financial conversations for full context.",
@@ -455,7 +450,7 @@ export default function register(api) {
         });
         return renderPayload(payload);
       },
-    },
+    }),
     { optional: true },
   );
 }

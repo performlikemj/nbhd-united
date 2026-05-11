@@ -110,10 +110,22 @@ def generate_tool_config(tier: str = "starter", version: str = OPENCLAW_CURRENT_
         "elevated": {
             "enabled": False,
         },
-        # Keep web search explicitly enabled for deterministic behavior.
         "web": {
+            # Web search stays explicitly on.
             "search": {
                 "enabled": True,
+            },
+            # Pin SSRF policy for any tool that performs URL fetching.
+            # On Container Apps Consumption, the managed-identity token
+            # endpoint is served at localhost:42356 (IDENTITY_ENDPOINT)
+            # — covered by allowPrivateNetwork=False alongside link-
+            # local 169.254.x. OpenClaw's library default already
+            # blocks these, but we pin it so an upstream change can't
+            # silently regress it.
+            "fetch": {
+                "ssrf": {
+                    "allowPrivateNetwork": False,
+                },
             },
         },
     }

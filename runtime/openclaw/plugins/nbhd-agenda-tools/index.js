@@ -1,3 +1,6 @@
+import { wrapTool } from "../../tool-logger.js";
+const wrap = (def) => wrapTool(def, { plugin: "nbhd-agenda-tools" });
+
 /**
  * NBHD Agenda Tools Plugin (Phase D)
  *
@@ -97,8 +100,7 @@ export default function register(api) {
 
   api.logger.info("NBHD agenda tools plugin registered");
 
-  api.registerTool(
-    {
+  api.registerTool(wrap({
       name: "nbhd_record_commitment",
       description:
         "Record a future-aware commitment to follow up with the user about a topic. " +
@@ -160,7 +162,7 @@ export default function register(api) {
           surface_after: result?.surface_after,
         };
       },
-    },
+    }),
     { optional: true },
   );
 }

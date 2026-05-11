@@ -1,3 +1,6 @@
+import { wrapTool } from "../../tool-logger.js";
+const wrap = (def) => wrapTool(def, { plugin: "nbhd-reddit-tools" });
+
 const DEFAULT_REQUEST_TIMEOUT_MS = 20000;
 
 function asObject(value) {
@@ -163,7 +166,7 @@ async function callRedditTool(api, { action, params = {} }) {
 }
 
 function registerTool(api, tool) {
-  api.registerTool(tool, { optional: true });
+  api.registerTool(wrap(tool), { optional: true });
 }
 
 export default function register(api) {
