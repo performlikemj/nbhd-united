@@ -231,6 +231,7 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
         "stuck_reaped": 0,
         "cap_reaped": 0,
         "at_pending": 0,
+        "duplicates_reaped": 0,
     }
 
     if not getattr(tenant, "postgres_cron_canonical", False):
@@ -252,6 +253,67 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
         return summary
 
     current_jobs = _extract_cron_jobs(list_result) or []
+
+    # Pre-pass: reap same-name duplicates from the gateway. The historical
+    # reconciler diffed by name only — ``current_managed = {name: job}``
+    # silently collapses two jobs with the same name into one dict entry,
+    # so duplicates are invisible to the add/remove diff and accumulate
+    # indefinitely. Sources of dups include pre-Postgres-canonical SQLite
+    # state (the cutover backfilled Postgres but didn't clean OC's runtime),
+    # agent hallucinations during Phase 2 sync, or race conditions between
+    # parallel ``cron.add`` paths during boot. Keep the newest by
+    # ``createdAtMs`` (an agent-created refresh is more likely current than
+    # a stale 2026-04 entry) and remove the rest before the main diff so
+    # ``current_managed`` is clean for the to_add/to_remove logic below.
+    by_name: dict[str, list[dict]] = {}
+    for j in current_jobs:
+        if not isinstance(j, dict) or _is_unmanaged_cron(j):
+            continue
+        name = j.get("name") or ""
+        if name:
+            by_name.setdefault(name, []).append(j)
+
+    dup_ids_to_remove: list[tuple[str, str]] = []  # (name, gateway_id) pairs for logging
+    for name, jobs in by_name.items():
+        if len(jobs) <= 1:
+            continue
+        # Sort newest-first by createdAtMs (0 for missing → treated as oldest)
+        jobs.sort(key=lambda j: j.get("createdAtMs") or 0, reverse=True)
+        for dupe in jobs[1:]:
+            dup_id = dupe.get("id") or dupe.get("jobId") or ""
+            if dup_id:
+                dup_ids_to_remove.append((name, str(dup_id)))
+
+    if dup_ids_to_remove:
+        reaped_dup_ids: set[str] = set()
+        for name, dup_id in dup_ids_to_remove:
+            try:
+                invoke_gateway_tool(tenant, "cron.remove", {"jobId": dup_id})
+                summary["duplicates_reaped"] += 1
+                reaped_dup_ids.add(dup_id)
+                logger.info(
+                    "regenerate_tenant_crons: reaped duplicate '%s' (id %s, older copy) for tenant %s",
+                    name,
+                    dup_id[:12],
+                    tenant.id,
+                )
+            except GatewayError:
+                logger.warning(
+                    "regenerate_tenant_crons: cron.remove failed for duplicate %s on tenant %s",
+                    dup_id[:12],
+                    tenant.id,
+                    exc_info=True,
+                )
+                summary["errors"] += 1
+        # Rebuild current_jobs minus the just-removed dupes so the rest of
+        # the function sees a clean view (and the at-cron janitor below
+        # doesn't double-reap something we already removed).
+        current_jobs = [
+            j
+            for j in current_jobs
+            if isinstance(j, dict) and (j.get("id") or j.get("jobId") or "") not in reaped_dup_ids
+        ]
+
     current_managed = {j.get("name", ""): j for j in current_jobs if isinstance(j, dict) and not _is_unmanaged_cron(j)}
 
     to_add = [desired_by_name[n] for n in desired_by_name if n not in current_managed]
