@@ -36,10 +36,12 @@ class CronJobListCreateTest(TestCase):
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_list_cron_jobs(self, mock_invoke):
+        # Use two crons that remain user-visible (Evening Check-in is now
+        # hidden as a core data-unearthing task).
         mock_invoke.return_value = {
             "jobs": [
                 {"name": "Morning Briefing", "enabled": True},
-                {"name": "Evening Check-in", "enabled": True},
+                {"name": "Weekly Reflection", "enabled": True},
             ],
         }
         resp = self.client.get("/api/v1/cron-jobs/")
@@ -232,6 +234,7 @@ class HiddenSystemCronsTest(TestCase):
             "jobs": [
                 {"name": "Morning Briefing", "enabled": True},
                 {"name": "Evening Check-in", "enabled": True},
+                {"name": "Personal Question", "enabled": True},
                 {"name": "Background Tasks", "enabled": True},
                 {"name": "Heartbeat Check-in", "enabled": True},
                 {"name": "Week Ahead Review", "enabled": True},
@@ -240,11 +243,17 @@ class HiddenSystemCronsTest(TestCase):
         resp = self.client.get("/api/v1/cron-jobs/")
         self.assertEqual(resp.status_code, 200)
         names = [j["name"] for j in resp.json()["jobs"]]
+        # Infrastructure crons are hidden
         self.assertNotIn("Background Tasks", names)
         self.assertNotIn("Heartbeat Check-in", names)
-        # User-visible system crons should still appear
+        # Core data-unearthing crons are also hidden — they're a product
+        # feature, not a user preference.
+        self.assertNotIn("Evening Check-in", names)
+        self.assertNotIn("Personal Question", names)
+        # User-controllable system crons still appear
         self.assertIn("Morning Briefing", names)
-        self.assertEqual(len(names), 3)
+        self.assertIn("Week Ahead Review", names)
+        self.assertEqual(len(names), 2)
 
     def test_delete_blocked_for_system_crons(self):
         resp = self.client.delete("/api/v1/cron-jobs/Background Tasks/")
@@ -555,6 +564,14 @@ class HiddenCronHelperTest(SimpleTestCase):
     def test_named_system_jobs_are_hidden(self):
         self.assertTrue(_is_hidden_cron("Background Tasks"))
         self.assertTrue(_is_hidden_cron("Heartbeat Check-in"))
+        self.assertTrue(_is_hidden_cron("Project Check-in"))
+
+    def test_core_unearthing_crons_are_hidden(self):
+        # Evening Check-in actively asks for missing energy/mood; Personal
+        # Question pursues one long-term-memory gap per day. Both are
+        # core product behavior, not user-tunable schedules.
+        self.assertTrue(_is_hidden_cron("Evening Check-in"))
+        self.assertTrue(_is_hidden_cron("Personal Question"))
 
     def test_sync_prefix_jobs_are_hidden(self):
         self.assertTrue(_is_hidden_cron("_sync:Morning Briefing"))
@@ -872,6 +889,70 @@ class PostgresCanonicalWriteTest(TestCase):
             list(CronJob.objects.filter(tenant=self.tenant).values_list("name", flat=True)),
             ["c"],
         )
+        mock_invoke.assert_not_called()
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_hidden_crons_do_not_count_toward_user_quota(self, mock_invoke):
+        """Personal Question, Evening Check-in, and other hidden system crons
+        must not consume the user's MAX_CRON_JOBS slots — otherwise a tenant
+        with all five hidden system crons (Background Tasks, Heartbeat,
+        Project, Evening, Personal) would only have 5 user-creatable slots
+        left instead of 10.
+        """
+        from apps.cron.models import CronJob, CronJobSource
+
+        # 9 user crons + every hidden system cron. With hidden counting,
+        # this would be at-cap (or over) and the 10th user create would 409.
+        for i in range(9):
+            CronJob.objects.create(
+                tenant=self.tenant,
+                name=f"User Cron {i}",
+                data={"name": f"User Cron {i}"},
+                source=CronJobSource.USER,
+            )
+        for hidden in (
+            "Background Tasks",
+            "Evening Check-in",
+            "Heartbeat Check-in",
+            "Personal Question",
+            "Project Check-in",
+        ):
+            CronJob.objects.create(
+                tenant=self.tenant,
+                name=hidden,
+                data={"name": hidden},
+                source=CronJobSource.SYSTEM,
+            )
+        # Sanity: 14 total rows but only 9 should be visible.
+        self.assertEqual(CronJob.objects.filter(tenant=self.tenant).count(), 14)
+
+        # The 10th user cron must succeed — hidden crons don't consume slots.
+        resp = self.client.post(
+            "/api/v1/cron-jobs/",
+            {
+                "name": "User Cron 9",
+                "schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "UTC"},
+                "payload": {"kind": "agentTurn", "message": "hi"},
+                "delivery": {"mode": "none"},
+                "foreground": False,
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+
+        # And the 11th must 409 — proving the cap still works against visible.
+        resp_over = self.client.post(
+            "/api/v1/cron-jobs/",
+            {
+                "name": "User Cron 10",
+                "schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "UTC"},
+                "payload": {"kind": "agentTurn", "message": "hi"},
+                "delivery": {"mode": "none"},
+                "foreground": False,
+            },
+            format="json",
+        )
+        self.assertEqual(resp_over.status_code, 409, resp_over.content)
         mock_invoke.assert_not_called()
 
 

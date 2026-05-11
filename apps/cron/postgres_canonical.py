@@ -81,6 +81,7 @@ def _classify_source(name: str) -> str:
     if name in {
         "Morning Briefing",
         "Evening Check-in",
+        "Personal Question",
         "Weekly Reflection",
         "Week Ahead Review",
         "Project Check-in",
@@ -125,13 +126,17 @@ def create_job(tenant: Tenant, data: dict, *, max_visible: int = 10) -> tuple[di
     if not name:
         return {"detail": "Job name is required."}, status.HTTP_400_BAD_REQUEST
 
-    visible_count = (
-        CronJob.objects.filter(tenant=tenant)
-        .exclude(name__startswith="_sync:")
-        .exclude(name__startswith="_fuel:")
-        .exclude(name__in=["Background Tasks", "Heartbeat Check-in", "Project Check-in"])
-        .count()
-    )
+    # Derive the visible-count exclusion from tenant_views.HIDDEN_SYSTEM_CRONS
+    # so additions to the hidden set (e.g. core unearthing crons like Personal
+    # Question, Evening Check-in) automatically stop counting toward the cap.
+    from django.db.models import Q
+
+    from .tenant_views import HIDDEN_SYSTEM_CRON_PREFIXES, HIDDEN_SYSTEM_CRONS
+
+    hidden_q = Q(name__in=HIDDEN_SYSTEM_CRONS)
+    for prefix in HIDDEN_SYSTEM_CRON_PREFIXES:
+        hidden_q |= Q(name__startswith=prefix)
+    visible_count = CronJob.objects.filter(tenant=tenant).exclude(hidden_q).count()
     if visible_count >= max_visible:
         return (
             {
