@@ -112,11 +112,22 @@ def _message_has_phase2_marker(message: str) -> bool:
 
 
 # System cron jobs that should be hidden from the user's Scheduled Tasks page.
-# These are infrastructure tasks — the user gains nothing from seeing them.
+# Two categories live in here:
+#   1. Infrastructure tasks the user gains nothing from seeing (Background
+#      Tasks, Heartbeat Check-in, Project Check-in).
+#   2. Core data-unearthing tasks — the assistant's job is to actively
+#      capture energy/mood/state and deepen long-term user context. Letting
+#      users disable or retime them defeats a core product feature. Evening
+#      Check-in now actively asks for missing energy data; Personal Question
+#      pursues one gap from long-term memory per day.
+# Hidden crons are also excluded from MAX_CRON_JOBS counting (see
+# `_filter_visible_jobs` and `postgres_canonical.create_job`).
 HIDDEN_SYSTEM_CRONS = frozenset(
     {
         "Background Tasks",
+        "Evening Check-in",
         "Heartbeat Check-in",
+        "Personal Question",
         "Project Check-in",
     }
 )
