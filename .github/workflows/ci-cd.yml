@@ -362,13 +362,31 @@ jobs:
             "$DJANGO_URL/api/cron/backfill-welcomes/" \
             || echo "Warning: backfill-welcomes failed (non-fatal — manual: python manage.py backfill_welcomes)"
 
-      - name: One-shot — fleet OpenClaw image bump (BYO rollout)
-        if: github.event_name == 'workflow_dispatch' && inputs.rollout_byo_image_bump == 'true'
+  # ==========================================================================
+  # Fleet rollout (workflow_dispatch only) — one-shot eager bump of every
+  # active tenant onto the current ACR image / current AGENTS.md template.
+  #
+  # Previously these steps lived inside `deploy-backend`, but that job's
+  # `if: push && main` condition meant the workflow_dispatch event never
+  # actually ran the rollout. Past dispatch runs (e.g. 25620166902) show
+  # `deploy-backend: skipped` confirming the dead path. Moved here as a
+  # standalone job so the dispatcher inputs actually do work.
+  #
+  # The job depends on nothing — it just calls Django endpoints with the
+  # deploy secret. Assumes the latest image is already in ACR (true if a
+  # push-to-main has landed since the last bump, which is the only time
+  # you'd want to run this anyway).
+  # ==========================================================================
+  fleet-rollout:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && (inputs.rollout_byo_image_bump == 'true' || inputs.rollout_byo_persona_refresh == 'true')
+    steps:
+      - name: One-shot — fleet OpenClaw image bump
+        if: inputs.rollout_byo_image_bump == 'true'
         run: |
-          # Manual fleet rollout: bump every active tenant onto the just-
-          # deployed OpenClaw image. NOT a routine deploy step — the regular
-          # apply-pending-configs cron handles future bumps lazily. This
-          # path exists for PR #434's one-shot BYO Anthropic rollout.
+          # Wraps `bump_all_tenant_images` mgmt command via the Django API.
+          # Hits every ACTIVE tenant (hibernated skipped by default — they
+          # self-heal at wake time per PR #384).
           DJANGO_URL="https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io"
           curl -sf -X POST \
             -H "X-Deploy-Secret: ${{ secrets.DEPLOY_SECRET }}" \
@@ -376,13 +394,11 @@ jobs:
             -d '{"include_hibernated": false}' \
             "$DJANGO_URL/api/cron/rollout-byo-image-bump/"
 
-      - name: One-shot — fleet AGENTS.md refresh (BYO rollout)
-        if: github.event_name == 'workflow_dispatch' && inputs.rollout_byo_persona_refresh == 'true'
+      - name: One-shot — fleet AGENTS.md refresh
+        if: inputs.rollout_byo_persona_refresh == 'true'
         run: |
-          # Manual fleet rollout: re-render workspace/AGENTS.md from the
-          # current template + per-tenant persona/extras and push to every
-          # tenant's file share. Same one-shot semantics as the image bump
-          # above — only fires on workflow_dispatch.
+          # Re-render workspace/AGENTS.md from the current template + per-
+          # tenant persona/extras and push to every tenant's file share.
           DJANGO_URL="https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io"
           curl -sf -X POST \
             -H "X-Deploy-Secret: ${{ secrets.DEPLOY_SECRET }}" \
