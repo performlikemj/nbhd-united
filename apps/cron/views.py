@@ -104,6 +104,11 @@ TASK_MAP = {
     # Postgres-canonical cron cutover — derived view of CronJob rows
     "regenerate_tenant_crons": "apps.orchestrator.tasks.regenerate_tenant_crons_task",
     "reconcile_tenant_crons": "apps.orchestrator.tasks.reconcile_tenant_crons_task",
+    # At-cron wake sweep — backstop wake scheduling for one-off kind:"at"
+    # crons. The hibernation path only schedules wakes for tenants Django
+    # is actively hibernating; this sweep covers out-of-band container
+    # restarts between cron creation and fire time.
+    "ensure_at_cron_wakes": "apps.orchestrator.tasks.ensure_at_cron_wakes_task",
     # Welcome-cron watchdog — daily fleet-wide reconcile for missing or
     # stale Fuel/Gravity welcome crons. Closes the gap when both the
     # deploy backfill and the live toggle path fail to deliver.
@@ -1175,8 +1180,16 @@ def run_rewrite_lessons_actionable(request):
     out = StringIO()
     call_command("rewrite_lessons_actionable", stdout=out)
     output = out.getvalue()
-    logger.info("rewrite_lessons_actionable: %s", output[-500:])
-    return JsonResponse({"ok": True, "output": output})
+    # Log only metadata — `rewrite_lessons_actionable` prints
+    # "[lesson_id] BEFORE: {lesson.text}" / "AFTER: {rewritten}" lines that
+    # contain lesson text derived from user daily notes. Container logs ship
+    # to a shared workspace; keep tenant content out of them.
+    logger.info(
+        "rewrite_lessons_actionable: completed (%d bytes, %d lines output)",
+        len(output),
+        output.count("\n"),
+    )
+    return JsonResponse({"ok": True, "output_bytes": len(output)})
 
 
 @csrf_exempt
@@ -1205,8 +1218,15 @@ def run_reseed_lessons(request):
     out = StringIO()
     call_command("reseed_lessons", stdout=out)
     output = out.getvalue()
-    logger.info("reseed_lessons: %s", output[-1000:])
-    return JsonResponse({"ok": True, "output": output})
+    # `reseed_lessons` prints per-tenant progress including lesson counts
+    # plus interleaved extraction details that can echo daily-note text.
+    # Same shared-workspace concern as rewrite_lessons_actionable above.
+    logger.info(
+        "reseed_lessons: completed (%d bytes, %d lines output)",
+        len(output),
+        output.count("\n"),
+    )
+    return JsonResponse({"ok": True, "output_bytes": len(output)})
 
 
 @csrf_exempt

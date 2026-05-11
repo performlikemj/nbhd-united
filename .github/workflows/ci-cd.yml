@@ -234,6 +234,17 @@ jobs:
         run: |
           ./scripts/openclaw_config_doctor_smoke.sh
 
+      - name: Run redact-stdout.js sidecar tests
+        # NBHD_REDACT_STDOUT_DISABLE_AUTOINSTALL=1 prevents the sidecar
+        # from patching the test runner's own streams (which would
+        # redact node:test's TAP output). The end-to-end subtests spawn
+        # child processes with the env var cleared so the wrap installs
+        # correctly there.
+        env:
+          NBHD_REDACT_STDOUT_DISABLE_AUTOINSTALL: "1"
+        run: |
+          node --test runtime/openclaw/redact-stdout.test.mjs
+
   # ==========================================================================
   # Deploy Backend (push to main only, after tests pass)
   # ==========================================================================
