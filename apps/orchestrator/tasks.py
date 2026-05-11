@@ -1,6 +1,7 @@
 """Tasks for async provisioning/deprovisioning (executed via QStash)."""
 
 import time
+from datetime import UTC
 
 import httpx
 
@@ -330,6 +331,192 @@ def apply_single_tenant_image_task(tenant_id: str, desired_tag: str) -> None:
         )
 
 
+# Cap on per-restore missed-fire triggers. A 24h gap on hourly crons would
+# otherwise stampede the gateway; users want the latest of each cron, not
+# every back-fire, so we dedupe to "latest missed fire per name" and then
+# cap total. 5 covers multiple distinct crons (morning briefing + heartbeat
+# + personal question + …) without flooding.
+_MAX_MISSED_FIRES_PER_RESTORE = 5
+
+
+def _compute_missed_cron_fires(
+    snapshot_jobs: list[dict],
+    snapshot_at,
+    now,
+) -> dict:
+    """For each enabled cron-kind job, return {name: latest_missed_fire_dt}.
+
+    A fire is "missed" if its scheduled time falls in (snapshot_at, now].
+    We keep only the latest per cron — users want the most recent morning
+    briefing, not 24 of them. Skips ``at`` / ``every`` kinds: ``at`` is
+    one-shot (the kind-"at" wake sweep covers it separately — see PR #513)
+    and ``every`` lacks the fixed-time semantics that make "missed fire"
+    meaningful. Skips agent-managed prefixes (``_sync:``, ``_fuel:``) —
+    those are one-shots whose schedule expressions encode specific dates;
+    re-firing them after the originating session is over would be wrong.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    try:
+        from croniter import croniter
+    except ImportError:
+        return {}
+
+    missed: dict[str, datetime] = {}
+
+    for job in snapshot_jobs:
+        if not isinstance(job, dict) or not job.get("enabled", True):
+            continue
+        name = job.get("name", "")
+        if not name or name.startswith(("_sync:", "_fuel:")):
+            continue
+        schedule = job.get("schedule")
+        if not isinstance(schedule, dict) or schedule.get("kind") != "cron":
+            continue
+        expr = schedule.get("expr")
+        if not isinstance(expr, str) or not expr.strip():
+            continue
+        tz_name = schedule.get("tz") or "UTC"
+        try:
+            zone = ZoneInfo(tz_name)
+        except Exception:
+            continue
+        try:
+            anchor = snapshot_at.astimezone(zone)
+            ceiling = now.astimezone(zone)
+            cron = croniter(expr, anchor)
+            latest = None
+            # croniter has no built-in "latest fire before X"; iterate
+            # forward and remember the last fire that lands inside the
+            # window. Bounded by the window's actual fire density.
+            while True:
+                next_dt = cron.get_next(datetime)
+                if next_dt > ceiling:
+                    break
+                if next_dt > anchor:
+                    latest = next_dt
+        except Exception:
+            continue
+        if latest is not None:
+            missed[name] = latest
+
+    return missed
+
+
+def _fire_missed_crons_after_restore(*, tenant, snapshot: dict, snapshot_jobs: list[dict]) -> int:
+    """Re-fire cron-kind jobs that should have run between snapshot and now.
+
+    OpenClaw 5.7's startup catch-up (``planStartupCatchup`` in
+    ``server-cron-*.js``) only fires missed crons when ``lastRunAtMs`` is
+    set on the job (via ``allowCronMissedRunByLastRun``). The pre-image
+    snapshot strips the entire ``state`` block (see ``_STRIP_FIELDS`` in
+    ``restore_crons_after_image_update_task``) so the restored job has no
+    ``lastRunAtMs`` — catch-up falls through and the missed fire is
+    silently dropped. We compute "what should have fired" from each cron
+    expression + ``snapshot_at`` and call ``cron.run`` for the latest one
+    per cron, capped to avoid gateway flood.
+
+    See ``project_openclaw_cron_payload_shape.md`` and the 2026-05-11
+    evening-check-in incident (cron registered, container awake 59 min,
+    but the agent turn never fired because lastRunAtMs was missing).
+
+    Returns the number of missed fires actually triggered.
+    """
+    import logging
+    from datetime import datetime
+
+    from django.utils import timezone as django_tz
+
+    logger = logging.getLogger(__name__)
+    tid = str(tenant.id)[:8]
+
+    snapshot_at_str = snapshot.get("snapshot_at")
+    if not snapshot_at_str or not snapshot_jobs:
+        return 0
+
+    try:
+        snapshot_at = datetime.fromisoformat(snapshot_at_str)
+    except (ValueError, TypeError):
+        logger.warning("Missed-cron catch-up: invalid snapshot_at %r for tenant %s", snapshot_at_str, tid)
+        return 0
+
+    if snapshot_at.tzinfo is None:
+        # Legacy snapshots may have stored naive ISO strings; interpret as
+        # UTC since that's what ``timezone.now().isoformat()`` produces today.
+
+        snapshot_at = snapshot_at.replace(tzinfo=UTC)
+
+    now = django_tz.now()
+    if snapshot_at >= now:
+        return 0
+
+    missed = _compute_missed_cron_fires(snapshot_jobs, snapshot_at, now)
+    if not missed:
+        return 0
+
+    # Map name → fresh gateway job id (restore generated new UUIDs).
+    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
+    from apps.orchestrator.services import _extract_cron_jobs
+
+    try:
+        result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+        current_jobs = _extract_cron_jobs(result) or []
+    except GatewayError:
+        logger.warning(
+            "Missed-cron catch-up: cron.list failed for tenant %s — skipping",
+            tid,
+            exc_info=True,
+        )
+        return 0
+
+    name_to_id: dict[str, str] = {}
+    for j in current_jobs:
+        if not isinstance(j, dict):
+            continue
+        name = j.get("name", "")
+        job_id = j.get("id") or j.get("jobId", "")
+        if name and job_id and name not in name_to_id:
+            name_to_id[name] = job_id
+
+    fired = 0
+    for name, fire_time in list(missed.items())[:_MAX_MISSED_FIRES_PER_RESTORE]:
+        job_id = name_to_id.get(name)
+        if not job_id:
+            logger.warning(
+                "Missed-cron catch-up: '%s' not in gateway after restore (tenant %s) — skipping",
+                name,
+                tid,
+            )
+            continue
+        try:
+            invoke_gateway_tool(tenant, "cron.run", {"jobId": job_id})
+            fired += 1
+            logger.info(
+                "Missed-cron catch-up: fired '%s' for tenant %s (was due %s)",
+                name,
+                tid,
+                fire_time.isoformat(),
+            )
+        except GatewayError:
+            logger.warning(
+                "Missed-cron catch-up: cron.run failed for '%s' on tenant %s",
+                name,
+                tid,
+                exc_info=True,
+            )
+
+    if len(missed) > _MAX_MISSED_FIRES_PER_RESTORE:
+        logger.info(
+            "Missed-cron catch-up: capped at %d of %d for tenant %s (older missed fires dropped)",
+            _MAX_MISSED_FIRES_PER_RESTORE,
+            len(missed),
+            tid,
+        )
+
+    return fired
+
+
 def restore_crons_after_image_update_task(tenant_id: str) -> None:
     """Restore cron jobs from snapshot after a container image update.
 
@@ -418,6 +605,21 @@ def restore_crons_after_image_update_task(tenant_id: str) -> None:
         except Exception:
             logger.warning("Post-restore dedup failed for %s (non-fatal)", tenant_id[:8], exc_info=True)
 
+    # Re-fire any cron-kind jobs that should have run while the container
+    # was down between snapshot capture and now. The pre-image snapshot
+    # strips ``state`` (including ``lastRunAtMs``), so OpenClaw 5.7's
+    # startup catch-up — gated by ``lastRunAtMs`` via ``allowCronMissedRunByLastRun``
+    # in ``planStartupCatchup`` — silently skips the missed fire. Closing the
+    # gap manually here is the smallest correct fix. See
+    # ``project_openclaw_cron_payload_shape.md`` and the 2026-05-11 evening
+    # check-in incident: cron registered in runtime, container awake 59 min,
+    # but the agent turn never fired because the missed window was dropped.
+    missed_fired = _fire_missed_crons_after_restore(
+        tenant=tenant,
+        snapshot=snapshot,
+        snapshot_jobs=snapshot_jobs,
+    )
+
     # If the tenant is on the new per-session Fuel flow, snapshot didn't
     # capture _fuel:* (the restore step deliberately filters them by prefix),
     # so we regenerate them here from Postgres truth.
@@ -435,11 +637,13 @@ def restore_crons_after_image_update_task(tenant_id: str) -> None:
             )
 
     logger.info(
-        "Post-image cron restore for tenant %s: %d restored, %d errors, %d already present (snapshot had %d)",
+        "Post-image cron restore for tenant %s: %d restored, %d errors, %d already present, "
+        "%d missed-fires triggered (snapshot had %d)",
         tenant_id[:8],
         restored,
         errors,
         len(existing_names),
+        missed_fired,
         len(snapshot_jobs),
     )
 
