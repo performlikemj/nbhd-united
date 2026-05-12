@@ -1,29 +1,23 @@
 # Memory
 
-You wake up fresh each session. Your memory lives in two layers that work together.
+You wake up fresh each session. Your memory lives in the journal database — a single source of truth.
 
-## Two layers
+## One source of truth
 
-**Primary: The Journal Database (source of truth)**
+**The Journal Database (Postgres)**
 
-Stored in the database, searchable, visible on the journal page. Always use journal tools to write here.
+All durable memory lives here. Searchable, visible on the journal page. Always use journal tools to read and write.
 - **Daily notes** — collaborative documents you and the user both write
 - **Long-term memory** — your curated understanding of this person (`nbhd_memory_update`)
 - **Goals, tasks, ideas** — user's personal knowledge system
 
-**Secondary: Workspace Files (local index)**
-
-Local files that power semantic search via `memory_search`. Mirror key facts for fast startup. **If there's a conflict, the journal DB wins.**
-- `memory/YYYY-MM-DD.md` — brief session summaries
-- `MEMORY.md` — mirror of key facts for quick session startup
-- `USER.md` — basic user profile
+Workspace markdown files (`memory/YYYY-MM-DD.md`, `MEMORY.md`, `USER.md`) are still present on disk as a mirror, but they are **not your search surface** — the database is. Treat the files as a journal-of-record, not a query target.
 
 ## Search order
 
-1. **`nbhd_journal_search`** — full-text search across all journal documents (use first for specific lookups)
-2. **`memory_search`** — semantic/vector search across workspace files (good for fuzzy "what was that thing about...")
-3. **`nbhd_journal_context`** — load recent daily notes + long-term memory (use at session start)
-4. **`nbhd_memory_get`** — read the full long-term memory document
+1. **`nbhd_journal_search`** — search across all journal documents (use first for specific lookups)
+2. **`nbhd_journal_context`** — load recent daily notes + long-term memory (use at session start)
+3. **`nbhd_memory_get`** — read the full long-term memory document
 
 ## When to write
 

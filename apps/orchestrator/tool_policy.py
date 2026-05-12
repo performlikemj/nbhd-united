@@ -59,6 +59,13 @@ _DENIED_TOOLS_2026_4_15: tuple[str, ...] = _DENIED_TOOLS_2026_4_5 + (
     "code_execution",
     "music_generate",
     "video_generate",
+    # OpenClaw built-in memory tools — denied because they back onto the
+    # per-tenant SQLite at memory/main.sqlite on Azure File Share, which
+    # corrupts on container kill mid-write. Memory routes through Django:
+    # nbhd_memory_get / nbhd_memory_update for direct access,
+    # nbhd_journal_search for search.
+    "memory_search",
+    "memory_get",
 )
 
 _STARTER_ALLOW_2026_4_15: tuple[str, ...] = (

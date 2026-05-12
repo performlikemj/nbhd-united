@@ -1304,8 +1304,17 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                     },
                 },
                 "memorySearch": {
-                    "enabled": True,
-                    # Auto-detects OpenAI for embeddings via OPENAI_API_KEY
+                    # Disabled: OpenClaw's memory_search backs onto a SQLite
+                    # index at memory/main.sqlite on the per-tenant Azure
+                    # File Share. SQLite over SMB is hostile — container
+                    # kill mid-write loses the file size (we've observed
+                    # 0-byte main.sqlite across the fleet), which then
+                    # surfaces to the user as "database is locked".
+                    # Postgres is the canonical memory store; search routes
+                    # through Django's `nbhd_journal_search` instead, which
+                    # is backed by full-text search (and pgvector for
+                    # DocumentChunk embeddings when those land).
+                    "enabled": False,
                 },
                 "heartbeat": {
                     # Disabled to save cost — agents are reactive only

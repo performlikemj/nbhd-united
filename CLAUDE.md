@@ -107,6 +107,7 @@ Keep messages concise, focused on the "why". Examples:
 - **Cold starts mask errors**: Always check logs after timeout errors — the real error may be hidden
 - **Frontend is static export**: No SSR. `npm run build` creates `out/` directory
 - **QStash, not Celery**: Do NOT add `django_celery_beat` — project uses QStash for all scheduling
+- **No SQLite on the per-tenant Azure File Share**: SMB lock/fsync semantics don't preserve SQLite's durability assumptions end-to-end — a container kill mid-write can leave a 0-byte file. OpenClaw's built-in `memory_search` indexed onto the share via `memory/main.sqlite` and corrupted fleet-wide; we disabled it and route search through Postgres (`nbhd_journal_search`). If any future OpenClaw feature wants to store SQLite on the share, route it through Postgres instead, or store the SQLite in container-local ephemeral storage and rebuild on cold start.
 
 ## Git Workflow
 

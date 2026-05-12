@@ -1590,8 +1590,10 @@ class RuntimeMemorySyncView(APIView):
     """GET files dict for workspace memory sync (agent/container access).
 
     Returns all syncable documents as a mapping of workspace-relative paths
-    to markdown content.  The caller writes them to the local filesystem so
-    OpenClaw's ``memory_search`` can index them.
+    to markdown content.  The caller writes them to the local filesystem
+    as a journal-of-record mirror. OpenClaw's ``memory_search`` no longer
+    indexes them (disabled fleet-wide); search now routes through
+    ``nbhd_journal_search`` → Postgres.
     """
 
     permission_classes = [AllowAny]

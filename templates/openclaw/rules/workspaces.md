@@ -88,7 +88,7 @@ How to suggest: Ask once, casually. Example: "I've noticed you talk about transl
 ## Cross-workspace knowledge
 
 All workspaces share:
-- `memory_search` and `nbhd_memory_get` (long-term memory)
+- `nbhd_memory_get` / `nbhd_memory_update` (long-term memory)
 - Daily notes (`nbhd_daily_note_get`, `nbhd_journal_context`)
 - Lessons (`nbhd_lesson_search`)
 - Documents (goals, tasks, ideas)

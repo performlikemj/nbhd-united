@@ -118,10 +118,19 @@ if [ "$(node_major)" -lt 22 ] 2>/dev/null; then
 fi
 
 set +e
+# Resolve OPENCLAW_VERSION FIRST so the env-var-prefix-with-line-continuation
+# pattern below isn't broken by an inline `$(...)` substitution swallowing
+# the trailing backslash. The original code lost OPENCLAW_CONFIG_PATH /
+# OPENCLAW_STATE_DIR / OPENCLAW_VERSION here because the line ending
+# `... || echo "latest")` had no trailing `\` — bash treated the next line
+# (`npx ...`) as a SEPARATE command that inherited none of these env vars.
+# Result: doctor ran against its default paths (no config in CI), found
+# nothing, exited 0, and a bad ssrf config key sailed through into prod.
+OPENCLAW_VERSION="$(grep -oP 'ARG OPENCLAW_VERSION=\K.*' Dockerfile.openclaw 2>/dev/null || echo "latest")"
 DOCTOR_OUTPUT="$(
   OPENCLAW_CONFIG_PATH="$CONFIG_PATH" \
   OPENCLAW_STATE_DIR="$STATE_DIR" \
-  OPENCLAW_VERSION=$(grep -oP 'ARG OPENCLAW_VERSION=\K.*' Dockerfile.openclaw 2>/dev/null || echo "latest")
+  OPENCLAW_VERSION="$OPENCLAW_VERSION" \
   npx --yes --package "openclaw@${OPENCLAW_VERSION}" openclaw doctor --non-interactive 2>&1
 )"
 DOCTOR_EXIT=$?

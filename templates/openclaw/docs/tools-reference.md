@@ -121,7 +121,6 @@ Rules:
 |------|---------|
 | `web_search` | Search the web (Brave Search) |
 | `web_fetch` | Fetch and extract content from a URL |
-| `memory_search` / `memory_get` | Search and read workspace memory files |
 | `read` / `write` / `edit` | Read and write workspace files |
 | `tts` | Text-to-speech |
 | `image` | Analyze images with vision model |
