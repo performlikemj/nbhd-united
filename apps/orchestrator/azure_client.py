@@ -908,6 +908,62 @@ def create_container_app(
     return {"name": container_name, "fqdn": fqdn}
 
 
+def update_container_internal_api_key_secret(
+    container_name: str,
+    identity_id: str,
+    kv_secret_name: str,
+) -> None:
+    """Rebind the `nbhd-internal-api-key` secret to a new Key Vault entry.
+
+    Used by Phase 1c fleet migration to point an existing tenant container
+    at its per-tenant `tenant-<uuid>-internal-key` instead of the shared
+    global `nbhd-internal-api-key`. Forces a new revision (via
+    revision_suffix bump) so Container Apps re-fetches the KV value —
+    a plain restart would keep the cached old value.
+    """
+    if _is_mock():
+        logger.info("[MOCK] Updated nbhd-internal-api-key secret for %s -> %s", container_name, kv_secret_name)
+        return
+
+    client = get_container_client()
+    app = client.container_apps.get(
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+    )
+
+    # Replace the `nbhd-internal-api-key` secret entry with one bound to
+    # the per-tenant KV secret. Keep all other secrets untouched.
+    secrets = [s for s in (app.configuration.secrets or []) if _entry_name(s) != "nbhd-internal-api-key"]
+    secrets.append(
+        _build_container_secret(
+            "nbhd-internal-api-key",
+            plain_value="",
+            key_vault_secret_name=kv_secret_name,
+            identity_id=identity_id,
+        )
+    )
+    app.configuration.secrets = secrets
+
+    import hashlib
+    import time
+
+    # Force a new revision so the KV value is re-fetched (a no-op spec
+    # change otherwise leaves the cached old value in place).
+    app.template.revision_suffix = f"i{hashlib.sha256(f'iak-{int(time.time_ns())}'.encode()).hexdigest()[:6]}"
+
+    client.container_apps.begin_create_or_update(
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+        app,
+    ).result()
+    logger.info(
+        "Updated nbhd-internal-api-key secret for %s -> %s (revision_suffix=%s)",
+        container_name,
+        kv_secret_name,
+        app.template.revision_suffix,
+    )
+
+
 def update_container_env_var(
     container_name: str,
     env_name: str,
