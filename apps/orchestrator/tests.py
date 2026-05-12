@@ -139,6 +139,24 @@ class ConfigGeneratorTest(TestCase):
         self.assertNotIn("group:automation", tools["deny"])
         self.assertNotIn("group:ui", tools["allow"])
 
+    def test_memorysearch_disabled_and_denied(self):
+        """OpenClaw's memory_search backs onto a SQLite index on the per-
+        tenant Azure File Share. SQLite over SMB corrupts on mid-write kill
+        (we've seen 0-byte main.sqlite across the fleet), surfacing to
+        users as "database is locked". Memory routes through Postgres via
+        nbhd_journal_search / nbhd_memory_get instead. This test pins
+        both layers of the guard so a silent re-enable can't slip in:
+
+        1. agents.defaults.memorySearch.enabled is False
+        2. memory_search and memory_get are in tools.deny
+        """
+        config = generate_openclaw_config(self.tenant)
+        memory_search_block = config["agents"]["defaults"]["memorySearch"]
+        self.assertFalse(memory_search_block["enabled"])
+        deny = config["tools"]["deny"]
+        self.assertIn("memory_search", deny)
+        self.assertIn("memory_get", deny)
+
     def test_channels_have_no_explicit_capabilities(self):
         """Capabilities are auto-detected by OpenClaw — not set in config."""
         config = generate_openclaw_config(self.tenant)

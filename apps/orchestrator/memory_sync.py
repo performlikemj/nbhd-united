@@ -1,7 +1,11 @@
-"""Sync journal documents to tenant workspace for vector indexing.
+"""Mirror journal documents to the tenant workspace file share.
 
 Renders Document content as markdown files and uploads them to the tenant's
-Azure File Share so OpenClaw's built-in memory_search can index them.
+Azure File Share. The files are a journal-of-record / human-readable mirror
+of what's in Postgres — they used to back OpenClaw's built-in memory_search
+SQLite index, but that index is disabled fleet-wide (SQLite over SMB is
+hostile; the file would corrupt mid-write). Search now routes through
+nbhd_journal_search → Django → Postgres directly.
 """
 
 from __future__ import annotations

@@ -10,9 +10,11 @@ logger = logging.getLogger(__name__)
 def sync_documents_to_workspace(tenant_id: str):
     """Mirror tenant's DB documents to their Azure File Share workspace.
 
-    Renders recent documents as markdown files and uploads them so
-    OpenClaw's built-in ``memory_search`` (vector search) can index them
-    alongside regular workspace memory files.
+    Renders recent documents as markdown files and uploads them as a
+    journal-of-record on the share. These files used to feed OpenClaw's
+    built-in ``memory_search`` SQLite index — that index is now disabled
+    fleet-wide (the index corrupted under SMB write semantics). Agents
+    search via ``nbhd_journal_search`` → Postgres directly.
 
     Files are written to ``memory/journal/<kind>/<slug>.md`` within the
     tenant's workspace file share.
