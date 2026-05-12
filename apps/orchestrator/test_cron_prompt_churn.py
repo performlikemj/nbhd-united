@@ -41,6 +41,30 @@ def _oc_normalize(message: str) -> str:
     return message.strip()
 
 
+def _oc_stored_payload(desired_job: dict) -> dict:
+    """Return the payload as OpenClaw would store it from a cron.add.
+
+    Two normalizations matter for the diff:
+    1. ``message`` gets `.trim()` (PR #505).
+    2. Top-level ``model`` in the cron def gets folded into
+       ``payload.model`` (observed on canary 2026-05-12 Heartbeat:
+       _build_heartbeat_cron returns ``"model": HEARTBEAT_MODEL`` at
+       the top level, and ``cron.list`` then reports
+       ``payload.model = HEARTBEAT_MODEL``).
+
+    Fixtures that simulate "OpenClaw's view of an existing cron" should
+    use this helper so the diff isn't fed an artificially-pristine
+    payload that diverges from runtime reality.
+    """
+    payload = dict(desired_job.get("payload", {}))
+    if "message" in payload:
+        payload["message"] = _oc_normalize(payload["message"])
+    top_level_model = desired_job.get("model")
+    if top_level_model and "model" not in payload:
+        payload["model"] = top_level_model
+    return payload
+
+
 def _list_response(jobs: list[dict]) -> dict:
     """Wrap a job list in OpenClaw's ``cron.list`` envelope shape.
 
@@ -148,13 +172,12 @@ class UpdateSystemCronPromptsNoChurnTests(TestCase):
 
         Mirrors what OC would return on ``cron.list`` if we'd previously
         created these jobs via ``cron.add``. ``normalize=True`` applies
-        the same ``.trim()`` OC does at store time.
+        OC's full storage normalization (message trim + top-level
+        ``model`` folded into ``payload.model``).
         """
         existing = []
         for desired in build_cron_seed_jobs(self.tenant):
-            payload = dict(desired["payload"])
-            if normalize and "message" in payload:
-                payload["message"] = _oc_normalize(payload["message"])
+            payload = _oc_stored_payload(desired) if normalize else dict(desired["payload"])
             existing.append(
                 {
                     "id": f"job-{desired['name']}",
@@ -375,16 +398,77 @@ class UpdateSystemCronPromptsNonMessageDriftTests(TestCase):
             "a silently-failing cron is worse than a re-customizable prompt",
         )
 
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_no_churn_when_heartbeat_model_at_top_level(self, mock_invoke):
+        """Heartbeat pins its model at the TOP LEVEL of the cron def
+        (see `_build_heartbeat_cron`: `"model": HEARTBEAT_MODEL` outside
+        the payload block). OpenClaw normalizes top-level `model` to
+        `payload.model` on cron.add. The diff must understand this OR
+        a no-op recreate fires for Heartbeat on every sweep — same churn
+        class PR #505 was meant to fix, just re-introduced via PR #532.
+
+        Observed on canary 2026-05-12 16:11 UTC: post-PR-#532 first
+        sweep recreated Heartbeat alongside the genuinely-drifted Evening
+        Check-in / Morning Briefing — wasteful gateway mutations every
+        hour that don't change the runtime state. This test pins that
+        Heartbeat's top-level `model` IS recognized as matching the
+        stored `payload.model`.
+        """
+        # Use the shared helper that mirrors OC's full storage normalization
+        # (message trim + top-level model folded into payload.model).
+        existing = []
+        for desired in build_cron_seed_jobs(self.tenant):
+            existing.append(
+                {
+                    "id": f"job-{desired['name']}",
+                    "name": desired["name"],
+                    "schedule": desired["schedule"],
+                    "sessionTarget": desired["sessionTarget"],
+                    "payload": _oc_stored_payload(desired),
+                    "delivery": desired.get("delivery", {}),
+                    "enabled": desired.get("enabled", True),
+                }
+            )
+        # Sanity: Heartbeat MUST be in the fixture with payload.model set —
+        # otherwise this test is just exercising the regular no-drift path.
+        heartbeat_existing = next(e for e in existing if e["name"] == "Heartbeat Check-in")
+        self.assertEqual(
+            heartbeat_existing["payload"].get("model"),
+            "openrouter/minimax/minimax-m2.7",
+            "Fixture sanity: Heartbeat must have payload.model populated "
+            "from the top-level cron-def model field via _oc_stored_payload",
+        )
+        mock_invoke.return_value = _list_response(existing)
+
+        update_system_cron_prompts(self.tenant)
+
+        heartbeat_mutations = [
+            call
+            for call in mock_invoke.call_args_list
+            if call.args[1] in ("cron.remove", "cron.add", "cron.update")
+            and (
+                call.args[2].get("jobId") == "job-Heartbeat Check-in"
+                or call.args[2].get("job", {}).get("name") == "Heartbeat Check-in"
+            )
+        ]
+        self.assertEqual(
+            heartbeat_mutations,
+            [],
+            "Heartbeat must NOT churn just because its model is at top-level "
+            "of the cron def — OpenClaw stores top-level model as payload.model, "
+            "so existing.payload.model == desired.model. Mutations seen: "
+            f"{[(c.args[1], c.args[2]) for c in heartbeat_mutations]}",
+        )
+
     def _existing_jobs_from_seed_with_stale_model(self) -> list[dict]:
         """Build `existing_jobs` where Evening Check-in carries the
         2026-05-12 stale BYO model in its payload. All other crons
-        match the desired payload exactly (so the diff is scoped).
+        mirror OC's storage normalization exactly (so the diff is
+        scoped to Evening Check-in's drift).
         """
         existing = []
         for desired in build_cron_seed_jobs(self.tenant):
-            payload = dict(desired["payload"])
-            if "message" in payload:
-                payload["message"] = _oc_normalize(payload["message"])
+            payload = _oc_stored_payload(desired)
             if desired["name"] == "Evening Check-in":
                 payload["model"] = "anthropic-cli/claude-sonnet-4-6"
             existing.append(
