@@ -23,6 +23,10 @@ class OrchestratorServiceTest(TestCase):
         "apps.orchestrator.services.create_managed_identity",
         return_value={"id": "/identities/1", "client_id": "client-1", "principal_id": "principal-1"},
     )
+    @patch(
+        "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
+        return_value="tenant-fixture-internal-key",
+    )
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch("apps.orchestrator.services.assign_acr_pull_role")
     @patch(
@@ -49,6 +53,7 @@ class OrchestratorServiceTest(TestCase):
         _mock_seed_cron_jobs,
         _mock_assign_acr_role,
         _mock_assign_kv_role,
+        _mock_store_kv_key,
         _mock_create_identity,
         _mock_config_json,
         _mock_generate_config,
@@ -61,11 +66,20 @@ class OrchestratorServiceTest(TestCase):
         self.assertEqual(self.tenant.container_fqdn, "oc-tenant.internal.azurecontainerapps.io")
         self.assertEqual(self.tenant.managed_identity_id, "/identities/1")
         self.assertIsNotNone(self.tenant.provisioned_at)
-        _mock_assign_kv_role.assert_called_once_with("principal-1")
+
+        # Phase 1b: per-tenant token is generated, stored in KV + DB, and
+        # the per-tenant KV secret name is passed through to create_container_app.
+        _mock_store_kv_key.assert_called_once()
+        self.assertNotEqual(self.tenant.internal_api_key, "")
+        _mock_assign_kv_role.assert_called_once()
+        kv_call = _mock_assign_kv_role.call_args
+        self.assertEqual(kv_call.args[0], "principal-1")
+        self.assertIn("tenant-fixture-internal-key", kv_call.kwargs["secret_names"])
+
         _mock_create_container.assert_called_once()
-        # All containers use the shared internal API key from Key Vault
-        call_kwargs = _mock_create_container.call_args.kwargs
-        self.assertNotIn("internal_api_key_kv_secret", call_kwargs)
+        ca_kwargs = _mock_create_container.call_args.kwargs
+        self.assertEqual(ca_kwargs["internal_api_key_kv_secret_name"], "tenant-fixture-internal-key")
+        self.assertEqual(ca_kwargs["internal_api_key_plain_value"], self.tenant.internal_api_key)
 
     @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="env")
     @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
@@ -116,6 +130,10 @@ class OrchestratorServiceTest(TestCase):
     @patch("apps.orchestrator.services.assign_acr_pull_role")
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch(
+        "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
+        return_value="tenant-fixture-internal-key",
+    )
+    @patch(
         "apps.orchestrator.services.create_managed_identity",
         return_value={"id": "/identities/2", "client_id": "client-2", "principal_id": "principal-2"},
     )
@@ -126,6 +144,7 @@ class OrchestratorServiceTest(TestCase):
         _mock_generate_config,
         _mock_config_json,
         _mock_create_identity,
+        _mock_store_kv_key,
         _mock_assign_kv_role,
         _mock_assign_acr_role,
         _mock_create_file_share,
@@ -139,7 +158,8 @@ class OrchestratorServiceTest(TestCase):
 
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.status, Tenant.Status.PENDING)
-        _mock_assign_kv_role.assert_called_once_with("principal-2")
+        _mock_assign_kv_role.assert_called_once()
+        self.assertEqual(_mock_assign_kv_role.call_args.args[0], "principal-2")
 
     @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="keyvault")
     @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
@@ -147,6 +167,10 @@ class OrchestratorServiceTest(TestCase):
     @patch(
         "apps.orchestrator.services.create_managed_identity",
         return_value={"id": "/identities/3", "client_id": "client-3", "principal_id": "principal-3"},
+    )
+    @patch(
+        "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
+        return_value="tenant-fixture-internal-key",
     )
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch("apps.orchestrator.services.assign_acr_pull_role")
@@ -171,6 +195,7 @@ class OrchestratorServiceTest(TestCase):
         _mock_seed_cron_jobs,
         _mock_assign_acr_role,
         _mock_assign_kv_role,
+        _mock_store_kv_key,
         _mock_create_identity,
         _mock_config_json,
         _mock_generate_config,

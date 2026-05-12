@@ -120,15 +120,15 @@ def get_authorization_client():
     return AuthorizationManagementClient(_get_provisioner_credential(), settings.AZURE_SUBSCRIPTION_ID)
 
 
-# Secrets a tenant container needs to read from Key Vault. Matches the
-# `keyVaultUrl` references in `create_container_app` below. Kept narrow on
-# purpose: vault-scope grants let any tenant MI read cross-cutting secrets
-# (database-url, stripe-live-secret-key, storage-account-key, qstash-*),
-# which is the catastrophic-on-prompt-inject path. Per-secret RBAC keeps
-# the blast radius of an MI-token leak to just these names.
+# Platform-shared secrets every tenant MI needs read access to. The
+# tenant-specific internal API key (`tenant-<uuid>-internal-key`, Phase 1b)
+# is added per-call by `provision_tenant`. Vault-scope grants used to let
+# any tenant MI read cross-cutting secrets (database-url, stripe-live-
+# secret-key, storage-account-key, qstash-*); per-secret RBAC keeps the
+# blast radius of an MI-token leak to just the names listed here plus the
+# tenant's own internal key.
 DEFAULT_TENANT_KV_SECRETS: tuple[str, ...] = (
     "anthropic-api-key",
-    "nbhd-internal-api-key",
     "openai-api-key",
     "openrouter-api-key",
     "brave-api-key",
@@ -718,13 +718,18 @@ def create_container_app(
     identity_id: str,
     identity_client_id: str,
     workspace_env: dict[str, str] | None = None,
+    internal_api_key_kv_secret_name: str | None = None,
+    internal_api_key_plain_value: str | None = None,
 ) -> dict[str, str]:
     """Create an Azure Container App for an OpenClaw instance.
 
-    All containers share a single internal API key from Key Vault
-    (AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY). Per-tenant keys were removed
-    2026-02-22 — unnecessary given network isolation (containers are
-    internal-only).
+    `internal_api_key_kv_secret_name` overrides the Key Vault secret name
+    that backs the container's `NBHD_INTERNAL_API_KEY` env var. New tenants
+    (Phase 1b, 2026-05-12) pass a per-tenant `tenant-<uuid>-internal-key`
+    so a compromised container's key can only authenticate as that tenant.
+    Defaults to the legacy shared secret (`AZURE_KV_SECRET_NBHD_INTERNAL_
+    API_KEY`) so existing tests and ops paths continue to work during the
+    fleet migration.
 
     Returns dict with 'name' and 'fqdn'.
     """
@@ -732,6 +737,11 @@ def create_container_app(
         fqdn = f"{container_name}.internal.azurecontainerapps.io"
         logger.info("[MOCK] Created container %s at %s", container_name, fqdn)
         return {"name": container_name, "fqdn": fqdn}
+
+    internal_kv_secret = internal_api_key_kv_secret_name or settings.AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY
+    internal_plain = (
+        internal_api_key_plain_value if internal_api_key_plain_value is not None else settings.NBHD_INTERNAL_API_KEY
+    )
 
     client = get_container_client()
     secrets = [
@@ -749,8 +759,8 @@ def create_container_app(
         ),
         _build_container_secret(
             "nbhd-internal-api-key",
-            plain_value=settings.NBHD_INTERNAL_API_KEY,
-            key_vault_secret_name=settings.AZURE_KV_SECRET_NBHD_INTERNAL_API_KEY,
+            plain_value=internal_plain,
+            key_vault_secret_name=internal_kv_secret,
             identity_id=identity_id,
         ),
         _build_container_secret(
