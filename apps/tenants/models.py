@@ -192,13 +192,29 @@ class Tenant(models.Model):
         help_text="Exempt from personal and global budget enforcement. Usage still tracked.",
     )
 
-    # NOTE: Per-tenant internal API keys were removed (2026-02-22).
-    # All containers share a single key via Azure Key Vault. This is safe
-    # because tenant containers are internal-only (external: false) — not
-    # reachable from the public internet. The per-tenant scheme caused mass
-    # auth failures and added unnecessary complexity.
-    # Fields `internal_api_key_hash` and `internal_api_key_set_at` were
-    # dropped in migration 0018.
+    # Per-tenant internal API key. When non-empty, internal_auth.py validates
+    # the X-NBHD-Internal-Key header against this value instead of the legacy
+    # global settings.NBHD_INTERNAL_API_KEY. Restored 2026-05-12 (Phase 1)
+    # to close the cross-tenant Django pivot — a prompt-injected tenant
+    # holding the global key from process.env could otherwise call internal
+    # endpoints with any tenant_id in headers and read that tenant's data.
+    #
+    # The previous "internal-only network" safety argument (used to justify
+    # the 2026-02-22 collapse, migration 0018) was wrong for the LLM threat
+    # model: the attacker is INSIDE the container, not outside. Dual-
+    # validation (per-tenant if set, global as fallback) makes the migration
+    # safe without a flag-day — see apps/integrations/internal_auth.py.
+    internal_api_key = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        help_text=(
+            "Per-tenant secret used by the tenant's OpenClaw container to "
+            "authenticate to Django internal endpoints. Stored raw; Container "
+            "Apps secret reference (kv-nbhd-prod/secrets/tenant-<uuid>-internal-key) "
+            "is the runtime source of truth for the container side."
+        ),
+    )
 
     # Onboarding
     onboarding_complete = models.BooleanField(
