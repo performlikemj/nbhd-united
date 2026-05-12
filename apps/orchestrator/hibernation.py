@@ -928,8 +928,6 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
     """
     import asyncio
 
-    from django.conf import settings
-
     from apps.router.models import BufferedMessage
     from apps.router.services import forward_to_openclaw
 
@@ -1009,7 +1007,9 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
 
             elif msg.channel == BufferedMessage.Channel.LINE:
                 url = f"https://{tenant.container_fqdn}/v1/chat/completions"
-                gateway_token = getattr(settings, "NBHD_INTERNAL_API_KEY", "").strip()
+                from apps.cron.gateway_client import get_gateway_token_for_tenant
+
+                gateway_token = get_gateway_token_for_tenant(tenant)
                 user_tz = tenant.user.timezone or "UTC"
                 line_user_id = tenant.user.line_user_id or ""
 

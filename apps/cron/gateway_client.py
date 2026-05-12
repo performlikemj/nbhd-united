@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 import requests
+from django.conf import settings
 
 from apps.orchestrator.azure_client import read_key_vault_secret
 from apps.tenants.models import Tenant
@@ -22,20 +23,50 @@ class GatewayError(Exception):
         self.status_code = status_code
 
 
-def _get_gateway_token(tenant: Tenant) -> str:
-    """Read the tenant's gateway auth token from Key Vault.
+def get_gateway_token_for_tenant(tenant: Tenant) -> str:
+    """Resolve the bearer token Django must send when calling this tenant's gateway.
 
-    The gateway's auth.token is configured from the container's
-    NBHD_INTERNAL_API_KEY env var. Both the container env and this
-    client must read the same Key Vault secret.
+    The container's gateway authenticates incoming requests against its
+    `NBHD_INTERNAL_API_KEY` env var (resolved by Container Apps from a
+    Key Vault secret reference). Django callers must send the SAME value
+    or the gateway returns 401.
 
-    Try the shared secret first (nbhd-internal-api-key), then fall back
-    to the per-tenant secret for backward compatibility.
+    Phase 1b/1c (2026-05-12) migrated tenants to per-tenant keys:
+      1. If `Tenant.internal_api_key` is set, the container is using
+         the per-tenant value — return it directly. DB is the source of
+         truth post-migration; no KV round-trip on the hot path.
+      2. Otherwise fall back to `settings.NBHD_INTERNAL_API_KEY` (the
+         legacy shared value, still bound on unmigrated containers).
+
+    Returns empty string when neither is available — caller decides how
+    to handle (most paths bail out with a logged warning rather than
+    sending a known-bad header).
+
+    This is the public helper used by every Django→container code path
+    (poller drain, hibernation flush, broadcast, gateway tool calls).
+    See `_get_gateway_token` for the gateway-tool variant that raises
+    `GatewayError` on miss.
     """
-    token = read_key_vault_secret("nbhd-internal-api-key")
+    per_tenant = (tenant.internal_api_key or "").strip()
+    if per_tenant:
+        return per_tenant
+    return (getattr(settings, "NBHD_INTERNAL_API_KEY", "") or "").strip()
+
+
+def _get_gateway_token(tenant: Tenant) -> str:
+    """Variant of `get_gateway_token_for_tenant` that raises on miss.
+
+    Used by `invoke_gateway_tool` where a missing token always indicates
+    a real configuration failure (Django can't reach the gateway at all).
+    KV is consulted as a last-resort fallback here because some Django
+    startup paths historically loaded the gateway secret only from KV.
+    """
+    token = get_gateway_token_for_tenant(tenant)
     if not token:
-        secret_name = f"tenant-{tenant.id}-internal-key"
-        token = read_key_vault_secret(secret_name)
+        # Last-resort KV read — keeps the historical behaviour where a
+        # Django pod without `settings.NBHD_INTERNAL_API_KEY` in its env
+        # could still reach the gateway via KV.
+        token = read_key_vault_secret("nbhd-internal-api-key") or ""
     if not token:
         raise GatewayError(f"Could not read gateway token for tenant {tenant.id}")
     return token

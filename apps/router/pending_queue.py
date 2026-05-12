@@ -535,7 +535,9 @@ def _drain_line_message(tenant: Tenant, msg: PendingMessage, timeout: float) -> 
     # closed. We always Push.
 
     url = f"https://{tenant.container_fqdn}/v1/chat/completions"
-    gateway_token = getattr(settings, "NBHD_INTERNAL_API_KEY", "").strip()
+    from apps.cron.gateway_client import get_gateway_token_for_tenant
+
+    gateway_token = get_gateway_token_for_tenant(tenant)
 
     chat_payload = {
         "model": "openclaw",
@@ -580,7 +582,9 @@ def _drain_telegram_message(tenant: Tenant, msg: PendingMessage, timeout: float)
     user_tz = payload.get("user_timezone") or "UTC"
 
     url = f"https://{tenant.container_fqdn}/v1/chat/completions"
-    gateway_token = getattr(settings, "NBHD_INTERNAL_API_KEY", "").strip()
+    from apps.cron.gateway_client import get_gateway_token_for_tenant
+
+    gateway_token = get_gateway_token_for_tenant(tenant)
 
     chat_payload = {
         "model": "openclaw",
