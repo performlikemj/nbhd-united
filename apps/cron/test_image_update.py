@@ -210,3 +210,79 @@ class ApplyPendingConfigsImageTests(TestCase):
         self.assertEqual(body["image_enqueued"], 0)
         self.assertEqual(body["image_failed"], 2)
         self.assertEqual(body["batch_enqueued"], 0)
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    @patch("apps.cron.publish.publish_batch", side_effect=_batch_return_len)
+    @patch(
+        "apps.orchestrator.hibernation._cron_active_or_imminent",
+        return_value="cron_in_flight",
+    )
+    def test_image_bump_deferred_when_cron_in_flight(
+        self,
+        mock_defer,
+        mock_batch,
+        _mock_verify,
+    ):
+        """Mirror hibernate_idle_tenants_task: don't bump the image on a
+        tenant with an in-flight cron — the resulting revision update
+        SIGTERMs the container mid-run.
+        """
+        now = timezone.now()
+        _create_tenant_with_state(
+            user_suffix=1,
+            pending_config_version=0,
+            config_version=0,
+            last_message_at=now - timedelta(minutes=20),
+            container_image_tag="oldtag",
+        )
+
+        response = self.client.post("/api/v1/cron/apply-pending-configs/")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["image_enqueued"], 0)
+        self.assertEqual(body["image_skipped_imminent_cron"], 1)
+
+        image_calls = _extract_batch_tasks(mock_batch, "apply_single_tenant_image")
+        self.assertEqual(len(image_calls), 0)
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    @patch("apps.cron.publish.publish_batch", side_effect=_batch_return_len)
+    @patch(
+        "apps.orchestrator.hibernation._cron_active_or_imminent",
+        side_effect=["cron_imminent", None],
+    )
+    def test_image_bump_mixed_defer_and_proceed(
+        self,
+        mock_defer,
+        mock_batch,
+        _mock_verify,
+    ):
+        """Two stale-image tenants: one has an imminent cron (defer), one
+        is quiet (bump). Counters track each independently.
+        """
+        now = timezone.now()
+        _create_tenant_with_state(
+            user_suffix=1,
+            pending_config_version=0,
+            config_version=0,
+            last_message_at=now - timedelta(minutes=20),
+            container_image_tag="oldtag",
+        )
+        _create_tenant_with_state(
+            user_suffix=2,
+            pending_config_version=0,
+            config_version=0,
+            last_message_at=now - timedelta(minutes=20),
+            container_image_tag="oldtag",
+        )
+
+        response = self.client.post("/api/v1/cron/apply-pending-configs/")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["image_enqueued"], 1)
+        self.assertEqual(body["image_skipped_imminent_cron"], 1)
+
+        image_calls = _extract_batch_tasks(mock_batch, "apply_single_tenant_image")
+        self.assertEqual(len(image_calls), 1)

@@ -53,6 +53,15 @@ _CRON_WAKE_IDLE_SECONDS = 1800  # 30 minutes
 # unnecessarily for sparse cron schedules.
 _CRON_LOOKAHEAD_WINDOW_SECONDS = 5400  # 90 minutes
 
+# Defer-window used by ``_cron_active_or_imminent`` for hourly sweeps
+# (hibernate-idle, image-bump). Catches the common "sweep fires at :00,
+# user cron fires at :00" race. Wider than the gateway's worst-case
+# response time so a slow cron.list call doesn't accidentally race past
+# the deferral. Smaller than the 90 min look-ahead because that one is
+# about keeping a warm container warm; this one is about not killing
+# a cron mid-fire.
+_CRON_DEFER_WINDOW_SECONDS = 300  # 5 minutes
+
 
 def hibernate_idle_tenant(tenant: Tenant) -> bool:
     """Hibernate a single idle tenant's container.
@@ -365,6 +374,78 @@ def _next_cron_within_window(
         candidates.append(next_run)
 
     return min(candidates) if candidates else None
+
+
+def _cron_active_or_imminent(
+    tenant: Tenant,
+    *,
+    window_seconds: int = _CRON_DEFER_WINDOW_SECONDS,
+) -> str | None:
+    """Return a skip reason if ``tenant`` has a cron mid-flight or about to
+    fire within ``window_seconds`` — else ``None``.
+
+    Used by the hourly sweeps (``hibernate_idle_tenants_task``,
+    ``apply_pending_configs``'s image batch) to defer a tenant when killing
+    the container right now would interrupt a user-visible cron run. The
+    existing backward-looking ``cron_wake_at`` guard only catches tenants
+    that were just woken for a cron; it misses two failure modes that
+    triggered the canary 2026-05-12 12:00 evening-check-in loss:
+
+    1. ``cron_in_flight`` — a job is mid-execution
+       (``state.runningAtMs`` set). Hibernating now sends SIGTERM
+       mid-run; the agent's reply never reaches the user.
+    2. ``cron_imminent`` — a job is scheduled to fire within
+       ``window_seconds``. The sweep would start hibernation just as the
+       cron timer fires, racing the Azure revision-deactivation against
+       the in-process cron dispatch.
+
+    Single live ``cron.list`` services both checks. Conservative on
+    failure: returns ``None`` (don't block the sweep) if the gateway is
+    unreachable — the 2h idle cutoff and ``cron_wake_at`` still act as
+    backstops, and the next sweep will retry.
+    """
+    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
+    from apps.orchestrator.services import _extract_cron_jobs
+
+    try:
+        result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": False})
+        jobs = _extract_cron_jobs(result)
+    except GatewayError:
+        logger.warning(
+            "defer-for-cron: live cron.list failed for tenant %s — proceeding without deferral",
+            str(tenant.id)[:8],
+            exc_info=True,
+        )
+        return None
+
+    if not jobs:
+        return None
+
+    now_ms = int(timezone.now().timestamp() * 1000)
+    cutoff_ms = now_ms + window_seconds * 1000
+
+    # In-flight check first — it's a stronger signal (we know a cron is
+    # actively running right now, not just scheduled).
+    for job in jobs:
+        if not isinstance(job, dict) or not job.get("enabled", True):
+            continue
+        state = job.get("state") or {}
+        running_at = state.get("runningAtMs")
+        if isinstance(running_at, int):
+            return "cron_in_flight"
+
+    for job in jobs:
+        if not isinstance(job, dict) or not job.get("enabled", True):
+            continue
+        state = job.get("state") or {}
+        next_run = state.get("nextRunAtMs")
+        if not isinstance(next_run, int):
+            continue
+        if next_run <= now_ms or next_run > cutoff_ms:
+            continue
+        return "cron_imminent"
+
+    return None
 
 
 def wake_hibernated_tenant(tenant: Tenant) -> bool:

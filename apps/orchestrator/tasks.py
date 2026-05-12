@@ -822,6 +822,7 @@ def hibernate_idle_tenants_task() -> dict:
     hibernated = 0
     failed = 0
     skipped_cron_wake = 0
+    skipped_imminent_cron = 0
     with transaction.atomic():
         idle_tenants = (
             Tenant.objects.filter(
@@ -833,6 +834,8 @@ def hibernate_idle_tenants_task() -> dict:
             .filter(Q(cron_wake_at__isnull=True) | Q(cron_wake_at__lt=cutoff))
             .select_for_update(skip_locked=True)
         )
+
+        from apps.orchestrator.hibernation import _cron_active_or_imminent
 
         for tenant in idle_tenants:
             # Re-check last_message_at + cron_wake_at to avoid TOCTOU race
@@ -849,18 +852,39 @@ def hibernate_idle_tenants_task() -> dict:
                 skipped_cron_wake += 1
                 continue
 
+            # Forward-looking guard: ``cron_wake_at`` only catches tenants
+            # we just woke for a cron. Long-running awake tenants miss
+            # that signal entirely, so the in-flight + lookahead check
+            # below covers the canary 2026-05-12 12:00 case (continuously
+            # awake since the morning deploy, killed mid-evening-check-in).
+            defer_reason = _cron_active_or_imminent(tenant)
+            if defer_reason:
+                skipped_imminent_cron += 1
+                logger.info(
+                    "hibernate_idle_tenants: deferring tenant %s (%s)",
+                    str(tenant.id)[:8],
+                    defer_reason,
+                )
+                continue
+
             if hibernate_idle_tenant(tenant):
                 hibernated += 1
             else:
                 failed += 1
 
     logger.info(
-        "hibernate_idle_tenants: hibernated=%d failed=%d skipped_cron_wake=%d",
+        "hibernate_idle_tenants: hibernated=%d failed=%d skipped_cron_wake=%d skipped_imminent_cron=%d",
         hibernated,
         failed,
         skipped_cron_wake,
+        skipped_imminent_cron,
     )
-    return {"hibernated": hibernated, "failed": failed, "skipped_cron_wake": skipped_cron_wake}
+    return {
+        "hibernated": hibernated,
+        "failed": failed,
+        "skipped_cron_wake": skipped_cron_wake,
+        "skipped_imminent_cron": skipped_imminent_cron,
+    }
 
 
 def nightly_extraction_task() -> dict:
