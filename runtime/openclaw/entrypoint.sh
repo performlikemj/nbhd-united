@@ -120,6 +120,21 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     chmod 600 "$CLAUDE_CRED_PATH"
     echo "[entrypoint] wrote $CLAUDE_CRED_PATH (BYO Anthropic CLI)"
 
+    # Tool-deny policy. The BYO Claude CLI runs as a model backend for
+    # OpenClaw, NOT as the tool-execution layer — OpenClaw owns tools via
+    # its own `tools.allow/deny` policy. But Claude CLI ships with its own
+    # native Bash/Edit/Write/WebFetch tools that fire if the model output
+    # produces tool calls; a prompt-injected assistant can use those to
+    # `printenv` (Bash), exfil via web_fetch, or read /proc/self/environ
+    # (Read). Locking these down at ~/.claude/settings.json applies to
+    # every claude invocation in this container regardless of CLI args.
+    # See runtime/openclaw/claude-settings.json for the deny list.
+    if [ -f /opt/nbhd/claude-settings.json ]; then
+        cp /opt/nbhd/claude-settings.json "$CLAUDE_CRED_DIR/settings.json"
+        chmod 600 "$CLAUDE_CRED_DIR/settings.json"
+        echo "[entrypoint] wrote $CLAUDE_CRED_DIR/settings.json (BYO tool deny policy)"
+    fi
+
     # Persist claude session JSONLs by symlinking ~/.claude/projects to
     # the file share. Idempotent: only creates the link when it isn't
     # already there. If a real (non-symlink) projects dir exists from a
