@@ -1211,6 +1211,33 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
     updated = 0
     skipped = 0
     errors = 0
+
+    # Fields the user can't customize, so any drift must trigger a
+    # recreate. `model` is the canary-2026-05-12 case: a stale
+    # anthropic-cli/... value left over from BYO setup that Django no
+    # longer sets but OpenClaw still has stored. `kind` covers the
+    # legacy systemEvent → agentTurn migration. New fields with the
+    # same property go here.
+    _NON_MESSAGE_PAYLOAD_DRIFT_FIELDS = ("model", "kind")
+
+    def _payload_non_message_drift(existing_payload: dict, desired_payload: dict) -> list[str]:
+        """Return non-message payload fields that drifted between sides.
+
+        Uses `dict.get` so a missing-vs-present mismatch ALSO counts as
+        drift — that's exactly the canary case: Django generates the
+        payload without a `model` field, OpenClaw stores `model =
+        anthropic-cli/...` from an earlier code path. `None != 'anthropic-cli/...'`,
+        so we trigger recreate, OpenClaw drops the field, and the next
+        fire falls through to `agents.defaults.model.primary`.
+        """
+        if not isinstance(existing_payload, dict) or not isinstance(desired_payload, dict):
+            return []
+        return [
+            field
+            for field in _NON_MESSAGE_PAYLOAD_DRIFT_FIELDS
+            if existing_payload.get(field) != desired_payload.get(field)
+        ]
+
     for desired in desired_jobs:
         name = desired.get("name", "")
         if name not in existing_by_name:
@@ -1230,12 +1257,31 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
         desired_payload = desired.get("payload", {})
         desired_message = desired_payload.get("message", "")
 
+        # Non-message payload drift (model, kind). These fields the user
+        # can't customize — if they differ, the cron is either misrouted
+        # (stale `model` rejected by the agents allowlist → preflight
+        # failure, see canary 2026-05-12) or shape-broken (legacy
+        # systemEvent vs current agentTurn). Force recreate regardless
+        # of message customization: a custom prompt the user can re-set
+        # is recoverable; a silently-failing cron isn't.
+        non_message_drift = _payload_non_message_drift(existing_payload, desired_payload)
+
         # Compare structural body only — strip the date preamble that
         # _prepare_cron_prompt injects, otherwise every refresh would
         # churn even when nothing semantic changed.
-        if _strip_date_line(existing_message) != _strip_date_line(desired_message):
-            if _is_default_prompt(existing_message):
+        message_differs = _strip_date_line(existing_message) != _strip_date_line(desired_message)
+        if message_differs:
+            if _is_default_prompt(existing_message) or non_message_drift:
                 patch["payload"] = desired_payload
+                if non_message_drift and not _is_default_prompt(existing_message):
+                    logger.warning(
+                        "update_system_cron_prompts: recreating '%s' for tenant %s "
+                        "due to non-message payload drift (%s); user-customized "
+                        "message will be reset to default",
+                        name,
+                        tenant_id,
+                        ",".join(non_message_drift),
+                    )
             else:
                 logger.info(
                     "update_system_cron_prompts: skipping '%s' for tenant %s (user-customized)",
@@ -1243,6 +1289,15 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
                     tenant_id,
                 )
                 skipped += 1
+        elif non_message_drift:
+            # Message matches but model/kind drifted — recreate to repair.
+            patch["payload"] = desired_payload
+            logger.info(
+                "update_system_cron_prompts: recreating '%s' for tenant %s due to non-message payload drift (%s)",
+                name,
+                tenant_id,
+                ",".join(non_message_drift),
+            )
 
         # Check timezone: always fix if wrong
         existing_schedule = existing.get("schedule", {})
