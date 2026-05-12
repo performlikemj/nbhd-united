@@ -99,6 +99,98 @@ class BillingWebhookServiceTest(TestCase):
         self.assertEqual(self.tenant.stripe_subscription_id, "sub_999")
         mock_publish.assert_not_called()
 
+    @patch("apps.orchestrator.services.update_system_cron_prompts")
+    @patch("apps.cron.suspension.resume_tenant_crons")
+    @patch("apps.orchestrator.azure_client.scale_container_app")
+    @patch("apps.cron.publish.publish_task")
+    def test_reactivation_invokes_cron_payload_sync_after_resume(
+        self,
+        mock_publish,
+        mock_scale,
+        mock_resume,
+        mock_payload_sync,
+    ):
+        """Suspended→Active transition must call update_system_cron_prompts
+        AFTER resume_tenant_crons so payload drift (e.g. stale
+        ``payload.model = anthropic-cli/...`` left over from a BYO setup
+        before the suspension) is fixed before any cron has a chance to
+        fire on the freshly-woken container.
+
+        Canary 2026-05-12 reproduction: pre-PR-#532, this stale model
+        survived for weeks because suspended tenants don't run
+        apply_pending_configs and the reactivation flow never sync'd
+        payloads. This test pins the eager-sync contract.
+        """
+        self.tenant.is_trial = False
+        self.tenant.status = Tenant.Status.SUSPENDED
+        self.tenant.container_id = "oc-reactivate"
+        self.tenant.container_fqdn = "oc-reactivate.internal.example.io"
+        self.tenant.save(
+            update_fields=["is_trial", "status", "container_id", "container_fqdn", "updated_at"],
+        )
+        mock_resume.return_value = {"enabled": 5, "already_enabled": 0, "errors": 0, "job_names": []}
+        mock_payload_sync.return_value = {"updated": 1, "skipped": 0, "errors": 0}
+
+        handle_checkout_completed(
+            {
+                "metadata": {"user_id": str(self.tenant.user_id), "tier": "starter"},
+                "customer": "cus_react",
+                "subscription": "sub_react",
+            }
+        )
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+        # The payload-sync hook must have been called exactly once with the
+        # reactivated tenant. Ordering vs. resume_tenant_crons is enforced
+        # by source — they're sequential in the same try block.
+        mock_payload_sync.assert_called_once()
+        sync_arg = mock_payload_sync.call_args.args[0]
+        self.assertEqual(sync_arg.id, self.tenant.id)
+        # And resume_tenant_crons must have been called too (the hook
+        # runs after it, not in place of it).
+        mock_resume.assert_called_once()
+
+    @patch("apps.orchestrator.services.update_system_cron_prompts")
+    @patch("apps.cron.suspension.resume_tenant_crons")
+    @patch("apps.orchestrator.azure_client.scale_container_app")
+    @patch("apps.cron.publish.publish_task")
+    def test_reactivation_continues_when_cron_payload_sync_fails(
+        self,
+        mock_publish,
+        mock_scale,
+        mock_resume,
+        mock_payload_sync,
+    ):
+        """A drift-fix failure during reactivation must NOT block the
+        rest of the flow. The next apply_pending_configs sweep is the
+        safety net — losing reactivation entirely because of a sync
+        hiccup would be worse than waiting one hour for the lazy path.
+        """
+        self.tenant.is_trial = False
+        self.tenant.status = Tenant.Status.SUSPENDED
+        self.tenant.container_id = "oc-reactivate-err"
+        self.tenant.container_fqdn = "oc-reactivate-err.internal.example.io"
+        self.tenant.save(
+            update_fields=["is_trial", "status", "container_id", "container_fqdn", "updated_at"],
+        )
+        mock_resume.return_value = {"enabled": 5, "already_enabled": 0, "errors": 0, "job_names": []}
+        mock_payload_sync.side_effect = RuntimeError("simulated gateway flake")
+
+        # Must not raise — reactivation should swallow the sync exception.
+        handle_checkout_completed(
+            {
+                "metadata": {"user_id": str(self.tenant.user_id), "tier": "starter"},
+                "customer": "cus_react_err",
+                "subscription": "sub_react_err",
+            }
+        )
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+        # Hook was still attempted, just raised.
+        mock_payload_sync.assert_called_once()
+
     @patch("apps.cron.publish.publish_task")
     def test_subscription_deleted_finds_tenant_by_subscription_id(self, mock_publish):
         self.tenant.stripe_subscription_id = "sub_lookup"

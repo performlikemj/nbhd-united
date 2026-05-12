@@ -216,6 +216,36 @@ def handle_checkout_completed(session_data: dict) -> None:
                     "Failed to re-enable crons for tenant %s — may need manual reseed",
                     tenant.id,
                 )
+
+            # Eagerly sync cron payloads against Postgres-canonical. Suspended
+            # tenants don't run apply_pending_configs (they're filtered out by
+            # the ACTIVE-status gate), so any drift accumulated before
+            # suspension stays frozen in OpenClaw runtime. PR #532's Layer 2
+            # diff would catch it lazily at the next post-reactivation sweep,
+            # but that's up to an hour of "first cron fire might silently
+            # error at preflight." Doing it here eagerly closes the window —
+            # the canary 2026-05-12 incident had Evening Check-in failing for
+            # multiple days because the stale `payload.model` was never
+            # caught at reactivation time.
+            try:
+                from apps.orchestrator.services import update_system_cron_prompts
+
+                drift_result = update_system_cron_prompts(tenant)
+                logger.info(
+                    "Reactivation cron-payload sync for tenant %s: updated=%d skipped=%d errors=%d",
+                    tenant.id,
+                    drift_result.get("updated", 0),
+                    drift_result.get("skipped", 0),
+                    drift_result.get("errors", 0),
+                )
+            except Exception:
+                # Don't block reactivation on a drift-fix failure. The next
+                # apply_pending_configs sweep is the safety net.
+                logger.exception(
+                    "Reactivation cron-payload sync failed for tenant %s — "
+                    "next apply_pending_configs sweep will catch drift",
+                    tenant.id,
+                )
         except Exception:
             logger.exception(
                 "Failed to wake container %s for tenant %s — may need re-provisioning", tenant.container_id, tenant.id
