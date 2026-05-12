@@ -2,6 +2,16 @@
   "id": "nbhd-reddit-tools",
   "name": "NBHD Reddit Tools",
   "description": "Reddit digest, monitoring, and posting tools backed by NBHD runtime endpoints.",
+  "contracts": {
+    "tools": [
+      "nbhd_reddit_connect",
+      "nbhd_reddit_status",
+      "nbhd_reddit_digest",
+      "nbhd_reddit_my_activity",
+      "nbhd_reddit_post",
+      "nbhd_reddit_reply"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

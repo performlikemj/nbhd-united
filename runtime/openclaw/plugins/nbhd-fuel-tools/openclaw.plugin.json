@@ -2,6 +2,22 @@
   "id": "nbhd-fuel-tools",
   "name": "NBHD Fuel Tools",
   "description": "Workout tracking, body weight logging, fitness profile management, and progress context.",
+  "contracts": {
+    "tools": [
+      "nbhd_fuel_audit",
+      "nbhd_fuel_summary",
+      "nbhd_fuel_log_workout",
+      "nbhd_fuel_update_workout",
+      "nbhd_fuel_delete_workout",
+      "nbhd_fuel_log_body_weight",
+      "nbhd_fuel_delete_body_weight",
+      "nbhd_fuel_log_sleep",
+      "nbhd_fuel_update_profile",
+      "nbhd_fuel_create_plan",
+      "nbhd_fuel_update_plan",
+      "nbhd_fuel_delete_plan"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
