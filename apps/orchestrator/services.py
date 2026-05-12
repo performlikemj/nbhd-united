@@ -1220,23 +1220,40 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
     # same property go here.
     _NON_MESSAGE_PAYLOAD_DRIFT_FIELDS = ("model", "kind")
 
-    def _payload_non_message_drift(existing_payload: dict, desired_payload: dict) -> list[str]:
+    def _payload_non_message_drift(existing: dict, desired: dict) -> list[str]:
         """Return non-message payload fields that drifted between sides.
 
-        Uses `dict.get` so a missing-vs-present mismatch ALSO counts as
-        drift — that's exactly the canary case: Django generates the
-        payload without a `model` field, OpenClaw stores `model =
-        anthropic-cli/...` from an earlier code path. `None != 'anthropic-cli/...'`,
-        so we trigger recreate, OpenClaw drops the field, and the next
-        fire falls through to `agents.defaults.model.primary`.
+        Compares full job defs so we can fall back to the top-level
+        `model` field on the desired side. OpenClaw normalizes top-level
+        `model` into `payload.model` on cron.add (observed on Heartbeat
+        2026-05-12 16:11 sweep), so:
+
+            desired.model = "openrouter/minimax/..."   (top-level)
+            desired.payload = {kind, message}          (no model)
+            existing.payload.model = "openrouter/minimax/..."  (stored)
+
+        A naive `existing.payload.model != desired.payload.model` says
+        DRIFT every time and triggers a no-op recreate on every sweep
+        — same churn class as PR #505. The fix is to OR in the
+        top-level field on the desired side. The existing side is read
+        from payload only, since OpenClaw always stores it there.
         """
+        existing_payload = existing.get("payload", {}) if isinstance(existing, dict) else {}
+        desired_payload = desired.get("payload", {}) if isinstance(desired, dict) else {}
         if not isinstance(existing_payload, dict) or not isinstance(desired_payload, dict):
             return []
-        return [
-            field
-            for field in _NON_MESSAGE_PAYLOAD_DRIFT_FIELDS
-            if existing_payload.get(field) != desired_payload.get(field)
-        ]
+        drift = []
+        for field in _NON_MESSAGE_PAYLOAD_DRIFT_FIELDS:
+            existing_value = existing_payload.get(field)
+            desired_value = desired_payload.get(field)
+            if desired_value is None and field == "model":
+                # Top-level fallback for cron defs that pin model at the
+                # outer level (Heartbeat). Other fields are payload-only
+                # by convention so no fallback needed.
+                desired_value = desired.get(field) if isinstance(desired, dict) else None
+            if existing_value != desired_value:
+                drift.append(field)
+        return drift
 
     for desired in desired_jobs:
         name = desired.get("name", "")
@@ -1264,7 +1281,7 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
         # systemEvent vs current agentTurn). Force recreate regardless
         # of message customization: a custom prompt the user can re-set
         # is recoverable; a silently-failing cron isn't.
-        non_message_drift = _payload_non_message_drift(existing_payload, desired_payload)
+        non_message_drift = _payload_non_message_drift(existing, desired)
 
         # Compare structural body only — strip the date preamble that
         # _prepare_cron_prompt injects, otherwise every refresh would
