@@ -745,8 +745,6 @@ def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
     """
     import logging
 
-    from django.conf import settings
-
     from apps.tenants.models import Tenant
 
     logger = logging.getLogger(__name__)
@@ -760,11 +758,9 @@ def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
         return
 
     url = f"https://{tenant.container_fqdn}/v1/chat/completions"
-    gateway_token = getattr(settings, "NBHD_INTERNAL_API_KEY", "").strip()
-    if not gateway_token:
-        from apps.orchestrator.azure_client import read_key_vault_secret
+    from apps.cron.gateway_client import get_gateway_token_for_tenant
 
-        gateway_token = read_key_vault_secret("nbhd-internal-api-key") or ""
+    gateway_token = get_gateway_token_for_tenant(tenant)
 
     user_tz = getattr(tenant.user, "timezone", None) or "UTC"
 

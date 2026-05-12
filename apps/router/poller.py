@@ -1178,7 +1178,9 @@ class TelegramPoller:
         if not fqdn:
             return False
         url = f"https://{fqdn}/health"
-        internal_key = getattr(settings, "NBHD_INTERNAL_API_KEY", "")
+        from apps.cron.gateway_client import get_gateway_token_for_tenant
+
+        internal_key = get_gateway_token_for_tenant(tenant)
         while _time.time() < deadline:
             try:
                 resp = httpx.get(url, headers={"X-NBHD-Internal-Key": internal_key}, timeout=5)
