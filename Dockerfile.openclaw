@@ -50,6 +50,7 @@ COPY runtime/openclaw/suppress-chmod-eperm.js /opt/nbhd/suppress-chmod-eperm.js
 COPY runtime/openclaw/redact-stdout.js /opt/nbhd/redact-stdout.js
 COPY runtime/openclaw/tool-logger.js /opt/nbhd/tool-logger.js
 COPY runtime/openclaw/claude-with-token.sh /opt/nbhd/claude-with-token.sh
+COPY runtime/openclaw/claude-settings.json /opt/nbhd/claude-settings.json
 COPY runtime/openclaw/entrypoint.sh /usr/local/bin/nbhd-openclaw-entrypoint
 
 RUN chmod +x /usr/local/bin/nbhd-openclaw-entrypoint /opt/nbhd/claude-with-token.sh \

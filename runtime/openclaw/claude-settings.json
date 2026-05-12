@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash",
+      "Edit",
+      "Write",
+      "MultiEdit",
+      "NotebookEdit",
+      "WebFetch",
+      "KillBash",
+      "BashOutput",
+      "Read(/proc/**)",
+      "Read(/sys/**)",
+      "Read(/dev/**)",
+      "Read(/etc/**)",
+      "Read(/root/**)",
+      "Read(/var/log/**)",
+      "Read(/run/secrets/**)",
+      "Read(**/.credentials.json)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(/opt/nbhd/**)"
+    ]
+  }
+}
