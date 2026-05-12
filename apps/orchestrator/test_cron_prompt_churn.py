@@ -230,3 +230,172 @@ class UpdateSystemCronPromptsNoChurnTests(TestCase):
             1,
             "Expected exactly 1 cron.add for the genuinely-drifted job",
         )
+
+
+class UpdateSystemCronPromptsNonMessageDriftTests(TestCase):
+    """Pin the 2026-05-12 canary bug: stale `payload.model` in OpenClaw
+    runtime that Django stopped setting. The diff was message-only, so a
+    `model = anthropic-cli/...` value left over from BYO setup persisted
+    indefinitely and broke every Evening Check-in cron fire at preflight.
+
+    These tests cover:
+    - The Layer 1 invariant: Django's `build_cron_seed_jobs` doesn't set
+      `payload.model` for any non-Heartbeat system cron (so a future
+      regression that re-introduces the field can't slip in).
+    - The Layer 2 corrective: `update_system_cron_prompts` recreates a
+      cron when only `payload.model` drifts, including when the message
+      is user-customized (the user can re-prompt; a stale model can't
+      be patched at fire time).
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(
+            display_name="Payload Drift Test",
+            telegram_chat_id=555444333,
+        )
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.container_id = "oc-payload-drift"
+        self.tenant.container_fqdn = "oc-payload-drift.internal.example.io"
+        self.tenant.save()
+
+    def test_layer1_no_system_cron_sets_payload_model(self):
+        """Django's seed payloads must omit `payload.model` for system
+        crons that should fall through to `agents.defaults.model.primary`.
+
+        Heartbeat is the only exception — it explicitly pins a cheap
+        model (MINIMAX_MODEL) regardless of the tenant's tier or BYO
+        state, and that model is always in the allowlist for every
+        tier. If Heartbeat's pinned model ever drifts off the allowlist,
+        we'd have the same class of preflight rejection.
+        """
+        jobs = build_cron_seed_jobs(self.tenant)
+        from apps.orchestrator.config_generator import _build_heartbeat_cron
+
+        heartbeat = _build_heartbeat_cron(self.tenant)
+        if heartbeat is not None:
+            jobs = [*jobs, heartbeat]
+
+        offending = []
+        for job in jobs:
+            payload = job.get("payload", {})
+            if "model" not in payload:
+                continue
+            if job["name"] == "Heartbeat Check-in":
+                # Heartbeat is allowed to pin — but the value must be a
+                # canonical openrouter/* model so it lives in every tier's
+                # allowlist.
+                model = payload["model"]
+                self.assertTrue(
+                    model.startswith("openrouter/"),
+                    f"Heartbeat payload.model {model!r} must be openrouter/* "
+                    "to survive in every tier's agents.defaults.models allowlist",
+                )
+                continue
+            offending.append((job["name"], payload["model"]))
+
+        self.assertEqual(
+            offending,
+            [],
+            f"System crons must not pin payload.model — let them fall through to "
+            f"agents.defaults.model.primary so model switches (e.g. BYO ↔ OpenRouter) "
+            f"take effect immediately. Offenders: {offending}",
+        )
+
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_layer2_recreate_on_stale_model_with_default_message(self, mock_invoke):
+        """Canary 2026-05-12 reproduction: OpenClaw runtime has
+        `payload.model = anthropic-cli/...` left from BYO setup; Django's
+        desired payload has no model field. The diff must trigger
+        delete+create, even though the message matches.
+        """
+        existing = self._existing_jobs_from_seed_with_stale_model()
+        mock_invoke.return_value = _list_response(existing)
+
+        update_system_cron_prompts(self.tenant)
+
+        evening_remove = [
+            call
+            for call in mock_invoke.call_args_list
+            if call.args[1] == "cron.remove" and call.args[2].get("jobId") == "job-Evening Check-in"
+        ]
+        evening_add = [
+            call
+            for call in mock_invoke.call_args_list
+            if call.args[1] == "cron.add" and call.args[2].get("job", {}).get("name") == "Evening Check-in"
+        ]
+        self.assertEqual(
+            len(evening_remove),
+            1,
+            "Expected cron.remove for Evening Check-in (stale payload.model drift)",
+        )
+        self.assertEqual(
+            len(evening_add),
+            1,
+            "Expected cron.add for Evening Check-in to repair stale model",
+        )
+        added_payload = evening_add[0].args[2]["job"]["payload"]
+        self.assertNotIn(
+            "model",
+            added_payload,
+            "Re-added Evening Check-in payload must omit `model` so the agent "
+            "uses agents.defaults.model.primary at fire time",
+        )
+
+    @patch("apps.orchestrator.services.invoke_gateway_tool")
+    def test_layer2_recreate_on_stale_model_with_custom_message(self, mock_invoke):
+        """Even with a user-customized prompt, stale `payload.model`
+        must force recreate — the cron is silently failing preflight
+        otherwise, and a custom prompt the user can re-write is more
+        recoverable than a cron that never fires.
+        """
+        existing = self._existing_jobs_from_seed_with_stale_model()
+        # Mark Evening Check-in's message as user-customized so it would
+        # be skipped under the old (message-only) policy.
+        evening_idx = next(i for i, e in enumerate(existing) if e["name"] == "Evening Check-in")
+        existing[evening_idx]["payload"]["message"] = (
+            "Custom user prompt — totally rewritten, none of the default prefixes."
+        )
+        mock_invoke.return_value = _list_response(existing)
+
+        update_system_cron_prompts(self.tenant)
+
+        recreate_evening = [
+            call
+            for call in mock_invoke.call_args_list
+            if call.args[1] in ("cron.remove", "cron.add")
+            and (
+                call.args[2].get("jobId") == "job-Evening Check-in"
+                or call.args[2].get("job", {}).get("name") == "Evening Check-in"
+            )
+        ]
+        self.assertEqual(
+            len(recreate_evening),
+            2,
+            "Stale model must force recreate even when the message is custom — "
+            "a silently-failing cron is worse than a re-customizable prompt",
+        )
+
+    def _existing_jobs_from_seed_with_stale_model(self) -> list[dict]:
+        """Build `existing_jobs` where Evening Check-in carries the
+        2026-05-12 stale BYO model in its payload. All other crons
+        match the desired payload exactly (so the diff is scoped).
+        """
+        existing = []
+        for desired in build_cron_seed_jobs(self.tenant):
+            payload = dict(desired["payload"])
+            if "message" in payload:
+                payload["message"] = _oc_normalize(payload["message"])
+            if desired["name"] == "Evening Check-in":
+                payload["model"] = "anthropic-cli/claude-sonnet-4-6"
+            existing.append(
+                {
+                    "id": f"job-{desired['name']}",
+                    "name": desired["name"],
+                    "schedule": desired["schedule"],
+                    "sessionTarget": desired["sessionTarget"],
+                    "payload": payload,
+                    "delivery": desired.get("delivery", {}),
+                    "enabled": desired.get("enabled", True),
+                }
+            )
+        return existing
