@@ -120,8 +120,35 @@ def get_authorization_client():
     return AuthorizationManagementClient(_get_provisioner_credential(), settings.AZURE_SUBSCRIPTION_ID)
 
 
-def assign_key_vault_role(principal_id: str) -> None:
-    """Assign 'Key Vault Secrets User' to identity on the project vault."""
+# Secrets a tenant container needs to read from Key Vault. Matches the
+# `keyVaultUrl` references in `create_container_app` below. Kept narrow on
+# purpose: vault-scope grants let any tenant MI read cross-cutting secrets
+# (database-url, stripe-live-secret-key, storage-account-key, qstash-*),
+# which is the catastrophic-on-prompt-inject path. Per-secret RBAC keeps
+# the blast radius of an MI-token leak to just these names.
+DEFAULT_TENANT_KV_SECRETS: tuple[str, ...] = (
+    "anthropic-api-key",
+    "nbhd-internal-api-key",
+    "openai-api-key",
+    "openrouter-api-key",
+    "brave-api-key",
+)
+
+
+def assign_key_vault_role(
+    principal_id: str,
+    secret_names: tuple[str, ...] | list[str] | None = None,
+) -> None:
+    """Grant 'Key Vault Secrets User' to identity, scoped per-secret.
+
+    `secret_names` defaults to `DEFAULT_TENANT_KV_SECRETS`. Pass an explicit
+    tuple/list to override (e.g. fleet migration that needs to cover legacy
+    bindings like `telegram-bot-token`). Each name gets its own role
+    assignment at `.../vaults/<vault>/secrets/<name>` scope.
+
+    Idempotent: deterministic uuid5 assignment names mean re-running on
+    already-granted secrets is a no-op (Azure returns 409, swallowed).
+    """
     if _is_mock():
         logger.info("[MOCK] Assigned Key Vault Secrets User to %s", principal_id)
         return
@@ -137,39 +164,45 @@ def assign_key_vault_role(principal_id: str) -> None:
     # Well-known Azure built-in role ID for Key Vault Secrets User
     KV_SECRETS_USER_ROLE = "4633458b-17de-408a-b874-0445c86b69e6"
 
-    scope = (
+    if secret_names is None:
+        secret_names = DEFAULT_TENANT_KV_SECRETS
+
+    vault_scope = (
         f"/subscriptions/{settings.AZURE_SUBSCRIPTION_ID}"
         f"/resourceGroups/{settings.AZURE_RESOURCE_GROUP}"
         f"/providers/Microsoft.KeyVault/vaults/{vault_name}"
     )
-    role_def_id = f"{scope}/providers/Microsoft.Authorization/roleDefinitions/{KV_SECRETS_USER_ROLE}"
-
-    # Deterministic UUID → idempotent (same identity + role + scope = same assignment name)
-    assignment_name = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"{principal_id}:{KV_SECRETS_USER_ROLE}:{scope}",
-        )
-    )
 
     from azure.mgmt.authorization.models import RoleAssignmentCreateParameters
 
-    try:
-        client.role_assignments.create(
-            scope=scope,
-            role_assignment_name=assignment_name,
-            parameters=RoleAssignmentCreateParameters(
-                role_definition_id=role_def_id,
-                principal_id=principal_id,
-                principal_type="ServicePrincipal",
-            ),
+    for secret_name in secret_names:
+        scope = f"{vault_scope}/secrets/{secret_name}"
+        role_def_id = f"{scope}/providers/Microsoft.Authorization/roleDefinitions/{KV_SECRETS_USER_ROLE}"
+
+        # Deterministic UUID → idempotent (same identity + role + scope = same assignment name)
+        assignment_name = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"{principal_id}:{KV_SECRETS_USER_ROLE}:{scope}",
+            )
         )
-        logger.info("Assigned KV Secrets User to %s on %s", principal_id, vault_name)
-    except Exception as exc:
-        if hasattr(exc, "status_code") and exc.status_code == 409:
-            logger.info("KV role already assigned to %s (idempotent)", principal_id)
-        else:
-            raise
+
+        try:
+            client.role_assignments.create(
+                scope=scope,
+                role_assignment_name=assignment_name,
+                parameters=RoleAssignmentCreateParameters(
+                    role_definition_id=role_def_id,
+                    principal_id=principal_id,
+                    principal_type="ServicePrincipal",
+                ),
+            )
+            logger.info("Assigned KV Secrets User to %s on %s/secrets/%s", principal_id, vault_name, secret_name)
+        except Exception as exc:
+            if hasattr(exc, "status_code") and exc.status_code == 409:
+                logger.info("KV role already assigned to %s for %s (idempotent)", principal_id, secret_name)
+            else:
+                raise
 
 
 def assign_acr_pull_role(principal_id: str) -> None:
