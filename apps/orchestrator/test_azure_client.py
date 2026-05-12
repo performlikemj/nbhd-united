@@ -168,9 +168,7 @@ class AssignKeyVaultRoleTest(SimpleTestCase):
             len(DEFAULT_TENANT_KV_SECRETS),
         )
 
-        scopes = [
-            call.kwargs["scope"] for call in mock_client.role_assignments.create.call_args_list
-        ]
+        scopes = [call.kwargs["scope"] for call in mock_client.role_assignments.create.call_args_list]
         expected_scopes = {
             f"/subscriptions/sub-123/resourceGroups/rg-test/providers/Microsoft.KeyVault/vaults/kv-test/secrets/{s}"
             for s in DEFAULT_TENANT_KV_SECRETS
@@ -199,9 +197,7 @@ class AssignKeyVaultRoleTest(SimpleTestCase):
         assign_key_vault_role("principal-abc", secret_names=["custom-secret-1", "custom-secret-2"])
 
         self.assertEqual(mock_client.role_assignments.create.call_count, 2)
-        scopes = {
-            call.kwargs["scope"] for call in mock_client.role_assignments.create.call_args_list
-        }
+        scopes = {call.kwargs["scope"] for call in mock_client.role_assignments.create.call_args_list}
         self.assertEqual(
             scopes,
             {
