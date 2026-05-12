@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets as secrets_lib
 import time
 
 from django.conf import settings
@@ -13,6 +14,7 @@ from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
 from apps.tenants.models import Tenant
 
 from .azure_client import (
+    DEFAULT_TENANT_KV_SECRETS,
     _is_mock,
     assign_acr_pull_role,
     assign_key_vault_role,
@@ -24,6 +26,7 @@ from .azure_client import (
     delete_tenant_file_share,
     download_config_from_file_share,
     register_environment_storage,
+    store_tenant_internal_key_in_key_vault,
     update_container_image,
     upload_config_to_file_share,
 )
@@ -232,10 +235,31 @@ def provision_tenant(tenant_id: str) -> None:
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="create_managed_identity")
         identity = create_managed_identity(str(tenant.id))
 
+        # 2a. (Phase 1b) Generate per-tenant internal API key, write to Key
+        # Vault as `tenant-<uuid>-internal-key`, and stash on the Tenant
+        # row so Django's `validate_internal_runtime_request` will accept
+        # it as the per-tenant key. Closes the Django-side cross-tenant
+        # pivot — a compromised tenant A can no longer call
+        # /api/.../<tenant_B>/... with a leaked key. See PR #524 for the
+        # validator dual-validation, then PR #525-something for fleet
+        # migration of existing tenants.
+        _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="generate_per_tenant_internal_key")
+        internal_api_key_plain = secrets_lib.token_urlsafe(48)
+        internal_api_key_kv_secret_name: str | None = None
+        if secret_backend == "keyvault":
+            internal_api_key_kv_secret_name = store_tenant_internal_key_in_key_vault(
+                str(tenant.id), internal_api_key_plain
+            )
+        tenant.internal_api_key = internal_api_key_plain
+        tenant.save(update_fields=["internal_api_key", "updated_at"])
+
         # 2b. Grant identity Key Vault access for secret references (keyvault backend only)
         if secret_backend == "keyvault":
             _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="assign_key_vault_role")
-            assign_key_vault_role(identity["principal_id"])
+            secret_names_to_grant = list(DEFAULT_TENANT_KV_SECRETS)
+            if internal_api_key_kv_secret_name:
+                secret_names_to_grant.append(internal_api_key_kv_secret_name)
+            assign_key_vault_role(identity["principal_id"], secret_names=secret_names_to_grant)
 
         # 2b2. Grant identity ACR pull access for container image
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="assign_acr_pull_role")
@@ -265,6 +289,8 @@ def provision_tenant(tenant_id: str) -> None:
             identity_id=identity["id"],
             identity_client_id=identity["client_id"],
             workspace_env=workspace_env,
+            internal_api_key_kv_secret_name=internal_api_key_kv_secret_name,
+            internal_api_key_plain_value=internal_api_key_plain,
         )
 
         # 4. Update tenant record
