@@ -155,19 +155,33 @@ class AssignKeyVaultRoleTest(SimpleTestCase):
     )
     @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
     @patch("apps.orchestrator.azure_client.get_authorization_client")
-    def test_creates_role_assignment(self, mock_get_auth_client, _mock_is_mock):
+    def test_creates_per_secret_role_assignments(self, mock_get_auth_client, _mock_is_mock):
+        from apps.orchestrator.azure_client import DEFAULT_TENANT_KV_SECRETS
+
         mock_client = MagicMock()
         mock_get_auth_client.return_value = mock_client
 
         assign_key_vault_role("principal-abc")
 
-        mock_client.role_assignments.create.assert_called_once()
-        call_kwargs = mock_client.role_assignments.create.call_args.kwargs
         self.assertEqual(
-            call_kwargs["scope"],
-            "/subscriptions/sub-123/resourceGroups/rg-test/providers/Microsoft.KeyVault/vaults/kv-test",
+            mock_client.role_assignments.create.call_count,
+            len(DEFAULT_TENANT_KV_SECRETS),
         )
-        params = call_kwargs["parameters"]
+
+        scopes = [
+            call.kwargs["scope"] for call in mock_client.role_assignments.create.call_args_list
+        ]
+        expected_scopes = {
+            f"/subscriptions/sub-123/resourceGroups/rg-test/providers/Microsoft.KeyVault/vaults/kv-test/secrets/{s}"
+            for s in DEFAULT_TENANT_KV_SECRETS
+        }
+        self.assertEqual(set(scopes), expected_scopes)
+
+        # No call should land at vault scope — that's the regression we're guarding against
+        for scope in scopes:
+            self.assertIn("/secrets/", scope, f"Unexpected vault-scope grant: {scope}")
+
+        params = mock_client.role_assignments.create.call_args_list[0].kwargs["parameters"]
         self.assertEqual(params.principal_id, "principal-abc")
         self.assertEqual(params.principal_type, "ServicePrincipal")
 
@@ -178,7 +192,34 @@ class AssignKeyVaultRoleTest(SimpleTestCase):
     )
     @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
     @patch("apps.orchestrator.azure_client.get_authorization_client")
+    def test_explicit_secret_names_overrides_default(self, mock_get_auth_client, _mock_is_mock):
+        mock_client = MagicMock()
+        mock_get_auth_client.return_value = mock_client
+
+        assign_key_vault_role("principal-abc", secret_names=["custom-secret-1", "custom-secret-2"])
+
+        self.assertEqual(mock_client.role_assignments.create.call_count, 2)
+        scopes = {
+            call.kwargs["scope"] for call in mock_client.role_assignments.create.call_args_list
+        }
+        self.assertEqual(
+            scopes,
+            {
+                "/subscriptions/sub-123/resourceGroups/rg-test/providers/Microsoft.KeyVault/vaults/kv-test/secrets/custom-secret-1",
+                "/subscriptions/sub-123/resourceGroups/rg-test/providers/Microsoft.KeyVault/vaults/kv-test/secrets/custom-secret-2",
+            },
+        )
+
+    @override_settings(
+        AZURE_SUBSCRIPTION_ID="sub-123",
+        AZURE_RESOURCE_GROUP="rg-test",
+        AZURE_KEY_VAULT_NAME="kv-test",
+    )
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_authorization_client")
     def test_idempotent_on_409_conflict(self, mock_get_auth_client, _mock_is_mock):
+        from apps.orchestrator.azure_client import DEFAULT_TENANT_KV_SECRETS
+
         mock_client = MagicMock()
         mock_get_auth_client.return_value = mock_client
 
@@ -186,9 +227,12 @@ class AssignKeyVaultRoleTest(SimpleTestCase):
         conflict_exc.status_code = 409
         mock_client.role_assignments.create.side_effect = conflict_exc
 
-        # Should not raise
+        # Should not raise; should still try every per-secret grant
         assign_key_vault_role("principal-abc")
-        mock_client.role_assignments.create.assert_called_once()
+        self.assertEqual(
+            mock_client.role_assignments.create.call_count,
+            len(DEFAULT_TENANT_KV_SECRETS),
+        )
 
     @override_settings(
         AZURE_SUBSCRIPTION_ID="sub-123",
