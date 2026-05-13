@@ -1,5 +1,6 @@
 "use client";
 
+import clsx from "clsx";
 import { useState, useCallback } from "react";
 import { Sidebar } from "@/components/journal/sidebar";
 import { DocumentView } from "@/components/journal/document-view";
@@ -61,18 +62,6 @@ export default function JournalPage() {
 
   return (
     <div className="flex h-full">
-      {/* Sidebar toggle — near document title on mobile */}
-      <button
-        type="button"
-        className="shrink-0 flex items-center justify-center w-10 h-10 rounded-xl border border-white/[0.06] bg-white/[0.02] text-ink-faint transition hover:bg-white/[0.04] hover:text-ink mr-2 lg:hidden"
-        onClick={() => setMobileSidebarOpen(true)}
-        aria-label="Open sidebar"
-      >
-        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h10M4 18h16" />
-        </svg>
-      </button>
-
       {/* Sidebar - desktop */}
       <div className="hidden lg:block">
         <Sidebar
@@ -87,26 +76,44 @@ export default function JournalPage() {
 
       {/* Mobile sidebar overlay */}
       <div
-        className={`fixed inset-0 z-40 lg:hidden transition-opacity duration-200 ${
+        className={clsx(
+          "fixed inset-0 z-40 lg:hidden transition-opacity duration-200",
           mobileSidebarOpen ? "opacity-100" : "pointer-events-none opacity-0"
-        }`}
+        )}
+        aria-hidden={!mobileSidebarOpen}
       >
         <div
-          className="absolute inset-0 bg-overlay/40 backdrop-blur-sm"
+          className="absolute inset-0 bg-overlay/50 backdrop-blur-sm"
           aria-hidden="true"
           onClick={() => setMobileSidebarOpen(false)}
         />
         <div
-          className={`relative z-10 h-full w-72 border-r border-white/[0.04] bg-[#0B0F13]/95 backdrop-blur-2xl shadow-[8px_0_40px_rgba(0,0,0,0.5)] transition-transform duration-250 ease-out ${
+          className={clsx(
+            "relative z-10 h-full w-[min(85vw,20rem)] border-r border-white/[0.04] bg-[#0B0F13]/95 backdrop-blur-2xl shadow-[8px_0_40px_rgba(0,0,0,0.5)] transition-transform duration-300 ease-out",
             mobileSidebarOpen ? "translate-x-0" : "-translate-x-full"
-          }`}
+          )}
         >
-          <Sidebar
-            activeKind={activeKind}
-            activeSlug={activeSlug}
-            onNavigate={handleNavigate}
-            recentEntries={dailyEntries.map((e) => ({ slug: e.slug, title: e.title }))}
-          />
+          {/* Close button for accessibility */}
+          <div className="flex items-center justify-end px-4 py-3 border-b border-white/[0.04]">
+            <button
+              type="button"
+              onClick={() => setMobileSidebarOpen(false)}
+              className="flex items-center justify-center rounded-xl p-2 text-ink-faint hover:bg-white/[0.04] hover:text-ink transition min-h-[44px] min-w-[44px]"
+              aria-label="Close sidebar"
+            >
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div className="h-[calc(100%-3.5rem)] overflow-y-auto">
+            <Sidebar
+              activeKind={activeKind}
+              activeSlug={activeSlug}
+              onNavigate={handleNavigate}
+              recentEntries={dailyEntries.map((e) => ({ slug: e.slug, title: e.title }))}
+            />
+          </div>
         </div>
       </div>
 
@@ -120,6 +127,7 @@ export default function JournalPage() {
             kind={activeKind}
             slug={activeSlug}
             onNavigate={handleNavigate}
+            onToggleSidebar={() => setMobileSidebarOpen(true)}
           />
         </div>
       </div>

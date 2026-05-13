@@ -45,6 +45,7 @@ interface DocumentHeaderProps {
   updatePending: boolean;
   isMobile: boolean | null;
   showSavedIndicator?: boolean;
+  onToggleSidebar?: () => void;
 }
 
 export function DocumentHeader({
@@ -59,6 +60,7 @@ export function DocumentHeader({
   updatePending,
   isMobile,
   showSavedIndicator,
+  onToggleSidebar,
 }: DocumentHeaderProps) {
   const { data: doc } = useDocumentQuery(kind, slug);
   const handleDateNav = (days: number) => {
@@ -66,8 +68,22 @@ export function DocumentHeader({
   };
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.04] px-4 py-3 lg:px-6 lg:py-4">
-      <div className="flex items-center gap-2 min-w-0">
+    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.04] px-3 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4">
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+        {/* Sidebar toggle — integrated into header on mobile */}
+        {onToggleSidebar && (
+          <button
+            type="button"
+            onClick={onToggleSidebar}
+            className="shrink-0 flex items-center justify-center rounded-xl border border-white/[0.06] bg-white/[0.02] text-ink-faint transition hover:bg-white/[0.04] hover:text-ink active:scale-95 min-h-[44px] min-w-[44px] lg:hidden"
+            aria-label="Open sidebar"
+          >
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h10M4 18h16" />
+            </svg>
+          </button>
+        )}
+
         {/* Date navigation for daily notes */}
         {kind === "daily" && (
           <div className="flex items-center gap-1.5 sm:gap-2">
@@ -152,6 +168,13 @@ export function DocumentHeader({
         {kind !== "daily" && (
           <h1 className="truncate font-display text-base text-ink sm:text-lg">{doc?.title}</h1>
         )}
+      </div>
+
+      {/* Kind badge — visible on all screen sizes for context */}
+      <div className="hidden sm:flex items-center">
+        <span className="rounded-full border border-white/[0.06] bg-white/[0.02] px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-ink-faint">
+          {kind}
+        </span>
       </div>
 
       {/* Edit/Save buttons — hidden on mobile when not editing (pencil FAB handles edit) */}

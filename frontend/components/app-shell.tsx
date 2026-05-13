@@ -75,18 +75,18 @@ function UserMenu({ onLogout }: { onLogout: () => void }) {
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex h-9 w-9 items-center justify-center rounded-full bg-white/[0.03] border border-white/[0.06] text-ink-muted transition hover:bg-white/[0.06] hover:text-ink hover:border-white/[0.10]"
+        className="flex h-10 w-10 items-center justify-center rounded-full bg-white/[0.03] border border-white/[0.06] text-ink-muted transition hover:bg-white/[0.06] hover:text-ink hover:border-white/[0.10] focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B0F13]"
         aria-label="User menu"
         aria-expanded={open}
       >
-        <span className="font-mono text-[10px] font-medium text-ink-faint">
+        <span className="font-mono text-[11px] font-medium text-ink-faint">
           {initials}
         </span>
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-52 rounded-2xl border border-white/[0.06] bg-[#0F1419]/95 backdrop-blur-2xl p-1.5 shadow-[0_20px_55px_rgba(0,0,0,0.45)] animate-reveal z-40">
-          <div className="px-3 py-2 border-b border-white/[0.04] mb-1">
+        <div className="absolute right-0 top-full mt-2 w-56 rounded-2xl border border-white/[0.06] bg-[#0F1419]/95 backdrop-blur-2xl p-2 shadow-[0_20px_55px_rgba(0,0,0,0.45)] animate-reveal z-40">
+          <div className="px-3 py-2.5 border-b border-white/[0.04] mb-1">
             <p className="text-xs text-ink-muted truncate">{displayName}</p>
           </div>
           <button
@@ -95,7 +95,7 @@ function UserMenu({ onLogout }: { onLogout: () => void }) {
               setOpen(false);
               onLogout();
             }}
-            className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm text-ink-muted hover:bg-white/[0.04] hover:text-ink transition min-h-[44px]"
+            className="flex w-full items-center gap-2.5 rounded-xl px-3 py-3 text-left text-sm text-ink-muted hover:bg-white/[0.04] hover:text-ink transition min-h-[48px]"
           >
             <IconLogOut className="h-4 w-4" />
             Sign out
@@ -310,10 +310,15 @@ export function AppShell({ children }: { children: ReactNode }) {
             : "border-b border-transparent"
         )}
       >
-        <div className="mx-auto flex w-full max-w-6xl min-w-0 items-center justify-between gap-2 px-3 py-2 sm:gap-3 sm:px-6">
+        <div className="mx-auto flex w-full max-w-6xl min-w-0 items-center justify-between gap-2 px-3 py-2.5 sm:gap-3 sm:px-6">
           {/* Left: Logo + concise title */}
           <div className="flex items-center gap-2.5 min-w-0 shrink-0">
-            <BrandIcon size={28} />
+            <Link
+              href="/journal"
+              className="shrink-0 rounded-lg focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B0F13]"
+            >
+              <BrandIcon size={28} />
+            </Link>
             <span className="text-xs font-medium text-ink-faint tracking-wide hidden xl:block">
               Neighborhood
             </span>
@@ -334,13 +339,13 @@ export function AppShell({ children }: { children: ReactNode }) {
                   href={item.href}
                   aria-current={active ? "page" : undefined}
                   className={clsx(
-                    "relative flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all duration-200",
+                    "relative flex items-center gap-1.5 rounded-full px-3 py-2 text-xs font-medium transition-all duration-200 min-h-[40px]",
                     active
                       ? "bg-accent/15 text-accent shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
                       : "text-ink-faint hover:bg-white/[0.04] hover:text-ink-muted",
                   )}
                 >
-                  <Icon className="h-3.5 w-3.5" />
+                  <Icon className="h-4 w-4" />
                   <span>{item.label}</span>
                 </Link>
               );

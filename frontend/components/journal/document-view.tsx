@@ -34,6 +34,7 @@ interface DocumentViewProps {
   kind: string;
   slug: string;
   onNavigate?: (kind: string, slug: string) => void;
+  onToggleSidebar?: () => void;
 }
 
 /** Stardust skeleton loader */
@@ -79,7 +80,7 @@ function PencilFab({ onClick, style }: { onClick: () => void; style: React.CSSPr
   );
 }
 
-export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
+export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: DocumentViewProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [helpOpen, setHelpOpen] = useState(false);
@@ -227,6 +228,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
           updatePending={updateMutation.isPending}
           isMobile={isMobile}
           showSavedIndicator={false}
+          onToggleSidebar={onToggleSidebar}
         />
         <EmptyState />
       </div>
@@ -320,6 +322,7 @@ export function DocumentView({ kind, slug, onNavigate }: DocumentViewProps) {
         updatePending={updateMutation.isPending}
         isMobile={isMobile}
         showSavedIndicator={savedIndicator}
+        onToggleSidebar={onToggleSidebar}
       />
 
       {/* Content */}
