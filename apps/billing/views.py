@@ -1,7 +1,6 @@
 """Stripe webhook handler and billing views."""
 
 import logging
-from collections.abc import Mapping
 
 import stripe
 from django.conf import settings
@@ -46,40 +45,31 @@ def _require_stripe_api_key() -> str | None:
 
 
 def _stripe_object_to_plain_dict(obj):
-    """Recursively convert a Stripe ``StripeObject`` to a plain dict.
+    """Convert a Stripe ``StripeObject`` to a plain dict.
 
-    Required because stripe-py 15.x's ``StripeObject`` (which
-    ``stripe.Webhook.construct_event`` returns for ``event["data"]["object"]``)
-    defines a ``__getattr__`` that translates attribute access into
-    dict-key access. Calling ``.get("metadata")`` on a ``StripeObject``
-    therefore routes through ``__getattr__("get")`` → ``self["get"]`` →
-    ``KeyError`` → ``AttributeError("get")``, instead of resolving to the
-    inherited ``dict.get`` method. The handlers in ``services.py`` use
-    ``.get(...)`` throughout, so we coerce at the webhook boundary
-    instead of touching each call site.
+    Required because stripe-py 15.x's ``StripeObject`` (returned by
+    ``stripe.Webhook.construct_event`` for ``event["data"]["object"]``)
+    is no longer a ``dict`` subclass, no longer a ``Mapping``, has no
+    ``.keys``, ``.items``, or ``.get`` methods, and its ``__getattr__``
+    intercepts any attribute lookup that misses the class definition.
+    Result: ``session_data.get("metadata")`` in our handlers raises
+    ``AttributeError: get`` — every real Stripe webhook to our endpoint
+    would crash with HTTP 500.
 
-    Observed via webhook signature test 2026-05-13: real Stripe
-    ``checkout.session.completed`` events would hit the same crash if
-    a suspended tenant ever resubscribed.
+    What 15.x's ``StripeObject`` *does* expose is a documented
+    ``to_dict()`` method that returns a fully-coerced plain dict
+    (nested ``StripeObject``s become plain dicts too). That's the
+    boundary we use here. It works on 14.x too — both versions ship
+    the same public method.
+
+    Observed via webhook signature test 2026-05-13 and confirmed by
+    PR #539 CI failures iterating against stripe-py 15.0.1.
     """
-    # `Mapping` catches both stripe-py 14.x (StripeObject is a dict
-    # subclass → also a Mapping) and 15.x (StripeObject no longer
-    # subclasses dict but is still a Mapping). isinstance(obj, dict)
-    # alone would miss 15.x and pass the StripeObject through unchanged
-    # — observed via PR #539 CI failure 2026-05-13 on stripe==15.0.1.
-    if isinstance(obj, Mapping):
-        # Use __iter__ (key iteration) and __getitem__ rather than
-        # .items() because .items, .get, and other dict methods may be
-        # shadowed by StripeObject.__getattr__ in 15.x (the .get crash
-        # that motivated this fix proves the shadowing happens — assume
-        # any non-dunder method could be affected and stick to the
-        # slot-defined dunders).
-        result = {}
-        for k in obj:
-            result[k] = _stripe_object_to_plain_dict(obj[k])
-        return result
-    if isinstance(obj, list):
-        return [_stripe_object_to_plain_dict(v) for v in obj]
+    # `to_dict` is a real method on the StripeObject class hierarchy
+    # (defined, not synthesised via __getattr__), so attribute lookup
+    # resolves it via the normal MRO — no shadowing risk like .get.
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()
     return obj
 
 
