@@ -125,6 +125,10 @@ TASK_MAP = {
     # bumps config AND image atomically — required when a release crosses
     # an OpenClaw config schema boundary (e.g. 4.x → 5.x).
     "bump_openclaw_atomic_per_tenant": "apps.orchestrator.tasks.bump_openclaw_atomic_per_tenant_task",
+    # Weekly Gravity snapshot — writes PillarSnapshot rows for the
+    # assistant's history/drill/compare tools. Skips hibernated tenants;
+    # idempotent per ISO week. See apps.insights.snapshots.compute_gravity_snapshot.
+    "snapshot_gravity_weekly": "apps.insights.tasks.snapshot_gravity_weekly_task",
 }
 
 
