@@ -5,36 +5,64 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('insights', '0001_initial'),
-        ('journal', '0015_session_processed_fields'),
-        ('tenants', '0057_tenant_internal_api_key'),
+        ("insights", "0001_initial"),
+        ("journal", "0015_session_processed_fields"),
+        ("tenants", "0057_tenant_internal_api_key"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='document',
-            name='intent_status',
-            field=models.CharField(blank=True, choices=[('active', 'Active'), ('achieved', 'Achieved'), ('abandoned', 'Abandoned'), ('expired', 'Expired')], default='', max_length=16),
+            model_name="document",
+            name="intent_status",
+            field=models.CharField(
+                blank=True,
+                choices=[
+                    ("active", "Active"),
+                    ("achieved", "Achieved"),
+                    ("abandoned", "Abandoned"),
+                    ("expired", "Expired"),
+                ],
+                default="",
+                max_length=16,
+            ),
         ),
         migrations.AddField(
-            model_name='document',
-            name='pillar',
-            field=models.CharField(blank=True, choices=[('gravity', 'Gravity'), ('fuel', 'Fuel'), ('core', 'Core'), ('lessons', 'Lessons'), ('constellation', 'Constellation'), ('horizons', 'Horizons'), ('journal', 'Journal')], default='', max_length=32),
+            model_name="document",
+            name="pillar",
+            field=models.CharField(
+                blank=True,
+                choices=[
+                    ("gravity", "Gravity"),
+                    ("fuel", "Fuel"),
+                    ("core", "Core"),
+                    ("lessons", "Lessons"),
+                    ("constellation", "Constellation"),
+                    ("horizons", "Horizons"),
+                    ("journal", "Journal"),
+                ],
+                default="",
+                max_length=32,
+            ),
         ),
         migrations.AddField(
-            model_name='document',
-            name='target',
+            model_name="document",
+            name="target",
             field=models.JSONField(blank=True, null=True),
         ),
         migrations.AddField(
-            model_name='document',
-            name='topic',
-            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='documents', to='insights.topicregistry'),
+            model_name="document",
+            name="topic",
+            field=models.ForeignKey(
+                blank=True,
+                null=True,
+                on_delete=django.db.models.deletion.SET_NULL,
+                related_name="documents",
+                to="insights.topicregistry",
+            ),
         ),
         migrations.AddIndex(
-            model_name='document',
-            index=models.Index(fields=['tenant', 'pillar', 'kind'], name='journal_doc_tenant__88181f_idx'),
+            model_name="document",
+            index=models.Index(fields=["tenant", "pillar", "kind"], name="journal_doc_tenant__88181f_idx"),
         ),
     ]
