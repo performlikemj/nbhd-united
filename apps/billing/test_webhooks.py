@@ -59,6 +59,76 @@ class StripeWebhookViewTest(TestCase):
 
         self.assertEqual(response.status_code, 400)
 
+    @patch("apps.billing.views.handle_checkout_completed")
+    @patch("apps.billing.views.stripe.Webhook.construct_event")
+    def test_stripeobject_is_coerced_to_plain_dict_before_dispatch(
+        self,
+        mock_construct,
+        mock_handler,
+    ):
+        """Pin the 2026-05-13 prod-bug fix: stripe-py 15.x's StripeObject
+        has a ``__getattr__`` that hijacks ``.get(...)`` (sends it through
+        ``__getitem__`` → KeyError → AttributeError). All ``services.py``
+        handlers use ``.get(...)`` throughout, so a real
+        ``checkout.session.completed`` webhook would crash with
+        ``AttributeError: get``. The fix coerces ``event["data"]["object"]``
+        to a plain dict (recursive) before dispatching — this test asserts
+        the handler receives a plain dict, not a StripeObject lookalike
+        with the .get bug.
+        """
+        import stripe
+
+        # Construct a real-shaped CheckoutSession + nested customer object,
+        # the way Stripe's construct_event returns them. The bug only
+        # manifests on actual StripeObject instances; passing plain dicts
+        # would silently pass the test even without the fix.
+        session = stripe.checkout.Session.construct_from(
+            {
+                "id": "cs_test",
+                "object": "checkout.session",
+                "customer": "cus_test",
+                "subscription": "sub_test",
+                "metadata": {"user_id": "u-1", "tier": "starter"},
+            },
+            key=None,
+        )
+
+        # Sanity: the test fixture must actually be a StripeObject —
+        # otherwise this test is exercising the dict path and proves nothing.
+        from apps.billing.views import _stripe_object_to_plain_dict
+
+        self.assertTrue(hasattr(session, "to_dict_recursive"))
+        self.assertEqual(type(session).__name__, "Session")
+
+        mock_construct.return_value = {
+            "type": "checkout.session.completed",
+            "data": {"object": session},
+        }
+
+        response = self.client.post(
+            "/api/v1/billing/webhook/",
+            data=b"{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_handler.assert_called_once()
+        passed = mock_handler.call_args.args[0]
+        # The handler must receive a vanilla dict — no StripeObject leaves
+        # anywhere reachable via .get(...).
+        self.assertIs(type(passed), dict)
+        self.assertIs(type(passed["metadata"]), dict)
+        # And the value must round-trip the meaningful fields.
+        self.assertEqual(passed["customer"], "cus_test")
+        self.assertEqual(passed["metadata"]["user_id"], "u-1")
+
+        # Helper sanity — pure-Python unit assertion alongside the integration.
+        coerced = _stripe_object_to_plain_dict(session)
+        self.assertIs(type(coerced), dict)
+        # .get() must work on the result (the original bug class).
+        self.assertEqual(coerced.get("metadata", {}).get("user_id"), "u-1")
+
 
 @override_settings(
     STRIPE_PRICE_ID="price_starter_test",

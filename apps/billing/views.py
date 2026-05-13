@@ -44,6 +44,34 @@ def _require_stripe_api_key() -> str | None:
     return api_key
 
 
+def _stripe_object_to_plain_dict(obj):
+    """Recursively convert a Stripe ``StripeObject`` to a plain dict.
+
+    Required because stripe-py 15.x's ``StripeObject`` (which
+    ``stripe.Webhook.construct_event`` returns for ``event["data"]["object"]``)
+    defines a ``__getattr__`` that translates attribute access into
+    dict-key access. Calling ``.get("metadata")`` on a ``StripeObject``
+    therefore routes through ``__getattr__("get")`` → ``self["get"]`` →
+    ``KeyError`` → ``AttributeError("get")``, instead of resolving to the
+    inherited ``dict.get`` method. The handlers in ``services.py`` use
+    ``.get(...)`` throughout, so we coerce at the webhook boundary
+    instead of touching each call site.
+
+    Observed via webhook signature test 2026-05-13: real Stripe
+    ``checkout.session.completed`` events would hit the same crash if
+    a suspended tenant ever resubscribed.
+    """
+    if hasattr(obj, "to_dict_recursive"):
+        # stripe-py StripeObject helper — returns a fully-detached
+        # plain-dict copy with no remaining StripeObject leaves.
+        return obj.to_dict_recursive()
+    if isinstance(obj, dict):
+        return {k: _stripe_object_to_plain_dict(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_stripe_object_to_plain_dict(v) for v in obj]
+    return obj
+
+
 @csrf_exempt
 @require_POST
 def stripe_webhook(request):
@@ -68,7 +96,7 @@ def stripe_webhook(request):
     set_rls_context(service_role=True)
 
     event_type = event["type"]
-    data = event["data"]["object"]
+    data = _stripe_object_to_plain_dict(event["data"]["object"])
     logger.info("Stripe webhook: %s", event_type)
 
     match event_type:
