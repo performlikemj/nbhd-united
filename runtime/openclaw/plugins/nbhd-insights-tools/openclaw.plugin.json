@@ -1,0 +1,28 @@
+{
+  "id": "nbhd-insights-tools",
+  "name": "NBHD Insights Tools",
+  "description": "Trajectory tools for the assistant baseline — query a tenant's pillar snapshots over time, drill into a specific period, and compare two periods. Phase 1 supports pillar=gravity only.",
+  "contracts": {
+    "tools": [
+      "nbhd_insights_history",
+      "nbhd_insights_snapshot",
+      "nbhd_insights_compare"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string",
+        "description": "Override NBHD API base URL. Defaults to NBHD_API_BASE_URL env var."
+      },
+      "requestTimeoutMs": {
+        "type": "number",
+        "minimum": 1000,
+        "maximum": 60000,
+        "description": "HTTP timeout for NBHD runtime endpoint requests."
+      }
+    }
+  }
+}

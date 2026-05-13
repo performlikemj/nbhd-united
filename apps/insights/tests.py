@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import timedelta
 from decimal import Decimal
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -346,3 +346,115 @@ class InsightsApiTests(TestCase):
     def test_compare_requires_both_periods(self):
         resp = self.client.get("/api/v1/insights/compare/?pillar=gravity")
         self.assertEqual(resp.status_code, 400)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-runtime-key")
+class RuntimeInsightsViewTests(TestCase):
+    """Internal-runtime endpoints called by the nbhd-insights-tools plugin.
+
+    Authenticates via ``X-NBHD-Internal-Key`` + ``X-NBHD-Tenant-Id`` headers
+    (no JWT). Tenant identity comes from the URL; the header must match.
+    """
+
+    def setUp(self):
+        self.tenant = _make_finance_tenant(display_name="RT", chat_id=900400)
+        self.other_tenant = _make_finance_tenant(display_name="RTOther", chat_id=900401)
+
+    def _headers(self, tenant_id=None, key="test-runtime-key"):
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": key,
+            "HTTP_X_NBHD_TENANT_ID": tenant_id or str(self.tenant.id),
+        }
+
+    def _history_url(self, tenant=None, query="?pillar=gravity"):
+        tid = (tenant or self.tenant).id
+        return f"/api/v1/insights/runtime/{tid}/history/{query}"
+
+    def _snapshot_url(self, snapshot_id, tenant=None):
+        tid = (tenant or self.tenant).id
+        return f"/api/v1/insights/runtime/{tid}/snapshots/{snapshot_id}/"
+
+    def _compare_url(self, tenant=None, **params):
+        tid = (tenant or self.tenant).id
+        query = "&".join(f"{k}={v}" for k, v in params.items())
+        return f"/api/v1/insights/runtime/{tid}/compare/?{query}"
+
+    def _make_snapshot(self, tenant: Tenant, *, days_ago: int = 0, debt: str = "1000") -> PillarSnapshot:
+        return PillarSnapshot.objects.create(
+            tenant=tenant,
+            pillar=Pillar.GRAVITY.value,
+            granularity=PillarSnapshot.Granularity.WEEKLY,
+            ts=timezone.now() - timedelta(days=days_ago),
+            payload={"schema_version": 1, "totals": {"debt": debt, "savings": "0", "minimum_payments": "0"}},
+        )
+
+    # ── auth ───────────────────────────────────────────────────────────
+    def test_runtime_history_missing_key_401(self):
+        resp = self.client.get(self._history_url())
+        self.assertEqual(resp.status_code, 401)
+
+    def test_runtime_history_wrong_key_401(self):
+        resp = self.client.get(self._history_url(), **self._headers(key="wrong"))
+        self.assertEqual(resp.status_code, 401)
+
+    def test_runtime_history_tenant_scope_mismatch_401(self):
+        # Header says self.tenant, URL is for other_tenant — auth rejects
+        resp = self.client.get(
+            self._history_url(tenant=self.other_tenant),
+            **self._headers(),
+        )
+        self.assertEqual(resp.status_code, 401)
+
+    # ── history ────────────────────────────────────────────────────────
+    def test_runtime_history_returns_snapshots(self):
+        self._make_snapshot(self.tenant, days_ago=2)
+        resp = self.client.get(self._history_url(), **self._headers())
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["pillar"], "gravity")
+        self.assertEqual(body["count"], 1)
+
+    def test_runtime_history_isolates_tenant(self):
+        # Other tenant's snapshot must not leak through this tenant's URL+auth
+        self._make_snapshot(self.other_tenant, days_ago=2)
+        resp = self.client.get(self._history_url(), **self._headers())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["count"], 0)
+
+    def test_runtime_history_rejects_invalid_pillar(self):
+        resp = self.client.get(
+            self._history_url(query="?pillar=fuel"),
+            **self._headers(),
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_runtime_history_rejects_invalid_window(self):
+        resp = self.client.get(
+            self._history_url(query="?pillar=gravity&window=garbage"),
+            **self._headers(),
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    # ── snapshot detail ────────────────────────────────────────────────
+    def test_runtime_snapshot_detail_returns_payload(self):
+        snap = self._make_snapshot(self.tenant, debt="1500")
+        resp = self.client.get(self._snapshot_url(snap.id), **self._headers())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["payload"]["totals"]["debt"], "1500")
+
+    def test_runtime_snapshot_detail_cross_tenant_404(self):
+        # Snapshot belongs to other_tenant, but URL+auth are for self.tenant
+        snap = self._make_snapshot(self.other_tenant)
+        resp = self.client.get(self._snapshot_url(snap.id), **self._headers())
+        self.assertEqual(resp.status_code, 404)
+
+    # ── compare ────────────────────────────────────────────────────────
+    def test_runtime_compare_returns_signed_delta(self):
+        a = self._make_snapshot(self.tenant, days_ago=14, debt="2000")
+        b = self._make_snapshot(self.tenant, days_ago=0, debt="1500")
+        resp = self.client.get(
+            self._compare_url(pillar="gravity", period_a=a.id, period_b=b.id),
+            **self._headers(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["totals_delta"]["debt"], "-500")

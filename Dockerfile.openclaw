@@ -42,6 +42,7 @@ COPY runtime/openclaw/plugins/nbhd-image-gen /opt/nbhd/plugins/nbhd-image-gen
 COPY runtime/openclaw/plugins/nbhd-reddit-tools /opt/nbhd/plugins/nbhd-reddit-tools
 COPY runtime/openclaw/plugins/nbhd-finance-tools /opt/nbhd/plugins/nbhd-finance-tools
 COPY runtime/openclaw/plugins/nbhd-fuel-tools /opt/nbhd/plugins/nbhd-fuel-tools
+COPY runtime/openclaw/plugins/nbhd-insights-tools /opt/nbhd/plugins/nbhd-insights-tools
 COPY skills/gws-* /opt/nbhd/skills/
 COPY agent-skills /opt/nbhd/agent-skills
 COPY templates/openclaw /opt/nbhd/templates/openclaw
