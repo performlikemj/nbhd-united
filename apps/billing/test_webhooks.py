@@ -93,11 +93,17 @@ class StripeWebhookViewTest(TestCase):
             key=None,
         )
 
-        # Sanity: the test fixture must actually be a StripeObject —
-        # otherwise this test is exercising the dict path and proves nothing.
+        # Sanity: the test fixture must actually be a StripeObject (or a
+        # subclass like checkout.Session), not a plain dict — otherwise
+        # this test is exercising the dict path and proves nothing.
+        # Using `type(...) is dict` because StripeObject INHERITS from
+        # dict, so `isinstance(..., dict)` would pass for both. Don't
+        # assert hasattr(session, "to_dict_recursive") — that helper
+        # exists in stripe-py 14.x but was removed in 15.x; the fix
+        # tolerates either via the helper's hasattr fallback path.
         from apps.billing.views import _stripe_object_to_plain_dict
 
-        self.assertTrue(hasattr(session, "to_dict_recursive"))
+        self.assertIsNot(type(session), dict)
         self.assertEqual(type(session).__name__, "Session")
 
         mock_construct.return_value = {
