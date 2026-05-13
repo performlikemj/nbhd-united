@@ -183,9 +183,11 @@ class ComputeGravitySnapshotTests(TestCase):
         )
 
         payload = compute_gravity_snapshot(self.tenant)
-        self.assertEqual(payload["totals"]["debt"], "1500")
-        self.assertEqual(payload["totals"]["savings"], "400")
-        self.assertEqual(payload["totals"]["minimum_payments"], "50")
+        # FinanceAccount stores DecimalField(max_digits=12, decimal_places=2),
+        # so Decimal("1500") round-trips as "1500.00".
+        self.assertEqual(payload["totals"]["debt"], "1500.00")
+        self.assertEqual(payload["totals"]["savings"], "400.00")
+        self.assertEqual(payload["totals"]["minimum_payments"], "50.00")
         self.assertEqual(payload["account_counts"], {"debt": 1, "savings": 1})
         self.assertEqual(len(payload["accounts"]), 2)  # archived excluded
 
