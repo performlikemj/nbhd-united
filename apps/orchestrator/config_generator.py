@@ -1253,6 +1253,20 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             )
         )
 
+    # Insights plugin — trajectory tools (history/drill/compare) over pillar
+    # snapshots. Phase 1 only emits Gravity snapshots, so we gate on
+    # finance_enabled. Expand to all tenants once Fuel/Core snapshot
+    # pipelines ship.
+    if getattr(tenant, "finance_enabled", False):
+        _plugin_defs.append(
+            (
+                str(getattr(settings, "OPENCLAW_INSIGHTS_PLUGIN_ID", "nbhd-insights-tools") or "").strip(),
+                str(
+                    getattr(settings, "OPENCLAW_INSIGHTS_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-insights-tools") or ""
+                ).strip(),
+            )
+        )
+
     _active_plugins = [(pid, ppath) for pid, ppath in _plugin_defs if pid]
 
     api_base = str(getattr(settings, "API_BASE_URL", "") or "").strip().rstrip("/")

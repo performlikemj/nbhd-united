@@ -108,8 +108,8 @@ export function ScheduleWeek({ onAddSession, onOpenWorkout }: ScheduleWeekProps)
         ))}
       </div>
 
-      {/* sm+: 2-up grid; lg+: full 7-day row. */}
-      <div className="hidden sm:grid sm:grid-cols-2 lg:grid-cols-7 gap-3 lg:gap-2">
+      {/* sm: 2-up; lg: 3-up; xl+: 4-up. All 7 days visible in 2 rows at xl. */}
+      <div className="hidden sm:grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
         {days.map(({ iso, date }) => (
           <DayCard
             key={iso}
@@ -150,8 +150,7 @@ function DayCard({ iso, date, sessions, isToday, onAddSession, onOpenWorkout }: 
               isToday ? "text-accent" : "text-ink-faint"
             }`}
           >
-            <span className="lg:hidden">{DAY_LABEL_LONG[dow]}</span>
-            <span className="hidden lg:inline">{DAY_LABEL_SHORT[dow]}</span>
+            <span>{DAY_LABEL_LONG[dow]}</span>
           </span>
           <span className="font-headline text-base font-semibold text-ink">{date.getDate()}</span>
           {isToday && (

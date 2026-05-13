@@ -58,6 +58,10 @@ SYSTEM_CRONS = [
     # Re-invokes the self-healing schedulers so a tenant whose welcome was
     # missed (gateway hiccup, agent crash mid-turn) gets retried within 24h.
     ("reconcile-welcomes", "30 1 * * *", "/api/cron/trigger/reconcile_welcomes/"),
+    # Weekly Sunday 05:00 UTC — write per-tenant Gravity (finance) snapshot
+    # to PillarSnapshot. Feeds the assistant's history/drill/compare tools.
+    # Skips hibernated tenants; idempotent per ISO week.
+    ("snapshot-gravity-weekly", "0 5 * * 0", "/api/cron/trigger/snapshot_gravity_weekly/"),
 ]
 
 

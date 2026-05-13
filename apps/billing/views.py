@@ -44,6 +44,35 @@ def _require_stripe_api_key() -> str | None:
     return api_key
 
 
+def _stripe_object_to_plain_dict(obj):
+    """Convert a Stripe ``StripeObject`` to a plain dict.
+
+    Required because stripe-py 15.x's ``StripeObject`` (returned by
+    ``stripe.Webhook.construct_event`` for ``event["data"]["object"]``)
+    is no longer a ``dict`` subclass, no longer a ``Mapping``, has no
+    ``.keys``, ``.items``, or ``.get`` methods, and its ``__getattr__``
+    intercepts any attribute lookup that misses the class definition.
+    Result: ``session_data.get("metadata")`` in our handlers raises
+    ``AttributeError: get`` — every real Stripe webhook to our endpoint
+    would crash with HTTP 500.
+
+    What 15.x's ``StripeObject`` *does* expose is a documented
+    ``to_dict()`` method that returns a fully-coerced plain dict
+    (nested ``StripeObject``s become plain dicts too). That's the
+    boundary we use here. It works on 14.x too — both versions ship
+    the same public method.
+
+    Observed via webhook signature test 2026-05-13 and confirmed by
+    PR #539 CI failures iterating against stripe-py 15.0.1.
+    """
+    # `to_dict` is a real method on the StripeObject class hierarchy
+    # (defined, not synthesised via __getattr__), so attribute lookup
+    # resolves it via the normal MRO — no shadowing risk like .get.
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()
+    return obj
+
+
 @csrf_exempt
 @require_POST
 def stripe_webhook(request):
@@ -68,7 +97,7 @@ def stripe_webhook(request):
     set_rls_context(service_role=True)
 
     event_type = event["type"]
-    data = event["data"]["object"]
+    data = _stripe_object_to_plain_dict(event["data"]["object"])
     logger.info("Stripe webhook: %s", event_type)
 
     match event_type:

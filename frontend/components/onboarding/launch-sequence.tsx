@@ -48,7 +48,7 @@ export function LaunchSequence() {
       </span>
 
       {/* Headline */}
-      <h1 className="font-display text-3xl sm:text-5xl font-extrabold text-[#e0e3e8] tracking-tight mb-4 leading-tight">
+      <h1 className="font-display text-3xl sm:text-5xl font-extrabold text-[#e0e3e8] tracking-tight mb-4 leading-tight whitespace-pre-line">
         {isReady ? "Your universe is ready" : "Launching your\nuniverse"}
       </h1>
 

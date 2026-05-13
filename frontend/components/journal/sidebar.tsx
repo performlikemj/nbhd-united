@@ -508,7 +508,9 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
             ))}
           </div>
           <p className="text-[11px] text-ink-faint/30 leading-relaxed">
-            Your universe is taking shape.\nCreate your first goal or project to begin.
+            Your universe is taking shape.
+            <br />
+            Create your first goal or project to begin.
           </p>
         </div>
       )}

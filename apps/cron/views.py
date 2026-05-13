@@ -125,6 +125,10 @@ TASK_MAP = {
     # bumps config AND image atomically — required when a release crosses
     # an OpenClaw config schema boundary (e.g. 4.x → 5.x).
     "bump_openclaw_atomic_per_tenant": "apps.orchestrator.tasks.bump_openclaw_atomic_per_tenant_task",
+    # Weekly Gravity snapshot — writes PillarSnapshot rows for the
+    # assistant's history/drill/compare tools. Skips hibernated tenants;
+    # idempotent per ISO week. See apps.insights.snapshots.compute_gravity_snapshot.
+    "snapshot_gravity_weekly": "apps.insights.tasks.snapshot_gravity_weekly_task",
 }
 
 
@@ -316,6 +320,7 @@ def apply_pending_configs(request):
     # edge case where a fleet bump lands between wake and apply-pending.
     desired_tag = getattr(settings, "OPENCLAW_IMAGE_TAG", "latest")
     image_count = 0
+    image_skipped_imminent_cron = 0
     if desired_tag and desired_tag != "latest":
         stale_image_tenants = (
             Tenant.objects.filter(
@@ -334,7 +339,24 @@ def apply_pending_configs(request):
             )
         )
 
+        from apps.orchestrator.hibernation import _cron_active_or_imminent
+
         for tenant in stale_image_tenants:
+            # Mirror the safeguard in hibernate_idle_tenants_task: image
+            # bump triggers a revision update that SIGTERMs the container,
+            # so an in-flight or imminent user cron would get interrupted.
+            # cron_wake_at above only protects tenants we just woke for
+            # a cron; long-running awake tenants need the forward-looking
+            # + in-flight check.
+            defer_reason = _cron_active_or_imminent(tenant)
+            if defer_reason:
+                image_skipped_imminent_cron += 1
+                logger.info(
+                    "apply_pending_configs: deferring image bump for tenant %s (%s)",
+                    str(tenant.id)[:8],
+                    defer_reason,
+                )
+                continue
             image_tasks.append(("apply_single_tenant_image", (str(tenant.id), desired_tag), {}))
             image_count += 1
 
@@ -383,6 +405,7 @@ def apply_pending_configs(request):
             "evaluated": evaluated,
             "image_enqueued": image_count if success else 0,
             "image_failed": 0 if success else image_count,
+            "image_skipped_imminent_cron": image_skipped_imminent_cron,
             "cron_seed_enqueued": cron_seed_count if success else 0,
             "cron_seed_failed": 0 if success else cron_seed_count,
             "batch_total": len(all_tasks),
