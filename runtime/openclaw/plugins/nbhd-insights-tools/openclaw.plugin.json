@@ -1,12 +1,17 @@
 {
   "id": "nbhd-insights-tools",
   "name": "NBHD Insights Tools",
-  "description": "Trajectory tools for the assistant baseline — query a tenant's pillar snapshots over time, drill into a specific period, and compare two periods. Phase 1 supports pillar=gravity only.",
+  "description": "Trajectory + memory-of-insights tools for the assistant baseline. Phase 1 read tools: history / snapshot / compare. Phase 2 baseline + write-side: baseline / list / record / confirm / refute. Phase 1 supports pillar=gravity only.",
   "contracts": {
     "tools": [
       "nbhd_insights_history",
       "nbhd_insights_snapshot",
-      "nbhd_insights_compare"
+      "nbhd_insights_compare",
+      "nbhd_insights_baseline",
+      "nbhd_insights_list",
+      "nbhd_insights_record",
+      "nbhd_insights_confirm",
+      "nbhd_insights_refute"
     ]
   },
   "configSchema": {
