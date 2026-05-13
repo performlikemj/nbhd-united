@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import {
   DM_Serif_Display,
   Plus_Jakarta_Sans,
@@ -62,19 +62,27 @@ export const metadata: Metadata = {
   },
 };
 
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#0b0f13",
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`h-full ${plusJakarta.variable} ${dmSerif.variable} ${spaceGrotesk.variable} ${instrumentSerif.variable}`}>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-        <meta name="theme-color" content="#0b0f13" />
-      </head>
+    <html
+      lang="en"
+      className={`h-full ${plusJakarta.variable} ${dmSerif.variable} ${spaceGrotesk.variable} ${instrumentSerif.variable}`}
+    >
       <body className="overflow-x-hidden bg-bg">
         <ThemeProvider>
           <Providers>
-            <AppShell>{children}</AppShell>
+            <div className="content-fade-up">
+              <AppShell>{children}</AppShell>
+            </div>
           </Providers>
         </ThemeProvider>
       </body>

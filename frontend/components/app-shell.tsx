@@ -3,7 +3,7 @@
 import clsx from "clsx";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { ReactNode, useEffect, useRef, useState } from "react";
+import { ReactNode, useEffect, useRef, useState, useCallback } from "react";
 
 import { logout } from "@/lib/api";
 import { clearTokens, isLoggedIn } from "@/lib/auth";
@@ -13,19 +13,39 @@ import { BrandLogo } from "@/components/brand-logo";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { SiteFooter } from "@/components/site-footer";
 import { SynapseNetwork } from "@/components/landing/synapse-network";
-
-const baseNavItems = [
-  { href: "/journal", label: "Journal" },
-  { href: "/constellation", label: "★ Constellation" },
-  { href: "/horizons", label: "◎ Horizons" },
-];
-
-const gravityNavItem = { href: "/finance", label: "◆ Gravity" };
-const fuelNavItem = { href: "/fuel", label: "▲ Fuel" };
-
-const settingsNavItem = { href: "/settings", label: "Settings" };
+import {
+  IconJournal,
+  IconConstellation,
+  IconHorizons,
+  IconGravity,
+  IconFuel,
+  IconSettings,
+  IconLogOut,
+} from "@/components/icons/constellation";
 
 const publicPages = ["/", "/login", "/signup", "/legal/terms", "/legal/privacy", "/legal/refund"];
+
+interface NavItem {
+  href: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}
+
+function useNavItems(tenant?: { finance_enabled?: boolean; fuel_enabled?: boolean } | null): NavItem[] {
+  const items: NavItem[] = [
+    { href: "/journal", label: "Journal", icon: IconJournal },
+    { href: "/constellation", label: "Constellation", icon: IconConstellation },
+    { href: "/horizons", label: "Horizons", icon: IconHorizons },
+  ];
+  if (tenant?.finance_enabled) {
+    items.push({ href: "/finance", label: "Gravity", icon: IconGravity });
+  }
+  if (tenant?.fuel_enabled) {
+    items.push({ href: "/fuel", label: "Fuel", icon: IconFuel });
+  }
+  items.push({ href: "/settings", label: "Settings", icon: IconSettings });
+  return items;
+}
 
 function UserMenu({ onLogout }: { onLogout: () => void }) {
   const { data: me } = useMeQuery();
@@ -55,26 +75,29 @@ function UserMenu({ onLogout }: { onLogout: () => void }) {
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex h-11 items-center gap-2 rounded-full border border-border px-3 text-sm text-ink-muted transition hover:border-border-strong hover:text-ink"
+        className="flex h-9 w-9 items-center justify-center rounded-full bg-white/[0.03] border border-white/[0.06] text-ink-muted transition hover:bg-white/[0.06] hover:text-ink hover:border-white/[0.10]"
         aria-label="User menu"
         aria-expanded={open}
       >
-        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-surface-hover font-mono text-[10px] font-medium text-ink-faint">
+        <span className="font-mono text-[10px] font-medium text-ink-faint">
           {initials}
         </span>
-        <span className="hidden sm:inline">{displayName}</span>
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-48 rounded-panel border border-border bg-surface p-1 shadow-panel animate-reveal z-40">
+        <div className="absolute right-0 top-full mt-2 w-52 rounded-2xl border border-white/[0.06] bg-[#0F1419]/95 backdrop-blur-2xl p-1.5 shadow-[0_20px_55px_rgba(0,0,0,0.45)] animate-reveal z-40">
+          <div className="px-3 py-2 border-b border-white/[0.04] mb-1">
+            <p className="text-xs text-ink-muted truncate">{displayName}</p>
+          </div>
           <button
             type="button"
             onClick={() => {
               setOpen(false);
               onLogout();
             }}
-            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-ink-muted hover:bg-surface-hover hover:text-ink"
+            className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm text-ink-muted hover:bg-white/[0.04] hover:text-ink transition min-h-[44px]"
           >
+            <IconLogOut className="h-4 w-4" />
             Sign out
           </button>
         </div>
@@ -89,39 +112,44 @@ function TrialBadge() {
   const isTrialEnded = tenant?.is_trial && !tenant?.has_active_subscription;
   const daysLeft = tenant?.trial_days_remaining;
 
-  if (!tenant?.is_trial) {
-    return null;
-  }
+  if (!tenant?.is_trial) return null;
 
   return (
     <span
       className={clsx(
-        "inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium",
+        "inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium",
         isTrialEnded
           ? "border-rose-border bg-rose-bg text-rose-text"
-          : "border-accent/30 bg-accent/10 text-accent",
+          : "border-accent/25 bg-accent/[0.08] text-accent",
       )}
     >
       {isTrialEnded
         ? "Trial ended"
-        : `Trial: ${daysLeft ?? 0} days left`}
+        : `Trial: ${daysLeft ?? 0}d`}
     </span>
   );
 }
 
- 
-function PlatformBudgetBanner() {
-  const { data: tenant } = useTenantQuery();
+function TrialDot() {
+  const { data: me } = useMeQuery();
+  const tenant = me?.tenant;
+  const isTrialEnded = tenant?.is_trial && !tenant?.has_active_subscription;
 
-  if (!tenant?.platform_budget_exceeded) {
-    return null;
-  }
+  if (!tenant?.is_trial) return null;
 
   return (
-    <div className="border-b border-amber-border bg-amber-bg px-4 py-3 text-center text-sm text-amber-text">
-      <strong>Beta notice:</strong> Our platform budget for this month has been reached.
-      Your assistant may be temporarily unavailable &mdash; service will resume when the budget resets.
-      Thanks for your patience!
+    <div className="relative group">
+      <div
+        className={clsx(
+          "h-2 w-2 rounded-full",
+          isTrialEnded ? "bg-rose-text" : "bg-accent"
+        )}
+      />
+      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block">
+        <div className="rounded-lg bg-[#0F1419] border border-white/[0.06] px-2.5 py-1.5 text-[10px] whitespace-nowrap text-ink-muted shadow-lg">
+          {isTrialEnded ? "Trial ended" : `${tenant?.trial_days_remaining ?? 0}d free trial`}
+        </div>
+      </div>
     </div>
   );
 }
@@ -142,25 +170,81 @@ function BackgroundLayers() {
   );
 }
 
+function MobileTabBar({
+  items,
+  pathname,
+}: {
+  items: NavItem[];
+  pathname: string;
+}) {
+  return (
+    <nav
+      className="fixed bottom-0 left-0 right-0 z-[50] md:hidden mobile-tab-shadow bg-[#0B0F13]/90 backdrop-blur-2xl border-t border-white/[0.04] pb-[env(safe-area-inset-bottom)]"
+      role="navigation"
+      aria-label="Mobile navigation"
+    >
+      <div className="flex items-center justify-around h-14">
+        {items.map((item) => {
+          const active = pathname.startsWith(item.href);
+          const Icon = item.icon;
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              aria-current={active ? "page" : undefined}
+              className="flex flex-1 flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] font-medium transition-all duration-200 min-h-[44px]"
+            >
+              <span
+                className={clsx(
+                  "transition-all duration-200 p-1.5 rounded-xl",
+                  active
+                    ? "text-accent"
+                    : "text-ink-faint"
+                )}
+              >
+                <Icon className={clsx(
+                  "h-[22px] w-[22px] transition-transform duration-200",
+                  active ? "scale-110" : ""
+                )} />
+              </span>
+              <span
+                className={clsx(
+                  "transition-colors duration-200",
+                  active
+                    ? "text-accent"
+                    : "text-ink-faint"
+                )}
+              >
+                {item.label}
+              </span>
+              {active && (
+                <span className="absolute bottom-1.5 h-1 w-1 rounded-full bg-accent shadow-[0_0_6px_rgba(124,107,240,0.6)]" />
+              )}
+            </Link>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [headerBorder, setHeaderBorder] = useState(false);
 
   const isPublicPage = publicPages.includes(pathname) || pathname.startsWith("/legal/");
   const { data: tenant } = useTenantQuery();
+  const navItems = useNavItems(tenant);
 
-  const navItems = [
-    ...baseNavItems,
-    ...(tenant?.finance_enabled ? [gravityNavItem] : []),
-    ...(tenant?.fuel_enabled ? [fuelNavItem] : []),
-    settingsNavItem,
-  ];
-
-  // Close mobile menu on route change
+  // Scroll listener for header blur/border transition
   useEffect(() => {
-    setMobileMenuOpen(false);
-  }, [pathname]);
+    const handleScroll = () => {
+      setHeaderBorder(window.scrollY > 8);
+    };
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
 
   useEffect(() => {
     if (!isPublicPage && !isLoggedIn()) {
@@ -180,7 +264,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   };
 
-  // Full-bleed pages — no shell chrome (landing, auth, onboarding)
+  // Full-bleed pages — no shell chrome
   const fullBleedPages = ["/", "/signup", "/login", "/onboarding"];
   if (fullBleedPages.includes(pathname)) {
     return (
@@ -196,9 +280,9 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="relative flex min-h-screen flex-col overflow-x-hidden">
         <BackgroundLayers />
         <a href="#main-content" className="skip-link">Skip to main content</a>
-        <header className="border-b border-border bg-surface/80 backdrop-blur-md">
-          <div className="mx-auto flex w-full max-w-6xl items-center px-4 py-3 sm:px-6">
-            <BrandLogo size={36} />
+        <header className="border-b border-white/[0.04] bg-[#0B0F13]/80 backdrop-blur-xl">
+          <div className="mx-auto flex w-full max-w-6xl items-center px-4 py-2.5 sm:px-6">
+            <BrandLogo size={32} />
           </div>
         </header>
         <main id="main-content" className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">{children}</main>
@@ -212,104 +296,87 @@ export function AppShell({ children }: { children: ReactNode }) {
       <BackgroundLayers />
       <a href="#main-content" className="skip-link">Skip to main content</a>
 
-      <header className="sticky top-0 z-30 border-b border-border bg-surface/80 backdrop-blur-md">
-        <div className="mx-auto flex w-full max-w-6xl min-w-0 items-center justify-between gap-2 px-4 py-2.5 sm:gap-3 sm:px-6 sm:py-3">
-          <div className="min-w-0">
-            <BrandLogo size={32} />
-            <h1 className="text-sm font-semibold text-ink sm:text-lg">
-              <span className="hidden sm:inline">Subscriber Control Console</span>
-              <span className="sm:hidden">Console</span>
-            </h1>
+      {/* Elegant slim header */}
+      <header
+        className={clsx(
+          "sticky top-0 z-30 bg-[#0B0F13]/70 backdrop-blur-xl transition-all duration-300",
+          headerBorder
+            ? "border-b border-white/[0.06] shadow-[0_1px_16px_rgba(0,0,0,0.3)]"
+            : "border-b border-transparent"
+        )}
+      >
+        <div className="mx-auto flex w-full max-w-6xl min-w-0 items-center justify-between gap-2 px-3 py-2 sm:gap-3 sm:px-6">
+          {/* Left: Logo + concise title */}
+          <div className="flex items-center gap-2.5 min-w-0 shrink-0">
+            <Link href="/journal" className="shrink-0">
+              <BrandLogo size={28} />
+            </Link>
+            <span className="text-xs font-medium text-ink-faint tracking-wide hidden sm:block">
+              Neighborhood
+            </span>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="hidden shrink-0 sm:block">
-              <TrialBadge />
-            </div>
-            {/* Desktop nav */}
-            <nav className="hidden items-center gap-1 rounded-full border border-border bg-surface/60 backdrop-blur-sm p-1 md:flex" role="navigation" aria-label="Main navigation">
-              {navItems.map((item) => {
-                const active = pathname.startsWith(item.href);
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    aria-current={active ? "page" : undefined}
-                    className={clsx(
-                      "shrink-0 rounded-full px-3 py-1.5 text-sm transition",
-                      active
-                        ? "bg-accent text-white"
-                        : "text-ink-muted hover:bg-surface-hover hover:text-ink",
-                    )}
-                  >
-                    {item.label}
-                  </Link>
-                );
-              })}
-            </nav>
-            <UserMenu onLogout={handleLogout} />
-            {/* Hamburger — mobile only */}
-            <button
-              type="button"
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="flex h-11 w-11 flex-col items-center justify-center gap-[5px] rounded-full border border-border md:hidden"
-              aria-label={mobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
-              aria-expanded={mobileMenuOpen}
-              aria-controls="mobile-nav-menu"
-            >
-              <span className={clsx("block h-0.5 w-5 rounded-full bg-ink transition-transform", mobileMenuOpen && "translate-y-[7px] rotate-45")} />
-              <span className={clsx("block h-0.5 w-5 rounded-full bg-ink transition-opacity", mobileMenuOpen && "opacity-0")} />
-              <span className={clsx("block h-0.5 w-5 rounded-full bg-ink transition-transform", mobileMenuOpen && "-translate-y-[7px] -rotate-45")} />
-            </button>
-          </div>
-        </div>
 
-        {/* Mobile nav menu */}
-        <div
-          id="mobile-nav-menu"
-          className={clsx(
-            "overflow-y-auto overscroll-contain border-t border-border bg-surface transition-[max-height] duration-200 ease-out md:hidden",
-            mobileMenuOpen ? "max-h-[70vh]" : "max-h-0 border-t-transparent",
-          )}
-        >
-          <nav className="flex flex-col gap-1 px-4 py-3" role="navigation" aria-label="Mobile navigation">
+          {/* Center: pill nav — desktop only */}
+          <nav
+            className="hidden md:flex items-center gap-0.5 rounded-full border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm p-0.5"
+            role="navigation"
+            aria-label="Main navigation"
+          >
             {navItems.map((item) => {
               const active = pathname.startsWith(item.href);
+              const Icon = item.icon;
               return (
                 <Link
                   key={item.href}
                   href={item.href}
                   aria-current={active ? "page" : undefined}
                   className={clsx(
-                    "flex min-h-[44px] items-center rounded-lg px-3 text-sm font-medium transition",
+                    "relative flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all duration-200",
                     active
-                      ? "bg-accent/10 text-accent"
-                      : "text-ink-muted hover:bg-surface-hover hover:text-ink",
+                      ? "bg-accent/15 text-accent shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
+                      : "text-ink-faint hover:bg-white/[0.04] hover:text-ink-muted",
                   )}
                 >
-                  {item.label}
+                  <Icon className="h-3.5 w-3.5" />
+                  <span>{item.label}</span>
                 </Link>
               );
             })}
-            <div className="px-3 py-2 sm:hidden">
+          </nav>
+
+          {/* Right: trial + user menu */}
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <div className="hidden sm:block">
               <TrialBadge />
             </div>
-          </nav>
+            <div className="block sm:hidden">
+              <TrialDot />
+            </div>
+            <UserMenu onLogout={handleLogout} />
+          </div>
         </div>
       </header>
 
-      {/* <PlatformBudgetBanner /> */}
-
-      <main id="main-content" className="mx-auto w-full max-w-6xl flex-1 flex flex-col min-h-0 px-4 py-8 sm:px-6">
-        <ErrorBoundary fallback={
-          <div className="rounded-panel border border-rose-border bg-rose-bg p-6 text-center">
-            <p className="text-sm font-medium text-rose-text">Something went wrong loading this page.</p>
-            <a href="/journal" className="mt-2 inline-block text-sm text-accent underline">Go to Journal</a>
-          </div>
-        }>
-          {children}
-        </ErrorBoundary>
+      <main
+        id="main-content"
+        className="mx-auto w-full max-w-6xl flex-1 flex flex-col min-h-0 px-4 py-4 sm:py-6 sm:px-6 lg:py-8 pb-[calc(3.5rem+env(safe-area-inset-bottom))]"
+      >
+        <div className="content-fade-up">
+          <ErrorBoundary
+            fallback={
+              <div className="rounded-2xl border border-rose-border bg-rose-bg p-6 text-center">
+                <p className="text-sm font-medium text-rose-text">Something went wrong loading this page.</p>
+                <a href="/journal" className="mt-2 inline-block text-sm text-accent underline">Go to Journal</a>
+              </div>
+            }
+          >
+            {children}
+          </ErrorBoundary>
+        </div>
       </main>
-      <SiteFooter />
+
+      {/* Mobile tab bar */}
+      <MobileTabBar items={navItems} pathname={pathname} />
     </div>
   );
 }
