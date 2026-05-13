@@ -260,6 +260,221 @@ a {
   }
 }
 
+/* ── Selection ── */
+::selection {
+  background: rgba(124, 107, 240, 0.25);
+  color: #e2e8f0;
+}
+
+/* ── Placeholder ── */
+::placeholder {
+  color: var(--ink-faint);
+  opacity: 1;
+}
+
+/* ── Scrollbar ── */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(124, 107, 240, 0.35) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(124, 107, 240, 0.35);
+  border-radius: 100px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(124, 107, 240, 0.55);
+}
+
+/* ── Safe Areas ── */
+html,
+body {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+@supports (padding: max(0px)) {
+  .pb-safe {
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+  .pb-safe-lg {
+    padding-bottom: max(1.25rem, env(safe-area-inset-bottom));
+  }
+  .min-h-safe {
+    min-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  }
+}
+
+/* ── Page Transitions ── */
+@supports (view-transition-name: page) {
+  ::view-transition-old(page),
+  ::view-transition-new(page) {
+    animation-duration: 200ms;
+    animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  }
+}
+
+.view-transition-enter {
+  animation: pageEnter 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.view-transition-exit {
+  animation: pageExit 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes pageEnter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pageExit {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+/* ── Page Load ── */
+@keyframes contentFadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.content-fade-up {
+  animation: contentFadeUp 400ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* ── Stardust animation ── */
+@keyframes stardust {
+  0%, 100% {
+    opacity: 0.3;
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-8px) scale(1.15);
+  }
+}
+
+.stardust-dot {
+  animation: stardust 3s ease-in-out infinite;
+}
+
+/* ── Constellation line animation ── */
+@keyframes drawLine {
+  from {
+    stroke-dashoffset: 100;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.constellation-line {
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  animation: drawLine 1.5s ease-out forwards;
+}
+
+/* ── Saved checkmark animation ── */
+@keyframes checkmarkIn {
+  from {
+    opacity: 0;
+    transform: scale(0.8) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.saved-pill {
+  animation: checkmarkIn 200ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* ── Skeleton shimmer ── */
+@keyframes stardustShimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.stardust-skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(124, 107, 240, 0.08) 0%,
+    rgba(124, 107, 240, 0.15) 25%,
+    rgba(78, 205, 196, 0.1) 50%,
+    rgba(124, 107, 240, 0.15) 75%,
+    rgba(124, 107, 240, 0.08) 100%
+  );
+  background-size: 400% 100%;
+  animation: stardustShimmer 2s ease-in-out infinite;
+}
+
+/* ── Left border glow for active items ── */
+.active-glow-left {
+  position: relative;
+}
+
+.active-glow-left::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.25rem;
+  bottom: 0.25rem;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 0 2px 2px 0;
+  box-shadow: 0 0 8px rgba(124, 107, 240, 0.4), 0 0 16px rgba(124, 107, 240, 0.2);
+}
+
+/* ── Mobile tab bar shadow ── */
+.mobile-tab-shadow {
+  box-shadow: 0 -1px 12px rgba(0, 0, 0, 0.4), 0 -1px 0 rgba(255, 255, 255, 0.03);
+}
+
+/* ── Bottom sheet ── */
+@keyframes bottomSheetEnter {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.bottom-sheet-enter {
+  animation: bottomSheetEnter 250ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
 /* ── Print ── */
 
 @media print {
