@@ -129,9 +129,19 @@ class SeedTopicsTests(TestCase):
 
 
 def _make_finance_tenant(*, display_name: str, chat_id: int) -> Tenant:
+    """Create an ACTIVE, finance-enabled tenant for insights tests.
+
+    Uses ``.update()`` rather than ``.save()`` to bypass post-save signals
+    (config-version bumps, AGENTS.md refresh, welcome-cron scheduling) that
+    would otherwise leave background connections open and break test teardown.
+    ``create_tenant`` defaults to ``Status.PENDING``, so we have to flip it.
+    """
     tenant = create_tenant(display_name=display_name, telegram_chat_id=chat_id)
-    tenant.finance_enabled = True
-    tenant.save(update_fields=["finance_enabled"])
+    Tenant.objects.filter(pk=tenant.pk).update(
+        finance_enabled=True,
+        status=Tenant.Status.ACTIVE,
+    )
+    tenant.refresh_from_db()
     return tenant
 
 
@@ -228,22 +238,19 @@ class SnapshotGravityWeeklyTaskTests(TestCase):
         self.assertEqual(PillarSnapshot.objects.count(), 1)
 
     def test_skips_hibernated_tenants(self):
-        self.tenant.hibernated_at = timezone.now()
-        self.tenant.save(update_fields=["hibernated_at"])
+        Tenant.objects.filter(pk=self.tenant.pk).update(hibernated_at=timezone.now())
         counts = snapshot_gravity_weekly_task()
         self.assertEqual(counts["written"], 0)
         self.assertEqual(PillarSnapshot.objects.count(), 0)
 
     def test_skips_finance_disabled_tenants(self):
-        self.tenant.finance_enabled = False
-        self.tenant.save(update_fields=["finance_enabled"])
+        Tenant.objects.filter(pk=self.tenant.pk).update(finance_enabled=False)
         counts = snapshot_gravity_weekly_task()
         self.assertEqual(counts["written"], 0)
         self.assertEqual(PillarSnapshot.objects.count(), 0)
 
     def test_skips_inactive_tenants(self):
-        self.tenant.status = Tenant.Status.SUSPENDED
-        self.tenant.save(update_fields=["status"])
+        Tenant.objects.filter(pk=self.tenant.pk).update(status=Tenant.Status.SUSPENDED)
         counts = snapshot_gravity_weekly_task()
         self.assertEqual(counts["written"], 0)
         self.assertEqual(PillarSnapshot.objects.count(), 0)

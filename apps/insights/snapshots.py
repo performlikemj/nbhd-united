@@ -70,7 +70,7 @@ def compute_gravity_snapshot(tenant: Tenant) -> dict[str, Any]:
                 "current_balance": _money(a.current_balance),
                 "original_balance": _money(a.original_balance),
                 "is_debt": a.account_type in debt_types,
-                "payoff_progress": float(a.payoff_progress) if a.is_active else 0.0,
+                "payoff_progress": float(a.payoff_progress) if a.payoff_progress is not None else None,
             }
             for a in accounts
         ],
