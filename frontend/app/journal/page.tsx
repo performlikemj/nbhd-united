@@ -63,7 +63,7 @@ export default function JournalPage() {
   return (
     <div className="flex h-full">
       {/* Sidebar - desktop */}
-      <div className="hidden lg:block">
+      <div className="hidden lg:block h-full">
         <Sidebar
           activeKind={activeKind}
           activeSlug={activeSlug}

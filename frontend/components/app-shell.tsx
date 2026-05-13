@@ -317,7 +317,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               href="/journal"
               className="shrink-0 rounded-lg focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B0F13]"
             >
-              <BrandIcon size={28} />
+              <BrandLogo size={32} />
             </Link>
             <span className="text-xs font-medium text-ink-faint tracking-wide hidden xl:block">
               Neighborhood
