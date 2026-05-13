@@ -294,7 +294,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="relative flex h-screen flex-col overflow-x-hidden">
+    <div
+      className="relative flex h-[100dvh] flex-col overflow-x-hidden"
+      style={{ paddingTop: "env(safe-area-inset-top)" }}
+    >
       <BackgroundLayers />
       <a href="#main-content" className="skip-link">Skip to main content</a>
 
