@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     "apps.finance",
     "apps.fuel",
     "apps.byo_models",
+    "apps.insights",
 ]
 
 MIDDLEWARE = [
