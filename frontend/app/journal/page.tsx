@@ -1,21 +1,15 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
-import clsx from "clsx";
-import { useQueryClient } from "@tanstack/react-query";
+import { useState, useCallback } from "react";
 import { Sidebar } from "@/components/journal/sidebar";
 import { DocumentView } from "@/components/journal/document-view";
 import { useSidebarTreeQuery } from "@/lib/queries";
 import { fetchDocument } from "@/lib/api";
+import { useQueryClient } from "@tanstack/react-query";
 
 function todayISO(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function formatEntryDate(dateStr: string): string {
-  const d = new Date(dateStr + "T00:00:00");
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 export default function JournalPage() {
@@ -40,6 +34,7 @@ export default function JournalPage() {
   });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [viewKey, setViewKey] = useState(0);
 
   // Recent entries from sidebar tree
   const { data: tree } = useSidebarTreeQuery();
@@ -56,78 +51,27 @@ export default function JournalPage() {
     [queryClient],
   );
 
-  // Draggable sidebar FAB — persists Y position in localStorage
-  const SIDEBAR_FAB_KEY = "sidebar-fab-y";
-  const [fabY, setFabY] = useState<number | null>(() => {
-    if (typeof window === "undefined") return null;
-    const saved = localStorage.getItem(SIDEBAR_FAB_KEY);
-    return saved ? parseInt(saved, 10) : window.innerHeight - 120;
-  });
-  const fabDrag = useRef<{ startTouchY: number; startBtnY: number; moved: boolean } | null>(null);
-
-  const handleFabTouchStart = useCallback((e: React.TouchEvent) => {
-    const touch = e.touches[0];
-    fabDrag.current = { startTouchY: touch.clientY, startBtnY: fabY ?? window.innerHeight - 120, moved: false };
-  }, [fabY]);
-
-  const handleFabTouchMove = useCallback((e: React.TouchEvent) => {
-    if (!fabDrag.current) return;
-    const delta = e.touches[0].clientY - fabDrag.current.startTouchY;
-    if (Math.abs(delta) > 4) {
-      fabDrag.current.moved = true;
-      e.preventDefault();
-    }
-    const newY = Math.max(16, Math.min(window.innerHeight - 72, fabDrag.current.startBtnY + delta));
-    setFabY(newY);
-  }, []);
-
-  const handleFabTouchEnd = useCallback(() => {
-    const wasDrag = fabDrag.current?.moved ?? false;
-    if (fabY !== null) localStorage.setItem(SIDEBAR_FAB_KEY, String(fabY));
-    fabDrag.current = null;
-    return wasDrag;
-  }, [fabY]);
-
   const handleNavigate = (kind: string, slug: string) => {
     setActiveKind(kind);
     setActiveSlug(slug);
     window.location.hash = `${kind}/${slug}`;
     setMobileSidebarOpen(false);
+    setViewKey((k) => k + 1);
   };
 
   return (
     <div className="flex h-full">
-      {/* Mobile sidebar toggle — draggable along Y */}
-      {fabY !== null && (
-        <button
-          type="button"
-          onTouchStart={handleFabTouchStart}
-          onTouchMove={handleFabTouchMove}
-          onTouchEnd={(e) => {
-            const wasDrag = handleFabTouchEnd();
-            if (!wasDrag) {
-              e.preventDefault();
-              setMobileSidebarOpen(!mobileSidebarOpen);
-            }
-          }}
-          onClick={() => {
-            if (!fabDrag.current) setMobileSidebarOpen(!mobileSidebarOpen);
-          }}
-          style={{ top: `${fabY}px` }}
-          className="fixed left-4 z-50 touch-none select-none rounded-full bg-accent p-3 text-white shadow-lg glow-purple lg:hidden"
-          aria-label="Toggle sidebar — drag to reposition"
-          aria-expanded={mobileSidebarOpen}
-          aria-controls="journal-mobile-sidebar"
-        >
-          <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            {mobileSidebarOpen ? (
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            ) : (
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-            )}
-          </svg>
-        </button>
-      )}
+      {/* Sidebar toggle — near document title on mobile */}
+      <button
+        type="button"
+        className="shrink-0 flex items-center justify-center w-10 h-10 rounded-xl border border-white/[0.06] bg-white/[0.02] text-ink-faint transition hover:bg-white/[0.04] hover:text-ink mr-2 lg:hidden"
+        onClick={() => setMobileSidebarOpen(true)}
+        aria-label="Open sidebar"
+      >
+        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h10M4 18h16" />
+        </svg>
+      </button>
 
       {/* Sidebar - desktop */}
       <div className="hidden lg:block">
@@ -137,23 +81,23 @@ export default function JournalPage() {
           onNavigate={handleNavigate}
           collapsed={sidebarCollapsed}
           onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
+          recentEntries={dailyEntries.map((e) => ({ slug: e.slug, title: e.title }))}
         />
       </div>
 
-      {/* Sidebar - mobile overlay */}
+      {/* Mobile sidebar overlay */}
       <div
-        id="journal-mobile-sidebar"
         className={`fixed inset-0 z-40 lg:hidden transition-opacity duration-200 ${
           mobileSidebarOpen ? "opacity-100" : "pointer-events-none opacity-0"
         }`}
       >
         <div
-          className="absolute inset-0 bg-overlay"
+          className="absolute inset-0 bg-overlay/40 backdrop-blur-sm"
           aria-hidden="true"
           onClick={() => setMobileSidebarOpen(false)}
         />
         <div
-          className={`relative z-10 h-full w-72 bg-c-dark/95 backdrop-blur-2xl shadow-xl transition-transform duration-200 ease-out ${
+          className={`relative z-10 h-full w-72 border-r border-white/[0.04] bg-[#0B0F13]/95 backdrop-blur-2xl shadow-[8px_0_40px_rgba(0,0,0,0.5)] transition-transform duration-250 ease-out ${
             mobileSidebarOpen ? "translate-x-0" : "-translate-x-full"
           }`}
         >
@@ -161,61 +105,23 @@ export default function JournalPage() {
             activeKind={activeKind}
             activeSlug={activeSlug}
             onNavigate={handleNavigate}
+            recentEntries={dailyEntries.map((e) => ({ slug: e.slug, title: e.title }))}
           />
         </div>
       </div>
 
-      {/* Recent Entries panel — desktop only, visible when viewing daily entries */}
-      {activeKind === "daily" && dailyEntries.length > 0 && (
-        <div className="hidden xl:block w-72 shrink-0 overflow-y-auto border-r border-white/5 bg-surface-elevated/30 backdrop-blur-sm">
-          <div className="p-5">
-            <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-ink-faint mb-4">
-              Recent Entries
-            </h3>
-            <div className="space-y-1">
-              {dailyEntries.map((entry) => {
-                const isActive = activeKind === "daily" && activeSlug === entry.slug;
-                return (
-                  <button
-                    key={entry.slug}
-                    type="button"
-                    onClick={() => handleNavigate("daily", entry.slug)}
-                    onMouseEnter={() => prefetchDocument("daily", entry.slug)}
-                    onFocus={() => prefetchDocument("daily", entry.slug)}
-                    className={clsx(
-                      "w-full rounded-xl p-3 text-left transition-all duration-200",
-                      isActive
-                        ? "bg-accent/10 border border-accent/20"
-                        : "hover:bg-white/5",
-                    )}
-                  >
-                    <span className={clsx(
-                      "block text-sm font-bold mb-0.5",
-                      isActive ? "text-accent" : "text-ink-muted",
-                    )}>
-                      {formatEntryDate(entry.slug)}
-                    </span>
-                    <span className={clsx(
-                      "block text-sm truncate",
-                      isActive ? "text-ink" : "text-ink-faint",
-                    )}>
-                      {entry.title}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Main content */}
       <div className="min-w-0 flex-1 overflow-hidden">
-        <DocumentView
-          kind={activeKind}
-          slug={activeSlug}
-          onNavigate={handleNavigate}
-        />
+        <div
+          key={`${activeKind}-${activeSlug}-${viewKey}`}
+          className="view-transition-enter h-full"
+        >
+          <DocumentView
+            kind={activeKind}
+            slug={activeSlug}
+            onNavigate={handleNavigate}
+          />
+        </div>
       </div>
     </div>
   );
