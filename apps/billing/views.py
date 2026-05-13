@@ -1,6 +1,7 @@
 """Stripe webhook handler and billing views."""
 
 import logging
+from collections.abc import Mapping
 
 import stripe
 from django.conf import settings
@@ -61,18 +62,18 @@ def _stripe_object_to_plain_dict(obj):
     ``checkout.session.completed`` events would hit the same crash if
     a suspended tenant ever resubscribed.
     """
-    if hasattr(obj, "to_dict_recursive"):
-        # stripe-py 14.x has this helper. Removed in 15.x — fall through
-        # to manual iteration below. The hasattr check is safe because
-        # StripeObject's __getattr__ raises AttributeError for missing
-        # keys, and hasattr returns False on AttributeError.
-        return obj.to_dict_recursive()
-    if isinstance(obj, dict):
-        # Use __iter__ (key iteration) and __getitem__ rather than .items()
-        # because .items, .get, and other dict methods may also be shadowed
-        # by StripeObject.__getattr__ in 15.x (the .get crash that motivated
-        # this fix proves the shadowing happens — assume any dict method
-        # could be affected and stick to the slot-defined dunders).
+    # `Mapping` catches both stripe-py 14.x (StripeObject is a dict
+    # subclass → also a Mapping) and 15.x (StripeObject no longer
+    # subclasses dict but is still a Mapping). isinstance(obj, dict)
+    # alone would miss 15.x and pass the StripeObject through unchanged
+    # — observed via PR #539 CI failure 2026-05-13 on stripe==15.0.1.
+    if isinstance(obj, Mapping):
+        # Use __iter__ (key iteration) and __getitem__ rather than
+        # .items() because .items, .get, and other dict methods may be
+        # shadowed by StripeObject.__getattr__ in 15.x (the .get crash
+        # that motivated this fix proves the shadowing happens — assume
+        # any non-dunder method could be affected and stick to the
+        # slot-defined dunders).
         result = {}
         for k in obj:
             result[k] = _stripe_object_to_plain_dict(obj[k])
