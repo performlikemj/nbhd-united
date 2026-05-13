@@ -9,7 +9,7 @@ import { logout } from "@/lib/api";
 import { clearTokens, isLoggedIn } from "@/lib/auth";
 import { useMeQuery, useTenantQuery } from "@/lib/queries";
 import { clearPersistedCache } from "@/lib/query-persist";
-import { BrandLogo } from "@/components/brand-logo";
+import { BrandLogo, BrandIcon } from "@/components/brand-logo";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { SiteFooter } from "@/components/site-footer";
 import { SynapseNetwork } from "@/components/landing/synapse-network";
@@ -179,7 +179,7 @@ function MobileTabBar({
 }) {
   return (
     <nav
-      className="fixed bottom-0 left-0 right-0 z-[50] md:hidden mobile-tab-shadow bg-[#0B0F13]/90 backdrop-blur-2xl border-t border-white/[0.04] pb-[env(safe-area-inset-bottom)]"
+      className="z-[50] lg:hidden mobile-tab-shadow bg-[#0B0F13]/90 backdrop-blur-2xl border-t border-white/[0.04] pb-[env(safe-area-inset-bottom)]"
       role="navigation"
       aria-label="Mobile navigation"
     >
@@ -237,14 +237,16 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { data: tenant } = useTenantQuery();
   const navItems = useNavItems(tenant);
 
-  // Scroll listener for header blur/border transition
+  // Scroll listener for header blur/border transition (main is the scroll container)
   useEffect(() => {
+    const main = document.getElementById("main-content");
+    if (!main) return;
     const handleScroll = () => {
-      setHeaderBorder(window.scrollY > 8);
+      setHeaderBorder(main.scrollTop > 8);
     };
-    window.addEventListener("scroll", handleScroll, { passive: true });
-    return () => window.removeEventListener("scroll", handleScroll);
-  }, []);
+    main.addEventListener("scroll", handleScroll, { passive: true });
+    return () => main.removeEventListener("scroll", handleScroll);
+  }, [pathname]);
 
   useEffect(() => {
     if (!isPublicPage && !isLoggedIn()) {
@@ -292,7 +294,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="relative flex min-h-screen flex-col overflow-x-hidden">
+    <div className="relative flex h-screen flex-col overflow-x-hidden">
       <BackgroundLayers />
       <a href="#main-content" className="skip-link">Skip to main content</a>
 
@@ -308,17 +310,15 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className="mx-auto flex w-full max-w-6xl min-w-0 items-center justify-between gap-2 px-3 py-2 sm:gap-3 sm:px-6">
           {/* Left: Logo + concise title */}
           <div className="flex items-center gap-2.5 min-w-0 shrink-0">
-            <Link href="/journal" className="shrink-0">
-              <BrandLogo size={28} />
-            </Link>
-            <span className="text-xs font-medium text-ink-faint tracking-wide hidden sm:block">
+            <BrandIcon size={28} />
+            <span className="text-xs font-medium text-ink-faint tracking-wide hidden xl:block">
               Neighborhood
             </span>
           </div>
 
           {/* Center: pill nav — desktop only */}
           <nav
-            className="hidden md:flex items-center gap-0.5 rounded-full border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm p-0.5"
+            className="hidden lg:flex items-center gap-0.5 rounded-full border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm p-0.5"
             role="navigation"
             aria-label="Main navigation"
           >
@@ -359,7 +359,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <main
         id="main-content"
-        className="mx-auto w-full max-w-6xl flex-1 flex flex-col min-h-0 px-4 py-4 sm:py-6 sm:px-6 lg:py-8 pb-[calc(3.5rem+env(safe-area-inset-bottom))]"
+        className="mx-auto w-full max-w-6xl flex-1 flex flex-col min-h-0 overflow-y-auto px-4 py-4 sm:py-6 sm:px-6 lg:py-8"
       >
         <div className="content-fade-up">
           <ErrorBoundary

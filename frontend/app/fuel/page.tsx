@@ -36,7 +36,7 @@ export default function FuelPage() {
   };
 
   return (
-    <div className="max-w-5xl mx-auto py-2 sm:py-6 overflow-x-hidden">
+    <div className="mx-auto py-2 sm:py-6 overflow-x-hidden">
       {/* Mobile: compact eyebrow + CTA on one row — saves ~140px above the fold */}
       <div className="sm:hidden flex items-center justify-between gap-3 mb-5">
         <span className="text-accent text-xs font-bold uppercase tracking-[0.22em]">FUEL</span>
