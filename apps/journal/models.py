@@ -7,6 +7,7 @@ import uuid
 from django.db import models
 from pgvector.django import VectorField
 
+from apps.insights.pillars import Pillar
 from apps.tenants.models import Tenant
 
 # Import so Django discovers the model for migrations
@@ -146,6 +147,11 @@ class Document(models.Model):
 
     This is the v2 unified model replacing DailyNote, JournalEntry, WeeklyReview,
     UserMemory, and NoteTemplate.
+
+    Goal-kind documents may carry pillar/topic tagging plus a structured
+    ``target`` and ``intent_status`` lifecycle so the assistant can anchor
+    confidence and prescriptions to the user's stated intent. These fields are
+    nullable so non-goal documents and pre-existing goals remain valid.
     """
 
     class Kind(models.TextChoices):
@@ -158,12 +164,28 @@ class Document(models.Model):
         IDEAS = "ideas", "Ideas"
         MEMORY = "memory", "Memory"
 
+    class IntentStatus(models.TextChoices):
+        ACTIVE = "active", "Active"
+        ACHIEVED = "achieved", "Achieved"
+        ABANDONED = "abandoned", "Abandoned"
+        EXPIRED = "expired", "Expired"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="documents")
     kind = models.CharField(max_length=32, choices=Kind.choices)
     slug = models.CharField(max_length=128)
     title = models.CharField(max_length=256)
     markdown = models.TextField(default="")
+    pillar = models.CharField(max_length=32, choices=Pillar.choices, blank=True, default="")
+    topic = models.ForeignKey(
+        "insights.TopicRegistry",
+        on_delete=models.SET_NULL,
+        related_name="documents",
+        null=True,
+        blank=True,
+    )
+    target = models.JSONField(null=True, blank=True)
+    intent_status = models.CharField(max_length=16, choices=IntentStatus.choices, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -172,6 +194,7 @@ class Document(models.Model):
         ordering = ["-updated_at"]
         indexes = [
             models.Index(fields=["tenant", "kind"]),
+            models.Index(fields=["tenant", "pillar", "kind"]),
         ]
 
     def __str__(self) -> str:
