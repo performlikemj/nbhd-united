@@ -210,6 +210,7 @@ class OpenclawSchemaShapeTest(TestCase):
             "messages",
             "models",
             "plugins",
+            "session",  # session.reset.{mode,idleMinutes} — verified in openclaw@2026.5.7 runtime-schema; added 2026-05-14 (CONTINUITY_workspace-routing-fix.md, Phase 5)
             "telemetry",
             "tools",
             "workspace",
