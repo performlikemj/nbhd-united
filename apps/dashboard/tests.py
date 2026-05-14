@@ -81,8 +81,8 @@ class HorizonsViewAssistantInsightsTests(TestCase):
     """Phase 2 extension: assistant_insights surfaced in /api/v1/dashboard/horizons/."""
 
     def setUp(self):
-        self.tenant = create_tenant(display_name="Horizons-P2", chat_id=900700)
-        self.other_tenant = create_tenant(display_name="Horizons-Other", chat_id=900701)
+        self.tenant = create_tenant(display_name="Horizons-P2", telegram_chat_id=900700)
+        self.other_tenant = create_tenant(display_name="Horizons-Other", telegram_chat_id=900701)
         self.client = APIClient()
         token = RefreshToken.for_user(self.tenant.user)
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.access_token}")
