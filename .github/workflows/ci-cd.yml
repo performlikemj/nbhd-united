@@ -1,8 +1,15 @@
 name: CI / CD
 
 on:
+  # Push to main → run full pipeline including deploys (deploys are
+  # already gated on ``ref == refs/heads/main`` further down). Push to
+  # feature branches DOES NOT need to trigger this workflow — the
+  # ``pull_request`` event below covers PR'd branches, and pre-PR
+  # pushes don't gate anything. Without this scope every force-push to
+  # a PR'd branch fires CI twice (once per event), doubling compute
+  # and slowing both runs by competing for runners.
   push:
-    branches: ['**']
+    branches: ['main']
   pull_request:
     branches: ['**']
   workflow_dispatch:
