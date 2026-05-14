@@ -93,7 +93,7 @@ class Migration(migrations.Migration):
     # PublicSchemaLockdownRuntimeGuard.test_rls_enabled_on_owned_public_tables
     # test catches it, add the offending app's latest migration here.
     dependencies = [
-        ("tenants", "0057_tenant_internal_api_key"),
+        ("tenants", "0058_postgres_cron_canonical_universal"),
         ("token_blacklist", "0013_alter_blacklistedtoken_options_and_more"),
     ]
 
