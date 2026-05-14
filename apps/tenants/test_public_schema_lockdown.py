@@ -145,6 +145,5 @@ class PublicSchemaLockdownRuntimeGuard(TestCase):
             "Tables in public.* (owned by the test role) have RLS disabled "
             "after migrations run. Migration 0058 enables RLS on all owned "
             "public tables; if you genuinely need RLS off for a new table, "
-            "document why and update this test. Offenders: "
-            + repr(offenders),
+            "document why and update this test. Offenders: " + repr(offenders),
         )

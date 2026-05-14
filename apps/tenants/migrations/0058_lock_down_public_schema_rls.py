@@ -84,7 +84,6 @@ REVERSE_SQL = (
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("tenants", "0057_tenant_internal_api_key"),
     ]
