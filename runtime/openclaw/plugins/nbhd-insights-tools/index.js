@@ -492,4 +492,162 @@ export default function register(api) {
     }),
     { optional: true },
   );
+
+  // ── Phase 3: graduated voice ────────────────────────────────────────
+
+  // Signals — structured breakdown the LLM judges register from
+  api.registerTool(
+    wrap({
+      name: "nbhd_insights_signals",
+      description:
+        "Get structured signals for a topic — the inputs you use to JUDGE which voice register to use this turn. Returns data state (sample_size, latest_z, trend, freshness), calibration counts (confirmed/refuted/open), intent (has_stated_goal + summary), user_voice_pref (their explicit override if any), and hard_floors (mechanical safety rails you cannot exceed). YOU pick the register — observation / hypothesis / soft prescription / direct — by weighing these signals against the LIVE CONVERSATION CONTEXT (user mood, regime changes they mentioned, seasonal cues). Never go hotter than hard_floors permit. Honor any non-zero register_offset. Skip-noise rules from observation mode still apply.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          pillar: {
+            type: "string",
+            enum: ALLOWED_PILLARS,
+            description: "Which pillar.",
+          },
+          topic: {
+            type: "string",
+            description: "Topic slug, e.g. 'debt', 'savings', 'dining'.",
+          },
+          window_weeks: {
+            type: "integer",
+            minimum: 1,
+            maximum: 104,
+            description: "Trailing window for the data signals (default 12).",
+          },
+          granularity: {
+            type: "string",
+            enum: ALLOWED_GRANULARITIES,
+            description: "Snapshot cadence (default 'weekly').",
+          },
+        },
+        required: ["pillar", "topic"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const query = {
+          pillar: asTrimmedString(input.pillar),
+          topic: asTrimmedString(input.topic),
+        };
+        if (input.window_weeks !== undefined) query.window_weeks = input.window_weeks;
+        const granularity = asTrimmedString(input.granularity);
+        if (granularity) query.granularity = granularity;
+
+        const payload = await callRuntime(api, {
+          path: insightsPath(api, "/signals/"),
+          method: "GET",
+          query,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  // Voice pref — persist user-explicit overrides
+  api.registerTool(
+    wrap({
+      name: "nbhd_insights_voice_pref_set",
+      description:
+        "Persist the user's EXPLICIT voice override for a (pillar, topic). Call this when the user says something like 'just tell me about dining' (register_offset=+1), 'be more cautious on debt' (register_offset=-1), or 'go back to default for dining' (register_offset=0). NEVER call this on your own inference — only when the user explicitly says they want you hotter/cooler. Omit `topic` to set a pillar-wide override. Idempotent upsert.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          pillar: {
+            type: "string",
+            enum: ALLOWED_PILLARS,
+            description: "Which pillar.",
+          },
+          topic: {
+            type: "string",
+            description: "Topic slug (omit for a pillar-wide override).",
+          },
+          register_offset: {
+            type: "integer",
+            enum: [-1, 0, 1],
+            description:
+              "-1 = drop one register (more cautious). 0 = clear override. +1 = bump one register (more direct).",
+          },
+          tone: {
+            type: "string",
+            enum: ["gentle", "direct"],
+            description: "Optional tone preference. Default: gentle.",
+          },
+          volume: {
+            type: "string",
+            enum: ["silent", "weekly", "live"],
+            description: "Optional proactive-volume preference. Default: weekly.",
+          },
+        },
+        required: ["pillar", "register_offset"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const body = {
+          pillar: asTrimmedString(input.pillar),
+          register_offset: input.register_offset,
+        };
+        const topic = asTrimmedString(input.topic);
+        if (topic) body.topic = topic;
+        const tone = asTrimmedString(input.tone);
+        if (tone) body.tone = tone;
+        const volume = asTrimmedString(input.volume);
+        if (volume) body.volume = volume;
+
+        const payload = await callRuntime(api, {
+          path: insightsPath(api, "/voice-prefs/set/"),
+          method: "POST",
+          body,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  // Voice pref — list the user's current overrides
+  api.registerTool(
+    wrap({
+      name: "nbhd_insights_voice_pref_list",
+      description:
+        "List the user's current voice-pref overrides. Useful when the user says 'what register are you using on X?' or 'show me my settings'. Filter by pillar and/or topic.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          pillar: {
+            type: "string",
+            enum: ALLOWED_PILLARS,
+            description: "Filter by pillar (omit for all).",
+          },
+          topic: {
+            type: "string",
+            description: "Filter by topic slug (omit for all).",
+          },
+        },
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const query = {};
+        const pillar = asTrimmedString(input.pillar);
+        if (pillar) query.pillar = pillar;
+        const topic = asTrimmedString(input.topic);
+        if (topic) query.topic = topic;
+
+        const payload = await callRuntime(api, {
+          path: insightsPath(api, "/voice-prefs/"),
+          method: "GET",
+          query,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
 }

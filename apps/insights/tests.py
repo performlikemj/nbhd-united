@@ -13,13 +13,15 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.finance.models import FinanceAccount, FinanceTransaction
+from apps.journal.models import Document
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
 from .baselines import compute_baseline
-from .models import AssistantInsight, PillarSnapshot, TopicAlias, TopicRegistry
+from .models import AssistantInsight, PillarSnapshot, TopicAlias, TopicRegistry, UserVoicePref
 from .pillars import Pillar
 from .seed import seed_topics
+from .signals import compute_signals
 from .snapshots import compute_gravity_snapshot
 from .tasks import snapshot_gravity_weekly_task
 from .topic_resolver import resolve_topic
@@ -785,3 +787,241 @@ class Phase2EndpointTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         ins.refresh_from_db()
         self.assertEqual(ins.status, AssistantInsight.Status.CONFIRMED)
+
+
+# ── Phase 3 — signals + voice prefs ──────────────────────────────────────
+
+
+class ComputeSignalsTests(TestCase):
+    def setUp(self):
+        self.tenant = _make_finance_tenant(display_name="P3Sig", chat_id=900800)
+        self.debt = _seed_gravity_topic("debt")
+
+    def test_unknown_topic_returns_stub(self):
+        out = compute_signals(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="not_a_topic")
+        self.assertFalse(out["topic_known"])
+        self.assertEqual(out["hard_floors"]["reason"], "topic_unknown")
+        self.assertFalse(out["hard_floors"]["can_be_direct"])
+        self.assertFalse(out["hard_floors"]["can_exceed_observation"])
+
+    def test_empty_history_floors_block_everything(self):
+        out = compute_signals(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="debt")
+        self.assertTrue(out["topic_known"])
+        self.assertEqual(out["data"]["sample_size"], 0)
+        self.assertFalse(out["hard_floors"]["can_be_direct"])
+        self.assertFalse(out["hard_floors"]["can_exceed_observation"])
+        self.assertIsNone(out["calibration"]["ratio"])
+        self.assertEqual(out["user_voice_pref"]["register_offset"], 0)
+        self.assertFalse(out["intent"]["has_stated_goal"])
+
+    def test_sample_floor_lifts_at_four(self):
+        for w in range(4):
+            _make_weekly_debt_snapshot(self.tenant, weeks_ago=w, debt=str(1000 + w * 100))
+        out = compute_signals(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="debt")
+        self.assertEqual(out["data"]["sample_size"], 4)
+        self.assertTrue(out["hard_floors"]["can_be_direct"])
+        self.assertFalse(out["hard_floors"]["can_exceed_observation"])
+
+    def test_observation_floor_lifts_at_three_responses(self):
+        for w in range(4):
+            _make_weekly_debt_snapshot(self.tenant, weeks_ago=w, debt="1000")
+        AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt,
+            statement="a",
+            status=AssistantInsight.Status.CONFIRMED,
+        )
+        AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt,
+            statement="b",
+            status=AssistantInsight.Status.CONFIRMED,
+        )
+        AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt,
+            statement="c",
+            status=AssistantInsight.Status.REFUTED,
+        )
+        out = compute_signals(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="debt")
+        self.assertEqual(out["calibration"]["response_total"], 3)
+        self.assertAlmostEqual(out["calibration"]["ratio"], 2 / 3, places=3)
+        self.assertTrue(out["hard_floors"]["can_be_direct"])
+        self.assertTrue(out["hard_floors"]["can_exceed_observation"])
+
+    def test_pillar_goal_counts_for_intent(self):
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="save-5k",
+            title="Save $5k by Dec",
+            markdown="### Save $5k by Dec\n- Target: $5,000",
+            pillar=Pillar.GRAVITY.value,
+            topic=None,
+        )
+        out = compute_signals(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="debt")
+        self.assertTrue(out["intent"]["has_stated_goal"])
+        self.assertEqual(out["intent"]["goal_scope"], "pillar")
+        self.assertIn("Save $5k", out["intent"]["goal_summary"])
+
+    def test_topic_goal_takes_precedence_over_pillar(self):
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="pillar-goal",
+            title="Pillar-level goal",
+            markdown="",
+            pillar=Pillar.GRAVITY.value,
+            topic=None,
+        )
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="topic-goal",
+            title="Topic-specific debt goal",
+            markdown="",
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt,
+        )
+        out = compute_signals(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="debt")
+        self.assertEqual(out["intent"]["goal_scope"], "topic")
+        self.assertIn("Topic-specific", out["intent"]["goal_summary"])
+
+    def test_topic_specific_voice_pref_wins_over_pillar_wide(self):
+        UserVoicePref.objects.create(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic=None, register_offset=-1)
+        UserVoicePref.objects.create(
+            tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic=self.debt, register_offset=1
+        )
+        out = compute_signals(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="debt")
+        self.assertEqual(out["user_voice_pref"]["register_offset"], 1)
+        self.assertEqual(out["user_voice_pref"]["scope"], "topic")
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-runtime-key")
+class Phase3EndpointTests(TestCase):
+    def setUp(self):
+        self.tenant = _make_finance_tenant(display_name="P3End", chat_id=900900)
+        self.other_tenant = _make_finance_tenant(display_name="P3Other", chat_id=900901)
+        self.client_jwt = APIClient()
+        token = RefreshToken.for_user(self.tenant.user)
+        self.client_jwt.credentials(HTTP_AUTHORIZATION=f"Bearer {token.access_token}")
+        self.debt = _seed_gravity_topic("debt")
+
+    def _runtime_headers(self, tenant_id=None, key="test-runtime-key"):
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": key,
+            "HTTP_X_NBHD_TENANT_ID": tenant_id or str(self.tenant.id),
+        }
+
+    def test_user_signals_returns_full_shape(self):
+        _make_weekly_debt_snapshot(self.tenant, weeks_ago=0, debt="1000")
+        resp = self.client_jwt.get("/api/v1/insights/signals/?pillar=gravity&topic=debt")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        for key in ("data", "calibration", "intent", "user_voice_pref", "hard_floors"):
+            self.assertIn(key, body)
+        self.assertTrue(body["topic_known"])
+
+    def test_user_signals_missing_topic_400(self):
+        resp = self.client_jwt.get("/api/v1/insights/signals/?pillar=gravity")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_runtime_signals_missing_key_401(self):
+        resp = self.client.get(f"/api/v1/insights/runtime/{self.tenant.id}/signals/?pillar=gravity&topic=debt")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_runtime_signals_returns_breakdown(self):
+        resp = self.client.get(
+            f"/api/v1/insights/runtime/{self.tenant.id}/signals/?pillar=gravity&topic=debt",
+            **self._runtime_headers(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["topic_known"])
+
+    def test_set_voice_pref_creates_topic_scoped(self):
+        resp = self.client_jwt.post(
+            "/api/v1/insights/voice-prefs/set/",
+            data={"pillar": "gravity", "topic": "debt", "register_offset": 1},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["register_offset"], 1)
+        self.assertEqual(body["topic_slug"], "debt")
+        self.assertEqual(body["scope"], "topic")
+
+    def test_set_voice_pref_pillar_wide_when_topic_omitted(self):
+        resp = self.client_jwt.post(
+            "/api/v1/insights/voice-prefs/set/",
+            data={"pillar": "gravity", "register_offset": -1},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(resp.json()["topic_slug"])
+        self.assertEqual(resp.json()["scope"], "pillar")
+
+    def test_set_voice_pref_idempotent_upsert(self):
+        self.client_jwt.post(
+            "/api/v1/insights/voice-prefs/set/",
+            data={"pillar": "gravity", "topic": "debt", "register_offset": 1},
+            format="json",
+        )
+        resp = self.client_jwt.post(
+            "/api/v1/insights/voice-prefs/set/",
+            data={"pillar": "gravity", "topic": "debt", "register_offset": -1},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["register_offset"], -1)
+        self.assertEqual(
+            UserVoicePref.objects.filter(tenant=self.tenant, pillar="gravity", topic=self.debt).count(),
+            1,
+        )
+
+    def test_set_voice_pref_rejects_invalid_offset(self):
+        resp = self.client_jwt.post(
+            "/api/v1/insights/voice-prefs/set/",
+            data={"pillar": "gravity", "topic": "debt", "register_offset": 5},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_set_voice_pref_rejects_invalid_pillar(self):
+        resp = self.client_jwt.post(
+            "/api/v1/insights/voice-prefs/set/",
+            data={"pillar": "fuel", "topic": "sleep_quality", "register_offset": 1},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_list_voice_prefs_isolates_tenant(self):
+        UserVoicePref.objects.create(
+            tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic=self.debt, register_offset=1
+        )
+        UserVoicePref.objects.create(
+            tenant=self.other_tenant, pillar=Pillar.GRAVITY.value, topic=None, register_offset=-1
+        )
+        resp = self.client_jwt.get("/api/v1/insights/voice-prefs/")
+        self.assertEqual(resp.json()["count"], 1)
+
+    def test_runtime_set_voice_pref(self):
+        resp = self.client.post(
+            f"/api/v1/insights/runtime/{self.tenant.id}/voice-prefs/set/",
+            data={"pillar": "gravity", "topic": "debt", "register_offset": 1},
+            content_type="application/json",
+            **self._runtime_headers(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["register_offset"], 1)
+
+    def test_runtime_set_voice_pref_cross_tenant_401(self):
+        resp = self.client.post(
+            f"/api/v1/insights/runtime/{self.other_tenant.id}/voice-prefs/set/",
+            data={"pillar": "gravity", "topic": "debt", "register_offset": 1},
+            content_type="application/json",
+            **self._runtime_headers(),
+        )
+        self.assertEqual(resp.status_code, 401)

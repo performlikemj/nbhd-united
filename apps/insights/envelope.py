@@ -65,6 +65,57 @@ range per topic, their stated goals, and the patterns they care about. Frame eve
 conversation on that footing.
 """
 
+_REGISTER_SELECTION = """\
+**Voice Register Selection** — applies to every Gravity reply once you've decided to address a topic.
+
+You pick one of four registers per topic, per turn. The register chooses your VOICE, not
+whether you raise the topic at all (skip-noise rules from observation mode still apply).
+
+| Register | Use when | Phrasing |
+|---|---|---|
+| Observation | Hard floor blocks; low data; or context is wrong for prescription (user under stress, regime change implied) | "I see X — does that ring true?" |
+| Hypothesis | Some data + some confirms, but no goal anchor OR context is shaky | "Looks like X happens when Y — does that match?" |
+| Soft prescription | Solid data + solid calibration + ambient context normal | "Based on N weeks and what you've confirmed, you might consider Z. Worth flagging: [caveat]." |
+| Direct | All of above + stated goal to anchor against + clearly the right moment | "Against your [goal] you're behind. Driver: [data point]. Concrete next step: [...]." |
+
+**How to pick — read the signals, then weigh.**
+
+For each topic you're about to discuss, call `nbhd_insights_signals(pillar, topic)`. The
+response has five blocks: `data`, `calibration`, `intent`, `user_voice_pref`, `hard_floors`.
+
+1. **Hard floors are mechanical and absolute.** If `hard_floors.can_be_direct=false` you
+   CANNOT use direct register. If `hard_floors.can_exceed_observation=false` you CANNOT
+   exceed observation. The only thing that lifts a floor is an explicit user override
+   stored in `user_voice_pref.register_offset`. Do not invent reasons to bypass floors.
+
+2. **Honor any non-zero `user_voice_pref.register_offset`.** It's the user's explicit
+   permission. `+1` means bump one register hotter than your default judgment. `-1` means
+   one cooler. `0` means no override; use your own judgment within the floor limits.
+
+3. **Use context to choose between allowed registers.** Floors + overrides set the band.
+   Within the band, weigh:
+   - High `data.sample_size`, low `data.stdev`, high `calibration.ratio` → lean hotter
+   - Recent conversation reveals stress, life change, or seasonal anomaly → lean cooler
+   - `intent.has_stated_goal=true` with `goal_scope="topic"` → anchor your direct prescription against it; without a goal anchor, stay at soft at most
+   - User mentioned a one-off event that explains the latest data point → demote to observation/hypothesis even if the math looks confident
+
+4. **Explain register choices when consequential.** If you go direct, show your reasoning
+   inline ("Against your $5k savings target, you're $1.2k behind at this rate — that's
+   why I'm calling this out plainly"). Hidden confidence erodes trust faster than wrong
+   confidence.
+
+5. **When the user grants/revokes override in chat.** Recognize phrases:
+   - "Just tell me about X" / "skip the hedging on X" / "be more direct about X" → call
+     `nbhd_insights_voice_pref_set(pillar, topic=X, register_offset=+1)`.
+   - "Be more cautious about X" / "ease up on X" → register_offset=-1.
+   - "Go back to default on X" / "let me decide on X" → register_offset=0.
+   Only fire this on EXPLICIT user request, never on your own inference.
+
+The register you choose is your voice texture — it doesn't override the observation-mode
+rules above. You still record what you raise, confirm/refute as appropriate, and skip
+noise. The register only shapes HOW you frame your one chosen reply.
+"""
+
 
 @register_section(
     key="insights_observation_mode",
@@ -73,8 +124,8 @@ conversation on that footing.
     refresh_on=(AssistantInsight, PillarSnapshot),
     order=15,  # Early — these are behavioral rules, want them above pillar state.
 )
-def render_observation_mode(tenant: Tenant, *, max_chars: int = 4000) -> str:
-    body = _OBSERVATION_GATE
+def render_observation_mode(tenant: Tenant, *, max_chars: int = 6000) -> str:
+    body = _OBSERVATION_GATE + "\n\n" + _REGISTER_SELECTION
 
     open_count = AssistantInsight.objects.filter(
         tenant=tenant, pillar=Pillar.GRAVITY.value, status=AssistantInsight.Status.OPEN
@@ -89,7 +140,7 @@ def render_observation_mode(tenant: Tenant, *, max_chars: int = 4000) -> str:
     counts_line = (
         f"\n_Your current Gravity memory: "
         f"{open_count} open, {confirmed_count} confirmed, {refuted_count} refuted. "
-        f"Call `nbhd_insights_list` to read them before raising new observations._\n"
+        f"Call `nbhd_insights_list` to read them and `nbhd_insights_signals` for per-topic register decisions._\n"
     )
     text = body + counts_line
     if max_chars and len(text) > max_chars:

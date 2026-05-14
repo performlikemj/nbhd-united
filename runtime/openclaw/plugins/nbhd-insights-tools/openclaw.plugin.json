@@ -1,7 +1,7 @@
 {
   "id": "nbhd-insights-tools",
   "name": "NBHD Insights Tools",
-  "description": "Trajectory + memory-of-insights tools for the assistant baseline. Phase 1 read tools: history / snapshot / compare. Phase 2 baseline + write-side: baseline / list / record / confirm / refute. Phase 1 supports pillar=gravity only.",
+  "description": "Trajectory + memory-of-insights + graduated-voice tools for the assistant baseline. Phase 1 read tools: history / snapshot / compare. Phase 2 baseline + write-side: baseline / list / record / confirm / refute. Phase 3 graduated voice: signals / voice_pref_set / voice_pref_list. Phase 1 supports pillar=gravity only.",
   "contracts": {
     "tools": [
       "nbhd_insights_history",
@@ -11,7 +11,10 @@
       "nbhd_insights_list",
       "nbhd_insights_record",
       "nbhd_insights_confirm",
-      "nbhd_insights_refute"
+      "nbhd_insights_refute",
+      "nbhd_insights_signals",
+      "nbhd_insights_voice_pref_set",
+      "nbhd_insights_voice_pref_list"
     ]
   },
   "configSchema": {

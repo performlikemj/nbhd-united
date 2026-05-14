@@ -37,7 +37,8 @@ from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
 from .baselines import compute_baseline
-from .models import AssistantInsight, PillarSnapshot
+from .models import AssistantInsight, PillarSnapshot, UserVoicePref
+from .signals import compute_signals
 from .views import (
     _DIFF_FUNCS,
     ALLOWED_PILLARS,
@@ -52,7 +53,10 @@ from .views import (
     _record_insight_impl,
     _serialize_insight,
     _serialize_snapshot,
+    _serialize_voice_pref,
+    _upsert_voice_pref_impl,
     _validate_record_body,
+    _validate_voice_pref_body,
 )
 
 logger = logging.getLogger(__name__)
@@ -376,3 +380,110 @@ class RuntimeRefuteInsightView(APIView):
         _append_user_response(ins, "refute", note)
         ins.save(update_fields=["status", "last_refuted_at", "user_responses"])
         return Response(_serialize_insight(ins))
+
+
+# ── Phase 3: signals + voice prefs ────────────────────────────────────────
+
+
+class RuntimePillarSignalsView(APIView):
+    """Internal: structured signals for (pillar, topic). The LLM judges register from this."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, tenant_id):
+        if err := _internal_auth_or_401(request, tenant_id):
+            return err
+        tenant = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant, Response):
+            return tenant
+
+        pillar = (request.query_params.get("pillar") or "").strip().lower()
+        if pillar not in ALLOWED_PILLARS:
+            return Response(
+                {"error": "pillar_not_available", "pillar": pillar, "allowed": sorted(ALLOWED_PILLARS)},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        topic_slug = (request.query_params.get("topic") or "").strip().lower()
+        if not topic_slug:
+            return Response(
+                {"error": "missing_param", "required": ["topic"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        window_weeks = _parse_int(
+            request.query_params.get("window_weeks"),
+            default=DEFAULT_BASELINE_WINDOW_WEEKS,
+            lo=1,
+            hi=MAX_BASELINE_WINDOW_WEEKS,
+        )
+        granularity = (request.query_params.get("granularity") or "weekly").strip().lower()
+        if granularity not in dict(PillarSnapshot.Granularity.choices):
+            return Response(
+                {"error": "invalid_granularity", "granularity": granularity},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        signals = compute_signals(
+            tenant=tenant,
+            pillar=pillar,
+            topic_slug=topic_slug,
+            window_weeks=window_weeks,
+            granularity=granularity,
+        )
+        return Response(signals)
+
+
+class RuntimeVoicePrefSetView(APIView):
+    """Internal: persist a user-explicit voice-pref override."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, tenant_id):
+        if err := _internal_auth_or_401(request, tenant_id):
+            return err
+        tenant = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant, Response):
+            return tenant
+
+        err, cleaned = _validate_voice_pref_body(request.data or {})
+        if err:
+            return err
+        pref = _upsert_voice_pref_impl(tenant=tenant, **cleaned)
+        return Response(_serialize_voice_pref(pref))
+
+
+class RuntimeVoicePrefListView(APIView):
+    """Internal: list the tenant's voice-pref overrides."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, tenant_id):
+        if err := _internal_auth_or_401(request, tenant_id):
+            return err
+        tenant = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant, Response):
+            return tenant
+
+        qs = UserVoicePref.objects.filter(tenant=tenant).select_related("topic")
+
+        pillar = (request.query_params.get("pillar") or "").strip().lower()
+        if pillar:
+            if pillar not in ALLOWED_PILLARS:
+                return Response(
+                    {"error": "pillar_not_available", "pillar": pillar, "allowed": sorted(ALLOWED_PILLARS)},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            qs = qs.filter(pillar=pillar)
+
+        topic_slug = (request.query_params.get("topic") or "").strip().lower()
+        if topic_slug:
+            qs = qs.filter(topic__slug=topic_slug)
+
+        rows = list(qs.order_by("pillar", "topic__slug"))
+        return Response(
+            {
+                "count": len(rows),
+                "voice_prefs": [_serialize_voice_pref(r) for r in rows],
+            }
+        )
