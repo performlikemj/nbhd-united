@@ -150,6 +150,27 @@ export async function logout(): Promise<void> {
   });
 }
 
+export async function requestPasswordReset(email: string): Promise<{ detail: string }> {
+  return apiFetch<{ detail: string }>("/api/v1/auth/password-reset/request/", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+}
+
+export async function confirmPasswordReset(
+  uid: string,
+  token: string,
+  newPassword: string,
+): Promise<{ access: string; refresh: string }> {
+  return apiFetch<{ access: string; refresh: string }>(
+    "/api/v1/auth/password-reset/confirm/",
+    {
+      method: "POST",
+      body: JSON.stringify({ uid, token, new_password: newPassword }),
+    },
+  );
+}
+
 export function fetchMe(): Promise<AuthUser> {
   return apiFetch<AuthUser>("/api/v1/auth/me/");
 }
