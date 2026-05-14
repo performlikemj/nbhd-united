@@ -140,10 +140,14 @@ def register_section(
 def _universal_refresh_receiver(sender, instance, **kwargs) -> None:
     """post_save / post_delete handler shared across all registered models.
 
-    Resolves the tenant from the instance, schedules a debounced
-    ``push_user_md`` on commit. Debounce + idempotency live in
-    ``push_user_md``; the receiver just spawns a daemon thread so the
-    request thread isn't blocked on the file-share write.
+    Resolves the tenant from the instance, schedules a ``push_user_md``
+    on commit. The receiver passes ``debounce_seconds=0`` because
+    ``push_user_md``'s default leading-edge debounce drops mid-burst
+    writes and leaves USER.md anchored to the first write in a storm —
+    the exact opposite of the agentic-freshness contract documented in
+    ``templates/openclaw/TOOLS.md``. Bulk callers that genuinely want
+    throttling still pass an explicit ``debounce_seconds`` to
+    ``push_user_md`` directly.
 
     When ``settings.NBHD_DISABLE_BACKGROUND_THREADS`` is true (tests +
     dev) the push runs synchronously inside the on_commit callback — no
@@ -158,7 +162,7 @@ def _universal_refresh_receiver(sender, instance, **kwargs) -> None:
         from apps.orchestrator.workspace_envelope import push_user_md
 
         try:
-            push_user_md(tenant_id)
+            push_user_md(tenant_id, debounce_seconds=0)
         except Exception:
             logger.warning(
                 "USER.md refresh from registry failed for tenant %s (sender=%s)",
