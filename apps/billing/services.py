@@ -281,6 +281,7 @@ def handle_subscription_deleted(subscription_data: dict) -> None:
 
     if tenant.pending_deletion:
         # User requested account deletion — paid period is now over, finalize it.
+        # Explicit user intent overrides exempt-tenant protection.
         logger.info(
             "Finalizing scheduled account deletion for tenant %s (subscription ended)",
             tenant.id,
@@ -292,6 +293,27 @@ def handle_subscription_deleted(subscription_data: dict) -> None:
             _do_hard_delete(user)
         except Exception:
             logger.exception("Hard-delete failed for tenant %s after subscription ended", tenant.id)
+        return
+
+    if tenant.is_budget_exempt:
+        # Infrastructure-class tenant (canary, internal accounts) — never
+        # auto-deprovision on a subscription event. These tenants exist
+        # outside the normal billing lifecycle: their Stripe state may
+        # cycle through test events, manual cancels, or expired trials
+        # without any signal that the underlying tenant should be torn
+        # down. ``is_budget_exempt`` is the existing "off-billing-rails"
+        # marker; reusing it avoids a new flag.
+        #
+        # Explicit ``pending_deletion`` requests still flow through above,
+        # so an exempt tenant can still be deleted on purpose.
+        logger.info(
+            "Skipping subscription-cancel deprovision for budget-exempt tenant %s "
+            "(stripe_customer=%s, stripe_subscription=%s) — flip is_budget_exempt=False "
+            "if you want this tenant to follow the normal billing lifecycle.",
+            tenant.id,
+            tenant.stripe_customer_id,
+            tenant.stripe_subscription_id,
+        )
         return
 
     # Normal cancellation — deprovision container but keep user record.

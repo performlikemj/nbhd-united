@@ -203,6 +203,63 @@ class BillingWebhookServiceTest(TestCase):
         self.assertEqual(self.tenant.status, Tenant.Status.DEPROVISIONING)
         mock_publish.assert_called_once_with("deprovision_tenant", str(self.tenant.id))
 
+    @patch("apps.cron.publish.publish_task")
+    def test_subscription_deleted_skips_budget_exempt_tenants(self, mock_publish):
+        """Infrastructure-class tenants (canary, internal accounts) carry
+        ``is_budget_exempt=True``. A Stripe subscription cancel event for
+        these tenants must NOT trigger deprovision — they exist outside
+        the normal billing lifecycle and their test-mode Stripe state can
+        cycle through cancels without any signal the tenant should be
+        torn down. Without this guard, today's canary incident recurs:
+        a test event fires, deprovision_tenant publishes, the container
+        delete fails on the RG lock, status flips to SUSPENDED, repeat.
+        """
+        self.tenant.stripe_subscription_id = "sub_canary"
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.is_budget_exempt = True
+        self.tenant.save(
+            update_fields=[
+                "stripe_subscription_id",
+                "status",
+                "is_budget_exempt",
+                "updated_at",
+            ]
+        )
+
+        handle_subscription_deleted({"id": "sub_canary"})
+
+        self.tenant.refresh_from_db()
+        # Status unchanged — no deprovision triggered.
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+        mock_publish.assert_not_called()
+
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.tenants.views._do_hard_delete")
+    def test_pending_deletion_overrides_budget_exempt(self, mock_hard_delete, mock_publish):
+        """``pending_deletion`` is explicit user intent and takes priority
+        over the exempt guard — an exempt tenant who has requested hard
+        delete still gets deleted when their subscription ends.
+        """
+        self.tenant.stripe_subscription_id = "sub_canary_delete"
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.is_budget_exempt = True
+        self.tenant.pending_deletion = True
+        self.tenant.save(
+            update_fields=[
+                "stripe_subscription_id",
+                "status",
+                "is_budget_exempt",
+                "pending_deletion",
+                "updated_at",
+            ]
+        )
+
+        handle_subscription_deleted({"id": "sub_canary_delete"})
+
+        mock_hard_delete.assert_called_once_with(self.tenant.user)
+        # Deprovision queue path is bypassed in favor of hard delete.
+        mock_publish.assert_not_called()
+
     def test_invoice_payment_failed_suspends_tenant_by_customer(self):
         self.tenant.stripe_customer_id = "cus_lookup"
         self.tenant.status = Tenant.Status.ACTIVE
