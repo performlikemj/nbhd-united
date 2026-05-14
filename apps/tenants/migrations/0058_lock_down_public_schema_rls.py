@@ -84,8 +84,17 @@ REVERSE_SQL = (
 
 
 class Migration(migrations.Migration):
+    # token_blacklist is the only third-party app in INSTALLED_APPS that
+    # creates `public.*` tables without depending on (and therefore
+    # without ordering itself against) tenants. Forcing it to run first
+    # ensures the loop below catches `token_blacklist_outstandingtoken`
+    # and `token_blacklist_blacklistedtoken`. If a future third-party
+    # addition creates more `public.*` tables and the matching
+    # PublicSchemaLockdownRuntimeGuard.test_rls_enabled_on_owned_public_tables
+    # test catches it, add the offending app's latest migration here.
     dependencies = [
         ("tenants", "0057_tenant_internal_api_key"),
+        ("token_blacklist", "0013_alter_blacklistedtoken_options_and_more"),
     ]
 
     operations = [
