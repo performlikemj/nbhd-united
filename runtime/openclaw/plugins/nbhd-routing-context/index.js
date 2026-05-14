@@ -20,7 +20,12 @@
  * in openclaw@2026.5.7.
  */
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 2000;
+// 5s timeout: the container-to-Django internal HTTP call has variable
+// latency under Azure Container Apps' internal networking. 2s was too
+// aggressive — observed timeout 2026-05-14 on the first turn after a
+// fresh image rollout (`workspace fetch timed out`), leaving the
+// catalogue uninjected for that turn.
+const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 const DEFAULT_CACHE_TTL_MS = 15_000;
 
 // Heuristics that catch the 2026-05-14 corruption pattern (token loop +
@@ -70,7 +75,7 @@ function getRuntimeConfig(api) {
   const requestTimeoutMs = parseInteger(pluginConfig.requestTimeoutMs, {
     defaultValue: DEFAULT_REQUEST_TIMEOUT_MS,
     min: 500,
-    max: 10_000,
+    max: 15_000,
   });
   const cacheTtlMs = parseInteger(pluginConfig.cacheTtlMs, {
     defaultValue: DEFAULT_CACHE_TTL_MS,
