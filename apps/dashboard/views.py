@@ -13,6 +13,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.billing.models import UsageRecord
+from apps.insights.models import AssistantInsight
 from apps.integrations.models import Integration
 from apps.journal.models import Document, JournalEntry, PendingExtraction, WeeklyReview
 from apps.orchestrator.services import check_tenant_health
@@ -304,6 +305,22 @@ class HorizonsView(APIView):
             else:
                 break
 
+        # 6. Assistant insights — the assistant's memory of patterns it has
+        # noticed about this user. Most recent open + confirmed, capped at 20.
+        # Refuted are intentionally excluded from the user view (kept in DB
+        # for the assistant's own reference, but not surfaced as cards).
+        insights = list(
+            AssistantInsight.objects.filter(
+                tenant=tenant,
+                status__in=[
+                    AssistantInsight.Status.OPEN,
+                    AssistantInsight.Status.CONFIRMED,
+                ],
+            )
+            .select_related("topic")
+            .order_by("-created_at")[:20]
+        )
+
         return Response(
             {
                 "goals": [
@@ -341,5 +358,19 @@ class HorizonsView(APIView):
                 "mood_trend": [{"date": str(m["date"]), "mood": m["mood"], "energy": m["energy"]} for m in moods],
                 "momentum": momentum,
                 "current_streak": streak,
+                "assistant_insights": [
+                    {
+                        "id": str(ins.id),
+                        "pillar": ins.pillar,
+                        "topic_slug": ins.topic.slug if ins.topic else None,
+                        "topic_display_name": ins.topic.display_name if ins.topic else None,
+                        "statement": ins.statement,
+                        "status": ins.status,
+                        "confidence": ins.confidence,
+                        "created_at": ins.created_at.isoformat(),
+                        "last_confirmed_at": ins.last_confirmed_at.isoformat() if ins.last_confirmed_at else None,
+                    }
+                    for ins in insights
+                ],
             }
         )

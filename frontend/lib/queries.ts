@@ -58,7 +58,9 @@ import {
   unlinkLine,
   setPreferredChannel,
   approveExtraction,
+  confirmInsight,
   dismissExtraction,
+  refuteInsight,
   fetchHorizons,
   fetchUsageHistory,
   fetchUsageSummary,
@@ -224,6 +226,26 @@ export function useDismissExtractionMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: dismissExtraction,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["horizons"] });
+    },
+  });
+}
+
+export function useConfirmInsightMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, note }: { id: string; note?: string }) => confirmInsight(id, note),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["horizons"] });
+    },
+  });
+}
+
+export function useRefuteInsightMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, note }: { id: string; note?: string }) => refuteInsight(id, note),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["horizons"] });
     },

@@ -193,6 +193,31 @@ export function dismissExtraction(id: string): Promise<{ id: string; status: str
   return apiFetch<{ id: string; status: string }>(`/api/v1/journal/extractions/${id}/dismiss/`, { method: "POST" });
 }
 
+// Assistant insights — the assistant's memory of patterns it has noticed.
+// Confirm and refute mutate AssistantInsight rows on the backend; both
+// invalidate the Horizons query so the card flips status in place.
+export function confirmInsight(id: string, note?: string): Promise<import("@/lib/types").HorizonsAssistantInsight> {
+  return apiFetch<import("@/lib/types").HorizonsAssistantInsight>(
+    `/api/v1/insights/insights/${id}/confirm/`,
+    {
+      method: "POST",
+      body: note ? JSON.stringify({ note }) : undefined,
+      headers: note ? { "Content-Type": "application/json" } : undefined,
+    },
+  );
+}
+
+export function refuteInsight(id: string, note?: string): Promise<import("@/lib/types").HorizonsAssistantInsight> {
+  return apiFetch<import("@/lib/types").HorizonsAssistantInsight>(
+    `/api/v1/insights/insights/${id}/refute/`,
+    {
+      method: "POST",
+      body: note ? JSON.stringify({ note }) : undefined,
+      headers: note ? { "Content-Type": "application/json" } : undefined,
+    },
+  );
+}
+
 // Tenants
 export function fetchTenant(): Promise<Tenant> {
   return apiFetch<Tenant>("/api/v1/tenants/me/");
