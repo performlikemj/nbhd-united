@@ -78,7 +78,8 @@ class CronJobListCreateTest(TestCase):
         self.assertNotIn("wakeMode", created_job)
         self.assertEqual(created_job["payload"]["kind"], "agentTurn")
         # Phase 2 sync block should be appended (foreground default = True)
-        self.assertIn("_sync:New Job", created_job["payload"]["message"])
+        self.assertIn("nbhd_cron_phase2_summary", created_job["payload"]["message"])
+        self.assertIn('"New Job"', created_job["payload"]["message"])
         self.assertIn("do thing", created_job["payload"]["message"])
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
@@ -510,10 +511,10 @@ class CronJobUpdateSnapshotFallbackTest(TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         created_job = mock_invoke.call_args_list[2][0][2]["job"]
-        self.assertIn("_sync:My Task", created_job["payload"]["message"])
-        self.assertTrue(
-            created_job["payload"]["message"].startswith("quiet maintenance"),
-        )
+        msg = created_job["payload"]["message"]
+        self.assertIn("nbhd_cron_phase2_summary", msg)
+        self.assertIn('"My Task"', msg)
+        self.assertTrue(msg.startswith("quiet maintenance"))
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_update_existing_job_still_uses_delete_recreate(self, mock_invoke):
@@ -662,7 +663,8 @@ class Phase2WrapHelperTest(SimpleTestCase):
         wrapped = _wrap_message_with_phase2("base prompt", "Test Job", foreground=True)
         self.assertTrue(wrapped.startswith("base prompt"))
         self.assertIn("FINAL STEP", wrapped)
-        self.assertIn("_sync:Test Job", wrapped)
+        self.assertIn("nbhd_cron_phase2_summary", wrapped)
+        self.assertIn('"Test Job"', wrapped)
 
     def test_foreground_idempotent(self):
         once = _wrap_message_with_phase2("base", "Test Job", foreground=True)

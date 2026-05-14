@@ -1839,6 +1839,101 @@ class RuntimeProfileUpdateView(APIView):
         )
 
 
+class RuntimeCronPhase2SummaryView(APIView):
+    """POST /api/v1/integrations/runtime/<tenant_id>/cron-phase2-summary/
+
+    Receives a 2-3 sentence summary from a foreground cron run that messaged
+    the user, and creates the corresponding ``_sync:<job_name>`` one-shot
+    cron with ``sessionTarget=main`` so the user's main chat session learns
+    what just happened. The agent only provides the summary; Django owns
+    cron expression math, payload composition, and self-removal text — a
+    deliberate split that keeps the model out of failure-prone tool-param
+    assembly. See ``apps/orchestrator/config_generator.py:_phase2_sync_block``
+    for the prompt-side contract.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        data = request.data or {}
+        summary = str(data.get("summary", "")).strip()
+        job_name = str(data.get("job_name", "")).strip()
+        if not summary:
+            return Response(
+                {"error": "summary_required", "detail": "summary must be a non-empty string"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not job_name:
+            return Response(
+                {"error": "job_name_required", "detail": "job_name must be a non-empty string"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Compute a cron expr ~2 minutes from now in the user's tz. Two
+        # minutes is enough buffer for the cron run jsonl to flush and the
+        # main session to be available, and short enough that the sync
+        # arrives while the user is still likely engaged with the message.
+        tz_name = _tenant_timezone_name(tenant)
+        try:
+            user_tz = ZoneInfo(tz_name)
+        except ZoneInfoNotFoundError:
+            user_tz = ZoneInfo("UTC")
+            tz_name = "UTC"
+        fire_at = datetime.now(user_tz) + timedelta(minutes=2)
+        # Date-specific expression: this minute, this hour, this day, this
+        # month — matches once and then never again, which is what we want
+        # for a one-shot whose payload also self-removes.
+        cron_expr = f"{fire_at.minute} {fire_at.hour} {fire_at.day} {fire_at.month} *"
+
+        sync_name = f"_sync:{job_name}"
+        payload_text = f"[Sync — {job_name}] {summary} After noting this, run: cron remove {sync_name}"
+
+        from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
+
+        try:
+            invoke_gateway_tool(
+                tenant,
+                "cron.add",
+                {
+                    "name": sync_name,
+                    "schedule": {"kind": "cron", "expr": cron_expr, "tz": tz_name},
+                    "sessionTarget": "main",
+                    "wakeMode": "now",
+                    "payload": {"kind": "systemEvent", "text": payload_text},
+                    "enabled": True,
+                },
+            )
+        except GatewayError as exc:
+            logger.warning(
+                "Phase 2 sync cron.add failed for tenant=%s job=%s: %s",
+                tenant.id,
+                job_name,
+                exc,
+            )
+            return Response(
+                {"error": "gateway_failed", "detail": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response(
+            {
+                "ok": True,
+                "sync_cron_name": sync_name,
+                "fires_at": fire_at.isoformat(),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Workspace runtime endpoints
 # ---------------------------------------------------------------------------

@@ -257,7 +257,14 @@ class ConfigGeneratorTest(TestCase):
             )
 
     def test_foreground_jobs_carry_phase2_sync_block(self):
-        """Foreground seed jobs have the Phase 2 sync wrapper appended."""
+        """Foreground seed jobs have the Phase 2 sync wrapper appended.
+
+        Under the tool-delegation model, the block instructs the agent to
+        invoke ``nbhd_cron_phase2_summary`` (Django creates the
+        ``_sync:<job_name>`` cron server-side). The agent passes ``job_name``
+        as a parameter; the literal name appears in the prompt as the value
+        to use.
+        """
         from .config_generator import build_cron_seed_jobs
 
         self.tenant.heartbeat_enabled = True
@@ -274,14 +281,19 @@ class ConfigGeneratorTest(TestCase):
             if job["name"] in foreground_names:
                 msg = job["payload"]["message"]
                 self.assertIn(
-                    f"_sync:{job['name']}",
-                    msg,
-                    f"{job['name']} should contain its sync cron name in the wrapper",
-                )
-                self.assertIn(
                     "FINAL STEP — conditional sync",
                     msg,
                     f"{job['name']} should carry the Phase 2 sync block",
+                )
+                self.assertIn(
+                    "nbhd_cron_phase2_summary",
+                    msg,
+                    f"{job['name']} should reference the phase 2 summary tool",
+                )
+                self.assertIn(
+                    f'"{job["name"]}"',
+                    msg,
+                    f"{job['name']} should appear as the literal job_name parameter",
                 )
                 self.assertIn(
                     "Did you send the user a message",
@@ -292,9 +304,8 @@ class ConfigGeneratorTest(TestCase):
     def test_phase2_sync_block_disambiguates_tool_from_message(self):
         """The Phase 2 sync block must explicitly tell the agent that this is a
         tool invocation, not a chat message. Regression guard for the cron-leak
-        incident where the model emitted `/cron add ...` text via
-        `nbhd_send_to_user` instead of calling the cron tool, and dropped the
-        leading underscore from the `_sync:` prefix.
+        incident where the model emitted ``/cron add ...`` text via
+        ``nbhd_send_to_user`` instead of invoking the sync tool.
         """
         from .config_generator import _phase2_sync_block
 
@@ -304,9 +315,10 @@ class ConfigGeneratorTest(TestCase):
         self.assertIn("TOOL invocation", block)
         self.assertIn("nbhd_send_to_user", block)
 
-        # The `_sync:` underscore prefix must be flagged as required
-        self.assertIn("_sync:Evening Check-in", block)
-        self.assertIn("MUST start with underscore", block)
+        # The new contract delegates cron creation to Django; the agent only
+        # invokes nbhd_cron_phase2_summary with summary + job_name.
+        self.assertIn("nbhd_cron_phase2_summary", block)
+        self.assertIn('"Evening Check-in"', block)
 
     def test_background_jobs_skip_phase2_sync_block(self):
         """Background seed jobs (foreground=false) do NOT carry the Phase 2 wrapper."""
@@ -327,7 +339,8 @@ class ConfigGeneratorTest(TestCase):
         jobs = build_cron_seed_jobs(self.tenant)
         hb = next((j for j in jobs if j["name"] == "Heartbeat Check-in"), None)
         self.assertIsNotNone(hb)
-        self.assertIn("_sync:Heartbeat Check-in", hb["payload"]["message"])
+        self.assertIn("nbhd_cron_phase2_summary", hb["payload"]["message"])
+        self.assertIn('"Heartbeat Check-in"', hb["payload"]["message"])
         self.assertIn("HEARTBEAT_OK", hb["payload"]["message"])
 
     # ── Config validator integration ────────────────────────────────

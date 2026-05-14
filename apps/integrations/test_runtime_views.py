@@ -599,4 +599,109 @@ class RedditViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["error"], "invalid_request")
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="shared-key")
+class RuntimeCronPhase2SummaryViewTest(TestCase):
+    """Tool-delegation contract for the Phase 2 sync flow.
+
+    Agent calls ``nbhd_cron_phase2_summary`` with summary + job_name; Django
+    constructs the ``_sync:<job>`` one-shot, computes the cron expression,
+    and registers it with the OpenClaw gateway. The agent contributes only
+    the summary text — every other parameter is server-owned.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Phase2", telegram_chat_id=919191)
+
+    def _headers(self):
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": "shared-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def test_requires_internal_auth(self):
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/cron-phase2-summary/",
+            data={"summary": "did stuff", "job_name": "Evening Check-in"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_rejects_empty_summary(self):
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/cron-phase2-summary/",
+            data={"summary": "  ", "job_name": "Evening Check-in"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "summary_required")
+
+    def test_rejects_missing_job_name(self):
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/cron-phase2-summary/",
+            data={"summary": "did stuff"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "job_name_required")
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_success_creates_sync_cron_via_gateway(self, mock_invoke):
+        mock_invoke.return_value = {"ok": True}
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/cron-phase2-summary/",
+            data={
+                "summary": "Wrote today's evening reflection and sent the user a recap.",
+                "job_name": "Evening Check-in",
+            },
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["sync_cron_name"], "_sync:Evening Check-in")
+
+        # Gateway was called with cron.add carrying the canonical sync shape.
+        self.assertEqual(mock_invoke.call_count, 1)
+        args, _ = mock_invoke.call_args
+        self.assertEqual(args[1], "cron.add")
+        job = args[2]
+        self.assertEqual(job["name"], "_sync:Evening Check-in")
+        self.assertEqual(job["sessionTarget"], "main")
+        self.assertEqual(job["wakeMode"], "now")
+        self.assertEqual(job["payload"]["kind"], "systemEvent")
+        # Payload text carries the summary and the self-removal instruction.
+        self.assertIn(
+            "Wrote today's evening reflection",
+            job["payload"]["text"],
+        )
+        self.assertIn(
+            "cron remove _sync:Evening Check-in",
+            job["payload"]["text"],
+        )
+        # Schedule is a one-shot date-specific expression — five parts,
+        # last part is the wildcard day-of-week.
+        expr = job["schedule"]["expr"]
+        self.assertEqual(len(expr.split()), 5)
+        self.assertTrue(expr.endswith(" *"))
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_gateway_failure_returns_502(self, mock_invoke):
+        from apps.cron.gateway_client import GatewayError
+
+        mock_invoke.side_effect = GatewayError("gateway down")
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/cron-phase2-summary/",
+            data={
+                "summary": "did stuff",
+                "job_name": "Evening Check-in",
+            },
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["error"], "gateway_failed")

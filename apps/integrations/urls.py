@@ -13,6 +13,7 @@ from .runtime_views import (
     RuntimeBYOErrorReportView,
     RuntimeCalendarEventsView,
     RuntimeCalendarFreeBusyView,
+    RuntimeCronPhase2SummaryView,
     RuntimeDailyNoteAppendView,
     RuntimeDailyNotesView,
     RuntimeDocumentAppendView,
@@ -192,6 +193,12 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/send-to-user/",
         _CronDeliveryView.as_view(),
         name="runtime-send-to-user",
+    ),
+    # Cron Phase 2 sync — agent summary triggers Django to create _sync: cron
+    path(
+        "runtime/<uuid:tenant_id>/cron-phase2-summary/",
+        RuntimeCronPhase2SummaryView.as_view(),
+        name="runtime-cron-phase2-summary",
     ),
     # Reddit runtime endpoints
     path(

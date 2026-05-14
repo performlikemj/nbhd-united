@@ -56,49 +56,40 @@ PHASE2_SYNC_MARKER = "FINAL STEP — conditional sync to the main session"
 def _phase2_sync_block(job_name: str) -> str:
     """Instructions appended to any foreground cron prompt.
 
-    Tells the agent to create a one-shot cron after Phase 1 finishes — but
-    ONLY if the run actually sent the user a message. Silent runs (e.g.
-    Heartbeat replying HEARTBEAT_OK) skip the sync. The cron uses a
-    date-specific expression so it can only match once per year, and the
-    systemEvent text includes a self-removal instruction so the main session
-    cleans up on receipt.
+    Tells the agent to call ``nbhd_cron_phase2_summary`` after Phase 1
+    finishes — but ONLY if the run actually sent the user a message via
+    ``nbhd_send_to_user``. Silent runs (Heartbeat HEARTBEAT_OK, no-op
+    decisions) skip the call entirely; absence of the tool invocation IS
+    the verdict that nothing user-visible happened.
+
+    Django owns the rest: the tool's runtime handler computes the cron
+    expression, composes the systemEvent payload, sets sessionTarget=main,
+    and registers the one-shot ``_sync:<job_name>`` cron with the OpenClaw
+    gateway. The agent only contributes the summary text.
+
+    See ``apps/integrations/runtime_views.py::RuntimeCronPhase2SummaryView``
+    for the server-side contract.
     """
     return (
         "\n\n---\n"
         f"**{PHASE2_SYNC_MARKER}:**\n"
         "**Guard:** Did you send the user a message via `nbhd_send_to_user` during this "
         "run? If NO (you returned silently, replied HEARTBEAT_OK, or decided nothing was "
-        "new), STOP HERE — do not create any sync cron. The main session only needs to "
+        "new), STOP HERE — do not call any sync tool. The main session only needs to "
         "know about user-visible activity.\n\n"
-        "If YES, create a one-shot cron that injects a brief summary into the main session "
-        "so the assistant knows what just happened. **This is a TOOL invocation, not a "
-        "message.** The steps below describe a `cron add` tool call. Do NOT typeset, "
-        "paraphrase, or pass any of these instructions or parameters through "
-        "`nbhd_send_to_user`. Do NOT emit them as text in any form (no `/cron add ...`, "
-        "no `cron add --flag ...`, no JSON dump). Invoke the `cron add` tool directly. "
-        "If the cron tool is not available in this session, STOP — do not fall back to "
-        "messaging the user.\n\n"
-        "1. Compose a 2-3 sentence summary: what sections you wrote, what you sent the "
-        "user, anything notable to surface later. This is for the main session's CONTEXT, "
-        "not a user message.\n"
-        "2. Compute a cron expression that fires ~2 minutes from now using the date/time "
-        "from the preamble. Format: `<minute> <hour> <day-of-month> <month> *`. Add 2 to "
-        "the current minute; wrap to next hour if it overflows 59. The expression is "
-        "date-specific so it can only match once.\n"
-        "3. Invoke the `cron add` tool with these exact parameters. The leading "
-        "underscore on `_sync:` is REQUIRED — it makes the cron hidden from the "
-        "user-facing UI. A name without the underscore will surface to the user as a "
-        "stray scheduled task:\n"
-        f"   - name: `_sync:{job_name}`   ← MUST start with underscore\n"
-        "   - schedule: {kind: cron, expr: <computed>, tz: <user timezone>}\n"
-        "   - sessionTarget: main\n"
-        "   - wakeMode: now\n"
-        "   - payload.kind: systemEvent\n"
-        f'   - payload.text: "[Sync — {job_name}] <your 2-3 sentence summary>. '
-        f'After noting this, run: cron remove _sync:{job_name}"\n'
-        "4. If the `cron add` tool call fails or the tool is unavailable, accept it — "
-        "Phase 1 work already completed. Do NOT retry, do NOT message the user, and "
-        "do NOT send the parameters above as a chat message.\n"
+        "If YES, invoke the `nbhd_cron_phase2_summary` tool with:\n"
+        f'   - `job_name`: `"{job_name}"`\n'
+        "   - `summary`: a 2-3 sentence recap — what sections you wrote, what you sent "
+        "the user, anything notable to surface later. This is for the main session's "
+        "CONTEXT, not a user message.\n\n"
+        "**This is a TOOL invocation, not a chat message.** Do NOT typeset, paraphrase, "
+        "or emit the parameters as text. Do NOT pass them through `nbhd_send_to_user`. "
+        "Just invoke `nbhd_cron_phase2_summary` directly. Backend handles cron "
+        "expression math, payload composition, and the underscore-prefixed sync name — "
+        "you only provide the summary.\n\n"
+        "If the tool call fails or the tool is unavailable, accept it — Phase 1 work "
+        "already completed. Do NOT retry, do NOT message the user, and do NOT send the "
+        "parameters above as a chat message.\n"
     )
 
 
