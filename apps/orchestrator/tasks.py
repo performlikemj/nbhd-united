@@ -625,7 +625,7 @@ def restore_crons_after_image_update_task(tenant_id: str) -> None:
             publish_task(
                 "regenerate_tenant_crons",
                 tenant_id,
-                idempotency_key=f"regen-cron:post-image:{tenant_id}",
+                idempotency_key=f"regen-cron-post-image-{tenant_id}",
                 delay_seconds=5,
             )
         except Exception:

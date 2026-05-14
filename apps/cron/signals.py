@@ -38,7 +38,7 @@ def _enqueue_regen(tenant_id: str) -> None:
         publish_task(
             "regenerate_tenant_crons",
             tenant_id,
-            idempotency_key=f"regen-cron:{tenant_id}",
+            idempotency_key=f"regen-cron-{tenant_id}",
             delay_seconds=30,
         )
     except Exception:

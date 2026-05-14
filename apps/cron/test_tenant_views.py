@@ -997,7 +997,7 @@ class PostgresCanonicalSignalTest(TestCase):
         call = mock_publish.call_args
         self.assertEqual(call[0][0], "regenerate_tenant_crons")
         self.assertEqual(call[1]["delay_seconds"], 30)
-        self.assertEqual(call[1]["idempotency_key"], f"regen-cron:{self.tenant.id}")
+        self.assertEqual(call[1]["idempotency_key"], f"regen-cron-{self.tenant.id}")
 
     @patch("apps.cron.publish.publish_task")
     def test_publishes_on_delete(self, mock_publish):
