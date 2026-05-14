@@ -66,9 +66,11 @@ fi
 export AZURE_MOCK="true"
 
 # Disable plugins whose paths only exist in the OpenClaw container image,
-# not in CI.  The default for OPENCLAW_USAGE_PLUGIN_ID is non-empty
-# ("nbhd-usage-reporter"), so we must explicitly clear it here.
+# not in CI.  The defaults for these IDs are non-empty in base.py, so we
+# must explicitly clear them here or `openclaw doctor` rejects the config
+# with "plugin not found" warnings.
 export OPENCLAW_USAGE_PLUGIN_ID=""
+export OPENCLAW_SETTINGS_PLUGIN_ID=""
 
 $PYTHON_BIN manage.py migrate --noinput >/dev/null
 

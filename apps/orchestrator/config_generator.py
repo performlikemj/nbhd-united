@@ -1214,6 +1214,15 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             str(getattr(settings, "OPENCLAW_IMAGE_GEN_PLUGIN_ID", "") or "").strip(),
             str(getattr(settings, "OPENCLAW_IMAGE_GEN_PLUGIN_PATH", "") or "").strip(),
         ),
+        # Settings plugin — primary-model read + switch (nbhd_get_preferred_model_state,
+        # nbhd_set_preferred_model). Unconditional in production via base.py default
+        # so every tenant can ask its assistant about models and route switch
+        # requests through the same tier gate as the dashboard. Tests disable by
+        # setting OPENCLAW_SETTINGS_PLUGIN_ID="".
+        (
+            str(getattr(settings, "OPENCLAW_SETTINGS_PLUGIN_ID", "") or "").strip(),
+            str(getattr(settings, "OPENCLAW_SETTINGS_PLUGIN_PATH", "") or "").strip(),
+        ),
     ]
     # Reddit plugin — conditionally loaded only when tenant has an active Reddit connection
     from apps.integrations.models import Integration as _Integration

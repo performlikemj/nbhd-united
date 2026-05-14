@@ -244,6 +244,11 @@ OPENCLAW_REDDIT_PLUGIN_PATH = env(
     "OPENCLAW_REDDIT_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-reddit-tools",
 )
+OPENCLAW_SETTINGS_PLUGIN_ID = env("OPENCLAW_SETTINGS_PLUGIN_ID", default="nbhd-settings-tools")
+OPENCLAW_SETTINGS_PLUGIN_PATH = env(
+    "OPENCLAW_SETTINGS_PLUGIN_PATH",
+    default="/opt/nbhd/plugins/nbhd-settings-tools",
+)
 COMPOSIO_REDDIT_AUTH_CONFIG_ID = env("COMPOSIO_REDDIT_AUTH_CONFIG_ID", default="")
 
 OPENCLAW_CONTAINER_SECRET_BACKEND = env(

@@ -41,7 +41,7 @@ from apps.tenants.models import Tenant
 logger = logging.getLogger(__name__)
 
 
-HINT_MODEL = "anthropic/claude-sonnet-4.6"
+HINT_MODEL = "openai/gpt-4o-mini"
 HINT_TIMEOUT = 30
 HINT_MAX_CONTENT_CHARS = 6000
 

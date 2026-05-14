@@ -26,7 +26,7 @@ from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
 
-EXTRACTION_MODEL = "anthropic/claude-sonnet-4.6"
+EXTRACTION_MODEL = "openai/gpt-4o-mini"
 MIN_NOTE_LENGTH = 100  # chars — below this we skip or fall back
 DEDUP_SIMILARITY_THRESHOLD = 0.65  # cosine similarity for semantic dedup
 TELEGRAM_API_BASE = "https://api.telegram.org/bot"
