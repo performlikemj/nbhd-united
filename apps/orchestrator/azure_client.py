@@ -865,6 +865,21 @@ def create_container_app(
                                 "volumeName": "plugin-runtime-deps",
                                 "mountPath": "/home/node/.openclaw/plugin-runtime-deps",
                             },
+                            # OpenClaw memory-core's SQLite FTS5 index. The
+                            # truth lives in MEMORY.md + memory/*.md on the
+                            # workspace share (line-based, SMB-safe). The
+                            # index is a rebuild-on-startup cache — put it
+                            # on local ephemeral storage so a container kill
+                            # mid-write can't corrupt the file (the SMB +
+                            # SQLite bug behind PR #525). The mount is
+                            # always present; whether OpenClaw actually
+                            # writes here is gated by per-tenant
+                            # ``experimental_memory_core_enabled`` (see
+                            # ``_build_memory_search_config``).
+                            {
+                                "volumeName": "index-cache",
+                                "mountPath": "/home/node/.openclaw/index",
+                            },
                         ],
                     },
                 ],
@@ -880,6 +895,10 @@ def create_container_app(
                     },
                     {
                         "name": "plugin-runtime-deps",
+                        "storageType": "EmptyDir",
+                    },
+                    {
+                        "name": "index-cache",
                         "storageType": "EmptyDir",
                     },
                 ],
@@ -1137,13 +1156,25 @@ def apply_byo_credentials_to_container(tenant: Any) -> None:
 _PLUGIN_RUNTIME_DEPS_VOLUME = "plugin-runtime-deps"
 _PLUGIN_RUNTIME_DEPS_PATH = "/home/node/.openclaw/plugin-runtime-deps"
 
+# OpenClaw memory-core's SQLite FTS5 index. Markdown lives on the share
+# (line-based, SMB-safe); the index is a rebuild-on-startup cache so it
+# belongs on local ephemeral storage. See ``_build_memory_search_config``
+# in config_generator for the corresponding openclaw.json shape.
+_INDEX_CACHE_VOLUME = "index-cache"
+_INDEX_CACHE_PATH = "/home/node/.openclaw/index"
 
-def _ensure_plugin_runtime_deps_in_template(app) -> bool:
-    """Mutate a Container App template in place to include the
-    plugin-runtime-deps EmptyDir mount on the openclaw container.
 
-    Returns True if the template was modified, False if the mount was
-    already present. Caller is responsible for persisting the change.
+def _ensure_empty_dir_mount_in_template(app, volume_name: str, mount_path: str) -> bool:
+    """Mutate a Container App template in place to include an EmptyDir
+    volume + mount on the ``openclaw`` container.
+
+    Idempotent — returns True if the template was modified, False if both
+    the volume and mount were already present. Caller is responsible for
+    persisting the change.
+
+    Single helper for every ephemeral-storage shadow we've needed so far
+    (plugin-runtime-deps to dodge SMB chmod-EPERM, index-cache to keep
+    SQLite off SMB). The shape is the same; only the names differ.
     """
     from azure.mgmt.appcontainers.models import Volume, VolumeMount
 
@@ -1153,8 +1184,8 @@ def _ensure_plugin_runtime_deps_in_template(app) -> bool:
 
     modified = False
 
-    if _PLUGIN_RUNTIME_DEPS_VOLUME not in volume_names:
-        volumes.append(Volume(name=_PLUGIN_RUNTIME_DEPS_VOLUME, storage_type="EmptyDir"))
+    if volume_name not in volume_names:
+        volumes.append(Volume(name=volume_name, storage_type="EmptyDir"))
         template.volumes = volumes
         modified = True
 
@@ -1162,18 +1193,27 @@ def _ensure_plugin_runtime_deps_in_template(app) -> bool:
         if container.name != "openclaw":
             continue
         mounts = list(container.volume_mounts or [])
-        if not any(m.volume_name == _PLUGIN_RUNTIME_DEPS_VOLUME for m in mounts):
-            mounts.append(
-                VolumeMount(
-                    volume_name=_PLUGIN_RUNTIME_DEPS_VOLUME,
-                    mount_path=_PLUGIN_RUNTIME_DEPS_PATH,
-                )
-            )
+        if not any(m.volume_name == volume_name for m in mounts):
+            mounts.append(VolumeMount(volume_name=volume_name, mount_path=mount_path))
             container.volume_mounts = mounts
             modified = True
         break
 
     return modified
+
+
+def _ensure_plugin_runtime_deps_in_template(app) -> bool:
+    """Mutate a Container App template in place to include the
+    plugin-runtime-deps EmptyDir mount on the openclaw container.
+    """
+    return _ensure_empty_dir_mount_in_template(app, _PLUGIN_RUNTIME_DEPS_VOLUME, _PLUGIN_RUNTIME_DEPS_PATH)
+
+
+def _ensure_index_cache_in_template(app) -> bool:
+    """Mutate a Container App template in place to include the
+    index-cache EmptyDir mount on the openclaw container.
+    """
+    return _ensure_empty_dir_mount_in_template(app, _INDEX_CACHE_VOLUME, _INDEX_CACHE_PATH)
 
 
 def ensure_plugin_runtime_deps_mount(container_name: str) -> bool:
@@ -1236,6 +1276,7 @@ def update_container_image(container_name: str, image: str) -> None:
             break
 
     _ensure_plugin_runtime_deps_in_template(app)
+    _ensure_index_cache_in_template(app)
 
     # Generate a unique revision suffix from the image tag to avoid
     # "revision with suffix already exists" errors.

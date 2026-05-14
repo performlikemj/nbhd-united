@@ -144,23 +144,30 @@ class ConfigGeneratorTest(TestCase):
         self.assertNotIn("group:automation", tools["deny"])
         self.assertNotIn("group:ui", tools["allow"])
 
-    def test_memorysearch_disabled_and_denied(self):
-        """OpenClaw's memory_search backs onto a SQLite index on the per-
-        tenant Azure File Share. SQLite over SMB corrupts on mid-write kill
-        (we've seen 0-byte main.sqlite across the fleet), surfacing to
-        users as "database is locked". Memory routes through Postgres via
-        nbhd_journal_search / nbhd_memory_get instead. This test pins
-        both layers of the guard so a silent re-enable can't slip in:
+    def test_memorysearch_default_disabled_for_tenants_without_flag(self):
+        """The PR #525 SQLite-on-SMB corruption guarantees memory-core stays
+        off by default. Phase 3 unwinds that ban behind a per-tenant
+        ``experimental_memory_core_enabled`` flag, so default tenants
+        (everyone without the flag set) continue to see:
 
-        1. agents.defaults.memorySearch.enabled is False
-        2. memory_search and memory_get are in tools.deny
+        - ``agents.defaults.memorySearch.enabled = False``
+
+        Tool deny is no longer the guard — the 2026.5.7 policy allows
+        ``memory_search`` / ``memory_get`` because the SQLite index now
+        lives on an ``index-cache`` EmptyDir mount (see
+        ``azure_client._ensure_index_cache_in_template``). With the flag
+        off, the gateway has the tools available but ``memorySearch.enabled
+        = False`` makes them no-ops; with the flag on, the tools call
+        into the safe-storage SQLite.
+
+        See ``apps/orchestrator/test_memory_core_ephemeral.py`` for the
+        flag-on path coverage.
         """
+        # Default tenant: no flag → memory search disabled.
+        self.assertFalse(self.tenant.experimental_memory_core_enabled)
         config = generate_openclaw_config(self.tenant)
         memory_search_block = config["agents"]["defaults"]["memorySearch"]
         self.assertFalse(memory_search_block["enabled"])
-        deny = config["tools"]["deny"]
-        self.assertIn("memory_search", deny)
-        self.assertIn("memory_get", deny)
 
     def test_channels_have_no_explicit_capabilities(self):
         """Capabilities are auto-detected by OpenClaw — not set in config."""
