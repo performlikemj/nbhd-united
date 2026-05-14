@@ -413,16 +413,42 @@ class ConfigGeneratorTest(TestCase):
     # ── Task model preferences ──────────────────────────────────────
 
     def test_task_model_preferences_override_cron_jobs(self):
-        self.tenant.task_model_preferences = {
-            "morning_briefing": "openrouter/qwen/qwen3-30b-a3b",
-        }
+        # Use a model from the tier's allowlist (starter ⇒ kimi). Without
+        # the allowlist guard added 2026-05-14, ``build_cron_seed_jobs``
+        # would stamp anything the user requested, including models the
+        # OpenClaw runtime rejects at preflight.
+        from apps.billing.constants import KIMI_MODEL
+
+        self.tenant.model_tier = "starter"
+        self.tenant.task_model_preferences = {"morning_briefing": KIMI_MODEL}
         self.tenant.save()
         jobs = build_cron_seed_jobs(self.tenant)
         morning = next(j for j in jobs if j["name"] == "Morning Briefing")
-        self.assertEqual(morning["model"], "openrouter/qwen/qwen3-30b-a3b")
+        self.assertEqual(morning["model"], KIMI_MODEL)
 
     def test_task_model_preferences_no_override_leaves_default(self):
         self.tenant.task_model_preferences = {}
+        self.tenant.save()
+        jobs = build_cron_seed_jobs(self.tenant)
+        morning = next(j for j in jobs if j["name"] == "Morning Briefing")
+        self.assertNotIn("model", morning)
+
+    def test_task_model_preferences_outside_allowlist_are_dropped(self):
+        """Stale preferences pointing at models not in the tenant's tier
+        allowlist (e.g. ``anthropic-cli/...`` left over from a torn-down
+        BYO setup) must not be stamped — OpenClaw rejects them at
+        preflight and the cron silently never fires.
+
+        Canary 2026-05-14 reproduction: postgres carried three stale
+        ``anthropic-cli/claude-sonnet-4-6`` entries from a BYO setup.
+        With a ``starter`` tier (no anthropic-cli in allowlist) and no
+        active BYO credential, the prefs were dropped, the cron
+        fell back to the agent default, and Morning Briefing fired.
+        """
+        self.tenant.model_tier = "starter"
+        self.tenant.task_model_preferences = {
+            "morning_briefing": "anthropic-cli/claude-sonnet-4-6",
+        }
         self.tenant.save()
         jobs = build_cron_seed_jobs(self.tenant)
         morning = next(j for j in jobs if j["name"] == "Morning Briefing")
