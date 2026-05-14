@@ -228,21 +228,26 @@ def handle_checkout_completed(session_data: dict) -> None:
             # multiple days because the stale `payload.model` was never
             # caught at reactivation time.
             try:
-                from apps.orchestrator.services import update_system_cron_prompts
+                from apps.orchestrator.services import refresh_system_cron_rows_from_seed
 
-                drift_result = update_system_cron_prompts(tenant)
+                drift_result = refresh_system_cron_rows_from_seed(tenant)
                 logger.info(
-                    "Reactivation cron-payload sync for tenant %s: updated=%d skipped=%d errors=%d",
+                    "Reactivation cron-row refresh for tenant %s: created=%d updated=%d preserved_custom=%d",
                     tenant.id,
+                    drift_result.get("created", 0),
                     drift_result.get("updated", 0),
-                    drift_result.get("skipped", 0),
-                    drift_result.get("errors", 0),
+                    drift_result.get("preserved_custom", 0),
                 )
+                # Postgres-row saves fire the post_save signal, which
+                # enqueues ``regenerate_tenant_crons`` on a 30s debounce.
+                # The reconciler pushes any drift to OpenClaw. Cold-start
+                # race (issue #540) is handled by QStash retry on the
+                # reconcile task.
             except Exception:
-                # Don't block reactivation on a drift-fix failure. The next
+                # Don't block reactivation on a refresh failure. The next
                 # apply_pending_configs sweep is the safety net.
                 logger.exception(
-                    "Reactivation cron-payload sync failed for tenant %s — "
+                    "Reactivation cron-row refresh failed for tenant %s — "
                     "next apply_pending_configs sweep will catch drift",
                     tenant.id,
                 )

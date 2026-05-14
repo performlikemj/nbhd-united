@@ -68,7 +68,10 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
     @patch("apps.orchestrator.services.config_to_json", return_value="{}")
     @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
     @patch("apps.orchestrator.services._audit_and_log")
-    @patch("apps.orchestrator.services.update_system_cron_prompts", return_value={"updated": 0})
+    @patch(
+        "apps.orchestrator.services.refresh_system_cron_rows_from_seed",
+        return_value={"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 0},
+    )
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
     def test_update_tenant_config_uploads_rules(
         self,
@@ -105,7 +108,10 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
     @patch("apps.orchestrator.services.config_to_json", return_value="{}")
     @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
     @patch("apps.orchestrator.services._audit_and_log")
-    @patch("apps.orchestrator.services.update_system_cron_prompts", return_value={"updated": 0})
+    @patch(
+        "apps.orchestrator.services.refresh_system_cron_rows_from_seed",
+        return_value={"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 0},
+    )
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
     def test_soul_and_identity_use_skip_if_exists(
         self,

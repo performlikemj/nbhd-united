@@ -99,7 +99,7 @@ class BillingWebhookServiceTest(TestCase):
         self.assertEqual(self.tenant.stripe_subscription_id, "sub_999")
         mock_publish.assert_not_called()
 
-    @patch("apps.orchestrator.services.update_system_cron_prompts")
+    @patch("apps.orchestrator.services.refresh_system_cron_rows_from_seed")
     @patch("apps.cron.suspension.resume_tenant_crons")
     @patch("apps.orchestrator.azure_client.scale_container_app")
     @patch("apps.cron.publish.publish_task")
@@ -129,7 +129,7 @@ class BillingWebhookServiceTest(TestCase):
             update_fields=["is_trial", "status", "container_id", "container_fqdn", "updated_at"],
         )
         mock_resume.return_value = {"enabled": 5, "already_enabled": 0, "errors": 0, "job_names": []}
-        mock_payload_sync.return_value = {"updated": 1, "skipped": 0, "errors": 0}
+        mock_payload_sync.return_value = {"created": 0, "updated": 1, "preserved_custom": 0, "unchanged": 8}
 
         handle_checkout_completed(
             {
@@ -141,7 +141,7 @@ class BillingWebhookServiceTest(TestCase):
 
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
-        # The payload-sync hook must have been called exactly once with the
+        # The refresh hook must have been called exactly once with the
         # reactivated tenant. Ordering vs. resume_tenant_crons is enforced
         # by source — they're sequential in the same try block.
         mock_payload_sync.assert_called_once()
@@ -151,7 +151,7 @@ class BillingWebhookServiceTest(TestCase):
         # runs after it, not in place of it).
         mock_resume.assert_called_once()
 
-    @patch("apps.orchestrator.services.update_system_cron_prompts")
+    @patch("apps.orchestrator.services.refresh_system_cron_rows_from_seed")
     @patch("apps.cron.suspension.resume_tenant_crons")
     @patch("apps.orchestrator.azure_client.scale_container_app")
     @patch("apps.cron.publish.publish_task")

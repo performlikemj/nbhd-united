@@ -20,7 +20,6 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
 from apps.cron.qstash_verify import verify_qstash_signature
 from apps.orchestrator.azure_client import restart_container_app
 from apps.tenants.models import Tenant
@@ -63,8 +62,6 @@ TASK_MAP = {
     "repair_stale_tenant_provisioning": "apps.orchestrator.tasks.repair_stale_tenant_provisioning_task",
     # Media cleanup (daily)
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
-    # Force reseed cron jobs for all tenants (one-off)
-    "force_reseed_crons": "apps.orchestrator.tasks.force_reseed_crons_task",
     # Lesson constellation maintenance
     "dedup_lessons": "apps.lessons.tasks.dedup_lessons_task",
     "reseed_lessons": "apps.lessons.tasks.reseed_lessons_task",
@@ -417,10 +414,15 @@ def apply_pending_configs(request):
 @csrf_exempt
 @require_POST
 def force_reseed_crons(request):
-    """Force delete-and-recreate cron jobs for all active tenants.
+    """DEPRECATED endpoint kept as a thin shim.
+
+    The legacy implementation lived here from the gateway-canonical era and
+    accumulated bugs (broken ``cron.list`` unwrap, hardcoded 5-name system
+    list that missed half the seed). Force-reseed is now handled by
+    refreshing each tenant's postgres CronJob rows from seed — the signal
+    handler pushes the new state to OpenClaw via the reconciler.
 
     URL: /api/cron/force-reseed-crons/
-    Use when cron job definitions have changed and need to be pushed to all containers.
     """
     deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
     provided = request.headers.get("X-Deploy-Secret", "")
@@ -430,145 +432,29 @@ def force_reseed_crons(request):
         logger.warning("Unauthorized force-reseed-crons attempt")
         return JsonResponse({"error": "Invalid signature"}, status=401)
 
-    from apps.orchestrator.config_generator import build_cron_seed_jobs
-
-    # Only touch system-managed jobs — preserve user-created crons
-    SYSTEM_JOB_NAMES = {
-        "Morning Briefing",
-        "Evening Check-in",
-        "Weekly Reflection",
-        "Week Ahead Review",
-        "Background Tasks",
-    }
+    from apps.orchestrator.services import refresh_system_cron_rows_from_seed
 
     tenants = Tenant.entitled_active().select_related("user")
 
     results = []
     for tenant in tenants:
         tid = str(tenant.id)[:8]
-        entry = {"tenant": tid, "deleted": 0, "created": 0, "user_jobs_preserved": 0, "errors": []}
-
-        if not tenant.container_fqdn:
-            entry["errors"].append("no FQDN")
-            results.append(entry)
-            continue
-
-        # List existing jobs
+        entry: dict = {"tenant": tid, "created": 0, "updated": 0, "preserved_custom": 0, "errors": []}
         try:
-            result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-            existing = (
-                result.get("jobs", []) if isinstance(result, dict) else result if isinstance(result, list) else []
-            )
-        except GatewayError as e:
-            entry["errors"].append(f"list: {str(e)[:100]}")
-            results.append(entry)
-            continue
-
-        # Delete only system-managed jobs
-        for job in existing:
-            if job.get("name") not in SYSTEM_JOB_NAMES:
-                entry["user_jobs_preserved"] += 1
-                continue
-            job_id = job.get("id") or job.get("jobId")
-            if not job_id:
-                continue
-            try:
-                invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
-                entry["deleted"] += 1
-            except GatewayError as e:
-                entry["errors"].append(f"delete {job_id}: {str(e)[:80]}")
-
-        # Create new system jobs
-        for job in build_cron_seed_jobs(tenant):
-            try:
-                invoke_gateway_tool(tenant, "cron.add", {"job": job})
-                entry["created"] += 1
-            except GatewayError as e:
-                entry["errors"].append(f"add {job.get('name', '?')}: {str(e)[:80]}")
-
-        # Safety net: dedup in case partial deletion left orphaned jobs
-        try:
-            from apps.orchestrator.services import dedup_tenant_cron_jobs
-
-            dedup_result = dedup_tenant_cron_jobs(tenant)
-            if dedup_result.get("deleted", 0) > 0:
-                entry["deduped"] = dedup_result["deleted"]
-        except Exception:
-            pass  # Non-critical — don't fail the reseed
-
-        # Restore user-created jobs from snapshot if any were lost
-        try:
-            from apps.orchestrator.services import restore_user_cron_jobs
-
-            post_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-            post_jobs = (
-                post_result.get("jobs", [])
-                if isinstance(post_result, dict)
-                else post_result
-                if isinstance(post_result, list)
-                else []
-            )
-            post_names = {j.get("name", "") for j in post_jobs if isinstance(j, dict)}
-            restore = restore_user_cron_jobs(tenant, post_names)
-            if restore["restored"] > 0:
-                entry["user_jobs_restored"] = restore["restored"]
-        except Exception:
-            pass  # Non-critical
-
-        # Universal isolation: all jobs run isolated. The legacy "migrate
-        # to main session" pass that used to live here was removed in the
-        # universal isolation refactor — it would have flipped freshly
-        # seeded jobs (which now intentionally use sessionTarget=isolated)
-        # back to main, undoing the new model.
-        #
-        # Flip any user-created jobs that are still on legacy main back to
-        # isolated, so the universal model holds across the whole system.
-        ADMIN_JOBS = {"Background Tasks", "Heartbeat Check-in"}
-        try:
-            all_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-            all_jobs = (
-                all_result.get("jobs", [])
-                if isinstance(all_result, dict)
-                else all_result
-                if isinstance(all_result, list)
-                else []
-            )
-            unmigrated = 0
-            for job in all_jobs:
-                if not isinstance(job, dict):
-                    continue
-                if job.get("name") in ADMIN_JOBS:
-                    continue
-                if job.get("sessionTarget") != "main":
-                    continue
-                job_id = job.get("jobId") or job.get("id")
-                if not job_id:
-                    continue
-                try:
-                    invoke_gateway_tool(
-                        tenant,
-                        "cron.update",
-                        {
-                            "jobId": job_id,
-                            "patch": {"sessionTarget": "isolated"},
-                        },
-                    )
-                    unmigrated += 1
-                except GatewayError:
-                    pass  # Best-effort
-            if unmigrated > 0:
-                entry["migrated_to_isolated"] = unmigrated
-        except Exception:
-            pass  # Non-critical
-
+            summary = refresh_system_cron_rows_from_seed(tenant)
+            entry["created"] = summary["created"]
+            entry["updated"] = summary["updated"]
+            entry["preserved_custom"] = summary["preserved_custom"]
+        except Exception as exc:
+            entry["errors"].append(str(exc)[:120])
         results.append(entry)
 
-    total_created = sum(r["created"] for r in results)
+    total_touched = sum(r["created"] + r["updated"] for r in results)
     total_errors = sum(len(r["errors"]) for r in results)
     return JsonResponse(
         {
             "tenants": len(results),
-            "total_created": total_created,
+            "total_touched": total_touched,
             "total_errors": total_errors,
             "details": results,
         }
@@ -976,92 +862,12 @@ def register_system_crons(request):
 
 
 @csrf_exempt
-def resync_cron_timezones(request):
-    """Delete and recreate system crons for all active tenants using each
-    tenant's configured timezone.
-
-    Fixes tenants whose system crons were seeded in UTC before they set
-    their timezone.
-
-    Auth: X-Deploy-Secret header must match DEPLOY_SECRET setting.
-    """
-    if request.method != "POST":
-        return JsonResponse({"error": "POST required"}, status=405)
-
-    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
-    if not deploy_secret:
-        logger.error("DEPLOY_SECRET not configured — resync_cron_timezones rejected")
-        return JsonResponse({"error": "Not configured"}, status=503)
-
-    provided = request.headers.get("X-Deploy-Secret", "")
-    if not provided or provided != deploy_secret:
-        logger.warning("Unauthorized resync_cron_timezones attempt")
-        return JsonResponse({"error": "Unauthorized"}, status=401)
-
-    from apps.orchestrator.config_generator import build_cron_seed_jobs
-
-    SYSTEM_JOB_NAMES = {"Morning Briefing", "Evening Check-in", "Week Ahead Review", "Background Tasks"}
-
-    # All tenants with a running container, not just ACTIVE — trial/pending
-    # tenants still have containers with potentially wrong UTC crons.
-    tenants = (
-        Tenant.objects.filter(
-            container_id__gt="",
-        )
-        .exclude(
-            status=Tenant.Status.DEPROVISIONING,
-        )
-        .select_related("user")
-    )
-
-    results = []
-    for tenant in tenants:
-        tid = str(tenant.id)
-        user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
-        if not tenant.container_fqdn:
-            results.append({"tenant": tid[:8], "status": "skipped", "reason": "no fqdn"})
-            continue
-        try:
-            list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-            existing = (
-                list_result.get("jobs", [])
-                if isinstance(list_result, dict)
-                else (list_result if isinstance(list_result, list) else [])
-            )
-
-            deleted = 0
-            for job in existing:
-                if job.get("name") not in SYSTEM_JOB_NAMES:
-                    continue
-                job_id = job.get("jobId") or job.get("id") or job.get("name")
-                try:
-                    invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
-                    deleted += 1
-                except GatewayError:
-                    pass
-
-            created = 0
-            for job in build_cron_seed_jobs(tenant):
-                try:
-                    invoke_gateway_tool(tenant, "cron.add", {"job": job})
-                    created += 1
-                except GatewayError as e:
-                    logger.error("resync_cron_timezones: add %s for %s failed: %s", job.get("name"), tid[:8], e)
-
-            logger.info(
-                "resync_cron_timezones: tenant %s tz=%s deleted=%d created=%d", tid[:8], user_tz, deleted, created
-            )
-            results.append({"tenant": tid[:8], "tz": user_tz, "deleted": deleted, "created": created})
-        except GatewayError as e:
-            logger.error("resync_cron_timezones: tenant %s failed: %s", tid[:8], e)
-            results.append({"tenant": tid[:8], "status": "error", "error": str(e)})
-
-    return JsonResponse({"results": results, "total": len(results)})
-
-
-@csrf_exempt
 def run_update_cron_prompts(request):
-    """Run update_system_cron_prompts for all active tenants.
+    """Refresh system cron rows from seed for all active tenants.
+
+    Refreshes postgres CronJob rows; the post_save signal triggers
+    ``regenerate_tenant_crons`` which pushes drift to each tenant's
+    OpenClaw runtime.
 
     Auth: X-Deploy-Secret header.
     """
@@ -1077,7 +883,7 @@ def run_update_cron_prompts(request):
 
     set_rls_context(service_role=True)
 
-    from apps.orchestrator.services import update_system_cron_prompts
+    from apps.orchestrator.services import refresh_system_cron_rows_from_seed
 
     tenants = Tenant.objects.filter(
         status=Tenant.Status.ACTIVE,
@@ -1086,14 +892,21 @@ def run_update_cron_prompts(request):
     results = []
     for tenant in tenants:
         try:
-            result = update_system_cron_prompts(tenant)
-            results.append({"tenant": str(tenant.id)[:8], "updated": result["updated"], "errors": result["errors"]})
+            result = refresh_system_cron_rows_from_seed(tenant)
+            results.append(
+                {
+                    "tenant": str(tenant.id)[:8],
+                    "created": result["created"],
+                    "updated": result["updated"],
+                    "preserved_custom": result["preserved_custom"],
+                }
+            )
         except Exception as e:
             results.append({"tenant": str(tenant.id)[:8], "status": "error", "error": str(e)})
 
-    total_updated = sum(r.get("updated", 0) for r in results)
-    logger.info("run_update_cron_prompts: %d tenants, %d prompts updated", len(results), total_updated)
-    return JsonResponse({"results": results, "total_updated": total_updated})
+    total_touched = sum(r.get("created", 0) + r.get("updated", 0) for r in results)
+    logger.info("run_update_cron_prompts: %d tenants, %d rows touched", len(results), total_touched)
+    return JsonResponse({"results": results, "total_touched": total_touched})
 
 
 @csrf_exempt

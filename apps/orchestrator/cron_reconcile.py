@@ -221,11 +221,13 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
     from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
     from apps.cron.models import CronJob
 
+    from .cron_drift import job_drift
     from .services import _extract_cron_jobs
 
     summary = {
         "added": 0,
         "removed": 0,
+        "recreated": 0,
         "unchanged": 0,
         "errors": 0,
         "stuck_reaped": 0,
@@ -318,7 +320,34 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
 
     to_add = [desired_by_name[n] for n in desired_by_name if n not in current_managed]
     to_remove = [current_managed[n] for n in current_managed if n not in desired_by_name]
-    summary["unchanged"] = len(desired_by_name) - len(to_add)
+
+    # Payload-aware drift detection. Names that exist in both sides but with
+    # drifted payload/schedule must be recreated — OpenClaw rejects payload
+    # patches via ``cron.update`` for the legacy systemEvent→agentTurn shape
+    # and we'd rather always converge than have a partial update path. The
+    # ``cron.remove``+``cron.add`` pattern is what ``update_system_cron_prompts``
+    # used pre-refactor; we move it here so the postgres-canonical reconciler
+    # is the single writer for system cron payload state.
+    #
+    # The dimensions checked (model, kind, message body after date strip,
+    # schedule, enabled) all originate from the seed or user-customized
+    # postgres state; any difference in OC is by definition stale. See
+    # ``apps/orchestrator/cron_drift.py`` for the per-field rules and the
+    # ``project_cron_payload_drift_extended.md`` memory for the canary
+    # 2026-05-12 incident this generalizes.
+    to_recreate: list[tuple[str, dict, dict]] = []  # (name, existing, desired)
+    for name in desired_by_name.keys() & current_managed.keys():
+        drift = job_drift(current_managed[name], desired_by_name[name])
+        if drift:
+            to_recreate.append((name, current_managed[name], desired_by_name[name]))
+            logger.info(
+                "regenerate_tenant_crons: drift on '%s' for tenant %s — fields=%s",
+                name,
+                tenant.id,
+                ",".join(drift),
+            )
+
+    summary["unchanged"] = len(desired_by_name) - len(to_add) - len(to_recreate)
 
     # Janitor: reap ``kind:"at"`` jobs whose fire time is more than the grace
     # window in the past. Covers agent-crashed-mid-fire and
@@ -355,6 +384,25 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
             logger.warning(
                 "regenerate_tenant_crons: cron.remove failed for %s on tenant %s",
                 str(job_id)[:12],
+                tenant.id,
+                exc_info=True,
+            )
+            summary["errors"] += 1
+
+    for name, existing, desired in to_recreate:
+        gateway_job_id = existing.get("id") or existing.get("jobId") or ""
+        try:
+            if gateway_job_id:
+                invoke_gateway_tool(tenant, "cron.remove", {"jobId": gateway_job_id})
+            invoke_gateway_tool(tenant, "cron.add", {"job": desired})
+            summary["recreated"] += 1
+            row = desired_rows_by_name.get(name)
+            if row is not None:
+                CronJob.objects.filter(pk=row.pk).update(last_pushed_to_container_at=pushed_at)
+        except GatewayError:
+            logger.warning(
+                "regenerate_tenant_crons: recreate failed for '%s' on tenant %s",
+                name,
                 tenant.id,
                 exc_info=True,
             )
@@ -425,11 +473,12 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
         )
 
     logger.info(
-        "regenerate_tenant_crons: tenant %s — added=%d removed=%d unchanged=%d "
+        "regenerate_tenant_crons: tenant %s — added=%d removed=%d recreated=%d unchanged=%d "
         "stuck_reaped=%d cap_reaped=%d at_pending=%d errors=%d",
         str(tenant.id)[:8],
         summary["added"],
         summary["removed"],
+        summary["recreated"],
         summary["unchanged"],
         summary["stuck_reaped"],
         summary.get("cap_reaped", 0),

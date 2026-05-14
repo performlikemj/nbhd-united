@@ -715,14 +715,24 @@ class ImageUpdateCronRestoreTest(TestCase):
 
     @patch("apps.orchestrator.services.dedup_tenant_cron_jobs")
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
-    def test_restore_from_snapshot_creates_missing_jobs(self, mock_gw, mock_dedup):
-        """restore_crons_after_image_update should create jobs from snapshot."""
+    def test_restore_from_snapshot_creates_missing_non_system_jobs(self, mock_gw, mock_dedup):
+        """restore_crons_after_image_update creates non-system jobs from snapshot.
+
+        System crons (Morning Briefing, etc.) are excluded — postgres is
+        canonical for those and the signal-driven reconciler pushes them
+        after restore. Non-system jobs (user reminders, agent-authored
+        ``_sync:*`` summaries) come from the snapshot.
+        """
         from apps.orchestrator.tasks import restore_crons_after_image_update_task
 
         self.tenant.cron_jobs_snapshot = {
             "jobs": [
+                # System cron — must be skipped by the restore.
                 {"name": "Morning Briefing", "id": "abc", "schedule": "0 7 * * *"},
+                # User reminder — must be restored.
                 {"name": "My Reminder", "id": "def", "schedule": "0 12 * * *"},
+                # Agent-authored sync — must be restored.
+                {"name": "_sync:Morning Briefing", "id": "ghi", "schedule": "5 7 12 5 *"},
             ],
             "snapshot_at": "2026-01-01T00:00:00",
             "trigger": "pre-image-update",
@@ -734,9 +744,10 @@ class ImageUpdateCronRestoreTest(TestCase):
 
         restore_crons_after_image_update_task(str(self.tenant.id))
 
-        # Both jobs should be created (with id stripped)
+        # Only non-system jobs restored. Morning Briefing skipped.
         add_calls = [c for c in mock_gw.call_args_list if c[0][1] == "cron.add"]
-        self.assertEqual(len(add_calls), 2)
+        added_names = {c[0][2]["job"]["name"] for c in add_calls}
+        self.assertEqual(added_names, {"My Reminder", "_sync:Morning Briefing"})
         # Verify gateway-internal 'id' field is stripped
         for call in add_calls:
             job_arg = call[0][2]["job"]
@@ -805,14 +816,13 @@ class ProvisioningTest(TestCase):
         self.assertEqual(self.tenant.status, Tenant.Status.DELETED)
         self.assertEqual(self.tenant.container_id, "")
 
-    @patch("apps.orchestrator.services.update_system_cron_prompts")
+    @patch("apps.orchestrator.services.refresh_system_cron_rows_from_seed")
     @patch("apps.orchestrator.services.upload_config_to_file_share")
-    def test_update_tenant_config_pushes_new_config(self, mock_upload, mock_cron_prompts):
-        # Cron-prompts is a separate gateway-touching call inside
-        # update_tenant_config; container-unavailable errors now propagate so
-        # the deferral helper can detect them. Mock it for this test which
-        # only cares about the file-share write.
-        mock_cron_prompts.return_value = {"updated": 0, "skipped": 0, "errors": 0}
+    def test_update_tenant_config_pushes_new_config(self, mock_upload, mock_cron_refresh):
+        # Cron-row refresh writes to postgres inside update_tenant_config; the
+        # signal handler pushes to the gateway asynchronously. Mock it for
+        # this test which only cares about the file-share write.
+        mock_cron_refresh.return_value = {"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 0}
         provision_tenant(str(self.tenant.id))
         self.tenant.refresh_from_db()
 

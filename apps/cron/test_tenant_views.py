@@ -1036,6 +1036,7 @@ class RegenerateTenantCronsTest(TestCase):
             {
                 "added": 0,
                 "removed": 0,
+                "recreated": 0,
                 "unchanged": 0,
                 "errors": 0,
                 "stuck_reaped": 0,

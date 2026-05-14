@@ -591,18 +591,23 @@ def update_tenant_config(tenant_id: str) -> None:
     except Exception:
         logger.exception("Failed to refresh USER.md for tenant %s (non-fatal)", tenant_id)
 
-    # Update system cron job prompts to match current config_generator
+    # Refresh the postgres CronJob rows for this tenant's system crons from
+    # the current seed. The CronJob post_save signal triggers a debounced
+    # ``regenerate_tenant_crons`` task that diffs postgres → OC and pushes
+    # any drift via cron.remove + cron.add. We don't touch the gateway from
+    # here — the reconciler is the single writer for system cron payload state.
     try:
-        result = update_system_cron_prompts(tenant)
-        if result["updated"]:
-            logger.info("Updated %d cron prompts for tenant %s", result["updated"], tenant_id)
-    except GatewayError:
-        # Container-unavailable from update_system_cron_prompts must propagate
-        # so the deferral helper can detect it; other gateway errors are
-        # already absorbed inside that function.
-        raise
+        result = refresh_system_cron_rows_from_seed(tenant)
+        if result["created"] or result["updated"]:
+            logger.info(
+                "Refreshed system cron rows for tenant %s — created=%d updated=%d preserved_custom=%d",
+                tenant_id,
+                result["created"],
+                result["updated"],
+                result["preserved_custom"],
+            )
     except Exception:
-        logger.exception("Failed to update cron prompts for tenant %s (non-fatal)", tenant_id)
+        logger.exception("Failed to refresh system cron rows for tenant %s (non-fatal)", tenant_id)
 
     logger.info("Updated OpenClaw config for tenant %s", tenant_id)
 
@@ -705,9 +710,14 @@ def dedup_tenant_cron_jobs(
     for name, group in by_name.items():
         if len(group) <= 1:
             continue
-        # Sort by createdAt descending — keep the newest
+        # Sort by createdAtMs descending — keep the newest. OpenClaw returns
+        # ``createdAtMs`` (epoch milliseconds), not ``createdAt`` — the
+        # earlier ``j.get("createdAt", ...)`` always missed and fell back
+        # to ``j.get("id", "")`` (UUID lex order), so dedup kept an arbitrary
+        # copy. This is the same correct sort used by the reconciler's
+        # dedup pre-pass in ``cron_reconcile.regenerate_tenant_crons``.
         group.sort(
-            key=lambda j: j.get("createdAt", j.get("id", "")),
+            key=lambda j: j.get("createdAtMs") or 0,
             reverse=True,
         )
         for dupe in group[1:]:
@@ -1093,6 +1103,120 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
         "skipped_existing": len(existing_names),
         "user_jobs_restored": user_restore["restored"],
     }
+
+
+def refresh_system_cron_rows_from_seed(tenant: Tenant | str) -> dict:
+    """Sync the Postgres CronJob rows for system crons to ``build_cron_seed_jobs``.
+
+    Postgres is canonical for postgres-canonical tenants. This function is
+    the seed-side writer: it ensures every system cron in ``build_cron_seed_jobs``
+    has a matching CronJob row whose ``data`` is current. The signal handler
+    (``apps/cron/signals.py``) fires ``regenerate_tenant_crons`` to push any
+    drift to the container's gateway.
+
+    User customizations are preserved when the row's stored message body
+    matches none of the ``_KNOWN_DEFAULT_PREFIXES`` (i.e. the user pasted
+    a fresh prompt via the dashboard). Non-message fields (model, kind,
+    schedule, delivery, sessionTarget) are always refreshed from seed —
+    those are not user-customizable surfaces.
+
+    Called from ``update_tenant_config``, the management command, and the
+    post-image-swap restore (so a fresh container converges).
+    """
+    if isinstance(tenant, str):
+        tenant = Tenant.objects.select_related("user").get(id=tenant)
+
+    from apps.cron.models import CronJob, CronJobSource
+
+    from .cron_drift import strip_date_line
+
+    seed_jobs = build_cron_seed_jobs(tenant)
+    summary = {"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 0}
+
+    for job in seed_jobs:
+        name = job.get("name", "")
+        if not name:
+            continue
+
+        row = CronJob.objects.filter(tenant=tenant, name=name).first()
+        if row is None:
+            CronJob.objects.create(
+                tenant=tenant,
+                name=name,
+                data=job,
+                source=CronJobSource.SYSTEM,
+                managed=True,
+                enabled=bool(job.get("enabled", True)),
+            )
+            summary["created"] += 1
+            continue
+
+        existing_payload = row.data.get("payload") if isinstance(row.data, dict) else None
+        existing_message = ""
+        if isinstance(existing_payload, dict):
+            existing_message = existing_payload.get("message") or ""
+        existing_body = strip_date_line(existing_message).strip()
+        is_default = (not existing_body) or any(existing_body.startswith(prefix) for prefix in _KNOWN_DEFAULT_PREFIXES)
+
+        if is_default:
+            # Safe to overwrite — message body matches a known default
+            # template (or is empty). Always pull non-message fields
+            # from seed regardless.
+            new_data = dict(job)
+        else:
+            # User pasted a custom message — preserve it. Refresh
+            # everything else (model, kind, schedule, delivery, sessionTarget).
+            new_data = dict(job)
+            seed_payload = new_data.get("payload") or {}
+            if isinstance(seed_payload, dict) and isinstance(existing_payload, dict):
+                merged_payload = dict(seed_payload)
+                # Custom message wins; non-message payload fields come from seed.
+                if "message" in existing_payload:
+                    merged_payload["message"] = existing_payload["message"]
+                new_data["payload"] = merged_payload
+            summary["preserved_custom"] += 1
+
+        if row.data == new_data:
+            summary["unchanged"] += 1
+            continue
+
+        row.data = new_data
+        row.save(update_fields=["data", "updated_at"])
+        summary["updated"] += 1
+
+    logger.info(
+        "refresh_system_cron_rows_from_seed: tenant %s — created=%d updated=%d preserved_custom=%d unchanged=%d",
+        str(tenant.id)[:8],
+        summary["created"],
+        summary["updated"],
+        summary["preserved_custom"],
+        summary["unchanged"],
+    )
+    return summary
+
+
+# Known default prompt prefixes, post-date-strip. If a stored cron message
+# body (after stripping the leading ``Current date and time:`` preamble)
+# starts with one of these, we treat it as platform-managed and safe to
+# overwrite from the current seed. Anything else is treated as a user
+# customization and preserved on refresh.
+#
+# Add a prefix here when a seed prompt's opening sentence changes — the
+# old form must remain in the list for one release so existing rows still
+# match as "default" and get rolled forward. Old entries can be pruned
+# once the fleet has converged.
+_KNOWN_DEFAULT_PREFIXES = (
+    "Good morning! Create today's morning briefing",
+    "It's evening check-in time.",
+    "It's Monday morning. Run the Week Ahead Review",
+    "Background maintenance run.",
+    "You received a scheduled check-in.",
+    "Sunday-evening Gravity check-in.",
+    "Personal-question cron. Pick ONE thoughtful",
+    # The pre-strip preamble itself, kept as a defensive prefix for any
+    # caller that passes the raw stored message without strip_date_line.
+    "Current date and time:",
+)
 
 
 def update_system_cron_prompts(tenant: Tenant | str) -> dict:
