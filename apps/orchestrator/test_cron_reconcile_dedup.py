@@ -37,12 +37,29 @@ def _list_response(jobs: list[dict]) -> dict:
     return {"jobs": jobs, "total": len(jobs)}
 
 
-def _gw_job(name: str, *, gateway_id: str, created_at_ms: int, schedule_expr: str = "0 7 * * *") -> dict:
-    """Job as returned by cron.list, with createdAtMs for dedup ordering."""
+_DEFAULT_SCHEDULES = {
+    "Personal Question": {"kind": "cron", "expr": "0 6 * * *", "tz": "Asia/Tokyo"},
+    "Project Check-in": {"kind": "cron", "expr": "0 9 * * 1-5", "tz": "Asia/Tokyo"},
+}
+
+
+def _gw_job(name: str, *, gateway_id: str, created_at_ms: int, schedule_expr: str | None = None) -> dict:
+    """Job as returned by cron.list, with createdAtMs for dedup ordering.
+
+    The schedule defaults to a per-name preset matching the postgres
+    fixtures created in ``setUp``. Drift detection in the reconciler is
+    schedule-aware now (see ``cron_drift.job_drift``), so a mismatch
+    between the gateway-side schedule here and the postgres-side schedule
+    would trigger a spurious recreate and break the dedup-focused
+    assertions.
+    """
+    schedule = dict(_DEFAULT_SCHEDULES.get(name, {"kind": "cron", "expr": "0 7 * * *", "tz": "UTC"}))
+    if schedule_expr is not None:
+        schedule["expr"] = schedule_expr
     return {
         "id": gateway_id,
         "name": name,
-        "schedule": {"kind": "cron", "expr": schedule_expr, "tz": "UTC"},
+        "schedule": schedule,
         "sessionTarget": "isolated",
         "payload": {"kind": "agentTurn", "message": "test"},
         "enabled": True,

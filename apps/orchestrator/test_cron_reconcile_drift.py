@@ -62,7 +62,13 @@ class _SetUpMixin:
         return tenant
 
     def _make_row(self, tenant, *, name: str, data: dict) -> CronJob:
-        return CronJob.objects.create(tenant=tenant, name=name, managed=True, data=data)
+        # Bypass post_save signal. Under QSTASH-not-configured (the test
+        # env), ``publish_task`` runs the regenerate task synchronously,
+        # which would consume the mock_invoke side_effects we set up
+        # below before the explicit ``regenerate_tenant_crons`` call.
+        # ``bulk_create`` doesn't fire signals.
+        CronJob.objects.bulk_create([CronJob(tenant=tenant, name=name, managed=True, data=data)])
+        return CronJob.objects.get(tenant=tenant, name=name)
 
 
 class PayloadModelDriftTests(_SetUpMixin, TestCase):

@@ -467,11 +467,13 @@ class DedupTenantCronJobsTest(TestCase):
     @patch("apps.orchestrator.services.invoke_gateway_tool")
     def test_dedup_keeps_newest_by_created_at(self, mock_invoke):
         """When duplicates exist, the newest job (by createdAt) is kept."""
+        # createdAtMs (epoch ms) is the field OpenClaw returns. Order
+        # matters: dedup keeps the highest value (newest) and reaps the rest.
         jobs = [
-            {"name": "Morning Briefing", "id": "old-1", "createdAt": "2026-01-01T00:00:00Z"},
-            {"name": "Morning Briefing", "id": "new-1", "createdAt": "2026-03-01T00:00:00Z"},
-            {"name": "Morning Briefing", "id": "mid-1", "createdAt": "2026-02-01T00:00:00Z"},
-            {"name": "Evening Check-in", "id": "only-1", "createdAt": "2026-01-01T00:00:00Z"},
+            {"name": "Morning Briefing", "id": "old-1", "createdAtMs": 1_700_000_000_000},
+            {"name": "Morning Briefing", "id": "new-1", "createdAtMs": 1_720_000_000_000},
+            {"name": "Morning Briefing", "id": "mid-1", "createdAtMs": 1_710_000_000_000},
+            {"name": "Evening Check-in", "id": "only-1", "createdAtMs": 1_700_000_000_000},
         ]
         mock_invoke.side_effect = [
             {"jobs": jobs},  # cron.list
@@ -512,8 +514,8 @@ class DedupTenantCronJobsTest(TestCase):
     def test_dedup_dry_run(self, mock_invoke):
         """Dry run reports duplicates without deleting."""
         jobs = [
-            {"name": "Morning Briefing", "id": "old-1", "createdAt": "2026-01-01T00:00:00Z"},
-            {"name": "Morning Briefing", "id": "new-1", "createdAt": "2026-03-01T00:00:00Z"},
+            {"name": "Morning Briefing", "id": "old-1", "createdAtMs": 1_700_000_000_000},
+            {"name": "Morning Briefing", "id": "new-1", "createdAtMs": 1_720_000_000_000},
         ]
         mock_invoke.return_value = {"jobs": jobs}
 
@@ -528,8 +530,8 @@ class DedupTenantCronJobsTest(TestCase):
     def test_dedup_with_prefetched_jobs(self, mock_invoke):
         """When jobs are pre-fetched, no cron.list call is made."""
         jobs = [
-            {"name": "Morning Briefing", "id": "old-1", "createdAt": "2026-01-01T00:00:00Z"},
-            {"name": "Morning Briefing", "id": "new-1", "createdAt": "2026-03-01T00:00:00Z"},
+            {"name": "Morning Briefing", "id": "old-1", "createdAtMs": 1_700_000_000_000},
+            {"name": "Morning Briefing", "id": "new-1", "createdAtMs": 1_720_000_000_000},
         ]
         mock_invoke.return_value = {}  # for cron.remove
 
