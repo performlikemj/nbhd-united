@@ -21,7 +21,7 @@ permission, not LLM inference.
 
 from __future__ import annotations
 
-from django.db.models import Count, Q
+from django.db.models import Count
 
 from apps.journal.models import Document
 
@@ -130,13 +130,15 @@ def compute_signals(
     chosen_goal = topic_goal or pillar_goal
 
     # Voice pref: prefer a topic-specific pref; fall back to a pillar-wide
-    # pref (topic=null). Both stored in the same table.
-    pref = (
-        UserVoicePref.objects.filter(tenant=tenant, pillar=pillar)
-        .filter(Q(topic=topic) | Q(topic__isnull=True))
-        .order_by("-topic_id")  # topic-specific first; null topic_id sorts last
-        .first()
+    # pref (topic=null). Two-query lookup — single ORDER BY with NULL handling
+    # is too fragile across DB backends (PostgreSQL puts NULL FIRST on DESC).
+    topic_pref = UserVoicePref.objects.filter(tenant=tenant, pillar=pillar, topic=topic).first()
+    pillar_pref = (
+        UserVoicePref.objects.filter(tenant=tenant, pillar=pillar, topic__isnull=True).first()
+        if topic_pref is None
+        else None
     )
+    pref = topic_pref or pillar_pref
 
     sample_size = baseline.get("sample_size", 0) or 0
 
