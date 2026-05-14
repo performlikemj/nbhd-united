@@ -1848,6 +1848,7 @@ class RuntimeProfileUpdateView(APIView):
 # These aliases preserve the original local names used throughout this file.
 from apps.journal.workspace_services import (
     WORKSPACE_LIMIT,
+    workspace_name_reserved_error,
 )
 from apps.journal.workspace_services import (
     embed_workspace_description as _embed_workspace_description,
@@ -1917,6 +1918,12 @@ class RuntimeWorkspaceListView(APIView):
         if len(name) > 60:
             return Response(
                 {"error": "invalid_request", "detail": "name must be 60 characters or less"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        reserved_error = workspace_name_reserved_error(name)
+        if reserved_error is not None:
+            return Response(
+                {"error": "reserved_prefix", "detail": reserved_error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -2002,6 +2009,12 @@ class RuntimeWorkspaceDetailView(APIView):
             if len(new_name) > 60:
                 return Response(
                     {"error": "invalid_request", "detail": "name must be 60 characters or less"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            reserved_error = workspace_name_reserved_error(new_name)
+            if reserved_error is not None:
+                return Response(
+                    {"error": "reserved_prefix", "detail": reserved_error},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             workspace.name = new_name

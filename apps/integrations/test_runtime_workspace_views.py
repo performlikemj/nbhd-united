@@ -170,6 +170,25 @@ class RuntimeWorkspaceViewsTest(TestCase):
         response = self._create(name="x" * 61)
         self.assertEqual(response.status_code, 400)
 
+    def test_create_rejects_reserved_sync_prefix(self, _embed_mock):
+        # Regression: 2026-05-14 — agent created `_sync:Heartbeat Check-in`
+        # workspace and trapped its own routing for 9 days. See
+        # CONTINUITY_workspace-routing-fix.md.
+        response = self._create(name="_sync:Heartbeat Check-in")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json().get("error"), "reserved_prefix")
+
+    def test_create_rejects_reserved_fuel_prefix(self, _embed_mock):
+        response = self._create(name="_fuel:warmup")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json().get("error"), "reserved_prefix")
+
+    def test_patch_rejects_reserved_prefix_rename(self, _embed_mock):
+        self._create(name="Work")
+        response = self._patch("work", {"name": "_sync:sneaky"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json().get("error"), "reserved_prefix")
+
     def test_create_marks_new_workspace_as_active(self, _embed_mock):
         response = self._create(name="Work")
         body = response.json()
