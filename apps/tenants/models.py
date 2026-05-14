@@ -266,6 +266,28 @@ class Tenant(models.Model):
         ),
     )
 
+    # Experimental: OpenClaw's built-in memory engine (memory-core).
+    # When True:
+    #   - agents.defaults.memorySearch.enabled becomes True with the
+    #     SQLite index pointed at the container-local ``index-cache``
+    #     EmptyDir mount (see azure_client.py). Markdown files (MEMORY.md,
+    #     memory/*.md) stay on the workspace share; only the SQLite
+    #     cache lives ephemeral and rebuilds on cold start.
+    #   - memory_search / memory_get tools are usable by the agent (the
+    #     tool policy for the canary OC version already allows them).
+    # Off by default fleet-wide; flip on canary first, measure cold-start
+    # index rebuild cost on Azure SMB, then decide whether the agentic
+    # memory benefit warrants fleet rollout. See PR #525 for the original
+    # disable, and ``project_memory_search_disabled.md`` for context.
+    experimental_memory_core_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Experimental: enable OpenClaw memory-core with the SQLite "
+            "index on container-local ephemeral storage (markdown stays "
+            "on the share). Canary-gated rollout."
+        ),
+    )
+
     # Feature tips
     feature_tips_enabled = models.BooleanField(
         default=True,

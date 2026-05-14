@@ -73,9 +73,26 @@ _STARTER_ALLOW_2026_4_15: tuple[str, ...] = (
     "group:plugins",
 )
 
+# ── 2026.5.7 policy ─────────────────────────────────────────────────
+# Restores ``memory_search`` and ``memory_get`` to the allow surface
+# alongside the architecture change that moves the SQLite index off
+# the Azure File Share (see ``apps/orchestrator/azure_client.py`` —
+# ``index-cache`` EmptyDir mount) and gates ``memorySearch.enabled``
+# per tenant via ``experimental_memory_core_enabled``. Tools allowed
+# fleet-wide are harmless when ``memorySearch.enabled`` is false on
+# a given tenant — the gateway returns "memory search disabled" if
+# the agent calls them anyway.
+
+_DENIED_TOOLS_2026_5_7: tuple[str, ...] = tuple(
+    t for t in _DENIED_TOOLS_2026_4_15 if t not in ("memory_search", "memory_get")
+)
+
+_STARTER_ALLOW_2026_5_7: tuple[str, ...] = _STARTER_ALLOW_2026_4_15
+
 # ── Version registry (newest first) ─────────────────────────────────
 
 _POLICY_VERSIONS: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = [
+    ("2026.5.7", _STARTER_ALLOW_2026_5_7, _DENIED_TOOLS_2026_5_7),
     ("2026.4.15", _STARTER_ALLOW_2026_4_15, _DENIED_TOOLS_2026_4_15),
     ("2026.4.5", _STARTER_ALLOW_2026_4_5, _DENIED_TOOLS_2026_4_5),
 ]

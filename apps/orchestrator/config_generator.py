@@ -861,6 +861,44 @@ def _build_commitments_config(tenant: Tenant) -> dict:
     return {"enabled": True, "maxPerDay": 3}
 
 
+def _build_memory_search_config(tenant: Tenant) -> dict:
+    """Build the ``agents.defaults.memorySearch`` block.
+
+    Two shapes:
+
+    - **Off** (default): ``{"enabled": False}`` — preserves PR #525
+      semantics. Search routes through ``nbhd_journal_search`` over
+      Postgres; OpenClaw's memory_search/memory_get tools are denied at
+      the tool-policy layer for older OpenClaw versions.
+    - **On** (canary flag): full memory-core engine. SQLite index lives
+      at ``/home/node/.openclaw/index/memory/{agentId}.sqlite`` — that
+      path is mounted via an ``index-cache`` EmptyDir volume (see
+      ``azure_client.py``) so a container kill mid-write can't corrupt
+      the file on SMB (the bug that motivated #525). The markdown files
+      the index points at — ``MEMORY.md``, ``memory/YYYY-MM-DD.md`` —
+      still live on the workspace share, where they belong.
+
+    The ``{agentId}`` token is interpolated by OpenClaw at index time
+    (``dist/memory-search-DbWvVOpI.js:37`` —
+    ``raw.replaceAll("{agentId}", agentId)``). Our agent id is "main"
+    so the resolved path is ``…/index/memory/main.sqlite``.
+
+    Trigram FTS5 tokenizer because the workspace contains mixed
+    English / Japanese (JST tenants) and short technical tokens like
+    "69kg" or "RPE 8" — trigram handles both noticeably better than
+    the default unicode61.
+    """
+    if not tenant.experimental_memory_core_enabled:
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "store": {
+            "path": "/home/node/.openclaw/index/memory/{agentId}.sqlite",
+            "fts": {"tokenizer": "trigram"},
+        },
+    }
+
+
 def _build_heartbeat_cron(tenant: Tenant) -> dict | None:
     """Build heartbeat cron job definition for a tenant.
 
@@ -1401,19 +1439,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                         ),
                     },
                 },
-                "memorySearch": {
-                    # Disabled: OpenClaw's memory_search backs onto a SQLite
-                    # index at memory/main.sqlite on the per-tenant Azure
-                    # File Share. SQLite over SMB is hostile — container
-                    # kill mid-write loses the file size (we've observed
-                    # 0-byte main.sqlite across the fleet), which then
-                    # surfaces to the user as "database is locked".
-                    # Postgres is the canonical memory store; search routes
-                    # through Django's `nbhd_journal_search` instead, which
-                    # is backed by full-text search (and pgvector for
-                    # DocumentChunk embeddings when those land).
-                    "enabled": False,
-                },
+                "memorySearch": _build_memory_search_config(tenant),
                 "heartbeat": _build_heartbeat_defaults(tenant),
                 "maxConcurrent": 2,
                 "subagents": {

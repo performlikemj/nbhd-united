@@ -484,6 +484,18 @@ class PluginRuntimeDepsMountTest(SimpleTestCase):
             "/home/node/.openclaw/plugin-runtime-deps",
         )
 
+        # index-cache EmptyDir — holds memory-core's SQLite FTS5 index off
+        # the share. Mount is always present (storage-cheap, always-safe);
+        # whether OpenClaw writes here is gated per-tenant by
+        # ``experimental_memory_core_enabled``.
+        self.assertIn("index-cache", volumes)
+        self.assertEqual(volumes["index-cache"]["storageType"], "EmptyDir")
+        self.assertIn("index-cache", mounts)
+        self.assertEqual(
+            mounts["index-cache"]["mountPath"],
+            "/home/node/.openclaw/index",
+        )
+
     @override_settings(AZURE_RESOURCE_GROUP="rg-test")
     @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
     @patch("apps.orchestrator.azure_client.get_container_client")
@@ -567,5 +579,7 @@ class PluginRuntimeDepsMountTest(SimpleTestCase):
         self.assertEqual(container.image, "nbhdunited.azurecr.io/nbhd-openclaw:newtag")
         volume_names = {v.name for v in app.template.volumes}
         self.assertIn("plugin-runtime-deps", volume_names)
+        self.assertIn("index-cache", volume_names)
         mount_names = {m.volume_name for m in container.volume_mounts}
         self.assertIn("plugin-runtime-deps", mount_names)
+        self.assertIn("index-cache", mount_names)
