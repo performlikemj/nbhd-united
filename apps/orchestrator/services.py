@@ -1156,9 +1156,7 @@ def refresh_system_cron_rows_from_seed(tenant: Tenant | str) -> dict:
         if isinstance(existing_payload, dict):
             existing_message = existing_payload.get("message") or ""
         existing_body = strip_date_line(existing_message).strip()
-        is_default = (not existing_body) or any(
-            existing_body.startswith(prefix) for prefix in _KNOWN_DEFAULT_PREFIXES
-        )
+        is_default = (not existing_body) or any(existing_body.startswith(prefix) for prefix in _KNOWN_DEFAULT_PREFIXES)
 
         if is_default:
             # Safe to overwrite — message body matches a known default
@@ -1187,8 +1185,7 @@ def refresh_system_cron_rows_from_seed(tenant: Tenant | str) -> dict:
         summary["updated"] += 1
 
     logger.info(
-        "refresh_system_cron_rows_from_seed: tenant %s — created=%d updated=%d "
-        "preserved_custom=%d unchanged=%d",
+        "refresh_system_cron_rows_from_seed: tenant %s — created=%d updated=%d preserved_custom=%d unchanged=%d",
         str(tenant.id)[:8],
         summary["created"],
         summary["updated"],
