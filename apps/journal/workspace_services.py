@@ -24,6 +24,22 @@ DEFAULT_WORKSPACE_DESCRIPTION = (
     "Catch-all workspace for everyday conversations and topics that don't fit into a more specific workspace."
 )
 
+# Prefixes the agent must not use when naming a workspace. These mirror the
+# system-generated cron-job prefixes in apps/orchestrator/services.py — the
+# 2026-05-14 incident was caused by an agent tool call creating a workspace
+# named `_sync:Heartbeat Check-in` during a heartbeat cron run, which then
+# became active and trapped the tenant's chat routing for 9 days.
+RESERVED_WORKSPACE_NAME_PREFIXES = ("_sync:", "_fuel:")
+
+
+def workspace_name_reserved_error(name: str) -> str | None:
+    """Return a 400-detail string if name uses a reserved prefix, else None."""
+    stripped = (name or "").strip()
+    for prefix in RESERVED_WORKSPACE_NAME_PREFIXES:
+        if stripped.startswith(prefix):
+            return f"Workspace names starting with {prefix!r} are reserved for system-managed contexts."
+    return None
+
 
 def serialize_workspace(workspace: Workspace, *, active_workspace_id=None) -> dict:
     """Serialize a Workspace model to JSON for API responses."""

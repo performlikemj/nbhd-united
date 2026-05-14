@@ -71,6 +71,7 @@ export AZURE_MOCK="true"
 # with "plugin not found" warnings.
 export OPENCLAW_USAGE_PLUGIN_ID=""
 export OPENCLAW_SETTINGS_PLUGIN_ID=""
+export OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID=""
 
 $PYTHON_BIN manage.py migrate --noinput >/dev/null
 

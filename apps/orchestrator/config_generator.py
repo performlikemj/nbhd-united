@@ -1293,6 +1293,16 @@ def _build_tools_section(tier: str, version: str = OPENCLAW_CURRENT_VERSION) -> 
             "models": [WHISPER_DEFAULT_MODEL],
         },
     }
+    # Tool-call loop detection. Off by default upstream — we turn it on as
+    # cheap defense against runaway tool ping-pong (the cron-reconciler
+    # remove/add storm we saw in the 2026-05-14 logs is a candidate
+    # pattern). Token-level degeneration is handled separately by the
+    # nbhd-routing-context plugin's before_agent_finalize hook; this is
+    # the tool-call abstraction layer. Defaults match the upstream
+    # documentation: warning at 10, critical block at 20.
+    tools["loopDetection"] = {
+        "enabled": True,
+    }
     return tools
 
 
@@ -1449,6 +1459,14 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             str(getattr(settings, "OPENCLAW_SETTINGS_PLUGIN_ID", "") or "").strip(),
             str(getattr(settings, "OPENCLAW_SETTINGS_PLUGIN_PATH", "") or "").strip(),
         ),
+        # Routing-context plugin — workspace catalogue injection + degenerate
+        # output guard. Unconditional in production via base.py default. See
+        # CONTINUITY_workspace-routing-fix.md, Phases 3-4. Tests disable by
+        # setting OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="".
+        (
+            str(getattr(settings, "OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID", "") or "").strip(),
+            str(getattr(settings, "OPENCLAW_ROUTING_CONTEXT_PLUGIN_PATH", "") or "").strip(),
+        ),
     ]
     # Reddit plugin — conditionally loaded only when tenant has an active Reddit connection
     from apps.integrations.models import Integration as _Integration
@@ -1603,6 +1621,20 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         },
         # Cron runtime settings (job definitions seeded via Gateway API)
         "cron": {"enabled": True},
+        # Session reset policy — bound the blast radius of a stuck active
+        # workspace. Without this, a stale `tenant.active_workspace` (e.g.
+        # the agent-created `_sync:Heartbeat Check-in` workspace from the
+        # 2026-05-14 incident) can trap a tenant indefinitely because the
+        # session keeps getting bumped on every message. Idle reset at 4h
+        # is short enough to recover within a day yet long enough not to
+        # trash a mid-conversation context. See
+        # CONTINUITY_workspace-routing-fix.md, Phase 5.
+        "session": {
+            "reset": {
+                "mode": "idle",
+                "idleMinutes": 240,
+            },
+        },
         # Inferred commitments — hidden background extraction pass after each
         # agent reply notices conversation-bound open loops ("I have an
         # interview tomorrow", "I was up all night") and stores them for

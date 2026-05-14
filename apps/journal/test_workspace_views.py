@@ -171,6 +171,26 @@ class WorkspaceViewsTest(TestCase):
         response = self._create(name="x" * 61)
         self.assertEqual(response.status_code, 400)
 
+    def test_create_rejects_reserved_sync_prefix(self, _embed):
+        response = self._create(name="_sync:Heartbeat Check-in")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json().get("error"), "reserved_prefix")
+
+    def test_create_rejects_reserved_fuel_prefix(self, _embed):
+        response = self._create(name="_fuel:warmup")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json().get("error"), "reserved_prefix")
+
+    def test_patch_rejects_reserved_prefix_rename(self, _embed):
+        self._create(name="Work")
+        response = self.client.patch(
+            "/api/v1/workspaces/work/",
+            {"name": "_sync:sneaky"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json().get("error"), "reserved_prefix")
+
     def test_create_marks_new_workspace_active(self, _embed):
         response = self._create(name="Work")
         self.assertTrue(response.json()["workspace"]["is_active"])

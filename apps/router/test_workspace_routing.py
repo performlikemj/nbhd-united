@@ -84,33 +84,48 @@ class TestDefaultWorkspaceParam(TestCase):
         self.assertEqual(ws.id, work.id)
 
 
-class TestWithinSessionRouting(TestCase):
-    """Within an active session (<30 min gap), use the active workspace
-    without classifying the message."""
+class TestContinuousClassification(TestCase):
+    """Every message is classified; backend evidence has a continuing vote.
 
-    def test_uses_active_workspace_without_classification(self):
+    Before 2026-05-14 this was gated on a 30-min session boundary, which
+    let a stale `active_workspace` trap the tenant. See
+    CONTINUITY_workspace-routing-fix.md, Phase 2.
+    """
+
+    def test_classifier_called_within_active_session(self):
         tenant = _make_tenant(last_msg_minutes_ago=5)
-        general = _make_workspace(tenant, "General", "general", is_default=True)
+        _make_workspace(tenant, "General", "general", is_default=True)
         work = _make_workspace(tenant, "Work", "work", description="budget meetings")
         tenant.active_workspace = work
         tenant.save(update_fields=["active_workspace"])
 
-        with patch("apps.router.workspace_routing._classify_message") as classify_mock:
-            user_param, ws, transitioned = resolve_workspace_routing(
-                tenant, "8078236299", "what should I cook for dinner?"
-            )
-            classify_mock.assert_not_called()
+        with patch("apps.router.workspace_routing._classify_message", return_value=work) as classify_mock:
+            user_param, ws, transitioned = resolve_workspace_routing(tenant, "8078236299", "follow-up on Q3 budget")
+            classify_mock.assert_called_once()
 
         self.assertEqual(user_param, "8078236299:ws:work")
         self.assertEqual(ws.id, work.id)
-        self.assertFalse(transitioned)
+        self.assertFalse(transitioned)  # same workspace, no transition
 
+    def test_mid_session_reclassify_on_topic_shift(self):
+        # Regression: 2026-05-14 routing trap — active workspace got stuck
+        # on a system `_sync:` workspace; user's chat messages must be
+        # allowed to re-route within an active session.
+        tenant = _make_tenant(last_msg_minutes_ago=5)
+        _make_workspace(tenant, "General", "general", is_default=True)
+        work = _make_workspace(tenant, "Work", "work")
+        sync = _make_workspace(tenant, "_sync:Heartbeat Check-in", "syncheartbeat-check-in")
+        tenant.active_workspace = sync
+        tenant.save(update_fields=["active_workspace"])
 
-class TestNewSessionClassification(TestCase):
-    """On a new session (>30 min gap), classify the message and pick the
-    best-matching workspace by embedding similarity."""
+        with patch("apps.router.workspace_routing._classify_message", return_value=work):
+            user_param, ws, transitioned = resolve_workspace_routing(tenant, "8078236299", "Q3 budget status please")
 
-    def test_classification_called_on_new_session(self):
+        self.assertEqual(user_param, "8078236299:ws:work")
+        self.assertEqual(ws.id, work.id)
+        self.assertTrue(transitioned)  # reclassified mid-session
+
+    def test_new_session_classification_to_work(self):
         tenant = _make_tenant(last_msg_minutes_ago=60)
         general = _make_workspace(tenant, "General", "general", is_default=True)
         work = _make_workspace(tenant, "Work", "work")
@@ -123,7 +138,7 @@ class TestNewSessionClassification(TestCase):
 
         self.assertEqual(user_param, "8078236299:ws:work")
         self.assertEqual(ws.id, work.id)
-        self.assertTrue(transitioned)  # Switched from general to work
+        self.assertTrue(transitioned)
 
     def test_classification_returns_none_falls_back_to_active(self):
         tenant = _make_tenant(last_msg_minutes_ago=60)
