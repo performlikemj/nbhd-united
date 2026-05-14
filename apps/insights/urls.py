@@ -6,9 +6,12 @@ from .runtime_views import (
     RuntimePillarBaselineView,
     RuntimePillarCompareView,
     RuntimePillarHistoryView,
+    RuntimePillarSignalsView,
     RuntimePillarSnapshotDetailView,
     RuntimeRecordInsightView,
     RuntimeRefuteInsightView,
+    RuntimeVoicePrefListView,
+    RuntimeVoicePrefSetView,
 )
 from .views import (
     ConfirmInsightView,
@@ -16,9 +19,12 @@ from .views import (
     PillarBaselineView,
     PillarCompareView,
     PillarHistoryView,
+    PillarSignalsView,
     PillarSnapshotDetailView,
     RecordInsightView,
     RefuteInsightView,
+    VoicePrefListView,
+    VoicePrefSetView,
 )
 
 urlpatterns = [
@@ -45,6 +51,10 @@ urlpatterns = [
         RefuteInsightView.as_view(),
         name="insights-refute",
     ),
+    # Phase 3 — graduated voice
+    path("signals/", PillarSignalsView.as_view(), name="insights-signals"),
+    path("voice-prefs/", VoicePrefListView.as_view(), name="insights-voice-prefs-list"),
+    path("voice-prefs/set/", VoicePrefSetView.as_view(), name="insights-voice-prefs-set"),
     # ── Internal runtime (X-NBHD-Internal-Key auth, tenant from URL) ──────
     # Called by the nbhd-insights-tools OpenClaw plugin.
     # Phase 1
@@ -88,5 +98,21 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/insights/<uuid:insight_id>/refute/",
         RuntimeRefuteInsightView.as_view(),
         name="runtime-insights-refute",
+    ),
+    # Phase 3
+    path(
+        "runtime/<uuid:tenant_id>/signals/",
+        RuntimePillarSignalsView.as_view(),
+        name="runtime-insights-signals",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/voice-prefs/",
+        RuntimeVoicePrefListView.as_view(),
+        name="runtime-insights-voice-prefs-list",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/voice-prefs/set/",
+        RuntimeVoicePrefSetView.as_view(),
+        name="runtime-insights-voice-prefs-set",
     ),
 ]

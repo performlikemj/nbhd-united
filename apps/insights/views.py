@@ -34,8 +34,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .baselines import compute_baseline
-from .models import AssistantInsight, PillarSnapshot
+from .models import AssistantInsight, PillarSnapshot, TopicRegistry, UserVoicePref
 from .pillars import Pillar
+from .signals import compute_signals
 from .topic_resolver import resolve_topic
 
 ALLOWED_PILLARS = {Pillar.GRAVITY.value}
@@ -486,3 +487,215 @@ class RefuteInsightView(APIView):
         _append_user_response(ins, "refute", note)
         ins.save(update_fields=["status", "last_refuted_at", "user_responses"])
         return Response(_serialize_insight(ins))
+
+
+# ── Phase 3: signals + voice prefs ────────────────────────────────────────
+
+
+def _serialize_voice_pref(pref: UserVoicePref) -> dict[str, Any]:
+    return {
+        "id": str(pref.id),
+        "pillar": pref.pillar,
+        "topic_slug": pref.topic.slug if pref.topic_id else None,
+        "topic_display_name": pref.topic.display_name if pref.topic_id else None,
+        "scope": "topic" if pref.topic_id else "pillar",
+        "register_offset": pref.register_offset,
+        "tone": pref.tone,
+        "volume": pref.volume,
+        "created_at": pref.created_at.isoformat(),
+        "updated_at": pref.updated_at.isoformat(),
+    }
+
+
+class PillarSignalsView(APIView):
+    """Structured signals for a (pillar, topic). The LLM judges register from this."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request):
+        tenant = _tenant_or_404(request)
+        if isinstance(tenant, Response):
+            return tenant
+
+        pillar = (request.query_params.get("pillar") or "").strip().lower()
+        if err := _validate_pillar(pillar):
+            return err
+
+        topic_slug = (request.query_params.get("topic") or "").strip().lower()
+        if not topic_slug:
+            return Response(
+                {"error": "missing_param", "required": ["topic"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        window_weeks = _parse_int(
+            request.query_params.get("window_weeks"),
+            default=12,
+            lo=1,
+            hi=104,
+        )
+        granularity = (request.query_params.get("granularity") or "weekly").strip().lower()
+        if granularity not in dict(PillarSnapshot.Granularity.choices):
+            return Response(
+                {"error": "invalid_granularity", "granularity": granularity},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        signals = compute_signals(
+            tenant=tenant,
+            pillar=pillar,
+            topic_slug=topic_slug,
+            window_weeks=window_weeks,
+            granularity=granularity,
+        )
+        return Response(signals)
+
+
+def _validate_offset(value) -> int | Response:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return Response(
+            {"error": "invalid_param", "detail": "register_offset must be -1, 0, or 1"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if n not in (-1, 0, 1):
+        return Response(
+            {"error": "invalid_param", "detail": "register_offset must be -1, 0, or 1"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return n
+
+
+def _validate_voice_pref_body(data: dict) -> tuple[Response, None] | tuple[None, dict]:
+    pillar = (data.get("pillar") or "").strip().lower()
+    if pillar not in ALLOWED_PILLARS:
+        return (
+            Response(
+                {"error": "pillar_not_available", "pillar": pillar, "allowed": sorted(ALLOWED_PILLARS)},
+                status=status.HTTP_404_NOT_FOUND,
+            ),
+            None,
+        )
+    if "register_offset" not in data:
+        return (
+            Response(
+                {"error": "missing_param", "required": ["register_offset"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            ),
+            None,
+        )
+    offset = _validate_offset(data["register_offset"])
+    if isinstance(offset, Response):
+        return offset, None
+
+    tone = (data.get("tone") or "").strip().lower()
+    if tone and tone not in dict(UserVoicePref.Tone.choices):
+        return (
+            Response(
+                {"error": "invalid_param", "detail": f"tone must be one of {sorted(dict(UserVoicePref.Tone.choices))}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            ),
+            None,
+        )
+    volume = (data.get("volume") or "").strip().lower()
+    if volume and volume not in dict(UserVoicePref.Volume.choices):
+        return (
+            Response(
+                {
+                    "error": "invalid_param",
+                    "detail": f"volume must be one of {sorted(dict(UserVoicePref.Volume.choices))}",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            ),
+            None,
+        )
+    topic_slug = (data.get("topic") or "").strip().lower() or None
+    return None, {
+        "pillar": pillar,
+        "topic_slug": topic_slug,
+        "register_offset": offset,
+        "tone": tone or None,
+        "volume": volume or None,
+    }
+
+
+def _upsert_voice_pref_impl(
+    *,
+    tenant,
+    pillar: str,
+    topic_slug: str | None,
+    register_offset: int,
+    tone: str | None,
+    volume: str | None,
+) -> UserVoicePref:
+    topic = None
+    if topic_slug:
+        topic = TopicRegistry.objects.filter(pillar=pillar, slug=topic_slug).first()
+        if topic is None:
+            # Auto-resolve / propose the topic so the assistant can store an
+            # override for a topic it just discovered in conversation.
+            topic = resolve_topic(pillar, topic_slug)
+
+    defaults = {"register_offset": register_offset}
+    if tone:
+        defaults["tone"] = tone
+    if volume:
+        defaults["volume"] = volume
+
+    pref, _ = UserVoicePref.objects.update_or_create(
+        tenant=tenant,
+        pillar=pillar,
+        topic=topic,
+        defaults=defaults,
+    )
+    return pref
+
+
+class VoicePrefSetView(APIView):
+    """Persist a user-explicit voice-pref override. Idempotent upsert."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request: Request):
+        tenant = _tenant_or_404(request)
+        if isinstance(tenant, Response):
+            return tenant
+
+        err, cleaned = _validate_voice_pref_body(request.data or {})
+        if err:
+            return err
+
+        pref = _upsert_voice_pref_impl(tenant=tenant, **cleaned)
+        return Response(_serialize_voice_pref(pref))
+
+
+class VoicePrefListView(APIView):
+    """List the tenant's voice-pref overrides, optionally filtered."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request):
+        tenant = _tenant_or_404(request)
+        if isinstance(tenant, Response):
+            return tenant
+
+        qs = UserVoicePref.objects.filter(tenant=tenant).select_related("topic")
+
+        pillar = (request.query_params.get("pillar") or "").strip().lower()
+        if pillar:
+            if err := _validate_pillar(pillar):
+                return err
+            qs = qs.filter(pillar=pillar)
+
+        topic_slug = (request.query_params.get("topic") or "").strip().lower()
+        if topic_slug:
+            qs = qs.filter(topic__slug=topic_slug)
+
+        rows = list(qs.order_by("pillar", "topic__slug"))
+        return Response(
+            {
+                "count": len(rows),
+                "voice_prefs": [_serialize_voice_pref(r) for r in rows],
+            }
+        )
