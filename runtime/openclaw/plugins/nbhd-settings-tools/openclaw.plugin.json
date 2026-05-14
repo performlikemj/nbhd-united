@@ -1,0 +1,27 @@
+{
+  "id": "nbhd-settings-tools",
+  "name": "NBHD Settings Tools",
+  "description": "Tenant settings tools for the assistant. Phase 1: primary-model read + switch, with the same tier gate as the consumer dashboard so the assistant cannot upgrade past its tier ceiling.",
+  "contracts": {
+    "tools": [
+      "nbhd_get_preferred_model_state",
+      "nbhd_set_preferred_model"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string",
+        "description": "Override NBHD API base URL. Defaults to NBHD_API_BASE_URL env var."
+      },
+      "requestTimeoutMs": {
+        "type": "number",
+        "minimum": 1000,
+        "maximum": 60000,
+        "description": "HTTP timeout for NBHD runtime endpoint requests."
+      }
+    }
+  }
+}

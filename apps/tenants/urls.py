@@ -5,6 +5,7 @@ from .line_views import line_generate_link, line_set_preferred_channel, line_sta
 from .runtime_views import (
     RuntimeAgendaEngagementView,
     RuntimeCommitmentRecordView,
+    RuntimePreferredModelView,
     RuntimeWelcomeMarkView,
 )
 from .telegram_views import telegram_generate_link, telegram_status, telegram_unlink
@@ -67,6 +68,14 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/commitments/",
         RuntimeCommitmentRecordView.as_view(),
         name="runtime-commitment-record",
+    ),
+    # Assistant-callable primary-model read + switch. Reuses the same
+    # tier gate as the consumer PreferredModelView so the assistant cannot
+    # quietly upgrade itself past the tier ceiling.
+    path(
+        "runtime/<uuid:tenant_id>/preferred-model/",
+        RuntimePreferredModelView.as_view(),
+        name="runtime-preferred-model",
     ),
     path("", include(router.urls)),
 ]

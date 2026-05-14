@@ -186,6 +186,93 @@ class RuntimeAgendaEngagementView(APIView):
         return Response({"kind": kind, "item_id": item_id, "action": action})
 
 
+class RuntimePreferredModelView(APIView):
+    """GET + POST /api/v1/tenants/runtime/<tenant_id>/preferred-model/
+
+    Internal endpoint for the assistant to read or change the tenant's
+    primary model. Mirrors ``PreferredModelView`` (consumer API) for the
+    write path — same tier gate via ``_get_allowed_models``, same
+    pending-config bump + immediate apply enqueue. The container hits
+    this from inside its own session when the user asks "switch me to
+    <model>". Tier-rejected attempts surface to the user as an honest
+    "not available on your tier" instead of a hallucinated success.
+
+    GET returns the current state without mutating. POST applies a switch
+    (or clears to the tier default when ``model_id`` is empty).
+    """
+
+    permission_classes = [AllowAny]
+
+    @staticmethod
+    def _state(tenant: Tenant) -> dict:
+        from apps.orchestrator.config_generator import TIER_MODEL_CONFIGS, _byo_model_extras
+
+        allowed = {
+            **TIER_MODEL_CONFIGS.get(tenant.model_tier, {}),
+            **_byo_model_extras(tenant),
+        }
+        return {
+            "preferred_model": tenant.preferred_model,
+            "applied_model": tenant.applied_model,
+            "model_tier": tenant.model_tier,
+            "allowed_models": [
+                {"model_id": mid, "alias": (meta or {}).get("alias", "")}
+                for mid, meta in allowed.items()
+            ],
+        }
+
+    def get(self, request, tenant_id):
+        auth_error = _internal_auth_or_401(request, tenant_id)
+        if auth_error:
+            return auth_error
+
+        try:
+            tenant = Tenant.objects.get(id=tenant_id)
+        except Tenant.DoesNotExist:
+            return Response({"error": "tenant_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(self._state(tenant))
+
+    def post(self, request, tenant_id):
+        from apps.tenants.views import _enqueue_immediate_apply, _get_allowed_models
+
+        auth_error = _internal_auth_or_401(request, tenant_id)
+        if auth_error:
+            return auth_error
+
+        try:
+            tenant = Tenant.objects.get(id=tenant_id)
+        except Tenant.DoesNotExist:
+            return Response({"error": "tenant_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        model_id = (request.data.get("model_id") or "").strip()
+
+        if model_id:
+            allowed = _get_allowed_models(tenant)
+            if model_id not in allowed:
+                response_body = {
+                    "error": "model_not_allowed",
+                    "detail": (
+                        f"Model {model_id!r} is not available on tier {tenant.model_tier!r}. "
+                        "Available models are listed in 'allowed_models'."
+                    ),
+                    **self._state(tenant),
+                }
+                return Response(response_body, status=status.HTTP_400_BAD_REQUEST)
+
+        tenant.preferred_model = model_id
+        tenant.save(update_fields=["preferred_model"])
+        tenant.bump_pending_config()
+        _enqueue_immediate_apply(tenant)
+
+        logger.info(
+            "Runtime preferred_model set: tenant=%s model=%s",
+            str(tenant.id)[:8],
+            model_id or "(cleared)",
+        )
+        return Response({"updated": True, **self._state(tenant)})
+
+
 class RuntimeCommitmentRecordView(APIView):
     """POST /api/v1/tenants/runtime/<tenant_id>/commitments/
 
