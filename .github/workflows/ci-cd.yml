@@ -244,6 +244,7 @@ jobs:
           NBHD_REDACT_STDOUT_DISABLE_AUTOINSTALL: "1"
         run: |
           node --test runtime/openclaw/redact-stdout.test.mjs
+          node --test runtime/openclaw/plugins/nbhd-routing-context/test.js
 
   # ==========================================================================
   # Deploy Backend (push to main only, after tests pass)

@@ -95,6 +95,7 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_JOURNAL_PLUGIN_ID="nbhd-journal-tools",
             OPENCLAW_USAGE_PLUGIN_ID="",
             OPENCLAW_SETTINGS_PLUGIN_ID="",
+            OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
 
@@ -115,6 +116,7 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_JOURNAL_PLUGIN_ID="",
             OPENCLAW_USAGE_PLUGIN_ID="",
             OPENCLAW_SETTINGS_PLUGIN_ID="",
+            OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
 
@@ -128,6 +130,7 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_JOURNAL_PLUGIN_ID="",
             OPENCLAW_USAGE_PLUGIN_ID="",
             OPENCLAW_SETTINGS_PLUGIN_ID="",
+            OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
 
@@ -357,6 +360,7 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_JOURNAL_PLUGIN_ID="",
             OPENCLAW_USAGE_PLUGIN_ID="",
             OPENCLAW_SETTINGS_PLUGIN_ID="",
+            OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
         self.assertNotIn("plugins", config)
@@ -378,6 +382,7 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_JOURNAL_PLUGIN_ID="",
             OPENCLAW_USAGE_PLUGIN_ID="",
             OPENCLAW_SETTINGS_PLUGIN_ID="",
+            OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
         self.assertNotIn("plugins", config)

@@ -1298,6 +1298,14 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             str(getattr(settings, "OPENCLAW_SETTINGS_PLUGIN_ID", "") or "").strip(),
             str(getattr(settings, "OPENCLAW_SETTINGS_PLUGIN_PATH", "") or "").strip(),
         ),
+        # Routing-context plugin — workspace catalogue injection + degenerate
+        # output guard. Unconditional in production via base.py default. See
+        # CONTINUITY_workspace-routing-fix.md, Phases 3-4. Tests disable by
+        # setting OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="".
+        (
+            str(getattr(settings, "OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID", "") or "").strip(),
+            str(getattr(settings, "OPENCLAW_ROUTING_CONTEXT_PLUGIN_PATH", "") or "").strip(),
+        ),
     ]
     # Reddit plugin — conditionally loaded only when tenant has an active Reddit connection
     from apps.integrations.models import Integration as _Integration

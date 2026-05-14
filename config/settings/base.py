@@ -249,6 +249,19 @@ OPENCLAW_SETTINGS_PLUGIN_PATH = env(
     "OPENCLAW_SETTINGS_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-settings-tools",
 )
+# Routing-context plugin — injects workspace catalogue into the system prompt
+# (before_prompt_build) + rejects degenerate model output (before_agent_finalize
+# / message_sending). Unconditional in production so every tenant gets the
+# guardrails. Tests disable via OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="".
+# See CONTINUITY_workspace-routing-fix.md.
+OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID = env(
+    "OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID",
+    default="nbhd-routing-context",
+)
+OPENCLAW_ROUTING_CONTEXT_PLUGIN_PATH = env(
+    "OPENCLAW_ROUTING_CONTEXT_PLUGIN_PATH",
+    default="/opt/nbhd/plugins/nbhd-routing-context",
+)
 COMPOSIO_REDDIT_AUTH_CONFIG_ID = env("COMPOSIO_REDDIT_AUTH_CONFIG_ID", default="")
 
 OPENCLAW_CONTAINER_SECRET_BACKEND = env(

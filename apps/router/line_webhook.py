@@ -979,7 +979,6 @@ class LineWebhookView(View):
         # made in arrival order.
         from apps.router.workspace_routing import (
             build_transition_marker,
-            build_workspace_context_marker,
             resolve_workspace_routing,
             update_active_workspace,
         )
@@ -991,10 +990,10 @@ class LineWebhookView(View):
         )
         if transitioned and workspace is not None:
             message_text = build_transition_marker(workspace) + message_text
-        # Always inject the active workspace marker so the agent knows which
-        # workspace it's in (handles UI switches that bypass routing entirely).
-        if workspace is not None:
-            message_text = build_workspace_context_marker(workspace) + message_text
+        # The always-on `[Active workspace: X]` marker + the full workspace
+        # catalogue are injected by the `nbhd-routing-context` OpenClaw plugin
+        # via `before_prompt_build`. See runtime/openclaw/plugins/nbhd-routing-context/
+        # and CONTINUITY_workspace-routing-fix.md, Phase 3.
         if workspace is not None:
             update_active_workspace(tenant, workspace)
 
