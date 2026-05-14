@@ -1036,7 +1036,16 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
                 if fuel_job:
                     jobs.append(fuel_job)
 
-    # Apply per-task model overrides from tenant preferences
+    # Apply per-task model overrides from tenant preferences. Only stamp
+    # models that are actually allowed for this tenant (tier allowlist
+    # plus BYO extras) — a stale preference from a lapsed BYO setup
+    # (e.g. ``anthropic-cli/claude-sonnet-4-6`` on a starter tier with no
+    # BYO credentials) would otherwise produce a cron whose preflight
+    # rejects with ``payload.model '...' rejected by agents.defaults.models
+    # allowlist`` and silently never fires. Canary 2026-05-14 reproduction:
+    # task_model_preferences carried three stale anthropic-cli entries
+    # left over from BYO, killing Morning Briefing / Evening Check-in /
+    # Week Ahead Review until this guard landed.
     _TASK_SLUG_MAP = {
         "Morning Briefing": "morning_briefing",
         "Evening Check-in": "evening_checkin",
@@ -1049,10 +1058,13 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     }
     prefs = getattr(tenant, "task_model_preferences", None) or {}
     if prefs:
+        tier = tenant.model_tier or "starter"
+        allowed_models = set(TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["starter"]))
+        allowed_models.update(_byo_model_extras(tenant))
         for job in jobs:
             slug = _TASK_SLUG_MAP.get(job["name"], "")
             model = prefs.get(slug)
-            if model:
+            if model and model in allowed_models:
                 job["model"] = model
 
     return jobs
