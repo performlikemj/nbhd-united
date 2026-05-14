@@ -103,6 +103,37 @@ The summary includes workout IDs. Use them with `nbhd_fuel_update_workout` and `
 - Match by date + activity name when the user references a workout informally ("my bench from Monday").
 - If ambiguous (multiple workouts on the same day), ask which one.
 
+## Body Weight Logging
+
+When the user mentions their weight in any form, log it immediately via
+`nbhd_fuel_log_body_weight`. The mention can be:
+
+- A direct statement: *"I'm at 69 kg today"*, *"weighed myself, 154 lbs"*
+- An aside attached to another topic: *"btw I was 69kg today and 69.4
+  yesterday"* — log **both** entries, even when the main topic is a
+  workout question
+- A historical recall: *"I was 70 last Monday"* — log it for that date
+- A range across days: *"I've been hovering around 70 this week"* — too
+  fuzzy to log; ask one clarifying question if it matters, otherwise skip
+
+**Rules:**
+- **One tool call per measurement.** Two values → two calls (e.g. today
+  and yesterday → two `nbhd_fuel_log_body_weight` calls). The DB
+  enforces unique (tenant, date) and upserts, so re-logging the same
+  date is safe.
+- **Confirm briefly:** *"Logged 69 kg for today and 69.4 for yesterday."*
+  This rule applies even when the main topic of the message was
+  workouts, sleep, or something else entirely — never silently drop a
+  measurement the user shared.
+- **Resolve relative dates** from the current date in the platform's
+  `[Now: ...]` header: *today* → that date, *yesterday* → −1 day, *two
+  days ago* → −2 days, *Monday* → the most recent past Monday.
+- **Units:** the runtime tool takes `weight_kg`. If the user uses lbs,
+  convert: `kg = lbs / 2.2046`. Confirm the converted value in the
+  reply so they know what was stored.
+- **Don't ask if you can log it.** Logging weight mentions is the
+  default behavior; the user can tell you to delete it later.
+
 ## Sleep Logging
 
 When the user mentions sleep, log it:

@@ -801,12 +801,75 @@ def _heartbeat_cron_expr(start_hour: int, window_hours: int) -> str:
     return f"0 {','.join(str(h) for h in sorted(hours))} * * *"
 
 
+def _build_heartbeat_defaults(tenant: Tenant) -> dict:
+    """Build the ``agents.defaults.heartbeat`` block.
+
+    Two shapes:
+
+    - **Built-in heartbeat off** (default): ``{"every": "0m"}`` — disables
+      OpenClaw's built-in periodic agent turn. Cron-based heartbeat is
+      what fires user-facing check-ins; see ``_build_heartbeat_cron``.
+    - **Built-in heartbeat on** (canary flag): every-1h periodic turn
+      that runs inside the user's active hours and delivers any due
+      inferred commitments. See docs/gateway/heartbeat and
+      docs/concepts/commitments.
+
+    The model is pinned to ``HEARTBEAT_MODEL`` so the gateway never burns
+    a BYO Anthropic tenant's CLI subscription on heartbeat turns — those
+    are platform-initiated, not user-requested.
+
+    Active hours derive from the tenant's existing heartbeat-window
+    fields (``heartbeat_start_hour`` / ``heartbeat_window_hours``) so we
+    don't duplicate timezone-window configuration across two heartbeat
+    surfaces. Timezone is the tenant's local TZ.
+    """
+    if not tenant.experimental_built_in_heartbeat:
+        # Heartbeat disabled at the OpenClaw level. Cron-based heartbeat
+        # (see _build_heartbeat_cron) fires our own check-in flow.
+        return {"every": "0m"}
+
+    user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
+    start_hour = tenant.heartbeat_start_hour
+    end_hour = (start_hour + tenant.heartbeat_window_hours) % 24
+    return {
+        "every": "1h",
+        "target": "last",
+        "model": HEARTBEAT_MODEL,
+        "directPolicy": "allow",
+        "lightContext": True,
+        "isolatedSession": True,
+        "skipWhenBusy": True,
+        "activeHours": {
+            "start": f"{start_hour:02d}:00",
+            "end": f"{end_hour:02d}:00",
+            "timezone": user_tz,
+        },
+    }
+
+
+def _build_commitments_config(tenant: Tenant) -> dict:
+    """Build the top-level ``commitments`` block.
+
+    Commitments only deliver through OpenClaw's built-in heartbeat. If
+    the built-in heartbeat is off the extractor would still run after
+    every agent reply but the inferred follow-ups would never surface —
+    pure background cost with no user-facing benefit. So we gate
+    commitments on the same flag as the built-in heartbeat.
+    """
+    if not tenant.experimental_built_in_heartbeat:
+        return {"enabled": False}
+    return {"enabled": True, "maxPerDay": 3}
+
+
 def _build_heartbeat_cron(tenant: Tenant) -> dict | None:
     """Build heartbeat cron job definition for a tenant.
 
-    Returns None if heartbeat is disabled.
+    Returns None if heartbeat is disabled, or if the tenant is on the
+    experimental built-in heartbeat path — both heartbeats firing in the
+    same activeHours window would deliver duplicate / overlapping
+    messages to the user.
     """
-    if not tenant.heartbeat_enabled:
+    if not tenant.heartbeat_enabled or tenant.experimental_built_in_heartbeat:
         return None
 
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
@@ -1351,10 +1414,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                     # DocumentChunk embeddings when those land).
                     "enabled": False,
                 },
-                "heartbeat": {
-                    # Disabled to save cost — agents are reactive only
-                    "every": "0m",
-                },
+                "heartbeat": _build_heartbeat_defaults(tenant),
                 "maxConcurrent": 2,
                 "subagents": {
                     "maxConcurrent": 2,
@@ -1404,6 +1464,13 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         },
         # Cron runtime settings (job definitions seeded via Gateway API)
         "cron": {"enabled": True},
+        # Inferred commitments — hidden background extraction pass after each
+        # agent reply notices conversation-bound open loops ("I have an
+        # interview tomorrow", "I was up all night") and stores them for
+        # heartbeat delivery. See docs/concepts/commitments. Only useful
+        # when the built-in heartbeat is on (delivery happens through it),
+        # so gate on the same flag.
+        "commitments": _build_commitments_config(tenant),
         # Layer-1 log redaction — see _build_logging_config docstring.
         "logging": _build_logging_config(),
     }

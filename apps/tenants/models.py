@@ -242,6 +242,30 @@ class Tenant(models.Model):
         help_text="Duration of the heartbeat window in hours (1-6)",
     )
 
+    # Experimental: OpenClaw built-in heartbeat (vs our cron-based heartbeat).
+    # When True:
+    #   - Django emits agents.defaults.heartbeat with every:"1h" + activeHours
+    #     so OpenClaw runs the gateway-managed periodic turn that delivers
+    #     inferred commitments. See docs/concepts/commitments and
+    #     gateway/heartbeat in the OpenClaw docs.
+    #   - _build_heartbeat_cron() returns None so the cron-based heartbeat
+    #     doesn't fire alongside (the two would overlap during the morning
+    #     window and we want a single mechanism while we observe canary).
+    #   - The commitments block is emitted (commitments only deliver via
+    #     OpenClaw's built-in heartbeat; enabling them without the heartbeat
+    #     is wasted background extraction).
+    # Off by default fleet-wide; flip on canary first, observe, then decide
+    # whether to make the built-in heartbeat the default and retire the
+    # cron-based one.
+    experimental_built_in_heartbeat = models.BooleanField(
+        default=False,
+        help_text=(
+            "Experimental: use OpenClaw's built-in heartbeat (which "
+            "delivers inferred commitments) instead of our cron-based "
+            "heartbeat. Canary-gated rollout."
+        ),
+    )
+
     # Feature tips
     feature_tips_enabled = models.BooleanField(
         default=True,
