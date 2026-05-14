@@ -50,9 +50,7 @@ class BuiltInHeartbeatOffTest(TestCase):
 
     def test_full_config_shape(self):
         config = generate_openclaw_config(self.tenant)
-        self.assertEqual(
-            config["agents"]["defaults"]["heartbeat"], {"every": "0m"}
-        )
+        self.assertEqual(config["agents"]["defaults"]["heartbeat"], {"every": "0m"})
         self.assertEqual(config["commitments"], {"enabled": False})
 
 
