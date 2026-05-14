@@ -6,6 +6,7 @@ import { AccountCard } from "@/components/account-card";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton, StatCardSkeleton } from "@/components/skeleton";
 import { StatCard } from "@/components/stat-card";
+import { GravityInsightsStrip } from "@/components/finance/gravity-insights-strip";
 import { PayoffChart } from "@/components/finance/payoff-chart";
 import { ProgressChart } from "@/components/finance/progress-chart";
 import { StrategyComparison } from "@/components/finance/strategy-comparison";
@@ -114,6 +115,9 @@ export default function FinancePage() {
     <div>
       {/* Header */}
       <PageHeader />
+
+      {/* Recent assistant observations — read-only deep-link to Horizons */}
+      <GravityInsightsStrip />
 
       {/* KPI Stats */}
       <div

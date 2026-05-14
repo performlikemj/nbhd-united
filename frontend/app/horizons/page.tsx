@@ -2,6 +2,7 @@
 
 import { GoalCard } from "@/components/goal-card";
 import { HorizonsSection } from "@/components/horizons/horizons-section";
+import { InsightCard } from "@/components/insight-card";
 import { MomentumStrip } from "@/components/momentum-strip";
 import { PendingGoal } from "@/components/pending-goal";
 import { WeeklyPulse } from "@/components/weekly-pulse";
@@ -110,6 +111,21 @@ export default function HorizonsPage() {
           </HorizonsSection>
         </div>
       </div>
+
+      {/* What I remember \u2014 assistant insights */}
+      {data.assistant_insights && data.assistant_insights.length > 0 ? (
+        <HorizonsSection
+          title="What I remember"
+          subtitle="Patterns I've noticed across your pillars. Confirm or correct so I keep getting it right."
+          delay={425}
+        >
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 md:gap-6">
+            {data.assistant_insights.map((insight) => (
+              <InsightCard key={insight.id} insight={insight} />
+            ))}
+          </div>
+        </HorizonsSection>
+      ) : null}
 
       {/* Suggestions from journal */}
       {data.pending_extractions.length > 0 ? (

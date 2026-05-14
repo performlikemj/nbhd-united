@@ -588,6 +588,20 @@ export interface HorizonsWeeklyDocument {
   updated_at: string;
 }
 
+export type AssistantInsightStatus = "open" | "confirmed" | "refuted" | "expired";
+
+export interface HorizonsAssistantInsight {
+  id: string;
+  pillar: string;
+  topic_slug: string | null;
+  topic_display_name: string | null;
+  statement: string;
+  status: AssistantInsightStatus;
+  confidence: number;
+  created_at: string;
+  last_confirmed_at: string | null;
+}
+
 export interface HorizonsData {
   goals: HorizonsGoal[];
   pending_extractions: HorizonsPendingExtraction[];
@@ -596,6 +610,7 @@ export interface HorizonsData {
   mood_trend: { date: string; mood: string; energy: string }[];
   momentum: HorizonsMomentumDay[];
   current_streak: number;
+  assistant_insights: HorizonsAssistantInsight[];
 }
 
 // ── Finance ──────────────────────────────────────────────────────────
