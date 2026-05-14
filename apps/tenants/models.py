@@ -309,6 +309,24 @@ class Tenant(models.Model):
         ),
     )
 
+    # Experimental: OpenClaw dreaming (memory consolidation).
+    # When True:
+    #   - plugins.entries["memory-core"].config.dreaming.enabled is set,
+    #     activating the Light → Deep → REM phased consolidation that
+    #     promotes high-signal short-term entries into MEMORY.md and
+    #     writes a Dream Diary into DREAMS.md for review.
+    # Requires ``experimental_memory_core_enabled`` to be True — dreaming
+    # IS the consolidation layer of memory-core; toggling it without the
+    # engine is meaningless.
+    experimental_dreaming_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Experimental: enable OpenClaw memory-core dreaming for "
+            "background consolidation. Requires "
+            "experimental_memory_core_enabled. Canary-gated rollout."
+        ),
+    )
+
     # Feature tips
     feature_tips_enabled = models.BooleanField(
         default=True,

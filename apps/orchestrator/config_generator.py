@@ -861,6 +861,49 @@ def _build_commitments_config(tenant: Tenant) -> dict:
     return {"enabled": True, "maxPerDay": 3}
 
 
+def _build_memory_core_plugin_entry(tenant: Tenant) -> dict | None:
+    """Build the ``plugins.entries["memory-core"]`` value, or None.
+
+    Today this entry is only emitted when dreaming is on — the rest of
+    memory-core's defaults are fine and don't need explicit config.
+    Returns None when:
+
+      - ``experimental_dreaming_enabled`` is False (every tenant today)
+      - Or dreaming is on but memory-core itself isn't (dreaming IS the
+        consolidation layer of memory-core; toggling without the engine
+        is meaningless). Logged warning + skip.
+
+    When both flags are True, returns the verified shape from
+    ``docs/concepts/dreaming.md`` "Enable dreaming" tab. Phase cadence
+    defaults to ``0 3 * * *`` (3am local) so it doesn't compete with
+    the user's morning briefing or heartbeat window. We don't tune
+    ``frequency`` explicitly today — observe canary first.
+    """
+    if not tenant.experimental_dreaming_enabled:
+        return None
+
+    if not tenant.experimental_memory_core_enabled:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Tenant %s has experimental_dreaming_enabled=True but "
+            "experimental_memory_core_enabled=False — dreaming requires "
+            "memory-core as its consolidation backend. Skipping memory-core "
+            "plugin entry. Enable memory-core first.",
+            str(tenant.id)[:8],
+        )
+        return None
+
+    return {
+        "enabled": True,
+        "config": {
+            "dreaming": {
+                "enabled": True,
+            },
+        },
+    }
+
+
 def _build_active_memory_plugin_entry(tenant: Tenant) -> dict | None:
     """Build the ``plugins.entries.active-memory`` value, or None.
 
@@ -1596,6 +1639,15 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         active_memory_entry = _build_active_memory_plugin_entry(tenant)
         if active_memory_entry is not None:
             plugin_config["entries"]["active-memory"] = active_memory_entry
+
+        # Same pattern for the memory-core plugin entry: bundled, only
+        # emitted when we have config to set on it. Today that's just
+        # dreaming; if we end up tuning anything else (FTS tokenizer
+        # location, dreaming.frequency, etc.) it'll land in the same
+        # entry.
+        memory_core_entry = _build_memory_core_plugin_entry(tenant)
+        if memory_core_entry is not None:
+            plugin_config["entries"]["memory-core"] = memory_core_entry
 
         paths = [ppath for _, ppath in _active_plugins if ppath]
         if paths:
