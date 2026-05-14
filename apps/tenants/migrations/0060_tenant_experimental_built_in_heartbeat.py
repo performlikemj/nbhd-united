@@ -4,17 +4,15 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
+
     dependencies = [
-        ("tenants", "0059_lock_down_public_schema_rls"),
+        ('tenants', '0059_lock_down_public_schema_rls'),
     ]
 
     operations = [
         migrations.AddField(
-            model_name="tenant",
-            name="experimental_built_in_heartbeat",
-            field=models.BooleanField(
-                default=False,
-                help_text="Experimental: use OpenClaw's built-in heartbeat (which delivers inferred commitments) instead of our cron-based heartbeat. Canary-gated rollout.",
-            ),
+            model_name='tenant',
+            name='experimental_built_in_heartbeat',
+            field=models.BooleanField(default=False, help_text="Experimental: use OpenClaw's built-in heartbeat (which delivers inferred commitments) instead of our cron-based heartbeat. Canary-gated rollout."),
         ),
     ]
