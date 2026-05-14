@@ -94,9 +94,7 @@ class PasswordResetRequestView(APIView):
         # Rate-limit before doing any DB work. Both buckets are checked so
         # an attacker can't pivot between IPs to enumerate one email, or
         # between emails from one IP.
-        if email and _rate_limited(
-            f"pwd_reset_email:{email}", PASSWORD_RESET_RATE_LIMIT_PER_EMAIL
-        ):
+        if email and _rate_limited(f"pwd_reset_email:{email}", PASSWORD_RESET_RATE_LIMIT_PER_EMAIL):
             return Response(status=status.HTTP_429_TOO_MANY_REQUESTS)
         if ip and _rate_limited(f"pwd_reset_ip:{ip}", PASSWORD_RESET_RATE_LIMIT_PER_IP):
             return Response(status=status.HTTP_429_TOO_MANY_REQUESTS)
@@ -110,11 +108,7 @@ class PasswordResetRequestView(APIView):
 
         # Constant-shape response regardless of whether the email existed.
         return Response(
-            {
-                "detail": (
-                    "If an account exists for that email, a reset link is on its way."
-                )
-            },
+            {"detail": ("If an account exists for that email, a reset link is on its way.")},
             status=status.HTTP_200_OK,
         )
 
