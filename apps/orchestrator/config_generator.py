@@ -861,6 +861,76 @@ def _build_commitments_config(tenant: Tenant) -> dict:
     return {"enabled": True, "maxPerDay": 3}
 
 
+def _build_active_memory_plugin_entry(tenant: Tenant) -> dict | None:
+    """Build the ``plugins.entries.active-memory`` value, or None.
+
+    Returns None when:
+
+      - ``experimental_active_memory_enabled`` is False (every tenant
+        today); the plugin entry is omitted entirely so OpenClaw treats
+        the plugin as absent.
+      - The flag is True but ``experimental_memory_core_enabled`` is
+        False — active-memory calls ``memory_search`` internally and
+        without memory-core that's a no-op at best, a runtime error at
+        worst. We log a warning and skip; canary should observe the
+        intended setup explicitly.
+
+    When both flags are True, returns the validated config dict
+    documented at ``docs/concepts/active-memory.md`` and verified
+    against ``dist/extensions/active-memory/openclaw.plugin.json``:
+
+      - ``allowedChatTypes: ["direct"]`` — LINE + Telegram DMs are
+        ``direct`` per OpenClaw's session-type taxonomy
+      - ``queryMode: "recent"`` — last few user/assistant turns plus
+        current message; balanced speed vs grounding (per the doc's
+        recommended starter setup)
+      - ``promptStyle: "balanced"`` — default for ``recent`` mode
+      - ``timeoutMs: 15000`` — hard cap on the recall sub-agent. The
+        circuit breaker (default 3 consecutive timeouts) skips recall
+        if it keeps failing, so the main reply path isn't dragged.
+      - ``setupGraceTimeoutMs: 30000`` — extra budget for the first
+        recall after a gateway restart while model warm-up and the
+        embedding index load are still in flight. Documented as the
+        v2026.5.2 cold-start grace; without it the first heartbeat
+        after a restart is likely to time out.
+
+    Model is left unset so the plugin inherits the agent's session
+    model. The doc recommends pinning a fast model (cerebras /
+    gemini-flash) for latency-sensitive recall — TODO once we have a
+    cerebras provider configured.
+    """
+    if not tenant.experimental_active_memory_enabled:
+        return None
+
+    if not tenant.experimental_memory_core_enabled:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Tenant %s has experimental_active_memory_enabled=True but "
+            "experimental_memory_core_enabled=False — active-memory plugin "
+            "requires memory-core as its recall backend. Skipping plugin "
+            "entry. Enable memory-core first or clear the active-memory flag.",
+            str(tenant.id)[:8],
+        )
+        return None
+
+    return {
+        "enabled": True,
+        "config": {
+            "enabled": True,
+            "agents": ["main"],
+            "allowedChatTypes": ["direct"],
+            "queryMode": "recent",
+            "promptStyle": "balanced",
+            "timeoutMs": 15000,
+            "setupGraceTimeoutMs": 30000,
+            "maxSummaryChars": 220,
+            "persistTranscripts": False,
+            "logging": False,
+        },
+    }
+
+
 def _build_memory_search_config(tenant: Tenant) -> dict:
     """Build the ``agents.defaults.memorySearch`` block.
 
@@ -1517,6 +1587,16 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 for pid, _ in _active_plugins
             },
         }
+
+        # OpenClaw built-in active-memory plugin — bundled with OC core,
+        # not an NBHD plugin, so it's not part of _active_plugins and
+        # doesn't need plugin_config["allow"] entries (bundledDiscovery
+        # in 2026.5+ handles bundled plugins). Just inject into entries
+        # if the tenant flag is on.
+        active_memory_entry = _build_active_memory_plugin_entry(tenant)
+        if active_memory_entry is not None:
+            plugin_config["entries"]["active-memory"] = active_memory_entry
+
         paths = [ppath for _, ppath in _active_plugins if ppath]
         if paths:
             plugin_config["load"] = {"paths": paths}
