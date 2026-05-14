@@ -249,4 +249,247 @@ export default function register(api) {
     }),
     { optional: true },
   );
+
+  // ── Baseline ────────────────────────────────────────────────────────
+  api.registerTool(
+    wrap({
+      name: "nbhd_insights_baseline",
+      description:
+        "Rolling baseline stats (mean, stdev, latest, latest_z, trend, sample_size, freshness_days) for a topic over a window. Use this BEFORE deciding if a pattern is anomalous. A high |latest_z| (>~1.5) hints anomaly, but always weigh against context — a known event (wedding, bonus) can produce a high z without being a real pattern. Returns supported=false when the topic isn't currently extractable from snapshot payloads; fall back to nbhd_insights_history.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          pillar: {
+            type: "string",
+            enum: ALLOWED_PILLARS,
+            description: "Which pillar (currently only 'gravity').",
+          },
+          topic: {
+            type: "string",
+            description: "Topic slug, e.g. 'debt', 'savings', 'minimum_payments'.",
+          },
+          window_weeks: {
+            type: "integer",
+            minimum: 1,
+            maximum: 104,
+            description: "Trailing window in weeks (default 12).",
+          },
+          granularity: {
+            type: "string",
+            enum: ALLOWED_GRANULARITIES,
+            description: "Snapshot cadence (default 'weekly').",
+          },
+        },
+        required: ["pillar", "topic"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const query = {
+          pillar: asTrimmedString(input.pillar),
+          topic: asTrimmedString(input.topic),
+        };
+        if (input.window_weeks !== undefined) query.window_weeks = input.window_weeks;
+        const granularity = asTrimmedString(input.granularity);
+        if (granularity) query.granularity = granularity;
+
+        const payload = await callRuntime(api, {
+          path: insightsPath(api, "/baseline/"),
+          method: "GET",
+          query,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  // ── Insight list (your existing memory) ─────────────────────────────
+  api.registerTool(
+    wrap({
+      name: "nbhd_insights_list",
+      description:
+        "List AssistantInsight rows you've previously recorded for this user — your own memory. Filter by pillar, topic, and/or status (open|confirmed|refuted|expired). ALWAYS check this before raising a new observation, so you don't repeat a refuted one or re-raise something already confirmed. Newest first.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          pillar: {
+            type: "string",
+            enum: ALLOWED_PILLARS,
+            description: "Filter to a pillar (omit for all).",
+          },
+          topic: {
+            type: "string",
+            description: "Filter to a topic slug (omit for all).",
+          },
+          status: {
+            type: "string",
+            enum: ["open", "confirmed", "refuted", "expired"],
+            description: "Filter by lifecycle status (omit for all).",
+          },
+          limit: {
+            type: "integer",
+            minimum: 1,
+            maximum: 100,
+            description: "Max rows (default 20).",
+          },
+        },
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const query = {};
+        const pillar = asTrimmedString(input.pillar);
+        if (pillar) query.pillar = pillar;
+        const topic = asTrimmedString(input.topic);
+        if (topic) query.topic = topic;
+        const statusArg = asTrimmedString(input.status);
+        if (statusArg) query.status = statusArg;
+        if (input.limit !== undefined) query.limit = input.limit;
+
+        const payload = await callRuntime(api, {
+          path: insightsPath(api, "/insights/"),
+          method: "GET",
+          query,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  // ── Record (write a new open insight) ───────────────────────────────
+  api.registerTool(
+    wrap({
+      name: "nbhd_insights_record",
+      description:
+        "Record an observation you've just raised with the user — your interpretation of a pattern, not a raw number. Status starts as 'open' until the user confirms or refutes. Use `evidence_refs` to point to the specific snapshots/window that support the claim (e.g. {snapshot_ids: [...], window: '8w'}). The `topic` accepts either a canonical slug or a natural string; if it's new, the registry creates a 'proposed' topic that ops can later promote. Skip noise — single-week blips, <10% baseline deltas, things the user already explicitly mentioned.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          pillar: {
+            type: "string",
+            enum: ALLOWED_PILLARS,
+            description: "Which pillar.",
+          },
+          topic: {
+            type: "string",
+            description: "Canonical slug ('dining') OR a natural string ('weekend takeout') that will be auto-resolved or proposed.",
+          },
+          statement: {
+            type: "string",
+            description: "Your phrased observation, in the same voice you used with the user. e.g. 'Dining ran 1.8x your usual the last 3 weeks'.",
+          },
+          evidence_refs: {
+            type: "object",
+            description: "Pointers to the data that supports this claim. Free-form JSON object, but conventionally {snapshot_ids: [...], window: '8w'}.",
+          },
+          confidence: {
+            type: "number",
+            minimum: 0,
+            maximum: 1,
+            description: "Optional 0..1. Default 0 — Phase 3's confidence engine will compute properly; passing your own value here is hint-only.",
+          },
+        },
+        required: ["pillar", "topic", "statement"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const body = {
+          pillar: asTrimmedString(input.pillar),
+          topic: asTrimmedString(input.topic),
+          statement: asTrimmedString(input.statement),
+        };
+        if (input.evidence_refs !== undefined) body.evidence_refs = input.evidence_refs;
+        if (input.confidence !== undefined) body.confidence = input.confidence;
+
+        const payload = await callRuntime(api, {
+          path: insightsPath(api, "/insights/record/"),
+          method: "POST",
+          body,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  // ── Confirm ─────────────────────────────────────────────────────────
+  api.registerTool(
+    wrap({
+      name: "nbhd_insights_confirm",
+      description:
+        "Mark an existing insight as confirmed by the user. Call this when the user agrees with an observation you raised. Idempotent — re-confirms just append to the response history.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          insight_id: {
+            type: "string",
+            description: "UUID of the insight to confirm.",
+          },
+          note: {
+            type: "string",
+            description: "Optional short context from the user's reply (e.g. 'wedding season').",
+          },
+        },
+        required: ["insight_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const id = asTrimmedString(input.insight_id);
+        if (!id) throw new Error("insight_id is required");
+        const body = {};
+        const note = asTrimmedString(input.note);
+        if (note) body.note = note;
+        const payload = await callRuntime(api, {
+          path: insightsPath(api, `/insights/${encodeURIComponent(id)}/confirm/`),
+          method: "POST",
+          body,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  // ── Refute ──────────────────────────────────────────────────────────
+  api.registerTool(
+    wrap({
+      name: "nbhd_insights_refute",
+      description:
+        "Mark an existing insight as refuted — the user corrected you. The row stays on record so you remember being wrong (and don't re-raise the same thing). Be quick to refute; refusing to admit wrong is the failure mode.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          insight_id: {
+            type: "string",
+            description: "UUID of the insight to refute.",
+          },
+          note: {
+            type: "string",
+            description: "Optional short context (e.g. 'that was a one-off, helped a friend with rent').",
+          },
+        },
+        required: ["insight_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const id = asTrimmedString(input.insight_id);
+        if (!id) throw new Error("insight_id is required");
+        const body = {};
+        const note = asTrimmedString(input.note);
+        if (note) body.note = note;
+        const payload = await callRuntime(api, {
+          path: insightsPath(api, `/insights/${encodeURIComponent(id)}/refute/`),
+          method: "POST",
+          body,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
 }

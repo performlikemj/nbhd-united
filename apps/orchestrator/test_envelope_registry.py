@@ -168,3 +168,42 @@ class UniversalRefreshReceiverTest(TestCase):
         # With background threads disabled, the on_commit callback runs
         # push_user_md inline → upload_workspace_file fires synchronously.
         self.assertGreaterEqual(mock_upload.call_count, 1)
+
+    @mock.patch("apps.orchestrator.workspace_envelope.upload_workspace_file")
+    @mock.patch("apps.orchestrator.workspace_envelope.download_workspace_file")
+    def test_back_to_back_saves_each_trigger_a_push(self, mock_download, mock_upload):
+        """Bursts of post_save signals must each upload — no leading-edge drop.
+
+        The registry receiver passes ``debounce_seconds=0`` to
+        ``push_user_md`` so the agentic-freshness contract in
+        ``templates/openclaw/TOOLS.md`` holds: when the agent logs
+        weight + sleep + workout in one turn, USER.md reflects the
+        *final* state, not just the first signal that fired. A leading-
+        edge debounce would drop the trailing writes and leave USER.md
+        anchored to the first row in the burst.
+        """
+        from apps.lessons.models import Lesson
+
+        mock_download.return_value = None
+        with self.captureOnCommitCallbacks(execute=True):
+            Lesson.objects.create(
+                tenant=self.tenant,
+                text="Lesson one",
+                source_type="conversation",
+                status="approved",
+            )
+            Lesson.objects.create(
+                tenant=self.tenant,
+                text="Lesson two",
+                source_type="conversation",
+                status="approved",
+            )
+            Lesson.objects.create(
+                tenant=self.tenant,
+                text="Lesson three",
+                source_type="conversation",
+                status="approved",
+            )
+        # Three back-to-back saves → three uploads. With the old
+        # 60s leading-edge debounce this would have been 1.
+        self.assertEqual(mock_upload.call_count, 3)

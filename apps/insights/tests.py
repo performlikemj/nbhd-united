@@ -16,7 +16,8 @@ from apps.finance.models import FinanceAccount, FinanceTransaction
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
-from .models import PillarSnapshot, TopicAlias, TopicRegistry
+from .baselines import compute_baseline
+from .models import AssistantInsight, PillarSnapshot, TopicAlias, TopicRegistry
 from .pillars import Pillar
 from .seed import seed_topics
 from .snapshots import compute_gravity_snapshot
@@ -458,3 +459,329 @@ class RuntimeInsightsViewTests(TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["totals_delta"]["debt"], "-500")
+
+
+# ── Phase 2 ──────────────────────────────────────────────────────────────
+
+
+def _seed_gravity_topic(slug: str = "debt") -> TopicRegistry:
+    return TopicRegistry.objects.create(
+        pillar=Pillar.GRAVITY.value,
+        slug=slug,
+        display_name=slug.title(),
+        status=TopicRegistry.Status.CANONICAL,
+        source=TopicRegistry.Source.SEED,
+    )
+
+
+def _make_weekly_debt_snapshot(tenant, *, weeks_ago: int, debt: str) -> PillarSnapshot:
+    return PillarSnapshot.objects.create(
+        tenant=tenant,
+        pillar=Pillar.GRAVITY.value,
+        granularity=PillarSnapshot.Granularity.WEEKLY,
+        ts=timezone.now() - timedelta(weeks=weeks_ago),
+        payload={
+            "schema_version": 1,
+            "totals": {"debt": debt, "savings": "0", "minimum_payments": "0"},
+        },
+    )
+
+
+class ComputeBaselineTests(TestCase):
+    def setUp(self):
+        self.tenant = _make_finance_tenant(display_name="Baseline", chat_id=900500)
+        _seed_gravity_topic("debt")
+
+    def test_unsupported_topic_returns_supported_false(self):
+        out = compute_baseline(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="dining")
+        self.assertFalse(out["supported"])
+        self.assertEqual(out["sample_size"], 0)
+
+    def test_empty_history_returns_supported_true_zero_samples(self):
+        out = compute_baseline(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="debt")
+        self.assertTrue(out["supported"])
+        self.assertEqual(out["sample_size"], 0)
+        self.assertIsNone(out["mean"])
+
+    def test_single_point_mean_only_stdev_zero(self):
+        _make_weekly_debt_snapshot(self.tenant, weeks_ago=0, debt="1000")
+        out = compute_baseline(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="debt")
+        self.assertEqual(out["sample_size"], 1)
+        self.assertEqual(out["mean"], 1000.0)
+        self.assertEqual(out["stdev"], 0.0)
+        self.assertEqual(out["latest_z"], 0.0)
+
+    def test_multi_point_mean_stdev_trend(self):
+        # 4 weeks rising debt: 1000, 1200, 1500, 2000
+        for weeks_ago, debt in [(3, "1000"), (2, "1200"), (1, "1500"), (0, "2000")]:
+            _make_weekly_debt_snapshot(self.tenant, weeks_ago=weeks_ago, debt=debt)
+        out = compute_baseline(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="debt", window_weeks=8)
+        self.assertEqual(out["sample_size"], 4)
+        self.assertAlmostEqual(out["mean"], 1425.0, places=1)
+        self.assertGreater(out["trend"], 0)  # rising
+        self.assertEqual(out["latest"], 2000.0)
+        # latest above mean → positive z
+        self.assertGreater(out["latest_z"], 0)
+
+    def test_window_bounds_results(self):
+        # One inside window, one outside
+        _make_weekly_debt_snapshot(self.tenant, weeks_ago=2, debt="1000")
+        _make_weekly_debt_snapshot(self.tenant, weeks_ago=20, debt="500")
+        out = compute_baseline(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="debt", window_weeks=4)
+        self.assertEqual(out["sample_size"], 1)
+        self.assertEqual(out["mean"], 1000.0)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-runtime-key")
+class Phase2EndpointTests(TestCase):
+    """Covers both user-facing (JWT) and runtime (internal-key) endpoint sets."""
+
+    def setUp(self):
+        self.tenant = _make_finance_tenant(display_name="P2", chat_id=900600)
+        self.other_tenant = _make_finance_tenant(display_name="P2Other", chat_id=900601)
+
+        # JWT client for user-facing tests
+        self.jwt_client = APIClient()
+        token = RefreshToken.for_user(self.tenant.user)
+        self.jwt_client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.access_token}")
+
+        # Seed canonical 'debt' topic so resolve_topic finds it
+        self.debt_topic = _seed_gravity_topic("debt")
+
+    def _runtime_headers(self, tenant_id=None, key="test-runtime-key"):
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": key,
+            "HTTP_X_NBHD_TENANT_ID": tenant_id or str(self.tenant.id),
+        }
+
+    # ── baseline ───────────────────────────────────────────────────────
+    def test_user_baseline_returns_stats(self):
+        _make_weekly_debt_snapshot(self.tenant, weeks_ago=0, debt="1500")
+        resp = self.jwt_client.get("/api/v1/insights/baseline/?pillar=gravity&topic=debt")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["topic"], "debt")
+        self.assertEqual(resp.json()["sample_size"], 1)
+
+    def test_user_baseline_missing_topic_400(self):
+        resp = self.jwt_client.get("/api/v1/insights/baseline/?pillar=gravity")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_runtime_baseline_returns_stats(self):
+        _make_weekly_debt_snapshot(self.tenant, weeks_ago=0, debt="2000")
+        resp = self.client.get(
+            f"/api/v1/insights/runtime/{self.tenant.id}/baseline/?pillar=gravity&topic=debt",
+            **self._runtime_headers(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["latest"], 2000.0)
+
+    def test_runtime_baseline_missing_key_401(self):
+        resp = self.client.get(f"/api/v1/insights/runtime/{self.tenant.id}/baseline/?pillar=gravity&topic=debt")
+        self.assertEqual(resp.status_code, 401)
+
+    # ── record ─────────────────────────────────────────────────────────
+    def test_user_record_creates_open_insight(self):
+        resp = self.jwt_client.post(
+            "/api/v1/insights/insights/record/",
+            data={
+                "pillar": "gravity",
+                "topic": "debt",
+                "statement": "Debt is trending up.",
+                "evidence_refs": {"window": "8w"},
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        body = resp.json()
+        self.assertEqual(body["status"], "open")
+        self.assertEqual(body["topic_slug"], "debt")
+        self.assertEqual(body["statement"], "Debt is trending up.")
+        self.assertEqual(AssistantInsight.objects.filter(tenant=self.tenant).count(), 1)
+
+    def test_record_auto_proposes_new_topic(self):
+        resp = self.jwt_client.post(
+            "/api/v1/insights/insights/record/",
+            data={
+                "pillar": "gravity",
+                "topic": "Vintage Wine Spend",
+                "statement": "Unusual wine purchases the last 3 weeks.",
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        topic_slug = resp.json()["topic_slug"]
+        proposed = TopicRegistry.objects.get(slug=topic_slug)
+        self.assertEqual(proposed.status, TopicRegistry.Status.PROPOSED)
+
+    def test_record_rejects_invalid_pillar(self):
+        resp = self.jwt_client.post(
+            "/api/v1/insights/insights/record/",
+            data={"pillar": "fuel", "topic": "sleep_quality", "statement": "."},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_record_rejects_missing_statement(self):
+        resp = self.jwt_client.post(
+            "/api/v1/insights/insights/record/",
+            data={"pillar": "gravity", "topic": "debt"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_record_rejects_invalid_confidence(self):
+        resp = self.jwt_client.post(
+            "/api/v1/insights/insights/record/",
+            data={
+                "pillar": "gravity",
+                "topic": "debt",
+                "statement": ".",
+                "confidence": 2.5,
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_runtime_record_creates_open_insight(self):
+        resp = self.client.post(
+            f"/api/v1/insights/runtime/{self.tenant.id}/insights/record/",
+            data={"pillar": "gravity", "topic": "debt", "statement": "Runtime path."},
+            content_type="application/json",
+            **self._runtime_headers(),
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.json()["status"], "open")
+
+    # ── list ───────────────────────────────────────────────────────────
+    def test_user_list_returns_tenant_insights_newest_first(self):
+        AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt_topic,
+            statement="Older",
+        )
+        AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt_topic,
+            statement="Newer",
+        )
+        resp = self.jwt_client.get("/api/v1/insights/insights/?pillar=gravity")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["count"], 2)
+        self.assertEqual(body["insights"][0]["statement"], "Newer")
+
+    def test_list_isolates_tenant(self):
+        AssistantInsight.objects.create(
+            tenant=self.other_tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt_topic,
+            statement="Other tenant",
+        )
+        resp = self.jwt_client.get("/api/v1/insights/insights/")
+        self.assertEqual(resp.json()["count"], 0)
+
+    def test_list_filter_by_status(self):
+        AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt_topic,
+            statement="Open one",
+            status=AssistantInsight.Status.OPEN,
+        )
+        AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt_topic,
+            statement="Confirmed one",
+            status=AssistantInsight.Status.CONFIRMED,
+        )
+        resp = self.jwt_client.get("/api/v1/insights/insights/?status=confirmed")
+        self.assertEqual(resp.json()["count"], 1)
+        self.assertEqual(resp.json()["insights"][0]["statement"], "Confirmed one")
+
+    def test_list_rejects_invalid_status(self):
+        resp = self.jwt_client.get("/api/v1/insights/insights/?status=garbage")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_runtime_list_returns_insights(self):
+        AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt_topic,
+            statement="Visible via runtime",
+        )
+        resp = self.client.get(
+            f"/api/v1/insights/runtime/{self.tenant.id}/insights/?pillar=gravity",
+            **self._runtime_headers(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["count"], 1)
+
+    # ── confirm / refute ───────────────────────────────────────────────
+    def test_confirm_flips_status(self):
+        ins = AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt_topic,
+            statement="Pending",
+        )
+        resp = self.jwt_client.post(
+            f"/api/v1/insights/insights/{ins.id}/confirm/",
+            data={"note": "yep"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        ins.refresh_from_db()
+        self.assertEqual(ins.status, AssistantInsight.Status.CONFIRMED)
+        self.assertIsNotNone(ins.last_confirmed_at)
+        self.assertEqual(len(ins.user_responses), 1)
+        self.assertEqual(ins.user_responses[0]["kind"], "confirm")
+        self.assertEqual(ins.user_responses[0]["note"], "yep")
+
+    def test_refute_flips_status_and_keeps_row(self):
+        ins = AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt_topic,
+            statement="Pending",
+        )
+        resp = self.jwt_client.post(
+            f"/api/v1/insights/insights/{ins.id}/refute/",
+            data={"note": "wedding"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        ins.refresh_from_db()
+        self.assertEqual(ins.status, AssistantInsight.Status.REFUTED)
+        self.assertIsNotNone(ins.last_refuted_at)
+        # Row preserved for memory
+        self.assertEqual(AssistantInsight.objects.filter(id=ins.id).count(), 1)
+
+    def test_confirm_cross_tenant_404(self):
+        ins = AssistantInsight.objects.create(
+            tenant=self.other_tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt_topic,
+            statement="Other tenant's",
+        )
+        resp = self.jwt_client.post(f"/api/v1/insights/insights/{ins.id}/confirm/")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_runtime_confirm_flips_status(self):
+        ins = AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt_topic,
+            statement="To confirm via runtime",
+        )
+        resp = self.client.post(
+            f"/api/v1/insights/runtime/{self.tenant.id}/insights/{ins.id}/confirm/",
+            data={},
+            content_type="application/json",
+            **self._runtime_headers(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        ins.refresh_from_db()
+        self.assertEqual(ins.status, AssistantInsight.Status.CONFIRMED)

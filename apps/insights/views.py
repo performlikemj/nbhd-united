@@ -1,16 +1,23 @@
 """User-facing API for the assistant baseline / insights subsystem.
 
-Day-1 endpoints surface pillar snapshots to the authenticated tenant user:
+Phase 1 — Read tools (snapshots):
 
 - ``GET /api/v1/insights/history/?pillar=gravity&window=8w&granularity=weekly``
 - ``GET /api/v1/insights/snapshots/<uuid>/``
 - ``GET /api/v1/insights/compare/?pillar=gravity&period_a=<uuid>&period_b=<uuid>``
 
-OpenClaw-runtime-compatible mirrors (X-NBHD-Internal-Key auth) live in
-``runtime_views.py`` and ship in Day 2.
+Phase 2 — Memory of insights (baseline + write-side):
 
-Pillar gating: Phase 1 only allows ``pillar=gravity``. Other pillars are
-404'd until their snapshot pipelines ship.
+- ``GET  /api/v1/insights/baseline/?pillar=gravity&topic=debt&window=12w``
+- ``GET  /api/v1/insights/insights/?pillar=gravity&topic=debt&status=open``
+- ``POST /api/v1/insights/insights/record/``
+- ``POST /api/v1/insights/insights/<uuid>/confirm/``
+- ``POST /api/v1/insights/insights/<uuid>/refute/``
+
+OpenClaw runtime mirrors with X-NBHD-Internal-Key auth live in ``runtime_views.py``.
+
+Pillar gating: only ``pillar=gravity`` is accepted; others 404 until their
+snapshot pipelines ship.
 """
 
 from __future__ import annotations
@@ -26,8 +33,10 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import PillarSnapshot
+from .baselines import compute_baseline
+from .models import AssistantInsight, PillarSnapshot
 from .pillars import Pillar
+from .topic_resolver import resolve_topic
 
 ALLOWED_PILLARS = {Pillar.GRAVITY.value}
 DEFAULT_WINDOW = "12w"
@@ -203,3 +212,277 @@ class PillarCompareView(APIView):
                 "totals_delta": diff,
             }
         )
+
+
+# ── Phase 2: baseline + write-side ────────────────────────────────────────
+
+
+MAX_INSIGHT_LIST = 100
+DEFAULT_INSIGHT_LIST = 20
+DEFAULT_BASELINE_WINDOW_WEEKS = 12
+MAX_BASELINE_WINDOW_WEEKS = 104
+
+
+def _serialize_insight(ins: AssistantInsight) -> dict[str, Any]:
+    return {
+        "id": str(ins.id),
+        "pillar": ins.pillar,
+        "topic_id": str(ins.topic_id),
+        "topic_slug": ins.topic.slug if ins.topic else None,
+        "statement": ins.statement,
+        "evidence_refs": ins.evidence_refs,
+        "confidence": ins.confidence,
+        "status": ins.status,
+        "created_at": ins.created_at.isoformat(),
+        "last_confirmed_at": ins.last_confirmed_at.isoformat() if ins.last_confirmed_at else None,
+        "last_refuted_at": ins.last_refuted_at.isoformat() if ins.last_refuted_at else None,
+        "author_model_version": ins.author_model_version,
+    }
+
+
+def _parse_int(value, *, default: int, lo: int, hi: int) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, n))
+
+
+class PillarBaselineView(APIView):
+    """Rolling baseline stats for a (pillar, topic) over a window. Pure stats."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request):
+        tenant = _tenant_or_404(request)
+        if isinstance(tenant, Response):
+            return tenant
+
+        pillar = (request.query_params.get("pillar") or "").strip().lower()
+        if err := _validate_pillar(pillar):
+            return err
+
+        topic_slug = (request.query_params.get("topic") or "").strip().lower()
+        if not topic_slug:
+            return Response(
+                {"error": "missing_param", "required": ["topic"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        granularity = (request.query_params.get("granularity") or "weekly").strip().lower()
+        if granularity not in dict(PillarSnapshot.Granularity.choices):
+            return Response(
+                {"error": "invalid_granularity", "granularity": granularity},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        window_weeks = _parse_int(
+            request.query_params.get("window_weeks"),
+            default=DEFAULT_BASELINE_WINDOW_WEEKS,
+            lo=1,
+            hi=MAX_BASELINE_WINDOW_WEEKS,
+        )
+
+        baseline = compute_baseline(
+            tenant=tenant,
+            pillar=pillar,
+            topic_slug=topic_slug,
+            window_weeks=window_weeks,
+            granularity=granularity,
+        )
+        return Response(baseline)
+
+
+class InsightListView(APIView):
+    """List AssistantInsight rows for the tenant, filterable by pillar/topic/status."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request):
+        tenant = _tenant_or_404(request)
+        if isinstance(tenant, Response):
+            return tenant
+
+        qs = AssistantInsight.objects.filter(tenant=tenant).select_related("topic")
+
+        pillar = (request.query_params.get("pillar") or "").strip().lower()
+        if pillar:
+            if err := _validate_pillar(pillar):
+                return err
+            qs = qs.filter(pillar=pillar)
+
+        topic_slug = (request.query_params.get("topic") or "").strip().lower()
+        if topic_slug:
+            qs = qs.filter(topic__slug=topic_slug)
+
+        status_param = (request.query_params.get("status") or "").strip().lower()
+        if status_param:
+            valid_statuses = {s.value for s in AssistantInsight.Status}
+            if status_param not in valid_statuses:
+                return Response(
+                    {"error": "invalid_status", "status": status_param},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            qs = qs.filter(status=status_param)
+
+        limit = _parse_int(
+            request.query_params.get("limit"),
+            default=DEFAULT_INSIGHT_LIST,
+            lo=1,
+            hi=MAX_INSIGHT_LIST,
+        )
+
+        rows = list(qs.order_by("-created_at")[:limit])
+        return Response(
+            {
+                "count": len(rows),
+                "insights": [_serialize_insight(r) for r in rows],
+            }
+        )
+
+
+def _record_insight_impl(
+    *,
+    tenant,
+    pillar: str,
+    topic_input: str,
+    statement: str,
+    evidence_refs: dict | None,
+    confidence: float | None,
+    model_version: str,
+) -> AssistantInsight:
+    topic = resolve_topic(pillar, topic_input, model_version=model_version)
+    return AssistantInsight.objects.create(
+        tenant=tenant,
+        pillar=pillar,
+        topic=topic,
+        statement=statement,
+        evidence_refs=evidence_refs or {},
+        confidence=confidence if confidence is not None else 0.0,
+        status=AssistantInsight.Status.OPEN,
+        author_model_version=model_version,
+    )
+
+
+def _validate_record_body(data: dict) -> tuple[Response, None] | tuple[None, dict]:
+    """Returns (error_response, None) on failure, (None, cleaned) on success."""
+    pillar = (data.get("pillar") or "").strip().lower()
+    if pillar not in ALLOWED_PILLARS:
+        return Response(
+            {"error": "pillar_not_available", "pillar": pillar, "allowed": sorted(ALLOWED_PILLARS)},
+            status=status.HTTP_404_NOT_FOUND,
+        ), None
+    topic_input = (data.get("topic") or "").strip()
+    if not topic_input:
+        return Response(
+            {"error": "missing_param", "required": ["topic"]},
+            status=status.HTTP_400_BAD_REQUEST,
+        ), None
+    statement = (data.get("statement") or "").strip()
+    if not statement:
+        return Response(
+            {"error": "missing_param", "required": ["statement"]},
+            status=status.HTTP_400_BAD_REQUEST,
+        ), None
+    evidence = data.get("evidence_refs") or {}
+    if not isinstance(evidence, dict):
+        return Response(
+            {"error": "invalid_param", "detail": "evidence_refs must be an object"},
+            status=status.HTTP_400_BAD_REQUEST,
+        ), None
+    confidence = data.get("confidence")
+    if confidence is not None:
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "invalid_param", "detail": "confidence must be numeric"},
+                status=status.HTTP_400_BAD_REQUEST,
+            ), None
+        if not (0.0 <= confidence <= 1.0):
+            return Response(
+                {"error": "invalid_param", "detail": "confidence must be in [0, 1]"},
+                status=status.HTTP_400_BAD_REQUEST,
+            ), None
+    model_version = (data.get("model_version") or "").strip()[:128]
+    return None, {
+        "pillar": pillar,
+        "topic_input": topic_input,
+        "statement": statement,
+        "evidence_refs": evidence,
+        "confidence": confidence,
+        "model_version": model_version,
+    }
+
+
+class RecordInsightView(APIView):
+    """Create a new AssistantInsight (status=open). Topic auto-resolves via resolve_topic."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request: Request):
+        tenant = _tenant_or_404(request)
+        if isinstance(tenant, Response):
+            return tenant
+
+        err, cleaned = _validate_record_body(request.data or {})
+        if err:
+            return err
+
+        ins = _record_insight_impl(tenant=tenant, **cleaned)
+        return Response(_serialize_insight(ins), status=status.HTTP_201_CREATED)
+
+
+def _append_user_response(ins: AssistantInsight, kind: str, note: str | None) -> None:
+    entry = {"at": timezone.now().isoformat(), "kind": kind}
+    if note:
+        entry["note"] = note[:512]
+    history = list(ins.user_responses or [])
+    history.append(entry)
+    ins.user_responses = history
+
+
+class ConfirmInsightView(APIView):
+    """Flip an insight to ``confirmed``. Idempotent — repeat confirms append to history."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request: Request, insight_id):
+        tenant = _tenant_or_404(request)
+        if isinstance(tenant, Response):
+            return tenant
+
+        try:
+            ins = AssistantInsight.objects.select_related("topic").get(id=insight_id, tenant=tenant)
+        except AssistantInsight.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        note = ((request.data or {}).get("note") or "").strip() or None
+        ins.status = AssistantInsight.Status.CONFIRMED
+        ins.last_confirmed_at = timezone.now()
+        _append_user_response(ins, "confirm", note)
+        ins.save(update_fields=["status", "last_confirmed_at", "user_responses"])
+        return Response(_serialize_insight(ins))
+
+
+class RefuteInsightView(APIView):
+    """Flip an insight to ``refuted``. Kept on record — the assistant remembers being wrong."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request: Request, insight_id):
+        tenant = _tenant_or_404(request)
+        if isinstance(tenant, Response):
+            return tenant
+
+        try:
+            ins = AssistantInsight.objects.select_related("topic").get(id=insight_id, tenant=tenant)
+        except AssistantInsight.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        note = ((request.data or {}).get("note") or "").strip() or None
+        ins.status = AssistantInsight.Status.REFUTED
+        ins.last_refuted_at = timezone.now()
+        _append_user_response(ins, "refute", note)
+        ins.save(update_fields=["status", "last_refuted_at", "user_responses"])
+        return Response(_serialize_insight(ins))
