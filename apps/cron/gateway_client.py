@@ -97,15 +97,37 @@ def invoke_gateway_tool(tenant: Tenant, tool: str, args: dict[str, Any]) -> dict
     if action:
         body["action"] = action
 
-    try:
-        resp = requests.post(
-            url,
-            json=body,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=15,
-        )
-    except requests.RequestException as exc:
-        raise GatewayError(f"Gateway request failed: {exc}") from exc
+    # 45s timeout + one retry on timeout. The previous 15s would race with
+    # cron fires at :00 of every hour — when the gateway is busy executing
+    # an agent turn, ``cron.list`` could legitimately take 20-40s, and the
+    # hourly reconcile sweep would time out and fail to detect drift. The
+    # canary 2026-05-13 22:00 UTC incident hit this: Morning Briefing's
+    # stale payload.model wasn't fixed before the 22:00 fire window
+    # because the 22:00 reconcile timed out reading cron.list.
+    last_exc: requests.RequestException | None = None
+    for attempt in (1, 2):
+        try:
+            resp = requests.post(
+                url,
+                json=body,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=45,
+            )
+            break
+        except requests.Timeout as exc:
+            last_exc = exc
+            if attempt == 1:
+                logger.warning(
+                    "Gateway %s.%s timed out (attempt 1/2) — retrying",
+                    tool_name,
+                    action or "",
+                )
+                continue
+            raise GatewayError(f"Gateway request failed: {exc}") from exc
+        except requests.RequestException as exc:
+            raise GatewayError(f"Gateway request failed: {exc}") from exc
+    else:  # pragma: no cover — defensive, the for-else only runs if no break
+        raise GatewayError(f"Gateway request failed: {last_exc}")
 
     if resp.status_code != 200:
         logger.error(

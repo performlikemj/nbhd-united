@@ -531,7 +531,8 @@ def restore_crons_after_image_update_task(tenant_id: str) -> None:
     # ``GatewayError`` keep working — the local rebind happens at call time
     # and picks up the patched object.
     from apps.cron.gateway_client import GatewayError, invoke_gateway_tool  # noqa: F811
-    from apps.orchestrator.services import _extract_cron_jobs, dedup_tenant_cron_jobs, seed_cron_jobs
+    from apps.orchestrator.config_generator import build_cron_seed_jobs
+    from apps.orchestrator.services import _extract_cron_jobs, seed_cron_jobs
     from apps.tenants.models import Tenant
 
     logger = logging.getLogger(__name__)
@@ -567,16 +568,28 @@ def restore_crons_after_image_update_task(tenant_id: str) -> None:
 
     existing_names = {j.get("name", "").lower() for j in existing_jobs if isinstance(j, dict)}
 
+    # System crons live in postgres (CronJob rows) for postgres-canonical
+    # tenants. We rely on the signal-driven ``regenerate_tenant_crons`` task
+    # (enqueued at the end of this function) to push them to the gateway
+    # with current seed shape — restoring them from the snapshot here would
+    # re-propagate whatever stale payload OC had at snapshot time (the
+    # 2026-05-13 canary incident: snapshot captured stale ``anthropic-cli/...``
+    # model on Morning Briefing and we kept pushing it back across image swaps).
+    system_cron_names = {j["name"].lower() for j in build_cron_seed_jobs(tenant) if j.get("name")}
+
     # Gateway-internal fields that cron.add rejects
     _STRIP_FIELDS = {"id", "jobId", "createdAt", "state", "createdAtMs", "updatedAtMs", "nextRunAtMs", "runningAtMs"}
 
-    # Deduplicate within snapshot (dirty snapshots may have duplicate names)
+    # Deduplicate within snapshot (dirty snapshots may have duplicate names).
+    # Skip system crons — postgres is canonical for those.
     seen_names: set[str] = set()
     jobs_to_restore: list[dict] = []
     for job in snapshot_jobs:
         if not isinstance(job, dict) or not job.get("name"):
             continue
         lower_name = job["name"].lower()
+        if lower_name in system_cron_names:
+            continue
         if lower_name in seen_names or lower_name in existing_names:
             continue
         seen_names.add(lower_name)
@@ -598,12 +611,29 @@ def restore_crons_after_image_update_task(tenant_id: str) -> None:
             )
             errors += 1
 
-    # Safety-net dedup
-    if restored > 0:
+    # System cron convergence: explicitly enqueue a reconcile so the new
+    # container picks up the postgres-canonical state right away. Without
+    # this, system crons would fire from whatever OC loaded from jobs.json
+    # on the share until the next signal-driven sweep — a 22:00 UTC
+    # morning briefing could fire stale during the post-boot window.
+    # Idempotency key dedup'd with the signal-driven reconcile that fires
+    # at the next CronJob.save.
+    if getattr(tenant, "postgres_cron_canonical", False):
         try:
-            dedup_tenant_cron_jobs(tenant)
+            from apps.cron.publish import publish_task
+
+            publish_task(
+                "regenerate_tenant_crons",
+                tenant_id,
+                idempotency_key=f"regen-cron:post-image:{tenant_id}",
+                delay_seconds=5,
+            )
         except Exception:
-            logger.warning("Post-restore dedup failed for %s (non-fatal)", tenant_id[:8], exc_info=True)
+            logger.warning(
+                "Failed to enqueue post-image reconcile for %s (non-fatal)",
+                tenant_id[:8],
+                exc_info=True,
+            )
 
     # Re-fire any cron-kind jobs that should have run while the container
     # was down between snapshot capture and now. The pre-image snapshot
@@ -646,93 +676,6 @@ def restore_crons_after_image_update_task(tenant_id: str) -> None:
         missed_fired,
         len(snapshot_jobs),
     )
-
-
-def force_reseed_crons_task() -> dict:
-    """Delete and recreate cron jobs for all active tenants.
-
-    Use when cron job definitions have changed and need to be pushed everywhere.
-    """
-    import logging
-
-    # Deferred import (re-importing names also available at module level) so
-    # tests that patch ``apps.cron.gateway_client.invoke_gateway_tool`` /
-    # ``GatewayError`` keep working — the local rebind happens at call time
-    # and picks up the patched object.
-    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool  # noqa: F811
-    from apps.orchestrator.config_generator import build_cron_seed_jobs
-    from apps.tenants.models import Tenant
-
-    logger = logging.getLogger(__name__)
-
-    # Only touch system-managed cron jobs (by name).
-    # User-created crons (reminders, custom schedules) are left untouched.
-    SYSTEM_JOB_NAMES = {
-        "Morning Briefing",
-        "Evening Check-in",
-        "Weekly Reflection",
-        "Week Ahead Review",
-        "Background Tasks",
-    }
-
-    tenants = Tenant.objects.filter(
-        status=Tenant.Status.ACTIVE,
-        container_id__gt="",
-    ).select_related("user")
-
-    total_updated = 0
-    total_errors = 0
-
-    for tenant in tenants:
-        tid = str(tenant.id)[:8]
-        if not tenant.container_fqdn:
-            logger.warning("force_reseed: tenant %s has no FQDN, skipping", tid)
-            total_errors += 1
-            continue
-
-        try:
-            # List existing
-            result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-            existing = (
-                result.get("jobs", []) if isinstance(result, dict) else result if isinstance(result, list) else []
-            )
-
-            # Delete only system-managed jobs
-            deleted = 0
-            for job in existing:
-                if job.get("name") not in SYSTEM_JOB_NAMES:
-                    continue  # User-created job — don't touch
-                job_id = job.get("id") or job.get("jobId")
-                if job_id:
-                    try:
-                        invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
-                        deleted += 1
-                    except GatewayError:
-                        pass
-
-            # Re-create system jobs with updated config
-            created = 0
-            for job in build_cron_seed_jobs(tenant):
-                try:
-                    invoke_gateway_tool(tenant, "cron.add", {"job": job})
-                    created += 1
-                except GatewayError as e:
-                    logger.error("force_reseed: add %s for %s failed: %s", job.get("name"), tid, e)
-                    total_errors += 1
-
-            total_updated += created
-            logger.info(
-                "force_reseed: tenant %s — %d system jobs deleted, %d created (user jobs preserved)",
-                tid,
-                deleted,
-                created,
-            )
-
-        except GatewayError as e:
-            logger.error("force_reseed: tenant %s failed: %s", tid, e)
-            total_errors += 1
-
-    return {"tenants": tenants.count(), "updated": total_updated, "errors": total_errors}
 
 
 def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:

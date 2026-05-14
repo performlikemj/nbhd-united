@@ -18,7 +18,6 @@ urlpatterns = [
     path("restart-tenant-container/", views.restart_tenant_container, name="cron-restart-tenant-container"),
     path("expire-trials/", views.expire_trials, name="cron-expire-trials"),
     path("bump-all-pending-configs/", views.bump_all_pending_configs, name="cron-bump-all-pending-configs"),
-    path("resync-cron-timezones/", views.resync_cron_timezones, name="cron-resync-cron-timezones"),
     path("run-update-cron-prompts/", views.run_update_cron_prompts, name="cron-run-update-cron-prompts"),
     path(
         "run-backfill-lesson-embeddings/",
