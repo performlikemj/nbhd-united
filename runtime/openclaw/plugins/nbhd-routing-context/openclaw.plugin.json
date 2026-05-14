@@ -21,7 +21,7 @@
       "requestTimeoutMs": {
         "type": "number",
         "minimum": 500,
-        "maximum": 10000,
+        "maximum": 15000,
         "description": "HTTP timeout for workspace list fetch."
       },
       "cacheTtlMs": {
