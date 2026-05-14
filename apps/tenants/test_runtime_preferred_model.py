@@ -38,15 +38,11 @@ class RuntimePreferredModelViewTest(TestCase):
         self.assertEqual(response.json()["error"], "internal_auth_failed")
 
     def test_post_requires_internal_auth(self, _enq):
-        response = self.client.post(
-            self.endpoint, data={"model_id": KIMI_MODEL}, content_type="application/json"
-        )
+        response = self.client.post(self.endpoint, data={"model_id": KIMI_MODEL}, content_type="application/json")
         self.assertEqual(response.status_code, 401)
 
     def test_rejects_tenant_scope_mismatch(self, _enq):
-        response = self.client.get(
-            self.endpoint, **self._headers(tenant_id=str(self.other_tenant.id))
-        )
+        response = self.client.get(self.endpoint, **self._headers(tenant_id=str(self.other_tenant.id)))
         self.assertEqual(response.status_code, 401)
 
     def test_unknown_tenant_returns_404(self, _enq):

@@ -216,8 +216,7 @@ class RuntimePreferredModelView(APIView):
             "applied_model": tenant.applied_model,
             "model_tier": tenant.model_tier,
             "allowed_models": [
-                {"model_id": mid, "alias": (meta or {}).get("alias", "")}
-                for mid, meta in allowed.items()
+                {"model_id": mid, "alias": (meta or {}).get("alias", "")} for mid, meta in allowed.items()
             ],
         }
 
