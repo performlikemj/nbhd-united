@@ -896,6 +896,57 @@ export default function register(api) {
     },
   }));
 
+  // ── Cron Phase 2 sync summary ─────────────────────────────────────
+  // Final step for any foreground scheduled task that messaged the user.
+  // Calling this tool delegates the entire sync-cron creation to Django:
+  // the agent provides only a 2-3 sentence summary; Django composes the
+  // cron expression, sessionTarget, payload, and self-removal text.
+  //
+  // If the run did NOT send the user a message, do not call this tool —
+  // absence of call = no sync needed.
+  api.registerTool(wrap({
+    name: "nbhd_cron_phase2_summary",
+    description:
+      "FINAL STEP for scheduled tasks (cron jobs): if you sent the user a " +
+      "message during this run via nbhd_send_to_user, call this tool with " +
+      "a 2-3 sentence summary of what happened so the user's main chat " +
+      "session has context when they reply. Do NOT call this if the run " +
+      "was silent (no user message sent). Backend handles all sync-cron " +
+      "creation — you only provide the summary.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["summary", "job_name"],
+      properties: {
+        summary: {
+          type: "string",
+          description:
+            "2-3 sentence summary, written for the main chat session's context. " +
+            "Mention what sections you wrote and what you sent the user.",
+        },
+        job_name: {
+          type: "string",
+          description:
+            "The name of the cron job that ran (e.g. 'Evening Check-in', " +
+            "'Morning Briefing'). Find this in the prompt preamble.",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const input = asObject(params);
+      const summary = asTrimmedString(input.summary);
+      const jobName = asTrimmedString(input.job_name);
+      if (!summary) throw new Error("summary is required");
+      if (!jobName) throw new Error("job_name is required");
+      const payload = await callRuntime(api, {
+        path: tenantPath(api, "/cron-phase2-summary/"),
+        method: "POST",
+        body: { summary, job_name: jobName },
+      });
+      return renderPayload(payload);
+    },
+  }));
+
   // ── Update user profile (timezone, display_name, language) ─────────
   api.registerTool(wrap({
     name: "nbhd_update_profile",

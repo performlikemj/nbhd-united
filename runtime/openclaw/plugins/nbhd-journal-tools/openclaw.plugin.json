@@ -23,6 +23,7 @@
       "nbhd_session_mark_processed",
       "nbhd_platform_issue_report",
       "nbhd_send_to_user",
+      "nbhd_cron_phase2_summary",
       "nbhd_update_profile",
       "nbhd_workspace_list",
       "nbhd_workspace_create",
