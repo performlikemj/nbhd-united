@@ -33,6 +33,16 @@ def resolve_workspace_routing(
 ) -> tuple[str, Workspace | None, bool]:
     """Decide which workspace this message belongs to and return the user_param.
 
+    Re-classifies every message. Previously we honored a 30-minute session
+    gap as a "no re-classification" window, but the 2026-05-14 routing trap
+    (CONTINUITY_workspace-routing-fix.md, Phase 2) showed that locks the
+    tenant into a stale active workspace until the next session boundary —
+    if the active workspace was set wrong (e.g. an agent-created `_sync:*`
+    one), every message lands in the wrong session for days. Backend
+    evidence (cosine similarity over workspace descriptions) should keep
+    voting on every turn; fall back to `current_active` only when the
+    classifier's top match is below `CLASSIFICATION_THRESHOLD`.
+
     Returns:
         (user_param, workspace, transitioned)
         - user_param: string to pass as `user` in /v1/chat/completions
@@ -47,16 +57,19 @@ def resolve_workspace_routing(
 
     current_active = tenant.active_workspace
 
-    # Within active session → stay in current workspace, no classification
-    if not _is_new_session(tenant):
-        target = current_active or _get_default(workspaces)
-        return _build_user_param(base_user_id, target), target, False
-
-    # New session — classify the message to find best workspace
     classified = _classify_message(message_text, workspaces)
     target = classified or current_active or _get_default(workspaces)
 
     transitioned = bool(current_active and target and current_active.id != target.id)
+    if transitioned:
+        logger.info(
+            "workspace_routing: reclassified tenant=%s from=%s to=%s "
+            "(was_new_session=%s)",
+            tenant.id,
+            current_active.slug if current_active else None,
+            target.slug if target else None,
+            _is_new_session(tenant),
+        )
     return _build_user_param(base_user_id, target), target, transitioned
 
 
