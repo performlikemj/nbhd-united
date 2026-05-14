@@ -1206,6 +1206,16 @@ def refresh_system_cron_rows_from_seed(tenant: Tenant | str) -> dict:
 # match as "default" and get rolled forward. Old entries can be pruned
 # once the fleet has converged.
 _KNOWN_DEFAULT_PREFIXES = (
+    # Shared preamble injected by ``_prepare_cron_prompt`` before every
+    # prompt-template body. This is what stored cron messages actually
+    # start with after ``strip_date_line``, since the preamble comes AFTER
+    # the date line. Without this entry the entire fleet was being
+    # classified as user-customized and seed refreshes were skipping the
+    # message body (canary 2026-05-14 02:48 sweep logged
+    # ``preserved_custom=10`` for the canary alone).
+    "**MANDATORY — do this BEFORE",
+    # Per-cron prompt bodies. Only relevant if a future refactor moves
+    # the shared preamble somewhere else.
     "Good morning! Create today's morning briefing",
     "It's evening check-in time.",
     "It's Monday morning. Run the Week Ahead Review",
@@ -1213,8 +1223,8 @@ _KNOWN_DEFAULT_PREFIXES = (
     "You received a scheduled check-in.",
     "Sunday-evening Gravity check-in.",
     "Personal-question cron. Pick ONE thoughtful",
-    # The pre-strip preamble itself, kept as a defensive prefix for any
-    # caller that passes the raw stored message without strip_date_line.
+    # Defensive: the date line itself, for any caller that passes the
+    # raw stored message without ``strip_date_line``.
     "Current date and time:",
 )
 
