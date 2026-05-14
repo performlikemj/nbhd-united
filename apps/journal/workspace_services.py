@@ -37,10 +37,7 @@ def workspace_name_reserved_error(name: str) -> str | None:
     stripped = (name or "").strip()
     for prefix in RESERVED_WORKSPACE_NAME_PREFIXES:
         if stripped.startswith(prefix):
-            return (
-                f"Workspace names starting with {prefix!r} are reserved for "
-                "system-managed contexts."
-            )
+            return f"Workspace names starting with {prefix!r} are reserved for system-managed contexts."
     return None
 
 

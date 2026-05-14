@@ -100,9 +100,7 @@ class TestContinuousClassification(TestCase):
         tenant.save(update_fields=["active_workspace"])
 
         with patch("apps.router.workspace_routing._classify_message", return_value=work) as classify_mock:
-            user_param, ws, transitioned = resolve_workspace_routing(
-                tenant, "8078236299", "follow-up on Q3 budget"
-            )
+            user_param, ws, transitioned = resolve_workspace_routing(tenant, "8078236299", "follow-up on Q3 budget")
             classify_mock.assert_called_once()
 
         self.assertEqual(user_param, "8078236299:ws:work")

@@ -63,8 +63,7 @@ def resolve_workspace_routing(
     transitioned = bool(current_active and target and current_active.id != target.id)
     if transitioned:
         logger.info(
-            "workspace_routing: reclassified tenant=%s from=%s to=%s "
-            "(was_new_session=%s)",
+            "workspace_routing: reclassified tenant=%s from=%s to=%s (was_new_session=%s)",
             tenant.id,
             current_active.slug if current_active else None,
             target.slug if target else None,
