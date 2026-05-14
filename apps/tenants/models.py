@@ -288,6 +288,27 @@ class Tenant(models.Model):
         ),
     )
 
+    # Experimental: OpenClaw active-memory plugin.
+    # When True:
+    #   - plugins.entries["active-memory"] is emitted with a blocking
+    #     pre-reply recall sub-agent that injects relevant memory before
+    #     the main agent composes its reply. Adds ~500ms-2s of latency
+    #     to the reply path but catches the "agent forgot to search
+    #     memory" failure mode this morning's diagnosis surfaced.
+    # Requires ``experimental_memory_core_enabled`` to be True — the
+    # active-memory plugin calls ``memory_search`` under the hood, which
+    # has no backend without memory-core. config_generator enforces the
+    # precondition and skips the plugin entry (with a logged warning) if
+    # active-memory is on but memory-core is off.
+    experimental_active_memory_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Experimental: enable the OpenClaw active-memory plugin "
+            "(blocking pre-reply recall). Requires "
+            "experimental_memory_core_enabled. Canary-gated rollout."
+        ),
+    )
+
     # Feature tips
     feature_tips_enabled = models.BooleanField(
         default=True,
