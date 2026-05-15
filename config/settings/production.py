@@ -1,9 +1,33 @@
 """Production settings (Azure)."""
 
 from .base import *  # noqa: F401,F403
-from .base import env
+from .base import DATABASES, env
 
 DEBUG = False
+
+# Database — transaction-mode pooling compatibility.
+#
+# Production runs Django against Supabase via Supavisor. Setting the
+# DATABASE_URL env var to the transaction-mode pooler endpoint (port 6543)
+# is what actually swaps the connection mode; this setting is the
+# Django-side companion that disables server-side cursors so QuerySet
+# .iterator() doesn't fall over.
+#
+# Background: in transaction-mode pooling Postgres backend connections
+# are released per transaction, not per client socket. Django's default
+# .iterator() opens a named server-side cursor and consumes it across
+# multiple transactions, which doesn't survive the connection swap.
+# DISABLE_SERVER_SIDE_CURSORS=True makes .iterator() materialize the
+# queryset client-side instead. Safe here because the only production
+# .iterator() caller (apps/insights/tasks.py — finance-eligible tenants)
+# is a tiny set; the others are migrations and ops commands.
+#
+# Why this matters: 2026-05-15 we observed Supavisor pool exhaustion
+# (`EMAXCONNSESSION max clients reached in session mode - pool_size: 15`).
+# All 15 backend conns were idle-but-pinned by Django sockets that
+# session-mode pooling refused to release. Transaction mode + this
+# setting is the canonical Django-on-Supabase pattern.
+DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"] = True
 
 # Security
 SECURE_SSL_REDIRECT = True
