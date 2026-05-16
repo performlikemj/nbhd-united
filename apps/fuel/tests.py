@@ -361,9 +361,7 @@ class ConsumerFuelViewTests(TestCase):
         self.assertEqual(len(resp.data), 2)
 
     def test_body_weight_patch_changes_date_and_weight(self):
-        entry = BodyWeightLog.objects.create(
-            tenant=self.tenant, date=date(2026, 5, 15), weight_kg=Decimal("69.20")
-        )
+        entry = BodyWeightLog.objects.create(tenant=self.tenant, date=date(2026, 5, 15), weight_kg=Decimal("69.20"))
         resp = self.client.patch(
             f"/api/v1/fuel/body-weight/{entry.id}/",
             {"date": "2026-05-16", "weight_kg": "69.30"},
@@ -376,12 +374,8 @@ class ConsumerFuelViewTests(TestCase):
 
     def test_body_weight_patch_date_collision_returns_409(self):
         """Shifting an entry onto an occupied date must surface as a clean 409, not a 500."""
-        target = BodyWeightLog.objects.create(
-            tenant=self.tenant, date=date(2026, 5, 16), weight_kg=Decimal("69.40")
-        )
-        source = BodyWeightLog.objects.create(
-            tenant=self.tenant, date=date(2026, 5, 15), weight_kg=Decimal("69.20")
-        )
+        target = BodyWeightLog.objects.create(tenant=self.tenant, date=date(2026, 5, 16), weight_kg=Decimal("69.40"))
+        source = BodyWeightLog.objects.create(tenant=self.tenant, date=date(2026, 5, 15), weight_kg=Decimal("69.20"))
         resp = self.client.patch(
             f"/api/v1/fuel/body-weight/{source.id}/",
             {"date": "2026-05-16"},
@@ -397,9 +391,7 @@ class ConsumerFuelViewTests(TestCase):
 
     def test_body_weight_patch_weight_only(self):
         """Patching weight without changing date should not trip the collision check."""
-        entry = BodyWeightLog.objects.create(
-            tenant=self.tenant, date=date(2026, 5, 15), weight_kg=Decimal("69.20")
-        )
+        entry = BodyWeightLog.objects.create(tenant=self.tenant, date=date(2026, 5, 15), weight_kg=Decimal("69.20"))
         resp = self.client.patch(
             f"/api/v1/fuel/body-weight/{entry.id}/",
             {"weight_kg": "69.50"},
