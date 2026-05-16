@@ -510,6 +510,16 @@ class BodyWeightDetailView(APIView):
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
         serializer = BodyWeightLogSerializer(entry, data=request.data, partial=True, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
+        # (tenant, date) is unique. If the user is moving an entry onto a
+        # date already occupied by another row, surface a 409 with a clean
+        # message instead of an opaque 500 from the integrity error.
+        new_date = serializer.validated_data.get("date")
+        if new_date and new_date != entry.date:
+            if BodyWeightLog.objects.filter(tenant=tenant, date=new_date).exclude(id=entry.id).exists():
+                return Response(
+                    {"error": "date_conflict", "detail": f"An entry already exists for {new_date}."},
+                    status=status.HTTP_409_CONFLICT,
+                )
         serializer.save()
         return Response(serializer.data)
 

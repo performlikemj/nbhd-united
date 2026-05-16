@@ -1077,6 +1077,16 @@ export function deleteBodyWeight(id: string): Promise<void> {
   });
 }
 
+export function updateBodyWeight(
+  id: string,
+  data: { date?: string; weight_kg?: number },
+): Promise<import("@/lib/types").BodyWeightEntry> {
+  return apiFetch<import("@/lib/types").BodyWeightEntry>(`/api/v1/fuel/body-weight/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
 export function updateFuelSettings(
   data: { fuel_enabled: boolean },
 ): Promise<{ fuel_enabled: boolean; fuel_profile_status: import("@/lib/types").FuelOnboardingStatus | null; restart_required: boolean }> {
