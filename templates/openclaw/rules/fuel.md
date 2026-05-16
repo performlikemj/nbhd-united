@@ -75,10 +75,10 @@ When the user says something that sounds like a workout log, log it immediately.
 
 Planks, side planks, wall sits, hollow holds, L-sits, dead hangs, handstand holds, front/back levers, bridge holds — anything timed rather than counted in reps.
 
-- Use `category: "calisthenics"`, **not** `"strength"`. The UI for `strength` renders reps × weight columns and will mis-display a plank as a weighted-rep exercise.
-- Each set uses `hold_s` (integer seconds), **not** `reps` and **not** `weight`. The runtime takes care of rendering "60s" vs "30 reps" based on whether `hold_s` is present.
-- Example: "60-second plank, three rounds" → `category: "calisthenics"`, `detail_json: {"skills": [{"name": "Plank", "sets": [{"hold_s": 60}, {"hold_s": 60}, {"hold_s": 60}]}]}`
-- Mixed-metric sessions (e.g. push day with weighted exercises *and* planks): log the weighted exercises as one workout under `"strength"`, and the planks as a separate workout under `"calisthenics"`. The backend groups by date.
+- Each set uses `hold_s` (integer seconds), **not** `reps` and **not** `weight`. The runtime renders "60s" when `hold_s` is set, and "N reps × W kg" otherwise — *per set*, not per workout.
+- **Mixed sessions are fine.** A strength workout that ends with planks goes in **one** call: `category: "strength"`, with the plank exercise's sets carrying `hold_s` while the weighted exercises carry `reps`/`weight`. Do not split a single workout into two just because one exercise is timed.
+- A pure-hold session (e.g. "did three sets of 60-second planks and nothing else") can go under `category: "calisthenics"` — that's the natural fit.
+- Example mixed: `{"name": "Plank", "sets": [{"hold_s": 60}, {"hold_s": 60}, {"hold_s": 60}]}` inside `detail_json.exercises` of a `"strength"` workout.
 
 **Data format rules:**
 - **All numeric fields must be numbers, not strings.** `"reps": 8` not `"reps": "8"` or `"reps": "to failure"`.

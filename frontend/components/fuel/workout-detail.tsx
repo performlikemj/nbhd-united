@@ -366,9 +366,15 @@ function FieldBox({ label, children }: { label: string; children: React.ReactNod
   );
 }
 
-/* ---- Strength Editor ---- */
+/* ---- Strength Editor ----
+ *
+ * A "strength" workout can contain isometric sets (e.g. a plank slotted
+ * into an upper-pull session). The LLM logs those with `hold_s` instead
+ * of `reps`/`weight`. We detect per-set rather than per-exercise so a
+ * single workout can mix weighted, bodyweight, and hold-time sets.
+ */
 function StrengthEditor({ detail, editing, onChange }: { detail: Record<string, unknown>; editing: boolean; onChange: (u: Record<string, unknown>) => void }) {
-  const exercises = (detail.exercises as { name: string; sets: { reps: number; weight: number; pr?: boolean }[] }[]) || [];
+  const exercises = (detail.exercises as { name: string; sets: { reps?: number; weight?: number; hold_s?: number; pr?: boolean }[] }[]) || [];
   const { unit } = useWeightUnit();
 
   const updateEx = (i: number, next: typeof exercises[number]) => {
@@ -393,7 +399,11 @@ function StrengthEditor({ detail, editing, onChange }: { detail: Record<string, 
         )}
       </div>
       <div className="space-y-2.5">
-        {exercises.map((ex, i) => (
+        {exercises.map((ex, i) => {
+          // 1RM math only applies to weighted sets; ignore hold-time entries.
+          const weightedSets = ex.sets.filter((s) => s.hold_s == null && typeof s.weight === "number" && typeof s.reps === "number");
+          const oneRm = weightedSets.length > 0 ? Math.max(...weightedSets.map((s) => est1RM(s.weight!, s.reps!))) : 0;
+          return (
           <div key={i} className="rounded-lg border border-border bg-surface-elevated p-3">
             <div className="flex items-center gap-2 mb-2">
               {editing ? (
@@ -401,44 +411,68 @@ function StrengthEditor({ detail, editing, onChange }: { detail: Record<string, 
               ) : (
                 <div className="flex-1 text-sm font-medium text-ink">{ex.name}</div>
               )}
-              <div className="font-mono text-[10px] text-ink-faint">
-                1RM est {dw(Math.max(...ex.sets.map((s) => est1RM(s.weight, s.reps))))} {unit}
-              </div>
+              {oneRm > 0 && (
+                <div className="font-mono text-[10px] text-ink-faint">
+                  1RM est {dw(oneRm)} {unit}
+                </div>
+              )}
             </div>
             <div className="space-y-1">
-              {ex.sets.map((s, j) => (
+              {ex.sets.map((s, j) => {
+                const isHold = s.hold_s != null;
+                return (
                 <div key={j} className="grid grid-cols-[20px_1fr_1fr_auto] sm:grid-cols-[22px_1fr_1fr_auto] items-center gap-1.5 sm:gap-2 text-xs">
                   <span className="font-mono text-[10px] text-ink-faint">{j + 1}</span>
-                  <div className="flex items-center gap-1">
-                    {editing ? (
-                      <NumericInput
-                        value={s.reps}
-                        onCommit={(v) => { const sets = [...ex.sets]; sets[j] = { ...s, reps: v ?? 0 }; updateEx(i, { ...ex, sets }); }}
-                        aria-label={`set ${j + 1} reps`}
-                        className="w-full bg-surface rounded border border-border px-1.5 sm:px-2 py-1.5 font-mono text-xs text-ink focus:outline-none focus:border-accent min-h-[36px]"
-                      />
-                    ) : (
-                      <span className="font-mono">{s.reps}</span>
-                    )}
-                    <span className="text-[8px] font-bold uppercase tracking-wider text-ink-faint">REPS</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    {editing ? (
-                      <NumericInput
-                        value={Math.round(dw(s.weight) * 10) / 10}
-                        onCommit={(v) => { const sets = [...ex.sets]; sets[j] = { ...s, weight: iw(v ?? 0) }; updateEx(i, { ...ex, sets }); }}
-                        allowDecimal
-                        aria-label={`set ${j + 1} weight in ${unit}`}
-                        className="w-full bg-surface rounded border border-border px-1.5 sm:px-2 py-1.5 font-mono text-xs text-ink focus:outline-none focus:border-accent min-h-[36px]"
-                      />
-                    ) : (
-                      <span className="font-mono">{s.weight ? dw(s.weight) : "BW"}</span>
-                    )}
-                    <span className="text-[8px] font-bold uppercase tracking-wider text-ink-faint">{unit.toUpperCase()}</span>
-                  </div>
+                  {isHold ? (
+                    // Hold-time set: span both columns, no weight slot needed.
+                    <div className="col-span-2 flex items-center gap-1">
+                      {editing ? (
+                        <NumericInput
+                          value={s.hold_s ?? null}
+                          onCommit={(v) => { const sets = [...ex.sets]; sets[j] = { ...s, hold_s: v ?? 0 }; updateEx(i, { ...ex, sets }); }}
+                          aria-label={`set ${j + 1} hold seconds`}
+                          className="w-full bg-surface rounded border border-border px-1.5 sm:px-2 py-1.5 font-mono text-xs text-ink focus:outline-none focus:border-accent min-h-[36px]"
+                        />
+                      ) : (
+                        <span className="font-mono">{s.hold_s}s</span>
+                      )}
+                      <span className="text-[8px] font-bold uppercase tracking-wider text-ink-faint">SEC</span>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-1">
+                        {editing ? (
+                          <NumericInput
+                            value={s.reps ?? null}
+                            onCommit={(v) => { const sets = [...ex.sets]; sets[j] = { ...s, reps: v ?? 0 }; updateEx(i, { ...ex, sets }); }}
+                            aria-label={`set ${j + 1} reps`}
+                            className="w-full bg-surface rounded border border-border px-1.5 sm:px-2 py-1.5 font-mono text-xs text-ink focus:outline-none focus:border-accent min-h-[36px]"
+                          />
+                        ) : (
+                          <span className="font-mono">{s.reps}</span>
+                        )}
+                        <span className="text-[8px] font-bold uppercase tracking-wider text-ink-faint">REPS</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {editing ? (
+                          <NumericInput
+                            value={Math.round(dw(s.weight ?? 0) * 10) / 10}
+                            onCommit={(v) => { const sets = [...ex.sets]; sets[j] = { ...s, weight: iw(v ?? 0) }; updateEx(i, { ...ex, sets }); }}
+                            allowDecimal
+                            aria-label={`set ${j + 1} weight in ${unit}`}
+                            className="w-full bg-surface rounded border border-border px-1.5 sm:px-2 py-1.5 font-mono text-xs text-ink focus:outline-none focus:border-accent min-h-[36px]"
+                          />
+                        ) : (
+                          <span className="font-mono">{s.weight ? dw(s.weight) : "BW"}</span>
+                        )}
+                        <span className="text-[8px] font-bold uppercase tracking-wider text-ink-faint">{unit.toUpperCase()}</span>
+                      </div>
+                    </>
+                  )}
                   {s.pr && <span className="text-[8px] font-bold uppercase tracking-wider text-accent">PR</span>}
                 </div>
-              ))}
+              );
+              })}
               {editing && (
                 <button onClick={() => updateEx(i, { ...ex, sets: [...ex.sets, { reps: 8, weight: ex.sets.at(-1)?.weight || (unit === "lbs" ? 27 : 60) }] })} className="text-[9px] font-bold uppercase tracking-wider text-ink-faint hover:text-ink transition">
                   + SET
@@ -446,7 +480,8 @@ function StrengthEditor({ detail, editing, onChange }: { detail: Record<string, 
               )}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
