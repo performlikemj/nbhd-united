@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 from django.conf import settings
+from django.db import close_old_connections
 from django.utils import timezone
 
 from apps.billing.services import check_budget, record_usage
@@ -85,9 +86,19 @@ class TelegramPoller:
                     logger.exception("Error in poll loop, backing off %ds", self._backoff)
                     time.sleep(self._backoff)
                     self._backoff = min(self._backoff * 2, MAX_BACKOFF)
+                finally:
+                    # Release any DB connection accumulated during this poll
+                    # cycle. Django's request lifecycle normally calls this
+                    # via the `request_finished` signal, but the poller
+                    # bypasses HTTP entirely — without this its Django
+                    # connection would persist for the process's entire
+                    # lifetime, permanently pinning a Supavisor pool slot.
+                    # See 2026-05-15 pool-exhaustion incident.
+                    close_old_connections()
         finally:
             self._http.close()
             self._http = None
+            close_old_connections()
             logger.info("Central Telegram poller stopped")
 
     def stop(self) -> None:
