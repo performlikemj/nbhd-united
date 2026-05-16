@@ -6,6 +6,7 @@ import {
   useBodyWeightQuery,
   useCreateBodyWeightMutation,
   useDeleteBodyWeightMutation,
+  useUpdateBodyWeightMutation,
 } from "@/lib/queries";
 import type { BodyWeightEntry } from "@/lib/types";
 import { displayToKg, kgToDisplay, useWeightUnit } from "./use-weight-unit";
@@ -14,11 +15,13 @@ export function BodyWeight() {
   const { data: entries, isLoading } = useBodyWeightQuery();
   const createMutation = useCreateBodyWeightMutation();
   const deleteMutation = useDeleteBodyWeightMutation();
+  const updateMutation = useUpdateBodyWeightMutation();
   const { unit, setUnit } = useWeightUnit();
   const todayISO = new Date().toISOString().slice(0, 10);
   const [date, setDate] = useState(todayISO);
   const [weight, setWeight] = useState("");
   const [pendingDelete, setPendingDelete] = useState<BodyWeightEntry | null>(null);
+  const [pendingEdit, setPendingEdit] = useState<BodyWeightEntry | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -121,7 +124,7 @@ export function BodyWeight() {
       ) : (entries || []).length > 0 ? (
         <div className="space-y-1">
           {(entries || []).slice(0, 14).map((e) => {
-            const isPending = deleteMutation.isPending && deleteMutation.variables === e.id;
+            const isDeletePending = deleteMutation.isPending && deleteMutation.variables === e.id;
             return (
               <div key={e.id} className="flex items-center gap-3 text-xs">
                 <span className="font-mono text-[10px] text-ink-faint w-20 shrink-0">
@@ -132,8 +135,19 @@ export function BodyWeight() {
                 </span>
                 <button
                   type="button"
+                  onClick={() => setPendingEdit(e)}
+                  aria-label={`Edit weight entry from ${e.date}`}
+                  className="rounded-md min-h-[36px] min-w-[36px] px-2 text-ink-faint hover:text-ink hover:bg-surface-hover transition"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
                   onClick={() => setPendingDelete(e)}
-                  disabled={isPending}
+                  disabled={isDeletePending}
                   aria-label={`Delete weight entry from ${e.date}`}
                   className="rounded-md min-h-[36px] min-w-[36px] px-2 text-ink-faint hover:text-rose-text hover:bg-rose-bg/40 transition disabled:opacity-50"
                 >
@@ -162,6 +176,141 @@ export function BodyWeight() {
           }}
         />
       )}
+
+      {pendingEdit && (
+        <EditEntryDialog
+          entry={pendingEdit}
+          unit={unit}
+          isPending={updateMutation.isPending}
+          error={updateMutation.error instanceof Error ? updateMutation.error.message : null}
+          onCancel={() => {
+            updateMutation.reset();
+            setPendingEdit(null);
+          }}
+          onSave={(patch) => {
+            updateMutation.mutate(
+              { id: pendingEdit.id, data: patch },
+              {
+                onSuccess: () => {
+                  updateMutation.reset();
+                  setPendingEdit(null);
+                },
+              },
+            );
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function EditEntryDialog({
+  entry,
+  unit,
+  isPending,
+  error,
+  onCancel,
+  onSave,
+}: {
+  entry: BodyWeightEntry;
+  unit: "kg" | "lbs";
+  isPending: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onSave: (patch: { date?: string; weight_kg?: number }) => void;
+}) {
+  const [date, setDate] = useState(entry.date);
+  const [weight, setWeight] = useState(
+    kgToDisplay(parseFloat(entry.weight_kg), unit).toFixed(1),
+  );
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const patch: { date?: string; weight_kg?: number } = {};
+    if (date !== entry.date) patch.date = date;
+    const parsed = parseFloat(weight);
+    if (Number.isFinite(parsed)) {
+      const kg = displayToKg(parsed, unit);
+      // Compare with rounding to 2dp since DB stores DecimalField(2).
+      if (Math.abs(kg - parseFloat(entry.weight_kg)) >= 0.005) {
+        patch.weight_kg = kg;
+      }
+    }
+    if (Object.keys(patch).length === 0) {
+      onCancel();
+      return;
+    }
+    onSave(patch);
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="edit-weight-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-overlay px-4"
+      onClick={onCancel}
+    >
+      <form
+        onSubmit={handleSubmit}
+        className="rounded-panel border border-border bg-surface-elevated p-5 shadow-panel max-w-sm w-full backdrop-blur-md"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div id="edit-weight-title" className="font-headline text-lg font-bold text-ink">Edit weight entry</div>
+
+        <div className="mt-4 space-y-3">
+          <label className="block">
+            <span className="block font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint mb-1">
+              Date
+            </span>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-full rounded-lg border border-border bg-surface px-3 min-h-[44px] py-2 font-mono text-sm text-ink focus:outline-none focus:border-accent"
+            />
+          </label>
+          <label className="block">
+            <span className="block font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint mb-1">
+              Weight ({unit})
+            </span>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={weight}
+              onChange={(e) => {
+                if (/^-?\d*\.?\d*$/.test(e.target.value)) setWeight(e.target.value);
+              }}
+              className="w-full rounded-lg border border-border bg-surface px-3 min-h-[44px] py-2 font-mono text-sm text-ink focus:outline-none focus:border-accent"
+            />
+          </label>
+        </div>
+
+        {error && (
+          <div className="mt-3 rounded-xl border border-rose-border bg-rose-bg px-4 py-2.5 text-sm text-rose-text">
+            {error.includes("409") || error.toLowerCase().includes("already")
+              ? `An entry already exists for ${date}. Delete that one first, or pick a different date.`
+              : error}
+          </div>
+        )}
+
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-lg border border-border bg-transparent text-ink-muted min-h-[44px] px-4 py-2 text-sm font-medium hover:bg-surface-hover hover:text-ink transition"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={isPending || !weight}
+            className="glow-purple rounded-lg bg-accent text-white border border-accent min-h-[44px] px-4 py-2 text-sm font-semibold hover:brightness-110 active:scale-[0.98] transition disabled:opacity-50"
+          >
+            {isPending ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

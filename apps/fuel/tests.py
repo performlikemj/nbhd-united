@@ -360,6 +360,55 @@ class ConsumerFuelViewTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(len(resp.data), 2)
 
+    def test_body_weight_patch_changes_date_and_weight(self):
+        entry = BodyWeightLog.objects.create(
+            tenant=self.tenant, date=date(2026, 5, 15), weight_kg=Decimal("69.20")
+        )
+        resp = self.client.patch(
+            f"/api/v1/fuel/body-weight/{entry.id}/",
+            {"date": "2026-05-16", "weight_kg": "69.30"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        entry.refresh_from_db()
+        self.assertEqual(str(entry.date), "2026-05-16")
+        self.assertEqual(str(entry.weight_kg), "69.30")
+
+    def test_body_weight_patch_date_collision_returns_409(self):
+        """Shifting an entry onto an occupied date must surface as a clean 409, not a 500."""
+        target = BodyWeightLog.objects.create(
+            tenant=self.tenant, date=date(2026, 5, 16), weight_kg=Decimal("69.40")
+        )
+        source = BodyWeightLog.objects.create(
+            tenant=self.tenant, date=date(2026, 5, 15), weight_kg=Decimal("69.20")
+        )
+        resp = self.client.patch(
+            f"/api/v1/fuel/body-weight/{source.id}/",
+            {"date": "2026-05-16"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["error"], "date_conflict")
+        # Neither entry was mutated.
+        source.refresh_from_db()
+        target.refresh_from_db()
+        self.assertEqual(str(source.date), "2026-05-15")
+        self.assertEqual(str(target.weight_kg), "69.40")
+
+    def test_body_weight_patch_weight_only(self):
+        """Patching weight without changing date should not trip the collision check."""
+        entry = BodyWeightLog.objects.create(
+            tenant=self.tenant, date=date(2026, 5, 15), weight_kg=Decimal("69.20")
+        )
+        resp = self.client.patch(
+            f"/api/v1/fuel/body-weight/{entry.id}/",
+            {"weight_kg": "69.50"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        entry.refresh_from_db()
+        self.assertEqual(str(entry.weight_kg), "69.50")
+
     def test_create_rest_day(self):
         resp = self.client.post(
             "/api/v1/fuel/workouts/",

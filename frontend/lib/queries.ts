@@ -113,6 +113,7 @@ import {
   fetchBodyWeight,
   createBodyWeight,
   deleteBodyWeight,
+  updateBodyWeight,
   updateFuelSettings,
   fetchFuelProfile,
   updateFuelProfile,
@@ -1355,6 +1356,17 @@ export function useDeleteBodyWeightMutation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: deleteBodyWeight,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-body-weight"] });
+    },
+  });
+}
+
+export function useUpdateBodyWeightMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { date?: string; weight_kg?: number } }) =>
+      updateBodyWeight(id, data),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["fuel-body-weight"] });
     },
