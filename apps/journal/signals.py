@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import UTC
 
 from django.conf import settings
 from django.db import transaction
@@ -35,16 +36,33 @@ def queue_memory_sync_on_document_save(sender, instance, **kwargs):
     QStash HTTP round-trip. This is the root-cause fix for
     `nbhd_daily_note_set_section` 20s timeouts seen in canary logs.
 
+    Publishes are bucketed to one per tenant per minute via
+    ``idempotency_key`` so a foreground cron's 15+ Document saves don't
+    each trigger a full re-render of the tenant's docs to SMB. Each sync
+    invocation reads ALL non-daily docs and uploads them — there's no
+    point firing 15 of those in a 3-minute window. QStash's
+    ``deduplication_id`` drops duplicates with the same key.
+
     In dev/test (no QStash), falls back to synchronous execution so test
     assertions about task side effects still work.
     """
+    from datetime import datetime
+
     tenant_id = str(instance.tenant_id)
 
     def _publish() -> None:
         from apps.cron.publish import publish_task
 
+        # One-minute bucket: bursts of writes coalesce to one delivery,
+        # isolated writes still sync within ≤60s.
+        bucket = datetime.now(UTC).strftime("%Y%m%d%H%M")
+        idempotency_key = f"sync_documents_to_workspace:{tenant_id}:{bucket}"
         try:
-            publish_task("sync_documents_to_workspace", tenant_id)
+            publish_task(
+                "sync_documents_to_workspace",
+                tenant_id,
+                idempotency_key=idempotency_key,
+            )
         except Exception:
             logger.warning(
                 "Failed to queue memory sync for tenant %s",
