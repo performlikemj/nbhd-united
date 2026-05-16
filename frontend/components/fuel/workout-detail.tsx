@@ -28,6 +28,68 @@ function est1RM(weight: number, reps: number): number {
   return Math.round(weight * (1 + reps / 30) * 10) / 10;
 }
 
+/**
+ * Numeric input that holds a string during editing and only commits on blur.
+ *
+ * Why not `<input type="number">`? Two problems with the native control here:
+ *   1. `+e.target.value` (number coercion) drops trailing dots, so typing
+ *      "60." then "2" rendered "602" instead of "60.2".
+ *   2. When `value={0}` is rendered (e.g. bodyweight exercises), a typed
+ *      digit at the cursor produces `"0X"` that the controlled-input cycle
+ *      may leave visible until the user backspaces.
+ *
+ * The fix: keep a local string while the user types, accept only digits and
+ * (optionally) a single decimal point, and convert on blur. Mirrors the
+ * `body-weight.tsx` pattern that doesn't have this bug.
+ */
+function NumericInput({
+  value,
+  onCommit,
+  allowDecimal = false,
+  placeholder,
+  className,
+  "aria-label": ariaLabel,
+}: {
+  value: number | null;
+  onCommit: (v: number | null) => void;
+  allowDecimal?: boolean;
+  placeholder?: string;
+  className?: string;
+  "aria-label"?: string;
+}) {
+  const [text, setText] = useState<string>(value == null ? "" : String(value));
+
+  const commit = () => {
+    if (text === "" || text === "-" || text === ".") {
+      onCommit(null);
+      return;
+    }
+    const n = allowDecimal ? parseFloat(text) : parseInt(text, 10);
+    onCommit(Number.isFinite(n) ? n : null);
+  };
+
+  const pattern = allowDecimal ? /^-?\d*\.?\d*$/ : /^-?\d*$/;
+
+  return (
+    <input
+      type="text"
+      inputMode={allowDecimal ? "decimal" : "numeric"}
+      value={text}
+      onChange={(e) => {
+        const v = e.target.value;
+        if (pattern.test(v)) setText(v);
+      }}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
+      placeholder={placeholder}
+      aria-label={ariaLabel}
+      className={className}
+    />
+  );
+}
+
 interface WorkoutDetailProps {
   workoutId: string | null;
   onClose: () => void;
@@ -349,7 +411,12 @@ function StrengthEditor({ detail, editing, onChange }: { detail: Record<string, 
                   <span className="font-mono text-[10px] text-ink-faint">{j + 1}</span>
                   <div className="flex items-center gap-1">
                     {editing ? (
-                      <input type="number" value={s.reps} onChange={(e) => { const sets = [...ex.sets]; sets[j] = { ...s, reps: +e.target.value }; updateEx(i, { ...ex, sets }); }} className="w-full bg-surface rounded border border-border px-1.5 sm:px-2 py-1.5 font-mono text-xs text-ink focus:outline-none focus:border-accent min-h-[36px]" />
+                      <NumericInput
+                        value={s.reps}
+                        onCommit={(v) => { const sets = [...ex.sets]; sets[j] = { ...s, reps: v ?? 0 }; updateEx(i, { ...ex, sets }); }}
+                        aria-label={`set ${j + 1} reps`}
+                        className="w-full bg-surface rounded border border-border px-1.5 sm:px-2 py-1.5 font-mono text-xs text-ink focus:outline-none focus:border-accent min-h-[36px]"
+                      />
                     ) : (
                       <span className="font-mono">{s.reps}</span>
                     )}
@@ -357,7 +424,13 @@ function StrengthEditor({ detail, editing, onChange }: { detail: Record<string, 
                   </div>
                   <div className="flex items-center gap-1">
                     {editing ? (
-                      <input type="number" value={Math.round(dw(s.weight) * 10) / 10} onChange={(e) => { const sets = [...ex.sets]; sets[j] = { ...s, weight: iw(+e.target.value) }; updateEx(i, { ...ex, sets }); }} className="w-full bg-surface rounded border border-border px-1.5 sm:px-2 py-1.5 font-mono text-xs text-ink focus:outline-none focus:border-accent min-h-[36px]" />
+                      <NumericInput
+                        value={Math.round(dw(s.weight) * 10) / 10}
+                        onCommit={(v) => { const sets = [...ex.sets]; sets[j] = { ...s, weight: iw(v ?? 0) }; updateEx(i, { ...ex, sets }); }}
+                        allowDecimal
+                        aria-label={`set ${j + 1} weight in ${unit}`}
+                        className="w-full bg-surface rounded border border-border px-1.5 sm:px-2 py-1.5 font-mono text-xs text-ink focus:outline-none focus:border-accent min-h-[36px]"
+                      />
                     ) : (
                       <span className="font-mono">{s.weight ? dw(s.weight) : "BW"}</span>
                     )}
@@ -395,13 +468,24 @@ function StatsEditor({ detail, editing, onChange, fields }: {
             <div key={key} className="rounded-lg border border-border bg-surface-elevated px-3 py-2.5">
               <div className="text-[8px] font-bold uppercase tracking-[0.2em] text-ink-faint">{label}</div>
               {editing ? (
-                <input
-                  type={key === "pace" ? "text" : "number"}
-                  value={(detail[key] as string | number) ?? ""}
-                  onChange={(e) => onChange({ [key]: key === "pace" ? e.target.value : (e.target.value ? +e.target.value : null) })}
-                  placeholder="\u2014"
-                  className="mt-1 w-full bg-transparent font-mono text-base text-ink focus:outline-none"
-                />
+                key === "pace" ? (
+                  <input
+                    type="text"
+                    value={(detail[key] as string) ?? ""}
+                    onChange={(e) => onChange({ [key]: e.target.value })}
+                    placeholder="\u2014"
+                    className="mt-1 w-full bg-transparent font-mono text-base text-ink focus:outline-none"
+                  />
+                ) : (
+                  <NumericInput
+                    value={(detail[key] as number | null) ?? null}
+                    onCommit={(v) => onChange({ [key]: v })}
+                    allowDecimal={key === "distance_km"}
+                    placeholder="\u2014"
+                    aria-label={label}
+                    className="mt-1 w-full bg-transparent font-mono text-base text-ink focus:outline-none"
+                  />
+                )
               ) : (
                 <div className="mt-1 text-xl font-semibold italic">
                   {String(detail[key] ?? "\u2014")}
@@ -454,7 +538,12 @@ function CalisthenicsEditor({ detail, editing, onChange }: { detail: Record<stri
                     <span className="font-mono text-[10px] text-ink-faint">{j + 1}</span>
                     <div className="flex items-center gap-1">
                       {editing ? (
-                        <input type="number" value={isHold ? (s.hold_s ?? "") : (s.reps ?? "")} onChange={(e) => { const sets = [...sk.sets]; sets[j] = isHold ? { hold_s: +e.target.value } : { reps: +e.target.value }; updateSkill(i, { ...sk, sets }); }} className="w-full bg-surface rounded border border-border px-2 py-1 font-mono text-xs text-ink focus:outline-none focus:border-accent" />
+                        <NumericInput
+                          value={isHold ? (s.hold_s ?? null) : (s.reps ?? null)}
+                          onCommit={(v) => { const sets = [...sk.sets]; sets[j] = isHold ? { hold_s: v ?? 0 } : { reps: v ?? 0 }; updateSkill(i, { ...sk, sets }); }}
+                          aria-label={`set ${j + 1} ${isHold ? "hold seconds" : "reps"}`}
+                          className="w-full bg-surface rounded border border-border px-2 py-1 font-mono text-xs text-ink focus:outline-none focus:border-accent"
+                        />
                       ) : (
                         <span className="font-mono">{isHold ? `${s.hold_s}s` : `${s.reps} reps`}</span>
                       )}
