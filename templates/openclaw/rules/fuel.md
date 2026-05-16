@@ -71,13 +71,23 @@ When the user says something that sounds like a workout log, log it immediately.
 - **Confirm briefly:** "Logged: Deadlift — 75 kg, 5x3." Don't over-explain.
 - **Session accumulation:** If the user fires off multiple exercises in quick succession, they're logging one session. Each goes as a separate `log_workout` call (the backend groups by date).
 
+### Isometric / hold-time exercises
+
+Planks, side planks, wall sits, hollow holds, L-sits, dead hangs, handstand holds, front/back levers, bridge holds — anything timed rather than counted in reps.
+
+- Use `category: "calisthenics"`, **not** `"strength"`. The UI for `strength` renders reps × weight columns and will mis-display a plank as a weighted-rep exercise.
+- Each set uses `hold_s` (integer seconds), **not** `reps` and **not** `weight`. The runtime takes care of rendering "60s" vs "30 reps" based on whether `hold_s` is present.
+- Example: "60-second plank, three rounds" → `category: "calisthenics"`, `detail_json: {"skills": [{"name": "Plank", "sets": [{"hold_s": 60}, {"hold_s": 60}, {"hold_s": 60}]}]}`
+- Mixed-metric sessions (e.g. push day with weighted exercises *and* planks): log the weighted exercises as one workout under `"strength"`, and the planks as a separate workout under `"calisthenics"`. The backend groups by date.
+
 **Data format rules:**
 - **All numeric fields must be numbers, not strings.** `"reps": 8` not `"reps": "8"` or `"reps": "to failure"`.
 - **`reps`** = integer count of repetitions performed. If unknown, omit the field entirely.
 - **`weight`** = number in kg. Use `0` for bodyweight exercises. If unknown, omit.
+- **`hold_s`** = integer seconds for isometric exercises (planks, holds, wall sits). Use this *instead of* `reps` and `weight`.
 - **`duration_minutes`** = integer. `45` not `"45 minutes"`.
 - **`rpe`** = integer 1-10. Only include if the user mentions it.
-- **`date`** = `YYYY-MM-DD` string. `"2026-04-22"` not `"April 22"`.
+- **`date`** = `YYYY-MM-DD` string, **or** a relative phrase like `"today"`, `"yesterday"`, `"Monday"`, `"3 days ago"`. The runtime resolves relative phrases in the user's timezone — do not pre-resolve in UTC.
 - **`distance_km`** = number. `5.0` not `"5k"`.
 - **`pace`** = string in `"M:SS"` format. `"5:30"` not `"5 min 30 sec"`.
 - **If a value is unknown, omit the field** — don't guess or put text descriptions in numeric fields.
@@ -130,9 +140,12 @@ When the user mentions their weight in any form, log it immediately via
   This rule applies even when the main topic of the message was
   workouts, sleep, or something else entirely — never silently drop a
   measurement the user shared.
-- **Resolve relative dates** from the current date in the platform's
-  `[Now: ...]` header: *today* → that date, *yesterday* → −1 day, *two
-  days ago* → −2 days, *Monday* → the most recent past Monday.
+- **Relative dates: pass through, don't resolve.** Send the phrase the
+  user used — `"today"`, `"yesterday"`, `"Monday"`, `"3 days ago"`, or
+  an ISO date. The runtime resolves it in the user's IANA timezone.
+  Do not compute the date yourself from the `[Now: ...]` header —
+  that header is UTC and will land on the wrong calendar day near
+  midnight in the user's local time.
 - **Units:** the runtime tool takes `weight_kg`. If the user uses lbs,
   convert: `kg = lbs / 2.2046`. Confirm the converted value in the
   reply so they know what was stored.
