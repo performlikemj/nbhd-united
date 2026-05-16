@@ -84,7 +84,12 @@ When the user says something that sounds like a workout log, log it immediately.
 
 ## Updating & Deleting Workouts
 
-The summary includes workout IDs. Use them with `nbhd_fuel_update_workout` and `nbhd_fuel_delete_workout`.
+Workout IDs are available from **either** tool:
+
+- `nbhd_fuel_audit` returns `next_14d_workouts[i].id` for today/upcoming workouts (preferred — usually already in context after a workout question).
+- `nbhd_fuel_summary` returns `recent_workouts[i].id` and `planned_workouts[i].id`.
+
+Use whichever you already have. Do NOT call `nbhd_fuel_summary` just to retrieve an ID when `nbhd_fuel_audit` already has it.
 
 **When to update:**
 - User says "that was actually yesterday" → update the date
@@ -99,7 +104,7 @@ The summary includes workout IDs. Use them with `nbhd_fuel_update_workout` and `
 - Don't suggest deletion unprompted — if the user logged something odd, ask before removing it.
 
 **Finding the right workout:**
-- Call `nbhd_fuel_summary` to see recent and planned workouts with their IDs.
+- If you've already called `nbhd_fuel_audit` (for today/upcoming) or `nbhd_fuel_summary` (for recent past), the IDs are in those responses — use them.
 - Match by date + activity name when the user references a workout informally ("my bench from Monday").
 - If ambiguous (multiple workouts on the same day), ask which one.
 

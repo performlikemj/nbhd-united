@@ -770,7 +770,17 @@ class RuntimeFuelAuditTests(TestCase):
         resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
         self.assertTrue(resp.data["today_plan"]["exists"])
         self.assertIn("Push Day", resp.data["today_plan"]["raw_section"])
-        self.assertIn("locked plan for today", resp.data["guidance"])
+        # Guidance should point the LLM at workout IDs for updates/deletes, not at summary.
+        self.assertIn("next_14d_workouts[i].id", resp.data["guidance"])
+        self.assertIn("nbhd_fuel_update_workout", resp.data["guidance"])
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_no_plan_guidance_mentions_workout_ids(self, mock_invoke):
+        """Even without today_plan, guidance must surface that IDs are inline."""
+        mock_invoke.return_value = {"details": {"jobs": []}}
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        self.assertFalse(resp.data["today_plan"]["exists"])
+        self.assertIn("next_14d_workouts[i].id", resp.data["guidance"])
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
     def test_audit_lists_next_14d_workouts(self, mock_invoke):

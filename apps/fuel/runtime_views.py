@@ -1335,11 +1335,16 @@ def _audit_guidance(today_plan: dict, fuel_crons: list, duplicate_fires: list) -
         )
     if today_plan.get("exists"):
         return (
-            "today_plan.raw_section is the locked plan for today. Deliver THAT plan "
-            "verbatim — do not invent a different one. If the user asks for a different "
-            "workout today, surface the conflict before changing anything."
+            "today_plan.raw_section is the locked plan description for today. Deliver "
+            "THAT plan to the user verbatim — do not invent a different one. To UPDATE "
+            "or DELETE today's workout (e.g. swap an exercise, change weights), find "
+            "the matching workout_id in next_14d_workouts[i].id (match by date) and "
+            "call nbhd_fuel_update_workout or nbhd_fuel_delete_workout directly. "
+            "Workout IDs are already in this response — do NOT call nbhd_fuel_summary "
+            "just to retrieve them."
         )
     return (
         "No locked plan for today. Safe to propose one. Before scheduling, check "
-        "next_14d_workouts so your proposal fits the existing program."
+        "next_14d_workouts so your proposal fits the existing program. Workout IDs "
+        "for any update or delete are in next_14d_workouts[i].id."
     )
