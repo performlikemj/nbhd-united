@@ -13,6 +13,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.llm_contracts import resolve_relative_date, today_in_tenant_tz
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
@@ -111,12 +112,12 @@ class RuntimeLogWorkoutView(APIView):
             except (TypeError, ValueError):
                 rpe = None
 
-        # Validate date
-        workout_date = data.get("date", str(date.today()))
-        try:
-            date.fromisoformat(str(workout_date))
-        except (ValueError, TypeError):
-            workout_date = str(date.today())
+        # Resolve date in the tenant's timezone (handles "today" / "yesterday"
+        # / ISO; falls back to today-in-tenant-tz when uninterpretable).
+        resolved = resolve_relative_date(tenant, data.get("date"))
+        if resolved is None:
+            resolved = today_in_tenant_tz(tenant)
+        workout_date = str(resolved)
 
         # Validate activity is a non-empty string
         activity = str(data.get("activity") or WorkoutCategory(category).label).strip()
@@ -631,16 +632,16 @@ class RuntimeBodyWeightView(APIView):
         tenant = tenant_or_resp
 
         data = request.data
-        weight_date = data.get("date", str(date.today()))
+        # Resolve date in the tenant's timezone so a morning entry doesn't
+        # land on yesterday when the server's UTC clock has already rolled
+        # over (Bug #3 from the 2026-05-16 video session).
+        resolved = resolve_relative_date(tenant, data.get("date"))
+        if resolved is None:
+            resolved = today_in_tenant_tz(tenant)
+        weight_date = str(resolved)
         weight_val = data.get("weight_kg")
         if weight_val is None:
             return Response({"error": "weight_kg is required"}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Validate date
-        try:
-            date.fromisoformat(str(weight_date))
-        except (ValueError, TypeError):
-            weight_date = str(date.today())
 
         try:
             weight_kg = Decimal(str(weight_val))
@@ -705,15 +706,14 @@ class RuntimeSleepView(APIView):
         from .models import SleepLog
 
         data = request.data
-        sleep_date = data.get("date", str(date.today()))
+        # Same tz-aware resolution as body weight and workout endpoints.
+        resolved = resolve_relative_date(tenant, data.get("date"))
+        if resolved is None:
+            resolved = today_in_tenant_tz(tenant)
+        sleep_date = str(resolved)
         duration_val = data.get("duration_hours")
         if duration_val is None:
             return Response({"error": "duration_hours is required"}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            date.fromisoformat(str(sleep_date))
-        except (ValueError, TypeError):
-            sleep_date = str(date.today())
 
         try:
             duration = Decimal(str(duration_val))

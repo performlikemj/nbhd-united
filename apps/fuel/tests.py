@@ -621,6 +621,53 @@ class RuntimeFuelViewTests(TestCase):
         self.assertEqual(resp.status_code, 201)
         self.assertIn("82.5", resp.data["weight_kg"])
 
+    def test_log_body_weight_default_date_uses_tenant_timezone(self):
+        """Bug #3 regression: an early-morning Eastern entry lands today, not yesterday.
+
+        Without a tz-aware default, a 6 AM EDT log on May 16 = 10 AM UTC
+        May 16 would store May 16 — fine. But a 9 PM EDT log on May 16 =
+        1 AM UTC May 17 would store May 17 (UTC's "today") instead of
+        May 16 (the user's). We freeze time at the boundary case to
+        prove the server consults the tenant's tz.
+        """
+        from datetime import UTC, datetime
+        from unittest.mock import patch
+
+        # Tenant user is in America/New_York.
+        self.tenant.user.timezone = "America/New_York"
+        self.tenant.user.save(update_fields=["timezone"])
+
+        # 2026-05-17 03:00 UTC = 2026-05-16 23:00 EDT. Eastern is still on May 16.
+        frozen = datetime(2026, 5, 17, 3, 0, 0, tzinfo=UTC)
+        with patch("apps.common.llm_contracts.dj_tz.now", return_value=frozen):
+            resp = self.client.post(
+                f"/api/v1/fuel/runtime/{self.tenant.id}/body-weight/",
+                {"weight_kg": "82.5"},  # No date — should default to today-in-tenant-tz.
+                format="json",
+                **self.headers,
+            )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["date"], "2026-05-16")
+
+    def test_log_body_weight_accepts_relative_phrase(self):
+        """The new contract: 'today' / 'yesterday' / weekday phrases resolve server-side."""
+        from datetime import UTC, datetime
+        from unittest.mock import patch
+
+        self.tenant.user.timezone = "America/New_York"
+        self.tenant.user.save(update_fields=["timezone"])
+
+        frozen = datetime(2026, 5, 17, 14, 0, 0, tzinfo=UTC)  # 10am EDT May 17.
+        with patch("apps.common.llm_contracts.dj_tz.now", return_value=frozen):
+            resp = self.client.post(
+                f"/api/v1/fuel/runtime/{self.tenant.id}/body-weight/",
+                {"date": "yesterday", "weight_kg": "82.5"},
+                format="json",
+                **self.headers,
+            )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["date"], "2026-05-16")
+
     def test_tenant_isolation_runtime(self):
         other = create_tenant(display_name="Other", telegram_chat_id=800099)
         Workout.objects.create(
