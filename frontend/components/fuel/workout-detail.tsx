@@ -249,17 +249,19 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
 
           {/* Action bar */}
           <div className="flex flex-col sm:flex-row gap-2 pt-4 border-t border-border">
+            {draft.status !== "done" && (
+              <button
+                onClick={markComplete}
+                disabled={updateMutation.isPending}
+                className="flex-1 rounded-full bg-emerald-bg text-emerald-text border border-emerald-border font-medium min-h-[44px] py-2.5 text-sm hover:opacity-90 transition disabled:opacity-50"
+              >
+                Mark complete
+              </button>
+            )}
             {editing ? (
-              <>
-                {draft.status === "planned" && (
-                  <button onClick={markComplete} className="flex-1 rounded-full bg-emerald-bg text-emerald-text border border-emerald-border font-medium min-h-[44px] py-2.5 text-sm hover:opacity-90 transition">
-                    Mark complete
-                  </button>
-                )}
-                <button onClick={save} disabled={updateMutation.isPending} className="flex-1 glow-purple rounded-full bg-accent text-white font-semibold min-h-[44px] py-2.5 text-sm hover:brightness-110 active:scale-[0.98] transition disabled:opacity-50">
-                  {updateMutation.isPending ? "Saving\u2026" : draft.status === "planned" ? "Save plan" : "Save changes"}
-                </button>
-              </>
+              <button onClick={save} disabled={updateMutation.isPending} className="flex-1 glow-purple rounded-full bg-accent text-white font-semibold min-h-[44px] py-2.5 text-sm hover:brightness-110 active:scale-[0.98] transition disabled:opacity-50">
+                {updateMutation.isPending ? "Saving\u2026" : draft.status === "planned" ? "Save plan" : "Save changes"}
+              </button>
             ) : (
               <>
                 <button onClick={() => setEditing(true)} className="flex-1 rounded-full bg-surface-elevated hover:bg-surface-hover border border-border text-ink font-medium min-h-[44px] py-2.5 text-sm transition">
