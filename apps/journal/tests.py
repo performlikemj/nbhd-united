@@ -1154,6 +1154,97 @@ class RuntimeDocumentAPITest(TestCase):
         )
         self.assertEqual(resp.status_code, 400)
 
+    # ── Path-component validation (path-injection guard) ────────────────
+    # The agent supplies `kind` and `slug` strings that flow into the
+    # `journal_document` table AND into Azure SMB paths via memory_sync.
+    # Reject NTFS-hostile values at the endpoint so the file share never
+    # sees them. The two production-incident shapes regressed here:
+    #   • kind=":" slug=":"     → memory/journal/:/:.md (NTFS reserves :)
+    #   • kind="cron" slug="_sync:Heartbeat Check-in"  → non-enum kind +
+    #     colon in slug, written by a misrouted Phase 2 sync.
+
+    def test_put_rejects_colon_kind_and_slug(self):
+        resp = self.client.put(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+            {"kind": ":", "slug": ":", "markdown": ""},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "invalid_kind")
+
+    def test_put_rejects_non_enum_kind(self):
+        resp = self.client.put(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+            {"kind": "cron", "slug": "_sync:Heartbeat Check-in", "markdown": ""},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "invalid_kind")
+
+    def test_put_rejects_slug_with_colon(self):
+        resp = self.client.put(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+            {"kind": "memory", "slug": "evil:name", "markdown": ""},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "invalid_slug")
+
+    def test_put_rejects_dotdot_segment(self):
+        resp = self.client.put(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+            {"kind": "memory", "slug": "memo/../escape", "markdown": ""},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "invalid_slug")
+
+    def test_put_rejects_leading_slash(self):
+        resp = self.client.put(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+            {"kind": "memory", "slug": "/absolute", "markdown": ""},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "invalid_slug")
+
+    def test_put_accepts_legitimate_dated_slug(self):
+        # Regression: the runtime regex must allow `.` so ISO dates like
+        # `2026-05-15` are valid (they aren't path-hostile).
+        resp = self.client.put(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+            {"kind": "memory", "slug": "week-ahead/2026-05-15", "markdown": "ok"},
+            format="json",
+            **self.headers,
+        )
+        self.assertIn(resp.status_code, [200, 201])
+        self.assertEqual(resp.data["slug"], "week-ahead/2026-05-15")
+
+    def test_get_rejects_non_enum_kind(self):
+        # Auto-create on GET previously seeded rows with any kind. Closed.
+        resp = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+            {"kind": "cron", "slug": "anything"},
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "invalid_kind")
+
+    def test_append_rejects_colon_slug(self):
+        resp = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/append/",
+            {"kind": "memory", "slug": "bad:slug", "content": "x"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "invalid_slug")
+
 
 # ═════════════════════════════════════════════════════════════════════
 # Document post_save signal — async behavior in production
@@ -1205,7 +1296,17 @@ class DocumentSaveSignalAsyncTest(TestCase):
                 if (target := c.kwargs.get("target")) is not None and target.__name__ == "_publish"
             ]
             self.assertEqual(qstash_thread_calls, [])
-            mock_publish.assert_called_once_with("sync_documents_to_workspace", str(self.tenant.id))
+            mock_publish.assert_called_once()
+            args, kwargs = mock_publish.call_args
+            self.assertEqual(args, ("sync_documents_to_workspace", str(self.tenant.id)))
+            # Bucketed idempotency_key collapses bursty Document saves into one
+            # delivery per tenant per minute on the QStash side.
+            self.assertIn("idempotency_key", kwargs)
+            self.assertTrue(
+                kwargs["idempotency_key"].startswith(
+                    f"sync_documents_to_workspace:{self.tenant.id}:",
+                ),
+            )
 
     @override_settings(QSTASH_TOKEN="t_abc", API_BASE_URL="https://example.com")
     def test_threaded_publish_when_qstash_configured(self):

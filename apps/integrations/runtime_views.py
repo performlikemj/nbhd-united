@@ -1235,6 +1235,8 @@ class RuntimeDocumentView(APIView):
     authentication_classes = []
 
     def get(self, request, tenant_id):
+        from apps.journal.path_validation import validate_kind_slug
+
         auth_failure = _internal_auth_or_401(request, tenant_id)
         if auth_failure is not None:
             return auth_failure
@@ -1255,7 +1257,7 @@ class RuntimeDocumentView(APIView):
             # For singleton docs, use kind as slug
             slug = kind
 
-        # Validate daily slugs must be valid dates
+        # Validate daily slugs must be valid dates (stricter than the general rule)
         if kind == "daily":
             if not re.match(r"^\d{4}-\d{2}-\d{2}$", slug):
                 return Response(
@@ -1265,6 +1267,16 @@ class RuntimeDocumentView(APIView):
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+
+        # General path-component validation — closes the auto-create-on-get path
+        # that previously seeded rows with NTFS-hostile kind/slug values.
+        validation_error = validate_kind_slug(kind, slug)
+        if validation_error is not None:
+            error_code, detail = validation_error
+            return Response(
+                {"error": error_code, "detail": detail},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         doc, _created = Document.objects.get_or_create(
             tenant=tenant,
@@ -1290,6 +1302,8 @@ class RuntimeDocumentView(APIView):
         )
 
     def put(self, request, tenant_id):
+        from apps.journal.path_validation import validate_kind_slug
+
         auth_failure = _internal_auth_or_401(request, tenant_id)
         if auth_failure is not None:
             return auth_failure
@@ -1310,6 +1324,14 @@ class RuntimeDocumentView(APIView):
             )
         if not slug:
             slug = kind
+
+        validation_error = validate_kind_slug(kind, slug)
+        if validation_error is not None:
+            error_code, detail = validation_error
+            return Response(
+                {"error": error_code, "detail": detail},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         doc, created = Document.objects.get_or_create(
             tenant=tenant,
@@ -1629,6 +1651,8 @@ class RuntimeDocumentAppendView(APIView):
     authentication_classes = []
 
     def post(self, request, tenant_id):
+        from apps.journal.path_validation import validate_kind_slug
+
         auth_failure = _internal_auth_or_401(request, tenant_id)
         if auth_failure is not None:
             return auth_failure
@@ -1651,6 +1675,14 @@ class RuntimeDocumentAppendView(APIView):
                 slug = str(_tenant_today(tenant))
             else:
                 slug = kind
+
+        validation_error = validate_kind_slug(kind, slug)
+        if validation_error is not None:
+            error_code, detail = validation_error
+            return Response(
+                {"error": error_code, "detail": detail},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         doc, _created = Document.objects.get_or_create(
             tenant=tenant,

@@ -43,12 +43,27 @@ def render_memory_files(tenant) -> dict[str, str]:
         .order_by("kind", "slug")
     )
 
+    from apps.journal.path_validation import validate_kind_slug
     from apps.pii.redactor import RedactionSession
 
     session = RedactionSession(tenant=tenant)
 
     files: dict[str, str] = {}
     for doc in documents:
+        # Defense-in-depth: skip rows whose kind/slug would produce an
+        # NTFS-hostile SMB path (``:``, ``..``, empty, out-of-enum kind, etc.).
+        # The runtime endpoint enforces this at the trust boundary, but a
+        # direct DB write or a pre-validation row from before the guard
+        # landed could still grind the sync against bad path components.
+        if validate_kind_slug(doc.kind, doc.slug or "") is not None:
+            logger.warning(
+                "memory_sync: skipping doc with invalid path components tenant=%s id=%s kind=%r slug=%r",
+                tenant.id,
+                doc.id,
+                doc.kind,
+                doc.slug,
+            )
+            continue
         path = f"memory/journal/{doc.kind}/{doc.slug}.md"
         content = f"# {doc.title}\n\n{doc.markdown}"
         content = session.redact(content)

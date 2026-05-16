@@ -96,3 +96,54 @@ class RenderMemoryFilesTest(TestCase):
 
         self.assertEqual(len(files), 1)
         self.assertIn("memory/journal/memory/mine.md", files)
+
+    def test_skips_docs_with_ntfs_hostile_path_components(self):
+        """Defense-in-depth: even if a doc with a path-hostile kind/slug
+        somehow lands in the DB (direct write, pre-validation legacy row),
+        render_memory_files must skip it rather than build an NTFS-hostile
+        path that grinds the SMB sync.
+
+        Regression: a ``kind=':' slug=':'`` row on the canary tenant produced
+        ``memory/journal/:/:.md`` and made ~6 failed SMB roundtrips per
+        sync invocation. See migration 0017.
+        """
+        Document.objects.filter(tenant=self.tenant).delete()
+        # Bypass field-choice validation via direct bulk_create (the model
+        # has `choices=` but Django doesn't enforce it at the DB layer).
+        Document.objects.bulk_create(
+            [
+                Document(
+                    tenant=self.tenant,
+                    kind=":",
+                    slug=":",
+                    title="garbage",
+                    markdown="",
+                ),
+                Document(
+                    tenant=self.tenant,
+                    kind="cron",
+                    slug="_sync:Heartbeat Check-in",
+                    title="misrouted sync",
+                    markdown="content",
+                ),
+                Document(
+                    tenant=self.tenant,
+                    kind="memory",
+                    slug="valid-slug",
+                    title="ok",
+                    markdown="kept",
+                ),
+            ]
+        )
+
+        files = render_memory_files(self.tenant)
+
+        # Only the valid row produces a file.
+        self.assertEqual(len(files), 1)
+        self.assertIn("memory/journal/memory/valid-slug.md", files)
+        # Hostile paths are NOT in the output.
+        self.assertNotIn("memory/journal/:/:.md", files)
+        self.assertNotIn(
+            "memory/journal/cron/_sync:Heartbeat Check-in.md",
+            files,
+        )
