@@ -56,6 +56,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "config.middleware.RequestTimingMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
@@ -146,6 +147,10 @@ CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
 from corsheaders.defaults import default_headers  # noqa: E402
 
 CORS_ALLOW_HEADERS = (*default_headers,)
+# Cache CORS preflight (OPTIONS) responses for a day so authenticated browser
+# requests don't pay the preflight round-trip on every call. Frontend is on a
+# separate origin (Azure SWA → Container App), so preflights happen often.
+CORS_PREFLIGHT_MAX_AGE = 86400
 
 # QStash (replaces Celery — scheduled & on-demand tasks via webhooks)
 QSTASH_CURRENT_SIGNING_KEY = env("QSTASH_CURRENT_SIGNING_KEY", default="")

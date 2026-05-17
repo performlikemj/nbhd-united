@@ -9,6 +9,7 @@ from uuid import UUID
 from django.http import Http404
 from django.utils import timezone
 from rest_framework import status
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -107,8 +108,10 @@ class JournalEntryListCreateView(APIView):
             except ValueError:
                 pass
 
-        serializer = JournalEntrySerializer(queryset, many=True)
-        return Response(serializer.data)
+        paginator = PageNumberPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        serializer = JournalEntrySerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
     def post(self, request):
         tenant = _get_tenant_for_user(request.user)

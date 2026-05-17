@@ -16,7 +16,6 @@ from apps.billing.models import UsageRecord
 from apps.insights.models import AssistantInsight
 from apps.integrations.models import Integration
 from apps.journal.models import Document, JournalEntry, PendingExtraction, WeeklyReview
-from apps.orchestrator.services import check_tenant_health
 from apps.tenants.models import Tenant
 
 _WEEKLY_SLUG_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
@@ -121,9 +120,6 @@ class DashboardView(APIView):
             ).values("provider", "provider_email", "connected_at")
         )
 
-        # Health check
-        health = check_tenant_health(str(tenant.id))
-
         return Response(
             {
                 "tenant": {
@@ -143,7 +139,6 @@ class DashboardView(APIView):
                     "total_cost": str(usage["total_cost"] or 0),
                 },
                 "connections": connections,
-                "health": health,
             }
         )
 

@@ -256,7 +256,8 @@ class WorkoutListView(APIView):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
-        qs = Workout.objects.filter(tenant=tenant)
+        # select_related("plan") avoids N+1 on WorkoutSerializer.plan_id/plan_name.
+        qs = Workout.objects.filter(tenant=tenant).select_related("plan")
 
         # Optional filters
         cat = request.query_params.get("category")
@@ -284,7 +285,7 @@ class WorkoutListView(APIView):
             qs = qs.filter(date__lte=date_to)
 
         limit = min(_safe_int(request.query_params.get("limit"), 100), 500)
-        qs = qs[:limit]
+        qs = qs.order_by("-date", "-id")[:limit]
         serializer = WorkoutSerializer(qs, many=True)
         return Response(serializer.data)
 
@@ -796,7 +797,7 @@ class PRFeedView(APIView):
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
         limit = min(_safe_int(request.query_params.get("limit"), 20), 100)
-        prs = PersonalRecord.objects.filter(tenant=tenant)[:limit]
+        prs = PersonalRecord.objects.filter(tenant=tenant).order_by("-date", "-created_at")[:limit]
         return Response(PersonalRecordSerializer(prs, many=True).data)
 
 
