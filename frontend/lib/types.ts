@@ -160,7 +160,6 @@ export interface DashboardData {
     provider_email: string;
     connected_at: string;
   }>;
-  health: Record<string, unknown>;
 }
 
 export interface UsageRecord {
