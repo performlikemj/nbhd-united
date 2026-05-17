@@ -10,6 +10,12 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
   web:
     build: .
     command: python manage.py runserver 0.0.0.0:8000
@@ -19,11 +25,13 @@ services:
       - "8000:8000"
     depends_on:
       - postgres
+      - redis
     env_file:
       - .env
     environment:
       - DJANGO_SETTINGS_MODULE=config.settings.development
       - DATABASE_URL=postgres://nbhd:nbhd@postgres:5432/nbhd_united
+      - REDIS_URL=redis://redis:6379/0
       - AZURE_MOCK=true
 
 volumes:
