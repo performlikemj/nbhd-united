@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Lesson } from "@/lib/types";
-import { approveLesson, dismissLesson, fetchPendingLessons } from "@/lib/api";
+import { useApproveLessonMutation, useDismissLessonMutation, usePendingLessonsQuery } from "@/lib/queries";
 
 function formatDate(dateString: string): string {
   const date = new Date(dateString);
@@ -13,50 +13,28 @@ function formatDate(dateString: string): string {
 }
 
 export default function PendingLessonQueuePage() {
-  const [items, setItems] = useState<Lesson[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data: items = [], isLoading, error: queryError } = usePendingLessonsQuery();
+  const approveMutation = useApproveLessonMutation();
+  const dismissMutation = useDismissLessonMutation();
   const [error, setError] = useState("");
   const [processing, setProcessing] = useState<number | null>(null);
   const [removingIds, setRemovingIds] = useState<number[]>([]);
 
+  const loading = isLoading;
   const totalCount = items.length;
-
-  useEffect(() => {
-    let mounted = true;
-
-    async function load() {
-      try {
-        const data = await fetchPendingLessons();
-        if (mounted) {
-          setItems(data);
-        }
-      } catch (e) {
-        if (mounted) {
-          setError(e instanceof Error ? e.message : "Failed to load pending lessons.");
-        }
-      } finally {
-        if (mounted) {
-          setLoading(false);
-        }
-      }
-    }
-
-    load();
-
-    return () => {
-      mounted = false;
-    };
-  }, []);
+  const liveError = error || (queryError instanceof Error ? queryError.message : queryError ? "Failed to load pending lessons." : "");
 
   const sortedItems = useMemo(
     () => [...items].sort((a, b) => new Date(b.suggested_at).getTime() - new Date(a.suggested_at).getTime()),
     [items],
   );
 
-  const removeFromList = (id: number) => {
+  // 220ms removal animation: tag the id so the card fades out, then let
+  // the mutation's onSuccess invalidate ["pending-lessons"] which refetches
+  // the list without the approved/dismissed entry.
+  const animateRemoval = (id: number) => {
     setRemovingIds((current) => [...current, id]);
     window.setTimeout(() => {
-      setItems((current) => current.filter((item) => item.id !== id));
       setRemovingIds((current) => current.filter((itemId) => itemId !== id));
     }, 220);
   };
@@ -64,8 +42,8 @@ export default function PendingLessonQueuePage() {
   const handleApprove = async (lesson: Lesson) => {
     try {
       setProcessing(lesson.id);
-      await approveLesson(lesson.id);
-      removeFromList(lesson.id);
+      animateRemoval(lesson.id);
+      await approveMutation.mutateAsync(lesson.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to approve lesson.");
     } finally {
@@ -76,8 +54,8 @@ export default function PendingLessonQueuePage() {
   const handleDismiss = async (lesson: Lesson) => {
     try {
       setProcessing(lesson.id);
-      await dismissLesson(lesson.id);
-      removeFromList(lesson.id);
+      animateRemoval(lesson.id);
+      await dismissMutation.mutateAsync(lesson.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to dismiss lesson.");
     } finally {
@@ -104,7 +82,7 @@ export default function PendingLessonQueuePage() {
         </Link>
       </div>
 
-      {error ? <div className="rounded-panel border border-rose-border bg-rose-bg px-3 py-2 text-sm text-rose-text">{error}</div> : null}
+      {liveError ? <div className="rounded-panel border border-rose-border bg-rose-bg px-3 py-2 text-sm text-rose-text">{liveError}</div> : null}
 
       {totalCount === 0 ? (
         <div className="rounded-panel border border-border bg-surface p-4 text-sm text-ink-muted">No pending lessons right now.</div>

@@ -1,11 +1,29 @@
 "use client";
 
 import clsx from "clsx";
+import dynamic from "next/dynamic";
 import { type MouseEvent, type TouchEvent as ReactTouchEvent, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
-import { MarkdownEditor, EditorToolbar } from "@/components/journal/markdown-editor";
 import { type Editor } from "@tiptap/react";
+
+// TipTap is ~150KB gzipped — lazy-load so /journal paints before the editor
+// hydrates. callback-ref pattern (`onEditorReady`) survives the dynamic import.
+const MarkdownEditor = dynamic(
+  () => import("@/components/journal/markdown-editor").then((m) => m.MarkdownEditor),
+  {
+    ssr: false,
+    loading: () => <div className="min-h-[50vh] animate-pulse rounded-panel bg-surface" />,
+  },
+);
+
+const EditorToolbar = dynamic(
+  () => import("@/components/journal/markdown-editor").then((m) => m.EditorToolbar),
+  {
+    ssr: false,
+    loading: () => <div className="h-10 animate-pulse rounded-panel bg-surface" />,
+  },
+);
 import { MarkdownHelpSheet } from "@/components/journal/markdown-help-sheet";
 import { QuickLogInput } from "@/components/journal/quick-log-input";
 import { EmptyState } from "@/components/journal/empty-state";
