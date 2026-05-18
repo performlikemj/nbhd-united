@@ -6,6 +6,7 @@ which this endpoint executes synchronously. This eliminates the need for
 Celery workers polling Redis continuously.
 """
 
+import inspect
 import json
 import logging
 import traceback
@@ -42,6 +43,26 @@ def execute_task_sync(task_path: str, *args, **kwargs):
     module = import_module(module_path)
     func = getattr(module, func_name)
     return func(*args, **kwargs)
+
+
+def _validate_task_signature(task_path: str, args: list, kwargs: dict) -> str | None:
+    """Return None if ``(args, kwargs)`` binds to ``task_path``'s function signature.
+
+    Returns a human-readable error string otherwise. Lets ``ImportError`` /
+    ``AttributeError`` propagate — those mean the TASK_MAP entry itself is
+    wrong (programmer bug), which the caller should surface as a 500.
+
+    Used by ``trigger_task`` to convert "QStash gave us a bad message" from
+    an opaque 500 (which QStash retries 3x) into a clear 400 (which it
+    parks in DLQ immediately). See issue #557.
+    """
+    module_path, func_name = task_path.rsplit(".", 1)
+    func = getattr(import_module(module_path), func_name)
+    try:
+        inspect.signature(func).bind(*args, **kwargs)
+    except TypeError as exc:
+        return str(exc)
+    return None
 
 
 # Map of URL-safe task names to task module paths.
@@ -173,6 +194,55 @@ def trigger_task(request, task_name):
         except (json.JSONDecodeError, AttributeError):
             pass
 
+    # Coerce malformed shapes (args not a list, kwargs not a dict) into the
+    # empty defaults so the signature check below produces a clean
+    # "missing required argument" error rather than an opaque TypeError
+    # from unpacking. Examples: ``{"args": null}``, ``{"args": 42}``,
+    # ``{"kwargs": "string"}`` — all real shapes QStash can deliver if a
+    # publisher serializes weirdly (see #557 + the publish_json vs
+    # publish-as-string MCP gotcha).
+    if not isinstance(task_args, list):
+        task_args = []
+    if not isinstance(task_kwargs, dict):
+        task_kwargs = {}
+
+    # Validate args against the task signature before we attempt to execute.
+    # QStash retries 5xx three times; a bad-args message can never succeed,
+    # so we return 400 instead — parks the message in DLQ on first delivery
+    # and stops the retry storm. See issue #557.
+    try:
+        arg_error = _validate_task_signature(task_path, task_args, task_kwargs)
+    except (ImportError, AttributeError) as exc:
+        logger.error("[%s] Cannot resolve task %s: %s", execution_id, task_name, exc)
+        return JsonResponse(
+            {
+                "status": "error",
+                "task_name": task_name,
+                "execution_id": execution_id,
+                "error": f"Task resolution failed: {exc}",
+            },
+            status=500,
+        )
+
+    if arg_error:
+        logger.warning(
+            "[%s] Bad args for %s: %s (args=%s kwargs=%s)",
+            execution_id,
+            task_name,
+            arg_error,
+            task_args,
+            list(task_kwargs.keys()),
+        )
+        return JsonResponse(
+            {
+                "status": "error",
+                "task_name": task_name,
+                "execution_id": execution_id,
+                "error": f"Invalid task arguments: {arg_error}",
+            },
+            status=400,
+        )
+
     try:
         logger.info("[%s] QStash executing task %s -> %s", execution_id, task_name, task_path)
         result = execute_task_sync(task_path, *task_args, **task_kwargs)
@@ -233,6 +303,45 @@ def trigger_task_debug(request, task_name):
             task_kwargs = body.get("kwargs", {})
         except (json.JSONDecodeError, AttributeError):
             pass
+
+    if not isinstance(task_args, list):
+        task_args = []
+    if not isinstance(task_kwargs, dict):
+        task_kwargs = {}
+
+    # Same boundary-validation contract as ``trigger_task`` — see #557.
+    try:
+        arg_error = _validate_task_signature(task_path, task_args, task_kwargs)
+    except (ImportError, AttributeError) as exc:
+        logger.error("[%s] DEBUG cannot resolve task %s: %s", execution_id, task_name, exc)
+        return JsonResponse(
+            {
+                "status": "error",
+                "task_name": task_name,
+                "execution_id": execution_id,
+                "error": f"Task resolution failed: {exc}",
+            },
+            status=500,
+        )
+
+    if arg_error:
+        logger.warning(
+            "[%s] DEBUG bad args for %s: %s (args=%s kwargs=%s)",
+            execution_id,
+            task_name,
+            arg_error,
+            task_args,
+            list(task_kwargs.keys()),
+        )
+        return JsonResponse(
+            {
+                "status": "error",
+                "task_name": task_name,
+                "execution_id": execution_id,
+                "error": f"Invalid task arguments: {arg_error}",
+            },
+            status=400,
+        )
 
     try:
         logger.info("[%s] DEBUG executing task %s -> %s", execution_id, task_name, task_path)
