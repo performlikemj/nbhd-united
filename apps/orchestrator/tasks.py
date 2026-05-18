@@ -91,6 +91,45 @@ def hibernate_suspended_task() -> dict:
     return {"hibernated": hibernated, "failed": failed, "total": tenants.count()}
 
 
+def resume_tenant_crons_task(tenant_id: str) -> dict:
+    """Re-enable a reactivated tenant's crons after the container has woken.
+
+    Enqueued (delayed ~30s) by ``handle_checkout_completed`` so the freshly
+    woken container's gateway has time to boot before we hit
+    ``cron.list`` / ``cron.update``. QStash retries handle any residual
+    cold-start. Running this synchronously from the Stripe webhook was the
+    original shape of issue #540 — the gateway is reliably not ready
+    inside the webhook's ~10s budget.
+
+    Idempotent: ``resume_tenant_crons`` only flips crons where
+    ``enabled=False`` to ``True``, so duplicate QStash deliveries
+    (signature retries, reactivation re-fire) are no-ops on the second
+    call.
+    """
+    import logging
+
+    from apps.cron.suspension import resume_tenant_crons
+    from apps.tenants.models import Tenant
+
+    logger = logging.getLogger(__name__)
+
+    tenant = Tenant.objects.filter(id=tenant_id).first()
+    if not tenant:
+        return {"enabled": 0, "already_enabled": 0, "errors": 0, "job_names": []}
+    if not tenant.container_fqdn:
+        return {"enabled": 0, "already_enabled": 0, "errors": 0, "job_names": []}
+
+    result = resume_tenant_crons(tenant)
+    logger.info(
+        "resume_tenant_crons_task: tenant %s — enabled=%d already_enabled=%d errors=%d",
+        str(tenant_id)[:8],
+        result.get("enabled", 0),
+        result.get("already_enabled", 0),
+        result.get("errors", 0),
+    )
+    return result
+
+
 def apply_single_tenant_config_task(tenant_id: str, _is_followup_retry: bool = False) -> None:
     """Apply pending config for a single tenant (enqueued by apply-pending-configs).
 
