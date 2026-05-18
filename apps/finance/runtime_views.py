@@ -7,6 +7,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
+from django.db import transaction as db_transaction
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -201,29 +202,76 @@ class RuntimeFinanceTransactionsView(APIView):
         else:
             txn_date = date.today()
 
-        transaction = FinanceTransaction.objects.create(
-            tenant=tenant,
-            account=account,
-            transaction_type=txn_type,
-            amount=amount,
-            description=(body.get("description") or "")[:256],
-            date=txn_date,
-        )
+        description = (body.get("description") or "")[:256]
 
-        # Update account balance
-        if txn_type in ("payment", "refund"):
-            account.current_balance = max(Decimal("0"), account.current_balance - amount)
-        elif txn_type in ("charge", "interest"):
-            account.current_balance += amount
-        account.save(update_fields=["current_balance", "updated_at"])
+        # Dedup guard: same (tenant, account, type, amount, date) on the books
+        # is treated as the agent re-recording a payment after a silent timeout
+        # or hallucinated retry. We return the existing row instead of inserting
+        # a second one — without this, repeated agent retries (see 2026-05-07
+        # → 2026-05-15 platform_issue_logs) silently double- and triple-debit
+        # account balances. select_for_update on the account row serialises
+        # concurrent writes per account.
+        with db_transaction.atomic():
+            locked_account = FinanceAccount.objects.select_for_update().get(pk=account.pk)
+            existing = (
+                FinanceTransaction.objects.filter(
+                    tenant=tenant,
+                    account=locked_account,
+                    transaction_type=txn_type,
+                    amount=amount,
+                    date=txn_date,
+                )
+                .order_by("created_at")
+                .first()
+            )
+
+            if existing is not None:
+                logger.info(
+                    "finance.dedup_hit tenant=%s account=%s amount=%s date=%s type=%s existing_id=%s",
+                    str(tenant.id)[:8],
+                    locked_account.nickname,
+                    amount,
+                    txn_date,
+                    txn_type,
+                    existing.id,
+                )
+                return Response(
+                    {
+                        "transaction_id": str(existing.id),
+                        "account_nickname": locked_account.nickname,
+                        "new_balance": str(locked_account.current_balance.quantize(Decimal("0.01"))),
+                        "transaction_type": existing.transaction_type,
+                        "amount": str(existing.amount),
+                        "duplicate": True,
+                        "existing_description": existing.description,
+                        "existing_recorded_at": existing.created_at.isoformat(),
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            txn_row = FinanceTransaction.objects.create(
+                tenant=tenant,
+                account=locked_account,
+                transaction_type=txn_type,
+                amount=amount,
+                description=description,
+                date=txn_date,
+            )
+
+            if txn_type in ("payment", "refund"):
+                locked_account.current_balance = max(Decimal("0"), locked_account.current_balance - amount)
+            elif txn_type in ("charge", "interest"):
+                locked_account.current_balance += amount
+            locked_account.save(update_fields=["current_balance", "updated_at"])
 
         return Response(
             {
-                "transaction_id": str(transaction.id),
-                "account_nickname": account.nickname,
-                "new_balance": str(account.current_balance.quantize(Decimal("0.01"))),
+                "transaction_id": str(txn_row.id),
+                "account_nickname": locked_account.nickname,
+                "new_balance": str(locked_account.current_balance.quantize(Decimal("0.01"))),
                 "transaction_type": txn_type,
                 "amount": str(amount),
+                "duplicate": False,
             },
             status=status.HTTP_201_CREATED,
         )
