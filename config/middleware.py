@@ -47,12 +47,14 @@ class RequestTimingMiddleware:
             response = self.get_response(request)
         total_ms = int((time.perf_counter() - start) * 1000)
 
+        cache_state = response.get("X-Cache", "-") if hasattr(response, "get") else "-"
         logger.info(
-            "PERF %s %s status=%d total_ms=%d db_queries=%d",
+            "PERF %s %s status=%d total_ms=%d db_queries=%d cache=%s",
             request.method,
             path,
             response.status_code,
             total_ms,
             counter["n"],
+            cache_state,
         )
         return response

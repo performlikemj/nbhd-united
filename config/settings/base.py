@@ -172,11 +172,22 @@ REDIS_URL = env("REDIS_URL", default="")
 # Cache — use Redis when available (shared across workers & container revisions),
 # fall back to in-process memory for local dev without Redis.
 #
-# Upstash closes idle connections after ~30s. Without health checks / retries /
-# keepalive, the next request after an idle period gets a `Connection closed
-# by server` ConnectionError. The decorator catches those, but we also want
-# the pool to self-heal so most requests don't even see the blip.
+# Upstash closes idle connections after ~30s. Two-layer protection:
+#   1. `health_check_interval=25s` so the pool pre-pings before the idle close.
+#   2. `Retry` on `ConnectionError`/`TimeoutError` so when (1) misses — e.g. a
+#      burst of parallel requests all reach for stale connections at once —
+#      redis-py transparently retries on a fresh connection instead of raising.
+# If both fail, `IGNORE_EXCEPTIONS=True` + the decorator's BYPASS path keep
+# user-facing 500s off the table.
 if REDIS_URL:
+    from redis.backoff import ExponentialBackoff  # noqa: E402
+    from redis.exceptions import ConnectionError as _RedisConnectionError  # noqa: E402
+    from redis.exceptions import TimeoutError as _RedisTimeoutError  # noqa: E402
+    from redis.retry import Retry  # noqa: E402
+
+    _REDIS_RETRY = Retry(ExponentialBackoff(cap=1, base=0.05), retries=2)
+    _REDIS_RETRY_ERRORS = [_RedisConnectionError, _RedisTimeoutError]
+
     CACHES = {
         "default": {
             "BACKEND": "django_redis.cache.RedisCache",
@@ -189,6 +200,8 @@ if REDIS_URL:
                 "CONNECTION_POOL_KWARGS": {
                     "max_connections": 20,
                     "retry_on_timeout": True,
+                    "retry_on_error": _REDIS_RETRY_ERRORS,
+                    "retry": _REDIS_RETRY,
                     "socket_keepalive": True,
                     "health_check_interval": 25,
                 },
