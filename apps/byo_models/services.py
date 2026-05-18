@@ -210,12 +210,11 @@ def regenerate_tenant_config(tenant: Tenant) -> None:
     share and advance `config_version` so the apply-pending-configs cron
     doesn't re-process this transition.
 
-    Mirrors `apps.orchestrator.tasks.apply_single_tenant_config_task`
-    minus the `gateway.reload` hot-reload, because the BYO flows always
-    trigger a new container revision right after — the new revision
-    reads the updated config from the file share at startup, so a
-    hot-reload of the old revision would just create a brief
-    inconsistent state.
+    Mirrors `apps.orchestrator.tasks.apply_single_tenant_config_task`:
+    write the regenerated config to the share, stamp ``applied_model``,
+    and advance ``config_version``. The new config takes effect on the
+    next container revision restart — BYO flows always trigger one right
+    after this via ``apply_byo_credentials_to_container``.
 
     No-op for tenants without a container_id or in a non-active status,
     since the underlying `update_tenant_config` would bail anyway.
@@ -230,13 +229,9 @@ def regenerate_tenant_config(tenant: Tenant) -> None:
         return
 
     update_tenant_config(str(tenant.id))
-    # BYO connect/disconnect drives a container revision restart (via
-    # apply_byo_credentials_to_container right after this), so we don't get
-    # to confirm adoption via gateway.reload like the picker path does.
-    # Stamp applied_model optimistically — matches the existing optimism
-    # around config_version. Worst case the new revision fails to start;
-    # the dashboard reads 'Active' on a model that isn't actually serving,
-    # which is no worse than today's config_version semantics.
+    # Stamp applied_model in lockstep with config_version. The BYO
+    # connect/disconnect that called this is about to restart the
+    # revision, which is when the new config actually loads.
     Tenant.objects.filter(id=tenant.id).update(
         config_version=db_models.F("pending_config_version"),
         config_refreshed_at=tz.now(),
