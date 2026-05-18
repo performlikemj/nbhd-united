@@ -19,6 +19,8 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.common.cache import tenant_cache
+
 from .models import Tenant
 from .serializers import TenantSerializer, UserSerializer
 
@@ -242,6 +244,7 @@ class LogoutView(APIView):
 class MeView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @tenant_cache(ttl=60, tag="tenant")
     def get(self, request):
         user = request.user
         user_data = UserSerializer(user).data
