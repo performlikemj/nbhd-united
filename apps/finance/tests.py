@@ -468,6 +468,97 @@ class RuntimeFinanceViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
+    # ── Dedup guard ─────────────────────────────────────────────────
+
+    def test_duplicate_payment_returns_existing_row(self):
+        """Same (account, type, amount, date) twice → second call returns the first row,
+        does not double-debit balance, does not insert a new transaction.
+
+        Models the 2026-05 incident where agent retries after silent timeouts
+        triple-recorded the same Nelnet confirmation."""
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Loan A",
+            current_balance=Decimal("1000"),
+            original_balance=Decimal("1000"),
+        )
+        payload = {
+            "account_nickname": "Loan A",
+            "amount": 50,
+            "date": "2026-05-06",
+            "description": "Confirmation #1",
+        }
+        first = self.client.post(
+            self._url("/transactions/"),
+            data=payload,
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertFalse(first.json()["duplicate"])
+
+        # Same call again — different description, but same (account, type, amount, date)
+        second = self.client.post(
+            self._url("/transactions/"),
+            data={**payload, "description": "Nelnet conf 1"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(second.status_code, 200)
+        body = second.json()
+        self.assertTrue(body["duplicate"])
+        self.assertEqual(body["transaction_id"], first.json()["transaction_id"])
+        self.assertEqual(body["existing_description"], "Confirmation #1")
+
+        # Exactly one row inserted, balance debited once
+        self.assertEqual(FinanceTransaction.objects.count(), 1)
+        self.assertEqual(
+            FinanceAccount.objects.get(nickname="Loan A").current_balance,
+            Decimal("950"),
+        )
+
+    def test_different_amount_same_day_creates_new_row(self):
+        """A $38 and a $105 payment to the same loan on the same day are NOT duplicates."""
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Loan A",
+            current_balance=Decimal("1000"),
+        )
+        for amount in (38, 105):
+            response = self.client.post(
+                self._url("/transactions/"),
+                data={"account_nickname": "Loan A", "amount": amount, "date": "2026-05-06"},
+                content_type="application/json",
+                **self._headers(),
+            )
+            self.assertEqual(response.status_code, 201)
+            self.assertFalse(response.json()["duplicate"])
+        self.assertEqual(FinanceTransaction.objects.count(), 2)
+        self.assertEqual(
+            FinanceAccount.objects.get(nickname="Loan A").current_balance,
+            Decimal("857"),
+        )
+
+    def test_same_amount_different_day_creates_new_row(self):
+        """Same amount on different dates is a separate legitimate payment."""
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Loan A",
+            current_balance=Decimal("1000"),
+        )
+        for day in ("2026-05-06", "2026-06-06"):
+            response = self.client.post(
+                self._url("/transactions/"),
+                data={"account_nickname": "Loan A", "amount": 50, "date": day},
+                content_type="application/json",
+                **self._headers(),
+            )
+            self.assertEqual(response.status_code, 201)
+        self.assertEqual(FinanceTransaction.objects.count(), 2)
+
     # ── Balance Update ──────────────────────────────────────────────
 
     def test_update_balance(self):
@@ -1673,3 +1764,136 @@ class RuntimeWelcomeMarkViewTests(TestCase):
     def test_wrong_internal_key_401(self):
         response = self._post("finance", key="wrong-key")
         self.assertEqual(response.status_code, 401)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# dedupe_finance_transactions management command
+# ═════════════════════════════════════════════════════════════════════
+
+
+class DedupeFinanceTransactionsCommandTests(TestCase):
+    """Backfill sweep that cleans up the May 2026 duplicate-Nelnet incident.
+
+    See dedupe_finance_transactions.py docstring for context.
+    """
+
+    def setUp(self):
+        from io import StringIO
+
+        self.tenant = create_tenant(display_name="DedupeTest", telegram_chat_id=900280)
+        self.other_tenant = create_tenant(display_name="DedupeOther", telegram_chat_id=900281)
+        self.account = FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Loan A",
+            current_balance=Decimal("900"),
+            original_balance=Decimal("1000"),
+        )
+        # Three rows = one real, two duplicates (same amount, type, date)
+        for description in ("orig", "dup-1", "dup-2"):
+            FinanceTransaction.objects.create(
+                tenant=self.tenant,
+                account=self.account,
+                transaction_type="payment",
+                amount=Decimal("50"),
+                description=description,
+                date=date(2026, 5, 6),
+            )
+        # Sanity: a separate legitimate payment that should not be touched
+        FinanceTransaction.objects.create(
+            tenant=self.tenant,
+            account=self.account,
+            transaction_type="payment",
+            amount=Decimal("25"),
+            description="separate",
+            date=date(2026, 5, 6),
+        )
+        self.stdout = StringIO()
+
+    def _run(self, **kwargs):
+        from django.core.management import call_command
+
+        call_command("dedupe_finance_transactions", stdout=self.stdout, **kwargs)
+        return self.stdout.getvalue()
+
+    def test_dry_run_does_not_modify_state(self):
+        output = self._run()
+        self.assertIn("DRY-RUN", output)
+        # Four rows untouched (3 dup-group + 1 separate)
+        self.assertEqual(FinanceTransaction.objects.count(), 4)
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.current_balance, Decimal("900"))
+
+    def test_apply_deletes_duplicates_and_restores_balance(self):
+        # Pre: account has $900 (was $1000, minus 50+50 from duplicates)
+        # Post: should keep the oldest row (description="orig"), drop the other two,
+        # and restore balance by +$100 -> $1000 (but capped at original_balance).
+        self._run(apply=True)
+        rows = list(FinanceTransaction.objects.filter(amount=Decimal("50")).values_list("description", flat=True))
+        self.assertEqual(rows, ["orig"])
+        # Separate $25 payment untouched
+        self.assertEqual(FinanceTransaction.objects.filter(amount=Decimal("25")).count(), 1)
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.current_balance, Decimal("1000"))
+
+    def test_apply_caps_balance_at_original(self):
+        """Reversal must not push balance above original_balance for debt accounts."""
+        # Pre-seed: original is $500, current is $400 — single real payment plus duplicates
+        acct = FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Tiny CC",
+            current_balance=Decimal("400"),
+            original_balance=Decimal("500"),
+        )
+        for _ in range(3):  # 1 canonical + 2 duplicates of $100 each — naive reversal would push to $600
+            FinanceTransaction.objects.create(
+                tenant=self.tenant,
+                account=acct,
+                transaction_type="payment",
+                amount=Decimal("100"),
+                description="x",
+                date=date(2026, 5, 1),
+            )
+        self._run(apply=True)
+        acct.refresh_from_db()
+        # Cap kicks in: 400 + 200 = 600 → clamped to original 500
+        self.assertEqual(acct.current_balance, Decimal("500"))
+
+    def test_tenant_filter_limits_scope(self):
+        other_acct = FinanceAccount.objects.create(
+            tenant=self.other_tenant,
+            account_type="student_loan",
+            nickname="Other Loan",
+            current_balance=Decimal("900"),
+            original_balance=Decimal("1000"),
+        )
+        # Duplicates on the other tenant
+        for _ in range(2):
+            FinanceTransaction.objects.create(
+                tenant=self.other_tenant,
+                account=other_acct,
+                transaction_type="payment",
+                amount=Decimal("75"),
+                description="other-dup",
+                date=date(2026, 5, 6),
+            )
+        self._run(apply=True, tenant_id=str(self.tenant.id))
+        # My tenant got cleaned…
+        self.assertEqual(
+            FinanceTransaction.objects.filter(tenant=self.tenant, amount=Decimal("50")).count(),
+            1,
+        )
+        # …the other tenant's duplicates remain
+        self.assertEqual(
+            FinanceTransaction.objects.filter(tenant=self.other_tenant).count(),
+            2,
+        )
+
+    def test_idempotent_second_run(self):
+        self._run(apply=True)
+        from io import StringIO
+
+        self.stdout = StringIO()
+        output = self._run(apply=True)
+        self.assertIn("No duplicate clusters", output)
