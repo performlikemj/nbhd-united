@@ -199,21 +199,30 @@ def handle_checkout_completed(session_data: dict) -> None:
             except Exception:
                 logger.exception("Failed to queue config apply for tenant %s", tenant.id)
 
-            # Re-enable cron jobs that were disabled during suspension
+            # Re-enable cron jobs that were disabled during suspension. The
+            # container just started waking and its gateway is not listening
+            # yet (cold-start typically 30-60s), so we cannot call
+            # ``resume_tenant_crons`` synchronously here — every reactivation
+            # would 502 inside the webhook handler and the crons would stay
+            # disabled until the hourly reconcile sweep caught the
+            # ``enabled``-field drift. See issue #540. Delay the resume via
+            # QStash so it fires after the gateway is ready, and let QStash
+            # retries cover any residual cold-start.
             try:
-                from apps.cron.suspension import resume_tenant_crons
-
-                # Refresh tenant to get updated status
-                tenant.refresh_from_db()
-                cron_result = resume_tenant_crons(tenant)
+                publish_task(
+                    "resume_tenant_crons",
+                    str(tenant.id),
+                    idempotency_key=f"resume-crons-{tenant.id}",
+                    delay_seconds=30,
+                )
                 logger.info(
-                    "Re-enabled %d cron jobs for reactivated tenant %s",
-                    cron_result.get("enabled", 0),
+                    "Queued resume_tenant_crons for reactivated tenant %s (delay=30s)",
                     tenant.id,
                 )
             except Exception:
                 logger.exception(
-                    "Failed to re-enable crons for tenant %s — may need manual reseed",
+                    "Failed to enqueue resume_tenant_crons for tenant %s — "
+                    "hourly reconcile_tenant_crons sweep is the safety net",
                     tenant.id,
                 )
 
@@ -240,9 +249,13 @@ def handle_checkout_completed(session_data: dict) -> None:
                 )
                 # Postgres-row saves fire the post_save signal, which
                 # enqueues ``regenerate_tenant_crons`` on a 30s debounce.
-                # The reconciler pushes any drift to OpenClaw. Cold-start
-                # race (issue #540) is handled by QStash retry on the
-                # reconcile task.
+                # The reconciler pushes payload/schedule drift to OpenClaw.
+                # If the refresh is a no-op (the common case — rows already
+                # match seed because suspension only touched the gateway),
+                # the signal does not fire; in that path the explicit
+                # ``resume_tenant_crons`` enqueue above is what re-enables
+                # the disabled crons, and the hourly reconcile sweep is
+                # the residual safety net.
             except Exception:
                 # Don't block reactivation on a refresh failure. The next
                 # apply_pending_configs sweep is the safety net.

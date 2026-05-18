@@ -100,26 +100,24 @@ class BillingWebhookServiceTest(TestCase):
         mock_publish.assert_not_called()
 
     @patch("apps.orchestrator.services.refresh_system_cron_rows_from_seed")
-    @patch("apps.cron.suspension.resume_tenant_crons")
     @patch("apps.orchestrator.azure_client.scale_container_app")
     @patch("apps.cron.publish.publish_task")
-    def test_reactivation_invokes_cron_payload_sync_after_resume(
+    def test_reactivation_enqueues_resume_crons_with_delay(
         self,
         mock_publish,
         mock_scale,
-        mock_resume,
         mock_payload_sync,
     ):
-        """Suspended→Active transition must call update_system_cron_prompts
-        AFTER resume_tenant_crons so payload drift (e.g. stale
-        ``payload.model = anthropic-cli/...`` left over from a BYO setup
-        before the suspension) is fixed before any cron has a chance to
-        fire on the freshly-woken container.
+        """Suspended→Active transition must enqueue ``resume_tenant_crons``
+        with a ~30s delay, NOT call it synchronously. The container was
+        hibernated and is just starting to wake — its gateway is not
+        listening yet, so a synchronous ``cron.list``/``cron.update``
+        round-trip would 502 inside the webhook handler. See issue #540.
 
-        Canary 2026-05-12 reproduction: pre-PR-#532, this stale model
-        survived for weeks because suspended tenants don't run
-        apply_pending_configs and the reactivation flow never sync'd
-        payloads. This test pins the eager-sync contract.
+        The delayed enqueue is what re-enables the customer's morning
+        briefing etc. after a real resub; the explicit assertion here
+        pins the contract that no synchronous gateway-touching cron op
+        runs from the webhook handler.
         """
         self.tenant.is_trial = False
         self.tenant.status = Tenant.Status.SUSPENDED
@@ -128,7 +126,6 @@ class BillingWebhookServiceTest(TestCase):
         self.tenant.save(
             update_fields=["is_trial", "status", "container_id", "container_fqdn", "updated_at"],
         )
-        mock_resume.return_value = {"enabled": 5, "already_enabled": 0, "errors": 0, "job_names": []}
         mock_payload_sync.return_value = {"created": 0, "updated": 1, "preserved_custom": 0, "unchanged": 8}
 
         handle_checkout_completed(
@@ -141,25 +138,31 @@ class BillingWebhookServiceTest(TestCase):
 
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
-        # The refresh hook must have been called exactly once with the
-        # reactivated tenant. Ordering vs. resume_tenant_crons is enforced
-        # by source — they're sequential in the same try block.
+
+        resume_calls = [
+            call for call in mock_publish.call_args_list if call.args and call.args[0] == "resume_tenant_crons"
+        ]
+        self.assertEqual(
+            len(resume_calls), 1, f"expected one resume_tenant_crons publish, got {mock_publish.call_args_list}"
+        )
+        call = resume_calls[0]
+        self.assertEqual(call.args[1], str(self.tenant.id))
+        self.assertEqual(call.kwargs.get("idempotency_key"), f"resume-crons-{self.tenant.id}")
+        # Delay must be long enough for the container's gateway to boot.
+        # 30s is the current value; flag if anyone shortens it without
+        # also revisiting the cold-start window in #540.
+        self.assertGreaterEqual(call.kwargs.get("delay_seconds", 0), 30)
+
+        # Refresh still happens (Postgres-only, no cold-start race).
         mock_payload_sync.assert_called_once()
-        sync_arg = mock_payload_sync.call_args.args[0]
-        self.assertEqual(sync_arg.id, self.tenant.id)
-        # And resume_tenant_crons must have been called too (the hook
-        # runs after it, not in place of it).
-        mock_resume.assert_called_once()
 
     @patch("apps.orchestrator.services.refresh_system_cron_rows_from_seed")
-    @patch("apps.cron.suspension.resume_tenant_crons")
     @patch("apps.orchestrator.azure_client.scale_container_app")
     @patch("apps.cron.publish.publish_task")
     def test_reactivation_continues_when_cron_payload_sync_fails(
         self,
         mock_publish,
         mock_scale,
-        mock_resume,
         mock_payload_sync,
     ):
         """A drift-fix failure during reactivation must NOT block the
@@ -174,7 +177,6 @@ class BillingWebhookServiceTest(TestCase):
         self.tenant.save(
             update_fields=["is_trial", "status", "container_id", "container_fqdn", "updated_at"],
         )
-        mock_resume.return_value = {"enabled": 5, "already_enabled": 0, "errors": 0, "job_names": []}
         mock_payload_sync.side_effect = RuntimeError("simulated gateway flake")
 
         # Must not raise — reactivation should swallow the sync exception.
@@ -190,6 +192,47 @@ class BillingWebhookServiceTest(TestCase):
         self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
         # Hook was still attempted, just raised.
         mock_payload_sync.assert_called_once()
+
+    @patch("apps.orchestrator.services.refresh_system_cron_rows_from_seed")
+    @patch("apps.orchestrator.azure_client.scale_container_app")
+    @patch("apps.cron.publish.publish_task")
+    def test_reactivation_swallows_resume_enqueue_failure(
+        self,
+        mock_publish,
+        mock_scale,
+        mock_payload_sync,
+    ):
+        """If QStash is unreachable, the failure to enqueue
+        ``resume_tenant_crons`` must NOT crash reactivation. The hourly
+        ``reconcile_tenant_crons`` sweep eventually fixes drift on the
+        ``enabled`` field via the cron-drift detector.
+        """
+        self.tenant.is_trial = False
+        self.tenant.status = Tenant.Status.SUSPENDED
+        self.tenant.container_id = "oc-reactivate-qstash-down"
+        self.tenant.container_fqdn = "oc-reactivate-qstash-down.internal.example.io"
+        self.tenant.save(
+            update_fields=["is_trial", "status", "container_id", "container_fqdn", "updated_at"],
+        )
+        mock_payload_sync.return_value = {"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 9}
+
+        def selective_fail(task_name, *args, **kwargs):
+            if task_name == "resume_tenant_crons":
+                raise RuntimeError("qstash down")
+
+        mock_publish.side_effect = selective_fail
+
+        # Must not raise.
+        handle_checkout_completed(
+            {
+                "metadata": {"user_id": str(self.tenant.user_id), "tier": "starter"},
+                "customer": "cus_react_qstash",
+                "subscription": "sub_react_qstash",
+            }
+        )
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
 
     @patch("apps.cron.publish.publish_task")
     def test_subscription_deleted_finds_tenant_by_subscription_id(self, mock_publish):

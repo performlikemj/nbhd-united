@@ -68,6 +68,10 @@ TASK_MAP = {
     "reseed_lessons_single_tenant": "apps.lessons.tasks.reseed_lessons_single_tenant_task",
     # Hibernate suspended containers (one-off cleanup)
     "hibernate_suspended": "apps.orchestrator.tasks.hibernate_suspended_task",
+    # Re-enable a reactivated tenant's crons (delayed ~30s after container wake
+    # so the gateway is ready). Enqueued by handle_checkout_completed on
+    # SUSPENDED→ACTIVE — see issue #540.
+    "resume_tenant_crons": "apps.orchestrator.tasks.resume_tenant_crons_task",
     # Per-tenant config/image updates (enqueued by apply-pending-configs)
     "apply_single_tenant_config": "apps.orchestrator.tasks.apply_single_tenant_config_task",
     "apply_single_tenant_image": "apps.orchestrator.tasks.apply_single_tenant_image_task",
