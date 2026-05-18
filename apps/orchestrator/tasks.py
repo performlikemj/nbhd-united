@@ -5,8 +5,6 @@ from datetime import UTC
 
 import httpx
 
-from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
-
 from .services import (
     bump_openclaw_version_for_tenant,
     deprovision_tenant,
@@ -369,7 +367,10 @@ def _fire_missed_crons_after_restore(*, tenant, snapshot: dict, snapshot_jobs: l
         return 0
 
     # Map name → fresh gateway job id (restore generated new UUIDs).
-    from apps.cron.gateway_client import GatewayError
+    # Local re-import keeps test mocks of ``apps.cron.gateway_client.invoke_gateway_tool``
+    # working (the patch hits the source module; module-level aliases bind at import time
+    # and would shadow the mock).
+    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
     from apps.orchestrator.services import _extract_cron_jobs
 
     try:
@@ -998,6 +999,7 @@ def remove_zombie_heartbeats_task() -> dict:
     """Remove Heartbeat Check-in cron jobs from tenants with heartbeat disabled."""
     import logging
 
+    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
     from apps.tenants.models import Tenant
 
     logger = logging.getLogger(__name__)
@@ -1097,7 +1099,7 @@ def ensure_at_cron_wakes_task() -> dict:
     import logging
     import time as _time
 
-    from apps.cron.gateway_client import GatewayError
+    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
     from apps.cron.pending_at_views import _at_fires_at_ms
     from apps.cron.publish import publish_task
     from apps.orchestrator.hibernation import _CRON_WAKE_LEAD_SECONDS
