@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { fetchConstellation, fetchPendingLessons } from "@/lib/api";
+import { useConstellationQuery, usePendingLessonsQuery } from "@/lib/queries";
 import {
   ConstellationData,
   ConstellationNode,
@@ -211,24 +211,14 @@ function Inspector({ node, neighbors, onClose, onJump }: { node: GraphNode; neig
 
 // ── Main Page ────────────────────────────────────────────────────────────────
 
-export default function ConstellationPage() {
-  const [rawData, setRawData] = useState<ConstellationData>({ nodes: [], edges: [], affinity_edges: [], clusters: [] });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [pendingCount, setPendingCount] = useState(0);
+const EMPTY_CONSTELLATION: ConstellationData = { nodes: [], edges: [], affinity_edges: [], clusters: [] };
 
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const [cd, pl] = await Promise.all([fetchConstellation(), fetchPendingLessons()]);
-        if (!mounted) return;
-        setRawData(cd); setPendingCount(pl.length);
-      } catch (err) { if (mounted) setError(err instanceof Error ? err.message : "Failed to load constellation."); }
-      finally { if (mounted) setLoading(false); }
-    })();
-    return () => { mounted = false; };
-  }, []);
+export default function ConstellationPage() {
+  const { data: rawData = EMPTY_CONSTELLATION, isLoading, error: queryError } = useConstellationQuery();
+  const { data: pendingLessons = [] } = usePendingLessonsQuery();
+  const loading = isLoading;
+  const error = queryError instanceof Error ? queryError.message : queryError ? "Failed to load constellation." : "";
+  const pendingCount = pendingLessons.length;
 
   const effectiveData = useMemo(() => {
     if (rawData.clusters.length > 0 || !(rawData.nodes.length > 0 && rawData.nodes.every((n) => n.cluster_id == null))) return rawData;

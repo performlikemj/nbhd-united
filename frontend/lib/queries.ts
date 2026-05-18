@@ -141,6 +141,10 @@ import {
   fetchByoCredentials,
   connectByoCredential,
   disconnectByoCredential,
+  fetchConstellation,
+  fetchPendingLessons,
+  approveLesson,
+  dismissLesson,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -190,7 +194,7 @@ export function useDashboardQuery() {
   return useQuery({
     queryKey: ["dashboard"],
     queryFn: fetchDashboard,
-    staleTime: 30_000,
+    staleTime: 60_000,
     enabled: isLoggedIn(),
   });
 }
@@ -199,7 +203,7 @@ export function useUsageHistoryQuery() {
   return useQuery({
     queryKey: ["usage-history"],
     queryFn: fetchUsageHistory,
-    staleTime: 30_000,
+    staleTime: 60_000,
     enabled: isLoggedIn(),
   });
 }
@@ -672,7 +676,7 @@ export function useJournalEntriesQuery() {
   return useQuery({
     queryKey: ["journal-entries"],
     queryFn: () => fetchJournalEntries(),
-    staleTime: 30_000,
+    staleTime: 90_000,
     enabled: isLoggedIn(),
   });
 }
@@ -800,7 +804,7 @@ export function useDocumentQuery(kind: string, slug: string) {
     queryKey: ["document", kind, slug],
     queryFn: () => fetchDocument(kind, slug),
     enabled: isLoggedIn() && !!kind && !!slug,
-    refetchInterval: 30_000,
+    staleTime: 60_000,
   });
 }
 
@@ -808,7 +812,7 @@ export function useDocumentsQuery(kind?: string) {
   return useQuery({
     queryKey: ["documents", kind ?? "all"],
     queryFn: () => fetchDocuments(kind),
-    staleTime: 30_000,
+    staleTime: 90_000,
     enabled: isLoggedIn(),
   });
 }
@@ -817,8 +821,7 @@ export function useSidebarTreeQuery() {
   return useQuery({
     queryKey: ["sidebar-tree"],
     queryFn: fetchSidebarTree,
-    staleTime: 30_000,
-    refetchInterval: 60_000,
+    staleTime: 120_000,
     enabled: isLoggedIn(),
   });
 }
@@ -888,7 +891,7 @@ export function useCronJobsQuery() {
   return useQuery({
     queryKey: ["cron-jobs"],
     queryFn: fetchCronJobs,
-    staleTime: 30_000,
+    staleTime: 60_000,
     enabled: isLoggedIn(),
   });
 }
@@ -982,15 +985,16 @@ export function useBulkUpdateForegroundMutation() {
 }
 
 // Pending one-off reminders (separate from recurring crons — different
-// lifecycle, gateway-only source of truth, auto-deleting). Polled on a
-// 30s interval so reminders that fire while the dashboard is open vanish
-// without a manual refresh.
+// lifecycle, gateway-only source of truth, auto-deleting). Polled so
+// reminders that fire while the dashboard is open vanish without a
+// manual refresh. 60s is enough resolution for "this just fired" UX
+// while halving the refetch cost vs. the original 30s.
 export function usePendingRemindersQuery() {
   return useQuery<PendingRemindersResponse>({
     queryKey: ["pending-reminders"],
     queryFn: fetchPendingReminders,
-    staleTime: 10_000,
-    refetchInterval: 30_000,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
     refetchOnWindowFocus: true,
     enabled: isLoggedIn(),
   });
@@ -1011,7 +1015,7 @@ export function useWorkspacesQuery() {
   return useQuery({
     queryKey: ["workspaces"],
     queryFn: fetchWorkspaces,
-    staleTime: 30_000,
+    staleTime: 120_000,
     enabled: isLoggedIn(),
   });
 }
@@ -1635,6 +1639,46 @@ export function useDisconnectByoMutation() {
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: ["byo-credentials"] });
       void qc.invalidateQueries({ queryKey: ["tenant"] });
+    },
+  });
+}
+
+// Constellation
+export function useConstellationQuery() {
+  return useQuery({
+    queryKey: ["constellation"],
+    queryFn: fetchConstellation,
+    staleTime: 5 * 60_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function usePendingLessonsQuery() {
+  return useQuery({
+    queryKey: ["pending-lessons"],
+    queryFn: fetchPendingLessons,
+    staleTime: 60_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useApproveLessonMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: approveLesson,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["pending-lessons"] });
+      void qc.invalidateQueries({ queryKey: ["constellation"] });
+    },
+  });
+}
+
+export function useDismissLessonMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: dismissLesson,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["pending-lessons"] });
     },
   });
 }

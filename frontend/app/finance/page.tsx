@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 
 import { AccountCard } from "@/components/account-card";
@@ -7,9 +8,26 @@ import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton, StatCardSkeleton } from "@/components/skeleton";
 import { StatCard } from "@/components/stat-card";
 import { GravityInsightsStrip } from "@/components/finance/gravity-insights-strip";
-import { PayoffChart } from "@/components/finance/payoff-chart";
-import { ProgressChart } from "@/components/finance/progress-chart";
 import { StrategyComparison } from "@/components/finance/strategy-comparison";
+
+// Recharts is ~80KB gzipped — lazy-load so /finance paints before the
+// charts. Both render conditionally on data.active_plan etc., so the
+// chunk is only fetched when those branches mount.
+const PayoffChart = dynamic(
+  () => import("@/components/finance/payoff-chart").then((m) => m.PayoffChart),
+  {
+    ssr: false,
+    loading: () => <div className="h-64 animate-pulse rounded-panel bg-surface" />,
+  },
+);
+
+const ProgressChart = dynamic(
+  () => import("@/components/finance/progress-chart").then((m) => m.ProgressChart),
+  {
+    ssr: false,
+    loading: () => <div className="h-64 animate-pulse rounded-panel bg-surface" />,
+  },
+);
 import {
   useArchiveFinanceAccountMutation,
   useArchivedFinanceAccountsQuery,
