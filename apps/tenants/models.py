@@ -396,10 +396,11 @@ class Tenant(models.Model):
         blank=True,
         default="",
         help_text=(
-            "Model the running container is currently serving, stamped after a "
-            "successful gateway.reload. Diverges from preferred_model while a "
-            "switch is in flight; the frontend uses the difference to render a "
-            "'Switching…' state instead of an immediate 'Active' badge."
+            "Model the running container will serve at next restart, stamped "
+            "when the regenerated openclaw.json is written to the file share. "
+            "Diverges from preferred_model between the picker change and the "
+            "next container warmup; the frontend uses the difference to render "
+            "a 'Switching…' state instead of an immediate 'Active' badge."
         ),
     )
     applied_model_at = models.DateTimeField(
