@@ -46,7 +46,10 @@ class ETagMiddleware:
         if request.META.get("HTTP_IF_NONE_MATCH") == etag:
             not_modified = HttpResponseNotModified()
             not_modified["ETag"] = etag
-            for header in ("Cache-Control", "Vary"):
+            # Propagate cache-relevant headers (including X-Cache) so outer
+            # middleware logging can see whether the underlying response came
+            # from the decorator's cache.
+            for header in ("Cache-Control", "Vary", "X-Cache"):
                 if header in response:
                     not_modified[header] = response[header]
             return not_modified
