@@ -13,6 +13,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.billing.models import UsageRecord
+from apps.common.cache import tenant_cache
 from apps.insights.models import AssistantInsight
 from apps.integrations.models import Integration
 from apps.journal.models import Document, JournalEntry, PendingExtraction, WeeklyReview
@@ -96,6 +97,7 @@ class DashboardView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @tenant_cache(ttl=30, tag="dashboard")
     def get(self, request):
         try:
             tenant = request.user.tenant

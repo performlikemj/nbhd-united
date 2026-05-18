@@ -53,10 +53,12 @@ INSTALLED_APPS = [
     "apps.fuel",
     "apps.byo_models",
     "apps.insights",
+    "apps.common",
 ]
 
 MIDDLEWARE = [
     "config.middleware.RequestTimingMiddleware",
+    "config.cache_middleware.ETagMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",

@@ -4,6 +4,7 @@ import json
 
 from django.core.management.base import BaseCommand
 
+from apps.common.cache import ping as cache_ping
 from apps.orchestrator.services import check_all_tenants_health
 from apps.tenants.models import Tenant
 
@@ -15,20 +16,49 @@ class Command(BaseCommand):
         parser.add_argument("--json", action="store_true", help="Output structured JSON")
 
     def handle(self, *args, **options):
+        try:
+            cache_ok = cache_ping()
+            cache_detail = "ok"
+        except Exception as exc:  # pragma: no cover - depends on env
+            cache_ok = False
+            cache_detail = f"{type(exc).__name__}: {exc}"
+
         tenants = Tenant.objects.filter(status=Tenant.Status.ACTIVE)
 
         if not tenants.exists():
             if options["json"]:
-                self.stdout.write(json.dumps({"tenants": 0, "results": []}))
+                self.stdout.write(
+                    json.dumps(
+                        {
+                            "tenants": 0,
+                            "results": [],
+                            "cache": {"ok": cache_ok, "detail": cache_detail},
+                        }
+                    )
+                )
             else:
+                cache_icon = "✅" if cache_ok else "❌"
+                self.stdout.write(f"{cache_icon} cache — {cache_detail}")
                 self.stdout.write("No active tenants.")
             return
 
         results = check_all_tenants_health()
 
         if options["json"]:
-            self.stdout.write(json.dumps({"tenants": len(results), "results": results}, indent=2))
+            self.stdout.write(
+                json.dumps(
+                    {
+                        "tenants": len(results),
+                        "results": results,
+                        "cache": {"ok": cache_ok, "detail": cache_detail},
+                    },
+                    indent=2,
+                )
+            )
             return
+
+        cache_icon = "✅" if cache_ok else "❌"
+        self.stdout.write(f"{cache_icon} cache — {cache_detail}")
 
         for result in results:
             icon = "\u2705" if result["healthy"] else "\u274c"

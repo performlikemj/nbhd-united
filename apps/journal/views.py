@@ -14,6 +14,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.cache import tenant_cache
 from apps.tenants.models import Tenant
 
 from .md_utils import append_entry_markdown, parse_daily_note, serialise_daily_note
@@ -91,6 +92,7 @@ def _note_template_response(note: DailyNote, *, include_entries: bool = False) -
 class JournalEntryListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @tenant_cache(ttl=60, tag="journal")
     def get(self, request):
         tenant = _get_tenant_for_user(request.user)
         queryset = JournalEntry.objects.filter(tenant=tenant).order_by("-date", "-created_at")

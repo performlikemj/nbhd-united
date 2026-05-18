@@ -11,6 +11,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.cache import tenant_cache
+
 
 def _safe_int(value, default):
     """Parse an int from query params, returning default on failure."""
@@ -252,6 +254,7 @@ class WorkoutListView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @tenant_cache(ttl=30, tag="fuel")
     def get(self, request):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
@@ -349,6 +352,7 @@ class WorkoutCalendarView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @tenant_cache(ttl=60, tag="fuel")
     def get(self, request):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
@@ -386,6 +390,7 @@ class WorkoutProgressView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @tenant_cache(ttl=120, tag="fuel")
     def get(self, request):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
@@ -738,6 +743,7 @@ class WeeklyVolumeSummaryView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @tenant_cache(ttl=120, tag="fuel")
     def get(self, request):
         from datetime import timedelta
 
@@ -792,6 +798,7 @@ class PRFeedView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @tenant_cache(ttl=120, tag="fuel")
     def get(self, request):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:

@@ -12,6 +12,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.cache import tenant_cache
 from apps.tenants.models import Tenant
 
 from .document_serializers import (
@@ -312,6 +313,7 @@ class SidebarTreeView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @tenant_cache(ttl=120, tag="sidebar")
     def get(self, request):
         tenant = _get_tenant(request.user)
         today = str(timezone.now().date())
