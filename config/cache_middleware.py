@@ -57,8 +57,6 @@ class ETagMiddleware:
         # or proxy could leak tenant A's body to tenant B.
         existing_vary = response.get("Vary", "")
         if "Authorization" not in existing_vary:
-            response["Vary"] = (
-                f"{existing_vary}, Authorization" if existing_vary else "Authorization"
-            )
+            response["Vary"] = f"{existing_vary}, Authorization" if existing_vary else "Authorization"
 
         return response

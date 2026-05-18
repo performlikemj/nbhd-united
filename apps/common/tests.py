@@ -62,9 +62,7 @@ class _CountingView(APIView):
     @tenant_cache(ttl=60, tag="fuel")
     def get(self, request):
         _CountingView.calls += 1
-        return Response(
-            {"calls": _CountingView.calls, "label": request.query_params.get("label", "x")}
-        )
+        return Response({"calls": _CountingView.calls, "label": request.query_params.get("label", "x")})
 
 
 class TenantCacheDecoratorTest(TestCase):
