@@ -4,15 +4,19 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0063_tenant_experimental_dreaming'),
+        ("tenants", "0063_tenant_experimental_dreaming"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='tenant',
-            name='applied_model',
-            field=models.CharField(blank=True, default='', help_text="Model the running container will serve at next restart, stamped when the regenerated openclaw.json is written to the file share. Diverges from preferred_model between the picker change and the next container warmup; the frontend uses the difference to render a 'Switching…' state instead of an immediate 'Active' badge.", max_length=255),
+            model_name="tenant",
+            name="applied_model",
+            field=models.CharField(
+                blank=True,
+                default="",
+                help_text="Model the running container will serve at next restart, stamped when the regenerated openclaw.json is written to the file share. Diverges from preferred_model between the picker change and the next container warmup; the frontend uses the difference to render a 'Switching…' state instead of an immediate 'Active' badge.",
+                max_length=255,
+            ),
         ),
     ]
