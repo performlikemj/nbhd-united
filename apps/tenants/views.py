@@ -10,6 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.cache import tenant_cache
 from apps.cron.publish import publish_task
 from apps.journal.services import seed_default_templates_for_tenant
 from apps.orchestrator.config_generator import TIER_MODEL_CONFIGS
@@ -32,6 +33,7 @@ class TenantViewSet(viewsets.ReadOnlyModelViewSet):
         return Tenant.objects.none()
 
     @action(detail=False, methods=["get"])
+    @tenant_cache(ttl=60, tag="tenant")
     def me(self, request):
         """Get current user's tenant."""
         try:
@@ -245,6 +247,7 @@ class PersonaListView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @tenant_cache(ttl=300, tag="tenant")
     def get(self, request):
         from apps.orchestrator.personas import list_personas
 
@@ -454,6 +457,7 @@ class UpdatePreferencesView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @tenant_cache(ttl=120, tag="tenant")
     def get(self, request):
         return Response(
             {

@@ -202,6 +202,7 @@ class DocumentDetailView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @tenant_cache(ttl=60, tag="journal")
     def get(self, request, kind: str, slug: str):
         tenant = _get_tenant(request.user)
         _validate_slug(kind, slug)

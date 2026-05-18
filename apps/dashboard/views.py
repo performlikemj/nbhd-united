@@ -177,6 +177,7 @@ class HorizonsView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @tenant_cache(ttl=60, tag="dashboard")
     def get(self, request):
         try:
             tenant = request.user.tenant
