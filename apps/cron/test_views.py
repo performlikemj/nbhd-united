@@ -311,3 +311,158 @@ class ExpireTrialsEntitlementTest(TestCase):
 
         ghost.refresh_from_db()
         self.assertEqual(ghost.status, Tenant.Status.SUSPENDED)
+
+
+class TriggerTaskArgValidationTest(TestCase):
+    """Boundary-hardening for ``trigger_task`` — issue #557.
+
+    Pre-fix, every QStash delivery with a malformed/empty body would
+    fall through to the underlying task with no positional args, raise
+    ``TypeError`` inside the task, and return 500. QStash retries 5xx
+    three times, so one bad message turned into three 500s + a DLQ
+    park. The fix is to validate ``(args, kwargs)`` against the task
+    signature at the boundary and return 400 instead — QStash does
+    not retry 4xx, so the message is parked on the first delivery.
+
+    See also: the QStash MCP ``qstash_publish_message`` tool sends bodies
+    via the generic ``publish`` path which corrupts JSON for Django's
+    receiver; multiple unrelated triggers hit this during the #540
+    flip-cycle verification on 2026-05-18.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    def test_empty_body_against_no_arg_task_succeeds(self, mock_verify):
+        """``reset_daily_counters_task`` takes no args; empty body should run."""
+        with patch("apps.tenants.tasks.reset_daily_counters_task", autospec=True) as mock_task:
+            mock_task.return_value = None
+            response = self.client.post(
+                "/api/v1/cron/trigger/reset_daily_counters/",
+                data=b"",
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 200)
+        mock_task.assert_called_once_with()
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    def test_empty_body_against_required_arg_task_returns_400(self, mock_verify):
+        """Pre-fix this returned 500 → QStash retried 3x. Now 400."""
+        with patch("apps.orchestrator.tasks.apply_single_tenant_config_task", autospec=True) as mock_task:
+            response = self.client.post(
+                "/api/v1/cron/trigger/apply_single_tenant_config/",
+                data=b"",
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertIn("missing", body["error"].lower())
+        # Critical: the underlying task must NOT run when args are bad.
+        mock_task.assert_not_called()
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    def test_empty_json_object_against_required_arg_task_returns_400(self, mock_verify):
+        """``{}`` is well-formed JSON but lacks ``args`` → same as empty."""
+        with patch("apps.orchestrator.tasks.apply_single_tenant_config_task", autospec=True) as mock_task:
+            response = self.client.post(
+                "/api/v1/cron/trigger/apply_single_tenant_config/",
+                data=b"{}",
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 400)
+        mock_task.assert_not_called()
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    def test_malformed_json_against_required_arg_task_returns_400(self, mock_verify):
+        """Bad JSON → JSONDecodeError swallowed → empty args → 400."""
+        with patch("apps.orchestrator.tasks.apply_single_tenant_config_task", autospec=True) as mock_task:
+            response = self.client.post(
+                "/api/v1/cron/trigger/apply_single_tenant_config/",
+                data=b"not json at all",
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 400)
+        mock_task.assert_not_called()
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    def test_double_encoded_string_body_returns_400(self, mock_verify):
+        """The QStash MCP ``qstash_publish_message`` failure mode: body
+        arrives as a JSON-encoded string ``"{\\"args\\":[\\"x\\"]}"`` instead
+        of a JSON object. ``.get("args", [])`` on a string raises
+        AttributeError → swallowed → empty args → 400 (not 500).
+        """
+        with patch("apps.orchestrator.tasks.apply_single_tenant_config_task", autospec=True) as mock_task:
+            response = self.client.post(
+                "/api/v1/cron/trigger/apply_single_tenant_config/",
+                data=b'"some string"',
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 400)
+        mock_task.assert_not_called()
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    def test_null_args_is_coerced_and_returns_400(self, mock_verify):
+        """``{"args": null}`` previously crashed during ``*null`` unpacking
+        with an opaque TypeError → 500. Now coerced to empty list → 400.
+        """
+        with patch("apps.orchestrator.tasks.apply_single_tenant_config_task", autospec=True) as mock_task:
+            response = self.client.post(
+                "/api/v1/cron/trigger/apply_single_tenant_config/",
+                data=json.dumps({"args": None}).encode(),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 400)
+        mock_task.assert_not_called()
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    def test_well_formed_body_with_correct_args_succeeds(self, mock_verify):
+        """Regression guard — valid messages keep working."""
+        with patch("apps.orchestrator.tasks.apply_single_tenant_config_task", autospec=True) as mock_task:
+            mock_task.return_value = None
+            response = self.client.post(
+                "/api/v1/cron/trigger/apply_single_tenant_config/",
+                data=json.dumps({"args": ["fake-tenant-uuid"], "kwargs": {}}).encode(),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 200)
+        mock_task.assert_called_once_with("fake-tenant-uuid")
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    def test_too_many_positional_args_returns_400(self, mock_verify):
+        with patch("apps.orchestrator.tasks.apply_single_tenant_config_task", autospec=True) as mock_task:
+            response = self.client.post(
+                "/api/v1/cron/trigger/apply_single_tenant_config/",
+                data=json.dumps({"args": ["uuid", "extra", "also-extra"], "kwargs": {}}).encode(),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertIn("too many", body["error"].lower())
+        mock_task.assert_not_called()
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    def test_unknown_kwarg_returns_400(self, mock_verify):
+        with patch("apps.orchestrator.tasks.apply_single_tenant_config_task", autospec=True) as mock_task:
+            response = self.client.post(
+                "/api/v1/cron/trigger/apply_single_tenant_config/",
+                data=json.dumps({"args": ["uuid"], "kwargs": {"bogus_kwarg": True}}).encode(),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertIn("unexpected", body["error"].lower())
+        mock_task.assert_not_called()
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    def test_known_kwarg_is_accepted(self, mock_verify):
+        """``apply_single_tenant_config_task`` accepts ``_is_followup_retry`` kwarg."""
+        with patch("apps.orchestrator.tasks.apply_single_tenant_config_task", autospec=True) as mock_task:
+            mock_task.return_value = None
+            response = self.client.post(
+                "/api/v1/cron/trigger/apply_single_tenant_config/",
+                data=json.dumps({"args": ["uuid"], "kwargs": {"_is_followup_retry": True}}).encode(),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 200)
+        mock_task.assert_called_once_with("uuid", _is_followup_retry=True)
