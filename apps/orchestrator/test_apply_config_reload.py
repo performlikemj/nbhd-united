@@ -47,7 +47,7 @@ class ApplySingleTenantConfigTests(TestCase):
     def test_file_write_advances_config_version_without_gateway_call(self):
         with (
             patch("apps.orchestrator.tasks.update_tenant_config") as mock_update,
-            patch("apps.orchestrator.tasks.invoke_gateway_tool") as mock_invoke,
+            patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
             patch("apps.cron.publish.publish_task") as mock_publish,
         ):
             apply_single_tenant_config_task(str(self.tenant.id))
@@ -67,7 +67,7 @@ class ApplySingleTenantConfigTests(TestCase):
 
         with (
             patch("apps.orchestrator.tasks.update_tenant_config") as mock_update,
-            patch("apps.orchestrator.tasks.invoke_gateway_tool") as mock_invoke,
+            patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
             patch("apps.cron.publish.publish_task") as mock_publish,
         ):
             apply_single_tenant_config_task(str(self.tenant.id))
@@ -85,7 +85,7 @@ class ApplySingleTenantConfigTests(TestCase):
 
         with (
             patch("apps.orchestrator.tasks.update_tenant_config") as mock_update,
-            patch("apps.orchestrator.tasks.invoke_gateway_tool") as mock_invoke,
+            patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
             patch("apps.cron.publish.publish_task") as mock_publish,
         ):
             apply_single_tenant_config_task(str(self.tenant.id))
@@ -100,7 +100,7 @@ class ApplySingleTenantConfigTests(TestCase):
         # without raising — same behavior as the no-arg path now.
         with (
             patch("apps.orchestrator.tasks.update_tenant_config") as mock_update,
-            patch("apps.orchestrator.tasks.invoke_gateway_tool") as mock_invoke,
+            patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
             patch("apps.cron.publish.publish_task") as mock_publish,
         ):
             apply_single_tenant_config_task(str(self.tenant.id), _is_followup_retry=True)
@@ -118,7 +118,7 @@ class ApplySingleTenantConfigTests(TestCase):
                 "apps.orchestrator.tasks.update_tenant_config",
                 side_effect=RuntimeError("file share unreachable"),
             ),
-            patch("apps.orchestrator.tasks.invoke_gateway_tool") as mock_invoke,
+            patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
             patch("apps.cron.publish.publish_task") as mock_publish,
         ):
             apply_single_tenant_config_task(str(self.tenant.id))
