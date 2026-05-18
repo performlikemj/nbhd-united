@@ -171,6 +171,11 @@ REDIS_URL = env("REDIS_URL", default="")
 
 # Cache — use Redis when available (shared across workers & container revisions),
 # fall back to in-process memory for local dev without Redis.
+#
+# Upstash closes idle connections after ~30s. Without health checks / retries /
+# keepalive, the next request after an idle period gets a `Connection closed
+# by server` ConnectionError. The decorator catches those, but we also want
+# the pool to self-heal so most requests don't even see the blip.
 if REDIS_URL:
     CACHES = {
         "default": {
@@ -178,9 +183,23 @@ if REDIS_URL:
             "LOCATION": REDIS_URL,
             "OPTIONS": {
                 "CLIENT_CLASS": "django_redis.client.DefaultClient",
+                "SOCKET_CONNECT_TIMEOUT": 3,
+                "SOCKET_TIMEOUT": 3,
+                "IGNORE_EXCEPTIONS": True,
+                "CONNECTION_POOL_KWARGS": {
+                    "max_connections": 20,
+                    "retry_on_timeout": True,
+                    "socket_keepalive": True,
+                    "health_check_interval": 25,
+                },
             },
         }
     }
+    # When IGNORE_EXCEPTIONS=True at the cache level, django-redis logs the
+    # underlying error but returns None to callers. Make sure those errors
+    # surface in logs so we can spot Upstash trouble.
+    DJANGO_REDIS_LOG_IGNORED_EXCEPTIONS = True
+    DJANGO_REDIS_LOGGER = "nbhd.cache.redis"
 
 # Stripe (dj-stripe)
 STRIPE_LIVE_SECRET_KEY = env("STRIPE_LIVE_SECRET_KEY", default="")

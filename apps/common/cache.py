@@ -36,28 +36,39 @@ def tag_version_key(tenant_id, tag: str) -> str:
 
 
 def get_tag_version(tenant_id, tag: str) -> int:
-    """Return the current version for (tenant, tag), seeding it to 1 if absent."""
+    """Return the current version for (tenant, tag), seeding it to 1 if absent.
+
+    Any cache-backend exception (Redis connection drops, timeouts) returns 0,
+    which the decorator treats as "no cache, run the view." We never let a
+    Redis blip bubble up as a 500.
+    """
     key = tag_version_key(tenant_id, tag)
-    version = cache.get(key)
-    if version is None:
-        # add() is atomic: if another process raced us, we read theirs back.
-        cache.add(key, 1, TAG_VERSION_TTL)
-        version = cache.get(key) or 1
-    return int(version)
+    try:
+        version = cache.get(key)
+        if version is None:
+            cache.add(key, 1, TAG_VERSION_TTL)
+            version = cache.get(key) or 1
+        return int(version)
+    except Exception:
+        logger.exception("get_tag_version failed for %s", key)
+        return 0
 
 
 def bump_tag(tenant_id, tag: str) -> int:
     """Atomically advance the tag version, invalidating all reads bound to it."""
     key = tag_version_key(tenant_id, tag)
     try:
-        return int(cache.incr(key))
-    except ValueError:
-        # Key didn't exist yet; seed and re-incr.
-        cache.add(key, 1, TAG_VERSION_TTL)
         try:
             return int(cache.incr(key))
         except ValueError:
-            return 1
+            cache.add(key, 1, TAG_VERSION_TTL)
+            try:
+                return int(cache.incr(key))
+            except ValueError:
+                return 1
+    except Exception:
+        logger.exception("bump_tag failed for %s", key)
+        return 0
 
 
 def bump_tags(tenant_id, tags: Iterable[str]) -> None:
@@ -103,10 +114,22 @@ def tenant_cache(ttl: int = DEFAULT_TTL, tag: str = "default"):
                 return view_method(self, request, *args, **kwargs)
 
             tag_v = get_tag_version(tenant.id, tag)
+            # tag_v == 0 means the cache backend is unhealthy; bypass entirely
+            # so a Redis blip can't cascade into a user-facing 500.
+            if tag_v == 0:
+                response = view_method(self, request, *args, **kwargs)
+                response["X-Cache"] = "BYPASS"
+                return response
+
             sig = _request_signature(request, kwargs)
             key = f"nbhd:view:{_view_qualname(self)}:{tenant.id}:{tag}:{tag_v}:{sig}"
 
-            cached = cache.get(key)
+            try:
+                cached = cache.get(key)
+            except Exception:
+                logger.exception("tenant_cache get failed for %s", key)
+                cached = None
+
             if cached is not None:
                 response = Response(cached["data"], status=cached["status"])
                 response["X-Cache"] = "HIT"
@@ -133,5 +156,9 @@ def tenant_cache(ttl: int = DEFAULT_TTL, tag: str = "default"):
 
 def ping() -> bool:
     """Smoke-test the cache backend with a 5s key round-trip."""
-    cache.set(PING_KEY, "ok", 5)
-    return cache.get(PING_KEY) == "ok"
+    try:
+        cache.set(PING_KEY, "ok", 5)
+        return cache.get(PING_KEY) == "ok"
+    except Exception:
+        logger.exception("cache ping failed")
+        return False
