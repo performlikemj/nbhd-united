@@ -352,7 +352,7 @@ function NextUpBanner({ workout, onOpen }: NextUpBannerProps) {
       aria-label="Next workout"
       className="
         rounded-panel border border-border bg-card/95 p-4 sm:p-5 shadow-panel backdrop-blur-md
-        relative overflow-hidden
+        relative overflow-hidden hover:border-border-strong transition-colors
       "
       style={{
         // accent stripe along the left edge in the category color
@@ -360,7 +360,14 @@ function NextUpBanner({ workout, onOpen }: NextUpBannerProps) {
         borderLeftColor: cat.accent,
       }}
     >
-      <div className="flex items-start gap-4 sm:items-center sm:justify-between flex-col sm:flex-row">
+      {/* Full-card tap target — sits beneath the action buttons so they keep working */}
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={`View ${workout.activity}`}
+        className="absolute inset-0 z-0 rounded-panel focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+      />
+      <div className="relative z-10 flex items-start gap-4 sm:items-center sm:justify-between flex-col sm:flex-row pointer-events-none">
         <div className="min-w-0">
           <div className="flex items-center gap-2 mb-1.5">
             <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-accent">
@@ -383,7 +390,7 @@ function NextUpBanner({ workout, onOpen }: NextUpBannerProps) {
           </div>
         </div>
 
-        <div className="flex w-full sm:w-auto items-center gap-2 shrink-0">
+        <div className="flex w-full sm:w-auto items-center gap-2 shrink-0 pointer-events-auto">
           <button
             type="button"
             onClick={() => complete.mutate({ id: workout.id })}
