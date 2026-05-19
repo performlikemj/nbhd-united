@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { useCreateWorkoutTemplateMutation, useDeleteWorkoutMutation, useDuplicateWorkoutMutation, useUpdateWorkoutMutation, useWorkoutQuery } from "@/lib/queries";
+import { useCompleteWorkoutMutation, useCreateWorkoutTemplateMutation, useDeleteWorkoutMutation, useDuplicateWorkoutMutation, useUpdateWorkoutMutation, useWorkoutQuery } from "@/lib/queries";
 import type { FuelWorkout, WorkoutCategory } from "@/lib/types";
 import { CATEGORIES, CATEGORY_IDS } from "./category-meta";
 import { displayToKg, kgToDisplay, useWeightUnit } from "./use-weight-unit";
@@ -103,6 +103,7 @@ export function WorkoutDetail({ workoutId, onClose }: WorkoutDetailProps) {
 function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose: () => void }) {
   const { data: workout } = useWorkoutQuery(workoutId);
   const updateMutation = useUpdateWorkoutMutation();
+  const completeMutation = useCompleteWorkoutMutation();
   const deleteMutation = useDeleteWorkoutMutation();
   const duplicateMutation = useDuplicateWorkoutMutation();
   const templateMutation = useCreateWorkoutTemplateMutation();
@@ -136,7 +137,14 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
   };
 
   const markComplete = () => {
-    updateMutation.mutate({ id: workout.id, data: { ...draft, status: "done" } });
+    completeMutation.mutate({
+      id: workout.id,
+      data: {
+        notes: draft.notes ?? undefined,
+        rpe: draft.rpe ?? undefined,
+        duration_minutes: draft.duration_minutes ?? undefined,
+      },
+    });
     setEditing(false);
   };
 
@@ -311,13 +319,13 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
 
           {/* Action bar */}
           <div className="flex flex-col sm:flex-row gap-2 pt-4 border-t border-border">
-            {draft.status !== "done" && (
+            {workout.status !== "done" && (
               <button
                 onClick={markComplete}
-                disabled={updateMutation.isPending}
+                disabled={completeMutation.isPending}
                 className="flex-1 rounded-full bg-emerald-bg text-emerald-text border border-emerald-border font-medium min-h-[44px] py-2.5 text-sm hover:opacity-90 transition disabled:opacity-50"
               >
-                Mark complete
+                {completeMutation.isPending ? "Completing…" : "Mark complete"}
               </button>
             )}
             {editing ? (
