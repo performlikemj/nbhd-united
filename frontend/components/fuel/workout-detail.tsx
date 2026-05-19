@@ -29,6 +29,75 @@ function est1RM(weight: number, reps: number): number {
   return Math.round(weight * (1 + reps / 30) * 10) / 10;
 }
 
+/* ---- Per-set metric contract (#593 Phase 5) ----
+ *
+ * Mirrors apps/fuel/set_contract.set_metric: prefer the explicit `type`
+ * the backend now stamps, fall back to field presence for any row not
+ * yet touched by migration 0010. The toggle lets a user re-type a
+ * miscategorised set in-place instead of arguing with the assistant.
+ */
+type SetMetric = "weighted_reps" | "bodyweight_reps" | "hold_time";
+
+const SET_METRIC_OPTIONS: { id: SetMetric; label: string }[] = [
+  { id: "weighted_reps", label: "WEIGHT" },
+  { id: "bodyweight_reps", label: "BODY" },
+  { id: "hold_time", label: "HOLD" },
+];
+
+type RawSet = { type?: SetMetric; reps?: number; weight?: number; hold_s?: number; pr?: boolean };
+
+function setMetric(s: RawSet): SetMetric {
+  if (s.type === "weighted_reps" || s.type === "bodyweight_reps" || s.type === "hold_time") {
+    return s.type;
+  }
+  if (s.hold_s != null) return "hold_time";
+  if (typeof s.weight === "number" && s.weight > 0) return "weighted_reps";
+  return "bodyweight_reps";
+}
+
+/** Re-shape a set when its metric changes: keep carry-over values, drop
+ *  fields that don't belong, always stamp the explicit `type`. */
+function reshapeSet(s: RawSet, m: SetMetric): RawSet {
+  const reps = typeof s.reps === "number" ? s.reps : 8;
+  const weight = typeof s.weight === "number" ? s.weight : 0;
+  const hold = typeof s.hold_s === "number" ? s.hold_s : 30;
+  const pr = s.pr ? { pr: true } : {};
+  if (m === "hold_time") return { type: m, hold_s: hold, ...pr };
+  if (m === "bodyweight_reps") return { type: m, reps, ...pr };
+  return { type: m, reps, weight, ...pr };
+}
+
+function MetricToggle({
+  value,
+  onChange,
+  options = SET_METRIC_OPTIONS,
+}: {
+  value: SetMetric;
+  onChange: (m: SetMetric) => void;
+  options?: { id: SetMetric; label: string }[];
+}) {
+  return (
+    <div role="group" aria-label="Set metric type" className="inline-flex rounded-full border border-border bg-surface p-0.5">
+      {options.map((m) => {
+        const active = m.id === value;
+        return (
+          <button
+            key={m.id}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(m.id)}
+            className={`rounded-full px-2.5 py-1 text-[8px] font-bold uppercase tracking-wider transition min-h-[36px] ${
+              active ? "bg-accent text-white" : "text-ink-faint hover:text-ink"
+            }`}
+          >
+            {m.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /**
  * Numeric input that holds a string during editing and only commits on blur.
  *
@@ -434,7 +503,7 @@ function WorkoutDetailSkeleton({ onClose }: { onClose: () => void }) {
  * single workout can mix weighted, bodyweight, and hold-time sets.
  */
 function StrengthEditor({ detail, editing, onChange }: { detail: Record<string, unknown>; editing: boolean; onChange: (u: Record<string, unknown>) => void }) {
-  const exercises = (detail.exercises as { name: string; sets: { reps?: number; weight?: number; hold_s?: number; pr?: boolean }[] }[]) || [];
+  const exercises = (detail.exercises as { name: string; sets: { type?: SetMetric; reps?: number; weight?: number; hold_s?: number; pr?: boolean }[] }[]) || [];
   const { unit } = useWeightUnit();
 
   const updateEx = (i: number, next: typeof exercises[number]) => {
@@ -461,7 +530,7 @@ function StrengthEditor({ detail, editing, onChange }: { detail: Record<string, 
       <div className="space-y-2.5">
         {exercises.map((ex, i) => {
           // 1RM math only applies to weighted sets; ignore hold-time entries.
-          const weightedSets = ex.sets.filter((s) => s.hold_s == null && typeof s.weight === "number" && typeof s.reps === "number");
+          const weightedSets = ex.sets.filter((s) => setMetric(s) === "weighted_reps" && typeof s.weight === "number" && typeof s.reps === "number");
           const oneRm = weightedSets.length > 0 ? Math.max(...weightedSets.map((s) => est1RM(s.weight!, s.reps!))) : 0;
           return (
           <div key={i} className="rounded-lg border border-border bg-surface-elevated p-3">
@@ -479,57 +548,68 @@ function StrengthEditor({ detail, editing, onChange }: { detail: Record<string, 
             </div>
             <div className="space-y-1">
               {ex.sets.map((s, j) => {
-                const isHold = s.hold_s != null;
+                const metric = setMetric(s);
+                const setType = (m: SetMetric) => {
+                  const sets = [...ex.sets];
+                  sets[j] = reshapeSet(s, m);
+                  updateEx(i, { ...ex, sets });
+                };
                 return (
-                <div key={j} className="grid grid-cols-[20px_1fr_1fr_auto] sm:grid-cols-[22px_1fr_1fr_auto] items-center gap-1.5 sm:gap-2 text-xs">
-                  <span className="font-mono text-[10px] text-ink-faint">{j + 1}</span>
-                  {isHold ? (
-                    // Hold-time set: span both columns, no weight slot needed.
-                    <div className="col-span-2 flex items-center gap-1">
-                      {editing ? (
-                        <NumericInput
-                          value={s.hold_s ?? null}
-                          onCommit={(v) => { const sets = [...ex.sets]; sets[j] = { ...s, hold_s: v ?? 0 }; updateEx(i, { ...ex, sets }); }}
-                          aria-label={`set ${j + 1} hold seconds`}
-                          className="w-full bg-surface rounded border border-border px-1.5 sm:px-2 py-1.5 font-mono text-xs text-ink focus:outline-none focus:border-accent min-h-[36px]"
-                        />
-                      ) : (
-                        <span className="font-mono">{s.hold_s}s</span>
-                      )}
-                      <span className="text-[8px] font-bold uppercase tracking-wider text-ink-faint">SEC</span>
-                    </div>
-                  ) : (
-                    <>
+                <div key={j} className="rounded border border-border/60 bg-surface/40 p-1.5">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-mono text-[10px] text-ink-faint">{j + 1}</span>
+                    {editing && <MetricToggle value={metric} onChange={setType} />}
+                    {s.pr && <span className="ml-auto text-[8px] font-bold uppercase tracking-wider text-accent">PR</span>}
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    {metric === "hold_time" ? (
                       <div className="flex items-center gap-1">
                         {editing ? (
                           <NumericInput
-                            value={s.reps ?? null}
-                            onCommit={(v) => { const sets = [...ex.sets]; sets[j] = { ...s, reps: v ?? 0 }; updateEx(i, { ...ex, sets }); }}
-                            aria-label={`set ${j + 1} reps`}
-                            className="w-full bg-surface rounded border border-border px-1.5 sm:px-2 py-1.5 font-mono text-xs text-ink focus:outline-none focus:border-accent min-h-[36px]"
+                            value={s.hold_s ?? null}
+                            onCommit={(v) => { const sets = [...ex.sets]; sets[j] = { ...s, type: "hold_time", hold_s: v ?? 0 }; updateEx(i, { ...ex, sets }); }}
+                            aria-label={`set ${j + 1} hold seconds`}
+                            className="w-24 bg-surface rounded border border-border px-2 py-1.5 font-mono text-xs text-ink focus:outline-none focus:border-accent min-h-[36px]"
                           />
                         ) : (
-                          <span className="font-mono">{s.reps}</span>
+                          <span className="font-mono">{s.hold_s}s</span>
                         )}
-                        <span className="text-[8px] font-bold uppercase tracking-wider text-ink-faint">REPS</span>
+                        <span className="text-[8px] font-bold uppercase tracking-wider text-ink-faint">SEC</span>
                       </div>
-                      <div className="flex items-center gap-1">
-                        {editing ? (
-                          <NumericInput
-                            value={Math.round(dw(s.weight ?? 0) * 10) / 10}
-                            onCommit={(v) => { const sets = [...ex.sets]; sets[j] = { ...s, weight: iw(v ?? 0) }; updateEx(i, { ...ex, sets }); }}
-                            allowDecimal
-                            aria-label={`set ${j + 1} weight in ${unit}`}
-                            className="w-full bg-surface rounded border border-border px-1.5 sm:px-2 py-1.5 font-mono text-xs text-ink focus:outline-none focus:border-accent min-h-[36px]"
-                          />
-                        ) : (
-                          <span className="font-mono">{s.weight ? dw(s.weight) : "BW"}</span>
+                    ) : (
+                      <>
+                        <div className="flex items-center gap-1">
+                          {editing ? (
+                            <NumericInput
+                              value={s.reps ?? null}
+                              onCommit={(v) => { const sets = [...ex.sets]; sets[j] = { ...s, reps: v ?? 0 }; updateEx(i, { ...ex, sets }); }}
+                              aria-label={`set ${j + 1} reps`}
+                              className="w-20 bg-surface rounded border border-border px-2 py-1.5 font-mono text-xs text-ink focus:outline-none focus:border-accent min-h-[36px]"
+                            />
+                          ) : (
+                            <span className="font-mono">{s.reps}</span>
+                          )}
+                          <span className="text-[8px] font-bold uppercase tracking-wider text-ink-faint">REPS</span>
+                        </div>
+                        {metric === "weighted_reps" && (
+                          <div className="flex items-center gap-1">
+                            {editing ? (
+                              <NumericInput
+                                value={Math.round(dw(s.weight ?? 0) * 10) / 10}
+                                onCommit={(v) => { const sets = [...ex.sets]; sets[j] = { ...s, weight: iw(v ?? 0) }; updateEx(i, { ...ex, sets }); }}
+                                allowDecimal
+                                aria-label={`set ${j + 1} weight in ${unit}`}
+                                className="w-20 bg-surface rounded border border-border px-2 py-1.5 font-mono text-xs text-ink focus:outline-none focus:border-accent min-h-[36px]"
+                              />
+                            ) : (
+                              <span className="font-mono">{s.weight ? dw(s.weight) : "BW"}</span>
+                            )}
+                            <span className="text-[8px] font-bold uppercase tracking-wider text-ink-faint">{unit.toUpperCase()}</span>
+                          </div>
                         )}
-                        <span className="text-[8px] font-bold uppercase tracking-wider text-ink-faint">{unit.toUpperCase()}</span>
-                      </div>
-                    </>
-                  )}
-                  {s.pr && <span className="text-[8px] font-bold uppercase tracking-wider text-accent">PR</span>}
+                      </>
+                    )}
+                  </div>
                 </div>
               );
               })}
@@ -597,7 +677,7 @@ function StatsEditor({ detail, editing, onChange, fields }: {
 
 /* ---- Calisthenics Editor ---- */
 function CalisthenicsEditor({ detail, editing, onChange }: { detail: Record<string, unknown>; editing: boolean; onChange: (u: Record<string, unknown>) => void }) {
-  const skills = (detail.skills as { name: string; sets: { reps?: number; hold_s?: number; pr?: boolean }[] }[]) || [];
+  const skills = (detail.skills as { name: string; sets: { type?: SetMetric; reps?: number; hold_s?: number; pr?: boolean }[] }[]) || [];
 
   const updateSkill = (i: number, next: typeof skills[number]) => {
     const x = [...skills];
@@ -617,7 +697,6 @@ function CalisthenicsEditor({ detail, editing, onChange }: { detail: Record<stri
       </div>
       <div className="space-y-2.5">
         {skills.map((sk, i) => {
-          const isHold = sk.sets[0]?.hold_s != null;
           return (
             <div key={i} className="rounded-lg border border-border bg-surface-elevated p-3">
               <div className="flex items-center gap-2 mb-2">
@@ -627,28 +706,46 @@ function CalisthenicsEditor({ detail, editing, onChange }: { detail: Record<stri
                   <div className="flex-1 text-sm font-medium text-ink">{sk.name}</div>
                 )}
               </div>
-              <div className="space-y-1">
-                {sk.sets.map((s, j) => (
-                  <div key={j} className="grid grid-cols-[22px_1fr_auto] items-center gap-2 text-xs">
-                    <span className="font-mono text-[10px] text-ink-faint">{j + 1}</span>
-                    <div className="flex items-center gap-1">
+              <div className="space-y-1.5">
+                {sk.sets.map((s, j) => {
+                  const metric = setMetric(s);
+                  const calisMetric = metric === "weighted_reps" ? "bodyweight_reps" : metric;
+                  const setType = (m: SetMetric) => {
+                    const sets = [...sk.sets];
+                    sets[j] = reshapeSet(s, m);
+                    updateSkill(i, { ...sk, sets });
+                  };
+                  return (
+                  <div key={j} className="rounded border border-border/60 bg-surface/40 p-1.5">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-mono text-[10px] text-ink-faint">{j + 1}</span>
+                      {editing && (
+                        <MetricToggle
+                          value={calisMetric}
+                          onChange={setType}
+                          options={SET_METRIC_OPTIONS.filter((o) => o.id !== "weighted_reps")}
+                        />
+                      )}
+                      {s.pr && <span className="ml-auto text-[8px] font-bold uppercase tracking-wider text-accent">PR</span>}
+                    </div>
+                    <div className="flex items-center gap-1 text-xs">
                       {editing ? (
                         <NumericInput
-                          value={isHold ? (s.hold_s ?? null) : (s.reps ?? null)}
-                          onCommit={(v) => { const sets = [...sk.sets]; sets[j] = isHold ? { hold_s: v ?? 0 } : { reps: v ?? 0 }; updateSkill(i, { ...sk, sets }); }}
-                          aria-label={`set ${j + 1} ${isHold ? "hold seconds" : "reps"}`}
-                          className="w-full bg-surface rounded border border-border px-2 py-1 font-mono text-xs text-ink focus:outline-none focus:border-accent"
+                          value={calisMetric === "hold_time" ? (s.hold_s ?? null) : (s.reps ?? null)}
+                          onCommit={(v) => { const sets = [...sk.sets]; sets[j] = calisMetric === "hold_time" ? { ...s, type: "hold_time", hold_s: v ?? 0 } : { ...s, type: "bodyweight_reps", reps: v ?? 0 }; updateSkill(i, { ...sk, sets }); }}
+                          aria-label={`set ${j + 1} ${calisMetric === "hold_time" ? "hold seconds" : "reps"}`}
+                          className="w-24 bg-surface rounded border border-border px-2 py-1.5 font-mono text-xs text-ink focus:outline-none focus:border-accent min-h-[36px]"
                         />
                       ) : (
-                        <span className="font-mono">{isHold ? `${s.hold_s}s` : `${s.reps} reps`}</span>
+                        <span className="font-mono">{calisMetric === "hold_time" ? `${s.hold_s}s` : `${s.reps} reps`}</span>
                       )}
-                      {editing && <span className="text-[8px] font-bold uppercase tracking-wider text-ink-faint">{isHold ? "SEC" : "REPS"}</span>}
+                      <span className="text-[8px] font-bold uppercase tracking-wider text-ink-faint">{calisMetric === "hold_time" ? "SEC" : "REPS"}</span>
                     </div>
-                    {s.pr && <span className="text-[8px] font-bold uppercase tracking-wider text-accent">PR</span>}
                   </div>
-                ))}
+                  );
+                })}
                 {editing && (
-                  <button onClick={() => updateSkill(i, { ...sk, sets: [...sk.sets, isHold ? { hold_s: 10 } : { reps: 5 }] })} className="text-[9px] font-bold uppercase tracking-wider text-ink-faint hover:text-ink transition">
+                  <button onClick={() => { const last = sk.sets.at(-1); const lm = last ? setMetric(last) : "bodyweight_reps"; const seed = lm === "weighted_reps" ? "bodyweight_reps" : lm; updateSkill(i, { ...sk, sets: [...sk.sets, reshapeSet({}, seed)] }); }} className="text-[9px] font-bold uppercase tracking-wider text-ink-faint hover:text-ink transition">
                     + SET
                   </button>
                 )}
