@@ -1897,3 +1897,275 @@ class DedupeFinanceTransactionsCommandTests(TestCase):
         self.stdout = StringIO()
         output = self._run(apply=True)
         self.assertIn("No duplicate clusters", output)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# FinanceQueryView — parameterized query for nbhd_gravity_query
+# ═════════════════════════════════════════════════════════════════════
+
+
+class FinanceQueryViewTests(TestCase):
+    """End-to-end tests for the parameterized query endpoint."""
+
+    def setUp(self):
+        from django.test import override_settings
+
+        self.tenant = create_tenant(display_name="QueryT", telegram_chat_id=901000)
+        self.other_tenant = create_tenant(display_name="QueryOther", telegram_chat_id=901001)
+        self._override = override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+        self._override.enable()
+
+        self.aj = FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Student Loan AJ",
+            current_balance=Decimal("6806.61"),
+            original_balance=Decimal("7808.69"),
+            interest_rate=Decimal("6.55"),
+            minimum_payment=Decimal("38.34"),
+            due_day=15,
+        )
+        self.ak = FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Student Loan AK",
+            current_balance=Decimal("2047.05"),
+            original_balance=Decimal("2083.12"),
+            interest_rate=Decimal("6.41"),
+            minimum_payment=Decimal("11.12"),
+            due_day=15,
+        )
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="savings",
+            nickname="Emergency Fund",
+            current_balance=Decimal("500"),
+        )
+        for amount, txn_date, acct in (
+            (Decimal("38.34"), date(2026, 5, 6), self.aj),
+            (Decimal("105.00"), date(2026, 5, 6), self.aj),
+            (Decimal("11.12"), date(2026, 5, 6), self.ak),
+            (Decimal("38.34"), date(2026, 5, 13), self.aj),
+        ):
+            FinanceTransaction.objects.create(
+                tenant=self.tenant,
+                account=acct,
+                transaction_type="payment",
+                amount=amount,
+                description="payment",
+                date=txn_date,
+            )
+        PayoffPlan.objects.create(
+            tenant=self.tenant,
+            strategy="avalanche",
+            monthly_budget=Decimal("400"),
+            total_debt=Decimal("9891.74"),
+            total_interest=Decimal("2000"),
+            payoff_months=36,
+            payoff_date=date(2029, 5, 1),
+            is_active=True,
+        )
+
+    def tearDown(self):
+        self._override.disable()
+
+    def _post(self, body, *, tenant_id=None, key="test-internal-key"):
+        tid = tenant_id or str(self.tenant.id)
+        return self.client.post(
+            f"/api/v1/finance/runtime/{tid}/query/",
+            data=body,
+            content_type="application/json",
+            HTTP_X_NBHD_INTERNAL_KEY=key,
+            HTTP_X_NBHD_TENANT_ID=tid,
+        )
+
+    def test_missing_key_401(self):
+        self.assertEqual(self._post({"resource": "accounts"}, key="").status_code, 401)
+
+    def test_response_envelope_has_meta(self):
+        r = self._post({"resource": "accounts"})
+        self.assertEqual(r.status_code, 200)
+        meta = r.json()["meta"]
+        for k in (
+            "schema_version",
+            "computed_at",
+            "tenant_tz",
+            "as_of",
+            "window_resolved_to",
+            "row_count",
+            "has_more",
+            "query_hash",
+        ):
+            self.assertIn(k, meta)
+
+    def test_accounts_default_returns_active(self):
+        r = self._post({"resource": "accounts"})
+        nicks = sorted(row["nickname"] for row in r.json()["data"])
+        self.assertEqual(nicks, ["Emergency Fund", "Student Loan AJ", "Student Loan AK"])
+
+    def test_accounts_filter_is_debt(self):
+        r = self._post({"resource": "accounts", "filter": {"is_debt": True}})
+        nicks = sorted(row["nickname"] for row in r.json()["data"])
+        self.assertEqual(nicks, ["Student Loan AJ", "Student Loan AK"])
+
+    def test_accounts_filter_unknown_key_400(self):
+        r = self._post({"resource": "accounts", "filter": {"colour": "red"}})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["error"], "unknown_filter_keys")
+
+    def test_accounts_fields_projection_keeps_identifier(self):
+        r = self._post({"resource": "accounts", "fields": ["nickname"]})
+        row = r.json()["data"][0]
+        self.assertIn("id", row)
+        self.assertIn("nickname", row)
+        self.assertNotIn("interest_rate", row)
+
+    def test_accounts_amounts_serialized_as_strings(self):
+        r = self._post({"resource": "accounts", "filter": {"nickname": "Student Loan AJ"}})
+        row = r.json()["data"][0]
+        self.assertEqual(row["current_balance"], "6806.61")
+
+    def test_transactions_requires_window(self):
+        r = self._post({"resource": "transactions"})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["error"], "window_required")
+
+    def test_transactions_between_window_filters_by_date(self):
+        r = self._post(
+            {
+                "resource": "transactions",
+                "window": {"kind": "between", "value": ["2026-05-10", "2026-05-20"]},
+            }
+        )
+        dates = sorted({row["date"] for row in r.json()["data"]})
+        self.assertEqual(dates, ["2026-05-13"])
+
+    def test_transactions_all_window_returns_everything(self):
+        r = self._post({"resource": "transactions", "window": {"kind": "all"}})
+        self.assertEqual(r.json()["meta"]["row_count"], 4)
+
+    def test_transactions_filter_by_account_nickname_fuzzy(self):
+        r = self._post(
+            {
+                "resource": "transactions",
+                "window": {"kind": "all"},
+                "filter": {"account_nickname": "loan ak"},
+            }
+        )
+        rows = r.json()["data"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["account_nickname"], "Student Loan AK")
+
+    def test_transactions_unknown_account_returns_empty(self):
+        r = self._post(
+            {
+                "resource": "transactions",
+                "window": {"kind": "all"},
+                "filter": {"account_nickname": "Ghost Loan"},
+            }
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["meta"]["row_count"], 0)
+
+    def test_transactions_aggregate_sum_no_group(self):
+        r = self._post(
+            {
+                "resource": "transactions",
+                "window": {"kind": "all"},
+                "aggregate": "sum",
+                "aggregate_field": "amount",
+            }
+        )
+        data = r.json()["data"]
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["value"], "192.80")
+        self.assertEqual(data[0]["count"], 4)
+
+    def test_transactions_aggregate_sum_group_by_account(self):
+        r = self._post(
+            {
+                "resource": "transactions",
+                "window": {"kind": "all"},
+                "aggregate": "sum",
+                "aggregate_field": "amount",
+                "group_by": "account_nickname",
+            }
+        )
+        data = r.json()["data"]
+        by_nick = {row["group"]["account_nickname"]: row["value"] for row in data}
+        self.assertEqual(by_nick["Student Loan AJ"], "181.68")
+        self.assertEqual(by_nick["Student Loan AK"], "11.12")
+
+    def test_aggregate_count_no_field_required(self):
+        r = self._post({"resource": "transactions", "window": {"kind": "all"}, "aggregate": "count"})
+        self.assertEqual(r.json()["data"][0]["value"], 4)
+
+    def test_aggregate_sum_requires_field(self):
+        r = self._post({"resource": "transactions", "window": {"kind": "all"}, "aggregate": "sum"})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["error"], "aggregate_field_required")
+
+    def test_aggregate_field_without_aggregate_400(self):
+        r = self._post(
+            {
+                "resource": "transactions",
+                "window": {"kind": "all"},
+                "aggregate_field": "amount",
+            }
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_group_by_without_aggregate_400(self):
+        r = self._post(
+            {
+                "resource": "transactions",
+                "window": {"kind": "all"},
+                "group_by": "transaction_type",
+            }
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_plan_default_returns_active(self):
+        r = self._post({"resource": "plan"})
+        data = r.json()["data"]
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["strategy"], "avalanche")
+        self.assertEqual(data[0]["monthly_budget"], "400.00")
+
+    def test_order_by_unknown_field_400(self):
+        r = self._post({"resource": "accounts", "order_by": "magic"})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["error"], "invalid_order_by")
+
+    def test_same_request_produces_same_hash(self):
+        body = {"resource": "transactions", "window": {"kind": "all"}}
+        a = self._post(body).json()["meta"]["query_hash"]
+        b = self._post(body).json()["meta"]["query_hash"]
+        self.assertEqual(a, b)
+
+    def test_different_filter_produces_different_hash(self):
+        a = self._post({"resource": "transactions", "window": {"kind": "all"}}).json()["meta"]["query_hash"]
+        b = self._post(
+            {
+                "resource": "transactions",
+                "window": {"kind": "all"},
+                "filter": {"transaction_type": "payment"},
+            }
+        ).json()["meta"]["query_hash"]
+        self.assertNotEqual(a, b)
+
+    def test_limit_caps_results_and_flags_has_more(self):
+        r = self._post({"resource": "transactions", "window": {"kind": "all"}, "limit": 2})
+        self.assertEqual(r.json()["meta"]["row_count"], 2)
+        self.assertTrue(r.json()["meta"]["has_more"])
+
+    def test_other_tenants_data_not_visible(self):
+        FinanceAccount.objects.create(
+            tenant=self.other_tenant,
+            account_type="credit_card",
+            nickname="Other Tenant Card",
+            current_balance=Decimal("999"),
+        )
+        r = self._post({"resource": "accounts"})
+        nicks = [row["nickname"] for row in r.json()["data"]]
+        self.assertNotIn("Other Tenant Card", nicks)
