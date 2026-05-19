@@ -636,6 +636,16 @@ class TelegramPoller:
 
         set_rls_context(service_role=True)
 
+        # Idempotency gate — the offset is in-memory only, so a poller
+        # restart re-fetches every update Telegram hadn't seen acked and
+        # would reprocess it. Claiming update_id here makes restart
+        # replays (and any provider re-send) a harmless no-op.
+        from apps.router.inbound_dedup import claim_inbound_event
+
+        if update_id and not claim_inbound_event(f"tg:{update_id}"):
+            logger.info("Telegram poller: skipping duplicate update %s", update_id)
+            return
+
         try:
             self._handle_update(update)
         except Exception:

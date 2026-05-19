@@ -183,3 +183,45 @@ class PendingMessage(models.Model):
 
     def __str__(self) -> str:
         return f"PendingMessage({self.channel}, {self.delivery_status}, tenant={self.tenant_id})"
+
+
+class ProcessedInboundEvent(models.Model):
+    """Idempotency ledger for inbound provider events.
+
+    LINE and Telegram both deliver webhooks *at least once*: LINE
+    redelivers an event (same ``webhookEventId``, ``deliveryContext.
+    isRedelivery=true``) whenever our endpoint is slow to 200 or on its
+    internal retry; Telegram replays any ``update_id`` that wasn't
+    acknowledged before the poller process restarted (the offset is
+    in-memory only). Without a dedupe gate every redelivery spawns a
+    fresh ``PendingMessage`` → a fresh drain → a duplicate assistant
+    reply. The ``PendingMessage`` SKIP-LOCKED lease only protects a
+    single row; two rows born from the same logical event are processed
+    independently.
+
+    Each channel claims its event here *before* any side effect, keyed
+    by the provider's stable id (``line:<webhookEventId>`` /
+    ``tg:<update_id>``). The unique constraint makes the claim race-safe
+    across the LINE webhook's per-event daemon threads and concurrent
+    redelivery. Rows are pruned probabilistically (see
+    ``apps.router.inbound_dedup``) so the table can't grow unbounded
+    without standing up new cron infrastructure.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    event_key = models.CharField(
+        max_length=160,
+        unique=True,
+        help_text=(
+            "Provider-namespaced stable event id: 'line:<webhookEventId>' "
+            "or 'tg:<update_id>'. The unique constraint is the dedupe."
+        ),
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = "processed inbound event"
+        verbose_name_plural = "processed inbound events"
+
+    def __str__(self) -> str:
+        return f"ProcessedInboundEvent({self.event_key})"
