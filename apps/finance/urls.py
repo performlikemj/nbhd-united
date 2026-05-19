@@ -1,5 +1,6 @@
 from django.urls import path
 
+from .query_views import FinanceQueryView
 from .runtime_views import (
     RuntimeFinanceAccountsView,
     RuntimeFinanceArchiveAccountView,
@@ -69,5 +70,10 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/summary/",
         RuntimeFinanceSummaryView.as_view(),
         name="runtime-finance-summary",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/query/",
+        FinanceQueryView.as_view(),
+        name="runtime-finance-query",
     ),
 ]

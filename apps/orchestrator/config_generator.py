@@ -43,7 +43,15 @@ _CRON_CONTEXT_PREAMBLE = (
     "just signaled, the prescribed task — weave it in lightly. If "
     "nothing fits, stay focused. Surface at most one or two threads, "
     "chosen for fit, never coverage. Never enumerate the agenda to "
-    "the user.\n\n"
+    "the user.\n"
+    "5. **GROUNDING CONTRACT** — every quantitative claim you make to the user "
+    "(counts, amounts, dates, streaks, totals, durations, percentages, "
+    '"X days ago") MUST come from a tool-call result returned in THIS turn. '
+    "Do not infer from USER.md. Do not recall from prior context. Do not "
+    "average or extrapolate. If a query returns zero rows, say so plainly — "
+    "don't pad with stale figures. Use the per-domain query tool for any "
+    "number you state: `nbhd_gravity_query` for finance (debt, payments, "
+    "payoff). USER.md is identity (goals, persona, voice) — not current state.\n\n"
 )
 
 
@@ -614,12 +622,22 @@ _FUEL_WORKOUT_PREP_PROMPT = (
 
 _GRAVITY_WEEKLY_PROMPT = (
     "Sunday-evening Gravity check-in. The user has finance tracking enabled.\n\n"
-    "USER.md (already in your context) carries the Gravity finance section: "
-    "active accounts + total debt, active payoff plan, top-priority debt by "
-    "the user's chosen strategy, upcoming due dates, recent transactions. "
-    "Do NOT call `nbhd_finance_summary` at the top — USER.md already has the "
-    "snapshot. Only call finance tools when you need detail USER.md doesn't "
-    "carry (full transaction history, mid-strategy comparisons, etc.).\n\n"
+    "Pull the data you need via `nbhd_gravity_query` — never assert finance "
+    "numbers from USER.md or memory. The four queries that cover this "
+    "check-in:\n"
+    "  1. This week's payments:\n"
+    '     {"resource": "transactions", "window": {"kind": "last_n_days", "value": 7}}\n'
+    "  2. Current active debts + balances:\n"
+    '     {"resource": "accounts", "filter": {"is_debt": true}}\n'
+    "  3. Active payoff plan (strategy, target date, monthly budget):\n"
+    '     {"resource": "plan"}\n'
+    '  4. Total debt for the opener ("debt down vs. last week", etc.):\n'
+    '     {"resource": "accounts", "filter": {"is_debt": true}, '
+    '"aggregate": "sum", "aggregate_field": "current_balance"}\n\n'
+    "Decide top-priority debt yourself from query (3) plus (2): avalanche → "
+    "highest interest_rate; snowball → lowest current_balance; hybrid → "
+    "your judgment. Decide upcoming due dates from (2)'s due_day field vs. "
+    "today's date in tenant tz.\n\n"
     "Send the user exactly ONE message via `nbhd_send_to_user` that:\n"
     "  - Opens with a brief acknowledgement of progress this week (debt down, "
     "payment made, milestone hit) OR a flag if something needs attention "
@@ -628,17 +646,22 @@ _GRAVITY_WEEKLY_PROMPT = (
     "should make\n"
     "  - If a due date falls within the coming week, name it explicitly\n"
     "  - Keeps it conversational and short — 4-6 lines max, no data dump\n\n"
-    "Cross-reference the snapshot:\n"
-    "  - If goals contains a finance-related goal (debt-free target, savings "
-    "target), tie progress to it\n"
-    "  - If recent journal mentions money stress / windfall, acknowledge it\n"
+    "GROUNDING: every number you write in the message must come from a query "
+    "result returned in this turn. If query (1) returns row_count=0, say "
+    "'no payments logged this week' — don't pad with last week's figures. "
+    "If a value looks wrong against what the user just told you, prefer the "
+    "query result and ask the user to confirm.\n\n"
+    "Cross-reference:\n"
+    "  - If goals (`nbhd_document_get` kind='goal') contains a finance goal "
+    "(debt-free target, savings target), tie progress to it.\n"
+    "  - If recent journal mentions money stress / windfall, acknowledge it.\n"
     "  - If a planned workout or other commitment competes with payment "
-    "timing this week, name the trade-off honestly\n\n"
-    "If nothing has changed materially since last week's check-in (no "
-    "payments, no new accounts, no due dates approaching), it is OK to "
+    "timing this week, name the trade-off honestly.\n\n"
+    "If queries (1) and (2) show no material change since last week (no "
+    "payments, balances unchanged, no due dates approaching), it is OK to "
     "send a shorter check-in: 'Quiet week on the Gravity side — you're on "
-    "track with [strategy]. Anything to adjust?' Don't pad with stale "
-    "content.\n\n"
+    "track with [strategy from query (3)]. Anything to adjust?' Don't pad "
+    "with stale content.\n\n"
     "**Send exactly ONE user-facing message via `nbhd_send_to_user`. After "
     "that message is sent, proceed to the FINAL STEP described below.**\n"
 )

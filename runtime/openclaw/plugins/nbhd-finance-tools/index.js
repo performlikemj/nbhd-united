@@ -437,7 +437,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_finance_summary",
       description:
-        "Get a complete financial overview: total debt, total savings, all account details, active payoff plan, and monthly minimums. Use this at the start of financial conversations for full context.",
+        "Get a complete financial overview: total debt, total savings, all account details, active payoff plan, and monthly minimums. Prefer `nbhd_gravity_query` for any specific slice — this returns a fixed snapshot and is kept for backward compatibility.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -447,6 +447,90 @@ export default function register(api) {
         const payload = await callRuntime(api, {
           path: financePath(api, "/summary/"),
           method: "GET",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  // ── Parameterized Gravity query ──────────────────────────────────────
+  api.registerTool(wrap({
+      name: "nbhd_gravity_query",
+      description:
+        "Query the Gravity (finance) ledger for accounts, transactions, or active payoff plan. " +
+        "USE THIS for any quantitative finance claim — debt totals, payment history, payoff progress, " +
+        "due dates. Never state a finance number from memory or from USER.md alone; if you don't see a " +
+        "number you need in this turn's tool results, query for it.\n\n" +
+        "Parameters:\n" +
+        "  • resource (required): one of \"accounts\", \"transactions\", \"plan\".\n" +
+        "  • window: time range. Required for \"transactions\". Shape: {\"kind\": <enum>, \"value\": <if needed>}.\n" +
+        "      Enum: today | yesterday | tomorrow | all | last_n_days (+value: int 1-730) | next_n_days |\n" +
+        "      last_n_weeks (+value: int 1-104) | last_n_months (+value: int 1-24) | this_week | last_week |\n" +
+        "      month_to_date | last_month | year_to_date | last_year | since (+value: \"YYYY-MM-DD\") |\n" +
+        "      between (+value: [\"YYYY-MM-DD\", \"YYYY-MM-DD\"]).\n" +
+        "  • filter: dict, resource-specific:\n" +
+        "      accounts:     {is_active?: bool (default true), account_type?: str, nickname?: str (fuzzy), is_debt?: bool}\n" +
+        "      transactions: {account_nickname?: str, account_id?: uuid, transaction_type?: str,\n" +
+        "                     min_amount?: number, max_amount?: number}\n" +
+        "      plan:         {is_active?: bool (default true), strategy?: \"snowball\"|\"avalanche\"|\"hybrid\"}\n" +
+        "  • fields: optional list of field names; the identifier (id) is always included. Omit for all fields.\n" +
+        "  • aggregate: optional one of \"sum\", \"count\", \"avg\", \"min\", \"max\". Requires aggregate_field for sum/avg/min/max.\n" +
+        "  • aggregate_field: required if aggregate is sum/avg/min/max. e.g. \"amount\", \"current_balance\".\n" +
+        "  • group_by: optional. transactions: \"transaction_type\"|\"account_id\"|\"account_nickname\"|\"date\". accounts: \"account_type\"|\"is_debt\".\n" +
+        "  • order_by: optional. Prefix with \"-\" for descending. Defaults: transactions \"-date\", accounts \"nickname\", plan \"-created_at\".\n" +
+        "  • limit: optional. Default 50, max 500. Response.meta.has_more is true if cap was reached.\n\n" +
+        "Returns: {\"data\": [...], \"meta\": {schema_version, computed_at, tenant_tz, as_of, window_resolved_to: {from,to}, row_count, has_more, query_hash}}\n\n" +
+        "All numeric amounts are returned as STRINGS to preserve Decimal precision; never parse as float.\n\n" +
+        "Examples:\n" +
+        "  Current debt total:\n" +
+        "    {\"resource\": \"accounts\", \"filter\": {\"is_debt\": true}, \"aggregate\": \"sum\", \"aggregate_field\": \"current_balance\"}\n" +
+        "  This week's payments:\n" +
+        "    {\"resource\": \"transactions\", \"window\": {\"kind\": \"last_n_days\", \"value\": 7}, \"filter\": {\"transaction_type\": \"payment\"}}\n" +
+        "  Monthly payment trend by account, last 6 months:\n" +
+        "    {\"resource\": \"transactions\", \"window\": {\"kind\": \"last_n_months\", \"value\": 6}, \"filter\": {\"transaction_type\": \"payment\"}, \"aggregate\": \"sum\", \"aggregate_field\": \"amount\", \"group_by\": \"account_nickname\"}\n" +
+        "  Current payoff plan:\n" +
+        "    {\"resource\": \"plan\"}\n" +
+        "  When did I last pay Student Loan AJ?\n" +
+        "    {\"resource\": \"transactions\", \"window\": {\"kind\": \"all\"}, \"filter\": {\"account_nickname\": \"Student Loan AJ\"}, \"order_by\": \"-date\", \"limit\": 1}\n\n" +
+        "GROUNDING CONTRACT: Any finance number you state to the user MUST come from a query result returned in this turn. Don't infer from USER.md. Don't recall. Don't extrapolate. If row_count is 0, say so plainly — never pad with stale figures.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          resource: { type: "string", enum: ["accounts", "transactions", "plan"] },
+          window: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              kind: {
+                type: "string",
+                enum: [
+                  "today", "yesterday", "tomorrow", "all",
+                  "last_n_days", "next_n_days", "last_n_weeks", "last_n_months",
+                  "this_week", "last_week", "month_to_date", "last_month",
+                  "year_to_date", "last_year", "since", "between",
+                ],
+              },
+              value: {},
+            },
+            required: ["kind"],
+          },
+          filter: { type: "object", additionalProperties: true },
+          fields: { type: "array", items: { type: "string" } },
+          aggregate: { type: "string", enum: ["sum", "count", "avg", "min", "max"] },
+          aggregate_field: { type: "string" },
+          group_by: { type: "string" },
+          order_by: { type: "string" },
+          limit: { type: "integer", minimum: 1, maximum: 500 },
+        },
+        required: ["resource"],
+      },
+      async execute(args) {
+        const payload = await callRuntime(api, {
+          path: financePath(api, "/query/"),
+          method: "POST",
+          body: args,
         });
         return renderPayload(payload);
       },
