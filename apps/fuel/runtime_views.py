@@ -124,6 +124,17 @@ class RuntimeLogWorkoutView(APIView):
         if not activity:
             activity = WorkoutCategory(category).label
 
+        # Phase 1 (#593) — deterministic registry correction of each set's
+        # `type` and (strength↔calisthenics) category before persistence,
+        # so a mis-classified set ("plank" as reps+weight) can't be stored.
+        # Local import: matches this module's idiom (detect_prs) and keeps
+        # the lint-autofix from reaping it between edits.
+        from .set_contract import normalize_detail
+
+        detail_json, category = normalize_detail(
+            data.get("detail_json", {}) or {}, category, activity=activity
+        )[:2]
+
         try:
             workout = Workout.objects.create(
                 tenant=tenant,
@@ -134,7 +145,7 @@ class RuntimeLogWorkoutView(APIView):
                 duration_minutes=duration,
                 rpe=rpe,
                 notes=data.get("notes", ""),
-                detail_json=data.get("detail_json", {}),
+                detail_json=detail_json,
             )
         except Exception as exc:
             logger.exception("RuntimeLogWorkoutView failed for tenant %s", tenant_id)
@@ -241,8 +252,17 @@ class RuntimeWorkoutDetailView(APIView):
             updated_fields.append("notes")
 
         if "detail_json" in data and isinstance(data["detail_json"], dict):
-            workout.detail_json = data["detail_json"]
+            from .set_contract import normalize_detail
+
+            nd, ncat = normalize_detail(
+                data["detail_json"], workout.category, activity=workout.activity
+            )[:2]
+            workout.detail_json = nd
             updated_fields.append("detail_json")
+            if ncat != workout.category:
+                workout.category = ncat
+                if "category" not in updated_fields:
+                    updated_fields.append("category")
 
         if updated_fields:
             updated_fields.append("updated_at")

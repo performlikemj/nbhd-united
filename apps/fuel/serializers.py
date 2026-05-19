@@ -114,6 +114,23 @@ class WorkoutSerializer(serializers.ModelSerializer):
             attrs["date"] = attrs["scheduled_at"].date()
         if not attrs.get("date") and not self.instance:
             raise serializers.ValidationError({"date": "Either date or scheduled_at is required."})
+
+        # Phase 1 (#593) — same deterministic registry correction the
+        # runtime path applies, for frontend-origin create/edit. Local
+        # import keeps the lint-autofix from reaping it between edits.
+        if "detail_json" in attrs:
+            from .set_contract import normalize_detail
+
+            base_cat = attrs.get("category") or (
+                self.instance.category if self.instance else "other"
+            )
+            base_act = attrs.get("activity") or (
+                self.instance.activity if self.instance else None
+            )
+            nd, ncat = normalize_detail(attrs["detail_json"], base_cat, activity=base_act)[:2]
+            attrs["detail_json"] = nd
+            if ncat != base_cat:
+                attrs["category"] = ncat
         return attrs
 
     def create(self, validated_data):
