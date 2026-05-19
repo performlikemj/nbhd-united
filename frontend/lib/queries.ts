@@ -1207,6 +1207,7 @@ export function useWorkoutsQuery(params?: {
   date_to?: string;
   limit?: number;
 }) {
+  const qc = useQueryClient();
   return useQuery({
     queryKey: [
       "fuel-workouts",
@@ -1216,7 +1217,12 @@ export function useWorkoutsQuery(params?: {
       params?.date_to ?? "",
       String(params?.limit ?? ""),
     ],
-    queryFn: () => fetchWorkouts(params),
+    queryFn: async () => {
+      const data = await fetchWorkouts(params);
+      // Prime the per-workout detail cache so opening the drawer is instant.
+      data.forEach((w) => qc.setQueryData(["fuel-workout", w.id], w));
+      return data;
+    },
     staleTime: 2 * 60_000,
     enabled: isLoggedIn(),
   });
@@ -1281,9 +1287,15 @@ export function useDeleteWorkoutMutation() {
 }
 
 export function useScheduleWindowQuery(window: string = "7d") {
+  const qc = useQueryClient();
   return useQuery({
     queryKey: ["fuel-schedule", window],
-    queryFn: () => fetchScheduleWindow(window),
+    queryFn: async () => {
+      const data = await fetchScheduleWindow(window);
+      // Prime the per-workout detail cache so opening the drawer is instant.
+      data.forEach((w) => qc.setQueryData(["fuel-workout", w.id], w));
+      return data;
+    },
     staleTime: 60_000,
     enabled: isLoggedIn(),
   });
