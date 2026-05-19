@@ -149,11 +149,9 @@ export function IconHorizons({ className = "h-5 w-5" }: { className?: string }) 
 export function IconGravity({ className = "h-5 w-5" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 2v20" />
-      <path d="M17 5a9 9 0 00-10 0" />
-      <path d="M17 19a9 9 0 00-10 0" />
-      <path d="M9 9c0 5.2 1.8 10 6 10" />
-      <path d="M9 15c0-5.2 1.8-10 6-10" />
+      <ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(-30 12 12)" />
+      <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />
+      <circle cx="20" cy="7.5" r="1.5" fill="currentColor" stroke="none" />
     </svg>
   );
 }
