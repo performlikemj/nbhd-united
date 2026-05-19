@@ -3,9 +3,10 @@
 import { useState } from "react";
 
 import { useCreateRestingHRMutation, useRestingHRQuery } from "@/lib/queries";
+import { SkelBar } from "@/components/ui/skeleton";
 
 export function RestingHeartRate() {
-  const { data: entries, isLoading } = useRestingHRQuery();
+  const { data: entries, isPending } = useRestingHRQuery();
   const createMutation = useCreateRestingHRMutation();
   const todayISO = new Date().toISOString().slice(0, 10);
   const [date, setDate] = useState(todayISO);
@@ -83,8 +84,15 @@ export function RestingHeartRate() {
         </button>
       </form>
 
-      {isLoading ? (
-        <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-faint">loading…</div>
+      {isPending ? (
+        <div className="space-y-1" role="status" aria-busy="true" aria-label="Loading resting heart rate history">
+          {[0, 1, 2, 3, 4].map((i) => (
+            <div key={i} className="flex items-center gap-3">
+              <SkelBar className="h-3 w-20 shrink-0" />
+              <SkelBar className="h-4 w-16" />
+            </div>
+          ))}
+        </div>
       ) : (entries || []).length > 0 ? (
         <div className="space-y-1">
           {(entries || []).slice(0, 14).map((e) => (

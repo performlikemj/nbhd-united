@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { SkelBar } from "@/components/ui/skeleton";
 import { useCompleteWorkoutMutation, useCreateWorkoutTemplateMutation, useDeleteWorkoutMutation, useDuplicateWorkoutMutation, useUpdateWorkoutMutation, useWorkoutQuery } from "@/lib/queries";
 import type { FuelWorkout, WorkoutCategory } from "@/lib/types";
 import { CATEGORIES, CATEGORY_IDS } from "./category-meta";
@@ -372,10 +373,6 @@ function FieldBox({ label, children }: { label: string; children: React.ReactNod
       <div className="mt-1">{children}</div>
     </div>
   );
-}
-
-function SkelBar({ className = "" }: { className?: string }) {
-  return <div className={`animate-pulse rounded bg-ink/10 ${className}`} aria-hidden="true" />;
 }
 
 function WorkoutDetailSkeleton({ onClose }: { onClose: () => void }) {

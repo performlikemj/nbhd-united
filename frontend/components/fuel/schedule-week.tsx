@@ -10,6 +10,7 @@ import {
 } from "@/lib/queries";
 import type { FuelWorkout, WorkoutCategory } from "@/lib/types";
 import { StatusPill } from "@/components/status-pill";
+import { SkelBar } from "@/components/ui/skeleton";
 import { CATEGORIES } from "./category-meta";
 
 interface ScheduleWeekProps {
@@ -43,7 +44,7 @@ function formatTime(scheduledAt: string | null): string | null {
 }
 
 export function ScheduleWeek({ onAddSession, onOpenWorkout }: ScheduleWeekProps) {
-  const { data, isLoading } = useScheduleWindowQuery("7d");
+  const { data, isLoading, isPending } = useScheduleWindowQuery("7d");
 
   const days = useMemo(() => nextSevenDays(), []);
   const todayIso = days[0].iso;
@@ -79,11 +80,17 @@ export function ScheduleWeek({ onAddSession, onOpenWorkout }: ScheduleWeekProps)
 
   return (
     <div className="space-y-3">
-      {nextUp && <NextUpBanner workout={nextUp} onOpen={() => onOpenWorkout(nextUp.id)} />}
+      {nextUp ? (
+        <NextUpBanner workout={nextUp} onOpen={() => onOpenWorkout(nextUp.id)} />
+      ) : isPending ? (
+        <NextUpSkeleton />
+      ) : null}
 
       <div className="flex items-center justify-between gap-3">
         <h2 className="font-headline text-base sm:text-lg font-semibold text-ink">Next 7 days</h2>
-        {isLoading && <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-faint">loading…</span>}
+        {isLoading && data && (
+          <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-faint">syncing…</span>
+        )}
       </div>
 
       {/* Mobile: today card + compact rows for the rest of the week. All 7 days visible at once. */}
@@ -285,6 +292,37 @@ function DayRow({ iso, date, sessions, onAddSession, onOpenWorkout }: DayRowProp
         </svg>
       )}
     </button>
+  );
+}
+
+function NextUpSkeleton() {
+  return (
+    <section
+      aria-busy="true"
+      role="status"
+      aria-label="Loading next workout"
+      className="rounded-panel border border-border bg-card/95 p-4 sm:p-5 shadow-panel backdrop-blur-md relative overflow-hidden"
+      style={{ borderLeftWidth: "3px", borderLeftColor: "rgba(226,232,240,0.15)" }}
+    >
+      <div className="flex items-start gap-4 sm:items-center sm:justify-between flex-col sm:flex-row">
+        <div className="min-w-0 w-full sm:w-auto">
+          <div className="flex items-center gap-2 mb-2">
+            <SkelBar className="h-3 w-14" />
+            <SkelBar className="h-3 w-24" />
+          </div>
+          <SkelBar className="h-6 w-2/3 sm:w-72" />
+          <div className="mt-2 flex items-center gap-3">
+            <SkelBar className="h-3 w-16" />
+            <SkelBar className="h-3 w-12" />
+          </div>
+        </div>
+        <div className="flex w-full sm:w-auto items-center gap-2 shrink-0">
+          <SkelBar className="h-11 flex-1 sm:w-28" />
+          <SkelBar className="h-11 w-20" />
+          <SkelBar className="h-11 w-20 hidden sm:block" />
+        </div>
+      </div>
+    </section>
   );
 }
 

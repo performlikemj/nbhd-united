@@ -9,10 +9,11 @@ import {
   useUpdateBodyWeightMutation,
 } from "@/lib/queries";
 import type { BodyWeightEntry } from "@/lib/types";
+import { SkelBar } from "@/components/ui/skeleton";
 import { displayToKg, kgToDisplay, useWeightUnit } from "./use-weight-unit";
 
 export function BodyWeight() {
-  const { data: entries, isLoading } = useBodyWeightQuery();
+  const { data: entries, isPending } = useBodyWeightQuery();
   const createMutation = useCreateBodyWeightMutation();
   const deleteMutation = useDeleteBodyWeightMutation();
   const updateMutation = useUpdateBodyWeightMutation();
@@ -119,8 +120,17 @@ export function BodyWeight() {
       </form>
 
       {/* Recent entries */}
-      {isLoading ? (
-        <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-faint">loading…</div>
+      {isPending ? (
+        <div className="space-y-1" role="status" aria-busy="true" aria-label="Loading body weight history">
+          {[0, 1, 2, 3, 4].map((i) => (
+            <div key={i} className="flex items-center gap-3">
+              <SkelBar className="h-3 w-20 shrink-0" />
+              <SkelBar className="h-4 w-16 flex-1" />
+              <SkelBar className="h-9 w-9" />
+              <SkelBar className="h-9 w-9" />
+            </div>
+          ))}
+        </div>
       ) : (entries || []).length > 0 ? (
         <div className="space-y-1">
           {(entries || []).slice(0, 14).map((e) => {

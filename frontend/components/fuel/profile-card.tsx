@@ -1,9 +1,29 @@
 "use client";
 
+import { SkelBar } from "@/components/ui/skeleton";
 import { useFuelProfileQuery } from "@/lib/queries";
 
 export function ProfileCard() {
-  const { data: profile } = useFuelProfileQuery();
+  const { data: profile, isPending } = useFuelProfileQuery();
+
+  if (isPending) {
+    return (
+      <div
+        className="rounded-panel border border-border bg-surface-elevated p-4 mb-6"
+        role="status"
+        aria-busy="true"
+        aria-label="Loading profile"
+      >
+        <SkelBar className="h-3 w-16 mb-3" />
+        <div className="flex flex-wrap gap-x-6 gap-y-2">
+          <SkelBar className="h-4 w-20" />
+          <SkelBar className="h-4 w-16" />
+          <SkelBar className="h-4 w-32" />
+          <SkelBar className="h-4 w-24" />
+        </div>
+      </div>
+    );
+  }
 
   if (!profile) return null;
 
