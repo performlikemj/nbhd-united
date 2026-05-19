@@ -127,7 +127,7 @@ function NewWorkoutDialogInner({ presetDate, onClose, onCreated }: Omit<NewWorko
               <input
                 value={activity}
                 onChange={(e) => setActivity(e.target.value)}
-                placeholder="Anything \u2014 tennis, bouldering, push day\u2026"
+                placeholder="Anything — tennis, bouldering, push day…"
                 className="mt-1.5 w-full rounded-lg border border-border bg-surface-elevated px-4 py-2.5 text-sm text-ink focus:outline-none focus:border-accent placeholder:text-ink-faint"
               />
               <div className="mt-2 flex flex-wrap gap-1.5">

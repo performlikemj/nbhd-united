@@ -262,9 +262,9 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
                 <div className="font-mono text-sm">{workout.duration_minutes ?? "\u2014"} min</div>
               )}
             </FieldBox>
-            <FieldBox label="RPE \u00b7 1\u201310">
+            <FieldBox label="RPE · 1–10">
               {editing ? (
-                <input type="number" min="1" max="10" value={draft.rpe ?? ""} onChange={(e) => setDraft({ ...draft, rpe: e.target.value ? +e.target.value : null })} placeholder="\u2014" className="w-full bg-transparent font-mono text-sm text-ink focus:outline-none" />
+                <input type="number" min="1" max="10" value={draft.rpe ?? ""} onChange={(e) => setDraft({ ...draft, rpe: e.target.value ? +e.target.value : null })} placeholder="—" className="w-full bg-transparent font-mono text-sm text-ink focus:outline-none" />
               ) : (
                 <div className="font-mono text-sm">{workout.rpe ?? "\u2014"}</div>
               )}
@@ -516,7 +516,7 @@ function StatsEditor({ detail, editing, onChange, fields }: {
                     type="text"
                     value={(detail[key] as string) ?? ""}
                     onChange={(e) => onChange({ [key]: e.target.value })}
-                    placeholder="\u2014"
+                    placeholder="—"
                     className="mt-1 w-full bg-transparent font-mono text-base text-ink focus:outline-none"
                   />
                 ) : (
@@ -524,7 +524,7 @@ function StatsEditor({ detail, editing, onChange, fields }: {
                     value={(detail[key] as number | null) ?? null}
                     onCommit={(v) => onChange({ [key]: v })}
                     allowDecimal={key === "distance_km"}
-                    placeholder="\u2014"
+                    placeholder="—"
                     aria-label={label}
                     className="mt-1 w-full bg-transparent font-mono text-base text-ink focus:outline-none"
                   />
