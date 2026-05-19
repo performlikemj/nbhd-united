@@ -230,32 +230,40 @@ export default function register(api) {
               exercises: {
                 type: "array",
                 description:
-                  "For strength/calisthenics. Each exercise has a name and sets.",
+                  "For strength AND calisthenics — both use this array (there is no separate 'skills' array). Each exercise has a name and sets; every set MUST declare its `type`.",
                 items: {
                   type: "object",
                   properties: {
                     name: {
                       type: "string",
-                      description: "Exercise name, e.g. 'Bench Press', 'Deadlift'.",
+                      description: "Exercise name, e.g. 'Bench Press', 'Pull-up', 'Plank'.",
                     },
                     sets: {
                       type: "array",
                       items: {
                         type: "object",
+                        required: ["type"],
                         properties: {
+                          type: {
+                            type: "string",
+                            enum: ["weighted_reps", "bodyweight_reps", "hold_time"],
+                            description:
+                              "REQUIRED. The set's metric kind. 'weighted_reps' → also send reps + weight (barbell/dumbbell/machine lifts). 'bodyweight_reps' → also send reps (push-ups, pull-ups, air squats). 'hold_time' → also send hold_s (planks, L-sits, dead hangs). Choose by the movement itself, not by whatever numbers the user happened to mention.",
+                          },
                           reps: {
                             type: "integer",
                             description:
-                              "Number of reps performed (must be a number, e.g. 8). If unknown, omit.",
+                              "Reps performed (integer, e.g. 8). Send for weighted_reps and bodyweight_reps; omit for hold_time.",
                           },
                           weight: {
                             type: "number",
-                            description: "Weight in kg (e.g. 75). Use 0 for bodyweight.",
+                            description:
+                              "Weight in kg (e.g. 75). Send for weighted_reps only. Bodyweight is NOT weight 0 — use type 'bodyweight_reps'.",
                           },
                           hold_s: {
                             type: "integer",
                             description:
-                              "Hold duration in seconds (for isometric exercises like planks).",
+                              "Hold duration in seconds. Send for hold_time only; omit otherwise.",
                           },
                         },
                       },
@@ -369,7 +377,8 @@ export default function register(api) {
           notes: { type: "string", description: "Updated notes." },
           detail_json: {
             type: "object",
-            description: "Updated category-specific structured data.",
+            description:
+              "Updated category-specific structured data. For strength/calisthenics, every set in exercises[] must include its `type` (weighted_reps | bodyweight_reps | hold_time), same contract as nbhd_fuel_log_workout.",
           },
         },
         required: ["workout_id"],
