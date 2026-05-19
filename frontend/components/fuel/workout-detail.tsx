@@ -127,7 +127,7 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
     setEditing(workout.status === "planned");
   }
 
-  if (!workout) return null;
+  if (!workout) return <WorkoutDetailSkeleton onClose={onClose} />;
 
   const meta = CATEGORIES[workout.category as WorkoutCategory];
 
@@ -370,6 +370,61 @@ function FieldBox({ label, children }: { label: string; children: React.ReactNod
     <div className="rounded-lg border border-border bg-surface-elevated px-3 py-2.5">
       <div className="text-[8px] font-bold uppercase tracking-[0.2em] text-ink-faint">{label}</div>
       <div className="mt-1">{children}</div>
+    </div>
+  );
+}
+
+function SkelBar({ className = "" }: { className?: string }) {
+  return <div className={`animate-pulse rounded bg-ink/10 ${className}`} aria-hidden="true" />;
+}
+
+function WorkoutDetailSkeleton({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-[55] flex" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative ml-auto h-full w-full sm:w-[620px] bg-surface border-l border-border overflow-y-auto animate-reveal"
+        role="status"
+        aria-busy="true"
+        aria-label="Loading workout"
+      >
+        <div className="sticky top-0 z-10 backdrop-blur bg-surface/90 border-b border-border px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between">
+          <SkelBar className="h-3 w-24" />
+          <button
+            onClick={onClose}
+            className="h-11 w-11 sm:h-10 sm:w-10 rounded-full hover:bg-surface-hover text-ink-muted flex items-center justify-center"
+            aria-label="Close"
+          >
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12" /></svg>
+          </button>
+        </div>
+        <div className="p-4 sm:p-6 space-y-5 sm:space-y-6">
+          <div>
+            <SkelBar className="h-8 w-2/3" />
+            <SkelBar className="mt-2 h-3 w-1/3" />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <SkelBar className="h-16" />
+            <SkelBar className="h-16" />
+            <SkelBar className="h-16" />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <SkelBar className="h-16" />
+            <SkelBar className="h-16" />
+          </div>
+          <div>
+            <SkelBar className="h-3 w-12" />
+            <SkelBar className="mt-2 h-20 w-full" />
+          </div>
+          <div className="flex flex-col sm:flex-row gap-2 pt-4 border-t border-border">
+            <SkelBar className="h-11 flex-1" />
+            <SkelBar className="h-11 flex-1" />
+            <SkelBar className="h-11 w-20" />
+          </div>
+        </div>
+        <span className="sr-only">Loading workout details</span>
+      </div>
     </div>
   );
 }
