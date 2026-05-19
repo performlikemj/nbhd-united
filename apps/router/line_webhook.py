@@ -597,6 +597,21 @@ class LineWebhookView(View):
         except Exception:
             pass
 
+        # Idempotency gate — LINE delivers at least once and redelivers
+        # (same webhookEventId, deliveryContext.isRedelivery=true) when we
+        # ack slowly. Claim the event before any side effect so a
+        # redelivery can't spawn a second PendingMessage / reply.
+        from apps.router.inbound_dedup import claim_inbound_event
+
+        webhook_event_id = event.get("webhookEventId")
+        if not claim_inbound_event(f"line:{webhook_event_id}" if webhook_event_id else None):
+            logger.info(
+                "LINE webhook: skipping duplicate event %s (isRedelivery=%s)",
+                webhook_event_id,
+                event.get("deliveryContext", {}).get("isRedelivery"),
+            )
+            return
+
         try:
             event_type = event.get("type", "")
             if event_type == "message":

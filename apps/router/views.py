@@ -181,6 +181,17 @@ def telegram_webhook(request):
     except json.JSONDecodeError:
         return HttpResponseBadRequest("Invalid JSON")
 
+    # Idempotency gate — Telegram retries a webhook delivery until it
+    # gets a 2xx, so a slow turn or a transient error means the same
+    # update_id arrives again. Claim it before any side effect; a
+    # duplicate is acked with a plain 200 so Telegram stops retrying.
+    from apps.router.inbound_dedup import claim_inbound_event
+
+    update_id = update.get("update_id")
+    if update_id and not claim_inbound_event(f"tg:{update_id}"):
+        logger.info("Telegram webhook: skipping duplicate update %s", update_id)
+        return HttpResponse("ok")
+
     # Handle /start TOKEN for account linking (before routing)
     link_response = handle_start_command(update)
     if link_response:
