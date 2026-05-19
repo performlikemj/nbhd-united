@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .set_contract import METRIC_HOLD_TIME, set_metric
+
 
 def _safe_num(val, default=0) -> float:
     """Coerce a value to float, returning default if not numeric."""
@@ -101,7 +103,9 @@ def aggregate_calisthenics_progress(workouts) -> dict:
             if not name:
                 continue
             sets = sk.get("sets", [])
-            is_hold = bool(sets and sets[0].get("hold_s") is not None)
+            # Shape-agnostic: explicit `type` (Phase 2+), else field
+            # presence — identical to the historical hold_s null-sniff.
+            is_hold = bool(sets) and set_metric(sets[0]) == METRIC_HOLD_TIME
             top = max(
                 (s.get("hold_s", 0) if is_hold else s.get("reps", 0) for s in sets),
                 default=0,

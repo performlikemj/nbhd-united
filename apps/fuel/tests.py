@@ -1906,3 +1906,120 @@ class ConsumerWorkoutPlanTests(TestCase):
         self.assertEqual(len(resp.data), 1)
         self.assertEqual(resp.data[0]["plan_id"], str(plan.id))
         self.assertEqual(resp.data[0]["plan_name"], "My Plan")
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Phase 0 — shape-agnostic set-metric accessor (#593)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class SetMetricTests(UnitTestCase):
+    """`set_metric` / `coerce_set` — pure, no DB."""
+
+    def test_explicit_valid_type_wins(self):
+        from .set_contract import set_metric
+
+        self.assertEqual(set_metric({"type": "hold_time", "weight": 99}), "hold_time")
+        self.assertEqual(set_metric({"type": "weighted_reps"}), "weighted_reps")
+        self.assertEqual(set_metric({"type": "bodyweight_reps"}), "bodyweight_reps")
+
+    def test_invalid_type_falls_through_to_inference(self):
+        from .set_contract import set_metric
+
+        # distance_time is not a *set* metric → ignore, infer from fields.
+        self.assertEqual(set_metric({"type": "distance_time", "reps": 8, "weight": 60}), "weighted_reps")
+        self.assertEqual(set_metric({"type": "garbage"}), "bodyweight_reps")
+        self.assertEqual(set_metric({"type": None, "hold_s": 30}), "hold_time")
+
+    def test_field_presence_inference_matches_legacy_sniff(self):
+        from .set_contract import set_metric
+
+        self.assertEqual(set_metric({"hold_s": 60}), "hold_time")
+        self.assertEqual(set_metric({"hold_s": 0}), "hold_time")  # presence, not truthiness
+        self.assertEqual(set_metric({"reps": 8, "weight": 75}), "weighted_reps")
+        self.assertEqual(set_metric({"reps": 12, "weight": 0}), "bodyweight_reps")  # 0 = bodyweight
+        self.assertEqual(set_metric({"reps": 10}), "bodyweight_reps")
+        # hold_s is checked before weight — matches the historical order.
+        self.assertEqual(set_metric({"hold_s": 45, "weight": 20}), "hold_time")
+
+    def test_registry_refine_only_when_fields_inconclusive(self):
+        from .set_contract import set_metric
+
+        self.assertEqual(set_metric({}, exercise_name="plank"), "hold_time")
+        self.assertEqual(set_metric({}, exercise_name="Bench Press"), "weighted_reps")
+        self.assertEqual(set_metric({}, exercise_name="pull-up"), "bodyweight_reps")
+        self.assertEqual(set_metric({}, exercise_name="not a real move"), "bodyweight_reps")
+        # Fields still beat the registry when present.
+        self.assertEqual(set_metric({"hold_s": 30}, exercise_name="Bench Press"), "hold_time")
+
+    def test_non_dict_degrades_safely(self):
+        from .set_contract import set_metric
+
+        for bad in (None, "x", 7, [], ("a",)):
+            self.assertEqual(set_metric(bad), "bodyweight_reps")
+
+    def test_coerce_set_stamps_and_is_idempotent(self):
+        from .set_contract import coerce_set
+
+        once = coerce_set({"reps": 8, "weight": 75})
+        self.assertEqual(once, {"reps": 8, "weight": 75, "type": "weighted_reps"})
+        self.assertEqual(coerce_set(once), once)  # idempotent
+        self.assertEqual(coerce_set(None), {"type": "bodyweight_reps"})
+        # Original is not mutated.
+        src = {"hold_s": 60}
+        coerce_set(src)
+        self.assertNotIn("type", src)
+
+
+class CalisthenicsAggregateRegressionTests(TestCase):
+    """Proves Phase 0 routing through `set_metric` is behaviour-neutral
+    on legacy flat data, and that typed data resolves identically."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Calis Test", telegram_chat_id=800077)
+
+    def _workout(self, detail):
+        return Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 5, 1),
+            category="calisthenics",
+            activity="Skill work",
+            detail_json=detail,
+        )
+
+    def test_legacy_flat_shape_unchanged(self):
+        from .services import aggregate_calisthenics_progress
+
+        w = self._workout(
+            {
+                "skills": [
+                    {"name": "Plank", "sets": [{"hold_s": 60}, {"hold_s": 75}]},
+                    {"name": "Pull-up", "sets": [{"reps": 8}, {"reps": 10}]},
+                ]
+            }
+        )
+        out = aggregate_calisthenics_progress([w])
+        self.assertEqual(
+            out,
+            {
+                "Plank": {"points": [{"date": "2026-05-01", "value": 75}], "is_hold": True},
+                "Pull-up": {"points": [{"date": "2026-05-01", "value": 10}], "is_hold": False},
+            },
+        )
+
+    def test_typed_shape_resolves_identically(self):
+        from .services import aggregate_calisthenics_progress
+
+        w = self._workout(
+            {
+                "skills": [
+                    {"name": "Plank", "sets": [{"type": "hold_time", "hold_s": 90}]},
+                    {"name": "Dip", "sets": [{"type": "bodyweight_reps", "reps": 12}]},
+                ]
+            }
+        )
+        out = aggregate_calisthenics_progress([w])
+        self.assertTrue(out["Plank"]["is_hold"])
+        self.assertEqual(out["Plank"]["points"][0]["value"], 90)
+        self.assertFalse(out["Dip"]["is_hold"])
+        self.assertEqual(out["Dip"]["points"][0]["value"], 12)
