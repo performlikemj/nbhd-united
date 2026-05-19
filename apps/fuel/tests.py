@@ -2377,3 +2377,106 @@ class SerializerValidateTests(TestCase):
     def test_coherent_accepted(self):
         s = self._ser({"exercises": [{"name": "Custom", "sets": [{"reps": 8, "weight": 60}]}]})
         self.assertTrue(s.is_valid(), s.errors)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Phase 4 — backfill migration + read-only dry-run (#593)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class StampSetTypeMigrationTests(TestCase):
+    """Migration 0010 forward fn — stamps type, idempotent, non-destructive."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Mig Test", telegram_chat_id=800111)
+
+    def _run(self):
+        import importlib
+
+        from django.apps import apps as django_apps
+
+        mig = importlib.import_module("apps.fuel.migrations.0010_stamp_set_type")
+        mig.stamp_set_types(django_apps, None)
+
+    def test_stamps_workout_and_template_idempotently(self):
+        from .models import WorkoutTemplate
+
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 5, 1),
+            category="strength",
+            activity="Bench",
+            detail_json={"exercises": [{"name": "Bench", "sets": [{"reps": 8, "weight": 75, "est_1rm": 116.7}]}]},
+        )
+        tmpl = WorkoutTemplate.objects.create(
+            tenant=self.tenant,
+            name="Core",
+            category="calisthenics",
+            activity="Plank",
+            detail_json={"skills": [{"name": "Plank", "sets": [{"hold_s": 60}]}]},
+        )
+        cardio = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 5, 2),
+            category="cardio",
+            activity="Run",
+            detail_json={"distance_km": 5, "pace": "5:30"},
+        )
+
+        self._run()
+        w.refresh_from_db()
+        tmpl.refresh_from_db()
+        cardio.refresh_from_db()
+
+        s = w.detail_json["exercises"][0]["sets"][0]
+        self.assertEqual(s["type"], "weighted_reps")
+        self.assertEqual(s["est_1rm"], 116.7)  # extras preserved
+        self.assertEqual(tmpl.detail_json["skills"][0]["sets"][0]["type"], "hold_time")
+        self.assertEqual(cardio.detail_json, {"distance_km": 5, "pace": "5:30"})  # untouched
+
+        snapshot = w.detail_json
+        self._run()  # idempotent
+        w.refresh_from_db()
+        self.assertEqual(w.detail_json, snapshot)
+
+    def test_non_dict_detail_is_skipped(self):
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 5, 3),
+            category="other",
+            activity="x",
+            detail_json=[],
+        )
+        self._run()  # must not raise
+        w.refresh_from_db()
+        self.assertEqual(w.detail_json, [])
+
+
+class DryRunCommandTests(TestCase):
+    """The dry-run command reports and writes nothing."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Dry Test", telegram_chat_id=800122)
+
+    def test_reports_and_does_not_mutate(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 5, 1),
+            category="strength",
+            activity="Bench",
+            detail_json={"exercises": [{"name": "Bench", "sets": [{"reps": 8, "weight": 75}]}]},
+        )
+        before = dict(w.detail_json)
+        out = StringIO()
+        call_command("fuel_set_type_dryrun", stdout=out)
+        text = out.getvalue()
+        self.assertIn("DRY RUN", text)
+        self.assertIn("Workout:", text)
+        self.assertIn("schedule_json", text)
+        w.refresh_from_db()
+        self.assertEqual(w.detail_json, before)  # untouched — read-only
+        self.assertNotIn("type", w.detail_json["exercises"][0]["sets"][0])
