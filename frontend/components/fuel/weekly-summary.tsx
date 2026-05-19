@@ -1,13 +1,34 @@
 "use client";
 
+import { SkelBar } from "@/components/ui/skeleton";
 import { useWeeklyVolumeQuery } from "@/lib/queries";
 import { CATEGORIES } from "./category-meta";
 import type { WorkoutCategory } from "@/lib/types";
 
 export function WeeklySummary() {
-  const { data, isLoading } = useWeeklyVolumeQuery();
+  const { data, isPending } = useWeeklyVolumeQuery();
 
-  if (isLoading || !data) return null;
+  if (isPending) {
+    return (
+      <div
+        className="rounded-panel border border-border bg-surface-elevated p-4 sm:p-5 mb-6"
+        role="status"
+        aria-busy="true"
+        aria-label="Loading weekly summary"
+      >
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint">THIS WEEK</div>
+          <SkelBar className="h-3 w-32" />
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <SkelBar className="h-4 w-20" />
+          <SkelBar className="h-4 w-16" />
+          <SkelBar className="h-4 w-24" />
+        </div>
+      </div>
+    );
+  }
+  if (!data) return null;
   if (data.totals.sessions === 0) return null;
 
   return (

@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 
 import { useWorkoutsQuery } from "@/lib/queries";
 import type { FuelWorkout, WorkoutCategory } from "@/lib/types";
+import { SkelBar } from "@/components/ui/skeleton";
 import { CATEGORIES, CATEGORY_IDS } from "./category-meta";
 
 interface HistoryProps {
@@ -12,7 +13,7 @@ interface HistoryProps {
 
 export function History({ onOpenWorkout }: HistoryProps) {
   const [filter, setFilter] = useState<"all" | WorkoutCategory>("all");
-  const { data: workouts, isLoading } = useWorkoutsQuery({ status: "done", limit: 200 });
+  const { data: workouts, isPending } = useWorkoutsQuery({ status: "done", limit: 200 });
 
   const done = useMemo(() => workouts || [], [workouts]);
 
@@ -24,8 +25,32 @@ export function History({ onOpenWorkout }: HistoryProps) {
 
   const filtered = filter === "all" ? done : done.filter((w) => w.category === filter);
 
-  if (isLoading) {
-    return <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-faint">loading…</div>;
+  if (isPending) {
+    return (
+      <div className="space-y-4" role="status" aria-busy="true" aria-label="Loading workout history">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <SkelBar className="h-11 w-16" />
+          <SkelBar className="h-11 w-24" />
+          <SkelBar className="h-11 w-20" />
+          <SkelBar className="h-11 w-24" />
+        </div>
+        <div className="space-y-2">
+          {[0, 1, 2, 3, 4, 5, 6].map((i) => (
+            <div
+              key={i}
+              className="rounded-panel border border-border bg-surface-elevated px-3 sm:px-4 py-3 flex items-center gap-2.5 sm:gap-3"
+            >
+              <SkelBar className="h-8 w-8 shrink-0" />
+              <div className="flex-1 min-w-0 space-y-1.5">
+                <SkelBar className="h-3 w-16" />
+                <SkelBar className="h-4 w-2/3" />
+                <SkelBar className="h-2.5 w-1/3" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
   }
 
   return (

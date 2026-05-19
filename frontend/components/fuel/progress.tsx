@@ -4,12 +4,13 @@ import { useMemo, useRef, useState } from "react";
 
 import { useFuelProgressQuery } from "@/lib/queries";
 import type { WorkoutCategory } from "@/lib/types";
+import { SkelBar } from "@/components/ui/skeleton";
 import { CATEGORIES, CATEGORY_IDS } from "./category-meta";
 import { kgToDisplay, useWeightUnit } from "./use-weight-unit";
 
 export function Progress() {
   const [cat, setCat] = useState<WorkoutCategory>("strength");
-  const { data, isLoading } = useFuelProgressQuery(cat);
+  const { data, isPending, isLoading } = useFuelProgressQuery(cat);
 
   const progress = data?.progress as Record<string, unknown> | undefined;
 
@@ -37,13 +38,25 @@ export function Progress() {
         </div>
       </div>
 
-      {isLoading && <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-faint">loading…</div>}
+      {isPending && (
+        <div className="space-y-4" role="status" aria-busy="true" aria-label="Loading progress">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            <SkelBar className="h-20" />
+            <SkelBar className="h-20" />
+            <SkelBar className="h-20" />
+          </div>
+          <SkelBar className="h-32 w-full" />
+        </div>
+      )}
+      {isLoading && !isPending && (
+        <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-faint">syncing…</div>
+      )}
 
-      {!isLoading && progress && cat === "strength" && <StrengthProgress data={progress} />}
-      {!isLoading && progress && cat === "cardio" && <CardioProgress data={progress} />}
-      {!isLoading && progress && cat === "hiit" && <HiitProgress data={progress} />}
-      {!isLoading && progress && cat === "calisthenics" && <CalisProgress data={progress} />}
-      {!isLoading && progress && (cat === "mobility" || cat === "sport" || cat === "other") && (
+      {!isPending && progress && cat === "strength" && <StrengthProgress data={progress} />}
+      {!isPending && progress && cat === "cardio" && <CardioProgress data={progress} />}
+      {!isPending && progress && cat === "hiit" && <HiitProgress data={progress} />}
+      {!isPending && progress && cat === "calisthenics" && <CalisProgress data={progress} />}
+      {!isPending && progress && (cat === "mobility" || cat === "sport" || cat === "other") && (
         <CountProgress data={progress} accent={CATEGORIES[cat].accent} />
       )}
     </div>

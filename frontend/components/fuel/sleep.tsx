@@ -3,9 +3,10 @@
 import { useState } from "react";
 
 import { useCreateSleepMutation, useSleepQuery } from "@/lib/queries";
+import { SkelBar } from "@/components/ui/skeleton";
 
 export function Sleep() {
-  const { data: entries, isLoading } = useSleepQuery();
+  const { data: entries, isPending } = useSleepQuery();
   const createMutation = useCreateSleepMutation();
   const todayISO = new Date().toISOString().slice(0, 10);
   const [date, setDate] = useState(todayISO);
@@ -102,8 +103,16 @@ export function Sleep() {
         </button>
       </form>
 
-      {isLoading ? (
-        <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-faint">loading…</div>
+      {isPending ? (
+        <div className="space-y-1" role="status" aria-busy="true" aria-label="Loading sleep history">
+          {[0, 1, 2, 3, 4].map((i) => (
+            <div key={i} className="flex items-center gap-2 sm:gap-3">
+              <SkelBar className="h-3 w-20 shrink-0" />
+              <SkelBar className="h-4 w-12" />
+              <SkelBar className="h-3 w-8" />
+            </div>
+          ))}
+        </div>
       ) : (entries || []).length > 0 ? (
         <div className="space-y-1">
           {(entries || []).slice(0, 14).map((e) => (
