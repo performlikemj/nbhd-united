@@ -46,9 +46,7 @@ __all__ = [
 # The three metrics a *set* can carry. (``distance_time`` / ``blocks``
 # describe whole cardio/mobility workouts, not per-set data, and are
 # intentionally out of scope here — see CONTINUITY_fuel-set-contract.md.)
-SET_METRICS = frozenset(
-    {METRIC_WEIGHTED_REPS, METRIC_BODYWEIGHT_REPS, METRIC_HOLD_TIME}
-)
+SET_METRICS = frozenset({METRIC_WEIGHTED_REPS, METRIC_BODYWEIGHT_REPS, METRIC_HOLD_TIME})
 
 
 def _positive_weight(value: Any) -> bool:
@@ -109,9 +107,7 @@ def coerce_set(raw: Any, *, exercise_name: str | None = None) -> dict[str, Any]:
     return out
 
 
-def _normalized_sets(
-    sets: Any, *, exercise_name: str, reg_metric: str
-) -> tuple[list, list[dict]]:
+def _normalized_sets(sets: Any, *, exercise_name: str, reg_metric: str) -> tuple[list, list[dict]]:
     """Stamp every set's ``type`` to the registry metric for a known
     exercise. Returns ``(new_sets, override_notes)``; only an actual
     change in effective metric is recorded as a note."""
@@ -125,15 +121,11 @@ def _normalized_sets(
         desired = reg_metric if reg_metric in SET_METRICS else prev
         new_sets.append({**s, "type": desired})
         if desired != prev:
-            notes.append(
-                {"exercise": exercise_name, "field": "set.type", "from": prev, "to": desired}
-            )
+            notes.append({"exercise": exercise_name, "field": "set.type", "from": prev, "to": desired})
     return new_sets, notes
 
 
-def normalize_detail(
-    detail: Any, category: str, *, activity: str | None = None
-) -> tuple[Any, str, list[dict]]:
+def normalize_detail(detail: Any, category: str, *, activity: str | None = None) -> tuple[Any, str, list[dict]]:
     """Deterministically correct set ``type`` and (only between
     ``strength`` and ``calisthenics``) the workout ``category`` from the
     exercise registry, *before* the LLM's guess is persisted.
@@ -169,9 +161,7 @@ def normalize_detail(
             reg_cats.append(reg_cat)
             sets = ex.get("sets")
             if isinstance(sets, list):
-                new_sets, notes = _normalized_sets(
-                    sets, exercise_name=name, reg_metric=reg_metric
-                )
+                new_sets, notes = _normalized_sets(sets, exercise_name=name, reg_metric=reg_metric)
                 rebuilt.append({**ex, "sets": new_sets})
                 overrides.extend(notes)
             else:
@@ -185,9 +175,7 @@ def normalize_detail(
         and category != reg_cats[0]
         and category in ("strength", "calisthenics", "other", "")
     ):
-        overrides.append(
-            {"field": "category", "from": category, "to": reg_cats[0]}
-        )
+        overrides.append({"field": "category", "from": category, "to": reg_cats[0]})
         category = reg_cats[0]
 
     if overrides:
@@ -261,9 +249,7 @@ def _coerce_container(detail: dict) -> dict:
         for ex in container:
             if isinstance(ex, dict) and isinstance(ex.get("sets"), list):
                 name = str(ex.get("name") or "").strip()
-                rebuilt.append(
-                    {**ex, "sets": [coerce_set(s, exercise_name=name) for s in ex["sets"]]}
-                )
+                rebuilt.append({**ex, "sets": [coerce_set(s, exercise_name=name) for s in ex["sets"]]})
             else:
                 rebuilt.append(ex)
         out[key] = rebuilt

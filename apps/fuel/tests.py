@@ -2069,9 +2069,7 @@ class NormalizeDetailTests(UnitTestCase):
     def test_skills_container_handled(self):
         from .set_contract import normalize_detail
 
-        detail, cat, ov = normalize_detail(
-            {"skills": [{"name": "Plank", "sets": [{"hold_s": 60}]}]}, "calisthenics"
-        )
+        detail, cat, ov = normalize_detail({"skills": [{"name": "Plank", "sets": [{"hold_s": 60}]}]}, "calisthenics")
         self.assertEqual(cat, "calisthenics")
         self.assertEqual(detail["skills"][0]["sets"][0]["type"], "hold_time")
         self.assertEqual(ov, [])  # already correct → no override note
@@ -2223,9 +2221,7 @@ class ValidateDetailTests(UnitTestCase):
             ({"reps": 12, "weight": 0}, "bodyweight_reps"),
             ({"reps": 5, "weight": 100}, "weighted_reps"),
         ):
-            d, err = validate_detail(
-                {"exercises": [{"name": "X", "sets": [raw]}]}, "calisthenics"
-            )
+            d, err = validate_detail({"exercises": [{"name": "X", "sets": [raw]}]}, "calisthenics")
             self.assertIsNone(err, raw)
             self.assertEqual(d["exercises"][0]["sets"][0]["type"], expected, raw)
 
@@ -2285,9 +2281,7 @@ class ValidateDetailTests(UnitTestCase):
     def test_skills_container_validated(self):
         from .set_contract import validate_detail
 
-        _, err = validate_detail(
-            {"skills": [{"name": "P", "sets": [{"type": "hold_time"}]}]}, "calisthenics"
-        )
+        _, err = validate_detail({"skills": [{"name": "P", "sets": [{"type": "hold_time"}]}]}, "calisthenics")
         self.assertIsNotNone(err)
 
 
@@ -2341,7 +2335,9 @@ class RuntimeValidateTests(TestCase):
             date=date(2026, 5, 1),
             category="strength",
             activity="Custom",
-            detail_json={"exercises": [{"name": "Custom", "sets": [{"reps": 5, "weight": 60, "type": "weighted_reps"}]}]},
+            detail_json={
+                "exercises": [{"name": "Custom", "sets": [{"reps": 5, "weight": 60, "type": "weighted_reps"}]}]
+            },
         )
         resp = self.client.patch(
             f"/api/v1/fuel/runtime/{self.tenant.id}/workouts/{w.id}/",

@@ -121,12 +121,8 @@ class WorkoutSerializer(serializers.ModelSerializer):
         if "detail_json" in attrs:
             from .set_contract import normalize_detail, validate_detail
 
-            base_cat = attrs.get("category") or (
-                self.instance.category if self.instance else "other"
-            )
-            base_act = attrs.get("activity") or (
-                self.instance.activity if self.instance else None
-            )
+            base_cat = attrs.get("category") or (self.instance.category if self.instance else "other")
+            base_act = attrs.get("activity") or (self.instance.activity if self.instance else None)
             nd, ncat = normalize_detail(attrs["detail_json"], base_cat, activity=base_act)[:2]
             nd, verr = validate_detail(nd, ncat)
             if verr is not None:
