@@ -45,9 +45,7 @@ class ClaimInboundEventTest(TestCase):
     def test_prune_removes_only_expired_rows(self):
         fresh = ProcessedInboundEvent.objects.create(event_key="line:fresh")
         old = ProcessedInboundEvent.objects.create(event_key="line:old")
-        ProcessedInboundEvent.objects.filter(pk=old.pk).update(
-            created_at=timezone.now() - timedelta(days=4)
-        )
+        ProcessedInboundEvent.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(days=4))
         # Force the probabilistic prune to run deterministically.
         with patch("apps.router.inbound_dedup.random.random", return_value=0.0):
             self.assertTrue(claim_inbound_event("line:trigger-prune"))

@@ -59,8 +59,7 @@ def _maybe_prune() -> None:
 
         cutoff = timezone.now() - _RETENTION
         stale_ids = list(
-            ProcessedInboundEvent.objects.filter(created_at__lt=cutoff)
-            .values_list("id", flat=True)[:_PRUNE_BATCH]
+            ProcessedInboundEvent.objects.filter(created_at__lt=cutoff).values_list("id", flat=True)[:_PRUNE_BATCH]
         )
         if stale_ids:
             ProcessedInboundEvent.objects.filter(id__in=stale_ids).delete()

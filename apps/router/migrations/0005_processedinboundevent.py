@@ -6,22 +6,28 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('router', '0004_pending_message'),
+        ("router", "0004_pending_message"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='ProcessedInboundEvent',
+            name="ProcessedInboundEvent",
             fields=[
-                ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
-                ('event_key', models.CharField(help_text="Provider-namespaced stable event id: 'line:<webhookEventId>' or 'tg:<update_id>'. The unique constraint is the dedupe.", max_length=160, unique=True)),
-                ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
+                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                (
+                    "event_key",
+                    models.CharField(
+                        help_text="Provider-namespaced stable event id: 'line:<webhookEventId>' or 'tg:<update_id>'. The unique constraint is the dedupe.",
+                        max_length=160,
+                        unique=True,
+                    ),
+                ),
+                ("created_at", models.DateTimeField(auto_now_add=True, db_index=True)),
             ],
             options={
-                'verbose_name': 'processed inbound event',
-                'verbose_name_plural': 'processed inbound events',
+                "verbose_name": "processed inbound event",
+                "verbose_name_plural": "processed inbound events",
             },
         ),
     ]
