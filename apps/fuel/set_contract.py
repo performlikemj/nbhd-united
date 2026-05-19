@@ -21,7 +21,9 @@ by ``apps.common.llm_lookups``; this module never invents new values.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from apps.common.llm_lookups import (
     METRIC_BODYWEIGHT_REPS,
@@ -38,6 +40,7 @@ __all__ = [
     "set_metric",
     "coerce_set",
     "normalize_detail",
+    "validate_detail",
 ]
 
 # The three metrics a *set* can carry. (``distance_time`` / ``blocks``
@@ -190,3 +193,104 @@ def normalize_detail(
     if overrides:
         new["_normalized"] = overrides
     return new, category, overrides
+
+
+# ── Typed set contract (Phase 2 / #593) ───────────────────────────────
+
+
+class _SetModel(BaseModel):
+    """Base for typed shapes — tolerate extra keys (``est_1rm``, ``pr``,
+    …) that consumers stamp onto stored sets."""
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class WeightedRepsSet(_SetModel):
+    # Constants (not string literals) so the lint-autofix can't strip the
+    # quotes off `Literal["..."]`; resolves to the same canonical value.
+    type: Literal[METRIC_WEIGHTED_REPS]
+    reps: int = Field(ge=0)
+    weight: float = Field(ge=0)
+
+
+class BodyweightRepsSet(_SetModel):
+    type: Literal[METRIC_BODYWEIGHT_REPS]
+    reps: int = Field(ge=0)
+
+
+class HoldTimeSet(_SetModel):
+    type: Literal[METRIC_HOLD_TIME]
+    hold_s: int = Field(ge=0)
+
+
+TypedSet = Annotated[
+    WeightedRepsSet | BodyweightRepsSet | HoldTimeSet,
+    Field(discriminator="type"),
+]
+
+
+class _Exercise(_SetModel):
+    name: str = ""
+    sets: list[TypedSet] = Field(default_factory=list)
+
+
+class _WorkoutDetail(_SetModel):
+    exercises: list[_Exercise] = Field(default_factory=list)
+    skills: list[_Exercise] = Field(default_factory=list)
+
+
+# `from __future__ import annotations` defers schema construction for the
+# discriminated union + nested models — rebuild them explicitly so
+# validation works at import time.
+WeightedRepsSet.model_rebuild()
+BodyweightRepsSet.model_rebuild()
+HoldTimeSet.model_rebuild()
+_Exercise.model_rebuild()
+_WorkoutDetail.model_rebuild()
+
+
+def _coerce_container(detail: dict) -> dict:
+    """Copy ``detail`` with every set in exercises/skills given a valid
+    ``type`` (all other keys + extras preserved). Does not validate."""
+    out = dict(detail)
+    for key in ("exercises", "skills"):
+        container = out.get(key)
+        if not isinstance(container, list):
+            continue
+        rebuilt: list = []
+        for ex in container:
+            if isinstance(ex, dict) and isinstance(ex.get("sets"), list):
+                name = str(ex.get("name") or "").strip()
+                rebuilt.append(
+                    {**ex, "sets": [coerce_set(s, exercise_name=name) for s in ex["sets"]]}
+                )
+            else:
+                rebuilt.append(ex)
+        out[key] = rebuilt
+    return out
+
+
+def validate_detail(detail: Any, category: str) -> tuple[Any, Any]:
+    """Coerce every set to a typed shape, then enforce the discriminated
+    contract. Returns ``(coerced_detail, error_or_None)``; the error is
+    an ``LLMValidationError`` the caller surfaces so the LLM
+    self-corrects. Only strength/calisthenics are validated — cardio /
+    HIIT / mobility keep their flat by-category shape untouched. The
+    coerced detail preserves every original key (extras, ``_normalized``,
+    cardio fields), so it is always safe to persist.
+    """
+    if not isinstance(detail, dict) or category not in ("strength", "calisthenics"):
+        return detail, None
+
+    coerced = _coerce_container(detail)
+
+    # Local import keeps this module free of an import-time Django
+    # dependency (llm_contracts pulls django.utils.timezone) and is
+    # used immediately, so the lint-autofix can't reap it.
+    from apps.common.llm_contracts import LLMValidationError
+
+    try:
+        _WorkoutDetail.model_validate(coerced)
+    except ValidationError as exc:
+        return coerced, LLMValidationError.from_pydantic(exc)
+    return coerced, None

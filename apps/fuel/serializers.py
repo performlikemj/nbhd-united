@@ -119,7 +119,7 @@ class WorkoutSerializer(serializers.ModelSerializer):
         # runtime path applies, for frontend-origin create/edit. Local
         # import keeps the lint-autofix from reaping it between edits.
         if "detail_json" in attrs:
-            from .set_contract import normalize_detail
+            from .set_contract import normalize_detail, validate_detail
 
             base_cat = attrs.get("category") or (
                 self.instance.category if self.instance else "other"
@@ -128,6 +128,9 @@ class WorkoutSerializer(serializers.ModelSerializer):
                 self.instance.activity if self.instance else None
             )
             nd, ncat = normalize_detail(attrs["detail_json"], base_cat, activity=base_act)[:2]
+            nd, verr = validate_detail(nd, ncat)
+            if verr is not None:
+                raise serializers.ValidationError({"detail_json": verr.as_tool_result()})
             attrs["detail_json"] = nd
             if ncat != base_cat:
                 attrs["category"] = ncat

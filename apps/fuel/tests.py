@@ -2120,7 +2120,9 @@ class RuntimeNormalizeTests(TestCase):
             "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
         }
 
-    def test_runtime_log_plank_corrected(self):
+    def test_runtime_plank_as_reps_weight_self_corrects(self):
+        # Registry knows "plank" is a hold; the payload has no duration —
+        # genuinely incomplete data → 400 self-correct, nothing stored.
         resp = self.client.post(
             f"/api/v1/fuel/runtime/{self.tenant.id}/log/",
             {
@@ -2128,6 +2130,24 @@ class RuntimeNormalizeTests(TestCase):
                 "category": "strength",
                 "activity": "Plank",
                 "detail_json": {"exercises": [{"name": "Plank", "sets": [{"reps": 8, "weight": 75}]}]},
+            },
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "validation_failed")
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 0)
+
+    def test_runtime_plank_with_duration_reclassified_and_stored(self):
+        # Coherent hold (has hold_s) logged under the wrong category →
+        # silently corrected to calisthenics/hold_time and stored.
+        resp = self.client.post(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/log/",
+            {
+                "date": "2026-05-01",
+                "category": "strength",
+                "activity": "Plank",
+                "detail_json": {"exercises": [{"name": "Plank", "sets": [{"hold_s": 60}]}]},
             },
             format="json",
             **self.headers,
@@ -2166,7 +2186,7 @@ class RuntimeNormalizeTests(TestCase):
         )
         resp = self.client.patch(
             f"/api/v1/fuel/runtime/{self.tenant.id}/workouts/{w.id}/",
-            {"detail_json": {"exercises": [{"name": "Plank", "sets": [{"reps": 5, "weight": 40}]}]}},
+            {"detail_json": {"exercises": [{"name": "Plank", "sets": [{"hold_s": 45}]}]}},
             format="json",
             **self.headers,
         )
@@ -2174,3 +2194,190 @@ class RuntimeNormalizeTests(TestCase):
         w.refresh_from_db()
         self.assertEqual(w.category, "calisthenics")
         self.assertEqual(w.detail_json["exercises"][0]["sets"][0]["type"], "hold_time")
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Phase 2 — typed discriminated-union contract + self-correct (#593)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class ValidateDetailTests(UnitTestCase):
+    """`validate_detail` — coerce + Pydantic enforcement, no DB."""
+
+    def test_valid_weighted_passes(self):
+        from .set_contract import validate_detail
+
+        d, err = validate_detail(
+            {"exercises": [{"name": "Bench", "sets": [{"reps": 8, "weight": 75}]}]},
+            "strength",
+        )
+        self.assertIsNone(err)
+        self.assertEqual(d["exercises"][0]["sets"][0]["type"], "weighted_reps")
+
+    def test_legacy_shapes_coerced_then_valid(self):
+        from .set_contract import validate_detail
+
+        for raw, expected in (
+            ({"hold_s": 60}, "hold_time"),
+            ({"reps": 12}, "bodyweight_reps"),
+            ({"reps": 12, "weight": 0}, "bodyweight_reps"),
+            ({"reps": 5, "weight": 100}, "weighted_reps"),
+        ):
+            d, err = validate_detail(
+                {"exercises": [{"name": "X", "sets": [raw]}]}, "calisthenics"
+            )
+            self.assertIsNone(err, raw)
+            self.assertEqual(d["exercises"][0]["sets"][0]["type"], expected, raw)
+
+    def test_incoherent_is_rejected_with_loc(self):
+        from .set_contract import validate_detail
+
+        _, err = validate_detail(
+            {"exercises": [{"name": "Iso", "sets": [{"type": "hold_time"}]}]},
+            "strength",
+        )
+        self.assertIsNotNone(err)
+        body = err.as_tool_result()
+        self.assertEqual(body["error"], "validation_failed")
+        flat = {(tuple(x["loc"]), x["type"]) for x in body["details"]}
+        self.assertTrue(any("hold_s" in loc and t == "missing" for loc, t in flat))
+
+    def test_weighted_missing_weight_rejected(self):
+        from .set_contract import validate_detail
+
+        _, err = validate_detail(
+            {"exercises": [{"name": "S", "sets": [{"type": "weighted_reps", "reps": 5}]}]},
+            "strength",
+        )
+        self.assertIsNotNone(err)
+
+    def test_non_numeric_rejected(self):
+        from .set_contract import validate_detail
+
+        _, err = validate_detail(
+            {"exercises": [{"name": "S", "sets": [{"type": "bodyweight_reps", "reps": "lots"}]}]},
+            "strength",
+        )
+        self.assertIsNotNone(err)
+
+    def test_cardio_is_passthrough(self):
+        from .set_contract import validate_detail
+
+        payload = {"distance_km": 5, "pace": "5:30"}
+        self.assertEqual(validate_detail(payload, "cardio"), (payload, None))
+
+    def test_extras_preserved_and_valid(self):
+        from .set_contract import validate_detail
+
+        d, err = validate_detail(
+            {
+                "_normalized": [{"x": 1}],
+                "exercises": [{"name": "Sq", "sets": [{"reps": 5, "weight": 100, "est_1rm": 116.7, "pr": True}]}],
+            },
+            "strength",
+        )
+        self.assertIsNone(err)
+        s = d["exercises"][0]["sets"][0]
+        self.assertEqual(s["est_1rm"], 116.7)
+        self.assertTrue(s["pr"])
+        self.assertIn("_normalized", d)
+
+    def test_skills_container_validated(self):
+        from .set_contract import validate_detail
+
+        _, err = validate_detail(
+            {"skills": [{"name": "P", "sets": [{"type": "hold_time"}]}]}, "calisthenics"
+        )
+        self.assertIsNotNone(err)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+class RuntimeValidateTests(TestCase):
+    """End-to-end: incoherent payloads get a 400 self-correct envelope."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Val Test", telegram_chat_id=800099)
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def test_runtime_rejects_incoherent(self):
+        resp = self.client.post(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/log/",
+            {
+                "date": "2026-05-01",
+                "category": "strength",
+                "activity": "Custom Iso Hold",
+                "detail_json": {"exercises": [{"name": "Custom Iso Hold", "sets": [{"type": "hold_time"}]}]},
+            },
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "validation_failed")
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 0)
+
+    def test_runtime_accepts_coherent(self):
+        resp = self.client.post(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/log/",
+            {
+                "date": "2026-05-01",
+                "category": "strength",
+                "activity": "Bench Press",
+                "detail_json": {"exercises": [{"name": "Bench Press", "sets": [{"reps": 5, "weight": 100}]}]},
+            },
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 201)
+        w = Workout.objects.get(tenant=self.tenant)
+        self.assertEqual(w.detail_json["exercises"][0]["sets"][0]["type"], "weighted_reps")
+
+    def test_runtime_patch_rejects_incoherent(self):
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 5, 1),
+            category="strength",
+            activity="Custom",
+            detail_json={"exercises": [{"name": "Custom", "sets": [{"reps": 5, "weight": 60, "type": "weighted_reps"}]}]},
+        )
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/workouts/{w.id}/",
+            {"detail_json": {"exercises": [{"name": "Custom", "sets": [{"type": "weighted_reps", "reps": 5}]}]}},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+        w.refresh_from_db()
+        self.assertEqual(w.detail_json["exercises"][0]["sets"][0]["weight"], 60)
+
+
+class SerializerValidateTests(TestCase):
+    """Frontend-origin path rejects incoherent detail_json too."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="SerVal", telegram_chat_id=800100)
+
+    def _ser(self, detail):
+        from .serializers import WorkoutSerializer
+
+        return WorkoutSerializer(
+            data={
+                "date": "2026-05-01",
+                "category": "strength",
+                "activity": "Custom",
+                "detail_json": detail,
+            },
+            context={"tenant": self.tenant},
+        )
+
+    def test_incoherent_rejected(self):
+        s = self._ser({"exercises": [{"name": "Custom", "sets": [{"type": "hold_time"}]}]})
+        self.assertFalse(s.is_valid())
+        self.assertIn("detail_json", s.errors)
+
+    def test_coherent_accepted(self):
+        s = self._ser({"exercises": [{"name": "Custom", "sets": [{"reps": 8, "weight": 60}]}]})
+        self.assertTrue(s.is_valid(), s.errors)

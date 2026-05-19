@@ -129,11 +129,14 @@ class RuntimeLogWorkoutView(APIView):
         # so a mis-classified set ("plank" as reps+weight) can't be stored.
         # Local import: matches this module's idiom (detect_prs) and keeps
         # the lint-autofix from reaping it between edits.
-        from .set_contract import normalize_detail
+        from .set_contract import normalize_detail, validate_detail
 
         detail_json, category = normalize_detail(
             data.get("detail_json", {}) or {}, category, activity=activity
         )[:2]
+        detail_json, verr = validate_detail(detail_json, category)
+        if verr is not None:
+            return Response(verr.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
 
         try:
             workout = Workout.objects.create(
@@ -252,11 +255,14 @@ class RuntimeWorkoutDetailView(APIView):
             updated_fields.append("notes")
 
         if "detail_json" in data and isinstance(data["detail_json"], dict):
-            from .set_contract import normalize_detail
+            from .set_contract import normalize_detail, validate_detail
 
             nd, ncat = normalize_detail(
                 data["detail_json"], workout.category, activity=workout.activity
             )[:2]
+            nd, verr = validate_detail(nd, ncat)
+            if verr is not None:
+                return Response(verr.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
             workout.detail_json = nd
             updated_fields.append("detail_json")
             if ncat != workout.category:
