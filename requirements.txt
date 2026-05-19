@@ -290,7 +290,7 @@ murmurhash==1.0.15
     #   thinc
 networkx==3.6.1
     # via torch
-numpy==2.4.3
+numpy==2.4.6
     # via
     #   blis
     #   contourpy
