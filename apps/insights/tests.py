@@ -29,17 +29,20 @@ from .topic_resolver import resolve_topic
 
 class TopicResolverTests(TestCase):
     def setUp(self):
-        self.canonical = TopicRegistry.objects.create(
+        # "dining" is pre-seeded by migration 0002 — use get_or_create.
+        self.canonical, _ = TopicRegistry.objects.get_or_create(
             pillar=Pillar.GRAVITY.value,
             slug="dining",
-            display_name="Dining",
-            status=TopicRegistry.Status.CANONICAL,
-            source=TopicRegistry.Source.SEED,
+            defaults={
+                "display_name": "Dining",
+                "status": TopicRegistry.Status.CANONICAL,
+                "source": TopicRegistry.Source.SEED,
+            },
         )
-        TopicAlias.objects.create(
+        TopicAlias.objects.get_or_create(
             topic=self.canonical,
             alias="eating out",
-            source=TopicAlias.Source.SEED,
+            defaults={"source": TopicAlias.Source.SEED},
         )
 
     def test_exact_slug_match(self):
@@ -467,13 +470,18 @@ class RuntimeInsightsViewTests(TestCase):
 
 
 def _seed_gravity_topic(slug: str = "debt") -> TopicRegistry:
-    return TopicRegistry.objects.create(
+    # get_or_create so tests work both pre- and post-seed migration
+    # (apps/insights/migrations/0002 pre-populates the canonical slugs).
+    topic, _ = TopicRegistry.objects.get_or_create(
         pillar=Pillar.GRAVITY.value,
         slug=slug,
-        display_name=slug.title(),
-        status=TopicRegistry.Status.CANONICAL,
-        source=TopicRegistry.Source.SEED,
+        defaults={
+            "display_name": slug.title(),
+            "status": TopicRegistry.Status.CANONICAL,
+            "source": TopicRegistry.Source.SEED,
+        },
     )
+    return topic
 
 
 def _make_weekly_debt_snapshot(tenant, *, weeks_ago: int, debt: str) -> PillarSnapshot:

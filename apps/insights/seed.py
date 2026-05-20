@@ -3,6 +3,12 @@
 Each pillar gets a starter set of canonical topics drawn from what the
 corresponding tab UI surfaces today. The assistant proposes additional topics
 as it observes user-specific patterns; ops promotes them.
+
+Adding a new pillar or topic: update ``SEED_TOPICS`` here, then add a sibling
+data migration in ``apps/insights/migrations/`` that calls ``seed_topics()``.
+The next ``manage.py migrate`` (which runs on every deploy) applies the new
+rows. ``get_or_create`` keeps the operation idempotent — existing rows are
+not touched.
 """
 
 from __future__ import annotations

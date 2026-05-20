@@ -22,12 +22,15 @@ class DashboardCacheInvalidationTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="CacheInv", telegram_chat_id=900800)
         self.other_tenant = create_tenant(display_name="CacheInvOther", telegram_chat_id=900801)
-        self.topic = TopicRegistry.objects.create(
+        # "debt" is pre-seeded by insights migration 0002.
+        self.topic, _ = TopicRegistry.objects.get_or_create(
             pillar=Pillar.GRAVITY.value,
             slug="debt",
-            display_name="Debt",
-            status=TopicRegistry.Status.CANONICAL,
-            source=TopicRegistry.Source.SEED,
+            defaults={
+                "display_name": "Debt",
+                "status": TopicRegistry.Status.CANONICAL,
+                "source": TopicRegistry.Source.SEED,
+            },
         )
         # Seed each tenant's tag so we have a baseline to compare against.
         # get_tag_version is the right primer — it lazily creates version=1.
