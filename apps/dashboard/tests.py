@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -78,8 +78,16 @@ class DeriveWeekBoundsTests(SimpleTestCase):
         self.assertEqual(start, date(2026, 4, 20))  # Monday
 
 
+@override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)
 class HorizonsViewAssistantInsightsTests(TestCase):
-    """Phase 2 extension: assistant_insights surfaced in /api/v1/dashboard/horizons/."""
+    """Phase 2 extension: assistant_insights surfaced in /api/v1/dashboard/horizons/.
+
+    Threads disabled so each AssistantInsight / Document save runs its
+    envelope-refresh receiver synchronously inside on_commit. Daemon
+    threads opening their own Postgres connection leak past test-DB
+    teardown — caught when Day 2's higher-volume tests started failing
+    CI on the post-merge run.
+    """
 
     def setUp(self):
         self.tenant = create_tenant(display_name="Horizons-P2", telegram_chat_id=900700)
@@ -154,10 +162,15 @@ class HorizonsViewAssistantInsightsTests(TestCase):
         self.assertIn("created_at", row)
 
 
+@override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)
 class HorizonsViewGoalsDualReadTests(TestCase):
     """Dual-read: HorizonsView 'goals' section returns typed Goal rows
     unioned with legacy Document(kind=GOAL) rows, deduped via
-    Goal.migrated_from_document."""
+    Goal.migrated_from_document.
+
+    Threads disabled to prevent daemon-thread connection leaks from
+    envelope-refresh receivers on Document/Goal saves.
+    """
 
     def setUp(self):
         self.tenant = create_tenant(display_name="Horizons-Goals", telegram_chat_id=900710)
@@ -223,10 +236,19 @@ class HorizonsViewGoalsDualReadTests(TestCase):
         self.assertIn("Unmigrated legacy goal", titles)
 
 
+@override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)
 class HorizonsViewTopicSignalsTests(TestCase):
     """Phase 3 Day 2: HorizonsView surfaces a ``topic_signals`` array — one
     entry per topic the tenant has engaged with, showing the meta-state
-    behind the assistant's voice register."""
+    behind the assistant's voice register.
+
+    Threads disabled because this class creates ``AssistantInsight``,
+    ``PillarSnapshot``, and ``Document`` rows across 9 tests. Each save
+    triggers ``_universal_refresh_receiver`` which spawns a daemon
+    thread; with threads enabled, those threads open their own Postgres
+    connections that linger past test-DB teardown and break CI cleanup
+    with ``database is being accessed by other users``.
+    """
 
     def setUp(self):
         from apps.insights.models import PillarSnapshot, UserVoicePref
