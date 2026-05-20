@@ -649,6 +649,16 @@ def relay_ai_response_to_telegram(tenant: Tenant, chat_id: int, ai_text: str) ->
 
     text = ai_text
 
+    # Extract [[insight:slug]]statement[[/insight]] markers, write
+    # AssistantInsight rows, strip marker tokens. Runs before chart
+    # processing so insights nested near chart markers still record.
+    try:
+        from apps.insights.markers import extract_and_record_insights
+
+        text = extract_and_record_insights(text, tenant=tenant)
+    except Exception:
+        logger.exception("insight marker extraction failed (telegram drain)")
+
     # Render [[chart:type]] markers into images and inject MEDIA: paths
     # (same convention as poller._send_rich_response so the agent
     # doesn't have to know which path it's on).
