@@ -28,6 +28,7 @@ History:
 from __future__ import annotations
 
 import logging
+import zoneinfo
 from datetime import UTC, datetime
 
 from django.conf import settings
@@ -61,6 +62,26 @@ _SYNTHESIS_HINT = (
 )
 
 
+def _render_current_time_line(tenant: Tenant) -> str:
+    """Render the live ``Current local time`` line included on every USER.md push.
+
+    Reads ``tenant.user.timezone`` — defaults to UTC on missing or
+    unrecognised tz. Because USER.md is loaded by OpenClaw on every agent
+    turn (chat and cron alike), this line is the authoritative live-time
+    signal the assistant should consult, even when an upstream cron prompt
+    embeds a stale snapshot. Bounded staleness comes from the periodic
+    ``refresh_user_md_fleet`` QStash task plus signal-driven refreshes.
+    """
+    user_tz = str(getattr(getattr(tenant, "user", None), "timezone", "") or "UTC")
+    try:
+        tz = zoneinfo.ZoneInfo(user_tz)
+    except Exception:
+        tz = zoneinfo.ZoneInfo("UTC")
+        user_tz = "UTC"
+    now = datetime.now(tz)
+    return f"_Current local time: {now.strftime('%A, %B %d, %Y at %H:%M')} ({user_tz})_"
+
+
 def render_managed_region(tenant: Tenant) -> str:
     """The full managed block, sentinel markers included.
 
@@ -73,12 +94,14 @@ def render_managed_region(tenant: Tenant) -> str:
     a new section is a one-file change there, not a render-loop edit.
     """
     refreshed_at = datetime.now(UTC).replace(microsecond=0).isoformat()
+    current_time_line = _render_current_time_line(tenant)
 
     parts: list[str] = [
         BEGIN_MARKER,
         "",
         "# Pre-loaded user state",
         "",
+        current_time_line,
         f"_Last refreshed: {refreshed_at}_",
         "",
         _SYNTHESIS_HINT,

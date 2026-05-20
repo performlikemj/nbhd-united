@@ -105,6 +105,10 @@ TASK_MAP = {
     "remove_zombie_heartbeats": "apps.orchestrator.tasks.remove_zombie_heartbeats_task",
     # Daily infra cost refresh from Azure billing
     "refresh_infra_costs": "apps.billing.tasks.refresh_infra_costs_task",
+    # Fleet USER.md refresh — bounds staleness of the `_Current local time: ..._`
+    # line in workspace/USER.md so cron-fired turns see fresh time even when
+    # no signal-driven refresh has fired for hours.
+    "refresh_user_md_fleet": "apps.orchestrator.tasks.refresh_user_md_fleet_task",
     # Idle hibernation — scale-to-zero for inactive tenants
     "hibernate_idle_tenants": "apps.orchestrator.tasks.hibernate_idle_tenants_task",
     "deliver_buffered_messages": "apps.orchestrator.hibernation.deliver_buffered_messages_task",

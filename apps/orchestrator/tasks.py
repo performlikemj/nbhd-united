@@ -783,6 +783,54 @@ def hibernate_idle_tenants_task() -> dict:
     }
 
 
+def refresh_user_md_fleet_task() -> dict:
+    """Re-render and push USER.md for every active tenant.
+
+    Bounds the staleness of the ``_Current local time: ..._`` line that
+    ``render_managed_region`` writes into USER.md. Signal-driven refreshes
+    cover state changes (goal saved, fuel logged, etc.) but a tenant who
+    sits quietly all afternoon would otherwise see their cron-fired
+    Heartbeat read a USER.md whose local-time stamp is from this morning.
+    Hourly fleet push keeps that bounded to ≤1h.
+
+    Mirrors the loop shape of ``nightly_extraction_task`` — per-tenant
+    failures are logged and skipped so one bad share doesn't gate the
+    fleet. Hibernated tenants are included (Azure File Share is always
+    mounted; the next wake-fired turn sees the freshly-pushed USER.md
+    without any extra wake-time work).
+
+    Idempotent — ``push_user_md`` is called with ``force=True`` to bypass
+    the 60s leading-edge debounce, and writes the same content if no
+    underlying state changed. Cost per tenant: one file-share read + one
+    file-share write, ~150-400ms typical.
+    """
+    import logging
+
+    from apps.orchestrator.workspace_envelope import push_user_md
+    from apps.tenants.models import Tenant
+
+    logger = logging.getLogger(__name__)
+
+    tenants = Tenant.objects.filter(status=Tenant.Status.ACTIVE).exclude(container_id="").select_related("user")
+
+    pushed = 0
+    failed = 0
+    for tenant in tenants:
+        try:
+            push_user_md(tenant, force=True, debounce_seconds=0)
+            pushed += 1
+        except Exception:
+            logger.warning(
+                "refresh_user_md_fleet: USER.md push failed for tenant %s",
+                str(tenant.id)[:8],
+                exc_info=True,
+            )
+            failed += 1
+
+    logger.info("refresh_user_md_fleet: pushed=%d failed=%d", pushed, failed)
+    return {"pushed": pushed, "failed": failed}
+
+
 def nightly_extraction_task() -> dict:
     """Run nightly extraction for all active tenants.
 

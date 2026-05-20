@@ -35,6 +35,11 @@ SYSTEM_CRONS = [
     ("repair-stale-provisioning", "*/30 * * * *", "/api/cron/trigger/repair_stale_tenant_provisioning/"),
     # Daily at 06:30 UTC — refresh infra costs from Azure billing
     ("refresh-infra-costs", "30 6 * * *", "/api/cron/trigger/refresh_infra_costs/"),
+    # Every hour at :25 — re-push USER.md fleet-wide to keep
+    # `_Current local time: ..._` fresh for cron-fired turns. Offset from
+    # :00 so it doesn't collide with hibernate-idle-tenants or
+    # apply-pending-configs (both at :00).
+    ("refresh-user-md-fleet", "25 * * * *", "/api/cron/trigger/refresh_user_md_fleet/"),
     # Every hour — hibernate idle tenants (no messages in 2h)
     ("hibernate-idle-tenants", "0 * * * *", "/api/cron/trigger/hibernate_idle_tenants/"),
     # Daily at 07:00 UTC — clean up delivered message buffers older than 7 days
