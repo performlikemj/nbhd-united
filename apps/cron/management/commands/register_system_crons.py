@@ -67,6 +67,11 @@ SYSTEM_CRONS = [
     # to PillarSnapshot. Feeds the assistant's history/drill/compare tools.
     # Skips hibernated tenants; idempotent per ISO week.
     ("snapshot-gravity-weekly", "0 5 * * 0", "/api/cron/trigger/snapshot_gravity_weekly/"),
+    # Hourly dispatcher for Phase 4 weekly reflection. Fires for each tenant
+    # whose local time is Sunday 09:00 (timezone-aware). Synthesis runs
+    # Django-side via LiteLLM — no OpenClaw container wake, no user-quota cost.
+    # Idempotent per (tenant, ISO week) via Document(kind=WEEKLY) slug check.
+    ("weekly-gravity-reflection", "0 * * * *", "/api/cron/trigger/weekly_gravity_reflection/"),
 ]
 
 

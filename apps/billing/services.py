@@ -59,8 +59,18 @@ def record_usage(
     input_tokens: int = 0,
     output_tokens: int = 0,
     model_used: str = "",
+    *,
+    is_system: bool = False,
 ) -> UsageRecord:
-    """Record a usage event and update tenant counters."""
+    """Record a usage event.
+
+    Tenant counters (``estimated_cost_this_month``, ``tokens_this_month``,
+    message counts) are updated only for user-attributed events. When
+    ``is_system=True`` the row is written and ``MonthlyBudget.spent_dollars``
+    is still incremented (the platform still pays for it), but the per-tenant
+    counters that drive quota enforcement are left alone. Phase 4's weekly
+    reflection synthesis uses this path.
+    """
     costs = MODEL_COSTS.get(model_used, DEFAULT_COST)
     cost = Decimal(str((input_tokens * costs["input"] + output_tokens * costs["output"]) / 1_000_000))
 
@@ -71,15 +81,17 @@ def record_usage(
         output_tokens=output_tokens,
         model_used=model_used,
         cost_estimate=cost,
+        is_system_event=is_system,
     )
 
-    total_tokens = input_tokens + output_tokens
-    Tenant.objects.filter(id=tenant.id).update(
-        messages_today=F("messages_today") + (1 if event_type == "message" else 0),
-        messages_this_month=F("messages_this_month") + (1 if event_type == "message" else 0),
-        tokens_this_month=F("tokens_this_month") + total_tokens,
-        estimated_cost_this_month=F("estimated_cost_this_month") + cost,
-    )
+    if not is_system:
+        total_tokens = input_tokens + output_tokens
+        Tenant.objects.filter(id=tenant.id).update(
+            messages_today=F("messages_today") + (1 if event_type == "message" else 0),
+            messages_this_month=F("messages_this_month") + (1 if event_type == "message" else 0),
+            tokens_this_month=F("tokens_this_month") + total_tokens,
+            estimated_cost_this_month=F("estimated_cost_this_month") + cost,
+        )
 
     # Update global budget
     today = date.today()

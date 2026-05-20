@@ -18,6 +18,10 @@ class UsageRecord(models.Model):
     model_used = models.CharField(max_length=255, blank=True, default="")
     cost_estimate = models.DecimalField(max_digits=10, decimal_places=6, default=0)
     metadata = models.JSONField(default=dict, blank=True)
+    # System events (Phase 4 weekly reflection, future platform-side LLM work)
+    # are charged to platform spend, not the tenant's monthly budget. The row
+    # still persists for observability — see record_usage(is_system=True).
+    is_system_event = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
