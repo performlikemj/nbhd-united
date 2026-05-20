@@ -545,3 +545,57 @@ class TelegramPollerForwardErrorLocalizationTest(TestCase):
         # English fallback retains the auto-retry promise.
         self.assertIn("I'm restarting right now", body)
         self.assertIn("send your message through", body)
+
+
+@override_settings(
+    TELEGRAM_BOT_TOKEN="TEST-BOT-TOKEN",
+    TELEGRAM_WEBHOOK_SECRET="test-secret",
+    FRONTEND_URL="https://app.example.com",
+    ROUTER_RATE_LIMIT_PER_MINUTE=10,
+)
+class TelegramPollerSessionContextDualReadTest(TestCase):
+    """_build_session_context_inner injects typed Goal/Task content when
+    present, else falls back to legacy Document markdown."""
+
+    def setUp(self):
+        from apps.tenants.services import create_tenant
+
+        self.tenant = create_tenant(display_name="SessCtx", telegram_chat_id=747474)
+        self.poller = TelegramPoller()
+
+    def test_typed_goal_appears_in_session_context(self):
+        from apps.journal.models import Goal
+
+        Goal.objects.create(
+            tenant=self.tenant,
+            title="Save $5k by Dec",
+            description="dec target",
+            status=Goal.Status.ACTIVE,
+        )
+        out = self.poller._build_session_context_inner(self.tenant, "anything")
+        self.assertIn("Your active goals", out)
+        self.assertIn("Save $5k by Dec", out)
+
+    def test_legacy_goal_doc_fallback_in_session_context(self):
+        from apps.journal.models import Document
+
+        # Seeded starter Goals Document already exists — overwrite its
+        # markdown so render_goals returns it instead of treating it as starter.
+        Document.objects.filter(tenant=self.tenant, kind=Document.Kind.GOAL, slug="goals").update(
+            markdown="- Legacy goal line"
+        )
+        out = self.poller._build_session_context_inner(self.tenant, "anything")
+        self.assertIn("Your active goals", out)
+        self.assertIn("Legacy goal line", out)
+
+    def test_typed_task_appears_in_session_context(self):
+        from apps.journal.models import Task
+
+        Task.objects.create(
+            tenant=self.tenant,
+            title="Call accountant",
+            status=Task.Status.OPEN,
+        )
+        out = self.poller._build_session_context_inner(self.tenant, "anything")
+        self.assertIn("Your current tasks", out)
+        self.assertIn("Call accountant", out)

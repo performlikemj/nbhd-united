@@ -13,7 +13,7 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.finance.models import FinanceAccount, FinanceTransaction
-from apps.journal.models import Document
+from apps.journal.models import Document, Goal
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
@@ -889,6 +889,73 @@ class ComputeSignalsTests(TestCase):
         out = compute_signals(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="debt")
         self.assertEqual(out["intent"]["goal_scope"], "topic")
         self.assertIn("Topic-specific", out["intent"]["goal_summary"])
+
+    def test_typed_goal_takes_precedence_over_document(self):
+        """Post-#624 dual-read: a typed ACTIVE Goal wins over a legacy Document."""
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="legacy-doc-goal",
+            title="Legacy doc goal",
+            markdown="### Legacy",
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt,
+        )
+        Goal.objects.create(
+            tenant=self.tenant,
+            title="Typed Goal — pay off card",
+            description="Target: zero balance",
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt,
+            status=Goal.Status.ACTIVE,
+        )
+        out = compute_signals(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="debt")
+        self.assertTrue(out["intent"]["has_stated_goal"])
+        self.assertEqual(out["intent"]["goal_scope"], "topic")
+        self.assertIn("Typed Goal", out["intent"]["goal_summary"])
+
+    def test_typed_goal_falls_back_to_document_when_absent(self):
+        """No typed Goal → still read the legacy Document."""
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="doc-only",
+            title="Legacy-only goal",
+            markdown="",
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt,
+        )
+        out = compute_signals(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="debt")
+        self.assertTrue(out["intent"]["has_stated_goal"])
+        self.assertEqual(out["intent"]["goal_scope"], "topic")
+        self.assertIn("Legacy-only", out["intent"]["goal_summary"])
+
+    def test_typed_goal_inactive_does_not_count_as_intent(self):
+        """Only ACTIVE typed Goals satisfy intent; ACHIEVED/ABANDONED don't."""
+        Goal.objects.create(
+            tenant=self.tenant,
+            title="Done goal",
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt,
+            status=Goal.Status.ACHIEVED,
+        )
+        out = compute_signals(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="debt")
+        self.assertFalse(out["intent"]["has_stated_goal"])
+
+    def test_typed_pillar_goal_intent(self):
+        """Pillar-scoped typed Goal (topic=null) satisfies pillar-level intent."""
+        Goal.objects.create(
+            tenant=self.tenant,
+            title="Save $5k by Dec",
+            description="rolling target",
+            pillar=Pillar.GRAVITY.value,
+            topic=None,
+            status=Goal.Status.ACTIVE,
+        )
+        out = compute_signals(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="debt")
+        self.assertTrue(out["intent"]["has_stated_goal"])
+        self.assertEqual(out["intent"]["goal_scope"], "pillar")
+        self.assertIn("Save $5k", out["intent"]["goal_summary"])
 
     def test_topic_specific_voice_pref_wins_over_pillar_wide(self):
         UserVoicePref.objects.create(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic=None, register_offset=-1)

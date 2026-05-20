@@ -705,3 +705,70 @@ class RuntimeCronPhase2SummaryViewTest(TestCase):
         )
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.json()["error"], "gateway_failed")
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="shared-key")
+class RuntimeJournalContextBackboneDualReadTest(TestCase):
+    """journal-context backbone returns typed Goal/Task content when present,
+    else falls back to the legacy Document blobs."""
+
+    def setUp(self):
+        from apps.journal.models import Document, Goal, Task
+
+        self.tenant = create_tenant(display_name="Backbone", telegram_chat_id=737373)
+        self.Document = Document
+        self.Goal = Goal
+        self.Task = Task
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": "shared-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def _backbone(self) -> dict:
+        resp = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/journal-context/",
+            **self._headers(),
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        return resp.json()["backbone"]
+
+    def test_typed_goal_appears_in_goal_backbone(self):
+        self.Goal.objects.create(
+            tenant=self.tenant,
+            title="Pay down loan",
+            description="Target zero",
+            status=self.Goal.Status.ACTIVE,
+        )
+        backbone = self._backbone()
+        self.assertIn("goal", backbone)
+        self.assertIn("Pay down loan", backbone["goal"]["markdown"])
+
+    def test_legacy_goal_document_still_renders_when_no_typed_rows(self):
+        # create_tenant seeds a starter Goals Document — overwrite it with
+        # non-starter markdown so render_goals' starter-detection returns this.
+        self.Document.objects.filter(tenant=self.tenant, kind=self.Document.Kind.GOAL, slug="goals").update(
+            markdown="Legacy doc body"
+        )
+        backbone = self._backbone()
+        self.assertIn("goal", backbone)
+        self.assertIn("Legacy doc body", backbone["goal"]["markdown"])
+
+    def test_typed_task_appears_in_tasks_backbone(self):
+        self.Task.objects.create(
+            tenant=self.tenant,
+            title="Email accountant",
+            status=self.Task.Status.OPEN,
+        )
+        backbone = self._backbone()
+        self.assertIn("tasks", backbone)
+        self.assertIn("Email accountant", backbone["tasks"]["markdown"])
+
+    def test_empty_state_omits_goal_and_tasks_when_only_starters_exist(self):
+        # Starter Goal/Task Documents are seeded by create_tenant but
+        # render_goals / render_open_tasks treat them as empty. The Ideas
+        # starter Document is still surfaced as-is (no starter-filter there).
+        backbone = self._backbone()
+        self.assertNotIn("goal", backbone)
+        self.assertNotIn("tasks", backbone)
