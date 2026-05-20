@@ -457,6 +457,17 @@ def relay_ai_response_to_line(
 
         ai_text = rehydrate_text(ai_text, entity_map)
 
+    # Extract [[insight:slug]]statement[[/insight]] markers and write
+    # AssistantInsight rows before chart processing (same flow as
+    # pending_queue.py / poller.py). The reply text is updated in place
+    # so chart markers nested inside or near insight markers still match.
+    try:
+        from apps.insights.markers import extract_and_record_insights
+
+        ai_text = extract_and_record_insights(ai_text, tenant=tenant)
+    except Exception:
+        logger.exception("insight marker extraction failed (line webhook)")
+
     try:
         # Render [[chart:type]] markers into images
         image_messages: list[dict] = []

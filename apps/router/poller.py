@@ -320,6 +320,16 @@ class TelegramPoller:
 
             text = rehydrate_text(text, entity_map)
 
+        # Extract [[insight:slug]]statement[[/insight]] markers and write
+        # AssistantInsight rows before chart processing. Same flow as
+        # pending_queue.py / line_webhook.py — covers all 3 outbound paths.
+        try:
+            from apps.insights.markers import extract_and_record_insights
+
+            text = extract_and_record_insights(text, tenant=tenant)
+        except Exception:
+            logger.exception("insight marker extraction failed (telegram poller)")
+
         # Render [[chart:type]] markers into images and inject MEDIA: paths
         chart_pattern = re.compile(r"\[\[chart:(\w+)(?:\|(.+?))?\]\]")
         for match in chart_pattern.finditer(text):
