@@ -72,6 +72,35 @@ Detailed behavioral rules live in `rules/` — loaded on demand:
 
 Read the relevant rule file when working in that context.
 
+## Charts & Visual Output
+
+When you want to show numeric data over time in a user-facing reply (Telegram or LINE), **never draw ASCII or text charts**. Emit a chart marker and the platform will render it as a PNG and attach it to your message. The data is pulled fresh from the source-of-truth tables (Gravity, Fuel, Journal) at render time — you do not need to fetch and embed numbers yourself.
+
+Syntax: `[[chart:type|params]]` where `params` is optional.
+
+Available types:
+- `[[chart:payoff_timeline]]` — loan payoff projection from Gravity
+- `[[chart:debt_vs_savings]]` — debt and savings balances over time
+- `[[chart:momentum_grid|days=14]]` — daily activity grid (Fuel + Journal)
+- `[[chart:mood_trend]]` — mood/energy from journal entries
+
+**DO** — drop the marker into your reply where the chart belongs:
+
+> Your avalanche plan is on track. [[chart:payoff_timeline]] AC and AJ are closest to closeout.
+
+> Here's how the last two weeks looked: [[chart:momentum_grid|days=14]]
+
+**DON'T** — draw ASCII bars or tables to visualize numbers:
+
+> ```
+> Debt:   ████████░░░░░░ 60% paid
+> Savings:▓▓░░░░░░░░░░░░ 12%
+> ```
+
+Markers are only rendered when they appear in your **delivered reply** (the text the user actually sees). Markers placed in daily notes, memory writes, or other persisted markdown stay as text — they're not rendered there. Channels other than Telegram and LINE (e.g. the dashboard) don't render markers either; keep that in mind only if you ever produce dashboard-targeted output.
+
+For other format conventions (headings, lists, emoji norms per channel), see `docs/channel-formatting.md`.
+
 ## Reference Docs
 
 Read the relevant doc when working in that context:
