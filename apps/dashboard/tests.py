@@ -95,12 +95,15 @@ class HorizonsViewAssistantInsightsTests(TestCase):
         self.client = APIClient()
         token = RefreshToken.for_user(self.tenant.user)
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.access_token}")
-        self.topic = TopicRegistry.objects.create(
+        # "debt" is pre-seeded by insights migration 0002.
+        self.topic, _ = TopicRegistry.objects.get_or_create(
             pillar=Pillar.GRAVITY.value,
             slug="debt",
-            display_name="Debt",
-            status=TopicRegistry.Status.CANONICAL,
-            source=TopicRegistry.Source.SEED,
+            defaults={
+                "display_name": "Debt",
+                "status": TopicRegistry.Status.CANONICAL,
+                "source": TopicRegistry.Source.SEED,
+            },
         )
 
     def _make(self, *, tenant=None, statement="An observation.", status=AssistantInsight.Status.OPEN):
@@ -262,19 +265,24 @@ class HorizonsViewTopicSignalsTests(TestCase):
         token = RefreshToken.for_user(self.tenant.user)
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.access_token}")
 
-        self.dining = TopicRegistry.objects.create(
+        # Both "dining" and "debt" are pre-seeded by insights migration 0002.
+        self.dining, _ = TopicRegistry.objects.get_or_create(
             pillar=Pillar.GRAVITY.value,
             slug="dining",
-            display_name="Dining",
-            status=TopicRegistry.Status.CANONICAL,
-            source=TopicRegistry.Source.SEED,
+            defaults={
+                "display_name": "Dining",
+                "status": TopicRegistry.Status.CANONICAL,
+                "source": TopicRegistry.Source.SEED,
+            },
         )
-        self.debt = TopicRegistry.objects.create(
+        self.debt, _ = TopicRegistry.objects.get_or_create(
             pillar=Pillar.GRAVITY.value,
             slug="debt",
-            display_name="Debt",
-            status=TopicRegistry.Status.CANONICAL,
-            source=TopicRegistry.Source.SEED,
+            defaults={
+                "display_name": "Debt",
+                "status": TopicRegistry.Status.CANONICAL,
+                "source": TopicRegistry.Source.SEED,
+            },
         )
 
     def _signals(self):
