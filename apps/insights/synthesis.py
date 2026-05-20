@@ -1,8 +1,8 @@
 """Weekly Gravity reflection synthesis — Phase 4 proactive observation.
 
 Once a week the platform looks at the last 7 days of a tenant's Gravity
-data and writes a single synthesis observation into the assistant's
-memory. This happens on the Django side, *not* through the per-tenant
+data and writes a single synthesis observation into the assistant's memory.
+This happens on the Django side, *not* through the per-tenant
 OpenClaw runtime, so:
 
 1. The token cost is billed to the platform (``record_usage(is_system=True)``),
