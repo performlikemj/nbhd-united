@@ -133,14 +133,22 @@ def _build_cron_message(
 def _prepare_cron_prompt(prompt: str, tenant: Tenant) -> str:
     """Prepend date context and shared preamble to a cron prompt.
 
-    Every cron job gets:
-    1. Current date/time (cheap models struggle with date math).
-    2. Shared preamble: cross-reference instructions; load today's daily note
-       (still volatile, agent fetches via tool).
+    The embedded ``Current date and time:`` line is a **snapshot** taken
+    when this cron payload was last reconciled into OpenClaw — it can be
+    hours or days old by fire time. The live authoritative value is in
+    ``workspace/USER.md`` (``_Current local time: ..._``), which OpenClaw
+    re-reads on every agent turn. The snapshot here is kept only so the
+    "do future-date math" math instruction has a concrete anchor and so
+    cheap models that never load USER.md still have some time signal.
 
-    Pre-loaded user state (goals, tasks, lessons, profile) is delivered via
-    ``workspace/USER.md`` — refreshed by Django on signal-driven post_save
-    events and force-pushed by ``update_system_cron_prompts``.
+    The reconciler in ``cron_drift.strip_date_line`` strips this preamble
+    before diffing, so daily drift of the snapshot doesn't churn the
+    cron-prompt store; staleness is bounded instead by the periodic
+    ``refresh_user_md_fleet`` push that re-renders USER.md fleet-wide.
+
+    The string prefix ``Current date and time:`` is load-bearing — do not
+    change it without also updating ``cron_drift.strip_date_line`` (and
+    accepting a one-time fleet-wide cron recreate during the cutover).
     """
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
     try:
@@ -150,9 +158,17 @@ def _prepare_cron_prompt(prompt: str, tenant: Tenant) -> str:
 
     now = datetime.now(tz)
     date_line = (
-        f"Current date and time: {now.strftime('%A, %B %d, %Y at %H:%M')} ({user_tz})\n"
-        f"When mentioning future events, compute exact days: "
-        f"event_date minus {now.strftime('%Y-%m-%d')} = X days from now. "
+        f"Current date and time: {now.strftime('%A, %B %d, %Y at %H:%M')} ({user_tz}) "
+        f"— SNAPSHOT taken when this cron payload was last reconciled, may be stale.\n"
+        f"For live time, read `_Current local time: ..._` from USER.md "
+        f"(loaded fresh on every agent turn). Prefer USER.md over the snapshot above "
+        f"whenever you reason about 'today', 'this morning', 'earlier today', or "
+        f"whether the user has already done something today. Before claiming the user "
+        f"has or hasn't done X today, verify against today's daily note and journal "
+        f"entries — don't infer activity from the snapshot date.\n"
+        f"When mentioning future events, compute exact days from USER.md's live date "
+        f"(fall back to {now.strftime('%Y-%m-%d')} only if USER.md isn't loaded): "
+        f"event_date minus today = X days from now. "
         f"Never say 'tomorrow' unless the math confirms exactly 1 day away.\n\n"
     )
     return date_line + _CRON_CONTEXT_PREAMBLE + prompt
