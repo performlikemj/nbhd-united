@@ -457,6 +457,12 @@ def relay_ai_response_to_line(
 
         ai_text = rehydrate_text(ai_text, entity_map)
 
+    # Log-only instrumentation: did the agent draw an ASCII chart instead of
+    # emitting a [[chart:...]] marker? See apps/router/output_guards.py.
+    from apps.router.output_guards import log_ascii_chart_leak
+
+    log_ascii_chart_leak(ai_text, tenant_id=tenant.id, channel="line")
+
     # Extract [[insight:slug]]statement[[/insight]] markers and write
     # AssistantInsight rows before chart processing (same flow as
     # pending_queue.py / poller.py). The reply text is updated in place

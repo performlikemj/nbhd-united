@@ -649,6 +649,11 @@ def relay_ai_response_to_telegram(tenant: Tenant, chat_id: int, ai_text: str) ->
 
     text = ai_text
 
+    # Log-only instrumentation: ASCII chart leakage when no marker emitted.
+    from apps.router.output_guards import log_ascii_chart_leak
+
+    log_ascii_chart_leak(text, tenant_id=tenant.id, channel="telegram_drain")
+
     # Extract [[insight:slug]]statement[[/insight]] markers, write
     # AssistantInsight rows, strip marker tokens. Runs before chart
     # processing so insights nested near chart markers still record.
