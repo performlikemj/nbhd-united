@@ -164,6 +164,7 @@ export function MarkdownEditor({
   onEditorReady,
 }: MarkdownEditorProps) {
   const editor = useEditor({
+    immediatelyRender: false,
     extensions: [
       StarterKit,
       TaskList,
