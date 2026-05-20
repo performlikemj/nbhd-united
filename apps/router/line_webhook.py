@@ -986,31 +986,12 @@ class LineWebhookView(View):
 
         user_tz = tenant.user.timezone or "UTC"
 
-        # Workspace routing — returns base line_user_id if tenant has no workspaces.
-        # We resolve workspace at enqueue time (not drain time) because routing
-        # depends on the user's *current* workspace context — by the time the
-        # drain runs, the user may have switched. Serializing per
-        # (tenant, channel, line_user_id) ensures these decisions still get
-        # made in arrival order.
-        from apps.router.workspace_routing import (
-            build_transition_marker,
-            resolve_workspace_routing,
-            update_active_workspace,
-        )
-
-        user_param, workspace, transitioned = resolve_workspace_routing(
-            tenant,
-            line_user_id,
-            message_text,
-        )
-        if transitioned and workspace is not None:
-            message_text = build_transition_marker(workspace) + message_text
-        # The always-on `[Active workspace: X]` marker + the full workspace
-        # catalogue are injected by the `nbhd-routing-context` OpenClaw plugin
-        # via `before_prompt_build`. See runtime/openclaw/plugins/nbhd-routing-context/
-        # and CONTINUITY_workspace-routing-fix.md, Phase 3.
-        if workspace is not None:
-            update_active_workspace(tenant, workspace)
+        # Chat sessionKey is flat: one continuous session per user.
+        # Workspace-based chat routing was removed 2026-05-20 — see
+        # docs/implementation/remove-workspace-chat-routing.md. Cron
+        # isolation lives at sessionTarget="isolated" + isolatedSession=True
+        # on the cron job config, not in user_param.
+        user_param = line_user_id
 
         # Inject current time so the agent always knows "now"
         from apps.router.services import (

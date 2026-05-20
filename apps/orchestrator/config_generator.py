@@ -1623,10 +1623,13 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             str(getattr(settings, "OPENCLAW_SETTINGS_PLUGIN_ID", "") or "").strip(),
             str(getattr(settings, "OPENCLAW_SETTINGS_PLUGIN_PATH", "") or "").strip(),
         ),
-        # Routing-context plugin — workspace catalogue injection + degenerate
-        # output guard. Unconditional in production via base.py default. See
-        # CONTINUITY_workspace-routing-fix.md, Phases 3-4. Tests disable by
-        # setting OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="".
+        # Routing-context plugin — degenerate output guard
+        # (before_agent_finalize + message_sending). Unconditional in
+        # production via base.py default. The before_prompt_build
+        # workspace-catalogue injection was removed 2026-05-20 along with
+        # workspace-based chat routing — see
+        # docs/implementation/remove-workspace-chat-routing.md. Tests
+        # disable the plugin by setting OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="".
         (
             str(getattr(settings, "OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID", "") or "").strip(),
             str(getattr(settings, "OPENCLAW_ROUTING_CONTEXT_PLUGIN_PATH", "") or "").strip(),
@@ -1770,14 +1773,14 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         },
         # Cron runtime settings (job definitions seeded via Gateway API)
         "cron": {"enabled": True},
-        # Session reset policy — bound the blast radius of a stuck active
-        # workspace. Without this, a stale `tenant.active_workspace` (e.g.
-        # the agent-created `_sync:Heartbeat Check-in` workspace from the
-        # 2026-05-14 incident) can trap a tenant indefinitely because the
-        # session keeps getting bumped on every message. Idle reset at 4h
-        # is short enough to recover within a day yet long enough not to
-        # trash a mid-conversation context. See
-        # CONTINUITY_workspace-routing-fix.md, Phase 5.
+        # Session reset policy — bound the blast radius of any stuck
+        # session state. Idle reset at 4h is short enough to recover
+        # within a day yet long enough not to trash a mid-conversation
+        # context. Originally introduced as a guard against stale
+        # `tenant.active_workspace` (per the 2026-05-14 incident); the
+        # workspace concept has since been removed from chat routing
+        # (see docs/implementation/remove-workspace-chat-routing.md) but
+        # the bound remains useful for any other source of session drift.
         "session": {
             "reset": {
                 "mode": "idle",

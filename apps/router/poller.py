@@ -978,38 +978,6 @@ class TelegramPoller:
         if history_parts:
             context_parts.append("## Relevant history\n" + "\n---\n".join(history_parts))
 
-        # Step 3: Workspace awareness — only when tenant has workspaces
-        try:
-            from apps.journal.models import Workspace
-
-            workspaces = list(Workspace.objects.filter(tenant=tenant).order_by("-last_used_at", "name"))
-            if workspaces:
-                active = tenant.active_workspace
-                ws_lines = []
-                other_lines = []
-                for ws in workspaces:
-                    desc = (ws.description or "").strip()[:200]
-                    if active and ws.id == active.id:
-                        ws_lines.append(f"**{ws.name}**" + (f": {desc}" if desc else ""))
-                    else:
-                        marker = " (default)" if ws.is_default else ""
-                        line = f"- **{ws.name}**{marker}"
-                        if desc:
-                            line += f": {desc}"
-                        other_lines.append(line)
-
-                ws_block = ""
-                if ws_lines:
-                    ws_block += "## Current workspace\n" + "\n".join(ws_lines)
-                if other_lines:
-                    ws_block += "\n\n## Other workspaces\n" + "\n".join(other_lines)
-                if ws_block:
-                    context_parts.append(ws_block)
-        except Exception:
-            logger.warning(
-                "contextual_recall: workspace context failed for tenant %s", str(tenant.id)[:8], exc_info=True
-            )
-
         if not context_parts:
             return message_text
 
@@ -1287,26 +1255,12 @@ class TelegramPoller:
 
         user_tz = tenant.user.timezone or "UTC"
 
-        # Workspace routing — returns base chat_id if tenant has no workspaces
-        from apps.router.workspace_routing import (
-            build_transition_marker,
-            resolve_workspace_routing,
-            update_active_workspace,
-        )
-
-        user_param, workspace, transitioned = resolve_workspace_routing(
-            tenant,
-            str(chat_id),
-            message_text,
-        )
-        if transitioned and workspace is not None:
-            message_text = build_transition_marker(workspace) + message_text
-        # The always-on `[Active workspace: X]` marker + the full workspace
-        # catalogue are injected by the `nbhd-routing-context` OpenClaw plugin
-        # via `before_prompt_build`. See runtime/openclaw/plugins/nbhd-routing-context/
-        # and CONTINUITY_workspace-routing-fix.md, Phase 3.
-        if workspace is not None:
-            update_active_workspace(tenant, workspace)
+        # Chat sessionKey is flat: one continuous session per user.
+        # Workspace-based chat routing was removed 2026-05-20 — see
+        # docs/implementation/remove-workspace-chat-routing.md. Cron
+        # isolation lives at sessionTarget="isolated" + isolatedSession=True
+        # on the cron job config, not in user_param.
+        user_param = str(chat_id)
 
         # Inject current time so the agent always knows "now"
         from apps.router.services import (

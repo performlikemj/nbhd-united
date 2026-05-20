@@ -10,7 +10,6 @@ import { Workspace } from "@/lib/types";
 import {
   useCreateWorkspaceMutation,
   useDeleteWorkspaceMutation,
-  useSwitchWorkspaceMutation,
   useUpdateWorkspaceMutation,
   useWorkspacesQuery,
 } from "@/lib/queries";
@@ -99,7 +98,6 @@ export default function SettingsWorkspacesPage() {
   const createMutation = useCreateWorkspaceMutation();
   const updateMutation = useUpdateWorkspaceMutation();
   const deleteMutation = useDeleteWorkspaceMutation();
-  const switchMutation = useSwitchWorkspaceMutation();
 
   /* ── Create form ── */
   const [showCreate, setShowCreate] = useState(false);
@@ -219,19 +217,6 @@ export default function SettingsWorkspacesPage() {
     setDeleteConfirmSlug(null);
   }, []);
 
-  const handleSwitch = useCallback(
-    async (workspace: Workspace) => {
-      if (workspace.is_active) return;
-      try {
-        await switchMutation.mutateAsync(workspace.slug);
-        showToast(`Switched to ${workspace.name}`, "success");
-      } catch (err) {
-        showToast(getErrorMessage(err), "error");
-      }
-    },
-    [switchMutation, showToast],
-  );
-
   /* ── Render ── */
 
   if (isLoading) {
@@ -256,7 +241,7 @@ export default function SettingsWorkspacesPage() {
     <div className="space-y-6">
       <SectionCard
         title="Workspaces"
-        subtitle="Organize your conversations into focused contexts. Your assistant automatically routes messages to the right workspace based on topic."
+        subtitle="Workspace labels for grouping content. They no longer affect chat routing — your assistant keeps one continuous conversation regardless of which workspace is set."
       >
         {/* Header with limit indicator and Add button */}
         <div className="mb-4 flex items-center justify-between gap-4">
@@ -279,8 +264,8 @@ export default function SettingsWorkspacesPage() {
           <div className="rounded-panel border border-dashed border-border p-8 text-center">
             <p className="font-medium text-ink">No workspaces yet</p>
             <p className="mt-2 text-sm text-ink-muted">
-              Create your first workspace to organize conversations by topic. A &ldquo;General&rdquo; default
-              workspace will be created automatically.
+              Create a workspace label to tag content by topic. Workspaces no longer split chat into separate
+              conversations — they&apos;re a free-form organization aid only.
             </p>
           </div>
         ) : (
@@ -293,11 +278,7 @@ export default function SettingsWorkspacesPage() {
               return (
                 <article
                   key={workspace.id}
-                  className={`group flex flex-col rounded-panel border bg-surface p-4 transition ${
-                    workspace.is_active
-                      ? "border-accent/60 ring-1 ring-accent/20"
-                      : "border-border hover:border-border-strong"
-                  }`}
+                  className="group flex flex-col rounded-panel border border-border bg-surface p-4 transition hover:border-border-strong"
                 >
                   {isEditing ? (
                     /* Edit form (inline) */
@@ -351,26 +332,14 @@ export default function SettingsWorkspacesPage() {
                     /* Display mode */
                     <>
                       <header className="mb-2 flex items-start justify-between gap-3">
-                        <button
-                          type="button"
-                          onClick={() => handleSwitch(workspace)}
-                          disabled={workspace.is_active}
-                          className="flex flex-1 items-center gap-2 text-left disabled:cursor-default"
-                          aria-label={workspace.is_active ? `${workspace.name} is active` : `Switch to ${workspace.name}`}
-                        >
+                        <div className="flex flex-1 items-center gap-2">
                           <h3 className="font-headline text-base font-semibold text-ink">{workspace.name}</h3>
                           {workspace.is_default ? (
                             <span className="inline-flex rounded-full bg-signal/15 px-2 py-0.5 text-xs font-medium text-signal">
                               Default
                             </span>
                           ) : null}
-                          {workspace.is_active ? (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-bg px-2 py-0.5 text-xs font-medium text-emerald-text">
-                              <span className="h-1.5 w-1.5 rounded-full bg-emerald-text" />
-                              Active
-                            </span>
-                          ) : null}
-                        </button>
+                        </div>
                         <div className="flex gap-1">
                           <button
                             type="button"
