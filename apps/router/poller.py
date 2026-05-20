@@ -320,6 +320,11 @@ class TelegramPoller:
 
             text = rehydrate_text(text, entity_map)
 
+        # Log-only instrumentation: ASCII chart leakage when no marker emitted.
+        from apps.router.output_guards import log_ascii_chart_leak
+
+        log_ascii_chart_leak(text, tenant_id=tenant.id, channel="telegram_poller")
+
         # Extract [[insight:slug]]statement[[/insight]] markers and write
         # AssistantInsight rows before chart processing. Same flow as
         # pending_queue.py / line_webhook.py — covers all 3 outbound paths.

@@ -136,6 +136,11 @@ class CronDeliveryView(APIView):
 
             message_text = rehydrate_text(message_text, entity_map)
 
+        # Log-only instrumentation: ASCII chart leakage when no marker emitted.
+        from apps.router.output_guards import log_ascii_chart_leak
+
+        log_ascii_chart_leak(message_text, tenant_id=tenant.id, channel=f"cron_{channel}")
+
         # Route to appropriate channel
         if channel == "line":
             return self._send_via_line(
