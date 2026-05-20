@@ -396,3 +396,9 @@ COMPOSIO_ALLOW_MULTIPLE_ACCOUNTS = env.bool(
     "COMPOSIO_ALLOW_MULTIPLE_ACCOUNTS",
     default=True,
 )
+
+# Custom test runner — disconnects the CronJob → reconciler signal during
+# test runs so the publish_task sync fallback (no QSTASH_TOKEN) doesn't
+# accumulate DB connections + outbound HTTP attempts on every CronJob save.
+# See ``config/test_runner.py`` for the full rationale.
+TEST_RUNNER = "config.test_runner.QuietCronSignalRunner"

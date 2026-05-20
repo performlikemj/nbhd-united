@@ -153,6 +153,12 @@ class RestoreFiresMissedCronsTests(TestCase):
         self.tenant.status = Tenant.Status.ACTIVE
         self.tenant.container_id = "oc-catchup-test"
         self.tenant.container_fqdn = "oc-catchup-test.internal"
+        # restore_crons_after_image_update_task has a dual path; this test
+        # asserts the legacy gateway sequence (cron.list → cron.add → ...).
+        # Pin canonical=False so migration 0067's default flip doesn't make
+        # the function additionally publish a reconcile task that would
+        # interleave with the mocked call sequence.
+        self.tenant.postgres_cron_canonical = False
         # Snapshot taken 2.5h ago; the cron in the snapshot fires at 7:00 JST
         # (= 22:00 UTC) so a snapshot at 21:56 UTC with now at ~22:30 UTC
         # makes the 22:00 UTC fire fall inside the window.

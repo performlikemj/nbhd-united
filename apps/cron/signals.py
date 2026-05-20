@@ -61,3 +61,21 @@ def cronjob_deleted_regen_tenant_crons(sender, instance, **kwargs):
     if not _tenant_uses_postgres_canonical(instance):
         return
     _enqueue_regen(str(instance.tenant_id))
+
+
+# ---------------------------------------------------------------------------
+# Test helpers — let the QuietCronSignalRunner mute the reconciler signal
+# globally, and let signal-contract tests re-enable it per-class. Production
+# code never calls these.
+
+
+def disconnect_cronjob_reconcile_signals() -> None:
+    """Disconnect both CronJob → reconciler signals (called by the test runner)."""
+    post_save.disconnect(cronjob_saved_regen_tenant_crons, sender=CronJob)
+    post_delete.disconnect(cronjob_deleted_regen_tenant_crons, sender=CronJob)
+
+
+def connect_cronjob_reconcile_signals() -> None:
+    """Reconnect both CronJob → reconciler signals (for tests that need them live)."""
+    post_save.connect(cronjob_saved_regen_tenant_crons, sender=CronJob)
+    post_delete.connect(cronjob_deleted_regen_tenant_crons, sender=CronJob)

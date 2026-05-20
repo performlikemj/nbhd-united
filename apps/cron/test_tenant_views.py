@@ -24,6 +24,10 @@ def _create_user_and_tenant(*, active=True):
         status=Tenant.Status.ACTIVE if active else Tenant.Status.PENDING,
         container_id="oc-test" if active else "",
         container_fqdn="oc-test.internal.azurecontainerapps.io" if active else "",
+        # Default helper exercises the legacy gateway-write path. Tests that
+        # need the Postgres-canonical branch flip the flag explicitly in
+        # their own setUp (see PostgresCanonicalSignalTest et al.).
+        postgres_cron_canonical=False,
     )
     return user, tenant
 
@@ -969,6 +973,18 @@ class PostgresCanonicalSignalTest(TestCase):
     only when the tenant is on the new flow."""
 
     def setUp(self):
+        # The custom test runner disconnects the reconciler signal at
+        # test-environment setup (see ``config/test_runner.py``). This class
+        # exists to verify the signal contract, so reconnect for the
+        # duration of these tests and tear down on cleanup.
+        from apps.cron.signals import (
+            connect_cronjob_reconcile_signals,
+            disconnect_cronjob_reconcile_signals,
+        )
+
+        connect_cronjob_reconcile_signals()
+        self.addCleanup(disconnect_cronjob_reconcile_signals)
+
         self.user, self.tenant = _create_user_and_tenant()
 
     @patch("apps.cron.publish.publish_task")
