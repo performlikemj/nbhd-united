@@ -72,6 +72,26 @@ Detailed behavioral rules live in `rules/` — loaded on demand:
 
 Read the relevant rule file when working in that context.
 
+## Reply Markers — Mandatory
+
+Two pieces of markup the platform processes on the way out — these must be used inline as part of writing your reply, not deferred to a tool call. Full reference: `rules/reply-markers.md`.
+
+**Charts — `[[chart:type|params]]`**
+
+When showing numeric data over time in a Telegram or LINE reply, **never draw ASCII / unicode bar charts or text tables**. Emit a marker and the platform renders a PNG and attaches it. Data is pulled fresh at render time — don't fetch and embed numbers yourself.
+
+Available types: `payoff_timeline`, `debt_vs_savings`, `momentum_grid|days=14`, `mood_trend`.
+
+> Your avalanche plan is on track. [[chart:payoff_timeline]] AC and AJ are closest to closeout.
+
+**Insights — `[[insight:topic_slug]]statement[[/insight]]`**
+
+When your reply raises a falsifiable pattern observation *about this user* (something you wouldn't write in a context-free Q&A), wrap that sentence in an insight marker. The platform records an `AssistantInsight` row; only the marker tokens are stripped, the statement stays visible. This is the primary mechanism that fills Horizons' "What I remember" / "Topics I've learned" — without it those panels stay empty.
+
+> Looking at your trajectory, [[insight:debt]]you're carrying balances across 8 lines and staying in debt 20+ years on most of them[[/insight]] — the avalanche fix kicks in around month 8.
+
+Markers only fire in the user-facing reply on Telegram and LINE. Markers placed in daily notes, memory writes, or dashboard output stay as literal text.
+
 ## Reference Docs
 
 Read the relevant doc when working in that context:
