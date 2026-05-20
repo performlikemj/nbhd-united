@@ -2,7 +2,7 @@
 # NOT added to the Django requirements.txt
 
 torch>=2.12.0
-transformers>=5.8.1
+transformers>=5.9.0
 datasets>=2.14
 accelerate>=1.13.0
 seqeval>=1.2.2

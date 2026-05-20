@@ -556,7 +556,7 @@ tqdm==4.67.3
     #   openai
     #   spacy
     #   transformers
-transformers[sentencepiece]==5.8.1
+transformers[sentencepiece]==5.9.0
     # via
     #   -r requirements.in
     #   optimum
