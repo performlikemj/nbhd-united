@@ -973,6 +973,18 @@ class PostgresCanonicalSignalTest(TestCase):
     only when the tenant is on the new flow."""
 
     def setUp(self):
+        # The custom test runner disconnects the reconciler signal at
+        # test-environment setup (see ``config/test_runner.py``). This class
+        # exists to verify the signal contract, so reconnect for the
+        # duration of these tests and tear down on cleanup.
+        from apps.cron.signals import (
+            connect_cronjob_reconcile_signals,
+            disconnect_cronjob_reconcile_signals,
+        )
+
+        connect_cronjob_reconcile_signals()
+        self.addCleanup(disconnect_cronjob_reconcile_signals)
+
         self.user, self.tenant = _create_user_and_tenant()
 
     @patch("apps.cron.publish.publish_task")
