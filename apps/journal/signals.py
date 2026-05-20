@@ -128,3 +128,72 @@ def auto_resolve_pending_extractions(sender, instance, **kwargs):
             count,
             str(instance.tenant_id)[:8],
         )
+
+
+def _auto_resolve_extractions_for_typed_row(*, tenant, kind, title: str, description: str) -> None:
+    """Auto-approve PendingExtractions matched by a newly-created Goal or Task.
+
+    Mirrors ``auto_resolve_pending_extractions`` (the Document-keyed handler)
+    so that the same PendingExtraction → approval flow works whether the
+    agent lands the new item as a typed row or a Document blob.
+    """
+    haystack = f"{title}\n{description}".lower().strip()
+    if not haystack:
+        return
+    pending = PendingExtraction.objects.filter(
+        tenant=tenant,
+        kind=kind,
+        status=PendingExtraction.Status.PENDING,
+    )
+    to_resolve = []
+    for p in pending:
+        extraction_text = p.text.lower().strip()
+        if not extraction_text:
+            continue
+        if extraction_text in haystack:
+            to_resolve.append(p.id)
+            continue
+        words = [w for w in extraction_text.split() if len(w) > 3]
+        if words and sum(1 for w in words if w in haystack) / len(words) >= 0.7:
+            to_resolve.append(p.id)
+    if to_resolve:
+        count = PendingExtraction.objects.filter(id__in=to_resolve).update(
+            status=PendingExtraction.Status.APPROVED,
+            resolved_at=timezone.now(),
+        )
+        logger.info(
+            "Auto-resolved %d pending extractions for tenant %s via typed row",
+            count,
+            str(tenant.id)[:8],
+        )
+
+
+# Imports kept local to receivers — the lint-on-Edit hook reaps module-level
+# Goal/Task imports if they look unused at parse time. See
+# feedback_local_reimport_pattern.
+
+
+@receiver(post_save, sender="journal.Goal")
+def auto_resolve_pending_extractions_on_goal(sender, instance, created, **kwargs):
+    """Same auto-resolve flow as the Document handler, but keyed on Goal."""
+    if not created:
+        return
+    _auto_resolve_extractions_for_typed_row(
+        tenant=instance.tenant,
+        kind=PendingExtraction.Kind.GOAL,
+        title=instance.title or "",
+        description=instance.description or "",
+    )
+
+
+@receiver(post_save, sender="journal.Task")
+def auto_resolve_pending_extractions_on_task(sender, instance, created, **kwargs):
+    """Same auto-resolve flow as the Document handler, but keyed on Task."""
+    if not created:
+        return
+    _auto_resolve_extractions_for_typed_row(
+        tenant=instance.tenant,
+        kind=PendingExtraction.Kind.TASK,
+        title=instance.title or "",
+        description=instance.description or "",
+    )

@@ -273,18 +273,29 @@ def _count_active_goals(tenant: Tenant) -> int:
     so we treat the *thread* — engaging with goals — as 0 or 1). Each
     FuelGoal without ``achieved_at`` adds one.
     """
+    # Dual-read: prefer typed Goal rows when present (post-migration tenants),
+    # else fall back to the legacy Document(kind=goal, slug=goals) markdown.
+    # Local import — see feedback_local_reimport_pattern memory.
+    from apps.journal.models import Goal
+
     count = 0
 
-    goals_doc = Document.objects.filter(
-        tenant=tenant,
-        kind=Document.Kind.GOAL,
-        slug="goals",
-    ).first()
-    if goals_doc and (goals_doc.markdown or "").strip():
-        starter = _starter_goals_markdown().strip()
-        body = (goals_doc.markdown or "").strip()
-        if body and body != starter:
-            count += 1
+    active_typed_count = Goal.objects.filter(tenant=tenant, status=Goal.Status.ACTIVE).count()
+    if active_typed_count > 0:
+        # Each active typed Goal counts individually — they're row-shaped so
+        # we don't have to collapse them into "is the goals doc nonempty".
+        count += active_typed_count
+    else:
+        goals_doc = Document.objects.filter(
+            tenant=tenant,
+            kind=Document.Kind.GOAL,
+            slug="goals",
+        ).first()
+        if goals_doc and (goals_doc.markdown or "").strip():
+            starter = _starter_goals_markdown().strip()
+            body = (goals_doc.markdown or "").strip()
+            if body and body != starter:
+                count += 1
 
     count += FuelGoal.objects.filter(tenant=tenant, achieved_at__isnull=True).count()
 

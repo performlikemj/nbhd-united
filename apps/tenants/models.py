@@ -327,6 +327,28 @@ class Tenant(models.Model):
         ),
     )
 
+    # Experimental: typed journal lifecycle (Goal/Task models).
+    # When True:
+    #   - System prompt + memoryFlush prompt teach the agent to use
+    #     nbhd_goal_* / nbhd_task_* tools (typed lifecycle) instead of
+    #     writing goal/task content as Document(kind=goal|tasks) markdown.
+    #   - Readers (envelope.py, agenda_envelope.py) prefer Goal/Task rows
+    #     over legacy Document markdown.
+    #   - memory_sync.py stops mirroring Document(kind in [goal, tasks])
+    #     to the file share — those are now owned by typed tables.
+    # Fleet-wide changes (new models, endpoints, tool registrations) ship
+    # ungated; only the prompt + reader behavior is flag-gated so stale
+    # tenants whose OpenClaw image lacks the new tools don't get prompted
+    # to call them.
+    experimental_typed_journal_lifecycle = models.BooleanField(
+        default=False,
+        help_text=(
+            "Experimental: route goal/task lifecycle through typed Goal/Task "
+            "tables and corresponding nbhd_goal_*/nbhd_task_* tools instead "
+            "of free-form Document markdown. Canary-gated rollout."
+        ),
+    )
+
     # Feature tips
     feature_tips_enabled = models.BooleanField(
         default=True,
