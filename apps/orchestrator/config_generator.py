@@ -130,6 +130,74 @@ def _build_cron_message(
     return full.strip()
 
 
+# When ``experimental_typed_journal_lifecycle`` is True on the tenant, these
+# substitutions rewrite the shared cron prompts to direct the agent at the
+# typed Goal/Task lifecycle tools instead of free-form ``Document(kind=goal|
+# tasks)`` markdown writes. Keyed off literal substrings present in the
+# prompts so we keep one source of truth per prompt rather than duplicating
+# every cron-prompt block into legacy + typed variants. Verified covered by
+# ``TypedLifecycleSwapsTest``.
+_TYPED_LIFECYCLE_SWAPS: tuple[tuple[str, str], ...] = (
+    # ── Write-side: tasks ───────────────────────────────────────────────
+    (
+        "`nbhd_document_append` (kind='tasks', slug='tasks')",
+        "`nbhd_task_create` (typed lifecycle — captures status + due_date as a queryable row; "
+        "use `nbhd_task_complete` to mark done later)",
+    ),
+    (
+        "`nbhd_document_set` with kind='tasks', slug='tasks'",
+        "`nbhd_task_create` for new actionable items (or `nbhd_task_update`/`nbhd_task_complete` "
+        "for existing tasks). Do not write goal/task content into Document anymore",
+    ),
+    # ── Write-side: goals ───────────────────────────────────────────────
+    (
+        "`nbhd_document_append` (kind='goal', slug='goals')",
+        "`nbhd_goal_create` for new goals or `nbhd_goal_update` to update an existing goal "
+        "(use `nbhd_goal_achieve` / `nbhd_goal_abandon` for lifecycle changes)",
+    ),
+    (
+        "`nbhd_document_set` with kind='goal', slug='goals'",
+        "`nbhd_goal_create` for new goals (or `nbhd_goal_update`/`nbhd_goal_achieve`/"
+        "`nbhd_goal_abandon` for existing). Do not write goal content into Document anymore",
+    ),
+    # ── Read-side: tasks ────────────────────────────────────────────────
+    (
+        "`nbhd_document_get` with kind='tasks', slug='tasks'",
+        "`nbhd_task_list({status: 'open'})` (typed — preferred). Legacy task markdown "
+        "in `nbhd_document_get(kind='tasks')` may still hold historical content during transition",
+    ),
+    # ── Read-side: goals ────────────────────────────────────────────────
+    (
+        "`nbhd_document_get` with kind='goal', slug='goals'",
+        "`nbhd_goal_list({status: 'active'})` (typed — preferred). Legacy goal markdown "
+        "in `nbhd_document_get(kind='goal')` may still hold historical content during transition",
+    ),
+    (
+        "`nbhd_document_get` kind='goal'",
+        "`nbhd_goal_list` (typed — preferred). Legacy `nbhd_document_get(kind='goal')` for transition",
+    ),
+    (
+        "`nbhd_document_get` kind='tasks'",
+        "`nbhd_task_list` (typed — preferred). Legacy `nbhd_document_get(kind='tasks')` for transition",
+    ),
+)
+
+
+def _apply_typed_lifecycle_swaps(prompt: str, tenant: Tenant) -> str:
+    """Rewrite cron prompts to direct the typed-lifecycle agent at typed tools.
+
+    No-op when the tenant flag is off — keeps the fleet behavior unchanged
+    while the canary observes the typed lifecycle. Order matters: longer
+    patterns first so we don't partial-match on shorter ones.
+    """
+    if not getattr(tenant, "experimental_typed_journal_lifecycle", False):
+        return prompt
+    out = prompt
+    for old, new in _TYPED_LIFECYCLE_SWAPS:
+        out = out.replace(old, new)
+    return out
+
+
 def _prepare_cron_prompt(prompt: str, tenant: Tenant) -> str:
     """Prepend date context and shared preamble to a cron prompt.
 
@@ -171,7 +239,7 @@ def _prepare_cron_prompt(prompt: str, tenant: Tenant) -> str:
         f"event_date minus today = X days from now. "
         f"Never say 'tomorrow' unless the math confirms exactly 1 day away.\n\n"
     )
-    return date_line + _CRON_CONTEXT_PREAMBLE + prompt
+    return _apply_typed_lifecycle_swaps(date_line + _CRON_CONTEXT_PREAMBLE + prompt, tenant)
 
 
 _MORNING_BRIEFING_PROMPT_TEMPLATE = (

@@ -408,7 +408,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_daily_note_append",
       description:
-        "Append a quick timestamped log entry to the daily note. Auto-timestamps with current time and author=agent.",
+        "Append a quick timestamped log entry to the daily note. Auto-timestamps with current time and author=agent. Use ONLY for narrative reflection, mood, observations, or prose journaling. For ACTIONABLE ITEMS the user wants to remember to do (reminders, follow-ups, todos, 'remind me to X') use `nbhd_task_create` instead — even if mentioned casually in chat. Tasks have status + due_date and are queryable; daily-note prose is not.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1377,7 +1377,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_task_create",
       description:
-        "Create a new task — an actionable item with a status (open/in_progress/done/skipped/deferred). Use for items the user needs to do. Do NOT use nbhd_document_put with kind='tasks' (deprecated). If the task pertains to a specific object in another pillar (e.g. paying a particular loan tracked in Gravity), pass `related_ref` so the task points to the source-of-truth row. Do NOT record CURRENT VALUES in the title or description (no balances, no totals, no '$X owed') — values live in their tracking systems and should be queried fresh.",
+        "PREFERRED tool for ANY actionable item the user mentions wanting to do — reminders, follow-ups, todos, 'remind me to X', 'I should Y', 'don't forget Z' — even when mentioned casually in chat. Captures intent as a queryable database row with status (open/in_progress/done/skipped/deferred) and due_date instead of as prose buried in a daily note. ALWAYS prefer this over `nbhd_daily_note_append` for items the user might want to come back to. Do NOT use `nbhd_document_put` with kind='tasks' (deprecated). If the task pertains to a specific object in another pillar (e.g. paying a particular loan tracked in Gravity), pass `related_ref` so the task points to the source-of-truth row. Do NOT record CURRENT VALUES in the title or description (no balances, no totals, no '$X owed') — values live in their tracking systems and should be queried fresh.",
       parameters: {
         type: "object",
         additionalProperties: false,
