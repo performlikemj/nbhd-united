@@ -363,6 +363,353 @@ class RuntimeWeeklyReviewsView(APIView):
         )
 
 
+# ── Typed Goal/Task lifecycle (feat/journal-typed-lifecycle) ──────────────
+#
+# These endpoints back the nbhd_goal_*/nbhd_task_* tools in nbhd-journal-tools.
+# Imports of Goal/Task/GoalSerializer/TaskSerializer are intentionally LOCAL
+# inside each method — the lint-on-Edit hook reaps module-level imports that
+# look unused at parse time. See ``feedback_local_reimport_pattern.md``.
+
+
+class RuntimeGoalListCreateView(APIView):
+    """List or create goals for a tenant runtime."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        from apps.journal.lifecycle_serializers import GoalSerializer
+        from apps.journal.models import Goal
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        qs = Goal.objects.filter(tenant=tenant)
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        pillar_filter = request.query_params.get("pillar")
+        if pillar_filter:
+            qs = qs.filter(pillar=pillar_filter)
+        parent_filter = request.query_params.get("parent_goal_id")
+        if parent_filter:
+            qs = qs.filter(parent_goal_id=parent_filter)
+
+        serializer = GoalSerializer(qs, many=True)
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "goals": serializer.data,
+                "count": len(serializer.data),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def post(self, request, tenant_id):
+        from apps.journal.lifecycle_serializers import GoalSerializer
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        serializer = GoalSerializer(data=request.data, context={"tenant": tenant})
+        serializer.is_valid(raise_exception=True)
+        goal = serializer.save()
+        return Response(
+            {"tenant_id": str(tenant.id), "goal": GoalSerializer(goal).data},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class RuntimeGoalDetailView(APIView):
+    """Get or update a single goal."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id, goal_id):
+        from apps.journal.lifecycle_serializers import GoalSerializer
+        from apps.journal.models import Goal
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        goal = Goal.objects.filter(tenant=tenant, id=goal_id).first()
+        if goal is None:
+            return Response({"error": "goal_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(
+            {"tenant_id": str(tenant.id), "goal": GoalSerializer(goal).data},
+            status=status.HTTP_200_OK,
+        )
+
+    def patch(self, request, tenant_id, goal_id):
+        from apps.journal.lifecycle_serializers import GoalSerializer
+        from apps.journal.models import Goal
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        goal = Goal.objects.filter(tenant=tenant, id=goal_id).first()
+        if goal is None:
+            return Response({"error": "goal_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = GoalSerializer(goal, data=request.data, partial=True, context={"tenant": tenant})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(
+            {"tenant_id": str(tenant.id), "goal": GoalSerializer(goal).data},
+            status=status.HTTP_200_OK,
+        )
+
+
+class RuntimeGoalAchieveView(APIView):
+    """Mark a goal as achieved."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id, goal_id):
+        from apps.journal.lifecycle_serializers import GoalSerializer
+        from apps.journal.models import Goal
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        goal = Goal.objects.filter(tenant=tenant, id=goal_id).first()
+        if goal is None:
+            return Response({"error": "goal_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        goal.mark_achieved()
+        return Response(
+            {"tenant_id": str(tenant.id), "goal": GoalSerializer(goal).data},
+            status=status.HTTP_200_OK,
+        )
+
+
+class RuntimeGoalAbandonView(APIView):
+    """Mark a goal as abandoned."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id, goal_id):
+        from apps.journal.lifecycle_serializers import GoalSerializer
+        from apps.journal.models import Goal
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        goal = Goal.objects.filter(tenant=tenant, id=goal_id).first()
+        if goal is None:
+            return Response({"error": "goal_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        goal.abandon()
+        return Response(
+            {"tenant_id": str(tenant.id), "goal": GoalSerializer(goal).data},
+            status=status.HTTP_200_OK,
+        )
+
+
+class RuntimeTaskListCreateView(APIView):
+    """List or create tasks for a tenant runtime."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        from apps.journal.lifecycle_serializers import TaskSerializer
+        from apps.journal.models import Task
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        qs = Task.objects.filter(tenant=tenant)
+        for field in ("status", "pillar"):
+            value = request.query_params.get(field)
+            if value:
+                qs = qs.filter(**{field: value})
+        parent_filter = request.query_params.get("parent_goal_id")
+        if parent_filter:
+            qs = qs.filter(parent_goal_id=parent_filter)
+        try:
+            due_before = _parse_iso_date(request.query_params.get("due_before"), field_name="due_before")
+            due_after = _parse_iso_date(request.query_params.get("due_after"), field_name="due_after")
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if due_before is not None:
+            qs = qs.filter(due_date__lte=due_before)
+        if due_after is not None:
+            qs = qs.filter(due_date__gte=due_after)
+
+        serializer = TaskSerializer(qs, many=True)
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "tasks": serializer.data,
+                "count": len(serializer.data),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def post(self, request, tenant_id):
+        from apps.journal.lifecycle_serializers import TaskSerializer
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        serializer = TaskSerializer(data=request.data, context={"tenant": tenant})
+        serializer.is_valid(raise_exception=True)
+        task = serializer.save()
+        return Response(
+            {"tenant_id": str(tenant.id), "task": TaskSerializer(task).data},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class RuntimeTaskDetailView(APIView):
+    """Get or update a single task."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id, task_id):
+        from apps.journal.lifecycle_serializers import TaskSerializer
+        from apps.journal.models import Task
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        task = Task.objects.filter(tenant=tenant, id=task_id).first()
+        if task is None:
+            return Response({"error": "task_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(
+            {"tenant_id": str(tenant.id), "task": TaskSerializer(task).data},
+            status=status.HTTP_200_OK,
+        )
+
+    def patch(self, request, tenant_id, task_id):
+        from apps.journal.lifecycle_serializers import TaskSerializer
+        from apps.journal.models import Task
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        task = Task.objects.filter(tenant=tenant, id=task_id).first()
+        if task is None:
+            return Response({"error": "task_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = TaskSerializer(task, data=request.data, partial=True, context={"tenant": tenant})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(
+            {"tenant_id": str(tenant.id), "task": TaskSerializer(task).data},
+            status=status.HTTP_200_OK,
+        )
+
+
+class _RuntimeTaskTransitionView(APIView):
+    """Base for task status transitions (complete/skip/defer)."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    # Subclass sets ``transition_method`` to a method name on Task.
+    transition_method: str = ""
+
+    def post(self, request, tenant_id, task_id):
+        from apps.journal.lifecycle_serializers import TaskSerializer
+        from apps.journal.models import Task
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        task = Task.objects.filter(tenant=tenant, id=task_id).first()
+        if task is None:
+            return Response({"error": "task_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        getattr(task, self.transition_method)()
+        return Response(
+            {"tenant_id": str(tenant.id), "task": TaskSerializer(task).data},
+            status=status.HTTP_200_OK,
+        )
+
+
+class RuntimeTaskCompleteView(_RuntimeTaskTransitionView):
+    """Mark a task as done (sets status=done, completed_at=now)."""
+
+    transition_method = "complete"
+
+
+class RuntimeTaskSkipView(_RuntimeTaskTransitionView):
+    """Mark a task as skipped."""
+
+    transition_method = "skip"
+
+
+class RuntimeTaskDeferView(_RuntimeTaskTransitionView):
+    """Mark a task as deferred."""
+
+    transition_method = "defer"
+
+
 class RuntimeGmailMessagesView(APIView):
     """Return normalized Gmail messages for a tenant runtime."""
 

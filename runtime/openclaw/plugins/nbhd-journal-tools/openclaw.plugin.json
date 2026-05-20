@@ -29,7 +29,20 @@
       "nbhd_workspace_create",
       "nbhd_workspace_update",
       "nbhd_workspace_delete",
-      "nbhd_workspace_switch"
+      "nbhd_workspace_switch",
+      "nbhd_goal_create",
+      "nbhd_goal_update",
+      "nbhd_goal_achieve",
+      "nbhd_goal_abandon",
+      "nbhd_goal_list",
+      "nbhd_goal_get",
+      "nbhd_task_create",
+      "nbhd_task_update",
+      "nbhd_task_complete",
+      "nbhd_task_skip",
+      "nbhd_task_defer",
+      "nbhd_task_list",
+      "nbhd_task_get"
     ]
   },
   "configSchema": {

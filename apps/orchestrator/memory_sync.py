@@ -33,15 +33,17 @@ def render_memory_files(tenant) -> dict[str, str]:
 
     cutoff = (timezone.now() - timedelta(days=30)).date()
 
-    # All non-daily docs + recent dailies
-    documents = (
-        Document.objects.filter(tenant=tenant)
-        .exclude(
-            kind="daily",
-            slug__lt=str(cutoff),
-        )
-        .order_by("kind", "slug")
-    )
+    # All non-daily docs + recent dailies. For tenants on the typed Goal/Task
+    # lifecycle, Document(kind in [goal, tasks]) is owned by the typed tables
+    # instead — skip them here so we don't write stale markdown mirrors of
+    # rows that have been migrated/superseded.
+    documents = Document.objects.filter(tenant=tenant)
+    if getattr(tenant, "experimental_typed_journal_lifecycle", False):
+        documents = documents.exclude(kind__in=[Document.Kind.GOAL, Document.Kind.TASKS])
+    documents = documents.exclude(
+        kind="daily",
+        slug__lt=str(cutoff),
+    ).order_by("kind", "slug")
 
     from apps.journal.path_validation import validate_kind_slug
     from apps.pii.redactor import RedactionSession

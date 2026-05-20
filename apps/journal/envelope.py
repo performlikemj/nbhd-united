@@ -48,7 +48,40 @@ def _starter_task_lines() -> frozenset[str]:
     order=20,
 )
 def render_goals(tenant: Tenant, *, max_chars: int = 1500) -> str:
-    """Active goals doc body, char-capped, skipping unmodified starter seed."""
+    """Active goals — typed Goal rows when present, else legacy Document fallback.
+
+    Dual-read keeps the envelope correct during the journal-typed-lifecycle
+    rollout: if the tenant has migrated Goal rows, render those; otherwise
+    fall back to the legacy ``Document(kind=goal, slug=goals)`` markdown.
+    Stale tenants are unaffected.
+    """
+    # Local import — Goal isn't used at module load time for the legacy path
+    # and the lint-on-Edit hook strips unused module-level imports.
+    from .models import Goal
+
+    active_goals = list(Goal.objects.filter(tenant=tenant, status=Goal.Status.ACTIVE).order_by("-updated_at"))
+    if active_goals:
+        lines: list[str] = []
+        running = 0
+        for goal in active_goals:
+            line = f"- **{goal.title.strip()}**"
+            if goal.pillar:
+                line += f" _(pillar: {goal.pillar})_"
+            if goal.target_date:
+                line += f" _(target: {goal.target_date.isoformat()})_"
+            description = (goal.description or "").strip()
+            if description:
+                first = description.splitlines()[0].strip().lstrip("# ").strip()
+                if first:
+                    line += f" — {first}"
+            if running + len(line) > max_chars:
+                lines.append(f"_(+{len(active_goals) - len(lines)} more goals — see Horizons)_")
+                break
+            lines.append(line)
+            running += len(line) + 1
+        return "\n".join(lines)
+
+    # Legacy fallback — Document-backed goals for stale tenants.
     doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.GOAL, slug="goals").first()
     if not doc:
         return ""
@@ -71,7 +104,30 @@ def render_goals(tenant: Tenant, *, max_chars: int = 1500) -> str:
     order=30,
 )
 def render_open_tasks(tenant: Tenant, *, max_items: int = 25) -> str:
-    """Open ``- [ ]`` items from the tasks doc, filtering starter placeholders."""
+    """Open tasks — typed Task rows when present, else legacy Document markdown.
+
+    Dual-read mirrors ``render_goals`` for the same rollout reason.
+    """
+    from .models import Task
+
+    open_tasks = list(
+        Task.objects.filter(tenant=tenant, status=Task.Status.OPEN).order_by("due_date", "-created_at")[:max_items]
+    )
+    total_open = Task.objects.filter(tenant=tenant, status=Task.Status.OPEN).count()
+    if open_tasks:
+        lines: list[str] = []
+        for task in open_tasks:
+            line = f"- [ ] {task.title.strip()}"
+            if task.due_date:
+                line += f" _(due {task.due_date.isoformat()})_"
+            if task.pillar:
+                line += f" _({task.pillar})_"
+            lines.append(line)
+        if total_open > len(open_tasks):
+            lines.append(f"_(+{total_open - len(open_tasks)} more open tasks)_")
+        return "\n".join(lines)
+
+    # Legacy fallback — Document-backed tasks for stale tenants.
     doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.TASKS, slug="tasks").first()
     if not doc:
         return ""

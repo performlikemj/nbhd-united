@@ -163,7 +163,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_document_put",
       description:
-        "Create or replace a document. Use for writing full documents like goals, project notes, weekly reviews. For daily notes, prefer nbhd_daily_note_set_section or nbhd_daily_note_append.",
+        "Create or replace a free-form narrative document. Use for daily notes, weekly/monthly reviews, project narratives, ideas, long-term memory. Do NOT use for goals or tasks — those have dedicated lifecycle tools (nbhd_goal_* and nbhd_task_*) so their status, due dates, and completion are queryable instead of buried in markdown. Kinds: daily, weekly, monthly, project, ideas, memory.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1170,6 +1170,417 @@ export default function register(api) {
           path: tenantPath(api, "/workspaces/switch/"),
           method: "POST",
           body: { slug },
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  // ── Typed Goal lifecycle ─────────────────────────────────────────────
+  // Replaces Document(kind="goal") for tenants with experimental_typed_journal_lifecycle.
+  // Goals have state (active/achieved/abandoned/expired). Status changes are
+  // DATABASE UPDATES, not prose edits — so completed goals don't linger in
+  // context as if they were still active.
+
+  const PILLAR_ENUM = ["gravity", "fuel", "core", "lessons", "journal", "constellation"];
+
+  api.registerTool(wrap({
+      name: "nbhd_goal_create",
+      description:
+        "Create a new goal — a durable intention with a target outcome. Use for anything the user wants to achieve. Do NOT use nbhd_document_put with kind='goal' (deprecated). Examples of GOOD goal titles: 'Achieve debt-free status on student loans', 'Build a daily journaling habit'. Examples of BAD goal titles (these are tasks, not goals): 'Pay April loan payment', 'Buy groceries'.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          title: { type: "string", description: "Short goal description." },
+          description: { type: "string", description: "Optional longer narrative." },
+          pillar: { type: "string", enum: PILLAR_ENUM, description: "Pillar this goal belongs to (optional)." },
+          target: { type: "object", description: "Optional structured target — shape is free, e.g. {kind: 'numeric', value: 40000, unit: 'usd'}." },
+          target_date: { type: "string", description: "ISO date YYYY-MM-DD (optional)." },
+          parent_goal_id: { type: "string", description: "Parent Goal UUID for sub-goals (optional)." },
+        },
+        required: ["title"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/goals/"),
+          method: "POST",
+          body: {
+            title: asTrimmedString(input.title),
+            description: asTrimmedString(input.description) || undefined,
+            pillar: asTrimmedString(input.pillar) || undefined,
+            target: input.target || undefined,
+            target_date: asTrimmedString(input.target_date) || undefined,
+            parent_goal_id: asTrimmedString(input.parent_goal_id) || undefined,
+          },
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_goal_update",
+      description:
+        "Update a goal — change title, description, target, target_date, pillar, or parent. Use PATCH semantics (only included fields are updated). For status changes, prefer nbhd_goal_achieve or nbhd_goal_abandon.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          goal_id: { type: "string", description: "Goal UUID." },
+          title: { type: "string" },
+          description: { type: "string" },
+          pillar: { type: "string", enum: PILLAR_ENUM },
+          target: { type: "object" },
+          target_date: { type: "string" },
+          parent_goal_id: { type: "string" },
+        },
+        required: ["goal_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const goalId = asTrimmedString(input.goal_id);
+        if (!goalId) throw new Error("goal_id is required");
+        const body = {};
+        for (const k of ["title", "description", "pillar", "target_date", "parent_goal_id"]) {
+          const v = asTrimmedString(input[k]);
+          if (v) body[k] = v;
+        }
+        if (input.target !== undefined) body.target = input.target;
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/goals/${encodeURIComponent(goalId)}/`),
+          method: "PATCH",
+          body,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_goal_achieve",
+      description:
+        "Mark a goal as achieved. Sets status=achieved and achieved_at=now. Use whenever the user confirms or you observe a goal has been reached.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          goal_id: { type: "string", description: "Goal UUID." },
+        },
+        required: ["goal_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const goalId = asTrimmedString(input.goal_id);
+        if (!goalId) throw new Error("goal_id is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/goals/${encodeURIComponent(goalId)}/achieve/`),
+          method: "POST",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_goal_abandon",
+      description:
+        "Mark a goal as abandoned. Use when the user has decided not to pursue it further. Does NOT delete the goal — preserved for history.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          goal_id: { type: "string", description: "Goal UUID." },
+        },
+        required: ["goal_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const goalId = asTrimmedString(input.goal_id);
+        if (!goalId) throw new Error("goal_id is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/goals/${encodeURIComponent(goalId)}/abandon/`),
+          method: "POST",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_goal_list",
+      description:
+        "List goals. Filter by status (active/achieved/abandoned/expired), pillar, or parent_goal_id. Default returns all goals for the tenant. Use this BEFORE stating any goal-related fact — long-term memory should not contain goal lists.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          status: { type: "string", enum: ["active", "achieved", "abandoned", "expired"] },
+          pillar: { type: "string", enum: PILLAR_ENUM },
+          parent_goal_id: { type: "string" },
+        },
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const query = {};
+        for (const k of ["status", "pillar", "parent_goal_id"]) {
+          const v = asTrimmedString(input[k]);
+          if (v) query[k] = v;
+        }
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/goals/"),
+          method: "GET",
+          query,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_goal_get",
+      description: "Fetch a single goal by ID with full details.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          goal_id: { type: "string", description: "Goal UUID." },
+        },
+        required: ["goal_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const goalId = asTrimmedString(input.goal_id);
+        if (!goalId) throw new Error("goal_id is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/goals/${encodeURIComponent(goalId)}/`),
+          method: "GET",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  // ── Typed Task lifecycle ─────────────────────────────────────────────
+  // Replaces Document(kind="tasks") markdown bullets. One row per task; status
+  // changes are database UPDATES, so a completed task drops out of "open" queries
+  // immediately and no stale "- [ ] X" line lingers in agent context.
+
+  api.registerTool(wrap({
+      name: "nbhd_task_create",
+      description:
+        "Create a new task — an actionable item with a status (open/in_progress/done/skipped/deferred). Use for items the user needs to do. Do NOT use nbhd_document_put with kind='tasks' (deprecated). If the task pertains to a specific object in another pillar (e.g. paying a particular loan tracked in Gravity), pass `related_ref` so the task points to the source-of-truth row. Do NOT record CURRENT VALUES in the title or description (no balances, no totals, no '$X owed') — values live in their tracking systems and should be queried fresh.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          title: { type: "string", description: "Short task description." },
+          description: { type: "string", description: "Optional longer context." },
+          pillar: { type: "string", enum: PILLAR_ENUM, description: "Pillar this task belongs to (optional)." },
+          due_date: { type: "string", description: "ISO date YYYY-MM-DD (optional)." },
+          parent_goal_id: { type: "string", description: "Goal UUID to attach to (optional)." },
+          related_ref: {
+            type: "object",
+            description:
+              "Pointer to a specific tracked object: {pillar: 'gravity', object_type: 'FinanceAccount', object_id: '<uuid>'}.",
+          },
+        },
+        required: ["title"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/tasks/"),
+          method: "POST",
+          body: {
+            title: asTrimmedString(input.title),
+            description: asTrimmedString(input.description) || undefined,
+            pillar: asTrimmedString(input.pillar) || undefined,
+            due_date: asTrimmedString(input.due_date) || undefined,
+            parent_goal_id: asTrimmedString(input.parent_goal_id) || undefined,
+            related_ref: input.related_ref || undefined,
+          },
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_task_update",
+      description:
+        "Update a task — change title, description, pillar, due_date, parent goal, or related_ref. PATCH semantics. For status changes, prefer nbhd_task_complete / nbhd_task_skip / nbhd_task_defer.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          task_id: { type: "string", description: "Task UUID." },
+          title: { type: "string" },
+          description: { type: "string" },
+          pillar: { type: "string", enum: PILLAR_ENUM },
+          due_date: { type: "string" },
+          parent_goal_id: { type: "string" },
+          related_ref: { type: "object" },
+        },
+        required: ["task_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const taskId = asTrimmedString(input.task_id);
+        if (!taskId) throw new Error("task_id is required");
+        const body = {};
+        for (const k of ["title", "description", "pillar", "due_date", "parent_goal_id"]) {
+          const v = asTrimmedString(input[k]);
+          if (v) body[k] = v;
+        }
+        if (input.related_ref !== undefined) body.related_ref = input.related_ref;
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/tasks/${encodeURIComponent(taskId)}/`),
+          method: "PATCH",
+          body,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_task_complete",
+      description:
+        "Mark a task as done. Sets status=done and completed_at=now. Use whenever the user confirms or you observe completion. Do NOT instead add 'verified ✅' to a note — that creates stale prose; this updates the source of truth so future queries return correct state.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          task_id: { type: "string", description: "Task UUID." },
+        },
+        required: ["task_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const taskId = asTrimmedString(input.task_id);
+        if (!taskId) throw new Error("task_id is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/tasks/${encodeURIComponent(taskId)}/complete/`),
+          method: "POST",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_task_skip",
+      description: "Mark a task as skipped. Use when the user decided not to do it.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          task_id: { type: "string", description: "Task UUID." },
+        },
+        required: ["task_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const taskId = asTrimmedString(input.task_id);
+        if (!taskId) throw new Error("task_id is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/tasks/${encodeURIComponent(taskId)}/skip/`),
+          method: "POST",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_task_defer",
+      description: "Mark a task as deferred. Use when the user is postponing it.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          task_id: { type: "string", description: "Task UUID." },
+        },
+        required: ["task_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const taskId = asTrimmedString(input.task_id);
+        if (!taskId) throw new Error("task_id is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/tasks/${encodeURIComponent(taskId)}/defer/`),
+          method: "POST",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_task_list",
+      description:
+        "List tasks. Filter by status (open/in_progress/done/skipped/deferred), pillar, parent_goal_id, due_before, due_after. Use this BEFORE stating any task status — never rely on memory for what's open vs done. Example: 'any open finance tasks?' → nbhd_task_list({status: 'open', pillar: 'gravity'}).",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          status: { type: "string", enum: ["open", "in_progress", "done", "skipped", "deferred"] },
+          pillar: { type: "string", enum: PILLAR_ENUM },
+          parent_goal_id: { type: "string" },
+          due_before: { type: "string", description: "ISO date YYYY-MM-DD." },
+          due_after: { type: "string", description: "ISO date YYYY-MM-DD." },
+        },
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const query = {};
+        for (const k of ["status", "pillar", "parent_goal_id", "due_before", "due_after"]) {
+          const v = asTrimmedString(input[k]);
+          if (v) query[k] = v;
+        }
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/tasks/"),
+          method: "GET",
+          query,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_task_get",
+      description: "Fetch a single task by ID with full details.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          task_id: { type: "string", description: "Task UUID." },
+        },
+        required: ["task_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const taskId = asTrimmedString(input.task_id);
+        if (!taskId) throw new Error("task_id is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/tasks/${encodeURIComponent(taskId)}/`),
+          method: "GET",
         });
         return renderPayload(payload);
       },

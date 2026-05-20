@@ -20,6 +20,10 @@ from .runtime_views import (
     RuntimeDocumentView,
     RuntimeGmailMessageDetailView,
     RuntimeGmailMessagesView,
+    RuntimeGoalAbandonView,
+    RuntimeGoalAchieveView,
+    RuntimeGoalDetailView,
+    RuntimeGoalListCreateView,
     RuntimeJournalContextView,
     RuntimeJournalEntriesView,
     RuntimeJournalSearchView,
@@ -30,6 +34,11 @@ from .runtime_views import (
     RuntimeProfileUpdateView,
     RuntimeSessionMarkProcessedView,
     RuntimeSessionsPendingView,
+    RuntimeTaskCompleteView,
+    RuntimeTaskDeferView,
+    RuntimeTaskDetailView,
+    RuntimeTaskListCreateView,
+    RuntimeTaskSkipView,
     RuntimeUsageReportView,
     RuntimeUserMemoryView,
     RuntimeWeeklyReviewsView,
@@ -43,6 +52,52 @@ router = DefaultRouter()
 router.register("", IntegrationViewSet, basename="integration")
 
 urlpatterns = [
+    # Typed Goal/Task lifecycle (feat/journal-typed-lifecycle)
+    path(
+        "runtime/<uuid:tenant_id>/goals/",
+        RuntimeGoalListCreateView.as_view(),
+        name="runtime-goals",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/goals/<uuid:goal_id>/",
+        RuntimeGoalDetailView.as_view(),
+        name="runtime-goal-detail",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/goals/<uuid:goal_id>/achieve/",
+        RuntimeGoalAchieveView.as_view(),
+        name="runtime-goal-achieve",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/goals/<uuid:goal_id>/abandon/",
+        RuntimeGoalAbandonView.as_view(),
+        name="runtime-goal-abandon",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/tasks/",
+        RuntimeTaskListCreateView.as_view(),
+        name="runtime-tasks",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/tasks/<uuid:task_id>/",
+        RuntimeTaskDetailView.as_view(),
+        name="runtime-task-detail",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/tasks/<uuid:task_id>/complete/",
+        RuntimeTaskCompleteView.as_view(),
+        name="runtime-task-complete",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/tasks/<uuid:task_id>/skip/",
+        RuntimeTaskSkipView.as_view(),
+        name="runtime-task-skip",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/tasks/<uuid:task_id>/defer/",
+        RuntimeTaskDeferView.as_view(),
+        name="runtime-task-defer",
+    ),
     path("authorize/<str:provider>/", OAuthAuthorizeView.as_view(), name="oauth-authorize"),
     path("callback/<str:provider>/", OAuthCallbackView.as_view(), name="oauth-callback"),
     path("composio-callback/<str:provider>/", ComposioCallbackView.as_view(), name="composio-callback"),

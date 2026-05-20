@@ -158,8 +158,14 @@ class Document(models.Model):
         DAILY = "daily", "Daily Note"
         WEEKLY = "weekly", "Weekly Review"
         MONTHLY = "monthly", "Monthly Review"
+        # DEPRECATED — promoted to journal.Goal model when the tenant flag
+        # ``experimental_typed_journal_lifecycle`` is on. Existing rows are
+        # migrated via ``manage.py migrate_documents_to_typed_models``. New
+        # writes should land in Goal; this choice remains for stale tenants
+        # and historical rows.
         GOAL = "goal", "Goal"
         PROJECT = "project", "Project"
+        # DEPRECATED — promoted to journal.Task model. See GOAL above.
         TASKS = "tasks", "Tasks"
         IDEAS = "ideas", "Ideas"
         MEMORY = "memory", "Memory"
@@ -246,6 +252,160 @@ class PendingExtraction(models.Model):
 
     def __str__(self) -> str:
         return f"{self.tenant_id}:{self.kind}:{str(self.id)[:8]}"
+
+
+class Goal(models.Model):
+    """Typed lifecycle for a user-stated intention with a target outcome.
+
+    Replaces ``Document(kind="goal")``. Goals have state (active/achieved/
+    abandoned) and an optional target — encoding them as markdown blobs
+    with sidecar ``intent_status``/``target`` fields meant the agent could
+    only update them via find-and-replace on prose, which produced the
+    contradictory duplicate-doc bug on the canary (one slug saying "paid
+    Apr 7 ✅", another saying "payment unconfirmed").
+
+    Narrative reflection still belongs in ``description`` (free markdown);
+    lifecycle is row-shaped now.
+    """
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        ACHIEVED = "achieved", "Achieved"
+        ABANDONED = "abandoned", "Abandoned"
+        EXPIRED = "expired", "Expired"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="goals")
+    title = models.CharField(max_length=256)
+    description = models.TextField(blank=True, default="")
+    pillar = models.CharField(max_length=32, choices=Pillar.choices, blank=True, default="")
+    topic = models.ForeignKey(
+        "insights.TopicRegistry",
+        on_delete=models.SET_NULL,
+        related_name="goals",
+        null=True,
+        blank=True,
+    )
+    target = models.JSONField(null=True, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
+    parent_goal = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        related_name="sub_goals",
+        null=True,
+        blank=True,
+    )
+    target_date = models.DateField(null=True, blank=True)
+    achieved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    migrated_from_document = models.ForeignKey(
+        "Document",
+        on_delete=models.SET_NULL,
+        related_name="migrated_goals",
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        db_table = "journal_goals"
+        ordering = ["-updated_at"]
+        indexes = [
+            models.Index(fields=["tenant", "status"]),
+            models.Index(fields=["tenant", "pillar", "status"]),
+            models.Index(fields=["tenant", "target_date"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}:goal:{self.title[:32]}"
+
+    def mark_achieved(self) -> None:
+        from django.utils import timezone
+
+        self.status = self.Status.ACHIEVED
+        self.achieved_at = timezone.now()
+        self.save(update_fields=["status", "achieved_at", "updated_at"])
+
+    def abandon(self) -> None:
+        self.status = self.Status.ABANDONED
+        self.save(update_fields=["status", "updated_at"])
+
+
+class Task(models.Model):
+    """Typed lifecycle for an actionable item with a status.
+
+    Replaces the markdown bullet lines that lived inside ``Document(kind="tasks")``.
+    One row per task makes status, due dates, and parent-goal linkage queryable
+    — and completing a task is a database UPDATE instead of a textual edit on a
+    markdown file, so no stale snapshot ever ships with the agent's context.
+
+    Tasks tied to a specific source-of-truth object (e.g. a FinanceAccount for
+    "pay this loan") reference it via ``related_ref`` rather than a typed FK —
+    keeps the schema closed while letting tasks point into any pillar's data.
+    Shape: ``{"pillar": "gravity", "object_type": "FinanceAccount",
+    "object_id": "<uuid>"}``.
+    """
+
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        IN_PROGRESS = "in_progress", "In Progress"
+        DONE = "done", "Done"
+        SKIPPED = "skipped", "Skipped"
+        DEFERRED = "deferred", "Deferred"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="tasks")
+    title = models.CharField(max_length=256)
+    description = models.TextField(blank=True, default="")
+    pillar = models.CharField(max_length=32, choices=Pillar.choices, blank=True, default="")
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
+    due_date = models.DateField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    parent_goal = models.ForeignKey(
+        Goal,
+        on_delete=models.SET_NULL,
+        related_name="tasks",
+        null=True,
+        blank=True,
+    )
+    related_ref = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    migrated_from_document = models.ForeignKey(
+        "Document",
+        on_delete=models.SET_NULL,
+        related_name="migrated_tasks",
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        db_table = "journal_tasks"
+        ordering = ["-updated_at"]
+        indexes = [
+            models.Index(fields=["tenant", "status"]),
+            models.Index(fields=["tenant", "pillar", "status"]),
+            models.Index(fields=["tenant", "due_date"]),
+            models.Index(fields=["tenant", "parent_goal"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}:task:{self.title[:32]}"
+
+    def complete(self) -> None:
+        from django.utils import timezone
+
+        self.status = self.Status.DONE
+        self.completed_at = timezone.now()
+        self.save(update_fields=["status", "completed_at", "updated_at"])
+
+    def skip(self) -> None:
+        self.status = self.Status.SKIPPED
+        self.save(update_fields=["status", "updated_at"])
+
+    def defer(self) -> None:
+        self.status = self.Status.DEFERRED
+        self.save(update_fields=["status", "updated_at"])
 
 
 class DocumentChunk(models.Model):
