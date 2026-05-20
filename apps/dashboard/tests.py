@@ -11,6 +11,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from apps.dashboard.views import _clean_markdown_preview, _derive_week_bounds
 from apps.insights.models import AssistantInsight, TopicRegistry
 from apps.insights.pillars import Pillar
+from apps.journal.models import Document, Goal
 from apps.tenants.services import create_tenant
 
 
@@ -151,3 +152,72 @@ class HorizonsViewAssistantInsightsTests(TestCase):
         self.assertEqual(row["status"], "confirmed")
         self.assertIn("confidence", row)
         self.assertIn("created_at", row)
+
+
+class HorizonsViewGoalsDualReadTests(TestCase):
+    """Dual-read: HorizonsView 'goals' section returns typed Goal rows
+    unioned with legacy Document(kind=GOAL) rows, deduped via
+    Goal.migrated_from_document."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Horizons-Goals", telegram_chat_id=900710)
+        self.client = APIClient()
+        token = RefreshToken.for_user(self.tenant.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.access_token}")
+
+    def _titles(self):
+        resp = self.client.get("/api/v1/dashboard/horizons/")
+        self.assertEqual(resp.status_code, 200)
+        return [g["title"] for g in resp.json()["goals"]]
+
+    def test_typed_goals_appear_in_goals_list(self):
+        Goal.objects.create(tenant=self.tenant, title="Typed only goal", status=Goal.Status.ACTIVE)
+        self.assertIn("Typed only goal", self._titles())
+
+    def test_legacy_documents_still_appear_when_no_typed_goals(self):
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="legacy-goal",
+            title="Legacy doc goal",
+            markdown="some content",
+        )
+        self.assertIn("Legacy doc goal", self._titles())
+
+    def test_migrated_document_is_deduped(self):
+        legacy = Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="orig",
+            title="Old prose goal",
+            markdown="x",
+        )
+        Goal.objects.create(
+            tenant=self.tenant,
+            title="Migrated typed goal",
+            status=Goal.Status.ACTIVE,
+            migrated_from_document=legacy,
+        )
+        titles = self._titles()
+        self.assertIn("Migrated typed goal", titles)
+        self.assertNotIn("Old prose goal", titles)
+
+    def test_inactive_typed_goals_excluded(self):
+        Goal.objects.create(tenant=self.tenant, title="Achieved goal", status=Goal.Status.ACHIEVED)
+        Goal.objects.create(tenant=self.tenant, title="Abandoned goal", status=Goal.Status.ABANDONED)
+        titles = self._titles()
+        self.assertNotIn("Achieved goal", titles)
+        self.assertNotIn("Abandoned goal", titles)
+
+    def test_mixed_typed_and_unrelated_legacy_coexist(self):
+        Goal.objects.create(tenant=self.tenant, title="Typed goal A", status=Goal.Status.ACTIVE)
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="unrelated-legacy",
+            title="Unmigrated legacy goal",
+            markdown="x",
+        )
+        titles = self._titles()
+        self.assertIn("Typed goal A", titles)
+        self.assertIn("Unmigrated legacy goal", titles)

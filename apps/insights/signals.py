@@ -29,22 +29,27 @@ from .baselines import compute_baseline
 from .models import AssistantInsight, PillarSnapshot, TopicRegistry, UserVoicePref
 
 
-def _summarize_goal(doc: Document) -> str | None:
-    """Extract a short summary for the intent block (title preferred, else markdown prefix)."""
-    if not doc:
+def _summarize_goal(goal) -> str | None:
+    """Short summary for the intent block.
+
+    Accepts either a typed ``Goal`` (post-#624) or a legacy ``Document(kind=GOAL)``.
+    Prefers the title; falls back to the prose body (``description`` for Goal,
+    ``markdown`` for Document).
+    """
+    if not goal:
         return None
-    title = (doc.title or "").strip()
+    title = (getattr(goal, "title", "") or "").strip()
     if title and title.lower() not in {"goals", "untitled goal", ""}:
         return title[:200]
-    markdown = (doc.markdown or "").strip()
-    if not markdown:
+    body = (getattr(goal, "description", None) or getattr(goal, "markdown", "") or "").strip()
+    if not body:
         return None
     # Drop heading and bullet markers, take first non-empty meaningful line.
-    for raw_line in markdown.splitlines():
+    for raw_line in body.splitlines():
         line = raw_line.strip().lstrip("#-* ").strip()
         if line and not line.lower().startswith(("goals", "active", "completed")):
             return line[:200]
-    return markdown[:200]
+    return body[:200]
 
 
 def compute_signals(
@@ -107,26 +112,47 @@ def compute_signals(
     # Intent: prefer a goal tagged to this exact topic; fall back to a
     # pillar-tagged goal (untagged-pillar goals don't count — they predate
     # Phase 0 tagging and might not be about this pillar at all).
+    #
+    # Dual-read for the #624 typed-Goal migration: prefer ACTIVE typed Goal
+    # rows when present, else the legacy Document(kind=GOAL). Mirrors the
+    # pattern in apps/orchestrator/agenda_envelope.py and apps/journal/envelope.py.
+    # Local import — see feedback_local_reimport_pattern memory.
+    from apps.journal.models import Goal
+
     topic_goal = (
-        Document.objects.filter(
-            tenant=tenant,
-            kind=Document.Kind.GOAL,
-            pillar=pillar,
-            topic=topic,
-        )
+        Goal.objects.filter(tenant=tenant, pillar=pillar, topic=topic, status=Goal.Status.ACTIVE)
         .order_by("-updated_at")
         .first()
     )
+    if topic_goal is None:
+        topic_goal = (
+            Document.objects.filter(
+                tenant=tenant,
+                kind=Document.Kind.GOAL,
+                pillar=pillar,
+                topic=topic,
+            )
+            .order_by("-updated_at")
+            .first()
+        )
+
     pillar_goal = (
-        Document.objects.filter(
-            tenant=tenant,
-            kind=Document.Kind.GOAL,
-            pillar=pillar,
-            topic__isnull=True,
-        )
+        Goal.objects.filter(tenant=tenant, pillar=pillar, topic__isnull=True, status=Goal.Status.ACTIVE)
         .order_by("-updated_at")
         .first()
     )
+    if pillar_goal is None:
+        pillar_goal = (
+            Document.objects.filter(
+                tenant=tenant,
+                kind=Document.Kind.GOAL,
+                pillar=pillar,
+                topic__isnull=True,
+            )
+            .order_by("-updated_at")
+            .first()
+        )
+
     chosen_goal = topic_goal or pillar_goal
 
     # Voice pref: prefer a topic-specific pref; fall back to a pillar-wide

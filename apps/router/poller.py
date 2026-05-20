@@ -918,19 +918,24 @@ class TelegramPoller:
             return message_text
 
     def _build_session_context_inner(self, tenant: Tenant, message_text: str) -> str:
-        from apps.journal.models import Document, DocumentChunk
+        from apps.journal.models import DocumentChunk
         from apps.lessons.models import Lesson
 
         context_parts: list[str] = []
 
-        # Step 1: Always inject goals + tasks
-        goals_doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.GOAL, slug="goals").first()
-        if goals_doc and goals_doc.markdown.strip():
-            context_parts.append(f"## Your active goals\n{goals_doc.markdown[:1500]}")
+        # Step 1: Always inject goals + tasks.
+        # Dual-read for #624: typed Goal/Task rows take precedence over
+        # legacy Documents. Reuse the journal envelope renderers so the
+        # session context matches what USER.md shows.
+        from apps.journal.envelope import render_goals, render_open_tasks
 
-        tasks_doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.TASKS, slug="tasks").first()
-        if tasks_doc and tasks_doc.markdown.strip():
-            context_parts.append(f"## Your current tasks\n{tasks_doc.markdown[:1500]}")
+        goals_markdown = render_goals(tenant, max_chars=1500)
+        if goals_markdown.strip():
+            context_parts.append(f"## Your active goals\n{goals_markdown}")
+
+        tasks_markdown = render_open_tasks(tenant)
+        if tasks_markdown.strip():
+            context_parts.append(f"## Your current tasks\n{tasks_markdown[:1500]}")
 
         # Step 2: Search relevant history (best-effort — skip if embedding fails)
         history_parts: list[str] = []

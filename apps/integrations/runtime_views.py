@@ -1232,23 +1232,39 @@ class RuntimeJournalContextView(APIView):
 
         # Backbone docs: tasks, goals, ideas — always included so the agent
         # starts every session aware of the user's current state.
-        backbone_kinds = [
-            Document.Kind.TASKS,
-            Document.Kind.GOAL,
-            Document.Kind.IDEAS,
-        ]
-        backbone_docs = Document.objects.filter(
-            tenant=tenant,
-            kind__in=backbone_kinds,
-        )
-        backbone_data = {
-            doc.kind: {
-                "slug": doc.slug,
-                "title": doc.title,
-                "markdown": doc.markdown,
+        #
+        # Dual-read for #624: goals + tasks may live as typed Goal/Task rows
+        # post-migration. Reuse apps/journal/envelope's already-dual-read
+        # renderers so the agent sees the same content as USER.md. Ideas
+        # are still Document-only.
+        # Local import — see feedback_local_reimport_pattern memory.
+        from apps.journal.envelope import render_goals, render_open_tasks
+
+        backbone_data: dict[str, dict] = {}
+
+        goals_markdown = render_goals(tenant)
+        if goals_markdown.strip():
+            backbone_data[Document.Kind.GOAL] = {
+                "slug": "goals",
+                "title": "Active goals",
+                "markdown": goals_markdown,
             }
-            for doc in backbone_docs
-        }
+
+        tasks_markdown = render_open_tasks(tenant)
+        if tasks_markdown.strip():
+            backbone_data[Document.Kind.TASKS] = {
+                "slug": "tasks",
+                "title": "Open tasks",
+                "markdown": tasks_markdown,
+            }
+
+        ideas_doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.IDEAS).first()
+        if ideas_doc:
+            backbone_data[Document.Kind.IDEAS] = {
+                "slug": ideas_doc.slug,
+                "title": ideas_doc.title,
+                "markdown": ideas_doc.markdown,
+            }
 
         notes_data = [
             {

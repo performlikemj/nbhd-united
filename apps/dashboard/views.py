@@ -187,12 +187,39 @@ class HorizonsView(APIView):
         today = timezone.now().date()
         thirty_days_ago = today - timedelta(days=29)
 
-        # 1. Active goal documents
-        goals = list(
+        # 1. Active goals — dual-read for the #624 typed-Goal migration.
+        # Union typed ACTIVE Goal rows with legacy Document(kind=GOAL) rows,
+        # excluding legacy docs that have already been migrated to typed Goals
+        # (tracked via Goal.migrated_from_document). Typed rows serialize into
+        # the same dict shape the frontend expects (description → markdown,
+        # synthesized slug from id since typed Goals don't have a slug column).
+        # Local import — see feedback_local_reimport_pattern memory.
+        from apps.journal.models import Goal
+
+        typed_goals_qs = Goal.objects.filter(tenant=tenant, status=Goal.Status.ACTIVE).order_by("-updated_at")
+        migrated_doc_ids = list(
+            typed_goals_qs.exclude(migrated_from_document_id__isnull=True).values_list(
+                "migrated_from_document_id", flat=True
+            )
+        )
+
+        typed_goals = [
+            {
+                "id": g.id,
+                "title": g.title,
+                "slug": f"typed:{g.id}",
+                "markdown": g.description or "",
+                "created_at": g.created_at,
+                "updated_at": g.updated_at,
+            }
+            for g in typed_goals_qs[:20]
+        ]
+        legacy_goals = list(
             Document.objects.filter(
                 tenant=tenant,
                 kind=Document.Kind.GOAL,
             )
+            .exclude(id__in=migrated_doc_ids)
             .order_by("-updated_at")[:20]
             .values(
                 "id",
@@ -203,6 +230,11 @@ class HorizonsView(APIView):
                 "updated_at",
             )
         )
+        goals = sorted(
+            typed_goals + legacy_goals,
+            key=lambda g: g["updated_at"],
+            reverse=True,
+        )[:20]
 
         # 2. Pending goal/task extractions (exclude expired)
         pending = list(
