@@ -221,3 +221,186 @@ class HorizonsViewGoalsDualReadTests(TestCase):
         titles = self._titles()
         self.assertIn("Typed goal A", titles)
         self.assertIn("Unmigrated legacy goal", titles)
+
+
+class HorizonsViewTopicSignalsTests(TestCase):
+    """Phase 3 Day 2: HorizonsView surfaces a ``topic_signals`` array — one
+    entry per topic the tenant has engaged with, showing the meta-state
+    behind the assistant's voice register."""
+
+    def setUp(self):
+        from apps.insights.models import PillarSnapshot, UserVoicePref
+
+        self.PillarSnapshot = PillarSnapshot
+        self.UserVoicePref = UserVoicePref
+
+        self.tenant = create_tenant(display_name="Horizons-Topics", telegram_chat_id=900720)
+        self.other_tenant = create_tenant(display_name="Horizons-Topics-Other", telegram_chat_id=900721)
+        self.client = APIClient()
+        token = RefreshToken.for_user(self.tenant.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.access_token}")
+
+        self.dining = TopicRegistry.objects.create(
+            pillar=Pillar.GRAVITY.value,
+            slug="dining",
+            display_name="Dining",
+            status=TopicRegistry.Status.CANONICAL,
+            source=TopicRegistry.Source.SEED,
+        )
+        self.debt = TopicRegistry.objects.create(
+            pillar=Pillar.GRAVITY.value,
+            slug="debt",
+            display_name="Debt",
+            status=TopicRegistry.Status.CANONICAL,
+            source=TopicRegistry.Source.SEED,
+        )
+
+    def _signals(self):
+        resp = self.client.get("/api/v1/dashboard/horizons/")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIn("topic_signals", body)
+        return body["topic_signals"]
+
+    def test_empty_state_returns_empty_list(self):
+        self.assertEqual(self._signals(), [])
+
+    def test_topic_with_snapshots_appears(self):
+        # PillarSnapshot has no topic FK — sample_size is derived via the
+        # per-pillar extractor map (apps/insights/baselines.py). "debt" is
+        # one of the gravity extractors, keyed off payload['totals']['debt'].
+        from django.utils import timezone
+
+        for weeks_ago in range(3):
+            self.PillarSnapshot.objects.create(
+                tenant=self.tenant,
+                pillar=Pillar.GRAVITY.value,
+                granularity=self.PillarSnapshot.Granularity.WEEKLY,
+                ts=timezone.now() - timezone.timedelta(weeks=weeks_ago),
+                payload={"totals": {"debt": 1000 + weeks_ago * 100}},
+            )
+        signals = self._signals()
+        self.assertEqual(len(signals), 1)
+        row = signals[0]
+        self.assertEqual(row["topic_slug"], "debt")
+        self.assertEqual(row["sample_size"], 3)
+        self.assertEqual(row["confirmed"], 0)
+        self.assertEqual(row["refuted"], 0)
+        self.assertFalse(row["has_goal"])
+        self.assertEqual(row["register_offset"], 0)
+        self.assertIsNone(row["register_scope"])
+
+    def test_topic_with_insights_appears_with_counts(self):
+        for status in [
+            AssistantInsight.Status.OPEN,
+            AssistantInsight.Status.CONFIRMED,
+            AssistantInsight.Status.CONFIRMED,
+            AssistantInsight.Status.REFUTED,
+        ]:
+            AssistantInsight.objects.create(
+                tenant=self.tenant,
+                pillar=Pillar.GRAVITY.value,
+                topic=self.dining,
+                statement="s",
+                status=status,
+            )
+        row = next(r for r in self._signals() if r["topic_slug"] == "dining")
+        self.assertEqual(row["confirmed"], 2)
+        self.assertEqual(row["refuted"], 1)
+
+    def test_topic_with_typed_goal_has_goal_true(self):
+        Goal.objects.create(
+            tenant=self.tenant,
+            title="Pay down dining",
+            pillar=Pillar.GRAVITY.value,
+            topic=self.dining,
+            status=Goal.Status.ACTIVE,
+        )
+        row = next(r for r in self._signals() if r["topic_slug"] == "dining")
+        self.assertTrue(row["has_goal"])
+
+    def test_topic_with_legacy_document_goal_has_goal_true(self):
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="legacy-dining-goal",
+            title="Legacy",
+            markdown="x",
+            pillar=Pillar.GRAVITY.value,
+            topic=self.dining,
+        )
+        row = next(r for r in self._signals() if r["topic_slug"] == "dining")
+        self.assertTrue(row["has_goal"])
+
+    def test_topic_specific_voice_pref_surfaces_with_scope(self):
+        self.UserVoicePref.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.dining,
+            register_offset=1,
+        )
+        row = next(r for r in self._signals() if r["topic_slug"] == "dining")
+        self.assertEqual(row["register_offset"], 1)
+        self.assertEqual(row["register_scope"], "topic")
+
+    def test_pillar_voice_pref_applies_to_topic_when_no_topic_pref(self):
+        self.UserVoicePref.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=None,
+            register_offset=-1,
+        )
+        # Need at least one source of engagement so the topic appears.
+        AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.dining,
+            statement="x",
+        )
+        row = next(r for r in self._signals() if r["topic_slug"] == "dining")
+        self.assertEqual(row["register_offset"], -1)
+        self.assertEqual(row["register_scope"], "pillar")
+
+    def test_topic_pref_wins_over_pillar_pref(self):
+        self.UserVoicePref.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=None,
+            register_offset=-1,
+        )
+        self.UserVoicePref.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.dining,
+            register_offset=1,
+        )
+        row = next(r for r in self._signals() if r["topic_slug"] == "dining")
+        self.assertEqual(row["register_offset"], 1)
+        self.assertEqual(row["register_scope"], "topic")
+
+    def test_tenant_isolation(self):
+        AssistantInsight.objects.create(
+            tenant=self.other_tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.dining,
+            statement="other tenant",
+        )
+        self.assertEqual(self._signals(), [])
+
+    def test_topics_sorted_by_pillar_then_display_name(self):
+        # Both dining + debt have engagement; expect alphabetical by
+        # display_name within the gravity pillar (Debt before Dining).
+        AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.dining,
+            statement="d",
+        )
+        AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt,
+            statement="x",
+        )
+        slugs = [r["topic_slug"] for r in self._signals()]
+        self.assertEqual(slugs, ["debt", "dining"])
