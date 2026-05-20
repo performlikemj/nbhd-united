@@ -2,6 +2,7 @@
 
 import { GoalCard } from "@/components/goal-card";
 import { HorizonsSection } from "@/components/horizons/horizons-section";
+import { TopicSignalsSection } from "@/components/horizons/topic-signals-section";
 import { InsightCard } from "@/components/insight-card";
 import { MomentumStrip } from "@/components/momentum-strip";
 import { PendingGoal } from "@/components/pending-goal";
@@ -126,6 +127,9 @@ export default function HorizonsPage() {
           </div>
         </HorizonsSection>
       ) : null}
+
+      {/* Topics I've learned \u2014 per-topic meta-state behind voice register */}
+      <TopicSignalsSection signals={data.topic_signals ?? []} delay={450} />
 
       {/* Suggestions from journal */}
       {data.pending_extractions.length > 0 ? (

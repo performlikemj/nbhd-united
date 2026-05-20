@@ -601,6 +601,18 @@ export interface HorizonsAssistantInsight {
   last_confirmed_at: string | null;
 }
 
+export interface HorizonsTopicSignal {
+  pillar: string;
+  topic_slug: string;
+  topic_display_name: string;
+  sample_size: number;
+  confirmed: number;
+  refuted: number;
+  has_goal: boolean;
+  register_offset: number;
+  register_scope: "topic" | "pillar" | null;
+}
+
 export interface HorizonsData {
   goals: HorizonsGoal[];
   pending_extractions: HorizonsPendingExtraction[];
@@ -610,6 +622,7 @@ export interface HorizonsData {
   momentum: HorizonsMomentumDay[];
   current_streak: number;
   assistant_insights: HorizonsAssistantInsight[];
+  topic_signals: HorizonsTopicSignal[];
 }
 
 // ── Finance ──────────────────────────────────────────────────────────

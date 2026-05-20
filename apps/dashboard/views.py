@@ -92,6 +92,18 @@ def _serialize_weekly_document(wd: dict) -> dict:
     }
 
 
+def _topic_signals(tenant) -> list[dict]:
+    """Thin wrapper around ``summarize_topic_signals``.
+
+    Lives in this module so the lazy import stays close to its single
+    caller (HorizonsView) and so the views layer can swap to a richer
+    summary later without touching the insights app.
+    """
+    from apps.insights.signals import summarize_topic_signals
+
+    return summarize_topic_signals(tenant)
+
+
 class DashboardView(APIView):
     """Main dashboard — tenant status, usage, connections."""
 
@@ -402,5 +414,9 @@ class HorizonsView(APIView):
                     }
                     for ins in insights
                 ],
+                # Phase 3 Day 2: "Topics I've learned" — per-topic meta-state
+                # behind the assistant's voice register. Local import to keep
+                # the heavy insights aggregation off Django startup.
+                "topic_signals": _topic_signals(tenant),
             }
         )

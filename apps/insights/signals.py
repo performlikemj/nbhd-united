@@ -17,6 +17,13 @@ Hard floors are the only mechanical constraints the LLM is bound by:
 *lower* than the floors permit, but not higher. User-explicit overrides
 (``register_offset`` in UserVoicePref) are separate — they're stored
 permission, not LLM inference.
+
+This module also exposes ``summarize_topic_signals`` — a lightweight
+per-tenant summary used by Horizons' "Topics I've learned" surface
+(Phase 3 Day 2). It returns aggregate counts and override status for
+every topic the tenant has engaged with. Volatile fields (``latest_z``,
+``trend``, ``freshness_days``) are deliberately omitted: the UI shows
+meta-state, not values that change by the minute.
 """
 
 from __future__ import annotations
@@ -225,3 +232,148 @@ def compute_signals(
             "can_exceed_observation": response_total >= 3,
         },
     }
+
+
+def summarize_topic_signals(tenant) -> list[dict]:
+    """Per-tenant summary of every topic the tenant has engaged with.
+
+    Powers Horizons' "Topics I've learned" section (Phase 3 Day 2). The
+    payload is intentionally meta-state only: counts of evidence, whether
+    a goal exists, and whether the user has set a voice-register override.
+    Volatile fields (``latest_z``, ``trend``, ``freshness_days``) belong in
+    ``compute_signals`` for the LLM's per-turn judgment, not in a UI that
+    re-renders on each Horizons load.
+
+    A topic appears in the result if the tenant has at least one of:
+    - a ``PillarSnapshot`` for the topic
+    - an ``AssistantInsight`` for the topic
+    - a ``Goal`` (typed or legacy Document) tagged to the topic
+    - a ``UserVoicePref`` for the topic
+
+    Per-row shape:
+        {
+          "pillar": "gravity",
+          "topic_slug": "dining",
+          "topic_display_name": "Dining",
+          "sample_size": 8,             # weekly snapshots in last 12w
+          "confirmed": 3,               # all-time
+          "refuted": 1,                 # all-time
+          "has_goal": true,             # typed Goal OR legacy Document
+          "register_offset": 1,         # -1 / 0 / +1
+          "register_scope": "topic",    # "topic" | "pillar" | null (default)
+        }
+
+    Sorted by (pillar, topic_display_name) for stable rendering.
+    """
+    # PillarSnapshot has no topic FK — sample_size for a topic is derived
+    # by running ``compute_baseline`` (which extracts the topic's value out
+    # of the snapshot payload via TOPIC_EXTRACTORS). So topic discovery
+    # happens in two passes:
+    #   1. Tables that carry a topic FK (insights, goals, prefs) — cheap.
+    #   2. Topics with extractor support — call compute_baseline to see if
+    #      this tenant has any non-null values.
+    # Local import for Goal — see feedback_local_reimport_pattern memory.
+    from apps.journal.models import Goal
+
+    from .baselines import TOPIC_EXTRACTORS
+
+    insight_topic_ids = set(
+        AssistantInsight.objects.filter(tenant=tenant).values_list("topic_id", flat=True).distinct()
+    )
+    goal_topic_ids = set(
+        Goal.objects.filter(tenant=tenant, status=Goal.Status.ACTIVE)
+        .exclude(topic__isnull=True)
+        .values_list("topic_id", flat=True)
+        .distinct()
+    )
+    legacy_goal_topic_ids = set(
+        Document.objects.filter(tenant=tenant, kind=Document.Kind.GOAL)
+        .exclude(topic__isnull=True)
+        .values_list("topic_id", flat=True)
+        .distinct()
+    )
+    pref_topic_ids = set(
+        UserVoicePref.objects.filter(tenant=tenant)
+        .exclude(topic__isnull=True)
+        .values_list("topic_id", flat=True)
+        .distinct()
+    )
+
+    fk_touched = insight_topic_ids | goal_topic_ids | legacy_goal_topic_ids | pref_topic_ids
+
+    # Pre-fetch all topics that *could* have snapshot data via extractors,
+    # then run compute_baseline per (pillar, slug) to determine sample_size.
+    extractor_pairs: list[tuple[str, str]] = [
+        (pillar, slug) for pillar, slugs in TOPIC_EXTRACTORS.items() for slug in slugs
+    ]
+    extractor_topics = {
+        (t.pillar, t.slug): t
+        for t in TopicRegistry.objects.filter(
+            pillar__in={p for p, _ in extractor_pairs},
+            slug__in={s for _, s in extractor_pairs},
+        )
+    }
+
+    sample_sizes: dict[int, int] = {}
+    snapshot_touched: set = set()
+    for pillar, slug in extractor_pairs:
+        topic = extractor_topics.get((pillar, slug))
+        if topic is None:
+            continue
+        baseline = compute_baseline(tenant=tenant, pillar=pillar, topic_slug=slug)
+        size = int(baseline.get("sample_size", 0) or 0)
+        if size > 0:
+            sample_sizes[topic.id] = size
+            snapshot_touched.add(topic.id)
+
+    touched_topic_ids = fk_touched | snapshot_touched
+    if not touched_topic_ids:
+        return []
+
+    topics = list(TopicRegistry.objects.filter(id__in=touched_topic_ids).order_by("pillar", "display_name"))
+    if not topics:
+        return []
+
+    # Bulk-load insight status counts so we don't N+1 the DB.
+    insight_counts: dict[tuple, int] = {}
+    for row in (
+        AssistantInsight.objects.filter(tenant=tenant, topic_id__in=touched_topic_ids)
+        .values("topic_id", "status")
+        .annotate(n=Count("id"))
+    ):
+        insight_counts[(row["topic_id"], row["status"])] = row["n"]
+
+    # Voice prefs: bulk-load topic + pillar-wide, resolve per-topic in Python.
+    topic_prefs = {
+        pref.topic_id: pref for pref in UserVoicePref.objects.filter(tenant=tenant, topic_id__in=touched_topic_ids)
+    }
+    pillar_prefs = {pref.pillar: pref for pref in UserVoicePref.objects.filter(tenant=tenant, topic__isnull=True)}
+
+    rows: list[dict] = []
+    for topic in topics:
+        topic_pref = topic_prefs.get(topic.id)
+        pillar_pref = pillar_prefs.get(topic.pillar)
+        if topic_pref is not None:
+            offset = topic_pref.register_offset
+            scope: str | None = "topic"
+        elif pillar_pref is not None:
+            offset = pillar_pref.register_offset
+            scope = "pillar"
+        else:
+            offset = 0
+            scope = None
+
+        rows.append(
+            {
+                "pillar": topic.pillar,
+                "topic_slug": topic.slug,
+                "topic_display_name": topic.display_name,
+                "sample_size": sample_sizes.get(topic.id, 0),
+                "confirmed": int(insight_counts.get((topic.id, AssistantInsight.Status.CONFIRMED), 0)),
+                "refuted": int(insight_counts.get((topic.id, AssistantInsight.Status.REFUTED), 0)),
+                "has_goal": (topic.id in goal_topic_ids) or (topic.id in legacy_goal_topic_ids),
+                "register_offset": offset,
+                "register_scope": scope,
+            }
+        )
+    return rows
