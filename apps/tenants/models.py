@@ -392,13 +392,14 @@ class Tenant(models.Model):
         help_text='Last-known cron job list from gateway. Format: {"jobs": [...], "snapshot_at": "ISO8601"}',
     )
 
-    # Per-tenant flag for the Postgres-canonical cron rollout. When True,
-    # the dashboard, runtime endpoints, and provisioning paths read/write
-    # the apps.cron.CronJob table directly; the gateway's SQLite is a
-    # derived view rebuilt by apps.orchestrator.cron_reconcile.
-    # When False (default), the legacy gateway-canonical paths apply.
+    # Per-tenant flag for the Postgres-canonical cron rollout. The dashboard,
+    # runtime endpoints, and provisioning paths read/write the apps.cron.CronJob
+    # table directly; the gateway's SQLite is a derived view rebuilt by
+    # apps.orchestrator.cron_reconcile. Migration 0058 flipped every existing
+    # tenant to True; new tenants default to True so they join the canonical
+    # flow at creation time. The False branches remain for emergency rollback.
     postgres_cron_canonical = models.BooleanField(
-        default=False,
+        default=True,
         help_text=(
             "Cutover flag for the Postgres-canonical cron model. "
             "When True, the CronJob table is the source of truth and "

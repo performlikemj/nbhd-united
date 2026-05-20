@@ -261,6 +261,12 @@ class OrchestratorServiceTest(TestCase):
 class SeedCronJobsTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Cron Seeder", telegram_chat_id=515152)
+        # These tests cover the legacy gateway-write branch of seed_cron_jobs;
+        # pin canonical=False so the model default flip in migration 0067
+        # doesn't reroute them through the Postgres-canonical branch (which
+        # has its own coverage in test_cron_reconcile_drift / _dedup).
+        self.tenant.postgres_cron_canonical = False
+        self.tenant.save(update_fields=["postgres_cron_canonical"])
 
     @patch("time.sleep")
     @patch("apps.orchestrator.services._is_mock", return_value=False)

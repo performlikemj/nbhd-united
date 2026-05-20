@@ -24,6 +24,10 @@ def _create_user_and_tenant(*, active=True):
         status=Tenant.Status.ACTIVE if active else Tenant.Status.PENDING,
         container_id="oc-test" if active else "",
         container_fqdn="oc-test.internal.azurecontainerapps.io" if active else "",
+        # Default helper exercises the legacy gateway-write path. Tests that
+        # need the Postgres-canonical branch flip the flag explicitly in
+        # their own setUp (see PostgresCanonicalSignalTest et al.).
+        postgres_cron_canonical=False,
     )
     return user, tenant
 

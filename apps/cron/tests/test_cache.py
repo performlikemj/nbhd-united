@@ -26,6 +26,10 @@ def _make_tenant(*, hibernated=False):
         container_id="oc-cache",
         container_fqdn="oc-cache.internal.azurecontainerapps.io",
         hibernated_at=timezone.now() if hibernated else None,
+        # Cache fallback tests run the legacy gateway-read path; pin
+        # canonical=False so the model default flip in migration 0067
+        # doesn't reroute them through the Postgres-canonical branch.
+        postgres_cron_canonical=False,
     )
     return user, tenant
 

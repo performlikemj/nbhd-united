@@ -22,6 +22,11 @@ def _create_user_and_tenant(*, telegram_chat_id: int | None = 12345):
         status=Tenant.Status.ACTIVE,
         container_id="oc-test",
         container_fqdn="test.internal",
+        # These tests exercise the legacy gateway-write path explicitly
+        # (they mock ``invoke_gateway_tool``); pin canonical=False so the
+        # model default flip in migration 0067 doesn't reroute them through
+        # the Postgres-canonical branch.
+        postgres_cron_canonical=False,
     )
     return user, tenant
 
