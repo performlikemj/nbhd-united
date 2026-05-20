@@ -79,7 +79,13 @@ _PRIVACY_PLACEHOLDERS_BODY = (
     key="privacy_placeholders",
     heading="## Privacy Placeholders",
     enabled=lambda t: bool(getattr(t, "pii_entity_map", None)),
-    refresh_on=(Tenant,),
+    # No own refresh trigger — the entity_map is updated via
+    # ``memory_sync.py``'s ``filter().update()`` which bypasses post_save
+    # anyway, so subscribing to ``Tenant`` saves wouldn't help. The section
+    # picks up on the next USER.md push triggered by any other registered
+    # contributor (Profile via User, Goals/Tasks via Document, Fuel via
+    # Workout, etc.) — every tenant activity drains a refresh.
+    refresh_on=(),
     order=70,
 )
 def render_privacy_placeholders(tenant: Tenant) -> str:
