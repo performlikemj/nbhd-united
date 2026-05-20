@@ -875,6 +875,72 @@ def _build_commitments_config(tenant: Tenant) -> dict:
     return {"enabled": True, "maxPerDay": 3}
 
 
+def _build_memory_flush_block(tenant: Tenant) -> dict:
+    """Build the ``agents.defaults.compaction.memoryFlush`` block.
+
+    Gated on ``experimental_typed_journal_lifecycle``:
+
+      - **Flag on (canary)**: prompt the agent to write goals/tasks through
+        the typed lifecycle tools (``nbhd_goal_create``, ``nbhd_task_create``,
+        etc.) and to keep memory/daily notes free of variable values that
+        live in other systems (Gravity, Fuel). This is the source-of-truth-
+        respecting variant that produced the original loan-staleness fix.
+      - **Flag off (default fleet)**: legacy prompt referencing
+        ``nbhd_memory_update`` / ``nbhd_daily_note_append`` only. Safe for
+        tenants whose OpenClaw image doesn't yet have the typed tools.
+
+    Both variants set ``enabled=True`` and ``softThresholdTokens=4000``.
+    """
+    if tenant.experimental_typed_journal_lifecycle:
+        return {
+            "enabled": True,
+            "softThresholdTokens": 4000,
+            "systemPrompt": (
+                "Session nearing compaction. Save important context now, using the "
+                "right surface for each kind of thing:\n"
+                "- Goals (intentions with a target outcome): nbhd_goal_create / nbhd_goal_update / "
+                "nbhd_goal_achieve / nbhd_goal_abandon\n"
+                "- Tasks (actionable items with a status): nbhd_task_create / nbhd_task_complete / "
+                "nbhd_task_skip / nbhd_task_defer\n"
+                "- Durable facts about the user that have no other source of truth "
+                "(preferences, principles, identity, learned patterns): nbhd_memory_update\n"
+                "- Narrative reflection on today: nbhd_daily_note_append\n"
+                "\n"
+                "Do NOT capture current values (balances, totals, weights, counts, payment "
+                "statuses, dates of specific events) into memory or daily notes — these "
+                "live in their tracking systems (Gravity, Fuel, etc.) and should be queried "
+                "fresh via the relevant pillar tool. Memory is for things no other system owns."
+            ),
+            "prompt": (
+                "Review this conversation. Promote new goals via nbhd_goal_create, new tasks "
+                "via nbhd_task_create, completed tasks via nbhd_task_complete. Capture "
+                "genuinely durable user facts via nbhd_memory_update. Save narrative "
+                "reflections via nbhd_daily_note_append. Do not record current values — "
+                "query the source systems for those. Reply with NO_REPLY when done."
+            ),
+        }
+
+    # Legacy variant — current fleet default. No mention of typed tools so
+    # stale tenants (older OpenClaw image) don't get prompted to call tools
+    # they don't have.
+    return {
+        "enabled": True,
+        "softThresholdTokens": 4000,
+        "systemPrompt": (
+            "Session nearing compaction. Save important context now. "
+            "Use nbhd_memory_update for lasting insights about the user. "
+            "Use nbhd_daily_note_append for today's notable events. "
+            "Also write a brief session summary to memory/YYYY-MM-DD.md as a workspace backup."
+        ),
+        "prompt": (
+            "Review this conversation for anything worth remembering. "
+            "Save lasting insights via nbhd_memory_update, today's events via nbhd_daily_note_append, "
+            "and a brief summary to your workspace memory file. "
+            "Reply with NO_REPLY when done."
+        ),
+    }
+
+
 def _build_memory_core_plugin_entry(tenant: Tenant) -> dict | None:
     """Build the ``plugins.entries["memory-core"]`` value, or None.
 
@@ -1567,22 +1633,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 "envelopeTimezone": "user",
                 "compaction": {
                     "mode": "safeguard",
-                    "memoryFlush": {
-                        "enabled": True,
-                        "softThresholdTokens": 4000,
-                        "systemPrompt": (
-                            "Session nearing compaction. Save important context now. "
-                            "Use nbhd_memory_update for lasting insights about the user. "
-                            "Use nbhd_daily_note_append for today's notable events. "
-                            "Also write a brief session summary to memory/YYYY-MM-DD.md as a workspace backup."
-                        ),
-                        "prompt": (
-                            "Review this conversation for anything worth remembering. "
-                            "Save lasting insights via nbhd_memory_update, today's events via nbhd_daily_note_append, "
-                            "and a brief summary to your workspace memory file. "
-                            "Reply with NO_REPLY when done."
-                        ),
-                    },
+                    "memoryFlush": _build_memory_flush_block(tenant),
                 },
                 "memorySearch": _build_memory_search_config(tenant),
                 "heartbeat": _build_heartbeat_defaults(tenant),
