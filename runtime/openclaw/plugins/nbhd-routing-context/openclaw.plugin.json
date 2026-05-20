@@ -1,35 +1,10 @@
 {
   "id": "nbhd-routing-context",
   "name": "NBHD Routing Context",
-  "description": "Injects the tenant's workspace catalogue into the system prompt so the agent can self-correct routing via nbhd_workspace_switch, and rejects degenerate model output before it reaches the user.",
+  "description": "Output sanitization — rejects degenerate model output (token loops, system-prompt echo, doubled-date artifacts) before it reaches the user.",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {
-      "apiBaseUrl": {
-        "type": "string",
-        "description": "Override NBHD API base URL. Defaults to NBHD_API_BASE_URL env var."
-      },
-      "tenantId": {
-        "type": "string",
-        "description": "Override tenant ID. Defaults to NBHD_TENANT_ID env var."
-      },
-      "internalApiKey": {
-        "type": "string",
-        "description": "Override internal API key. Defaults to NBHD_INTERNAL_API_KEY env var."
-      },
-      "requestTimeoutMs": {
-        "type": "number",
-        "minimum": 500,
-        "maximum": 15000,
-        "description": "HTTP timeout for workspace list fetch."
-      },
-      "cacheTtlMs": {
-        "type": "number",
-        "minimum": 0,
-        "maximum": 300000,
-        "description": "How long to cache the workspace list. Set 0 to disable."
-      }
-    }
+    "properties": {}
   }
 }

@@ -1,7 +1,7 @@
-"""Tests for the workspace rules upload mechanism (Phase 4 of workspace routing).
+"""Tests for the workspace rules upload mechanism.
 
-The rules templates in templates/openclaw/rules/ were created in PR #172 but
-the upload mechanism was never wired. This test ensures:
+The rules templates in templates/openclaw/rules/ are uploaded to each tenant's
+file share under workspace/rules/<filename> on config refresh. This test ensures:
 
 1. render_workspace_rules() discovers all .md files in the rules dir
 2. update_tenant_config() uploads each rule to workspace/rules/<filename>
@@ -33,14 +33,8 @@ class RenderWorkspaceRulesTest(TestCase):
             self.assertIsInstance(content, str)
             self.assertGreater(len(content), 0)
 
-    def test_includes_workspaces_rule(self):
-        """Phase 4 added rules/workspaces.md — verify it's discovered."""
-        rules = render_workspace_rules()
-        self.assertIn("workspaces.md", rules)
-        self.assertIn("workspace", rules["workspaces.md"].lower())
-
-    def test_includes_existing_rules(self):
-        """Pre-existing rules from PR #172 should also be discovered."""
+    def test_includes_core_rules(self):
+        """The core rule files should be discovered by render_workspace_rules."""
         rules = render_workspace_rules()
         expected_rules = {
             "journal-capture.md",
@@ -48,10 +42,14 @@ class RenderWorkspaceRulesTest(TestCase):
             "memory.md",
             "messaging.md",
             "onboarding.md",
-            "workspaces.md",
         }
         # All expected rules should be present (may have more)
         self.assertTrue(expected_rules.issubset(set(rules.keys())))
+
+    def test_workspaces_rule_removed(self):
+        """rules/workspaces.md was deleted with the workspace-chat-routing removal."""
+        rules = render_workspace_rules()
+        self.assertNotIn("workspaces.md", rules)
 
 
 class UpdateTenantConfigUploadsRulesTest(TestCase):
@@ -92,7 +90,7 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
             for call in mock_upload_workspace_file.call_args_list
         ]
 
-        # Verify at least the new workspaces.md rule was uploaded
+        # Verify the rules dir was uploaded (covers any of the core rule files)
         rules_paths = [p for p in uploaded_paths if "workspace/rules/" in p]
         self.assertGreater(
             len(rules_paths),
@@ -100,8 +98,8 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
             f"No rules uploaded. All paths: {uploaded_paths}",
         )
         self.assertTrue(
-            any("workspaces.md" in p for p in rules_paths),
-            f"workspaces.md not found in uploaded rules: {rules_paths}",
+            any("memory.md" in p for p in rules_paths),
+            f"memory.md not found in uploaded rules: {rules_paths}",
         )
 
     @patch("apps.orchestrator.services.upload_config_to_file_share")

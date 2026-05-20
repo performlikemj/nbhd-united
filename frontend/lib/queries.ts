@@ -13,7 +13,6 @@ import {
   RefreshConfigStatus,
   Tenant,
   TransparencyData,
-  WorkspacesResponse,
 } from "@/lib/types";
 import {
   appendToDocument,
@@ -130,11 +129,6 @@ import {
   createRestingHR,
   fetchSleep,
   createSleep,
-  fetchWorkspaces,
-  createWorkspace,
-  updateWorkspace,
-  deleteWorkspace,
-  switchWorkspace,
   fetchPATs,
   mintPAT,
   revokePAT,
@@ -1006,81 +1000,6 @@ export function useCancelPendingReminderMutation() {
     mutationFn: (name: string) => cancelPendingReminder(name),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["pending-reminders"] });
-    },
-  });
-}
-
-// Workspaces
-export function useWorkspacesQuery() {
-  return useQuery({
-    queryKey: ["workspaces"],
-    queryFn: fetchWorkspaces,
-    staleTime: 120_000,
-    enabled: isLoggedIn(),
-  });
-}
-
-export function useCreateWorkspaceMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: createWorkspace,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
-    },
-  });
-}
-
-export function useUpdateWorkspaceMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ slug, data }: { slug: string; data: Parameters<typeof updateWorkspace>[1] }) =>
-      updateWorkspace(slug, data),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
-    },
-    onError: () => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
-    },
-  });
-}
-
-export function useDeleteWorkspaceMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (slug: string) => deleteWorkspace(slug),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
-    },
-    onError: () => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
-    },
-  });
-}
-
-export function useSwitchWorkspaceMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (slug: string) => switchWorkspace(slug),
-    onMutate: async (slug: string) => {
-      await queryClient.cancelQueries({ queryKey: ["workspaces"] });
-      const previous = queryClient.getQueryData<WorkspacesResponse>(["workspaces"]);
-      queryClient.setQueryData<WorkspacesResponse>(["workspaces"], (old) =>
-        old
-          ? {
-              ...old,
-              workspaces: old.workspaces.map((ws) => ({ ...ws, is_active: ws.slug === slug })),
-            }
-          : old,
-      );
-      return { previous };
-    },
-    onError: (_err, _slug, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(["workspaces"], context.previous);
-      }
-    },
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
     },
   });
 }

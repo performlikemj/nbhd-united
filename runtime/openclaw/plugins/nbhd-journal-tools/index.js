@@ -1014,7 +1014,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_workspace_list",
       description:
-        "List the user's conversation workspaces. Each workspace is a separate context (e.g. Work, Personal, Translation) with its own conversation history. Returns name, slug, description, is_default, is_active, last_used_at for each.",
+        "List the user's workspaces. Workspaces are a content-organization label only — they do NOT route chat messages or create separate conversation contexts. Returns name, slug, description, is_default, last_used_at for each. Only call when the user explicitly asks to see their workspaces.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1035,7 +1035,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_workspace_create",
       description:
-        "Create a new conversation workspace. Use when the user explicitly asks (e.g. 'create a workspace for translation work') OR when you've detected a recurring topic that deserves its own focused context. The first workspace creation also auto-creates a 'General' default workspace as a catch-all. Maximum 4 workspaces per user. The new workspace becomes active immediately.",
+        "Create a new workspace label. Use ONLY when the user explicitly asks ('create a workspace for X'). Workspaces are a content-organization label — they do NOT route chat messages, so do not proactively create one because you detected a recurring topic. Maximum 4 workspaces per user.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1048,7 +1048,7 @@ export default function register(api) {
           description: {
             type: "string",
             description:
-              "What topics this workspace covers. Used to route incoming messages to the right workspace. E.g. 'Q3 budget prep, team standups, project deadlines, client communications'.",
+              "What topics this workspace label covers. Free-form note — not used for routing.",
           },
         },
         required: ["name"],
@@ -1075,7 +1075,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_workspace_update",
       description:
-        "Update a workspace's name or description. Re-embeds the description for routing classification when changed. Use to refine a workspace as the user's needs evolve.",
+        "Update a workspace label's name or description. Workspaces no longer route chat messages — description changes are free-form notes only. Use when the user explicitly asks to refine a workspace label.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1120,7 +1120,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_workspace_delete",
       description:
-        "Delete a workspace. The default workspace cannot be deleted. If the deleted workspace was active, the active workspace falls back to General. The conversation history in the deleted workspace's session will no longer be reachable. Always confirm with the user before deleting.",
+        "Delete a workspace label. The default workspace cannot be deleted. Workspaces no longer route chat messages — deletion only removes the label, not any conversation history. Always confirm with the user before deleting.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1146,36 +1146,11 @@ export default function register(api) {
     { optional: true },
   );
 
-  // ── Workspace: Switch ────────────────────────────────────────────────
-  api.registerTool(wrap({
-      name: "nbhd_workspace_switch",
-      description:
-        "Switch the active workspace. Call this whenever the user asks to switch workspaces — either explicitly ('switch to X', 'go to my X workspace', 'open X', 'change to X') or implicitly ('this is work stuff', 'let's talk about translation'). VERBALLY confirming a switch is NOT enough — you must call this tool, otherwise the database doesn't update, the dashboard stays on the old workspace, and routing keeps sending messages to the old session. The user's NEXT message will route to the new workspace's session. After calling, add the [WorkspaceName] chip indicator on your response.",
-      parameters: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          slug: {
-            type: "string",
-            description: "The workspace slug to switch to.",
-          },
-        },
-        required: ["slug"],
-      },
-      async execute(_id, params) {
-        const input = asObject(params);
-        const slug = asTrimmedString(input.slug);
-        if (!slug) throw new Error("slug is required");
-        const payload = await callRuntime(api, {
-          path: tenantPath(api, "/workspaces/switch/"),
-          method: "POST",
-          body: { slug },
-        });
-        return renderPayload(payload);
-      },
-    }),
-    { optional: true },
-  );
+  // nbhd_workspace_switch was removed 2026-05-20 along with workspace
+  // chat routing — see docs/implementation/remove-workspace-chat-routing.md.
+  // Workspaces remain as a dormant content-organization primitive accessible
+  // via nbhd_workspace_list / _create / _update / _delete above, but no
+  // longer steer chat sessions.
 
   // ── Typed Goal lifecycle ─────────────────────────────────────────────
   // Replaces Document(kind="goal") for tenants with experimental_typed_journal_lifecycle.

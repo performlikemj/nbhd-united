@@ -29,7 +29,6 @@
       "nbhd_workspace_create",
       "nbhd_workspace_update",
       "nbhd_workspace_delete",
-      "nbhd_workspace_switch",
       "nbhd_goal_create",
       "nbhd_goal_update",
       "nbhd_goal_achieve",
