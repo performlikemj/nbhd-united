@@ -297,5 +297,71 @@ class MemorySyncExclusionGatedTest(TestCase):
         self.assertIn("memory/journal/memory/long-term.md", files)
 
 
+class TypedLifecycleSwapsTest(TestCase):
+    """Cron-prompt rewrites direct typed-lifecycle tenants at typed tools."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="swapsuser", password="pass")
+        self.tenant = Tenant.objects.create(user=self.user, status="active")
+
+    def _prepare(self, prompt: str) -> str:
+        from apps.orchestrator.config_generator import _prepare_cron_prompt
+
+        return _prepare_cron_prompt(prompt, self.tenant)
+
+    def test_flag_off_leaves_legacy_references_intact(self):
+        legacy_prompt = (
+            "Step 1: Load the user's tasks document (`nbhd_document_get` with kind='tasks', slug='tasks').\n"
+            "Step 2: Append a new task via `nbhd_document_append` (kind='tasks', slug='tasks')."
+        )
+        out = self._prepare(legacy_prompt)
+        self.assertIn("`nbhd_document_get` with kind='tasks', slug='tasks'", out)
+        self.assertIn("`nbhd_document_append` (kind='tasks', slug='tasks')", out)
+        self.assertNotIn("nbhd_task_create", out)
+        self.assertNotIn("nbhd_task_list", out)
+
+    def test_flag_on_swaps_tasks_write_to_typed_tool(self):
+        self.tenant.experimental_typed_journal_lifecycle = True
+        self.tenant.save()
+        legacy_prompt = "Append a task via `nbhd_document_append` (kind='tasks', slug='tasks')."
+        out = self._prepare(legacy_prompt)
+        self.assertIn("nbhd_task_create", out)
+        self.assertNotIn("nbhd_document_append` (kind='tasks'", out)
+
+    def test_flag_on_swaps_tasks_read_to_typed_tool(self):
+        self.tenant.experimental_typed_journal_lifecycle = True
+        self.tenant.save()
+        legacy_prompt = "Load tasks (`nbhd_document_get` with kind='tasks', slug='tasks')."
+        out = self._prepare(legacy_prompt)
+        self.assertIn("nbhd_task_list", out)
+        # Legacy fallback still mentioned so the agent can read historical content during transition.
+        self.assertIn("Legacy task markdown", out)
+
+    def test_flag_on_swaps_goals_read_and_write(self):
+        self.tenant.experimental_typed_journal_lifecycle = True
+        self.tenant.save()
+        prompt = (
+            "Update goal via `nbhd_document_append` (kind='goal', slug='goals').\n"
+            "Load goals via `nbhd_document_get` with kind='goal', slug='goals'."
+        )
+        out = self._prepare(prompt)
+        self.assertIn("nbhd_goal_create", out)
+        self.assertIn("nbhd_goal_list", out)
+        self.assertNotIn("nbhd_document_append` (kind='goal'", out)
+        self.assertNotIn("nbhd_document_get` with kind='goal'", out)
+
+    def test_flag_on_swaps_document_set_variants(self):
+        self.tenant.experimental_typed_journal_lifecycle = True
+        self.tenant.save()
+        prompt = (
+            "Action items → tasks document (`nbhd_document_set` with kind='tasks', slug='tasks')\n"
+            "Goals → goals document (`nbhd_document_set` with kind='goal', slug='goals')"
+        )
+        out = self._prepare(prompt)
+        self.assertIn("nbhd_task_create", out)
+        self.assertIn("nbhd_goal_create", out)
+        self.assertNotIn("nbhd_document_set", out)
+
+
 # Suppress unused-import warnings — these are exercised in tests above via local references.
 __all__ = ["timezone"]
