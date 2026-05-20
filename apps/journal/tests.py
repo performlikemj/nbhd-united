@@ -1300,13 +1300,16 @@ class DocumentSaveSignalAsyncTest(TestCase):
             args, kwargs = mock_publish.call_args
             self.assertEqual(args, ("sync_documents_to_workspace", str(self.tenant.id)))
             # Bucketed idempotency_key collapses bursty Document saves into one
-            # delivery per tenant per minute on the QStash side.
+            # delivery per tenant per minute on the QStash side. Uses '-' as
+            # the separator because QStash rejects ':' / whitespace in the
+            # dedup id (caught by the eager validator in apps.cron.publish).
             self.assertIn("idempotency_key", kwargs)
             self.assertTrue(
                 kwargs["idempotency_key"].startswith(
-                    f"sync_documents_to_workspace:{self.tenant.id}:",
+                    f"sync-documents-to-workspace-{self.tenant.id}-",
                 ),
             )
+            self.assertNotIn(":", kwargs["idempotency_key"])
 
     @override_settings(QSTASH_TOKEN="t_abc", API_BASE_URL="https://example.com")
     def test_threaded_publish_when_qstash_configured(self):

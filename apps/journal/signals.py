@@ -55,8 +55,13 @@ def queue_memory_sync_on_document_save(sender, instance, **kwargs):
 
         # One-minute bucket: bursts of writes coalesce to one delivery,
         # isolated writes still sync within ≤60s.
+        # NB: QStash rejects ``Upstash-Deduplication-Id`` containing ``:``
+        # or whitespace ("DeduplicationId cannot contain ':'") — use '-'
+        # as the separator. The previous colon-separated form silently
+        # 400'd every publish from 9ae5ac3 (2026-05-16) until this fix,
+        # meaning no Document save propagated to workspace memory.
         bucket = datetime.now(UTC).strftime("%Y%m%d%H%M")
-        idempotency_key = f"sync_documents_to_workspace:{tenant_id}:{bucket}"
+        idempotency_key = f"sync-documents-to-workspace-{tenant_id}-{bucket}"
         try:
             publish_task(
                 "sync_documents_to_workspace",
