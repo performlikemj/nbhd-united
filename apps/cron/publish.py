@@ -31,6 +31,14 @@ def _publish_log_context(task_name: str, args, kwargs):
     return context
 
 
+# QStash rejects an ``Upstash-Deduplication-Id`` header containing
+# whitespace or ``:`` with a 400 "DeduplicationId cannot contain ':'".
+# Caught these literal characters in the field; reject early with the
+# offending value so the failing call-site is unambiguous instead of
+# surfacing as a generic 400 deep inside the SDK.
+_DEDUP_FORBIDDEN = (":", " ", "\t", "\n", "\r")
+
+
 def publish_task(
     task_name: str,
     *args,
@@ -50,6 +58,8 @@ def publish_task(
         idempotency_key: Optional key for QStash deduplication. QStash will
             discard duplicate messages with the same key within a time window.
             Use this for broadcast-style tasks to prevent double delivery.
+            Must not contain ``:`` or whitespace — QStash rejects either
+            with a 400 ``"DeduplicationId cannot contain ':'"``.
         retries: Optional QStash retry count. Defaults to 3 (QStash's
             default). Set to 0 or 1 for tasks that already do their own
             application-level retry / per-message attempt cap and where
@@ -57,6 +67,12 @@ def publish_task(
             chat completions while a slow turn is still in flight).
         *args, **kwargs: Arguments passed to the task function.
     """
+    if idempotency_key is not None and any(c in idempotency_key for c in _DEDUP_FORBIDDEN):
+        raise ValueError(
+            f"idempotency_key={idempotency_key!r} contains a character QStash rejects "
+            f"in 'Upstash-Deduplication-Id' (':' or whitespace). Use '-' or '_' instead."
+        )
+
     qstash_token = getattr(settings, "QSTASH_TOKEN", "")
     api_base_url = getattr(settings, "API_BASE_URL", "")
     log_context = _publish_log_context(task_name, args, kwargs)
@@ -125,6 +141,17 @@ def publish_batch(
     """
     if not tasks:
         return 0
+
+    # Validate dedup ids upfront so a malformed key fails identically in
+    # the sync-fallback (tests / dev) and the QStash path (prod) instead
+    # of slipping through unchecked when QSTASH_TOKEN is unset.
+    for task in tasks:
+        dedup_id = task[3] if len(task) > 3 else None
+        if dedup_id and any(c in dedup_id for c in _DEDUP_FORBIDDEN):
+            raise ValueError(
+                f"batch dedup_id={dedup_id!r} contains a character QStash rejects "
+                f"in 'Upstash-Deduplication-Id' (':' or whitespace)."
+            )
 
     qstash_token = getattr(settings, "QSTASH_TOKEN", "")
     api_base_url = getattr(settings, "API_BASE_URL", "")
