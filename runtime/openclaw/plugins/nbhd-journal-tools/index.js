@@ -609,6 +609,44 @@ export default function register(api) {
     { optional: true },
   );
 
+  // ── Reconcile Scan (conversational gate function) ───────────────────
+  api.registerTool(wrap({
+      name: "nbhd_reconcile_scan",
+      description:
+        "Call this BEFORE replying on a conversational turn when the user just reported a concrete action that could change a goal, task, finance account, or fuel log — payments, transactions, workouts, body weight, task completion, goal progress, project status. Pass `claim` as a one-sentence summary of what they reported. Returns the active goals, open tasks, finance accounts, and fuel rows already filtered against the claim, each annotated with which typed write tool (`nbhd_goal_*`, `nbhd_task_*`, `nbhd_finance_*`, `nbhd_fuel_*`) to call to apply the update. Do NOT call this for questions, planning, venting, hypotheticals, or small talk.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          claim: {
+            type: "string",
+            description: "One-sentence summary of the concrete action the user just reported (e.g. 'paid credit card $400', 'did push workout today', 'lost 2 lbs').",
+          },
+          limit: {
+            type: "number",
+            description: "Max candidates to return (default 15, max 25).",
+          },
+        },
+        required: ["claim"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const claim = asTrimmedString(input.claim);
+        if (!claim) throw new Error("claim is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/reconcile/scan/"),
+          method: "GET",
+          query: {
+            claim,
+            limit: parseInteger(input.limit, { defaultValue: 15, min: 1, max: 25 }),
+          },
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
   // ── Lessons: suggest/search/pending ─────────────────────────────────
   api.registerTool(wrap({
       name: "nbhd_lesson_suggest",

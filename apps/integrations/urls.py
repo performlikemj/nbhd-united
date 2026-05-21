@@ -32,6 +32,7 @@ from .runtime_views import (
     RuntimeLessonSearchView,
     RuntimeMemorySyncView,
     RuntimeProfileUpdateView,
+    RuntimeReconcileScanView,
     RuntimeSessionMarkProcessedView,
     RuntimeSessionsPendingView,
     RuntimeTaskCompleteView,
@@ -184,6 +185,12 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/journal/search/",
         RuntimeJournalSearchView.as_view(),
         name="runtime-journal-search",
+    ),
+    # Reconcile scan — agent-side conversational gate function
+    path(
+        "runtime/<uuid:tenant_id>/reconcile/scan/",
+        RuntimeReconcileScanView.as_view(),
+        name="runtime-reconcile-scan",
     ),
     # v2 Document endpoints
     path(

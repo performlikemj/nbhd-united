@@ -40,6 +40,7 @@
 |------|---------|
 | `nbhd_journal_context` | Load recent daily notes + memory in one call (use at session start) |
 | `nbhd_journal_search` | Full-text search across all journal documents |
+| `nbhd_reconcile_scan` | **Conversational gate function** — call BEFORE replying when the user reports a concrete action (payment, workout, completed task, weight change, etc.). Returns active goals + open tasks + finance accounts + fuel rows filtered against the `claim`, each annotated with which typed write tool to call. See AGENTS.md "Conversational reconcile gate". Never call for questions, planning, or small talk. |
 
 ### Lessons
 | Tool | Purpose |

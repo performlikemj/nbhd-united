@@ -23,6 +23,13 @@ SOUL.md, USER.md, MEMORY.md, IDENTITY.md, and TOOLS.md are already in your conte
 
 2. **Conversational turn** — the message starts with `[chat: user is mid-conversation, ...]` after the `[Now: ...]` line. Reply directly. **Do NOT** call `nbhd_journal_context`, `nbhd_daily_note_get`, `nbhd_document_get`, or `memory/YYYY-MM-DD.md` reads up front. Only fetch context when the user's question explicitly requires it — e.g. "what did we plan for today?" justifies reading the daily note; "hi how are you?" does not. Read `docs/channel-formatting.md` only the first time you need to format something non-trivial.
 
+   **Conversational reconcile gate — apply BEFORE replying on every conversational turn:**
+
+   Ask yourself one question: *did the user just report a concrete action that could change a goal, task, finance account, or fuel log?* **Material:** payments, transactions, workouts, body weight, task completion, goal progress, project status, lessons learned. **Not material:** questions, planning, venting, hypotheticals, "how are you", small talk.
+
+   - **If yes** → call `nbhd_reconcile_scan({claim: "<one-sentence summary of what they reported>"})` **first**. It returns the relevant active goals, open tasks, finance accounts, and fuel rows already filtered against the claim, each annotated with which typed write tool to use. Apply the warranted updates via those tools (`nbhd_goal_*`, `nbhd_task_*`, `nbhd_finance_*`, `nbhd_fuel_*`) and mention briefly in your reply what changed (e.g. *"Updated *Pay off card by Aug* — balance now $1,820."*). If `nbhd_reconcile_scan` returns no candidates, just reply normally — don't fabricate updates.
+   - **If no** → reply directly. Don't call the scan tool for questions or small talk.
+
 If neither marker is present (legacy turn or internal warmup), default to the conversational behavior — keep it light.
 
 Use `nbhd_journal_search` / `nbhd_journal_context` only when you need to recall specific past context.
