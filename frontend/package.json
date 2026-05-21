@@ -15,7 +15,7 @@
     "@tiptap/extension-list": "^3.23.5",
     "@tiptap/extension-placeholder": "^3.23.5",
     "@tiptap/pm": "^3.23.6",
-    "@tiptap/react": "^3.23.5",
+    "@tiptap/react": "^3.23.6",
     "@tiptap/starter-kit": "^3.23.5",
     "clsx": "^2.1.1",
     "next": "^16.2.6",
