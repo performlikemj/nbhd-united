@@ -1193,3 +1193,74 @@ class PIIDenylistItemView(APIView):
         Tenant.objects.filter(pk=tenant.pk).update(pii_denylist=denylist)
         tenant.pii_denylist = denylist
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class PIIDenylistBulkView(APIView):
+    """Bulk-add names to the tenant denylist in a single request.
+
+    Designed for the People settings page's "Ignore N selected" action
+    over the 826-row canary case — sequential single-entry POSTs would
+    take ~40s to drain. One round trip drains in ~200ms.
+
+    Bad individual entries (empty after strip, too long, canonicalizes
+    to empty) are skipped, not fatal: the response lists ``added`` keys
+    and ``skipped`` items with reasons so the UI can show partial
+    success. Total batch size is capped to prevent runaway payloads.
+    """
+
+    permission_classes = [IsAuthenticated]
+    _MAX_NAME = 200
+    _MAX_BATCH = 1000
+
+    def post(self, request):
+        from apps.pii.entity_registry import normalize_denylist_key
+
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
+
+        body = request.data or {}
+        names = body.get("names")
+        if not isinstance(names, list):
+            return Response(
+                {"detail": "names must be a list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(names) > self._MAX_BATCH:
+            return Response(
+                {"detail": f"batch exceeds max size {self._MAX_BATCH}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        denylist = dict(tenant.pii_denylist or {})
+        now = timezone.now().isoformat()
+        added: list[str] = []
+        skipped: list[dict] = []
+
+        for raw in names:
+            if not isinstance(raw, str):
+                skipped.append({"name": str(raw)[:64], "reason": "not a string"})
+                continue
+            name = raw.strip()
+            if not name:
+                skipped.append({"name": raw[:64], "reason": "empty"})
+                continue
+            if len(name) > self._MAX_NAME:
+                skipped.append({"name": name[:64], "reason": f"exceeds max length {self._MAX_NAME}"})
+                continue
+            key = normalize_denylist_key(name)
+            if not key:
+                skipped.append({"name": name[:64], "reason": "canonicalizes to empty"})
+                continue
+            denylist[key] = {"reason": "manual", "decided_at": now}
+            added.append(key)
+
+        # One write covers the whole batch — the JSONField update is atomic.
+        Tenant.objects.filter(pk=tenant.pk).update(pii_denylist=denylist)
+        tenant.pii_denylist = denylist
+
+        return Response(
+            {"added": added, "skipped": skipped},
+            status=status.HTTP_200_OK,
+        )

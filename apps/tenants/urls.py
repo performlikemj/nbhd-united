@@ -17,6 +17,7 @@ from .views import (
     HeartbeatConfigView,
     OnboardTenantView,
     PersonaListView,
+    PIIDenylistBulkView,
     PIIDenylistItemView,
     PIIDenylistListView,
     PreferredModelView,
@@ -53,6 +54,14 @@ urlpatterns = [
     # should never treat as PII. Foundation lives in PR #664 / migration
     # 0068; this UI lets users curate the list directly.
     path("settings/pii-denylist/", PIIDenylistListView.as_view(), name="pii-denylist-list"),
+    # NOTE: `bulk/` MUST be registered before `<str:key>/` — otherwise the
+    # string path captures "bulk" as the key and ItemView returns 405 for
+    # POST. Django matches paths in declaration order.
+    path(
+        "settings/pii-denylist/bulk/",
+        PIIDenylistBulkView.as_view(),
+        name="pii-denylist-bulk",
+    ),
     path(
         "settings/pii-denylist/<str:key>/",
         PIIDenylistItemView.as_view(),
