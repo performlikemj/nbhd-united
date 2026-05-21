@@ -428,7 +428,7 @@ pydantic-core==2.41.5
     # via pydantic
 pygments==2.19.2
     # via rich
-pyjwt[crypto]==2.12.1
+pyjwt[crypto]==2.13.0
     # via
     #   -r requirements.in
     #   djangorestframework-simplejwt
