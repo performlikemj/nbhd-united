@@ -16,6 +16,15 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from apps.pii.config import DEBERTA_LABEL_MAP, TIER_POLICIES
+from apps.pii.entity_registry import (
+    get_name as _entry_name,
+)
+from apps.pii.entity_registry import (
+    inverted_names as _inverted_names,
+)
+from apps.pii.entity_registry import (
+    to_storage_value as _entry_storage,
+)
 
 if TYPE_CHECKING:
     from apps.tenants.models import Tenant
@@ -144,15 +153,19 @@ class RedactionSession:
             return text
 
 
-def rehydrate_text(text: str, entity_map: dict[str, str]) -> str:
+def rehydrate_text(text: str, entity_map: dict[str, Any]) -> str:
     """Replace PII placeholders with original values.
 
     Args:
-        text: Text potentially containing [ENTITY_TYPE_N] placeholders.
-        entity_map: Mapping from placeholder to original value.
+        text: Text potentially containing ``[ENTITY_TYPE_N]`` placeholders.
+        entity_map: Mapping from placeholder to entry. Entries may be
+            either the legacy string shape (``"Nana"``) or the registry
+            dict shape (``{"name": "Nana", "relationship": ...}``);
+            both are accepted transparently.
 
     Returns:
-        Text with placeholders replaced by original values.
+        Text with placeholders replaced by the entry's ``name``.
+        Unknown placeholders are left as-is.
     """
     if not text or not entity_map:
         return text
@@ -163,7 +176,11 @@ def rehydrate_text(text: str, entity_map: dict[str, str]) -> str:
 
     def _replace(match: re.Match) -> str:
         placeholder = match.group(0)
-        return entity_map.get(placeholder, placeholder)
+        entry = entity_map.get(placeholder)
+        if entry is None:
+            return placeholder
+        name = _entry_name(entry)
+        return name or placeholder
 
     return _PLACEHOLDER_RE.sub(_replace, text)
 
@@ -214,8 +231,10 @@ def _redact_user_message(
     """Internal: redact user message with known + new entity detection."""
     existing_map = getattr(tenant, "pii_entity_map", None) or {}
 
-    # Step 1: Replace known entities from the existing map (exact string match)
-    inverted = {v: k for k, v in existing_map.items()}  # original -> placeholder
+    # Step 1: Replace known entities from the existing map (exact string match).
+    # The entity registry coerces both legacy str entries and new dict
+    # entries to a single ``name -> placeholder`` view.
+    inverted = _inverted_names(existing_map)
     out = text
     for original, placeholder in sorted(inverted.items(), key=lambda x: -len(x[0])):
         # Replace longest matches first to avoid partial replacements
@@ -259,7 +278,7 @@ def _redact_user_message(
     if not results:
         return out
 
-    new_map_entries: dict[str, str] = {}
+    new_map_entries: dict[str, dict[str, Any]] = {}
     sorted_results = sorted(results, key=lambda r: r.start)
     replacements: list[tuple[int, int, str]] = []
 
@@ -280,13 +299,15 @@ def _redact_user_message(
         type_counters[etype] = count
         placeholder = f"[{etype}_{count}]"
         replacements.append((result.start, result.end, placeholder))
-        new_map_entries[placeholder] = original
+        new_map_entries[placeholder] = _entry_storage(original)
 
     # Apply replacements
     for start, end, placeholder in reversed(replacements):
         out = out[:start] + placeholder + out[end:]
 
-    # Persist new entities to DB
+    # Persist new entities to DB. Existing rows are preserved as-is so a
+    # legacy string entry stays a string until something else rewrites it
+    # — keeps reads cheap and avoids touching unrelated rows.
     if new_map_entries:
         merged = {**existing_map, **new_map_entries}
         type(tenant).objects.filter(pk=tenant.pk).update(pii_entity_map=merged)

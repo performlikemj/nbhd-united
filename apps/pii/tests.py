@@ -270,6 +270,7 @@ class RedactUserMessageTest(TestCase):
         self.assertIn("[EMAIL_ADDRESS_2]", result)
 
     def test_new_entities_persisted_to_db(self):
+        from apps.pii.entity_registry import get_name
         from apps.pii.redactor import redact_user_message
 
         self.tenant.pii_entity_map = {}
@@ -280,8 +281,11 @@ class RedactUserMessageTest(TestCase):
         # Reload from DB
         self.tenant.refresh_from_db()
         self.assertTrue(len(self.tenant.pii_entity_map) > 0)
-        # Should contain the new email
-        self.assertIn("bob.smith@acme.com", self.tenant.pii_entity_map.values())
+        # Should contain the new email — read via registry helper so the
+        # assertion is shape-agnostic (entries are now dicts with a
+        # ``name`` field; legacy string entries still readable).
+        names = {get_name(v) for v in self.tenant.pii_entity_map.values()}
+        self.assertIn("bob.smith@acme.com", names)
 
     def test_empty_message_unchanged(self):
         from apps.pii.redactor import redact_user_message
