@@ -51,7 +51,7 @@ from django.conf import settings
 from django.db import models, transaction
 from django.utils import timezone
 
-from apps.billing.services import record_usage
+from apps.billing.services import extract_model_from_response, record_usage
 from apps.router.models import PendingMessage
 from apps.tenants.models import Tenant
 
@@ -920,7 +920,7 @@ def _record_usage_safe(tenant: Tenant, result: Any) -> None:
 
     input_tokens = usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0) or 0
     output_tokens = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0) or 0
-    model_used = result.get("model", "") or ""
+    model_used = extract_model_from_response(result)
 
     if not (input_tokens or output_tokens):
         return
