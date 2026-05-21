@@ -95,5 +95,60 @@ def render_privacy_placeholders(tenant: Tenant) -> str:
     This block lives in USER.md so the rule is in the agent's always-on
     context for tenants where placeholders are actively in play — keeps
     AGENTS.md slim while making the rule visible exactly when it matters.
+
+    When entries in ``pii_entity_map`` carry ``relationship`` or ``notes``
+    metadata (the new dict shape from the entity registry), an *Identity
+    context* sub-section is appended listing those entries so the agent
+    can disambiguate pronouns ("she", "they") against user-curated
+    identity — without ever seeing the real name. Legacy string-only
+    entries contribute nothing to this sub-section but still benefit
+    from the always-on preservation rule above.
     """
-    return _PRIVACY_PLACEHOLDERS_BODY
+    body = _PRIVACY_PLACEHOLDERS_BODY
+    identity = _render_identity_context(tenant)
+    if identity:
+        body = f"{body}\n\n{identity}"
+    return body
+
+
+def _render_identity_context(tenant: Tenant) -> str:
+    """Build the *Identity context* sub-section from ``pii_entity_map``
+    entries that have either ``relationship`` or ``notes`` populated.
+
+    Returns empty string when nothing user-curated exists — keeps the
+    privacy block tight on tenants who haven't filled in any metadata.
+    """
+    from apps.pii.entity_registry import get_metadata, iter_normalized
+
+    entity_map = getattr(tenant, "pii_entity_map", None)
+    if not entity_map:
+        return ""
+
+    lines: list[str] = []
+    # Sort by placeholder for stable rendering (deterministic envelope diffs).
+    sorted_entries = sorted(iter_normalized(entity_map), key=lambda kv: kv[0])
+    for placeholder, entry in sorted_entries:
+        meta = get_metadata(entry)
+        relationship = (meta.get("relationship") or "").strip()
+        notes = (meta.get("notes") or "").strip()
+        if not relationship and not notes:
+            continue
+        if relationship and notes:
+            descriptor = f"{relationship} — {notes}"
+        else:
+            descriptor = relationship or notes
+        lines.append(f"- `{placeholder}` — {descriptor}")
+
+    if not lines:
+        return ""
+
+    header = (
+        "### Identity context\n"
+        "\n"
+        "The following placeholders refer to specific people in the user's "
+        "life. Use this metadata to disambiguate pronouns and references "
+        '("she", "they", "my daughter") — but still emit the '
+        "`[PERSON_X]` placeholder verbatim in your reply, never the "
+        "metadata below.\n"
+    )
+    return header + "\n" + "\n".join(lines)
