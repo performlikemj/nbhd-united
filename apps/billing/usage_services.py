@@ -12,8 +12,8 @@ from django.utils import timezone
 from apps.tenants.models import Tenant
 
 from .constants import (
-    DEFAULT_RATE,
     MODEL_RATES,
+    display_name_for_model,
 )
 from .models import MonthlyBudget, UsageRecord
 
@@ -70,7 +70,7 @@ def get_usage_summary(tenant: Tenant, ref_date: date | None = None) -> dict:
         "by_model": [
             {
                 "model": row["model_used"],
-                "display_name": MODEL_RATES.get(row["model_used"], DEFAULT_RATE)["display_name"],
+                "display_name": display_name_for_model(row["model_used"] or ""),
                 "input_tokens": row["input_tokens"],
                 "output_tokens": row["output_tokens"],
                 "cost": float(row["cost"]),

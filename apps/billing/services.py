@@ -53,6 +53,48 @@ def _find_tenant_for_stripe_event(payload: dict) -> Tenant | None:
     return None
 
 
+# The chat-completions gateway request always sends ``"model": "openclaw"``
+# because the actual model is chosen inside the OpenClaw runtime, not by the
+# Django caller. The response echoes that placeholder back in the OpenAI-spec
+# top-level ``model`` field, while the real upstream model id (e.g.
+# ``openrouter/minimax/minimax-m2.7`` or ``anthropic/claude-sonnet-4.6``) is
+# reported in OpenClaw's custom ``usage.model_used`` field. Anything that
+# records usage from a gateway response must prefer the usage-level fields,
+# or every record will be tagged as the "openclaw" placeholder and the
+# per-model breakdown collapses into one undifferentiated bucket.
+_OPENCLAW_PLACEHOLDER = "openclaw"
+
+
+def extract_model_from_response(result: object) -> str:
+    """Resolve the actual upstream model id from an OpenClaw chat response.
+
+    Tries (in order) ``usage.model_used`` → ``usage.model`` →
+    top-level ``model_used`` → top-level ``model``. The ``"openclaw"``
+    request-side placeholder is treated as no-signal and skipped.
+    Returns ``""`` if nothing usable is found.
+    """
+    if not isinstance(result, dict):
+        return ""
+
+    candidates: list[str] = []
+    usage = result.get("usage")
+    if isinstance(usage, dict):
+        for key in ("model_used", "model"):
+            value = usage.get(key)
+            if isinstance(value, str):
+                candidates.append(value)
+    for key in ("model_used", "model"):
+        value = result.get(key)
+        if isinstance(value, str):
+            candidates.append(value)
+
+    for value in candidates:
+        stripped = value.strip()
+        if stripped and stripped != _OPENCLAW_PLACEHOLDER:
+            return stripped
+    return ""
+
+
 def record_usage(
     tenant: Tenant,
     event_type: str,

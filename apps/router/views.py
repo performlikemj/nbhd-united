@@ -11,7 +11,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from apps.billing.services import check_budget, record_usage
+from apps.billing.services import check_budget, extract_model_from_response, record_usage
 from apps.tenants.models import Tenant
 
 from .error_messages import error_msg
@@ -85,14 +85,7 @@ def _record_usage_from_openclaw_result(tenant: Tenant, result: object) -> None:
 
     input_tokens = _coerce_non_negative_int(usage.get("input_tokens", usage.get("input")))
     output_tokens = _coerce_non_negative_int(usage.get("output_tokens", usage.get("output")))
-    model_used = ""
-    if isinstance(usage.get("model_used"), str):
-        model_used = usage.get("model_used") or ""
-    elif isinstance(usage.get("model"), str):
-        model_used = usage.get("model") or ""
-
-    if not model_used and isinstance(result.get("model_used"), str):
-        model_used = result.get("model_used") or ""
+    model_used = extract_model_from_response(result)
 
     if not (input_tokens or output_tokens):
         logger.warning(

@@ -66,6 +66,39 @@ MODEL_RATES: dict[str, dict[str, float]] = {
 
 DEFAULT_RATE = {"input": 0.3, "output": 1.2, "display_name": "Unknown Model"}
 
+# Display-only map for models we don't bill but want to attribute properly.
+# BYO subscription models are zero-cost on our side (the tenant pays the
+# provider directly), so they don't belong in MODEL_RATES — but the usage
+# rollup still needs a human-readable label for them. Includes the dotted
+# variants OpenRouter sometimes reports back (e.g. ``claude-sonnet-4.6``
+# instead of the canonical hyphenated ``claude-sonnet-4-6``).
+BYO_MODEL_DISPLAY: dict[str, str] = {
+    ANTHROPIC_SONNET_MODEL: ANTHROPIC_SONNET_DISPLAY,
+    ANTHROPIC_SONNET_MODEL.replace("-4-6", "-4.6"): ANTHROPIC_SONNET_DISPLAY,
+    ANTHROPIC_OPUS_MODEL: ANTHROPIC_OPUS_DISPLAY,
+    ANTHROPIC_OPUS_MODEL.replace("-4-7", "-4.7"): ANTHROPIC_OPUS_DISPLAY,
+}
+
+
+def display_name_for_model(model_used: str) -> str:
+    """Return the display name for a stored ``model_used`` string.
+
+    Looks up MODEL_RATES (billed models) first, then BYO_MODEL_DISPLAY
+    (subscription-paid models), then falls back to the raw value so new
+    or unmapped models surface as their id rather than "Unknown Model".
+    Empty strings still return "Unknown Model" as the explicit fallback.
+    """
+    if not model_used:
+        return DEFAULT_RATE["display_name"]
+    rate = MODEL_RATES.get(model_used)
+    if rate is not None:
+        return rate["display_name"]
+    byo = BYO_MODEL_DISPLAY.get(model_used)
+    if byo is not None:
+        return byo
+    return model_used
+
+
 # ── Reasoning / slow-inference models ─────────────────────────────────────
 # These models have longer time-to-first-token and generation times.
 # The router gives them a higher forwarding timeout and sends a
