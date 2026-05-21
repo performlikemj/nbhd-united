@@ -41,7 +41,8 @@
       "nbhd_task_skip",
       "nbhd_task_defer",
       "nbhd_task_list",
-      "nbhd_task_get"
+      "nbhd_task_get",
+      "nbhd_reconcile_scan"
     ]
   },
   "configSchema": {

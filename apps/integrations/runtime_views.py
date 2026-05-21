@@ -2234,6 +2234,398 @@ class RuntimeProfileUpdateView(APIView):
         )
 
 
+_RECONCILE_STOPWORDS = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "but",
+        "with",
+        "from",
+        "this",
+        "that",
+        "have",
+        "had",
+        "was",
+        "were",
+        "are",
+        "you",
+        "your",
+        "user",
+        "today",
+        "just",
+        "now",
+        "did",
+        "got",
+        "into",
+        "out",
+        "than",
+        "then",
+        "been",
+        "being",
+        "about",
+        "some",
+        "any",
+        "all",
+        "say",
+        "said",
+        "tell",
+        "told",
+    }
+)
+
+_FINANCE_KEYWORDS = frozenset(
+    {
+        "paid",
+        "pay",
+        "payment",
+        "payments",
+        "paying",
+        "bill",
+        "bills",
+        "billed",
+        "loan",
+        "loans",
+        "debt",
+        "debts",
+        "card",
+        "cards",
+        "credit",
+        "balance",
+        "balances",
+        "transaction",
+        "transactions",
+        "deposit",
+        "deposits",
+        "withdraw",
+        "withdrew",
+        "withdrawal",
+        "interest",
+        "owe",
+        "owed",
+        "owes",
+        "due",
+        "minimum",
+        "principal",
+        "transfer",
+        "transferred",
+        "mortgage",
+        "rent",
+        "account",
+        "bank",
+        "spent",
+        "spend",
+        "cost",
+        "income",
+        "invoice",
+    }
+)
+
+_FUEL_KEYWORDS = frozenset(
+    {
+        "workout",
+        "workouts",
+        "ran",
+        "run",
+        "running",
+        "lift",
+        "lifted",
+        "lifting",
+        "train",
+        "trained",
+        "training",
+        "gym",
+        "exercise",
+        "exercised",
+        "cardio",
+        "swim",
+        "swam",
+        "swimming",
+        "bike",
+        "biked",
+        "biking",
+        "ride",
+        "rode",
+        "hike",
+        "hiked",
+        "yoga",
+        "stretch",
+        "stretched",
+        "weight",
+        "weighed",
+        "weighs",
+        "lbs",
+        "kg",
+        "kilograms",
+        "pounds",
+        "pound",
+        "push",
+        "pull",
+        "legs",
+        "cycle",
+        "cycled",
+        "rpe",
+        "sets",
+        "reps",
+        "miles",
+        "mile",
+        "kilometers",
+        "kilometer",
+        "km",
+    }
+)
+
+
+def _reconcile_tokenize(text: str) -> list[str]:
+    """Lowercase, split on non-alphanumeric, drop stopwords and length<3."""
+    if not text:
+        return []
+    cleaned = re.sub(r"[^a-z0-9 ]+", " ", text.lower())
+    return [t for t in cleaned.split() if len(t) >= 3 and t not in _RECONCILE_STOPWORDS]
+
+
+def _reconcile_match_score(tokens: list[str], haystack: str) -> tuple[int, list[str]]:
+    """Return (score, matched_tokens) for token substring matches in haystack."""
+    if not tokens or not haystack:
+        return 0, []
+    lowered = haystack.lower()
+    matched: list[str] = []
+    for tok in tokens:
+        if tok in lowered and tok not in matched:
+            matched.append(tok)
+    return len(matched), matched
+
+
+class RuntimeReconcileScanView(APIView):
+    """GET /api/v1/integrations/runtime/<tenant_id>/reconcile/scan/
+
+    Given a one-sentence ``claim`` describing what the user just reported,
+    return the active goals, open tasks, finance accounts, and fuel rows
+    that are plausibly affected. Each candidate is annotated with which
+    typed write tool the agent should call to apply the update.
+
+    This is the function half of the AGENTS.md conversational reconcile
+    gate — the agent decides whether the user's message is "material"
+    enough to scan, then calls this endpoint, then applies updates via
+    the existing typed tools.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        from apps.fuel.models import BodyWeightLog, Workout, WorkoutStatus
+        from apps.journal.models import Goal, Task
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        claim = request.query_params.get("claim", "").strip()
+        if not claim:
+            return Response(
+                {"error": "invalid_request", "detail": "claim parameter required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(claim) > 500:
+            claim = claim[:500]
+
+        try:
+            limit = min(int(request.query_params.get("limit", "15")), 25)
+        except (TypeError, ValueError):
+            limit = 15
+
+        tokens = _reconcile_tokenize(claim)
+        finance_triggered = any(t in _FINANCE_KEYWORDS for t in tokens)
+        fuel_triggered = any(t in _FUEL_KEYWORDS for t in tokens)
+
+        candidates: list[dict] = []
+
+        # ── Goals ────────────────────────────────────────────────────
+        active_goals = Goal.objects.filter(tenant=tenant, status=Goal.Status.ACTIVE)[:50]
+        for goal in active_goals:
+            haystack = f"{goal.title}\n{goal.description}"
+            score, matched = _reconcile_match_score(tokens, haystack)
+            if score == 0:
+                continue
+            candidates.append(
+                {
+                    "kind": "goal",
+                    "id": str(goal.id),
+                    "title": goal.title,
+                    "pillar": goal.pillar or None,
+                    "status": goal.status,
+                    "score": score,
+                    "matched_tokens": matched,
+                    "current_state": {
+                        "target": goal.target,
+                        "target_date": goal.target_date.isoformat() if goal.target_date else None,
+                        "description": goal.description[:280] if goal.description else "",
+                    },
+                    "update_tools": [
+                        "nbhd_goal_update",
+                        "nbhd_goal_achieve",
+                        "nbhd_goal_abandon",
+                    ],
+                }
+            )
+
+        # ── Tasks ────────────────────────────────────────────────────
+        open_tasks = Task.objects.filter(
+            tenant=tenant,
+            status__in=[Task.Status.OPEN, Task.Status.IN_PROGRESS],
+        )[:100]
+        for task in open_tasks:
+            haystack = f"{task.title}\n{task.description}"
+            score, matched = _reconcile_match_score(tokens, haystack)
+            if score == 0:
+                continue
+            candidates.append(
+                {
+                    "kind": "task",
+                    "id": str(task.id),
+                    "title": task.title,
+                    "pillar": task.pillar or None,
+                    "status": task.status,
+                    "score": score,
+                    "matched_tokens": matched,
+                    "current_state": {
+                        "due_date": task.due_date.isoformat() if task.due_date else None,
+                        "parent_goal_id": str(task.parent_goal_id) if task.parent_goal_id else None,
+                        "related_ref": task.related_ref,
+                        "description": task.description[:280] if task.description else "",
+                    },
+                    "update_tools": [
+                        "nbhd_task_complete",
+                        "nbhd_task_update",
+                        "nbhd_task_skip",
+                        "nbhd_task_defer",
+                    ],
+                }
+            )
+
+        # ── Finance accounts ─────────────────────────────────────────
+        if finance_triggered and getattr(tenant, "finance_enabled", False):
+            from apps.finance.models import FinanceAccount
+
+            active_accounts = list(FinanceAccount.objects.filter(tenant=tenant, is_active=True))
+            account_hits: list[tuple[int, list[str], FinanceAccount]] = []
+            for account in active_accounts:
+                score, matched = _reconcile_match_score(tokens, account.nickname)
+                if score > 0:
+                    account_hits.append((score + 1, matched, account))  # +1 boost for explicit nickname match
+                elif account.is_debt:
+                    account_hits.append((1, ["(finance-keyword fallback)"], account))
+            account_hits.sort(key=lambda r: (-r[0], -float(r[2].current_balance or 0)))
+            for score, matched, account in account_hits[:5]:
+                candidates.append(
+                    {
+                        "kind": "finance_account",
+                        "id": str(account.id),
+                        "title": account.nickname,
+                        "pillar": "gravity",
+                        "score": score,
+                        "matched_tokens": matched,
+                        "current_state": {
+                            "account_type": account.account_type,
+                            "current_balance": str(account.current_balance),
+                            "is_debt": account.is_debt,
+                            "due_day": account.due_day,
+                            "minimum_payment": (
+                                str(account.minimum_payment) if account.minimum_payment is not None else None
+                            ),
+                            "interest_rate": (
+                                str(account.interest_rate) if account.interest_rate is not None else None
+                            ),
+                        },
+                        "update_tools": [
+                            "nbhd_finance_record_payment",
+                            "nbhd_finance_update_balance",
+                        ],
+                    }
+                )
+
+        # ── Fuel ─────────────────────────────────────────────────────
+        if fuel_triggered and getattr(tenant, "fuel_enabled", False):
+            today = _tenant_today(tenant)
+            window_start = today - timedelta(days=2)
+            window_end = today + timedelta(days=1)
+            recent_workouts = list(
+                Workout.objects.filter(tenant=tenant, date__gte=window_start, date__lte=window_end).order_by(
+                    "-date", "-created_at"
+                )[:10]
+            )
+            for workout in recent_workouts:
+                bonus = 0
+                if workout.status == WorkoutStatus.PLANNED and workout.date == today:
+                    bonus = 2  # most likely candidate for "just did it" updates
+                score, matched = _reconcile_match_score(tokens, f"{workout.activity} {workout.category}")
+                if score == 0 and bonus == 0:
+                    continue
+                candidates.append(
+                    {
+                        "kind": "fuel_workout",
+                        "id": str(workout.id),
+                        "title": workout.activity,
+                        "pillar": "fuel",
+                        "score": score + bonus,
+                        "matched_tokens": matched or (["(scheduled-today)"] if bonus else []),
+                        "current_state": {
+                            "date": workout.date.isoformat(),
+                            "category": workout.category,
+                            "status": workout.status,
+                            "duration_minutes": workout.duration_minutes,
+                            "rpe": workout.rpe,
+                        },
+                        "update_tools": [
+                            "nbhd_fuel_update_workout",
+                            "nbhd_fuel_log_workout",
+                        ],
+                    }
+                )
+
+            if any(t in {"weight", "weighed", "weighs", "lbs", "kg", "pounds", "pound", "kilograms"} for t in tokens):
+                latest_weight = BodyWeightLog.objects.filter(tenant=tenant).order_by("-date").first()
+                if latest_weight is not None:
+                    candidates.append(
+                        {
+                            "kind": "fuel_body_weight",
+                            "id": str(latest_weight.id),
+                            "title": f"Body weight on {latest_weight.date.isoformat()}",
+                            "pillar": "fuel",
+                            "score": 1,
+                            "matched_tokens": ["(weight-keyword)"],
+                            "current_state": {
+                                "date": latest_weight.date.isoformat(),
+                                "weight_kg": str(latest_weight.weight_kg),
+                            },
+                            "update_tools": ["nbhd_fuel_log_body_weight"],
+                        }
+                    )
+
+        candidates.sort(key=lambda c: -c["score"])
+        candidates = candidates[:limit]
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "claim": claim,
+                "tokens": tokens,
+                "triggered": {
+                    "finance": finance_triggered,
+                    "fuel": fuel_triggered,
+                },
+                "count": len(candidates),
+                "candidates": candidates,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class RuntimeCronPhase2SummaryView(APIView):
     """POST /api/v1/integrations/runtime/<tenant_id>/cron-phase2-summary/
 
