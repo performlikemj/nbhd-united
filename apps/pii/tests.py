@@ -414,6 +414,98 @@ class CaseInsensitiveMergeTests(TestCase):
         self.assertEqual(session._inverted_ci["sautai"][1], "[PERSON_5]")
 
 
+class DenylistTests(TestCase):
+    """Tenant-level deny lever for the NER over-detection class
+    (Issue #660). Users mark "goal" / "calendar" / "🏆 wins" as
+    not-PII; the redactor stops substituting placeholders for them
+    on both new detections AND legacy entity_map entries.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Test User", telegram_chat_id=777777)
+
+    def test_legacy_entity_map_entry_skipped_when_denylisted(self):
+        # The canary scenario: a false-positive "goal" was already in
+        # the map as [PERSON_408] from before this fix. User denylists
+        # it. New messages containing "goal" should NOT get redacted.
+        from apps.pii.redactor import redact_user_message
+
+        self.tenant.pii_entity_map = {"[PERSON_408]": "goal"}
+        self.tenant.pii_denylist = {"goal": {"reason": "manual"}}
+        self.tenant.save(update_fields=["pii_entity_map", "pii_denylist"])
+
+        result = redact_user_message("My goal is to run 5k", self.tenant)
+        self.assertNotIn("[PERSON_408]", result)
+        self.assertIn("goal", result)
+
+    def test_denylist_match_is_case_insensitive(self):
+        from apps.pii.redactor import redact_user_message
+
+        self.tenant.pii_entity_map = {"[PERSON_408]": "goal"}
+        self.tenant.pii_denylist = {"goal": {}}
+        self.tenant.save(update_fields=["pii_entity_map", "pii_denylist"])
+
+        # Variant casings should all bypass redaction.
+        for variant in ["goal", "Goal", "GOAL"]:
+            result = redact_user_message(f"Today's {variant} is a 5k", self.tenant)
+            self.assertNotIn("[PERSON_", result, f"failed for variant {variant!r}")
+
+    def test_legacy_entry_still_rehydrates(self):
+        # Critical safety: denylisting an entry stops it from driving
+        # redaction but does NOT remove it from the map. Stored text
+        # in workspace files / chat history that still references the
+        # placeholder must rehydrate correctly.
+        m = {"[PERSON_408]": "goal"}
+        denylist = {"goal": {}}
+        self.tenant.pii_entity_map = m
+        self.tenant.pii_denylist = denylist
+        self.tenant.save(update_fields=["pii_entity_map", "pii_denylist"])
+
+        # Outgoing path: rehydrate_text doesn't consult denylist; the
+        # entry still maps placeholder -> name, so the user sees the
+        # original word in any old text that referenced [PERSON_408].
+        self.assertEqual(
+            rehydrate_text("Old message about [PERSON_408]", m),
+            "Old message about goal",
+        )
+
+    def test_empty_denylist_preserves_today_behavior(self):
+        # Backwards-compat guard: a tenant with no denylist must
+        # behave exactly as before this PR. The "goal" entry should
+        # still drive Step 1 regex redaction.
+        from apps.pii.redactor import redact_user_message
+
+        self.tenant.pii_entity_map = {"[PERSON_408]": "goal"}
+        self.tenant.pii_denylist = {}
+        self.tenant.save(update_fields=["pii_entity_map", "pii_denylist"])
+
+        result = redact_user_message("My goal is to run", self.tenant)
+        self.assertIn("[PERSON_408]", result)
+
+    def test_session_inherits_denylist(self):
+        # Workspace memory sync runs through RedactionSession. The
+        # denylist must propagate so workspace doc redaction matches
+        # inbound-message redaction.
+        self.tenant.pii_denylist = {"goal": {}}
+        self.tenant.save(update_fields=["pii_denylist"])
+
+        session = RedactionSession(tenant=self.tenant)
+        self.assertEqual(session._denylist, {"goal": {}})
+
+    def test_new_mint_suppressed_when_denylisted(self):
+        # Forces a synthetic NER hit on "goal" to verify the post-NER
+        # filter path drops denylisted spans before they reach mint.
+        # Doesn't require the actual ONNX model.
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        self.tenant.pii_denylist = {"goal": {}}
+        results = [DetectedEntity("PERSON", 0, 4, 0.95)]
+        text = "goal"
+
+        filtered = _filter_results(results, text, set(), denylist=self.tenant.pii_denylist)
+        self.assertEqual(filtered, [])
+
+
 class RedactTelegramUpdateTest(TestCase):
     """Test Telegram update redaction for the webhook path."""
 

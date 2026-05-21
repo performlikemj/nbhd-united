@@ -196,3 +196,31 @@ def inverted_names_ci(
         if existing is None or _placeholder_num(placeholder) < _placeholder_num(existing[1]):
             out[key] = (display, placeholder)
     return out
+
+
+def is_denied(denylist: dict[str, Any] | None, name: str) -> bool:
+    """True when ``name`` is on the tenant's PII denylist.
+
+    The denylist is a per-tenant ``Dict[canonical_key, metadata_dict]``.
+    Lookup is by ``canonical_key(name)`` so casing / whitespace variants
+    of the same denied word all match. The metadata is unused by this
+    check — it carries provenance (reason, decided_at) for downstream
+    consumers like the admin UI.
+
+    Empty / None denylist returns False, preserving the today's-behavior
+    semantics for tenants who haven't added anything.
+    """
+    if not denylist:
+        return False
+    key = canonical_key(name)
+    if not key:
+        return False
+    return key in denylist
+
+
+def normalize_denylist_key(name: str) -> str:
+    """Public alias for ``canonical_key`` to make denylist write call
+    sites self-documenting. Use when adding to a tenant's pii_denylist
+    so the key shape stays consistent fleet-wide.
+    """
+    return canonical_key(name)

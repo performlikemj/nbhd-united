@@ -26,6 +26,9 @@ from apps.pii.entity_registry import (
     inverted_names_ci as _inverted_names_ci,
 )
 from apps.pii.entity_registry import (
+    is_denied as _is_denied,
+)
+from apps.pii.entity_registry import (
     to_storage_value as _entry_storage,
 )
 
@@ -143,6 +146,7 @@ class RedactionSession:
         #  - Counter base shifts past existing placeholder numbers, so a
         #    fresh session never clobbers [PERSON_1] with a new entity.
         self._inverted_ci: dict[str, tuple[str, str]] = {}
+        self._denylist: dict[str, Any] = {}
         if tenant is not None:
             existing_map = getattr(tenant, "pii_entity_map", None) or {}
             self._inverted_ci = _inverted_names_ci(existing_map)
@@ -151,6 +155,9 @@ class RedactionSession:
                 if match:
                     etype, num = match.group(1), int(match.group(2))
                     self._type_counters[etype] = max(self._type_counters.get(etype, 0), num)
+            # Workspace memory sync also respects the user's denylist so
+            # false-positive entities don't get re-minted from documents.
+            self._denylist = getattr(tenant, "pii_denylist", None) or {}
 
     def redact(self, text: str) -> str:
         """Redact PII from text, updating the session's entity map."""
@@ -167,6 +174,7 @@ class RedactionSession:
                 type_counters=self._type_counters,
                 entity_map=self.entity_map,
                 inverted_ci=self._inverted_ci,
+                denylist=self._denylist,
             )
             return result
         except Exception:
@@ -251,6 +259,7 @@ def _redact_user_message(
 ) -> str:
     """Internal: redact user message with known + new entity detection."""
     existing_map = getattr(tenant, "pii_entity_map", None) or {}
+    denylist = getattr(tenant, "pii_denylist", None) or {}
 
     # Step 1: Replace known entities from the existing map (case-insensitive
     # match). ``inverted_ci`` is keyed by ``canonical_key(name)`` so
@@ -268,6 +277,12 @@ def _redact_user_message(
         if not original:
             # Defensive: re.escape("") == "" and re.sub("", X, text)
             # explodes the text. Never iterate empty originals.
+            continue
+        if _is_denied(denylist, original):
+            # Legacy false-positive entry. The placeholder stays in the
+            # map (rehydration of historical refs still works) but it
+            # stops driving redaction. This is how the user clears
+            # accumulated NER bloat without breaking stored text.
             continue
         pattern = re.compile(re.escape(original), re.IGNORECASE)
         out = pattern.sub(placeholder, out)
@@ -302,7 +317,7 @@ def _redact_user_message(
                     allow_names.add(parts[0])
 
     results = _detect_pii(out, entities, score_threshold)
-    results = _filter_results(results, out, allow_names)
+    results = _filter_results(results, out, allow_names, denylist=denylist)
 
     # Filter out results that overlap with already-replaced placeholders
     results = [r for r in results if not _PLACEHOLDER_RE.match(out[r.start : r.end])]
@@ -336,6 +351,17 @@ def _redact_user_message(
         placeholder = f"[{etype}_{count}]"
         replacements.append((result.start, result.end, placeholder))
         new_map_entries[placeholder] = _entry_storage(original)
+        # Telemetry — capture score on every mint so future threshold
+        # tuning can be data-driven instead of vibes-driven. Span text
+        # truncated; tenant id and score are the load-bearing fields.
+        logger.info(
+            "pii_mint tenant=%s type=%s placeholder=%s score=%.3f span=%r",
+            getattr(tenant, "id", "?"),
+            etype,
+            placeholder,
+            result.score,
+            original[:32],
+        )
         # Register the mint in the case-insensitive view so later spans
         # in the SAME message ("Sautai meets sautai") collapse onto it.
         if ci_key:
@@ -569,6 +595,7 @@ def _redact(
     type_counters: dict[str, int],
     entity_map: dict[str, str],
     inverted_ci: dict[str, tuple[str, str]] | None = None,
+    denylist: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, str]]:
     """Run PII detection and replace with numbered placeholders.
 
@@ -582,6 +609,10 @@ def _redact(
 
     When ``inverted_ci`` is ``None`` (one-off ``redact_text`` callers),
     behaviour matches the pre-fix mint-everything path.
+
+    ``denylist`` (when non-empty) suppresses detection of spans whose
+    canonical key the tenant has marked as "not PII for me". See
+    ``entity_registry.is_denied``.
 
     Returns ``(redacted_text, entity_map)``.
     """
@@ -599,7 +630,7 @@ def _redact(
                     allow_names = allow_names | {parts[0]}
 
     results = _detect_pii(text, entities, score_threshold)
-    results = _filter_results(results, text, allow_names)
+    results = _filter_results(results, text, allow_names, denylist=denylist)
 
     if not results:
         return text, entity_map
@@ -645,8 +676,18 @@ def _filter_results(
     results: list,
     text: str,
     allow_names: set[str],
+    *,
+    denylist: dict[str, Any] | None = None,
 ) -> list:
-    """Remove false positives and deduplicate overlapping spans."""
+    """Remove false positives and deduplicate overlapping spans.
+
+    The optional ``denylist`` is the tenant's ``pii_denylist`` JSON
+    field — canonical-keyed strings the user has marked as "not PII
+    for me". Detections whose canonical key is denylisted are dropped
+    regardless of entity type, so the same denylist entry suppresses
+    both PERSON and LOCATION false positives without the user having
+    to think about which type the model assigned.
+    """
     filtered = []
     for result in results:
         matched_text = text[result.start : result.end].strip()
@@ -656,6 +697,10 @@ def _filter_results(
         if result.entity_type == "PERSON" and any(
             matched_lower == name.lower() or matched_text == name for name in allow_names
         ):
+            continue
+
+        # Skip tenant-denylisted spans (manually flagged as non-PII).
+        if _is_denied(denylist, matched_text):
             continue
 
         filtered.append(result)
