@@ -225,3 +225,51 @@ class ProcessedInboundEvent(models.Model):
 
     def __str__(self) -> str:
         return f"ProcessedInboundEvent({self.event_key})"
+
+
+class LineOutboundMessage(models.Model):
+    """Records LINE messages we've sent so quote-reply lookups can resolve
+    a ``quotedMessageId`` on inbound webhook events back to the original
+    text we sent.
+
+    LINE's webhook delivers only the *id* of the quoted message on a
+    quote-reply (``TextMessageContent.quotedMessageId``), unlike Telegram
+    which inlines ``reply_to_message.text``. To prepend
+    ``[Replying to: "..."]`` context to the user's message before
+    forwarding to the container, we have to look up what we said.
+
+    Rows are pruned probabilistically on insert so the table can't grow
+    unbounded (see ``apps.router.line_webhook._record_line_outbound``).
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        "tenants.Tenant",
+        on_delete=models.CASCADE,
+        related_name="line_outbound_messages",
+    )
+    line_user_id = models.CharField(max_length=128)
+    line_message_id = models.CharField(
+        max_length=64,
+        unique=True,
+        help_text="ID returned by LINE's push/reply API in sentMessages[].id.",
+    )
+    text_excerpt = models.TextField(
+        blank=True,
+        default="",
+        help_text="First ~500 chars of the message we sent — used as the quoted excerpt.",
+    )
+    sent_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "line_outbound_messages"
+        ordering = ["-sent_at"]
+        indexes = [
+            models.Index(
+                fields=["tenant", "line_user_id", "-sent_at"],
+                name="line_outb_tenant_user_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"LineOutboundMessage({self.line_message_id})"
