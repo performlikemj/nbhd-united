@@ -172,14 +172,13 @@ def _transcribe_line_audio(message_id: str) -> str | None:
         return None
 
 
-def _send_line_reply(reply_token: str, messages: list[dict]) -> bool:
-    """Send messages via LINE Reply Message API (free, unlimited).
-
-    Returns True on success, False if token expired or other failure.
+def _post_line_reply(reply_token: str, messages: list[dict]) -> dict | None:
+    """POST to LINE Reply API. Returns parsed response body on success
+    (which contains ``sentMessages``), else ``None``.
     """
     access_token = _get_access_token()
     if not access_token or not reply_token:
-        return False
+        return None
     try:
         resp = httpx.post(
             f"{LINE_API_BASE}/message/reply",
@@ -191,38 +190,73 @@ def _send_line_reply(reply_token: str, messages: list[dict]) -> bool:
             timeout=10,
         )
         if resp.is_success:
-            return True
-        # 400 with "Invalid reply token" = expired
+            try:
+                return resp.json()
+            except Exception:
+                return {}
         logger.debug("LINE reply failed (%s): %s", resp.status_code, resp.text[:200])
-        return False
+        return None
     except Exception:
         logger.debug("LINE reply exception", exc_info=True)
-        return False
+        return None
+
+
+def _send_line_reply(reply_token: str, messages: list[dict]) -> bool:
+    """Send messages via LINE Reply Message API (free, unlimited).
+
+    Returns True on success, False if token expired or other failure.
+    """
+    return _post_line_reply(reply_token, messages) is not None
 
 
 def _send_line_messages(
     line_user_id: str,
     messages: list[dict],
     reply_token: str | None = None,
+    tenant=None,
 ) -> bool:
     """Send messages, preferring Reply API (free) with Push fallback.
 
     Tries reply_token first. If it fails (expired/missing), falls back to Push.
+
+    When ``tenant`` is provided, the ``sentMessages`` IDs returned by LINE
+    are persisted via ``_record_line_outbound`` so future quote-replies
+    can be resolved to their excerpt. Recording is best-effort and never
+    breaks the send path; omit ``tenant`` to skip it.
     """
-    if reply_token and _send_line_reply(reply_token, messages):
-        return True
-    return _send_line_push(line_user_id, messages)
+    data = _post_line_messages(line_user_id, messages, reply_token=reply_token)
+    if data is None:
+        return False
+    if tenant is not None:
+        _record_line_outbound(tenant, line_user_id, data.get("sentMessages") or [], messages)
+    return True
 
 
-def _send_line_push(line_user_id: str, messages: list[dict]) -> bool:
-    """Send messages via LINE Push Message API.
+def _post_line_messages(
+    line_user_id: str,
+    messages: list[dict],
+    reply_token: str | None = None,
+) -> dict | None:
+    """Send via Reply API (free) with Push fallback, returning the LINE
+    response body (containing ``sentMessages``) so callers can record IDs.
 
-    Returns True on success.
+    Returns ``None`` only when both paths fail.
+    """
+    if reply_token:
+        data = _post_line_reply(reply_token, messages)
+        if data is not None:
+            return data
+    return _post_line_push(line_user_id, messages)
+
+
+def _post_line_push(line_user_id: str, messages: list[dict]) -> dict | None:
+    """POST to LINE Push API. Returns parsed response body on success
+    (which contains ``sentMessages``), else ``None``.
     """
     access_token = _get_access_token()
     if not access_token:
         logger.error("LINE_CHANNEL_ACCESS_TOKEN not configured")
-        return False
+        return None
 
     try:
         resp = httpx.post(
@@ -243,11 +277,146 @@ def _send_line_push(line_user_id: str, messages: list[dict]) -> bool:
                 resp.status_code,
                 resp.text[:300],
             )
-            return False
-        return True
+            return None
+        try:
+            return resp.json()
+        except Exception:
+            return {}
     except Exception:
         logger.exception("Failed to send LINE push message to %s", line_user_id)
-        return False
+        return None
+
+
+def _send_line_push(line_user_id: str, messages: list[dict]) -> bool:
+    """Send messages via LINE Push Message API.
+
+    Returns True on success.
+    """
+    return _post_line_push(line_user_id, messages) is not None
+
+
+# ---------------------------------------------------------------------------
+# Outbound message recording (for quote-reply context resolution)
+# ---------------------------------------------------------------------------
+
+_OUTBOUND_EXCERPT_MAX = 500
+_OUTBOUND_PRUNE_DAYS = 30
+
+
+def _message_text_excerpt(msg: dict) -> str:
+    """Pull a human-readable excerpt from a LINE message dict so a future
+    quote-reply lookup has something to quote.
+
+    LINE messages come in many shapes (text, sticker, image, flex).
+    Falls back across the fields that carry user-visible copy.
+    """
+    if not isinstance(msg, dict):
+        return ""
+    t = msg.get("type")
+    if t == "text":
+        return (msg.get("text") or "").strip()
+    if t == "flex":
+        return (msg.get("altText") or "").strip()
+    if t in ("image", "video", "audio"):
+        return f"[{t}]"
+    if t == "sticker":
+        return "[sticker]"
+    return (msg.get("altText") or msg.get("text") or "").strip()
+
+
+def _record_line_outbound(
+    tenant,
+    line_user_id: str,
+    sent_messages: list[dict] | None,
+    messages: list[dict],
+) -> None:
+    """Persist ``(id, text_excerpt)`` rows from a LINE send response so an
+    inbound ``quotedMessageId`` can be resolved back to what we said.
+
+    ``sent_messages`` is the ``sentMessages`` array LINE returns from the
+    push/reply API; index-aligned with the ``messages`` we sent. We skip
+    silently if either side is missing — recording is best-effort and
+    must never break the send path.
+    """
+    if not sent_messages or not tenant or not line_user_id:
+        return
+
+    from apps.router.models import LineOutboundMessage
+
+    rows: list[LineOutboundMessage] = []
+    for i, sm in enumerate(sent_messages):
+        if not isinstance(sm, dict):
+            continue
+        mid = sm.get("id")
+        if not mid:
+            continue
+        excerpt = _message_text_excerpt(messages[i] if i < len(messages) else {})
+        rows.append(
+            LineOutboundMessage(
+                tenant=tenant,
+                line_user_id=line_user_id,
+                line_message_id=str(mid),
+                text_excerpt=excerpt[:_OUTBOUND_EXCERPT_MAX],
+            )
+        )
+    if not rows:
+        return
+
+    try:
+        LineOutboundMessage.objects.bulk_create(rows, ignore_conflicts=True)
+    except Exception:
+        logger.debug("LineOutboundMessage bulk_create failed", exc_info=True)
+        return
+
+    # Probabilistic pruning so the table can't grow unbounded — matches
+    # the pattern used by ProcessedInboundEvent.
+    import random as _random
+    from datetime import timedelta
+
+    if _random.random() < 0.01:
+        cutoff = timezone.now() - timedelta(days=_OUTBOUND_PRUNE_DAYS)
+        try:
+            LineOutboundMessage.objects.filter(sent_at__lt=cutoff).delete()
+        except Exception:
+            logger.debug("LineOutboundMessage prune failed", exc_info=True)
+
+
+def _extract_line_reply_context(tenant, message: dict) -> str:
+    """If the inbound LINE ``message`` is a quote-reply, return a
+    ``[Replying to: "..."]\\n\\n`` prefix; else empty string.
+
+    Looks up ``message.quotedMessageId`` in ``LineOutboundMessage`` to
+    find what we said in that earlier turn. Telegram gets this for free
+    via ``reply_to_message.text`` in the webhook payload; LINE only
+    sends the ID and requires our own store (see model docstring).
+    """
+    quoted_id = (message or {}).get("quotedMessageId")
+    if not quoted_id or not tenant:
+        return ""
+
+    from apps.router.models import LineOutboundMessage
+
+    try:
+        row = (
+            LineOutboundMessage.objects.filter(tenant=tenant, line_message_id=str(quoted_id))
+            .only("text_excerpt")
+            .first()
+        )
+    except Exception:
+        logger.debug("LineOutboundMessage lookup failed", exc_info=True)
+        return ""
+
+    if not row or not row.text_excerpt:
+        # We've seen the quoted id reference but lost the content — either
+        # the row was pruned (>30d) or the assistant message was sent
+        # before this feature shipped. Still annotate so the agent knows
+        # the user is replying to something it said.
+        return "[Replying to an earlier message of yours]\n\n"
+
+    excerpt = row.text_excerpt
+    if len(excerpt) > 200:
+        excerpt = excerpt[:200] + "…"
+    return f'[Replying to: "{excerpt}"]\n\n'
 
 
 def _send_line_text(line_user_id: str, text: str) -> bool:
@@ -545,7 +714,7 @@ def relay_ai_response_to_line(
         if not messages:
             return False
 
-        sent = _send_line_messages(line_user_id, messages, reply_token=reply_token)
+        sent = _send_line_messages(line_user_id, messages, reply_token=reply_token, tenant=tenant)
         if sent:
             return True
 
@@ -556,13 +725,21 @@ def relay_ai_response_to_line(
         )
         # Retry with plain text as emergency fallback
         fallback_text = _strip_markdown(ai_text)
-        return _send_line_text(line_user_id, fallback_text[:5000])
+        return _send_line_messages(
+            line_user_id,
+            [{"type": "text", "text": fallback_text[:5000]}],
+            tenant=tenant,
+        )
 
     except Exception:
         logger.exception("Error building LINE response for %s", line_user_id)
         # Emergency fallback — strip markdown before sending
         fallback_text = _strip_markdown(ai_text)
-        return _send_line_text(line_user_id, fallback_text[:5000])
+        return _send_line_messages(
+            line_user_id,
+            [{"type": "text", "text": fallback_text[:5000]}],
+            tenant=tenant,
+        )
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -900,13 +1077,21 @@ class LineWebhookView(View):
         # Update last_message_at
         Tenant.objects.filter(id=tenant.id).update(last_message_at=timezone.now())
 
+        # If this is a quote-reply, prepend reply-context prefix so the
+        # agent knows what message it's responding to. Mirror of Telegram's
+        # ``_extract_reply_context`` in poller.py.
+        reply_prefix = _extract_line_reply_context(tenant, message)
+        forwarded_text = f"{reply_prefix}{text}" if reply_prefix else text
+        raw_user_text = text  # apology fallback should not include the prefix
+
         # Forward to container (pass reply_token for free Reply API)
         self._forward_to_container(
             line_user_id,
             tenant,
-            text,
+            forwarded_text,
             reply_token=reply_token,
             is_voice=msg_type == "audio",
+            raw_user_text=raw_user_text,
         )
 
     def _send_onboarding_reply(self, line_user_id: str, reply) -> None:

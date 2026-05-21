@@ -603,24 +603,24 @@ class ReplyAPITest(TestCase):
         call_url = mock_post.call_args[0][0]
         self.assertIn("message/reply", call_url)
 
-    @patch("apps.router.line_webhook._send_line_push")
-    @patch("apps.router.line_webhook._send_line_reply")
+    @patch("apps.router.line_webhook._post_line_push")
+    @patch("apps.router.line_webhook._post_line_reply")
     def test_send_messages_falls_back_to_push(self, mock_reply, mock_push):
         """Falls back to Push when Reply fails."""
         from apps.router.line_webhook import _send_line_messages
 
-        mock_reply.return_value = False
-        mock_push.return_value = True
+        mock_reply.return_value = None
+        mock_push.return_value = {"sentMessages": [{"id": "m1"}]}
         result = _send_line_messages("U123", [{"type": "text", "text": "hi"}], reply_token="tok")
         self.assertTrue(result)
         mock_push.assert_called_once()
 
-    @patch("apps.router.line_webhook._send_line_push")
+    @patch("apps.router.line_webhook._post_line_push")
     def test_send_messages_push_only_when_no_token(self, mock_push):
         """Uses Push directly when no reply_token."""
         from apps.router.line_webhook import _send_line_messages
 
-        mock_push.return_value = True
+        mock_push.return_value = {"sentMessages": [{"id": "m1"}]}
         result = _send_line_messages("U123", [{"type": "text", "text": "hi"}], reply_token=None)
         self.assertTrue(result)
         mock_push.assert_called_once()

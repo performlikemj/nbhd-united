@@ -290,6 +290,11 @@ class CronDeliveryView(APIView):
             chunks = _split_message(plain, max_len=5000)
             messages = [{"type": "text", "text": c} for c in chunks[:5]]
 
+        from apps.router.line_webhook import _record_line_outbound
+        from apps.tenants.models import Tenant
+
+        tenant_obj = Tenant.objects.filter(id=tenant_id).first()
+
         sent_count = 0
         try:
             with httpx.Client(timeout=10) as http:
@@ -314,6 +319,12 @@ class CronDeliveryView(APIView):
                             {"error": "line_send_failed", "detail": resp.text[:200]},
                             status=http_status.HTTP_502_BAD_GATEWAY,
                         )
+                    if tenant_obj:
+                        try:
+                            sent_messages = (resp.json() or {}).get("sentMessages") or []
+                        except Exception:
+                            sent_messages = []
+                        _record_line_outbound(tenant_obj, line_user_id, sent_messages, batch)
                     sent_count += len(batch)
 
         except httpx.HTTPError as exc:
