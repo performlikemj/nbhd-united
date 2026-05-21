@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { SectionCard } from "@/components/section-card";
 import {
@@ -37,6 +37,24 @@ function draftEquals(entry: EntityRegistryEntry, draft: ReturnType<typeof emptyD
   );
 }
 
+// An entry is "curated" once the user has filled in either a relationship
+// or notes. That's the signal the user has actually claimed this entry —
+// vs. the long tail of NER auto-detections sitting at name-only.
+function isCurated(entry: EntityRegistryEntry): boolean {
+  return Boolean(entry.relationship?.trim()) || Boolean(entry.notes?.trim());
+}
+
+function matchesSearch(entry: EntityRegistryEntry, query: string): boolean {
+  if (!query) return true;
+  const q = query.toLowerCase();
+  return (
+    entry.placeholder.toLowerCase().includes(q) ||
+    (entry.name ?? "").toLowerCase().includes(q) ||
+    (entry.relationship ?? "").toLowerCase().includes(q) ||
+    (entry.notes ?? "").toLowerCase().includes(q)
+  );
+}
+
 export default function PeopleSettingsPage() {
   const queryClient = useQueryClient();
   const { data, isLoading, error } = useQuery({
@@ -46,6 +64,11 @@ export default function PeopleSettingsPage() {
 
   const [drafts, setDrafts] = useState<DraftMap>({});
   const [errorMap, setErrorMap] = useState<Record<string, string>>({});
+  const [search, setSearch] = useState("");
+  // Default ON. Tenants commonly accumulate hundreds of NER auto-detections
+  // before curating any; showing them all by default makes the page unusable
+  // (the 826-entry canary case). Users can toggle off to audit the full set.
+  const [showOnlyCurated, setShowOnlyCurated] = useState(true);
 
   // Seed drafts when server data first arrives, but never clobber a draft
   // the user is actively editing.
@@ -138,7 +161,17 @@ export default function PeopleSettingsPage() {
     }
   };
 
-  const entries = data?.entries ?? [];
+  const entries = useMemo(() => data?.entries ?? [], [data]);
+
+  const filteredEntries = useMemo(() => {
+    return entries.filter((entry) => {
+      if (showOnlyCurated && !isCurated(entry)) return false;
+      if (!matchesSearch(entry, search)) return false;
+      return true;
+    });
+  }, [entries, showOnlyCurated, search]);
+
+  const curatedCount = useMemo(() => entries.filter(isCurated).length, [entries]);
 
   return (
     <div className="space-y-6">
@@ -168,8 +201,69 @@ export default function PeopleSettingsPage() {
         )}
 
         {entries.length > 0 && (
-          <div className="space-y-3">
-            {entries.map((entry) => {
+          <>
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-1 items-center gap-3">
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search name, relationship, notes…"
+                  className="w-full max-w-sm rounded-xl border border-white/10 bg-white/[0.05] px-4 py-2.5 text-sm text-[#e0e3e8] outline-none placeholder:text-white/25 focus:border-[#5dd9d0]/50 focus:shadow-[0_0_8px_rgba(93,217,208,0.15)] transition min-h-[44px]"
+                />
+                <label className="flex shrink-0 items-center gap-2 text-xs text-ink-muted cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showOnlyCurated}
+                    onChange={(e) => setShowOnlyCurated(e.target.checked)}
+                    className="h-4 w-4 rounded border-white/20 bg-white/[0.05] accent-accent"
+                  />
+                  Show only curated
+                </label>
+              </div>
+              <p className="text-xs text-ink-faint shrink-0">
+                Showing {filteredEntries.length} of {entries.length}
+                {showOnlyCurated && curatedCount < entries.length && (
+                  <span> · {entries.length - curatedCount} hidden auto-detections</span>
+                )}
+              </p>
+            </div>
+
+            {filteredEntries.length === 0 && (
+              <p className="text-sm text-ink-muted">
+                No entries match.
+                {showOnlyCurated && (
+                  <>
+                    {" "}
+                    Try unchecking{" "}
+                    <button
+                      type="button"
+                      onClick={() => setShowOnlyCurated(false)}
+                      className="underline text-accent hover:text-accent-hover"
+                    >
+                      “Show only curated”
+                    </button>{" "}
+                    to see auto-detected entries.
+                  </>
+                )}
+                {!showOnlyCurated && search && (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      onClick={() => setSearch("")}
+                      className="underline text-accent hover:text-accent-hover"
+                    >
+                      Clear search
+                    </button>
+                    .
+                  </>
+                )}
+              </p>
+            )}
+
+            <div className="space-y-3">
+            {filteredEntries.map((entry) => {
               const draft = drafts[entry.placeholder] ?? entryToDraft(entry);
               const dirty = !draftEquals(entry, draft);
               const rowError = errorMap[entry.placeholder];
@@ -256,7 +350,8 @@ export default function PeopleSettingsPage() {
                 </div>
               );
             })}
-          </div>
+            </div>
+          </>
         )}
 
         <p className="mt-6 text-xs text-ink-faint">
