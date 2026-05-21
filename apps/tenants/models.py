@@ -374,6 +374,16 @@ class Tenant(models.Model):
         '{"[PERSON_1]": "Sarah Chen", "[EMAIL_ADDRESS_1]": "sarah@example.com"}',
     )
 
+    # Canonical-keyed strings the user has marked as "not PII for me". The
+    # redactor short-circuits both Step 1 (existing-map regex) and the
+    # post-NER mint loop for these keys. Empty = today's behavior.
+    pii_denylist = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Canonical-keyed denylist of false-positive PII spans. "
+        'Shape: {"goal": {}, "calendar": {"reason": "manual"}}.',
+    )
+
     # Model preference
     task_model_preferences = models.JSONField(
         default=dict,

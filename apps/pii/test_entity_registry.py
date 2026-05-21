@@ -25,7 +25,9 @@ from apps.pii.entity_registry import (
     get_name,
     inverted_names,
     inverted_names_ci,
+    is_denied,
     iter_normalized,
+    normalize_denylist_key,
     to_storage_value,
 )
 from apps.pii.redactor import rehydrate_text
@@ -247,6 +249,52 @@ class InvertedNamesCITests(TestCase):
         self.assertEqual(result["sautai"][1], "[NOT_A_PLACEHOLDER]")
 
 
+class IsDeniedTests(TestCase):
+    def test_match_is_case_insensitive(self):
+        d = {"goal": {}}
+        self.assertTrue(is_denied(d, "goal"))
+        self.assertTrue(is_denied(d, "Goal"))
+        self.assertTrue(is_denied(d, "GOAL"))
+
+    def test_match_strips_whitespace(self):
+        d = {"calendar": {"reason": "manual"}}
+        self.assertTrue(is_denied(d, "  calendar  "))
+
+    def test_empty_denylist_returns_false(self):
+        self.assertFalse(is_denied(None, "anything"))
+        self.assertFalse(is_denied({}, "anything"))
+
+    def test_empty_name_returns_false(self):
+        d = {"goal": {}}
+        self.assertFalse(is_denied(d, ""))
+        self.assertFalse(is_denied(d, "   "))
+
+    def test_unknown_name_returns_false(self):
+        d = {"goal": {}, "calendar": {}}
+        self.assertFalse(is_denied(d, "sautai"))
+
+    def test_non_string_input_returns_false(self):
+        d = {"goal": {}}
+        self.assertFalse(is_denied(d, None))  # type: ignore[arg-type]
+        self.assertFalse(is_denied(d, 42))  # type: ignore[arg-type]
+
+    def test_metadata_payload_does_not_affect_match(self):
+        # The denylist value is opaque metadata for downstream consumers
+        # (UI, future arbiter). is_denied only cares about key presence.
+        d = {
+            "goal": {},
+            "calendar": {"reason": "manual", "decided_at": "2026-05-21"},
+        }
+        self.assertTrue(is_denied(d, "goal"))
+        self.assertTrue(is_denied(d, "calendar"))
+
+
+class NormalizeDenylistKeyTests(TestCase):
+    def test_matches_canonical_key(self):
+        self.assertEqual(normalize_denylist_key("Goal"), canonical_key("Goal"))
+        self.assertEqual(normalize_denylist_key("  Calendar  "), "calendar")
+
+
 class RehydrateBackwardCompatTests(TestCase):
     def test_legacy_string_entries_rehydrate(self):
         m = {"[PERSON_1]": "Alice"}
@@ -314,7 +362,7 @@ class RedactWriteNewShapeTests(TestCase):
 
         with (
             patch("apps.pii.redactor._detect_pii", return_value=fake),
-            patch("apps.pii.redactor._filter_results", side_effect=lambda r, t, a: r),
+            patch("apps.pii.redactor._filter_results", side_effect=lambda r, t, a, **kw: r),
         ):
             out = redact_user_message(text, tenant)
 
@@ -339,7 +387,7 @@ class RedactWriteNewShapeTests(TestCase):
 
         with (
             patch("apps.pii.redactor._detect_pii", return_value=fake),
-            patch("apps.pii.redactor._filter_results", side_effect=lambda r, t, a: r),
+            patch("apps.pii.redactor._filter_results", side_effect=lambda r, t, a, **kw: r),
         ):
             redact_user_message(text, tenant)
 
