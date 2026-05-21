@@ -215,6 +215,7 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
         duration_minutes: draft.duration_minutes ?? undefined,
       },
     });
+    setDraft((d) => ({ ...d, status: "done" }));
     setEditing(false);
   };
 
@@ -249,6 +250,19 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
             {workout.status === "planned" && (
               <span className="text-[8px] font-bold uppercase tracking-wider rounded px-1.5 py-0.5 bg-accent/10 text-accent">
                 PLANNED
+              </span>
+            )}
+            {workout.status === "done" && (
+              <span className="text-[8px] font-bold uppercase tracking-wider rounded px-1.5 py-0.5 bg-status-emerald text-status-emerald-text inline-flex items-center gap-1">
+                <svg viewBox="0 0 24 24" className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth="3" aria-hidden="true">
+                  <path d="M5 12l5 5L20 7" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                DONE
+              </span>
+            )}
+            {workout.status === "skipped" && (
+              <span className="text-[8px] font-bold uppercase tracking-wider rounded px-1.5 py-0.5 bg-status-slate text-status-slate-text">
+                SKIPPED
               </span>
             )}
           </div>

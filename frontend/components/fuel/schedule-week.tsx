@@ -381,9 +381,29 @@ function NextUpBanner({ workout, onOpen }: NextUpBannerProps) {
   const skip = useSkipWorkoutMutation();
   const complete = useCompleteWorkoutMutation();
 
-  const cat = CATEGORIES[workout.category as WorkoutCategory] ?? CATEGORIES.other;
-  const relative = formatRelative(workout.scheduled_at, workout.date, now);
+  // Brief "✓ Done" confirmation that survives the cache invalidation +
+  // workout-prop swap, so the user gets explicit feedback that the click took.
+  const [justCompleted, setJustCompleted] = useState<FuelWorkout | null>(null);
+  useEffect(() => {
+    if (!justCompleted) return;
+    const id = window.setTimeout(() => setJustCompleted(null), 1400);
+    return () => window.clearTimeout(id);
+  }, [justCompleted]);
+
+  const display = justCompleted ?? workout;
+  const cat = CATEGORIES[display.category as WorkoutCategory] ?? CATEGORIES.other;
+  const relative = formatRelative(display.scheduled_at, display.date, now);
   const isOverdue = relative === "overdue" || relative.startsWith("was ");
+
+  const onComplete = () => {
+    const target = workout;
+    complete.mutate(
+      { id: target.id },
+      {
+        onSuccess: () => setJustCompleted({ ...target, status: "done" }),
+      },
+    );
+  };
 
   return (
     <section
@@ -398,13 +418,17 @@ function NextUpBanner({ workout, onOpen }: NextUpBannerProps) {
         borderLeftColor: cat.accent,
       }}
     >
-      {/* Full-card tap target — sits beneath the action buttons so they keep working */}
-      <button
-        type="button"
-        onClick={onOpen}
-        aria-label={`View ${workout.activity}`}
-        className="absolute inset-0 z-0 rounded-panel focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
-      />
+      {/* Full-card tap target — sits beneath the action buttons so they keep working.
+          Disabled during the post-complete flash so the user can't accidentally
+          re-open the completed workout while it's animating out. */}
+      {!justCompleted && (
+        <button
+          type="button"
+          onClick={onOpen}
+          aria-label={`View ${workout.activity}`}
+          className="absolute inset-0 z-0 rounded-panel focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+        />
+      )}
       <div className="relative z-10 flex items-start gap-4 sm:items-center sm:justify-between flex-col sm:flex-row pointer-events-none">
         <div className="min-w-0">
           <div className="flex items-center gap-2 mb-1.5">
@@ -420,41 +444,56 @@ function NextUpBanner({ workout, onOpen }: NextUpBannerProps) {
             </span>
           </div>
           <h3 className="font-headline text-xl font-semibold text-ink truncate">
-            {workout.activity}
+            {display.activity}
           </h3>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-muted">
             <span className="capitalize">{cat.label}</span>
-            {workout.duration_minutes && <span>· {workout.duration_minutes} min</span>}
+            {display.duration_minutes && <span>· {display.duration_minutes} min</span>}
           </div>
         </div>
 
         <div className="flex w-full sm:w-auto items-center gap-2 shrink-0 pointer-events-auto">
-          <button
-            type="button"
-            onClick={() => complete.mutate({ id: workout.id })}
-            disabled={complete.isPending}
-            className="glow-purple flex-1 sm:flex-none rounded-full bg-accent px-4 py-2.5 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50 min-h-[44px] flex items-center justify-center"
-          >
-            Complete
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              const reason = window.prompt("Skip reason (optional):") || "";
-              skip.mutate({ id: workout.id, reason });
-            }}
-            disabled={skip.isPending}
-            className="rounded-full border border-border bg-transparent px-4 py-2.5 text-sm font-medium text-ink-muted transition hover:bg-surface-hover hover:text-ink active:scale-95 disabled:opacity-50 min-h-[44px]"
-          >
-            Skip
-          </button>
-          <button
-            type="button"
-            onClick={onOpen}
-            className="rounded-full border border-border bg-transparent px-4 py-2.5 text-sm font-medium text-ink-muted transition hover:bg-surface-hover hover:text-ink active:scale-95 min-h-[44px] hidden sm:inline-flex"
-          >
-            View
-          </button>
+          {justCompleted ? (
+            <div
+              role="status"
+              aria-live="polite"
+              className="flex-1 sm:flex-none rounded-full bg-status-emerald text-status-emerald-text px-4 py-2.5 text-sm font-semibold min-h-[44px] flex items-center justify-center gap-2 animate-reveal"
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="3" aria-hidden="true">
+                <path d="M5 12l5 5L20 7" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              Done
+            </div>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={onComplete}
+                disabled={complete.isPending}
+                className="glow-purple flex-1 sm:flex-none rounded-full bg-accent px-4 py-2.5 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50 min-h-[44px] flex items-center justify-center"
+              >
+                {complete.isPending ? "Completing…" : "Complete"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const reason = window.prompt("Skip reason (optional):") || "";
+                  skip.mutate({ id: workout.id, reason });
+                }}
+                disabled={skip.isPending}
+                className="rounded-full border border-border bg-transparent px-4 py-2.5 text-sm font-medium text-ink-muted transition hover:bg-surface-hover hover:text-ink active:scale-95 disabled:opacity-50 min-h-[44px]"
+              >
+                Skip
+              </button>
+              <button
+                type="button"
+                onClick={onOpen}
+                className="rounded-full border border-border bg-transparent px-4 py-2.5 text-sm font-medium text-ink-muted transition hover:bg-surface-hover hover:text-ink active:scale-95 min-h-[44px] hidden sm:inline-flex"
+              >
+                View
+              </button>
+            </>
+          )}
         </div>
       </div>
     </section>
