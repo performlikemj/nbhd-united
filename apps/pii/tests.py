@@ -109,10 +109,25 @@ class RedactTextIntegrationTest(TestCase):
         self.assertIn("## Reflections", result)
 
     def test_redaction_error_returns_original(self):
+        # Patch `_redact` itself so the outer try/except in `redact_text`
+        # fires. Patching only the DeBERTa pipeline isn't sufficient:
+        # `_detect_pii` swallows DeBERTa failures and falls through to
+        # Presidio pattern recognizers, which catch emails on their own.
+        text = "Some text with sarah@test.com"
+        with patch("apps.pii.redactor._redact", side_effect=RuntimeError("boom")):
+            result = redact_text(text, tier="starter")
+        self.assertEqual(result, text)
+
+    def test_deberta_failure_falls_back_to_pattern_recognizers(self):
+        # Documents the resilience behaviour: even if the DeBERTa model
+        # fails to load, Presidio's email/CC/IBAN recognizers still run.
+        # This is why patching only `get_pii_pipeline` doesn't simulate
+        # a full redaction error.
         text = "Some text with sarah@test.com"
         with patch("apps.pii.engine.get_pii_pipeline", side_effect=RuntimeError("boom")):
             result = redact_text(text, tier="starter")
-        self.assertEqual(result, text)
+        self.assertNotIn("sarah@test.com", result)
+        self.assertIn("[EMAIL_ADDRESS_", result)
 
 
 class RedactionSessionTest(TestCase):
@@ -292,6 +307,111 @@ class RedactUserMessageTest(TestCase):
 
         self.assertEqual(redact_user_message("", self.tenant), "")
         self.assertEqual(redact_user_message("  ", self.tenant), "  ")
+
+
+class CaseInsensitiveMergeTests(TestCase):
+    """Bug from canary audit (2026-05-21): 826-entry pii_entity_map had
+    "sautai" stored 59 times under different case-variant placeholders.
+    The Step 1 regex pass + post-NER lookup were case-sensitive, so user
+    typing "sautai" after "Sautai" was already in the map silently
+    minted a fresh placeholder every time.
+
+    These tests don't require the ONNX PII model — they exercise the
+    Step 1 known-entity pass and the RedactionSession seed logic, both
+    of which run before NER.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Test User", telegram_chat_id=555555)
+
+    def test_case_variant_in_message_reuses_known_placeholder(self):
+        from apps.pii.redactor import redact_user_message
+
+        self.tenant.pii_entity_map = {"[PERSON_5]": "Sautai"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        result = redact_user_message("hi sautai", self.tenant)
+        self.assertIn("[PERSON_5]", result)
+        self.assertNotIn("sautai", result.lower().replace("[person_5]", ""))
+
+        # Map must not have grown — no fresh mint for the case variant.
+        self.tenant.refresh_from_db()
+        self.assertEqual(list(self.tenant.pii_entity_map.keys()), ["[PERSON_5]"])
+
+    def test_multiple_case_variants_in_one_message_all_collapse(self):
+        from apps.pii.redactor import redact_user_message
+
+        self.tenant.pii_entity_map = {"[PERSON_5]": "Sautai"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        result = redact_user_message("met Sautai and sautai and SAUTAI today", self.tenant)
+        # All three occurrences become the same placeholder.
+        self.assertEqual(result.count("[PERSON_5]"), 3)
+        self.assertNotIn("[PERSON_6]", result)
+
+    def test_whitespace_padded_entry_still_matches(self):
+        from apps.pii.redactor import redact_user_message
+
+        self.tenant.pii_entity_map = {"[PERSON_5]": "  Sautai  "}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        result = redact_user_message("hi Sautai", self.tenant)
+        self.assertIn("[PERSON_5]", result)
+
+    def test_empty_value_in_map_does_not_crash_regex_pass(self):
+        # Empty originals would explode the regex pass: re.escape("") is
+        # "", and re.sub("", X, text) inserts X between every character.
+        # The redactor must defend against that.
+        from apps.pii.redactor import redact_user_message
+
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": "",
+            "[PERSON_2]": "Sautai",
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        result = redact_user_message("hi Sautai", self.tenant)
+        # Sautai still gets caught; empty entry just gets skipped silently.
+        self.assertIn("[PERSON_2]", result)
+        # And no garbled splatter from the empty regex.
+        self.assertNotIn("[PERSON_1]hi", result)
+
+    def test_legacy_duplicate_placeholders_both_rehydrate(self):
+        # Backwards-compat: tenants out there have maps like the canary's,
+        # with [PERSON_5] AND [PERSON_408] both pointing to "sautai". We
+        # don't compact the map (that needs a separate audit of every
+        # storage location holding placeholder text), so both must keep
+        # rehydrating correctly.
+        m = {
+            "[PERSON_5]": "Sautai",
+            "[PERSON_408]": "sautai",
+        }
+        self.assertEqual(rehydrate_text("[PERSON_5] and [PERSON_408]", m), "Sautai and sautai")
+
+    def test_session_seeds_counters_from_tenant_map(self):
+        # The latent collision bug: RedactionSession starts counters at
+        # 0, so first mint becomes [PERSON_1] regardless of what the
+        # tenant map already holds. memory_sync then does dict-union,
+        # which clobbers the existing [PERSON_1] -> whoever with the
+        # new entity. Seeding fixes this side effect.
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": "Alice",
+            "[PERSON_3]": "Bob",
+            "[EMAIL_ADDRESS_2]": "x@y.com",
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        session = RedactionSession(tenant=self.tenant)
+        self.assertEqual(session._type_counters.get("PERSON"), 3)
+        self.assertEqual(session._type_counters.get("EMAIL_ADDRESS"), 2)
+
+    def test_session_seeds_inverted_ci_from_tenant_map(self):
+        self.tenant.pii_entity_map = {"[PERSON_5]": "Sautai"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        session = RedactionSession(tenant=self.tenant)
+        self.assertIn("sautai", session._inverted_ci)
+        self.assertEqual(session._inverted_ci["sautai"][1], "[PERSON_5]")
 
 
 class RedactTelegramUpdateTest(TestCase):

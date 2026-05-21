@@ -34,11 +34,14 @@ opportunistically as redaction fires. No explicit migration is needed.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from typing import Any
 
 # Keys allowed in an entity entry. Anything else is dropped on normalize.
 _KNOWN_FIELDS = ("name", "relationship", "notes", "updated_at")
+
+_PLACEHOLDER_NUM_RE = re.compile(r"\[[A-Z_]+_(\d+)\]")
 
 
 def coerce(entry: Any) -> dict[str, Any]:
@@ -133,4 +136,63 @@ def inverted_names(entity_map: dict[str, Any] | None) -> dict[str, str]:
         name = get_name(entry)
         if name:
             out[name] = placeholder
+    return out
+
+
+def canonical_key(name: str) -> str:
+    """Return the case-insensitive canonical form of a name for entity
+    merging. Casefolded + stripped of leading/trailing whitespace.
+
+    Why casefold and not lower: casefold handles "ß"/"ss" and Turkish
+    dotted/dotless I, which lower() does not. Same cost, more correct
+    for the multilingual tenant base.
+
+    Empty / non-string inputs return ``""`` — callers should treat that
+    as "no key, skip this entry."
+    """
+    if not isinstance(name, str):
+        return ""
+    return name.casefold().strip()
+
+
+def _placeholder_num(placeholder: str) -> int:
+    """Parse the numeric suffix from ``[ETYPE_N]``. Returns 0 for
+    malformed placeholders so they sort first and lose canonical-pick
+    ties to well-formed neighbours.
+    """
+    match = _PLACEHOLDER_NUM_RE.match(placeholder)
+    return int(match.group(1)) if match else 0
+
+
+def inverted_names_ci(
+    entity_map: dict[str, Any] | None,
+) -> dict[str, tuple[str, str]]:
+    """Case-insensitive variant of ``inverted_names``.
+
+    Returns ``canonical_key -> (display_name, placeholder)`` so that
+    "Sautai", "sautai", and " Sautai " all resolve to the same
+    placeholder. When multiple entries share a canonical key (legacy
+    bloat from the bug this exists to fix), the lowest-numbered
+    placeholder wins — that's the canonical mint, and rehydration
+    keeps working for the duplicates because the underlying map is
+    unchanged.
+
+    Used by the redactor's known-entity pass + post-NER hit check.
+    """
+    out: dict[str, tuple[str, str]] = {}
+    if not entity_map:
+        return out
+    for placeholder, entry in entity_map.items():
+        name = get_name(entry)
+        key = canonical_key(name)
+        if not key:
+            continue
+        # Strip outer whitespace from the display form so callers can
+        # feed it straight into ``re.escape`` and match unpadded user
+        # text. The underlying entity_map keeps its padded value for
+        # rehydration; that path keys by placeholder, not by name.
+        display = name.strip()
+        existing = out.get(key)
+        if existing is None or _placeholder_num(placeholder) < _placeholder_num(existing[1]):
+            out[key] = (display, placeholder)
     return out
