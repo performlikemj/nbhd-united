@@ -12,6 +12,8 @@ from .telegram_views import telegram_generate_link, telegram_status, telegram_un
 from .views import (
     CancelDeletionView,
     DeleteAccountView,
+    EntityRegistryItemView,
+    EntityRegistryListView,
     HeartbeatConfigView,
     OnboardTenantView,
     PersonaListView,
@@ -36,6 +38,15 @@ urlpatterns = [
     path("personas/", PersonaListView.as_view(), name="persona-list"),
     path("preferences/", UpdatePreferencesView.as_view(), name="preferences"),
     path("refresh-config/", RefreshConfigView.as_view(), name="refresh-config"),
+    # Settings UI for the per-tenant PII entity registry. List, edit name /
+    # relationship / notes, or delete entries. Backs the privacy-placeholders
+    # envelope identity-context sub-section (apps/tenants/envelope.py).
+    path("settings/entity-registry/", EntityRegistryListView.as_view(), name="entity-registry-list"),
+    path(
+        "settings/entity-registry/<str:placeholder>/",
+        EntityRegistryItemView.as_view(),
+        name="entity-registry-item",
+    ),
     path("telegram/generate-link/", telegram_generate_link, name="telegram-generate-link"),
     path("telegram/unlink/", telegram_unlink, name="telegram-unlink"),
     path("telegram/status/", telegram_status, name="telegram-status"),
