@@ -1080,3 +1080,116 @@ class EntityRegistryItemView(APIView):
         tenant.pii_entity_map = entity_map
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class PIIDenylistListView(APIView):
+    """List / add tenant PII denylist entries.
+
+    The denylist is a per-tenant ``Dict[canonical_key, metadata]`` of
+    words the user has marked as "not PII for me". The redactor short-
+    circuits both the existing-map regex pass AND the post-NER mint
+    loop for denylisted canonical keys (see ``apps/pii/redactor.py``).
+
+    Adding an entry does NOT remove the corresponding entry from
+    ``pii_entity_map`` — that's deliberate. Rehydration of stored
+    placeholder refs in workspace files / chat history needs the
+    entity_map entry intact; the denylist just stops it from driving
+    new redaction.
+    """
+
+    permission_classes = [IsAuthenticated]
+    _MAX_NAME = 200
+
+    def get(self, request):
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
+
+        denylist = tenant.pii_denylist or {}
+        entries = []
+        for key, meta in denylist.items():
+            meta_dict = meta if isinstance(meta, dict) else {}
+            entries.append(
+                {
+                    "key": key,
+                    "reason": meta_dict.get("reason", "manual"),
+                    "decided_at": meta_dict.get("decided_at"),
+                }
+            )
+        entries.sort(key=lambda e: e["key"])
+        return Response({"entries": entries})
+
+    def post(self, request):
+        from apps.pii.entity_registry import normalize_denylist_key
+
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
+
+        body = request.data or {}
+        raw_name = body.get("name")
+        if not isinstance(raw_name, str):
+            return Response({"detail": "name must be a string"}, status=status.HTTP_400_BAD_REQUEST)
+        name = raw_name.strip()
+        if not name:
+            return Response({"detail": "name is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if len(name) > self._MAX_NAME:
+            return Response(
+                {"detail": f"name exceeds max length {self._MAX_NAME}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        key = normalize_denylist_key(name)
+        if not key:
+            return Response(
+                {"detail": "name canonicalizes to empty"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        denylist = dict(tenant.pii_denylist or {})
+        denylist[key] = {
+            "reason": "manual",
+            "decided_at": timezone.now().isoformat(),
+        }
+        Tenant.objects.filter(pk=tenant.pk).update(pii_denylist=denylist)
+        tenant.pii_denylist = denylist
+
+        return Response(
+            {
+                "key": key,
+                "reason": denylist[key]["reason"],
+                "decided_at": denylist[key]["decided_at"],
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class PIIDenylistItemView(APIView):
+    """Remove a single denylist entry by canonical key.
+
+    Removal re-enables redaction for the canonical key on future
+    messages; existing entity_map entries with the same key resume
+    driving the Step 1 regex pass.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, key: str):
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
+
+        denylist = dict(tenant.pii_denylist or {})
+        if key not in denylist:
+            return Response(
+                {"detail": f"Unknown denylist key: {key}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        del denylist[key]
+        Tenant.objects.filter(pk=tenant.pk).update(pii_denylist=denylist)
+        tenant.pii_denylist = denylist
+        return Response(status=status.HTTP_204_NO_CONTENT)
