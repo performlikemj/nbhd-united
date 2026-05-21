@@ -61,4 +61,20 @@ class Migration(migrations.Migration):
                 ],
             },
         ),
+        # Enable RLS to match the public-schema lockdown invariant
+        # (tenants/0059 + tenants/0066). Test
+        # ``test_rls_enabled_on_owned_public_tables`` will fail otherwise.
+        # No policies are defined here: the Django backend connects as the
+        # table owner and bypasses RLS by default, while the anon role
+        # PostgREST exposes has no SELECT/INSERT/UPDATE grant on this
+        # table — locking it down structurally rather than via policy.
+        migrations.RunSQL(
+            sql="ALTER TABLE line_outbound_messages ENABLE ROW LEVEL SECURITY;",
+            # Intentionally NOT disabling RLS on reverse — would re-expose
+            # the table via PostgREST/anon. Mirrors the reverse stance in
+            # tenants/0066_relock_public_schema_rls.py. The table itself
+            # is dropped by the reverse of CreateModel anyway, so this
+            # RunSQL has nothing to undo.
+            reverse_sql=migrations.RunSQL.noop,
+        ),
     ]
