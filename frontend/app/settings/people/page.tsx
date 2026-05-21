@@ -8,6 +8,7 @@ import {
   type EntityRegistryEntry,
   type PIIDenylistEntry,
   addPIIDenylistEntry,
+  bulkAddPIIDenylistEntries,
   deleteEntityRegistryEntry,
   fetchEntityRegistry,
   fetchPIIDenylist,
@@ -77,6 +78,10 @@ export default function PeopleSettingsPage() {
   // before curating any; showing them all by default makes the page unusable
   // (the 826-entry canary case). Users can toggle off to audit the full set.
   const [showOnlyCurated, setShowOnlyCurated] = useState(true);
+  // Multi-select: placeholder strings of rows the user has ticked for
+  // bulk Ignore. Cleared on a successful bulk submission.
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  const [bulkError, setBulkError] = useState<string | null>(null);
 
   // Seed drafts when server data first arrives, but never clobber a draft
   // the user is actively editing.
@@ -128,6 +133,14 @@ export default function PeopleSettingsPage() {
     mutationFn: (key: string) => removePIIDenylistEntry(key),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["pii-denylist"] });
+    },
+  });
+
+  const bulkDenyMutation = useMutation({
+    mutationFn: (names: string[]) => bulkAddPIIDenylistEntries(names),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["pii-denylist"] });
+      setSelectedKeys(new Set());
     },
   });
 
@@ -210,6 +223,34 @@ export default function PeopleSettingsPage() {
     }
   };
 
+  const toggleSelect = (placeholder: string) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(placeholder)) next.delete(placeholder);
+      else next.add(placeholder);
+      return next;
+    });
+  };
+
+  const handleBulkIgnore = async () => {
+    setBulkError(null);
+    const selectedEntries = entries.filter(
+      (e) => selectedKeys.has(e.placeholder) && (e.name?.trim() ?? "") !== "",
+    );
+    if (selectedEntries.length === 0) return;
+    const names = selectedEntries.map((e) => e.name.trim());
+    try {
+      const result = await bulkDenyMutation.mutateAsync(names);
+      if (result.skipped.length > 0) {
+        setBulkError(
+          `Ignored ${result.added.length} entries; skipped ${result.skipped.length} (empty or invalid).`,
+        );
+      }
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : "Bulk ignore failed");
+    }
+  };
+
   const entries = useMemo(() => data?.entries ?? [], [data]);
 
   const filteredEntries = useMemo(() => {
@@ -230,6 +271,35 @@ export default function PeopleSettingsPage() {
     () => new Set(denylistEntries.map((d) => d.key)),
     [denylistEntries],
   );
+
+  // Selection helpers — operate over the currently visible rows so
+  // "Select all" only ticks what's on screen given current filters.
+  const visiblePlaceholders = useMemo(
+    () => filteredEntries.map((e) => e.placeholder),
+    [filteredEntries],
+  );
+  const selectedVisibleCount = useMemo(
+    () => visiblePlaceholders.filter((ph) => selectedKeys.has(ph)).length,
+    [visiblePlaceholders, selectedKeys],
+  );
+  const allVisibleSelected =
+    visiblePlaceholders.length > 0 && selectedVisibleCount === visiblePlaceholders.length;
+  const someVisibleSelected =
+    selectedVisibleCount > 0 && selectedVisibleCount < visiblePlaceholders.length;
+
+  const toggleSelectAllVisible = () => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        for (const ph of visiblePlaceholders) next.delete(ph);
+      } else {
+        for (const ph of visiblePlaceholders) next.add(ph);
+      }
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedKeys(new Set());
 
   return (
     <div className="space-y-6">
@@ -332,6 +402,70 @@ export default function PeopleSettingsPage() {
               </p>
             )}
 
+            {/* Select-all-visible toggle, anchored above the row list so it
+                relates to whatever the current filter shows. Sticky bulk
+                action bar (below) shows when anything is selected. */}
+            <div className="mb-2 flex items-center justify-between gap-3 px-1 text-xs text-ink-muted">
+              <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  ref={(el) => {
+                    if (el) el.indeterminate = someVisibleSelected;
+                  }}
+                  onChange={toggleSelectAllVisible}
+                  disabled={visiblePlaceholders.length === 0}
+                  className="h-4 w-4 rounded border-white/20 bg-white/[0.05] accent-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label={
+                    allVisibleSelected
+                      ? `Deselect all ${visiblePlaceholders.length} visible entries`
+                      : `Select all ${visiblePlaceholders.length} visible entries`
+                  }
+                />
+                Select all visible
+              </label>
+              {selectedKeys.size > 0 && (
+                <span className="text-ink-faint">{selectedKeys.size} selected total</span>
+              )}
+            </div>
+
+            {selectedKeys.size > 0 && (
+              <div
+                className="sticky top-2 z-10 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-accent/30 bg-accent/10 px-4 py-3 backdrop-blur-md"
+                role="region"
+                aria-label="Bulk actions"
+              >
+                <p className="text-sm text-ink">
+                  <span className="font-semibold">{selectedKeys.size}</span> selected
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={clearSelection}
+                    disabled={bulkDenyMutation.isPending}
+                    className="rounded-lg border border-border bg-transparent px-3 py-2 text-xs text-ink-muted transition hover:bg-surface-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px]"
+                  >
+                    Clear selection
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleBulkIgnore}
+                    disabled={bulkDenyMutation.isPending}
+                    className="glow-purple rounded-lg bg-accent px-4 py-2 text-xs font-semibold text-white transition hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px]"
+                  >
+                    {bulkDenyMutation.isPending
+                      ? "Ignoring…"
+                      : `Ignore ${selectedKeys.size} selected`}
+                  </button>
+                </div>
+                {bulkError && (
+                  <p className="w-full text-xs text-ink-muted" role="status">
+                    {bulkError}
+                  </p>
+                )}
+              </div>
+            )}
+
             <div className="space-y-3">
             {filteredEntries.map((entry) => {
               const draft = drafts[entry.placeholder] ?? entryToDraft(entry);
@@ -350,15 +484,26 @@ export default function PeopleSettingsPage() {
                 return denylistKeys.has(n.toLowerCase());
               })();
 
+              const isSelected = selectedKeys.has(entry.placeholder);
+
               return (
                 <div
                   key={entry.placeholder}
                   className="rounded-xl border border-border bg-surface/60 p-4 backdrop-blur-sm"
                 >
                   <div className="mb-3 flex items-center justify-between gap-4">
-                    <code className="font-mono text-xs uppercase tracking-[0.12em] text-ink-faint">
-                      {entry.placeholder}
-                    </code>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleSelect(entry.placeholder)}
+                        aria-label={`Select ${entry.placeholder}`}
+                        className="h-4 w-4 rounded border-white/20 bg-white/[0.05] accent-accent cursor-pointer"
+                      />
+                      <code className="font-mono text-xs uppercase tracking-[0.12em] text-ink-faint">
+                        {entry.placeholder}
+                      </code>
+                    </div>
                     {entry.updated_at && (
                       <span className="text-[10px] uppercase tracking-[0.12em] text-ink-faint">
                         Updated {new Date(entry.updated_at).toLocaleDateString()}

@@ -155,3 +155,118 @@ class PIIDenylistItemViewTests(TestCase):
         self.assertEqual(resp.status_code, 404)
         tenant_a.refresh_from_db()
         self.assertIn("goal", tenant_a.pii_denylist)
+
+
+class PIIDenylistBulkViewTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_requires_authentication(self):
+        resp = self.client.post(
+            "/api/v1/tenants/settings/pii-denylist/bulk/",
+            {"names": ["goal"]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 401)
+
+    def test_happy_path_adds_canonical_keys(self):
+        user, tenant = _make_user_with_tenant(denylist={})
+        self.client.force_authenticate(user=user)
+        resp = self.client.post(
+            "/api/v1/tenants/settings/pii-denylist/bulk/",
+            {"names": ["Goal", "Calendar", "🏆 wins"]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(set(body["added"]), {"goal", "calendar", "🏆 wins"})
+        self.assertEqual(body["skipped"], [])
+
+        tenant.refresh_from_db()
+        self.assertEqual(set(tenant.pii_denylist.keys()), {"goal", "calendar", "🏆 wins"})
+
+    def test_mixed_valid_and_invalid_partial_success(self):
+        # The whole point of bulk: bad entries are skipped, not fatal.
+        user, tenant = _make_user_with_tenant(denylist={})
+        self.client.force_authenticate(user=user)
+        resp = self.client.post(
+            "/api/v1/tenants/settings/pii-denylist/bulk/",
+            {"names": ["goal", "", "   ", "x" * 201, "calendar", 42]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(set(body["added"]), {"goal", "calendar"})
+        reasons = {entry["reason"] for entry in body["skipped"]}
+        self.assertIn("empty", reasons)
+        self.assertTrue(any("exceeds max length" in r for r in reasons))
+        self.assertIn("not a string", reasons)
+
+        tenant.refresh_from_db()
+        self.assertEqual(set(tenant.pii_denylist.keys()), {"goal", "calendar"})
+
+    def test_rejects_non_list_names(self):
+        user, _ = _make_user_with_tenant()
+        self.client.force_authenticate(user=user)
+        for bad in [{"names": "goal"}, {"names": None}, {}]:
+            resp = self.client.post(
+                "/api/v1/tenants/settings/pii-denylist/bulk/",
+                bad,
+                format="json",
+            )
+            self.assertEqual(resp.status_code, 400, f"failed body={bad!r}")
+
+    def test_rejects_oversized_batch(self):
+        user, _ = _make_user_with_tenant()
+        self.client.force_authenticate(user=user)
+        resp = self.client.post(
+            "/api/v1/tenants/settings/pii-denylist/bulk/",
+            {"names": [f"name_{i}" for i in range(1001)]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_merges_with_existing_denylist(self):
+        # Existing entries remain; new ones get added. Casing variants
+        # in the batch collapse onto a single canonical key with
+        # refreshed metadata.
+        user, tenant = _make_user_with_tenant(denylist={"already": {"reason": "manual", "decided_at": "2026-01-01"}})
+        self.client.force_authenticate(user=user)
+        resp = self.client.post(
+            "/api/v1/tenants/settings/pii-denylist/bulk/",
+            {"names": ["goal", "Goal", "GOAL"]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        tenant.refresh_from_db()
+        self.assertIn("already", tenant.pii_denylist)
+        self.assertIn("goal", tenant.pii_denylist)
+        self.assertEqual(tenant.pii_denylist["already"]["decided_at"], "2026-01-01")
+
+    def test_empty_batch_is_a_noop(self):
+        user, tenant = _make_user_with_tenant(denylist={"existing": {}})
+        self.client.force_authenticate(user=user)
+        resp = self.client.post(
+            "/api/v1/tenants/settings/pii-denylist/bulk/",
+            {"names": []},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"added": [], "skipped": []})
+        tenant.refresh_from_db()
+        self.assertEqual(set(tenant.pii_denylist.keys()), {"existing"})
+
+    def test_tenants_isolated(self):
+        _, tenant_a = _make_user_with_tenant(denylist={})
+        user_b, tenant_b = _make_user_with_tenant(denylist={})
+        self.client.force_authenticate(user=user_b)
+        resp = self.client.post(
+            "/api/v1/tenants/settings/pii-denylist/bulk/",
+            {"names": ["goal", "calendar"]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        tenant_a.refresh_from_db()
+        tenant_b.refresh_from_db()
+        self.assertEqual(tenant_a.pii_denylist, {})
+        self.assertEqual(set(tenant_b.pii_denylist.keys()), {"goal", "calendar"})

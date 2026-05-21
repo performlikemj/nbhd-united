@@ -299,6 +299,18 @@ export function removePIIDenylistEntry(key: string): Promise<void> {
   });
 }
 
+export interface PIIDenylistBulkResult {
+  added: string[];
+  skipped: Array<{ name: string; reason: string }>;
+}
+
+export function bulkAddPIIDenylistEntries(names: string[]): Promise<PIIDenylistBulkResult> {
+  return apiFetch<PIIDenylistBulkResult>("/api/v1/tenants/settings/pii-denylist/bulk/", {
+    method: "POST",
+    body: JSON.stringify({ names }),
+  });
+}
+
 export function onboardTenant(data: { display_name?: string; language?: string; agent_persona?: string }): Promise<Tenant> {
   return apiFetch<Tenant>("/api/v1/tenants/onboard/", {
     method: "POST",
