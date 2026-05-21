@@ -6,8 +6,12 @@ import { useEffect, useMemo, useState } from "react";
 import { SectionCard } from "@/components/section-card";
 import {
   type EntityRegistryEntry,
+  type PIIDenylistEntry,
+  addPIIDenylistEntry,
   deleteEntityRegistryEntry,
   fetchEntityRegistry,
+  fetchPIIDenylist,
+  removePIIDenylistEntry,
   updateEntityRegistryEntry,
 } from "@/lib/api";
 
@@ -61,6 +65,10 @@ export default function PeopleSettingsPage() {
     queryKey: ["entity-registry"],
     queryFn: fetchEntityRegistry,
   });
+  const denylistQuery = useQuery({
+    queryKey: ["pii-denylist"],
+    queryFn: fetchPIIDenylist,
+  });
 
   const [drafts, setDrafts] = useState<DraftMap>({});
   const [errorMap, setErrorMap] = useState<Record<string, string>>({});
@@ -102,6 +110,24 @@ export default function PeopleSettingsPage() {
     mutationFn: (placeholder: string) => deleteEntityRegistryEntry(placeholder),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["entity-registry"] });
+    },
+  });
+
+  // Denylist: adding marks an entry's name as "not PII for me" — the
+  // redactor stops substituting placeholders for it on detection AND
+  // stops the existing entity_map entry from driving the Step 1 regex
+  // pass. The entity_map row stays so historical refs rehydrate.
+  const addDenyMutation = useMutation({
+    mutationFn: (name: string) => addPIIDenylistEntry(name),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["pii-denylist"] });
+    },
+  });
+
+  const removeDenyMutation = useMutation({
+    mutationFn: (key: string) => removePIIDenylistEntry(key),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["pii-denylist"] });
     },
   });
 
@@ -161,6 +187,29 @@ export default function PeopleSettingsPage() {
     }
   };
 
+  const handleIgnore = async (entry: EntityRegistryEntry) => {
+    const name = entry.name?.trim();
+    if (!name) return;
+    try {
+      await addDenyMutation.mutateAsync(name);
+    } catch (err) {
+      setErrorMap((prev) => ({
+        ...prev,
+        [entry.placeholder]: err instanceof Error ? err.message : "Could not ignore",
+      }));
+    }
+  };
+
+  const handleUndoIgnore = async (deny: PIIDenylistEntry) => {
+    try {
+      await removeDenyMutation.mutateAsync(deny.key);
+    } catch {
+      // The denylist section has its own error region below; surface
+      // an alert as a low-effort fallback since this is a rare path.
+      window.alert("Could not re-enable redaction for this word.");
+    }
+  };
+
   const entries = useMemo(() => data?.entries ?? [], [data]);
 
   const filteredEntries = useMemo(() => {
@@ -173,8 +222,29 @@ export default function PeopleSettingsPage() {
 
   const curatedCount = useMemo(() => entries.filter(isCurated).length, [entries]);
 
+  const denylistEntries = useMemo(
+    () => denylistQuery.data?.entries ?? [],
+    [denylistQuery.data],
+  );
+  const denylistKeys = useMemo(
+    () => new Set(denylistEntries.map((d) => d.key)),
+    [denylistEntries],
+  );
+
   return (
     <div className="space-y-6">
+      <div
+        className="rounded-xl border border-accent/20 bg-accent/[0.06] px-4 py-3 text-sm text-ink-muted"
+        role="note"
+      >
+        <p>
+          <span className="font-semibold text-ink">This is a privacy feature.</span>{" "}
+          We swap out personal details with placeholders before sending your messages to AI models, then put the
+          real values back when the model replies. Sometimes the detector mis-identifies an ordinary word as a name —
+          you can help your experience by occasionally marking those entries as “Ignore.”
+        </p>
+      </div>
+
       <SectionCard
         title="People your assistant knows"
         subtitle="When your assistant detects a name in a message, it tags it with a placeholder so the real name never leaves our servers in the form your AI provider sees. Edit a binding here if your assistant ever uses the wrong name, or add a relationship and notes so it can disambiguate “she” / “they” / “my coworker” more reliably."
@@ -272,6 +342,13 @@ export default function PeopleSettingsPage() {
                 updateMutation.variables?.placeholder === entry.placeholder;
               const isDeleting =
                 deleteMutation.isPending && deleteMutation.variables === entry.placeholder;
+              const isIgnoring =
+                addDenyMutation.isPending && addDenyMutation.variables === entry.name?.trim();
+              const alreadyIgnored = (() => {
+                const n = entry.name?.trim();
+                if (!n) return false;
+                return denylistKeys.has(n.toLowerCase());
+              })();
 
               return (
                 <div
@@ -320,6 +397,19 @@ export default function PeopleSettingsPage() {
                   )}
 
                   <div className="mt-3 flex items-center justify-end gap-2">
+                    {alreadyIgnored ? (
+                      <span className="text-xs text-ink-faint">Ignored — won’t be redacted</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleIgnore(entry)}
+                        disabled={isSaving || isDeleting || isIgnoring || !entry.name?.trim()}
+                        title="Mark this entry as not personal — future messages with this word won’t be redacted, and existing references still resolve."
+                        className="rounded-lg border border-border bg-transparent px-3 py-2 text-xs text-ink-muted transition hover:bg-surface-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px]"
+                      >
+                        {isIgnoring ? "Ignoring…" : "Ignore"}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => handleDelete(entry)}
@@ -358,6 +448,62 @@ export default function PeopleSettingsPage() {
           Edits apply to future messages only. Past journal entries and notes that already contain
           the previous name aren’t rewritten.
         </p>
+      </SectionCard>
+
+      <SectionCard
+        title="Ignored words"
+        subtitle="Words you’ve marked as not personal. They won’t be redacted in future messages, but existing references in your history still resolve. Re-enable redaction if you change your mind."
+      >
+        {denylistQuery.isLoading && (
+          <div className="text-sm text-ink-muted" role="status">
+            Loading…
+          </div>
+        )}
+        {denylistQuery.error && (
+          <div
+            role="alert"
+            className="rounded-xl border border-rose-border bg-rose-bg px-4 py-2.5 text-sm text-rose-text"
+          >
+            Could not load the ignored list:{" "}
+            {denylistQuery.error instanceof Error ? denylistQuery.error.message : "unknown error"}
+          </div>
+        )}
+        {!denylistQuery.isLoading && !denylistQuery.error && denylistEntries.length === 0 && (
+          <p className="text-sm text-ink-muted">
+            Nothing ignored yet. Use the “Ignore” button above on any entry that isn’t actually a person.
+          </p>
+        )}
+        {denylistEntries.length > 0 && (
+          <ul className="space-y-2">
+            {denylistEntries.map((deny) => {
+              const isRemoving =
+                removeDenyMutation.isPending && removeDenyMutation.variables === deny.key;
+              return (
+                <li
+                  key={deny.key}
+                  className="flex items-center justify-between gap-4 rounded-xl border border-border bg-surface/60 px-4 py-3 backdrop-blur-sm"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm text-ink">{deny.key}</p>
+                    {deny.decided_at && (
+                      <p className="text-[10px] uppercase tracking-[0.12em] text-ink-faint">
+                        Ignored {new Date(deny.decided_at).toLocaleDateString()}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleUndoIgnore(deny)}
+                    disabled={isRemoving}
+                    className="rounded-lg border border-border bg-transparent px-3 py-2 text-xs text-ink-muted transition hover:bg-surface-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px]"
+                  >
+                    {isRemoving ? "Re-enabling…" : "Re-enable redaction"}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </SectionCard>
     </div>
   );

@@ -273,6 +273,32 @@ export function deleteEntityRegistryEntry(placeholder: string): Promise<void> {
   );
 }
 
+// PII denylist — per-tenant canonical-keyed words the redactor should
+// never treat as PII. Populated manually via the People settings page
+// when a user spots an NER false positive ("goal", "calendar", an emoji).
+export interface PIIDenylistEntry {
+  key: string;
+  reason: string;
+  decided_at: string | null;
+}
+
+export function fetchPIIDenylist(): Promise<{ entries: PIIDenylistEntry[] }> {
+  return apiFetch<{ entries: PIIDenylistEntry[] }>("/api/v1/tenants/settings/pii-denylist/");
+}
+
+export function addPIIDenylistEntry(name: string): Promise<PIIDenylistEntry> {
+  return apiFetch<PIIDenylistEntry>("/api/v1/tenants/settings/pii-denylist/", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function removePIIDenylistEntry(key: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/tenants/settings/pii-denylist/${encodeURIComponent(key)}/`, {
+    method: "DELETE",
+  });
+}
+
 export function onboardTenant(data: { display_name?: string; language?: string; agent_persona?: string }): Promise<Tenant> {
   return apiFetch<Tenant>("/api/v1/tenants/onboard/", {
     method: "POST",

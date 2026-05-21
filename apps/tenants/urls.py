@@ -17,6 +17,8 @@ from .views import (
     HeartbeatConfigView,
     OnboardTenantView,
     PersonaListView,
+    PIIDenylistItemView,
+    PIIDenylistListView,
     PreferredModelView,
     ProfileView,
     ProvisioningStatusView,
@@ -46,6 +48,15 @@ urlpatterns = [
         "settings/entity-registry/<str:placeholder>/",
         EntityRegistryItemView.as_view(),
         name="entity-registry-item",
+    ),
+    # PII denylist: per-tenant set of canonical-keyed words the redactor
+    # should never treat as PII. Foundation lives in PR #664 / migration
+    # 0068; this UI lets users curate the list directly.
+    path("settings/pii-denylist/", PIIDenylistListView.as_view(), name="pii-denylist-list"),
+    path(
+        "settings/pii-denylist/<str:key>/",
+        PIIDenylistItemView.as_view(),
+        name="pii-denylist-item",
     ),
     path("telegram/generate-link/", telegram_generate_link, name="telegram-generate-link"),
     path("telegram/unlink/", telegram_unlink, name="telegram-unlink"),
