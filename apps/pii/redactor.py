@@ -17,10 +17,13 @@ from typing import TYPE_CHECKING, Any
 
 from apps.pii.config import DEBERTA_LABEL_MAP, TIER_POLICIES
 from apps.pii.entity_registry import (
+    canonical_key as _canonical_key,
+)
+from apps.pii.entity_registry import (
     get_name as _entry_name,
 )
 from apps.pii.entity_registry import (
-    inverted_names as _inverted_names,
+    inverted_names_ci as _inverted_names_ci,
 )
 from apps.pii.entity_registry import (
     to_storage_value as _entry_storage,
@@ -128,9 +131,26 @@ class RedactionSession:
         self.entities = policy.get("entities", [])
         self.score_threshold = policy.get("score_threshold", 0.7)
 
-        # Cross-document state
+        # Cross-document state. `entity_map` only carries NEW mints from
+        # this session — callers union it onto the tenant map.
         self._type_counters: dict[str, int] = {}
         self.entity_map: dict[str, str] = {}
+
+        # Seed from the tenant's existing map so workspace mints dedup
+        # against entities the tenant already knows about. Two effects:
+        #  - "Sautai" already in the tenant map gets reused instead of
+        #    minted as a fresh [PERSON_N+1] every sync.
+        #  - Counter base shifts past existing placeholder numbers, so a
+        #    fresh session never clobbers [PERSON_1] with a new entity.
+        self._inverted_ci: dict[str, tuple[str, str]] = {}
+        if tenant is not None:
+            existing_map = getattr(tenant, "pii_entity_map", None) or {}
+            self._inverted_ci = _inverted_names_ci(existing_map)
+            for placeholder_key in existing_map:
+                match = _PLACEHOLDER_RE.match(placeholder_key)
+                if match:
+                    etype, num = match.group(1), int(match.group(2))
+                    self._type_counters[etype] = max(self._type_counters.get(etype, 0), num)
 
     def redact(self, text: str) -> str:
         """Redact PII from text, updating the session's entity map."""
@@ -146,6 +166,7 @@ class RedactionSession:
                 self.tenant,
                 type_counters=self._type_counters,
                 entity_map=self.entity_map,
+                inverted_ci=self._inverted_ci,
             )
             return result
         except Exception:
@@ -231,14 +252,25 @@ def _redact_user_message(
     """Internal: redact user message with known + new entity detection."""
     existing_map = getattr(tenant, "pii_entity_map", None) or {}
 
-    # Step 1: Replace known entities from the existing map (exact string match).
-    # The entity registry coerces both legacy str entries and new dict
-    # entries to a single ``name -> placeholder`` view.
-    inverted = _inverted_names(existing_map)
+    # Step 1: Replace known entities from the existing map (case-insensitive
+    # match). ``inverted_ci`` is keyed by ``canonical_key(name)`` so
+    # "Sautai", "sautai", and " Sautai " all resolve to the same
+    # placeholder. The value tuple carries the display name (for regex
+    # building) and the canonical placeholder (lowest-numbered if the
+    # map has legacy duplicates from before this fix).
+    inverted_ci = _inverted_names_ci(existing_map)
     out = text
-    for original, placeholder in sorted(inverted.items(), key=lambda x: -len(x[0])):
-        # Replace longest matches first to avoid partial replacements
-        out = out.replace(original, placeholder)
+    # Longest names first so "Jay Haughton" matches before "Jay".
+    for original, placeholder in sorted(
+        ((name, ph) for name, ph in inverted_ci.values()),
+        key=lambda x: -len(x[0]),
+    ):
+        if not original:
+            # Defensive: re.escape("") == "" and re.sub("", X, text)
+            # explodes the text. Never iterate empty originals.
+            continue
+        pattern = re.compile(re.escape(original), re.IGNORECASE)
+        out = pattern.sub(placeholder, out)
 
     # Step 2: Run detection on the (partially redacted) text for NEW entities
     # Derive current max counters from existing map
@@ -290,9 +322,13 @@ def _redact_user_message(
         if _PLACEHOLDER_RE.match(original):
             continue
 
-        # Check if this exact text is already known
-        if original in inverted:
-            replacements.append((result.start, result.end, inverted[original]))
+        # Case-insensitive lookup against known + newly-minted entries.
+        # Step 1's regex pass should have caught most known matches, but
+        # NER can still surface spans Step 1 missed (e.g., longest-first
+        # ordering edge cases, multi-word vs single-word variants).
+        ci_key = _canonical_key(original)
+        if ci_key and ci_key in inverted_ci:
+            replacements.append((result.start, result.end, inverted_ci[ci_key][1]))
             continue
 
         count = type_counters.get(etype, 0) + 1
@@ -300,6 +336,10 @@ def _redact_user_message(
         placeholder = f"[{etype}_{count}]"
         replacements.append((result.start, result.end, placeholder))
         new_map_entries[placeholder] = _entry_storage(original)
+        # Register the mint in the case-insensitive view so later spans
+        # in the SAME message ("Sautai meets sautai") collapse onto it.
+        if ci_key:
+            inverted_ci[ci_key] = (original, placeholder)
 
     # Apply replacements
     for start, end, placeholder in reversed(replacements):
@@ -528,11 +568,22 @@ def _redact(
     *,
     type_counters: dict[str, int],
     entity_map: dict[str, str],
+    inverted_ci: dict[str, tuple[str, str]] | None = None,
 ) -> tuple[str, dict[str, str]]:
     """Run PII detection and replace with numbered placeholders.
 
-    Mutates type_counters and entity_map in place for cross-document sessions.
-    Returns (redacted_text, entity_map).
+    Mutates ``type_counters``, ``entity_map``, and (if provided)
+    ``inverted_ci`` in place for cross-document sessions.
+
+    When ``inverted_ci`` is provided (workspace memory sync path),
+    detected spans whose canonical key is already known reuse the
+    existing placeholder instead of minting a new one. New mints get
+    registered back so subsequent calls in the same session dedup.
+
+    When ``inverted_ci`` is ``None`` (one-off ``redact_text`` callers),
+    behaviour matches the pre-fix mint-everything path.
+
+    Returns ``(redacted_text, entity_map)``.
     """
     # Build the allow-list from tenant's display name (full, first, and last)
     if tenant is not None:
@@ -561,11 +612,26 @@ def _redact(
     for result in sorted_results:
         etype = result.entity_type
         original = text[result.start : result.end]
+
+        # Reuse a known placeholder if the session was seeded with one
+        # for this entity (case-insensitive). Skips minting entirely.
+        if inverted_ci is not None:
+            ci_key = _canonical_key(original)
+            if ci_key and ci_key in inverted_ci:
+                replacements.append((result.start, result.end, inverted_ci[ci_key][1]))
+                continue
+
         count = type_counters.get(etype, 0) + 1
         type_counters[etype] = count
         placeholder = f"[{etype}_{count}]"
         replacements.append((result.start, result.end, placeholder))
         entity_map[placeholder] = original
+        # Register the mint for in-session dedup so a second mention of
+        # the same name in a later document collapses onto this one.
+        if inverted_ci is not None:
+            ci_key = _canonical_key(original)
+            if ci_key:
+                inverted_ci[ci_key] = (original, placeholder)
 
     # Apply replacements from end to start to preserve character positions
     out = text
