@@ -917,3 +917,166 @@ class CancelDeletionView(APIView):
         tenant.save(update_fields=["pending_deletion", "deletion_scheduled_at", "updated_at"])
 
         return Response({"detail": "Deletion cancelled. Your account is active."}, status=status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# Entity Registry — user-facing settings UI for pii_entity_map
+# ---------------------------------------------------------------------------
+#
+# The PII redactor mints ``[PERSON_X]`` placeholders for detected names
+# and persists ``{placeholder: {name, relationship?, notes?, updated_at?}}``
+# on the tenant. Two reasons users care:
+#
+# 1. **Wrong rehydration**: NER mis-bound a placeholder to a wrong name
+#    (or a typo, or a transliteration that drifted). Without a UI, the
+#    bad binding silently leaks into every future assistant reply.
+# 2. **Pronoun disambiguation**: the privacy_placeholders envelope
+#    section (apps/tenants/envelope.py) injects identity context into
+#    the prompt — but only for entries that have user-curated
+#    ``relationship`` or ``notes``. The UI is where users curate.
+#
+# This is a privacy surface — entries contain real names. Every endpoint
+# is scoped to ``request.user.tenant``; cross-tenant access is impossible
+# by construction.
+
+
+class EntityRegistryListView(APIView):
+    """List the tenant's pii_entity_map as registry entries.
+
+    Returns one row per placeholder with name + metadata. Legacy
+    string-shaped entries are coerced via ``apps.pii.entity_registry``
+    on read so the wire format is always uniform.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.pii.entity_registry import iter_normalized
+
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
+
+        entries = []
+        for placeholder, entry in iter_normalized(tenant.pii_entity_map):
+            entries.append(
+                {
+                    "placeholder": placeholder,
+                    "name": entry.get("name", ""),
+                    "relationship": entry.get("relationship", ""),
+                    "notes": entry.get("notes", ""),
+                    "updated_at": entry.get("updated_at"),
+                }
+            )
+        # Sort by placeholder for stable rendering.
+        entries.sort(key=lambda e: e["placeholder"])
+        return Response({"entries": entries})
+
+
+class EntityRegistryItemView(APIView):
+    """PATCH or DELETE a single entry by placeholder.
+
+    PATCH body accepts ``name``, ``relationship``, ``notes`` — any
+    subset. Empty strings are stored as empty (treated as "not set" by
+    consumers); use DELETE to remove the entry entirely.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    # Cap field lengths so a malicious payload can't bloat the JSONField.
+    _MAX_NAME = 200
+    _MAX_RELATIONSHIP = 80
+    _MAX_NOTES = 500
+
+    def patch(self, request, placeholder: str):
+        from apps.pii.entity_registry import coerce, to_storage_value
+
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
+
+        entity_map = tenant.pii_entity_map or {}
+        if placeholder not in entity_map:
+            return Response(
+                {"detail": f"Unknown placeholder: {placeholder}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Coerce current entry, then apply patch fields.
+        current = coerce(entity_map[placeholder])
+        body = request.data or {}
+
+        # Validate types and lengths.
+        def _str_field(key: str, max_len: int) -> str | None:
+            if key not in body:
+                return None
+            value = body[key]
+            if value is None:
+                return ""
+            if not isinstance(value, str):
+                raise ValueError(f"{key} must be a string")
+            value = value.strip()
+            if len(value) > max_len:
+                raise ValueError(f"{key} exceeds max length {max_len}")
+            return value
+
+        try:
+            patches = {
+                "name": _str_field("name", self._MAX_NAME),
+                "relationship": _str_field("relationship", self._MAX_RELATIONSHIP),
+                "notes": _str_field("notes", self._MAX_NOTES),
+            }
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Apply only fields the client sent.
+        for key in ("name", "relationship", "notes"):
+            if patches[key] is not None:
+                current[key] = patches[key]
+
+        # Stamp updated_at so we can detect drift / show "last edited".
+        current["updated_at"] = timezone.now().isoformat()
+
+        # Rebuild via to_storage_value to drop empty optionals + keep
+        # JSON compact.
+        new_value = to_storage_value(
+            current.get("name", ""),
+            relationship=current.get("relationship", ""),
+            notes=current.get("notes", ""),
+            updated_at=current["updated_at"],
+        )
+        entity_map[placeholder] = new_value
+
+        Tenant.objects.filter(pk=tenant.pk).update(pii_entity_map=entity_map)
+        tenant.pii_entity_map = entity_map
+
+        return Response(
+            {
+                "placeholder": placeholder,
+                "name": new_value.get("name", ""),
+                "relationship": new_value.get("relationship", ""),
+                "notes": new_value.get("notes", ""),
+                "updated_at": new_value.get("updated_at"),
+            }
+        )
+
+    def delete(self, request, placeholder: str):
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
+
+        entity_map = tenant.pii_entity_map or {}
+        if placeholder not in entity_map:
+            return Response(
+                {"detail": f"Unknown placeholder: {placeholder}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        del entity_map[placeholder]
+        Tenant.objects.filter(pk=tenant.pk).update(pii_entity_map=entity_map)
+        tenant.pii_entity_map = entity_map
+
+        return Response(status=status.HTTP_204_NO_CONTENT)

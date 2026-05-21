@@ -239,6 +239,40 @@ export function fetchTenant(): Promise<Tenant> {
   return apiFetch<Tenant>("/api/v1/tenants/me/");
 }
 
+// Entity registry — per-tenant PII placeholders with optional identity metadata.
+// Backs the privacy_placeholders envelope identity-context sub-section.
+export interface EntityRegistryEntry {
+  placeholder: string;
+  name: string;
+  relationship: string;
+  notes: string;
+  updated_at: string | null;
+}
+
+export function fetchEntityRegistry(): Promise<{ entries: EntityRegistryEntry[] }> {
+  return apiFetch<{ entries: EntityRegistryEntry[] }>("/api/v1/tenants/settings/entity-registry/");
+}
+
+export function updateEntityRegistryEntry(
+  placeholder: string,
+  patch: Partial<Pick<EntityRegistryEntry, "name" | "relationship" | "notes">>,
+): Promise<EntityRegistryEntry> {
+  return apiFetch<EntityRegistryEntry>(
+    `/api/v1/tenants/settings/entity-registry/${encodeURIComponent(placeholder)}/`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    },
+  );
+}
+
+export function deleteEntityRegistryEntry(placeholder: string): Promise<void> {
+  return apiFetch<void>(
+    `/api/v1/tenants/settings/entity-registry/${encodeURIComponent(placeholder)}/`,
+    { method: "DELETE" },
+  );
+}
+
 export function onboardTenant(data: { display_name?: string; language?: string; agent_persona?: string }): Promise<Tenant> {
   return apiFetch<Tenant>("/api/v1/tenants/onboard/", {
     method: "POST",
