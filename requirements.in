@@ -30,25 +30,21 @@ pgvector
 # PII redaction (outgoing LLM traffic)
 presidio-analyzer>=2.2    # Pattern recognizers only (credit card Luhn, IBAN checksum)
 onnxruntime>=1.26.0
-# Pin to ==5.7.0 — last known-good version that loads the `onbekend/nbhd-pii-model`
-# DeBERTa ONNX model correctly. 5.8.0 removed `is_tf_available` from
-# `transformers.utils`, which downstream code paths (including
-# `transformers.pipeline()`'s own internal imports) still reference,
-# producing ``ImportError: cannot import name 'is_tf_available' from
-# 'transformers.utils'`` on every PII redactor invocation. <5.0 also
-# loads the model but produces different tokenizer/entity outputs vs.
-# 5.7.x, breaking the integration tests in apps/pii/tests.py.
+# Neural PII is currently disabled in practice — `optimum 1.17.1`'s
+# `optimum.utils.input_generators` does
+#     from transformers.utils import is_tf_available, is_torch_available
+# but that symbol is gone from every transformers version we have access
+# to (5.7.0, 5.8.x, 5.9.x). `apps.pii.engine.get_pii_pipeline()` catches
+# the ImportError and falls back to Presidio pattern recognizers — that's
+# the production behavior on the canary today. Restoring neural PII
+# requires either an upstream optimum fix (>=2.x drops the broken import)
+# or our own engine refactor; tracked as a separate piece of work.
 #
-# History:
-#   - PR #447 (5.7→5.8) broke prod 2026-05-07, fixed by 0e01bd2.
-#   - 7b7e926 re-pinned <5.8 with the right rationale.
-#   - Dependabot walked it back up via #556 (5.8→5.8.1) and #652 (5.8.1→5.9.0),
-#     re-breaking prod 2026-05-21.
-#
-# Hard ceiling at 5.8.0 + a dependabot ignore on minor+major+patch bumps
-# (the package is essentially frozen until we re-validate against a newer
-# transformers + a fresh model build).
-transformers==5.7.0
+# Until then: keep the pin range that origin/main runs (so we don't
+# stir up a new pip resolution), and lean on the dependabot ignore in
+# .github/dependabot.yml to prevent further drift across this whole
+# triplet (transformers / optimum / onnxruntime).
+transformers>=5.9.0,<5.10.0
 optimum[onnxruntime]>=1.14
 sentencepiece>=0.2
 
