@@ -73,14 +73,25 @@ class TaskLifecycleTest(TestCase):
 
 
 class EnvelopeDualReadTest(TestCase):
-    """Reader picks Goal/Task rows when present, else falls back to Document."""
+    """USER.md sections render *count + retrieval pointer*, not full lists.
+
+    Pre-refactor these sections dumped full goal/task titles into USER.md
+    on every turn; combined with the insights observation-mode block,
+    USER.md routinely ran ~15 KB and OpenClaw silently truncated the
+    tail. Post-refactor (2026-05-22, USER.md shrink) the sections carry
+    one-line summaries with a tool-call breadcrumb — the agent retrieves
+    detail on demand via ``nbhd_goal_list`` / ``nbhd_task_list``.
+
+    These tests pin the new contract: counts present, breadcrumb
+    present, full titles absent. Typed rows preferred; Document fallback
+    only surfaces a "legacy doc present, call nbhd_document_get" pointer.
+    """
 
     def setUp(self):
         self.user = User.objects.create_user(username="envuser", password="pass")
         self.tenant = Tenant.objects.create(user=self.user, status="active")
 
-    def test_render_goals_prefers_typed_rows(self):
-        # Legacy doc + new typed Goal — typed row wins.
+    def test_render_goals_typed_rows_yield_count_and_pointer(self):
         Document.objects.create(
             tenant=self.tenant,
             kind=Document.Kind.GOAL,
@@ -90,11 +101,18 @@ class EnvelopeDualReadTest(TestCase):
         )
         Goal.objects.create(tenant=self.tenant, title="Achieve debt-free status")
         out = render_goals(self.tenant)
-        self.assertIn("Achieve debt-free status", out)
+        # Count summary present.
+        self.assertIn("1 active goal", out)
+        # Retrieval pointer present.
+        self.assertIn("nbhd_goal_list", out)
+        # Full title NOT dumped inline.
+        self.assertNotIn("Achieve debt-free status", out)
+        # Legacy fallback skipped because typed rows exist.
         self.assertNotIn("Old goals", out)
 
-    def test_render_goals_falls_back_to_document(self):
-        # No typed Goal rows — should render the legacy doc.
+    def test_render_goals_falls_back_to_document_pointer(self):
+        # No typed Goal rows — surface a pointer to the legacy doc, not the
+        # doc content itself.
         Document.objects.create(
             tenant=self.tenant,
             kind=Document.Kind.GOAL,
@@ -103,9 +121,12 @@ class EnvelopeDualReadTest(TestCase):
             markdown="# Legacy goals\n\n- Read books",
         )
         out = render_goals(self.tenant)
-        self.assertIn("Legacy goals", out)
+        self.assertIn("Legacy goals document present", out)
+        self.assertIn("nbhd_document_get", out)
+        # Doc body NOT dumped inline.
+        self.assertNotIn("Read books", out)
 
-    def test_render_open_tasks_prefers_typed_rows(self):
+    def test_render_open_tasks_typed_rows_yield_count_and_pointer(self):
         Document.objects.create(
             tenant=self.tenant,
             kind=Document.Kind.TASKS,
@@ -115,16 +136,20 @@ class EnvelopeDualReadTest(TestCase):
         )
         Task.objects.create(tenant=self.tenant, title="Pay May loan payment", due_date=date(2026, 5, 5))
         out = render_open_tasks(self.tenant)
-        self.assertIn("Pay May loan payment", out)
-        self.assertIn("2026-05-05", out)
+        self.assertIn("1 open", out)
+        self.assertIn("nbhd_task_list", out)
+        self.assertNotIn("Pay May loan payment", out)
         self.assertNotIn("Old task", out)
 
-    def test_render_open_tasks_excludes_done(self):
+    def test_render_open_tasks_excludes_done_from_count(self):
         t = Task.objects.create(tenant=self.tenant, title="Already done")
         t.complete()
         Task.objects.create(tenant=self.tenant, title="Still open")
         out = render_open_tasks(self.tenant)
-        self.assertIn("Still open", out)
+        # Only the open one counted.
+        self.assertIn("1 open", out)
+        # Neither title appears inline.
+        self.assertNotIn("Still open", out)
         self.assertNotIn("Already done", out)
 
 

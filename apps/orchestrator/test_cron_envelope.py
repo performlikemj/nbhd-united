@@ -66,6 +66,14 @@ def _starter_md(slug: str) -> str:
 
 
 class EnvelopeGoalsTest(TestCase):
+    """``render_goals`` returns a count + retrieval pointer, not the full list.
+
+    Post 2026-05-22 USER.md shrink: USER.md sections cap at a one-line
+    summary; the agent retrieves detail on demand via ``nbhd_goal_list``.
+    The legacy Document-only fallback surfaces a pointer rather than
+    dumping the doc body inline.
+    """
+
     def setUp(self):
         self.tenant = create_tenant(display_name="EnvGoals", telegram_chat_id=910001)
         _clear_seed_docs(self.tenant)
@@ -83,7 +91,7 @@ class EnvelopeGoalsTest(TestCase):
         )
         self.assertEqual(envelope_goals(self.tenant), "")
 
-    def test_returns_full_markdown_under_cap(self):
+    def test_legacy_doc_surfaces_retrieval_pointer_not_inline_body(self):
         md = "## Active\n- Ship the envelope\n- Run the canary"
         Document.objects.create(
             tenant=self.tenant,
@@ -92,21 +100,13 @@ class EnvelopeGoalsTest(TestCase):
             title="Goals",
             markdown=md,
         )
-        self.assertEqual(envelope_goals(self.tenant), md)
-
-    def test_truncates_when_over_cap(self):
-        md = "x" * 2000
-        Document.objects.create(
-            tenant=self.tenant,
-            kind=Document.Kind.GOAL,
-            slug="goals",
-            title="Goals",
-            markdown=md,
-        )
-        out = envelope_goals(self.tenant, max_chars=1500)
-        self.assertTrue(out.startswith("x" * 1500))
-        self.assertIn("truncated", out)
-        self.assertLess(len(out), 2000)
+        out = envelope_goals(self.tenant)
+        # Pointer + tool reference present.
+        self.assertIn("Legacy goals document present", out)
+        self.assertIn("nbhd_document_get", out)
+        # Doc body NOT inline.
+        self.assertNotIn("Ship the envelope", out)
+        self.assertNotIn("Run the canary", out)
 
     def test_only_picks_goals_doc_for_this_tenant(self):
         other = create_tenant(display_name="Other", telegram_chat_id=910002)
@@ -130,20 +130,13 @@ class EnvelopeGoalsTest(TestCase):
         )
         self.assertEqual(envelope_goals(self.tenant), "")
 
-    def test_treats_user_addition_as_real_content(self):
-        custom = _starter_md("goals") + "\n- Train for half-marathon\n"
-        Document.objects.create(
-            tenant=self.tenant,
-            kind=Document.Kind.GOAL,
-            slug="goals",
-            title="Goals",
-            markdown=custom,
-        )
-        out = envelope_goals(self.tenant)
-        self.assertIn("Train for half-marathon", out)
-
 
 class EnvelopeOpenTasksTest(TestCase):
+    """``render_open_tasks`` returns a count + retrieval pointer, not the full list.
+
+    Same rationale as :class:`EnvelopeGoalsTest`.
+    """
+
     def setUp(self):
         self.tenant = create_tenant(display_name="EnvTasks", telegram_chat_id=910010)
         _clear_seed_docs(self.tenant)
@@ -151,7 +144,7 @@ class EnvelopeOpenTasksTest(TestCase):
     def test_returns_empty_when_no_tasks_doc(self):
         self.assertEqual(envelope_open_tasks(self.tenant), "")
 
-    def test_returns_only_open_items(self):
+    def test_legacy_doc_surfaces_pointer_with_open_count(self):
         md = (
             "## Tasks\n"
             "- [ ] First open task\n"
@@ -168,9 +161,12 @@ class EnvelopeOpenTasksTest(TestCase):
             markdown=md,
         )
         out = envelope_open_tasks(self.tenant)
-        self.assertIn("- [ ] First open task", out)
-        self.assertIn("- [ ] Second open task", out)
-        self.assertIn("- [ ] Indented open task", out)
+        # Pointer + tool reference present; counts the 3 open items.
+        self.assertIn("Legacy tasks document", out)
+        self.assertIn("3 open item", out)
+        self.assertIn("nbhd_document_get", out)
+        # Inline content NOT dumped.
+        self.assertNotIn("First open task", out)
         self.assertNotIn("Already done", out)
         self.assertNotIn("Some prose", out)
 
@@ -184,19 +180,6 @@ class EnvelopeOpenTasksTest(TestCase):
         )
         self.assertEqual(envelope_open_tasks(self.tenant), "")
 
-    def test_caps_at_max_items_with_overflow_hint(self):
-        lines = "\n".join(f"- [ ] Task {i}" for i in range(40))
-        Document.objects.create(
-            tenant=self.tenant,
-            kind=Document.Kind.TASKS,
-            slug="tasks",
-            title="Tasks",
-            markdown=lines,
-        )
-        out = envelope_open_tasks(self.tenant, max_items=10)
-        self.assertEqual(out.count("- [ ] Task"), 10)
-        self.assertIn("+30 more open tasks", out)
-
     def test_skips_starter_placeholder_tasks(self):
         Document.objects.create(
             tenant=self.tenant,
@@ -206,18 +189,6 @@ class EnvelopeOpenTasksTest(TestCase):
             markdown=_starter_md("tasks"),
         )
         self.assertEqual(envelope_open_tasks(self.tenant), "")
-
-    def test_keeps_real_tasks_alongside_starter(self):
-        md = _starter_md("tasks") + "\n- [ ] Real task the user added\n"
-        Document.objects.create(
-            tenant=self.tenant,
-            kind=Document.Kind.TASKS,
-            slug="tasks",
-            title="Tasks",
-            markdown=md,
-        )
-        out = envelope_open_tasks(self.tenant)
-        self.assertIn("Real task the user added", out)
 
 
 class EnvelopeRecentLessonsTest(TestCase):
@@ -688,6 +659,7 @@ class RenderManagedRegionTest(TestCase):
         self.assertIn("(UTC)", out)
 
     def test_includes_all_three_when_all_present(self):
+        """All three section headings appear; bodies are retrieval pointers, not inline content."""
         Document.objects.create(
             tenant=self.tenant,
             kind=Document.Kind.GOAL,
@@ -711,16 +683,22 @@ class RenderManagedRegionTest(TestCase):
         out = render_managed_region(self.tenant)
         self.assertIn(BEGIN_MARKER, out)
         self.assertIn("# Pre-loaded user state", out)
+        # Headings present
         self.assertIn("## Active goals", out)
-        self.assertIn("Ship envelope to canary", out)
         self.assertIn("## Open tasks", out)
-        self.assertIn("- [ ] Run unit tests", out)
-        self.assertNotIn("Read hook site", out)  # closed task excluded
         self.assertIn("## Recent lessons", out)
+        # Retrieval pointers present, raw legacy doc bodies NOT inline
+        self.assertIn("nbhd_document_get", out)
+        self.assertNotIn("Ship envelope to canary", out)
+        self.assertNotIn("Run unit tests", out)
+        self.assertNotIn("Read hook site", out)
+        # Recent lessons still renders inline (it's already short — separate
+        # contract from goals/tasks).
         self.assertIn("Pre-fetched state beats agent tool reliance", out)
         self.assertIn(END_MARKER, out)
 
     def test_skips_missing_sections_but_keeps_present_ones(self):
+        """Present sections render their retrieval-pointer body; missing sections are absent."""
         Document.objects.create(
             tenant=self.tenant,
             kind=Document.Kind.TASKS,
@@ -730,7 +708,9 @@ class RenderManagedRegionTest(TestCase):
         )
         out = render_managed_region(self.tenant)
         self.assertIn("## Open tasks", out)
-        self.assertIn("Solo task", out)
+        # Pointer body, NOT inline task title.
+        self.assertIn("nbhd_document_get", out)
+        self.assertNotIn("Solo task", out)
         self.assertNotIn("## Active goals", out)
         self.assertNotIn("## Recent lessons", out)
 
