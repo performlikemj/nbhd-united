@@ -480,6 +480,20 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     agents_extras = _get_tenant_prompt_extras(tenant, "agents_md")
     if agents_extras:
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + agents_extras
+
+    # Gravity observation-mode rules — behavioral, belongs in AGENTS.md
+    # (not USER.md). The rules block is ~6 KB of static text; until
+    # 2026-05-22 it lived in USER.md via apps/insights/envelope.py, which
+    # pushed USER.md past OpenClaw's 12 KB per-file bootstrap budget and
+    # silently truncated the tail (Privacy Placeholders, Recent journal,
+    # Fuel/Gravity state). USER.md now carries only the dynamic counts
+    # block; the full gate + register-selection rules live here.
+    if tenant is not None and getattr(tenant, "finance_enabled", False):
+        from apps.insights.envelope import render_observation_mode_rules
+
+        result["NBHD_AGENTS_MD"] = (
+            result["NBHD_AGENTS_MD"] + "\n\n## Gravity Observation Mode\n\n" + render_observation_mode_rules(tenant)
+        )
     # Load static reference docs
     for key, filename in _WORKSPACE_DOCS.items():
         content = _load_doc_template(filename)
