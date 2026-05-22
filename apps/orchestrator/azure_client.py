@@ -390,9 +390,27 @@ def download_config_from_file_share(tenant_id: str) -> bytes | None:
 def upload_config_to_file_share(tenant_id: str, config_json: str) -> None:
     """Upload openclaw.json to the tenant's Azure File Share.
 
-    Uses atomic write: upload to a temp file first, then rename to the
-    target path. This prevents the container from reading a partially-written
-    file if it restarts while the upload is in progress.
+    Uses a single ``upload_file(data, length=…)`` PUT — the same low-level
+    signature every other Azure file-share write in this codebase uses.
+
+    The previous implementation wrote to ``openclaw.json.tmp`` then called
+    ``rename_file("openclaw.json", overwrite=True)``. That trick *leaked*
+    the ``overwrite=`` kwarg through azure-storage-file-share 12.24+ /
+    azure-core 1.39+ / requests 2.32+ into ``requests.Session.request``
+    (which doesn't accept it), and concurrent workers competing for the
+    same ``.tmp`` file produced ``ResourceNotFoundError`` mid-rename —
+    leaving the target file allocated to the expected size but filled
+    with null bytes. The 2026-05-22 canary corruption (DB said success,
+    file on share was 7531 bytes of ``\\x00``) was this exact race.
+
+    Atomicity wasn't actually preserved by the rename trick either:
+    OpenClaw reads ``openclaw.json`` once at container startup, not on
+    every turn, so there is no in-flight reader to race. A single
+    ``upload_file`` PUT is already atomic at the HTTP layer. If it
+    raises, the calling ``update_tenant_config`` propagates the
+    exception, which ``apply_single_tenant_config_task`` catches and
+    *does not* advance ``config_version`` — so partial-write semantics
+    are preserved end-to-end without the rename dance.
     """
     share_name = f"ws-{str(tenant_id)[:20]}"
 
@@ -414,20 +432,15 @@ def upload_config_to_file_share(tenant_id: str, config_json: str) -> None:
     account_key = keys.keys[0].value
     account_url = f"https://{account_name}.file.core.windows.net"
 
-    # Write to temp file first, then atomic rename — prevents the container
-    # from reading a partially-written file during concurrent restarts.
-    tmp_client = ShareFileClient(
+    file_client = ShareFileClient(
         account_url=account_url,
         share_name=share_name,
-        file_path="openclaw.json.tmp",
+        file_path="openclaw.json",
         credential=account_key,
     )
     data = config_json.encode("utf-8")
-    tmp_client.upload_file(data, length=len(data))
-
-    # Atomic rename: overwrite the target file
-    tmp_client.rename_file("openclaw.json", overwrite=True)
-    logger.info("Uploaded openclaw.json to file share %s (atomic)", share_name)
+    file_client.upload_file(data, length=len(data))
+    logger.info("Uploaded openclaw.json to file share %s", share_name)
 
 
 def upload_workspace_file(

@@ -688,7 +688,17 @@ def _write_gws_credentials_to_file_share(
         credential=account_key,
     )
 
-    file_client.upload_file(creds_json.encode(), overwrite=True)
+    # NOTE: ``overwrite=True`` triggers
+    # ``TypeError: Session.request() got an unexpected keyword argument 'overwrite'``
+    # in the current azure-storage-file-share 12.24 / azure-core 1.39 /
+    # requests 2.32 triplet — the kwarg leaks through the pipeline to the
+    # HTTP transport layer. Use the explicit ``length=`` signature that
+    # every other upload_file caller in this codebase already uses
+    # (apps/orchestrator/azure_client.py, apps/orchestrator/memory_sync.py).
+    # ShareFileClient.upload_file is replace-on-write by default, so the
+    # ``overwrite=True`` semantics are preserved.
+    data = creds_json.encode()
+    file_client.upload_file(data, length=len(data))
     logger.info("Wrote gws credentials to file share %s/gws-credentials.json", share_name)
 
 

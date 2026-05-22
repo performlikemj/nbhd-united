@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase, override_settings
 
@@ -124,6 +124,52 @@ class GWSCredentialWriteTest(TestCase):
 
         # No refresh_token → early return with warning (no Azure call)
         _write_gws_credentials_to_file_share(tenant, tokens)
+
+    def test_gws_creds_upload_does_not_pass_overwrite_kwarg(self, _mock_kv):
+        """Guard against the kwarg-leak that broke prod 2026-05-21.
+
+        ``ShareFileClient.upload_file(data, overwrite=True)`` leaks the
+        ``overwrite`` kwarg through azure-core's pipeline into
+        ``requests.Session.request`` on the currently-pinned triplet
+        (azure-storage-file-share 12.24 / azure-core 1.39 / requests 2.32),
+        producing ``TypeError: Session.request() got an unexpected keyword
+        argument 'overwrite'``. The replacement signature is the explicit
+        ``length=`` form that the rest of the codebase already uses.
+        """
+        import json
+
+        from apps.integrations.services import _write_gws_credentials_to_file_share
+
+        user = _make_user()
+        tenant = _make_tenant(user)
+
+        tokens = {"access_token": "ya29.test", "refresh_token": "1//test-refresh"}
+
+        fake_storage_client = MagicMock()
+        fake_storage_client.storage_accounts.list_keys.return_value.keys = [MagicMock(value="k")]
+
+        with (
+            patch.dict(os.environ, {"AZURE_MOCK": "false"}),
+            patch(
+                "django.conf.settings.AZURE_STORAGE_ACCOUNT_NAME",
+                "stnbhdprod",
+                create=True,
+            ),
+            patch("apps.orchestrator.azure_client.get_storage_client", return_value=fake_storage_client),
+            patch("azure.storage.fileshare.ShareFileClient") as MockClient,
+        ):
+            _write_gws_credentials_to_file_share(tenant, tokens)
+
+        # Exactly one upload_file call, with the safe ``length=`` signature
+        # and no ``overwrite`` kwarg that would leak to the HTTP layer.
+        instance = MockClient.return_value
+        instance.upload_file.assert_called_once()
+        call_args, call_kwargs = instance.upload_file.call_args
+        self.assertNotIn("overwrite", call_kwargs)
+        self.assertIn("length", call_kwargs)
+        # And the body itself is the JSON-serialised credentials.
+        body = call_args[0]
+        self.assertEqual(json.loads(body)["refresh_token"], "1//test-refresh")
 
 
 # ────────────────────────────────────────────────────────────────────────────

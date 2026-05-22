@@ -15,6 +15,7 @@ from apps.orchestrator.azure_client import (
     register_environment_storage,
     store_tenant_internal_key_in_key_vault,
     update_container_image,
+    upload_config_to_file_share,
 )
 
 
@@ -583,3 +584,61 @@ class PluginRuntimeDepsMountTest(SimpleTestCase):
         mount_names = {m.volume_name for m in container.volume_mounts}
         self.assertIn("plugin-runtime-deps", mount_names)
         self.assertIn("index-cache", mount_names)
+
+
+@override_settings(
+    AZURE_RESOURCE_GROUP="rg-nbhd-prod",
+    AZURE_STORAGE_ACCOUNT_NAME="stnbhdprod",
+)
+class UploadConfigToFileShareTest(SimpleTestCase):
+    """Guard against the kwarg-leak class that corrupted canary on 2026-05-22.
+
+    Old impl wrote to ``openclaw.json.tmp`` then called
+    ``rename_file("openclaw.json", overwrite=True)``. On the current
+    azure-storage-file-share 12.24+ / azure-core 1.39+ / requests 2.32+
+    triplet the ``overwrite=`` kwarg leaks into ``requests.Session.request``
+    (which doesn't accept it). Concurrent workers racing for the .tmp file
+    produced ``ResourceNotFoundError`` mid-rename, leaving the target file
+    allocated to expected size but filled with null bytes — Django logged
+    "Uploaded (atomic)" but the share held garbage.
+
+    These tests pin the safe pattern: one direct ``upload_file(data,
+    length=…)`` call, no ``overwrite`` kwarg anywhere.
+    """
+
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_storage_client")
+    @patch("azure.storage.fileshare.ShareFileClient")
+    def test_upload_config_uses_direct_upload_file_with_length(self, mock_share_cls, mock_get_storage, _mock_is_mock):
+        fake_storage = MagicMock()
+        fake_storage.storage_accounts.list_keys.return_value.keys = [MagicMock(value="k")]
+        mock_get_storage.return_value = fake_storage
+
+        upload_config_to_file_share(
+            "148ccf1c-ef13-47f8-ada1-a98fa90e14a0",
+            '{"agents": {"defaults": {}}}',
+        )
+
+        # ShareFileClient is instantiated exactly once — against the final
+        # filename, no .tmp dance. Old impl created two clients (one for
+        # .tmp, then rename); this asserts the new direct-write shape.
+        self.assertEqual(mock_share_cls.call_count, 1)
+        client_kwargs = mock_share_cls.call_args.kwargs
+        self.assertEqual(client_kwargs["file_path"], "openclaw.json")
+        self.assertEqual(client_kwargs["share_name"], "ws-148ccf1c-ef13-47f8-a")
+
+        instance = mock_share_cls.return_value
+        instance.upload_file.assert_called_once()
+        upload_args, upload_kwargs = instance.upload_file.call_args
+        # ``length=`` form — same as every other upload_file caller in this module.
+        self.assertIn("length", upload_kwargs)
+        self.assertNotIn("overwrite", upload_kwargs)
+        # The body is the JSON payload bytes, length matches.
+        self.assertEqual(upload_kwargs["length"], len(upload_args[0]))
+        # ``rename_file`` is never touched — that's where the kwarg leak lived.
+        instance.rename_file.assert_not_called()
+
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=True)
+    def test_mock_mode_is_no_op(self, _mock_is_mock):
+        # Must not raise; must not hit Azure.
+        upload_config_to_file_share("any-tenant", '{"agents": {}}')
