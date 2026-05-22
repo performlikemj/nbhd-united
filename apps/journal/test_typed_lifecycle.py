@@ -11,8 +11,18 @@ from django.utils import timezone
 
 from apps.tenants.models import Tenant, User
 
-from .envelope import render_goals, render_open_tasks
+from .envelope import (
+    render_goals,
+    render_goals_summary,
+    render_open_tasks,
+    render_open_tasks_summary,
+)
 from .models import Document, Goal, Task
+
+# Sentinel reference — keeps the lint hook from stripping the *_summary
+# imports if a future edit ever removes a call site. (The hook autofixes
+# "unused import" between Edits in a multi-step refactor.)
+_LINT_HOOK_GUARD = (render_goals_summary, render_open_tasks_summary)
 
 
 class GoalLifecycleTest(TestCase):
@@ -73,14 +83,26 @@ class TaskLifecycleTest(TestCase):
 
 
 class EnvelopeDualReadTest(TestCase):
-    """Reader picks Goal/Task rows when present, else falls back to Document."""
+    """USER.md sections render *count + retrieval pointer*, not full lists.
+
+    Pre-refactor these sections dumped full goal/task titles into USER.md
+    on every turn; combined with the insights observation-mode block,
+    USER.md routinely ran ~15 KB and OpenClaw silently truncated the
+    tail. Post-refactor (2026-05-22, USER.md shrink) the sections carry
+    one-line summaries with a tool-call breadcrumb — the agent retrieves
+    detail on demand via ``nbhd_goal_list`` / ``nbhd_task_list``.
+
+    These tests pin the new contract: counts present, breadcrumb
+    present, full titles absent. Typed rows preferred; Document fallback
+    only surfaces a "legacy doc present, call nbhd_document_get" pointer.
+    """
 
     def setUp(self):
         self.user = User.objects.create_user(username="envuser", password="pass")
         self.tenant = Tenant.objects.create(user=self.user, status="active")
 
-    def test_render_goals_prefers_typed_rows(self):
-        # Legacy doc + new typed Goal — typed row wins.
+    def test_render_goals_full_returns_typed_row_titles_inline(self):
+        """``render_goals`` (full) is the path session-start + nbhd_journal_context use."""
         Document.objects.create(
             tenant=self.tenant,
             kind=Document.Kind.GOAL,
@@ -91,10 +113,32 @@ class EnvelopeDualReadTest(TestCase):
         Goal.objects.create(tenant=self.tenant, title="Achieve debt-free status")
         out = render_goals(self.tenant)
         self.assertIn("Achieve debt-free status", out)
-        self.assertNotIn("Old goals", out)
+        self.assertNotIn("Old goals", out)  # typed rows win; legacy doc skipped
 
-    def test_render_goals_falls_back_to_document(self):
-        # No typed Goal rows — should render the legacy doc.
+    def test_render_goals_summary_returns_pointer_not_inline_titles(self):
+        """``render_goals_summary`` is the USER.md path — pointer only."""
+        Goal.objects.create(tenant=self.tenant, title="Achieve debt-free status")
+        out = render_goals_summary(self.tenant)
+        self.assertIn("1 active goal", out)
+        self.assertIn("nbhd_goal_list", out)
+        self.assertNotIn("Achieve debt-free status", out)
+
+    def test_render_goals_summary_legacy_doc_yields_pointer(self):
+        """Legacy Document fallback path emits a retrieval pointer, not the doc body."""
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="goals",
+            title="Goals",
+            markdown="# Legacy goals\n\n- Read books",
+        )
+        out = render_goals_summary(self.tenant)
+        self.assertIn("Legacy goals document present", out)
+        self.assertIn("nbhd_document_get", out)
+        self.assertNotIn("Read books", out)
+
+    def test_render_goals_full_legacy_doc_returns_markdown(self):
+        """Full path still serves the legacy doc body inline for session-start use."""
         Document.objects.create(
             tenant=self.tenant,
             kind=Document.Kind.GOAL,
@@ -104,22 +148,22 @@ class EnvelopeDualReadTest(TestCase):
         )
         out = render_goals(self.tenant)
         self.assertIn("Legacy goals", out)
+        self.assertIn("Read books", out)
 
-    def test_render_open_tasks_prefers_typed_rows(self):
-        Document.objects.create(
-            tenant=self.tenant,
-            kind=Document.Kind.TASKS,
-            slug="tasks",
-            title="Tasks",
-            markdown="- [ ] Old task\n",
-        )
+    def test_render_open_tasks_full_returns_typed_titles_inline(self):
         Task.objects.create(tenant=self.tenant, title="Pay May loan payment", due_date=date(2026, 5, 5))
         out = render_open_tasks(self.tenant)
         self.assertIn("Pay May loan payment", out)
         self.assertIn("2026-05-05", out)
-        self.assertNotIn("Old task", out)
 
-    def test_render_open_tasks_excludes_done(self):
+    def test_render_open_tasks_summary_returns_pointer_not_inline_titles(self):
+        Task.objects.create(tenant=self.tenant, title="Pay May loan payment", due_date=date(2026, 5, 5))
+        out = render_open_tasks_summary(self.tenant)
+        self.assertIn("1 open", out)
+        self.assertIn("nbhd_task_list", out)
+        self.assertNotIn("Pay May loan payment", out)
+
+    def test_render_open_tasks_full_excludes_done(self):
         t = Task.objects.create(tenant=self.tenant, title="Already done")
         t.complete()
         Task.objects.create(tenant=self.tenant, title="Still open")

@@ -66,6 +66,10 @@ def _starter_md(slug: str) -> str:
 
 
 class EnvelopeGoalsTest(TestCase):
+    """``render_goals`` (full) returns inline markdown — for session-start +
+    ``nbhd_journal_context``. USER.md uses ``render_goals_summary`` instead,
+    covered by ``RenderManagedRegionTest`` below."""
+
     def setUp(self):
         self.tenant = create_tenant(display_name="EnvGoals", telegram_chat_id=910001)
         _clear_seed_docs(self.tenant)
@@ -144,6 +148,9 @@ class EnvelopeGoalsTest(TestCase):
 
 
 class EnvelopeOpenTasksTest(TestCase):
+    """``render_open_tasks`` (full) returns inline markdown — for session-start
+    + ``nbhd_journal_context``. USER.md uses ``render_open_tasks_summary``."""
+
     def setUp(self):
         self.tenant = create_tenant(display_name="EnvTasks", telegram_chat_id=910010)
         _clear_seed_docs(self.tenant)
@@ -688,6 +695,7 @@ class RenderManagedRegionTest(TestCase):
         self.assertIn("(UTC)", out)
 
     def test_includes_all_three_when_all_present(self):
+        """All three section headings appear; bodies are retrieval pointers, not inline content."""
         Document.objects.create(
             tenant=self.tenant,
             kind=Document.Kind.GOAL,
@@ -711,16 +719,22 @@ class RenderManagedRegionTest(TestCase):
         out = render_managed_region(self.tenant)
         self.assertIn(BEGIN_MARKER, out)
         self.assertIn("# Pre-loaded user state", out)
+        # Headings present
         self.assertIn("## Active goals", out)
-        self.assertIn("Ship envelope to canary", out)
         self.assertIn("## Open tasks", out)
-        self.assertIn("- [ ] Run unit tests", out)
-        self.assertNotIn("Read hook site", out)  # closed task excluded
         self.assertIn("## Recent lessons", out)
+        # Retrieval pointers present, raw legacy doc bodies NOT inline
+        self.assertIn("nbhd_document_get", out)
+        self.assertNotIn("Ship envelope to canary", out)
+        self.assertNotIn("Run unit tests", out)
+        self.assertNotIn("Read hook site", out)
+        # Recent lessons still renders inline (it's already short — separate
+        # contract from goals/tasks).
         self.assertIn("Pre-fetched state beats agent tool reliance", out)
         self.assertIn(END_MARKER, out)
 
     def test_skips_missing_sections_but_keeps_present_ones(self):
+        """Present sections render their retrieval-pointer body; missing sections are absent."""
         Document.objects.create(
             tenant=self.tenant,
             kind=Document.Kind.TASKS,
@@ -730,7 +744,9 @@ class RenderManagedRegionTest(TestCase):
         )
         out = render_managed_region(self.tenant)
         self.assertIn("## Open tasks", out)
-        self.assertIn("Solo task", out)
+        # Pointer body, NOT inline task title.
+        self.assertIn("nbhd_document_get", out)
+        self.assertNotIn("Solo task", out)
         self.assertNotIn("## Active goals", out)
         self.assertNotIn("## Recent lessons", out)
 

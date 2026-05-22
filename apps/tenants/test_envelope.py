@@ -66,7 +66,11 @@ class PrivacyPlaceholdersSectionTests(TestCase):
             "privacy_placeholders section was not registered — check apps.tenants.apps.ready()",
         )
         self.assertEqual(section.heading, "## Privacy Placeholders")
-        self.assertEqual(section.order, 70)
+        # order=12 — directly after Profile (10). The placeholder legend
+        # is load-bearing for redaction round-trips; if USER.md ever gets
+        # truncated again, the legend MUST survive (was order=70 before
+        # the 2026-05-22 USER.md shrink refactor, got silently cut).
+        self.assertLess(section.order, 20, "Privacy Placeholders must sort near the top of USER.md")
 
 
 class IdentityContextSubSectionTests(TestCase):

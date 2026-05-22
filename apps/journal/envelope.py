@@ -40,23 +40,23 @@ def _starter_task_lines() -> frozenset[str]:
     return frozenset(line.strip() for line in seed.splitlines() if line.lstrip().startswith("- [ ]"))
 
 
-@register_section(
-    key="goals",
-    heading="## Active goals",
-    enabled=lambda t: True,
-    refresh_on=(Document,),
-    order=20,
-)
 def render_goals(tenant: Tenant, *, max_chars: int = 1500) -> str:
-    """Active goals — typed Goal rows when present, else legacy Document fallback.
+    """Active goals — full inline markdown.
 
-    Dual-read keeps the envelope correct during the journal-typed-lifecycle
-    rollout: if the tenant has migrated Goal rows, render those; otherwise
-    fall back to the legacy ``Document(kind=goal, slug=goals)`` markdown.
-    Stale tenants are unaffected.
+    Used by callers that want the full list once, not the always-loaded
+    USER.md path:
+
+    - ``apps/router/poller.py._build_session_context_inner`` — session-start
+      injection (fires on the first message after a 30-min gap), full list
+      is helpful, paid once per session.
+    - ``apps/integrations/runtime_views.py`` ``nbhd_journal_context`` — the
+      agent's on-demand backbone-fetch tool, MUST return full content (a
+      pointer here would create a circular tool-call loop).
+
+    USER.md uses :func:`render_goals_summary` (registered via
+    ``@register_section``) instead — a one-line summary + retrieval pointer
+    so the always-loaded bootstrap stays small.
     """
-    # Local import — Goal isn't used at module load time for the legacy path
-    # and the lint-on-Edit hook strips unused module-level imports.
     from .models import Goal
 
     active_goals = list(Goal.objects.filter(tenant=tenant, status=Goal.Status.ACTIVE).order_by("-updated_at"))
@@ -96,17 +96,12 @@ def render_goals(tenant: Tenant, *, max_chars: int = 1500) -> str:
     return md
 
 
-@register_section(
-    key="tasks",
-    heading="## Open tasks",
-    enabled=lambda t: True,
-    refresh_on=(),  # Document already triggers via the goals section
-    order=30,
-)
 def render_open_tasks(tenant: Tenant, *, max_items: int = 25) -> str:
-    """Open tasks — typed Task rows when present, else legacy Document markdown.
+    """Open tasks — full inline markdown.
 
-    Dual-read mirrors ``render_goals`` for the same rollout reason.
+    Same rationale as :func:`render_goals` — full content for session-
+    start + backbone-fetch callers. USER.md uses
+    :func:`render_open_tasks_summary`.
     """
     from .models import Task
 
@@ -143,6 +138,117 @@ def render_open_tasks(tenant: Tenant, *, max_items: int = 25) -> str:
         kept = open_items[:max_items]
         return "\n".join(kept) + f"\n_(+{len(open_items) - max_items} more open tasks in tasks doc)_"
     return "\n".join(open_items)
+
+
+@register_section(
+    key="goals",
+    heading="## Active goals",
+    enabled=lambda t: True,
+    refresh_on=(Document,),
+    order=20,
+)
+def render_goals_summary(tenant: Tenant) -> str:
+    """One-line summary + retrieval pointer — for USER.md only.
+
+    Previously USER.md rendered the full active-goal list inline (1–4 KB
+    depending on tenant). Combined with similar sections this pushed
+    USER.md past OpenClaw's 12 KB per-file bootstrap budget and silently
+    truncated the tail. Per the OpenClaw workspace docs (docs.openclaw.ai
+    → Agent Workspace), per-tenant dynamic state belongs in on-demand
+    retrieval, not always-loaded bootstrap.
+
+    The reconcile gate in AGENTS.md (PR #666) already requires the agent
+    to call ``nbhd_reconcile_scan`` before replying to a goal-related
+    claim, so the tools-first pattern is established; the always-loaded
+    list was bonus context the agent could (and should) re-derive on
+    demand via ``nbhd_goal_list``.
+
+    Session-start context (apps/router/poller.py) and the
+    ``nbhd_journal_context`` backbone-fetch tool still use the full
+    :func:`render_goals` — those are paid-once paths where the data IS
+    valuable inline.
+    """
+    from .models import Goal
+
+    active_count = Goal.objects.filter(tenant=tenant, status=Goal.Status.ACTIVE).count()
+    if active_count:
+        last = (
+            Goal.objects.filter(tenant=tenant, status=Goal.Status.ACTIVE)
+            .order_by("-updated_at")
+            .values_list("updated_at", flat=True)
+            .first()
+        )
+        when = last.date().isoformat() if last else "unknown"
+        return (
+            f"_{active_count} active goal(s). Last edit: {when}. "
+            f"Call `nbhd_goal_list({{status: 'active'}})` for current titles, pillars, target dates, "
+            f"and descriptions; use `nbhd_goal_get({{goal_id}})` to drill into one._"
+        )
+
+    # Legacy Document fallback — surface a pointer, not the doc body.
+    doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.GOAL, slug="goals").first()
+    if doc and (doc.markdown or "").strip() and (doc.markdown or "").strip() != _starter_markdown("goals").strip():
+        return (
+            "_Legacy goals document present. "
+            "Call `nbhd_document_get({kind: 'goal', slug: 'goals'})` to read; "
+            "consider migrating to typed Goal rows via `nbhd_goal_create`._"
+        )
+    return ""
+
+
+@register_section(
+    key="tasks",
+    heading="## Open tasks",
+    enabled=lambda t: True,
+    refresh_on=(),  # Document already triggers via the goals section
+    order=30,
+)
+def render_open_tasks_summary(tenant: Tenant) -> str:
+    """One-line summary + retrieval pointer — for USER.md only.
+
+    Same rationale as :func:`render_goals_summary`. Full inline content
+    for session-start + backbone-fetch lives in :func:`render_open_tasks`.
+    """
+    from .models import Task
+
+    open_count = Task.objects.filter(tenant=tenant, status=Task.Status.OPEN).count()
+    in_progress_count = Task.objects.filter(tenant=tenant, status=Task.Status.IN_PROGRESS).count()
+
+    if open_count or in_progress_count:
+        from datetime import timedelta
+
+        from django.utils import timezone as tz
+
+        due_soon = Task.objects.filter(
+            tenant=tenant,
+            status=Task.Status.OPEN,
+            due_date__lte=(tz.now().date() + timedelta(days=7)),
+            due_date__isnull=False,
+        ).count()
+        due_phrase = f", {due_soon} due this week" if due_soon else ""
+        return (
+            f"_{open_count} open, {in_progress_count} in-progress{due_phrase}. "
+            f"Call `nbhd_task_list({{status: 'open'}})` for titles, due dates, and pillars; "
+            f"`nbhd_task_list({{status: 'in_progress'}})` for what's underway._"
+        )
+
+    # Legacy Document fallback — surface a pointer, not the doc body.
+    doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.TASKS, slug="tasks").first()
+    if not doc:
+        return ""
+    starter_lines = _starter_task_lines()
+    open_items = [
+        line
+        for line in (doc.markdown or "").splitlines()
+        if line.lstrip().startswith("- [ ]") and line.strip() not in starter_lines
+    ]
+    if open_items:
+        return (
+            f"_Legacy tasks document with {len(open_items)} open item(s). "
+            f"Call `nbhd_document_get({{kind: 'tasks', slug: 'tasks'}})` to read; "
+            f"migrate to typed Task rows via `nbhd_task_create`._"
+        )
+    return ""
 
 
 @register_section(

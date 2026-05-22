@@ -1,15 +1,21 @@
-"""USER.md ``Assistant baseline — observation mode`` section.
+"""Gravity observation-mode prompt + USER.md memory-counts section.
 
-Injects the Phase 2 observation-gate instructions into every Gravity-enabled
-tenant's USER.md so the assistant reads them on every turn. This is the
-**intelligence layer** for the insights subsystem — the tools live in the
-nbhd-insights-tools plugin, but the rules for *when* to invoke them, *what*
-patterns to look for, and *how* to frame observations live here.
+The two long-form prompt constants ``_OBSERVATION_GATE`` and
+``_REGISTER_SELECTION`` are the **intelligence layer** for the insights
+subsystem — the tools live in the nbhd-insights-tools plugin, but the
+rules for *when* to invoke them, *what* patterns to look for, and *how*
+to frame observations live here.
 
-Re-renders on AssistantInsight changes so the assistant sees its own
-confirmed/refuted history reflected back when the user touches Horizons.
-Gated on ``finance_enabled`` for now (Phase 2 is Gravity-only); expand to
-all tenants once Fuel/Core snapshot pipelines ship.
+They are exposed via :func:`render_observation_mode_rules` so
+``apps.orchestrator.personas.render_workspace_files`` can append them to
+**AGENTS.md** (where behavioral rules belong per docs.openclaw.ai),
+rather than dragging ~6 KB of static text through USER.md on every
+turn. USER.md now carries only the small dynamic counts block (via the
+``insights_observation_mode`` envelope section) — the agent's own
+confirmed/refuted memory reflected back.
+
+Gated on ``finance_enabled`` for now (Phase 2 is Gravity-only); expand
+to all tenants once Fuel/Core snapshot pipelines ship.
 """
 
 from __future__ import annotations
@@ -117,16 +123,35 @@ noise. The register only shapes HOW you frame your one chosen reply.
 """
 
 
+def render_observation_mode_rules(tenant: Tenant) -> str:
+    """Return the Gravity observation-mode + register-selection prompt blocks.
+
+    Imported by :func:`apps.orchestrator.personas.render_workspace_files`
+    and appended to AGENTS.md when ``tenant.finance_enabled`` is true.
+    Behavioral rules belong in AGENTS.md per the OpenClaw workspace
+    docs — keeping them out of USER.md frees ~6 KB of bootstrap budget
+    that was being silently truncated.
+    """
+    return _OBSERVATION_GATE + "\n\n" + _REGISTER_SELECTION
+
+
 @register_section(
     key="insights_observation_mode",
-    heading="## Assistant — observation mode (Gravity)",
+    heading="## Assistant — observation memory (Gravity)",
     enabled=lambda t: getattr(t, "finance_enabled", False),
     refresh_on=(AssistantInsight, PillarSnapshot),
-    order=15,  # Early — these are behavioral rules, want them above pillar state.
+    order=15,
 )
-def render_observation_mode(tenant: Tenant, *, max_chars: int = 6000) -> str:
-    body = _OBSERVATION_GATE + "\n\n" + _REGISTER_SELECTION
+def render_observation_mode(tenant: Tenant, *, max_chars: int = 600) -> str:
+    """Tiny USER.md section: counts only.
 
+    The behavioral rules (observation gate + register selection) live in
+    AGENTS.md now — see :func:`render_observation_mode_rules` and
+    ``apps.orchestrator.personas.render_workspace_files``. This section
+    just surfaces the agent's current memory state so it sees its own
+    confirmed/refuted history reflected back when the user touches
+    Horizons.
+    """
     open_count = AssistantInsight.objects.filter(
         tenant=tenant, pillar=Pillar.GRAVITY.value, status=AssistantInsight.Status.OPEN
     ).count()
@@ -137,12 +162,11 @@ def render_observation_mode(tenant: Tenant, *, max_chars: int = 6000) -> str:
         tenant=tenant, pillar=Pillar.GRAVITY.value, status=AssistantInsight.Status.REFUTED
     ).count()
 
-    counts_line = (
-        f"\n_Your current Gravity memory: "
-        f"{open_count} open, {confirmed_count} confirmed, {refuted_count} refuted. "
-        f"Call `nbhd_insights_list` to read them and `nbhd_insights_signals` for per-topic register decisions._\n"
+    text = (
+        f"_Gravity memory: {open_count} open, {confirmed_count} confirmed, {refuted_count} refuted. "
+        f"Call `nbhd_insights_list` to read them. "
+        f'See AGENTS.md → "Gravity Observation Mode" + "Voice Register Selection" for the full gate + register rules._'
     )
-    text = body + counts_line
     if max_chars and len(text) > max_chars:
         text = text[: max_chars - 1] + "…"
     return text
