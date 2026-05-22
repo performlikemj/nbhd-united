@@ -767,3 +767,32 @@ class PrivacyRedactionDocTest(TestCase):
         files = render_workspace_files("neighbor", tenant=tenant)
         self.assertIn("NBHD_DOC_PRIVACY_REDACTION", files)
         self.assertIn("Privacy Placeholders", files["NBHD_DOC_PRIVACY_REDACTION"])
+
+
+class PIIEngineImportSmokeTest(TestCase):
+    """Catch transformers / optimum ABI drift at CI time, not in prod.
+
+    The actual failure mode: ``transformers.pipeline()`` and
+    ``optimum.onnxruntime.ORTModelForTokenClassification`` are import-time
+    coupled to internal symbols that move between transformers minor
+    versions. Dependabot has bumped us into broken territory twice
+    (PR #447 5.7→5.8 on 2026-05-07, PR #652 5.8→5.9 on 2026-05-21);
+    each time the redactor silently degraded to pattern-only mode.
+
+    These tests just exercise the import surface — no 230MB model
+    download, no GPU, no network. If transformers drops a symbol the
+    pipeline factory still touches, this fails here instead of in prod.
+    """
+
+    def test_transformers_pipeline_factory_imports(self):
+        from transformers import AutoTokenizer, pipeline  # noqa: F401
+
+    def test_optimum_ort_model_imports(self):
+        from optimum.onnxruntime import ORTModelForTokenClassification  # noqa: F401
+
+    def test_pii_engine_module_imports(self):
+        # Importing the module triggers no model load by itself (the load
+        # is lazy inside get_pii_pipeline). But it does prove the engine
+        # module hasn't accumulated any class-body imports that would
+        # crash the module before the lazy guard kicks in.
+        from apps.pii.engine import get_pii_pipeline  # noqa: F401
