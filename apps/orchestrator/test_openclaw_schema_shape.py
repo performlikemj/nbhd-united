@@ -188,6 +188,29 @@ class OpenclawSchemaShapeTest(TestCase):
             self.assertIsInstance(cfg["agents"], list)
             self.assertTrue(all(isinstance(a, str) for a in cfg["agents"]))
 
+    # ── Bootstrap budget ──────────────────────────────────────────────
+
+    def test_bootstrap_max_chars_set_above_default(self):
+        """Per-file bootstrap budget must exceed OC's 12 000 default.
+
+        USER.md routinely runs ~15 KB once the insights observation-mode
+        prompt + per-tenant goals/tasks/journal are rendered. At the
+        default 12 000, OC silently truncates the tail (Privacy
+        Placeholders, Recent journal, Fuel/Gravity state) before
+        injection. Schema-shape verified via openclaw@2026.5.20
+        ``dist/pi-embedded-helpers-*.js`` reading
+        ``agents.defaults.bootstrapMaxChars``.
+        """
+        v = _get(self.config, "agents.defaults.bootstrapMaxChars")
+        self.assertIsInstance(v, int)
+        self.assertGreater(v, 12000)
+
+    def test_bootstrap_total_max_chars_set_above_default(self):
+        """Total bootstrap budget must exceed OC's 60 000 default."""
+        v = _get(self.config, "agents.defaults.bootstrapTotalMaxChars")
+        self.assertIsInstance(v, int)
+        self.assertGreater(v, 60000)
+
     # ── Sanity: known top-level keys ──────────────────────────────────
 
     def test_no_unexpected_top_level_keys(self):

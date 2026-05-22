@@ -1718,6 +1718,18 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 "workspace": "/home/node/.openclaw/workspace",
                 "userTimezone": str(getattr(tenant.user, "timezone", "") or "UTC"),
                 "envelopeTimezone": "user",
+                # Workspace bootstrap budget — OpenClaw injects USER.md / AGENTS.md /
+                # SOUL.md etc. into the system prompt on every turn. Defaults are
+                # 12 000 chars per file and 60 000 chars total. USER.md alone runs
+                # past the default for any tenant with the Phase 2 insights
+                # observation-mode prompt enabled (the static rule block is ~6 KB,
+                # tenant state pushes it past 15 KB) — the tail (Privacy Placeholders,
+                # Recent journal, Fuel/Gravity state) is silently dropped before
+                # injection, causing degraded replies. 18 000 / 80 000 restores the
+                # full envelope with margin. Long term: move the static rule text
+                # out of USER.md into AGENTS.md or the system-prompt block (Phase C1).
+                "bootstrapMaxChars": 18000,
+                "bootstrapTotalMaxChars": 80000,
                 "compaction": {
                     "mode": "safeguard",
                     "memoryFlush": _build_memory_flush_block(tenant),
