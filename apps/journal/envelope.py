@@ -40,6 +40,106 @@ def _starter_task_lines() -> frozenset[str]:
     return frozenset(line.strip() for line in seed.splitlines() if line.lstrip().startswith("- [ ]"))
 
 
+def render_goals(tenant: Tenant, *, max_chars: int = 1500) -> str:
+    """Active goals — full inline markdown.
+
+    Used by callers that want the full list once, not the always-loaded
+    USER.md path:
+
+    - ``apps/router/poller.py._build_session_context_inner`` — session-start
+      injection (fires on the first message after a 30-min gap), full list
+      is helpful, paid once per session.
+    - ``apps/integrations/runtime_views.py`` ``nbhd_journal_context`` — the
+      agent's on-demand backbone-fetch tool, MUST return full content (a
+      pointer here would create a circular tool-call loop).
+
+    USER.md uses :func:`render_goals_summary` (registered via
+    ``@register_section``) instead — a one-line summary + retrieval pointer
+    so the always-loaded bootstrap stays small.
+    """
+    from .models import Goal
+
+    active_goals = list(Goal.objects.filter(tenant=tenant, status=Goal.Status.ACTIVE).order_by("-updated_at"))
+    if active_goals:
+        lines: list[str] = []
+        running = 0
+        for goal in active_goals:
+            line = f"- **{goal.title.strip()}**"
+            if goal.pillar:
+                line += f" _(pillar: {goal.pillar})_"
+            if goal.target_date:
+                line += f" _(target: {goal.target_date.isoformat()})_"
+            description = (goal.description or "").strip()
+            if description:
+                first = description.splitlines()[0].strip().lstrip("# ").strip()
+                if first:
+                    line += f" — {first}"
+            if running + len(line) > max_chars:
+                lines.append(f"_(+{len(active_goals) - len(lines)} more goals — see Horizons)_")
+                break
+            lines.append(line)
+            running += len(line) + 1
+        return "\n".join(lines)
+
+    # Legacy fallback — Document-backed goals for stale tenants.
+    doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.GOAL, slug="goals").first()
+    if not doc:
+        return ""
+    md = (doc.markdown or "").strip()
+    if not md:
+        return ""
+    starter = _starter_markdown("goals").strip()
+    if starter and md == starter:
+        return ""
+    if len(md) > max_chars:
+        return md[:max_chars].rstrip() + "\n_(truncated — see goals doc for full text)_"
+    return md
+
+
+def render_open_tasks(tenant: Tenant, *, max_items: int = 25) -> str:
+    """Open tasks — full inline markdown.
+
+    Same rationale as :func:`render_goals` — full content for session-
+    start + backbone-fetch callers. USER.md uses
+    :func:`render_open_tasks_summary`.
+    """
+    from .models import Task
+
+    open_tasks = list(
+        Task.objects.filter(tenant=tenant, status=Task.Status.OPEN).order_by("due_date", "-created_at")[:max_items]
+    )
+    total_open = Task.objects.filter(tenant=tenant, status=Task.Status.OPEN).count()
+    if open_tasks:
+        lines: list[str] = []
+        for task in open_tasks:
+            line = f"- [ ] {task.title.strip()}"
+            if task.due_date:
+                line += f" _(due {task.due_date.isoformat()})_"
+            if task.pillar:
+                line += f" _({task.pillar})_"
+            lines.append(line)
+        if total_open > len(open_tasks):
+            lines.append(f"_(+{total_open - len(open_tasks)} more open tasks)_")
+        return "\n".join(lines)
+
+    # Legacy fallback — Document-backed tasks for stale tenants.
+    doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.TASKS, slug="tasks").first()
+    if not doc:
+        return ""
+    starter_lines = _starter_task_lines()
+    open_items = [
+        line
+        for line in (doc.markdown or "").splitlines()
+        if line.lstrip().startswith("- [ ]") and line.strip() not in starter_lines
+    ]
+    if not open_items:
+        return ""
+    if len(open_items) > max_items:
+        kept = open_items[:max_items]
+        return "\n".join(kept) + f"\n_(+{len(open_items) - max_items} more open tasks in tasks doc)_"
+    return "\n".join(open_items)
+
+
 @register_section(
     key="goals",
     heading="## Active goals",
@@ -47,23 +147,29 @@ def _starter_task_lines() -> frozenset[str]:
     refresh_on=(Document,),
     order=20,
 )
-def render_goals(tenant: Tenant) -> str:
-    """One-line summary + retrieval pointer.
+def render_goals_summary(tenant: Tenant) -> str:
+    """One-line summary + retrieval pointer — for USER.md only.
 
-    Previously rendered the full active-goal list inline (1–4 KB depending
-    on tenant), which combined with similar sections pushed USER.md past
-    OpenClaw's 12 KB bootstrap budget and silently truncated the tail.
-    Per the OpenClaw workspace docs, per-tenant dynamic state should be
-    retrieved on demand — ``nbhd_goal_list`` exists for exactly this.
+    Previously USER.md rendered the full active-goal list inline (1–4 KB
+    depending on tenant). Combined with similar sections this pushed
+    USER.md past OpenClaw's 12 KB per-file bootstrap budget and silently
+    truncated the tail. Per the OpenClaw workspace docs (docs.openclaw.ai
+    → Agent Workspace), per-tenant dynamic state belongs in on-demand
+    retrieval, not always-loaded bootstrap.
 
-    The reconcile-gate in AGENTS.md (#666) already requires the agent to
-    call ``nbhd_reconcile_scan`` before replying to a goal-related claim,
-    so the tools-first pattern is established; the always-loaded list was
-    bonus context the agent could (and should) re-derive on demand.
+    The reconcile gate in AGENTS.md (PR #666) already requires the agent
+    to call ``nbhd_reconcile_scan`` before replying to a goal-related
+    claim, so the tools-first pattern is established; the always-loaded
+    list was bonus context the agent could (and should) re-derive on
+    demand via ``nbhd_goal_list``.
+
+    Session-start context (apps/router/poller.py) and the
+    ``nbhd_journal_context`` backbone-fetch tool still use the full
+    :func:`render_goals` — those are paid-once paths where the data IS
+    valuable inline.
     """
     from .models import Goal
 
-    # Typed Goal rows — preferred path.
     active_count = Goal.objects.filter(tenant=tenant, status=Goal.Status.ACTIVE).count()
     if active_count:
         last = (
@@ -79,8 +185,7 @@ def render_goals(tenant: Tenant) -> str:
             f"and descriptions; use `nbhd_goal_get({{goal_id}})` to drill into one._"
         )
 
-    # Legacy Document fallback — only surfaces if the tenant hasn't migrated
-    # to typed Goals yet. Render a pointer rather than dumping the full doc.
+    # Legacy Document fallback — surface a pointer, not the doc body.
     doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.GOAL, slug="goals").first()
     if doc and (doc.markdown or "").strip() and (doc.markdown or "").strip() != _starter_markdown("goals").strip():
         return (
@@ -98,13 +203,11 @@ def render_goals(tenant: Tenant) -> str:
     refresh_on=(),  # Document already triggers via the goals section
     order=30,
 )
-def render_open_tasks(tenant: Tenant) -> str:
-    """One-line summary + retrieval pointer.
+def render_open_tasks_summary(tenant: Tenant) -> str:
+    """One-line summary + retrieval pointer — for USER.md only.
 
-    Same rationale as :func:`render_goals` — the full task list was 3–4 KB
-    in USER.md on every turn and silently truncated. ``nbhd_task_list``
-    serves the agent on demand, the reconcile gate already requires the
-    agent to query before replying to a task claim.
+    Same rationale as :func:`render_goals_summary`. Full inline content
+    for session-start + backbone-fetch lives in :func:`render_open_tasks`.
     """
     from .models import Task
 
@@ -129,7 +232,7 @@ def render_open_tasks(tenant: Tenant) -> str:
             f"`nbhd_task_list({{status: 'in_progress'}})` for what's underway._"
         )
 
-    # Legacy Document fallback — only if tenant hasn't migrated.
+    # Legacy Document fallback — surface a pointer, not the doc body.
     doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.TASKS, slug="tasks").first()
     if not doc:
         return ""

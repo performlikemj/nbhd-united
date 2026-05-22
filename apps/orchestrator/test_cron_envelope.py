@@ -66,13 +66,9 @@ def _starter_md(slug: str) -> str:
 
 
 class EnvelopeGoalsTest(TestCase):
-    """``render_goals`` returns a count + retrieval pointer, not the full list.
-
-    Post 2026-05-22 USER.md shrink: USER.md sections cap at a one-line
-    summary; the agent retrieves detail on demand via ``nbhd_goal_list``.
-    The legacy Document-only fallback surfaces a pointer rather than
-    dumping the doc body inline.
-    """
+    """``render_goals`` (full) returns inline markdown — for session-start +
+    ``nbhd_journal_context``. USER.md uses ``render_goals_summary`` instead,
+    covered by ``RenderManagedRegionTest`` below."""
 
     def setUp(self):
         self.tenant = create_tenant(display_name="EnvGoals", telegram_chat_id=910001)
@@ -91,7 +87,7 @@ class EnvelopeGoalsTest(TestCase):
         )
         self.assertEqual(envelope_goals(self.tenant), "")
 
-    def test_legacy_doc_surfaces_retrieval_pointer_not_inline_body(self):
+    def test_returns_full_markdown_under_cap(self):
         md = "## Active\n- Ship the envelope\n- Run the canary"
         Document.objects.create(
             tenant=self.tenant,
@@ -100,13 +96,21 @@ class EnvelopeGoalsTest(TestCase):
             title="Goals",
             markdown=md,
         )
-        out = envelope_goals(self.tenant)
-        # Pointer + tool reference present.
-        self.assertIn("Legacy goals document present", out)
-        self.assertIn("nbhd_document_get", out)
-        # Doc body NOT inline.
-        self.assertNotIn("Ship the envelope", out)
-        self.assertNotIn("Run the canary", out)
+        self.assertEqual(envelope_goals(self.tenant), md)
+
+    def test_truncates_when_over_cap(self):
+        md = "x" * 2000
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="goals",
+            title="Goals",
+            markdown=md,
+        )
+        out = envelope_goals(self.tenant, max_chars=1500)
+        self.assertTrue(out.startswith("x" * 1500))
+        self.assertIn("truncated", out)
+        self.assertLess(len(out), 2000)
 
     def test_only_picks_goals_doc_for_this_tenant(self):
         other = create_tenant(display_name="Other", telegram_chat_id=910002)
@@ -130,12 +134,22 @@ class EnvelopeGoalsTest(TestCase):
         )
         self.assertEqual(envelope_goals(self.tenant), "")
 
+    def test_treats_user_addition_as_real_content(self):
+        custom = _starter_md("goals") + "\n- Train for half-marathon\n"
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="goals",
+            title="Goals",
+            markdown=custom,
+        )
+        out = envelope_goals(self.tenant)
+        self.assertIn("Train for half-marathon", out)
+
 
 class EnvelopeOpenTasksTest(TestCase):
-    """``render_open_tasks`` returns a count + retrieval pointer, not the full list.
-
-    Same rationale as :class:`EnvelopeGoalsTest`.
-    """
+    """``render_open_tasks`` (full) returns inline markdown — for session-start
+    + ``nbhd_journal_context``. USER.md uses ``render_open_tasks_summary``."""
 
     def setUp(self):
         self.tenant = create_tenant(display_name="EnvTasks", telegram_chat_id=910010)
@@ -144,7 +158,7 @@ class EnvelopeOpenTasksTest(TestCase):
     def test_returns_empty_when_no_tasks_doc(self):
         self.assertEqual(envelope_open_tasks(self.tenant), "")
 
-    def test_legacy_doc_surfaces_pointer_with_open_count(self):
+    def test_returns_only_open_items(self):
         md = (
             "## Tasks\n"
             "- [ ] First open task\n"
@@ -161,12 +175,9 @@ class EnvelopeOpenTasksTest(TestCase):
             markdown=md,
         )
         out = envelope_open_tasks(self.tenant)
-        # Pointer + tool reference present; counts the 3 open items.
-        self.assertIn("Legacy tasks document", out)
-        self.assertIn("3 open item", out)
-        self.assertIn("nbhd_document_get", out)
-        # Inline content NOT dumped.
-        self.assertNotIn("First open task", out)
+        self.assertIn("- [ ] First open task", out)
+        self.assertIn("- [ ] Second open task", out)
+        self.assertIn("- [ ] Indented open task", out)
         self.assertNotIn("Already done", out)
         self.assertNotIn("Some prose", out)
 
@@ -180,6 +191,19 @@ class EnvelopeOpenTasksTest(TestCase):
         )
         self.assertEqual(envelope_open_tasks(self.tenant), "")
 
+    def test_caps_at_max_items_with_overflow_hint(self):
+        lines = "\n".join(f"- [ ] Task {i}" for i in range(40))
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.TASKS,
+            slug="tasks",
+            title="Tasks",
+            markdown=lines,
+        )
+        out = envelope_open_tasks(self.tenant, max_items=10)
+        self.assertEqual(out.count("- [ ] Task"), 10)
+        self.assertIn("+30 more open tasks", out)
+
     def test_skips_starter_placeholder_tasks(self):
         Document.objects.create(
             tenant=self.tenant,
@@ -189,6 +213,18 @@ class EnvelopeOpenTasksTest(TestCase):
             markdown=_starter_md("tasks"),
         )
         self.assertEqual(envelope_open_tasks(self.tenant), "")
+
+    def test_keeps_real_tasks_alongside_starter(self):
+        md = _starter_md("tasks") + "\n- [ ] Real task the user added\n"
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.TASKS,
+            slug="tasks",
+            title="Tasks",
+            markdown=md,
+        )
+        out = envelope_open_tasks(self.tenant)
+        self.assertIn("Real task the user added", out)
 
 
 class EnvelopeRecentLessonsTest(TestCase):
