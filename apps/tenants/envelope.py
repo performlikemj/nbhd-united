@@ -86,7 +86,16 @@ _PRIVACY_PLACEHOLDERS_BODY = (
     # contributor (Profile via User, Goals/Tasks via Document, Fuel via
     # Workout, etc.) — every tenant activity drains a refresh.
     refresh_on=(),
-    order=70,
+    # order=12 — directly after Profile (10), so the placeholder legend
+    # sits near the TOP of USER.md and survives any future budget pressure.
+    # Until 2026-05-22 this was order=70 (near the bottom), and when
+    # USER.md exceeded OpenClaw's 12 KB bootstrap budget the placeholder
+    # legend was silently truncated — the agent saw `[[USER_PAUL_3]]` etc.
+    # with no dictionary mapping them back to real names, surfacing as
+    # "funky" / "slightly off" replies. The dictionary is load-bearing:
+    # if it ever does get cut by some future bloat, that's a worse
+    # outcome than losing stale journal entries, so promote it.
+    order=12,
 )
 def render_privacy_placeholders(tenant: Tenant) -> str:
     """Auto-injected rule block when the tenant has redacted entity state.
