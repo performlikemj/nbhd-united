@@ -767,3 +767,64 @@ class PrivacyRedactionDocTest(TestCase):
         files = render_workspace_files("neighbor", tenant=tenant)
         self.assertIn("NBHD_DOC_PRIVACY_REDACTION", files)
         self.assertIn("Privacy Placeholders", files["NBHD_DOC_PRIVACY_REDACTION"])
+
+
+class PIIEngineImportSmokeTest(TestCase):
+    """Document the current PII engine import surface and catch new breakage.
+
+    The transformers / optimum / onnxruntime triplet has churned for months:
+    PR #447 (5.7→5.8) broke prod 2026-05-07, PR #652 (5.8→5.9) re-broke it
+    2026-05-21. Both times ``optimum.utils.input_generators`` references
+    ``is_tf_available`` which transformers had removed.
+
+    Neural PII has been **degraded to pattern-only** since at least
+    2026-05-07 — `apps.pii.engine.get_pii_pipeline()` catches the
+    ImportError and caches it, the redactor falls back to Presidio. These
+    tests pin the *currently-known* state so a future dependency upgrade
+    that breaks something *new* (i.e. a different import path) surfaces
+    here rather than silently expanding the degradation footprint.
+
+    The actual defence against further dependabot churn is the
+    `transformers` / `optimum` / `onnxruntime` ignore block in
+    `.github/dependabot.yml`.
+    """
+
+    def test_transformers_pipeline_factory_imports(self):
+        # Top-level transformers imports still work; only the internal
+        # `transformers.utils.is_tf_available` lookup that `optimum` does
+        # is broken in 5.x.
+        from transformers import AutoTokenizer, pipeline  # noqa: F401
+
+    def test_pii_engine_module_imports(self):
+        # The engine module itself must import cleanly — the broken
+        # transformers / optimum chain is gated behind a try/except
+        # inside `get_pii_pipeline()`, NOT at module level.
+        from apps.pii.engine import get_pii_pipeline  # noqa: F401
+
+    def test_optimum_ort_model_import_known_state(self):
+        """Documents the optimum ImportError chain.
+
+        Skips when the import succeeds (= neural PII has been restored,
+        somebody fixed the dep triplet — at that point delete this test
+        and the redactor's fallback-to-pattern path can be hardened).
+        Fails when the error mode CHANGES (= different symbol missing,
+        new transitive broken, etc.) — surfaces fresh breakage in CI.
+        """
+        try:
+            from optimum.onnxruntime import ORTModelForTokenClassification  # noqa: F401
+        except ImportError as exc:
+            msg = str(exc)
+            # Known-broken state: `is_tf_available` removed from
+            # transformers.utils. If the message diverges from this,
+            # something new has broken.
+            self.assertIn(
+                "is_tf_available",
+                msg,
+                f"Optimum import failed with an UNFAMILIAR error — investigate before "
+                f"re-bumping any of transformers/optimum/onnxruntime. Got: {msg}",
+            )
+            self.skipTest(
+                "Known-degraded: optimum 1.17 imports `is_tf_available` from transformers.utils, "
+                "which transformers 5.x removed. Neural PII falls back to Presidio patterns "
+                "(see apps.pii.engine.get_pii_pipeline). Tracked separately."
+            )

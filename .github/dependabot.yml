@@ -25,3 +25,26 @@ updates:
     schedule:
       interval: "daily"
     open-pull-requests-limit: 10
+    ignore:
+      # transformers 5.x removed `is_tf_available` and other utility symbols
+      # that ecosystem code paths still reference. Last verified incident:
+      # PR #652 (5.8 → 5.9) re-broke prod 2026-05-21. requirements.in
+      # caps at <5.0; this ignore stops the cycle of PRs we have to
+      # repeatedly revert. Lift after the upstream ABI gap is resolved.
+      - dependency-name: "transformers"
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
+      # optimum / onnxruntime are version-coupled with transformers; pin
+      # the floor + ignore majors so a coordinated bump is the only path.
+      - dependency-name: "optimum"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "onnxruntime"
+        update-types: ["version-update:semver-major"]
+      # azure-storage-file-share / azure-core: the file-share 12.24
+      # + azure-core 1.39 + requests 2.32 triplet currently leaks the
+      # ``overwrite=True`` kwarg into ``requests.Session.request`` on
+      # the upload_file path. Pin majors until we know which triplet
+      # actually works end-to-end.
+      - dependency-name: "azure-storage-file-share"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "azure-core"
+        update-types: ["version-update:semver-major"]
