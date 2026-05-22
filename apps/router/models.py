@@ -272,10 +272,7 @@ class ProactiveOutbound(models.Model):
     channel = models.CharField(max_length=16, choices=Channel.choices)
     channel_user_id = models.CharField(
         max_length=128,
-        help_text=(
-            "Per-channel user identifier (line_user_id for LINE, Telegram "
-            "chat_id stringified for Telegram)."
-        ),
+        help_text=("Per-channel user identifier (line_user_id for LINE, Telegram chat_id stringified for Telegram)."),
     )
     message_text = models.TextField(
         help_text="Full proactive message body as sent (post-PII-rehydration).",
