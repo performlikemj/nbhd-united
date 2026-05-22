@@ -143,18 +143,36 @@ class CronDeliveryView(APIView):
 
         # Route to appropriate channel
         if channel == "line":
-            return self._send_via_line(
+            channel_user_id = tenant.user.line_user_id or ""
+            resp = self._send_via_line(
                 tenant_id=tid,
-                line_user_id=tenant.user.line_user_id,
+                line_user_id=channel_user_id,
                 message_text=message_text,
             )
         else:
-            return self._send_via_telegram(
+            channel_user_id = str(tenant.user.telegram_chat_id or "")
+            resp = self._send_via_telegram(
                 tenant_id=tid,
                 chat_id=tenant.user.telegram_chat_id,
                 message_text=message_text,
                 parse_mode=parse_mode,
             )
+
+        # Record the outbound for thread-continuity on the next inbound.
+        # This is the deterministic replacement for the LLM-mediated
+        # ``_phase2_sync_block`` path — see apps.router.proactive_context.
+        if 200 <= resp.status_code < 300 and channel_user_id:
+            from apps.router.proactive_context import record_proactive_outbound
+
+            record_proactive_outbound(
+                tenant=tenant,
+                channel=channel,
+                channel_user_id=channel_user_id,
+                message_text=message_text,
+                job_name=request.headers.get("X-NBHD-Job-Name", ""),
+            )
+
+        return resp
 
     def _resolve_channel(self, user) -> str | None:
         """Determine which channel to use for outbound messages.

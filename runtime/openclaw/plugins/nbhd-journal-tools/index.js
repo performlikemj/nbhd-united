@@ -64,7 +64,7 @@ function renderPayload(payload) {
   };
 }
 
-async function callRuntime(api, { path, method = "GET", query, body }) {
+async function callRuntime(api, { path, method = "GET", query, body, extraHeaders }) {
   const runtime = getRuntimeConfig(api);
   const url = buildUrl(runtime.apiBaseUrl, path, query);
   const controller = new AbortController();
@@ -75,6 +75,11 @@ async function callRuntime(api, { path, method = "GET", query, body }) {
       "X-NBHD-Internal-Key": runtime.internalKey,
       "X-NBHD-Tenant-Id": runtime.tenantId,
     };
+    if (extraHeaders && typeof extraHeaders === "object") {
+      for (const [k, v] of Object.entries(extraHeaders)) {
+        if (typeof v === "string" && v.length > 0) headers[k] = v;
+      }
+    }
     let requestBody;
     if (method !== "GET" && body !== undefined) {
       headers["Content-Type"] = "application/json";
@@ -908,9 +913,12 @@ export default function register(api) {
   api.registerTool(wrap({
     name: "nbhd_send_to_user",
     description:
-      "Send a message to the user via Telegram. Use this in cron sessions " +
-      "or whenever you need to proactively reach out. Do NOT use during " +
-      "normal conversation — just reply directly instead.",
+      "Send a message to the user via Telegram or LINE. Use this in cron " +
+      "sessions or whenever you need to proactively reach out. Do NOT use " +
+      "during normal conversation — just reply directly instead. When " +
+      "running inside a cron job, pass `job_name` (find it in the prompt " +
+      "preamble) so the user's next inbound reply correctly threads back " +
+      "to this message.",
     parameters: {
       type: "object",
       required: ["message"],
@@ -919,16 +927,26 @@ export default function register(api) {
           type: "string",
           description: "The message text to send. Supports Markdown formatting.",
         },
+        job_name: {
+          type: "string",
+          description:
+            "Optional. The cron job name from the prompt preamble (e.g. " +
+            "'Morning Briefing', 'Evening Check-in'). Used by Django to " +
+            "tag the outbound for thread-continuity context on the user's " +
+            "next reply. Safe to omit for ad-hoc proactive sends.",
+        },
       },
     },
     async execute(_id, params) {
       const input = asObject(params);
       const message = asTrimmedString(input.message);
       if (!message) throw new Error("message is required");
+      const jobName = asTrimmedString(input.job_name);
       const payload = await callRuntime(api, {
         path: tenantPath(api, "/send-to-user/"),
         method: "POST",
         body: { message },
+        extraHeaders: jobName ? { "X-NBHD-Job-Name": jobName.slice(0, 64) } : undefined,
       });
       return renderPayload(payload);
     },
