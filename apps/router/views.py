@@ -294,10 +294,20 @@ def telegram_webhook(request):
         user_timezone = tenant.user.timezone or "UTC"
 
         # Inject current time into message text so the agent knows "now"
+        # Surface any proactive outbound sent to this user in the last
+        # 24h so the agent can thread the reply back to it. See
+        # apps.router.proactive_context.
+        from apps.router.proactive_context import surface_proactive_context
         from apps.router.services import (
             build_chat_context_marker,
             build_datetime_context,
             get_forwarding_timeout,
+        )
+
+        proactive_block = surface_proactive_context(
+            tenant=tenant,
+            channel="telegram",
+            channel_user_id=str(chat_id),
         )
 
         msg = update.get("message") or update.get("edited_message") or {}
@@ -305,7 +315,9 @@ def telegram_webhook(request):
             # Mark this as a conversational turn (not a scheduled cron run)
             # so the agent skips the heavy AGENTS.md "Session Start"
             # auto-context-load. See poller.py for the parallel comment.
-            msg["text"] = build_datetime_context(user_timezone) + build_chat_context_marker() + msg["text"]
+            msg["text"] = (
+                proactive_block + build_datetime_context(user_timezone) + build_chat_context_marker() + msg["text"]
+            )
 
         # Reasoning models need more time; the agent replies directly via bot
         # token even if this times out, but a longer window lets us capture

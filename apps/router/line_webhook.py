@@ -1196,15 +1196,25 @@ class LineWebhookView(View):
         user_param = line_user_id
 
         # Inject current time so the agent always knows "now"
+        # Surface any proactive outbound (cron-fired or otherwise) sent
+        # to this user in the last 24h so the agent can thread the
+        # reply back to it. See apps.router.proactive_context.
+        from apps.router.proactive_context import surface_proactive_context
         from apps.router.services import (
             build_chat_context_marker,
             build_datetime_context,
         )
 
+        proactive_block = surface_proactive_context(
+            tenant=tenant,
+            channel="line",
+            channel_user_id=line_user_id,
+        )
+
         # Mark this as a conversational turn (not a scheduled cron run) so the
         # agent skips the heavy AGENTS.md "Session Start" auto-context-load.
         # See poller.py for the parallel comment.
-        message_text = build_datetime_context(user_tz) + build_chat_context_marker() + message_text
+        message_text = proactive_block + build_datetime_context(user_tz) + build_chat_context_marker() + message_text
 
         # Hand off to the serialization queue. The reply_token is
         # captured but the drain task ignores it — by the time the

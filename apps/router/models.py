@@ -227,6 +227,106 @@ class ProcessedInboundEvent(models.Model):
         return f"ProcessedInboundEvent({self.event_key})"
 
 
+class ProactiveOutbound(models.Model):
+    """Records every proactive ``nbhd_send_to_user`` push so the next
+    inbound from that user can surface it as conversation context.
+
+    The conversation-state-loss problem this solves: cron-fired sessions
+    and main-chat sessions are separate OpenClaw sessions. When a cron
+    job sends a 3-bullet check-in via ``nbhd_send_to_user`` and the
+    container then hibernates, the user's reply arrives on a fresh main-
+    chat session with no record of what was asked — so the agent
+    conflates a multi-point reply because it can't anchor each paragraph
+    to the original question. The legacy mitigation
+    (``_phase2_sync_block``) prompts the agent to create a hidden
+    ``_sync:`` cron that injects a summary into the main session, but
+    that path is LLM-mediated and unreliably fired.
+
+    This model is the deterministic replacement: every successful push
+    from ``CronDeliveryView`` writes a row here, and the inbound
+    envelope composer (LINE webhook, Telegram webhook, Telegram poller)
+    pulls unconsumed rows from the last 24h and prepends them as a
+    ``[earlier-from-you ...]`` block before the user's text.
+
+    ``parsed_items`` stores markdown bullets / numbered items extracted
+    from ``message_text`` so the envelope can render a structured
+    "previous question 1/2/3" block; the agent's chat marker then knows
+    to map reply paragraphs by index when the counts line up.
+
+    Distinct from ``LineOutboundMessage``: that table keys by LINE
+    ``message_id`` for quote-reply lookups and is LINE-specific. This
+    table is channel-agnostic and keys by ``(tenant, channel,
+    channel_user_id, created_at)`` for thread-continuity lookups.
+    """
+
+    class Channel(models.TextChoices):
+        TELEGRAM = "telegram"
+        LINE = "line"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        "tenants.Tenant",
+        on_delete=models.CASCADE,
+        related_name="proactive_outbounds",
+    )
+    channel = models.CharField(max_length=16, choices=Channel.choices)
+    channel_user_id = models.CharField(
+        max_length=128,
+        help_text=("Per-channel user identifier (line_user_id for LINE, Telegram chat_id stringified for Telegram)."),
+    )
+    message_text = models.TextField(
+        help_text="Full proactive message body as sent (post-PII-rehydration).",
+    )
+    job_name = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text=(
+            "Cron job name if the send originated from a cron session "
+            "(read from X-NBHD-Job-Name header). Empty for main-session "
+            "or ad-hoc proactive sends."
+        ),
+    )
+    parsed_items = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            "Markdown bullets / numbered items extracted from "
+            "``message_text`` as list[str]. Empty list when the body has "
+            "no list structure. Used by the envelope to render structured "
+            "anchors so a multi-paragraph reply can be mapped by index."
+        ),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    consumed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Set when this row was first surfaced into an inbound "
+            "envelope. Kept for audit even after consumption — the "
+            "envelope still surfaces consumed rows within a short "
+            "follow-up window so back-to-back replies still see context."
+        ),
+    )
+
+    class Meta:
+        db_table = "proactive_outbounds"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["tenant", "channel", "channel_user_id", "-created_at"],
+                name="proactive_outb_thread_idx",
+            ),
+            models.Index(
+                fields=["created_at"],
+                name="proactive_outb_created_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"ProactiveOutbound({self.channel}, tenant={self.tenant_id}, job={self.job_name or '-'})"
+
+
 class LineOutboundMessage(models.Model):
     """Records LINE messages we've sent so quote-reply lookups can resolve
     a ``quotedMessageId`` on inbound webhook events back to the original
