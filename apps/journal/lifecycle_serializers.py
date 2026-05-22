@@ -7,6 +7,32 @@ from rest_framework import serializers
 from .models import Goal, Task
 
 
+class _LazyTopicPKField(serializers.PrimaryKeyRelatedField):
+    """``PrimaryKeyRelatedField`` that defers ``TopicRegistry`` import past app loading.
+
+    ``apps.insights.signals`` imports from ``apps.journal.models`` at app-ready,
+    so a top-level import of ``TopicRegistry`` here creates a load-order cycle.
+    DRF's ``PrimaryKeyRelatedField.__init__`` asserts ``queryset is not None``
+    at field construction (the class body runs before the serializer's own
+    ``__init__``), so a class-body ``queryset=None`` declaration raises
+    ``AssertionError`` and breaks every Goal/Task runtime endpoint on import.
+
+    Resolving via ``get_queryset()`` runs at request time, when the app
+    registry is settled.
+    """
+
+    def __init__(self, **kwargs):
+        # Placeholder queryset satisfies DRF's not-None assert; get_queryset()
+        # supersedes it at request time.
+        kwargs.setdefault("queryset", Goal.objects.none())
+        super().__init__(**kwargs)
+
+    def get_queryset(self):
+        from apps.insights.models import TopicRegistry
+
+        return TopicRegistry.objects.all()
+
+
 class GoalSerializer(serializers.ModelSerializer):
     """Read/write shape for Goal lifecycle.
 
@@ -20,9 +46,8 @@ class GoalSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True,
     )
-    topic_id = serializers.PrimaryKeyRelatedField(
+    topic_id = _LazyTopicPKField(
         source="topic",
-        queryset=None,  # populated lazily — see __init__
         required=False,
         allow_null=True,
     )
@@ -44,13 +69,6 @@ class GoalSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "achieved_at", "created_at", "updated_at"]
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Avoid importing insights at module import time (Django app loading order).
-        from apps.insights.models import TopicRegistry
-
-        self.fields["topic_id"].queryset = TopicRegistry.objects.all()
 
     def validate(self, attrs):
         # Scope parent_goal to the same tenant — protects against cross-tenant linkage.

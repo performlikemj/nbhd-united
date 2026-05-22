@@ -363,5 +363,33 @@ class TypedLifecycleSwapsTest(TestCase):
         self.assertNotIn("nbhd_document_set", out)
 
 
+class LifecycleSerializerImportSmokeTest(TestCase):
+    """Guard against class-body field misconstruction in lifecycle serializers.
+
+    A ``PrimaryKeyRelatedField(queryset=None)`` declared in a serializer
+    class body raises ``AssertionError`` during the first import — every
+    Goal/Task runtime endpoint then 500s. The runtime views import lazily
+    inside method bodies, so Django startup doesn't catch it; this smoke
+    test forces both serializers to construct.
+    """
+
+    def test_goal_serializer_constructs(self):
+        from apps.journal.lifecycle_serializers import GoalSerializer
+
+        GoalSerializer()
+
+    def test_task_serializer_constructs(self):
+        from apps.journal.lifecycle_serializers import TaskSerializer
+
+        TaskSerializer()
+
+    def test_goal_serializer_topic_queryset_resolves_to_topic_registry(self):
+        from apps.insights.models import TopicRegistry
+        from apps.journal.lifecycle_serializers import GoalSerializer
+
+        field = GoalSerializer().fields["topic_id"]
+        self.assertIs(field.get_queryset().model, TopicRegistry)
+
+
 # Suppress unused-import warnings — these are exercised in tests above via local references.
 __all__ = ["timezone"]
