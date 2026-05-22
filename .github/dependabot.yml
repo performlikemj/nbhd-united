@@ -32,7 +32,7 @@ updates:
       # caps at <5.0; this ignore stops the cycle of PRs we have to
       # repeatedly revert. Lift after the upstream ABI gap is resolved.
       - dependency-name: "transformers"
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
       # optimum / onnxruntime are version-coupled with transformers; pin
       # the floor + ignore majors so a coordinated bump is the only path.
       - dependency-name: "optimum"

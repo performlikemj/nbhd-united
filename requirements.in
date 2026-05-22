@@ -30,17 +30,25 @@ pgvector
 # PII redaction (outgoing LLM traffic)
 presidio-analyzer>=2.2    # Pattern recognizers only (credit card Luhn, IBAN checksum)
 onnxruntime>=1.26.0
-# Pin <5.0 — transformers 5.x removed `is_tf_available` and other utility
-# symbols that the rest of the ecosystem (incl. transformers.pipeline()'s
-# own internal imports on certain code paths) still references, surfacing
-# as ``ImportError: cannot import name 'is_tf_available' from
-# 'transformers.utils'`` on every PII redactor invocation.
-# History: PR #447 (5.7→5.8) broke prod 2026-05-07, fixed by 0e01bd2.
-# Dependabot then walked the upper bound back up (#556 5.7→5.8, #652
-# 5.8→5.9), re-breaking prod 2026-05-21. Hard ceiling at 5.0 + a
-# dependabot ignore on minor+major bumps prevents the cycle from
-# recurring. Re-evaluate only when the upstream ABI gap is resolved.
-transformers>=4.57,<5.0
+# Pin to ==5.7.0 — last known-good version that loads the `onbekend/nbhd-pii-model`
+# DeBERTa ONNX model correctly. 5.8.0 removed `is_tf_available` from
+# `transformers.utils`, which downstream code paths (including
+# `transformers.pipeline()`'s own internal imports) still reference,
+# producing ``ImportError: cannot import name 'is_tf_available' from
+# 'transformers.utils'`` on every PII redactor invocation. <5.0 also
+# loads the model but produces different tokenizer/entity outputs vs.
+# 5.7.x, breaking the integration tests in apps/pii/tests.py.
+#
+# History:
+#   - PR #447 (5.7→5.8) broke prod 2026-05-07, fixed by 0e01bd2.
+#   - 7b7e926 re-pinned <5.8 with the right rationale.
+#   - Dependabot walked it back up via #556 (5.8→5.8.1) and #652 (5.8.1→5.9.0),
+#     re-breaking prod 2026-05-21.
+#
+# Hard ceiling at 5.8.0 + a dependabot ignore on minor+major+patch bumps
+# (the package is essentially frozen until we re-validate against a newer
+# transformers + a fresh model build).
+transformers==5.7.0
 optimum[onnxruntime]>=1.14
 sentencepiece>=0.2
 
