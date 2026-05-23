@@ -73,7 +73,9 @@ class BuiltInHeartbeatOnTest(TestCase):
         self.assertTrue(hb["isolatedSession"])
         self.assertTrue(hb["skipWhenBusy"])
         # model pinned to HEARTBEAT_MODEL so BYO Anthropic subs aren't billed
-        self.assertIn("minimax", hb["model"].lower())
+        from apps.orchestrator.config_generator import HEARTBEAT_MODEL
+
+        self.assertEqual(hb["model"], HEARTBEAT_MODEL)
         # activeHours derived from tenant's existing fields
         self.assertEqual(hb["activeHours"]["start"], "08:00")
         self.assertEqual(hb["activeHours"]["end"], "14:00")
