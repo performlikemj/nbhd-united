@@ -431,10 +431,12 @@ class UpdateSystemCronPromptsNonMessageDriftTests(TestCase):
             )
         # Sanity: Heartbeat MUST be in the fixture with payload.model set —
         # otherwise this test is just exercising the regular no-drift path.
+        from apps.orchestrator.config_generator import HEARTBEAT_MODEL
+
         heartbeat_existing = next(e for e in existing if e["name"] == "Heartbeat Check-in")
         self.assertEqual(
             heartbeat_existing["payload"].get("model"),
-            "openrouter/minimax/minimax-m2.7",
+            HEARTBEAT_MODEL,
             "Fixture sanity: Heartbeat must have payload.model populated "
             "from the top-level cron-def model field via _oc_stored_payload",
         )

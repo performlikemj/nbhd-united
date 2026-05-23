@@ -762,7 +762,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_update_plan",
       description:
-        "Update an existing workout plan. Can change name, status (active/paused/completed/archived), notes, or schedule. If schedule_json or weeks change, future planned workouts are deleted and regenerated from the new template. Use this for swapping exercises, changing frequency, pausing, or completing a plan.",
+        "Update an existing workout plan. Can change name, status (active/paused/completed/archived), notes, or schedule. If schedule_json or weeks change, future planned workouts are regenerated from the new template; per-workout customisations (detail_json, duration_minutes, scheduled_at, notes) are preserved across the regen when the (date, activity) pair still matches. To intentionally clear a day's exercises, rename its activity. Use this for swapping exercises, changing frequency, pausing, or completing a plan.",
       parameters: {
         type: "object",
         additionalProperties: false,
