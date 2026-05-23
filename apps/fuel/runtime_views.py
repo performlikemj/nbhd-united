@@ -1097,12 +1097,25 @@ class RuntimeWorkoutPlanDetailView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # Regenerate future planned workouts if schedule or weeks changed
+        # Regenerate future planned workouts if schedule or weeks changed.
+        # Snapshot per-workout customisations BEFORE the delete so a one-line
+        # tweak (e.g. "swap Tuesday for a longer run") doesn't wipe per-day
+        # exercise prescriptions across the rest of the plan. Match on
+        # (date, activity) — same intent, same row. Activity rename =
+        # different intent, intentionally not restored.
         if needs_regeneration:
             today = date.today()
-            # Delete future planned workouts belonging to this plan
-            Workout.objects.filter(plan=plan, status=WorkoutStatus.PLANNED, date__gte=today).delete()
-            # Regenerate from today forward for remaining weeks
+            future_qs = Workout.objects.filter(plan=plan, status=WorkoutStatus.PLANNED, date__gte=today)
+            preserved = {
+                (w.date.isoformat(), w.activity): {
+                    "detail_json": w.detail_json,
+                    "duration_minutes": w.duration_minutes,
+                    "scheduled_at": w.scheduled_at,
+                    "notes": w.notes,
+                }
+                for w in future_qs
+            }
+            future_qs.delete()
 
             elapsed_days = (today - plan.start_date).days
             elapsed_weeks = max(0, elapsed_days // 7)
@@ -1110,6 +1123,29 @@ class RuntimeWorkoutPlanDetailView(APIView):
             if remaining_weeks > 0:
                 regen_start = max(today, plan.start_date)
                 _expand_plan_workouts(plan, tenant, plan.schedule_json, regen_start, remaining_weeks)
+
+            # Restore customisations into the freshly-expanded rows where
+            # the template didn't provide a value. Template wins on conflict.
+            if preserved:
+                for w in Workout.objects.filter(plan=plan, status=WorkoutStatus.PLANNED, date__gte=today):
+                    snap = preserved.get((w.date.isoformat(), w.activity))
+                    if not snap:
+                        continue
+                    update_fields: list[str] = []
+                    if (not isinstance(w.detail_json, dict) or not w.detail_json) and snap["detail_json"]:
+                        w.detail_json = snap["detail_json"]
+                        update_fields.append("detail_json")
+                    if w.duration_minutes is None and snap["duration_minutes"] is not None:
+                        w.duration_minutes = snap["duration_minutes"]
+                        update_fields.append("duration_minutes")
+                    if w.scheduled_at is None and snap["scheduled_at"] is not None:
+                        w.scheduled_at = snap["scheduled_at"]
+                        update_fields.append("scheduled_at")
+                    if not w.notes and snap["notes"]:
+                        w.notes = snap["notes"]
+                        update_fields.append("notes")
+                    if update_fields:
+                        w.save(update_fields=update_fields)
 
         # Manage fuel cron based on status/schedule changes (best-effort)
         if "status" in updated_fields or needs_regeneration:

@@ -1689,6 +1689,142 @@ class RuntimeWorkoutPlanTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["status"], "paused")
 
+    def test_update_plan_preserves_detail_json(self):
+        """Regen preserves per-workout exercise prescriptions when the new
+        schedule_json doesn't override them, matched by (date, activity).
+        """
+        from datetime import timedelta
+
+        plan_start = date.today() + timedelta(days=((7 - date.today().weekday()) % 7) or 7)
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Soccer Build",
+            start_date=plan_start,
+            weeks=2,
+            days_per_week=2,
+            schedule_json={
+                "0": {"activity": "Upper Push", "category": "strength"},
+                "2": {"activity": "Upper Pull", "category": "strength"},
+            },
+        )
+        customised = Workout.objects.create(
+            tenant=self.tenant,
+            plan=plan,
+            date=plan_start,
+            status="planned",
+            category="strength",
+            activity="Upper Push",
+            duration_minutes=55,
+            detail_json={
+                "exercises": [
+                    {"name": "Bench Press", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 80}]},
+                ]
+            },
+            notes="Pre-meet taper week",
+        )
+
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan.id}/",
+            {
+                "schedule_json": {
+                    "0": {"activity": "Upper Push", "category": "strength"},
+                    "2": {"activity": "Upper Pull", "category": "strength"},
+                },
+            },
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        regen = Workout.objects.get(tenant=self.tenant, plan=plan, date=plan_start, activity="Upper Push")
+        self.assertNotEqual(regen.id, customised.id)
+        self.assertEqual(regen.detail_json, customised.detail_json)
+        self.assertEqual(regen.duration_minutes, 55)
+        self.assertEqual(regen.notes, "Pre-meet taper week")
+
+    def test_update_plan_template_overrides_duration(self):
+        """When the new schedule_json supplies duration_minutes, it wins
+        over the preserved snapshot.
+        """
+        from datetime import timedelta
+
+        plan_start = date.today() + timedelta(days=((7 - date.today().weekday()) % 7) or 7)
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Override",
+            start_date=plan_start,
+            weeks=1,
+            days_per_week=1,
+            schedule_json={"0": {"activity": "Push", "category": "strength"}},
+        )
+        Workout.objects.create(
+            tenant=self.tenant,
+            plan=plan,
+            date=plan_start,
+            status="planned",
+            category="strength",
+            activity="Push",
+            duration_minutes=45,
+        )
+
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan.id}/",
+            {
+                "schedule_json": {
+                    "0": {"activity": "Push", "category": "strength", "duration_minutes": 75},
+                },
+            },
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        regen = Workout.objects.get(plan=plan, date=plan_start, activity="Push")
+        self.assertEqual(regen.duration_minutes, 75)
+
+    def test_update_plan_renamed_activity_is_new_intent(self):
+        """If the activity name changes for the same day, the snapshot
+        doesn't restore — treated as a different workout.
+        """
+        from datetime import timedelta
+
+        plan_start = date.today() + timedelta(days=((7 - date.today().weekday()) % 7) or 7)
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Rename",
+            start_date=plan_start,
+            weeks=1,
+            days_per_week=1,
+            schedule_json={"0": {"activity": "Push", "category": "strength"}},
+        )
+        Workout.objects.create(
+            tenant=self.tenant,
+            plan=plan,
+            date=plan_start,
+            status="planned",
+            category="strength",
+            activity="Push",
+            detail_json={
+                "exercises": [
+                    {"name": "Bench", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 80}]},
+                ]
+            },
+        )
+
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan.id}/",
+            {
+                "schedule_json": {
+                    "0": {"activity": "Pull", "category": "strength"},
+                },
+            },
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        regen = Workout.objects.get(plan=plan, date=plan_start)
+        self.assertEqual(regen.activity, "Pull")
+        self.assertEqual(regen.detail_json, {})
+
     def test_delete_plan_preserves_done(self):
         """DELETE removes planned workouts but preserves completed ones."""
         plan = WorkoutPlan.objects.create(
