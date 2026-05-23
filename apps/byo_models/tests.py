@@ -555,13 +555,14 @@ class BYOConfigGeneratorTest(TestCase):
         still expose the rest of the tier's allowed models so
         rate-limit/overload on the cheap model still falls through.
         """
-        from apps.billing.constants import GEMMA_MODEL, KIMI_MODEL, MINIMAX_MODEL
+        from apps.billing.constants import DEEPSEEK_MODEL, GEMMA_MODEL, MINIMAX_MODEL
 
-        # No preferred_model override — primary stays at tier default.
+        # No preferred_model override — primary stays at tier default
+        # (DeepSeek V4 Pro since 2026-05-23).
         cfg = self._generate()
-        self.assertEqual(cfg["agents"]["defaults"]["model"]["primary"], MINIMAX_MODEL)
+        self.assertEqual(cfg["agents"]["defaults"]["model"]["primary"], DEEPSEEK_MODEL)
         fallbacks = cfg["agents"]["defaults"]["model"]["fallbacks"]
-        self.assertIn(KIMI_MODEL, fallbacks)
+        self.assertIn(MINIMAX_MODEL, fallbacks)
         self.assertIn(GEMMA_MODEL, fallbacks)
 
 

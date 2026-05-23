@@ -10,7 +10,7 @@ from django.test.utils import override_settings
 from apps.billing.constants import (
     ANTHROPIC_OPUS_MODEL,
     ANTHROPIC_SONNET_MODEL,
-    KIMI_MODEL,
+    DEEPSEEK_MODEL,
     MINIMAX_MODEL,
 )
 from apps.tenants.services import create_tenant
@@ -38,7 +38,7 @@ class RuntimePreferredModelViewTest(TestCase):
         self.assertEqual(response.json()["error"], "internal_auth_failed")
 
     def test_post_requires_internal_auth(self, _enq):
-        response = self.client.post(self.endpoint, data={"model_id": KIMI_MODEL}, content_type="application/json")
+        response = self.client.post(self.endpoint, data={"model_id": DEEPSEEK_MODEL}, content_type="application/json")
         self.assertEqual(response.status_code, 401)
 
     def test_rejects_tenant_scope_mismatch(self, _enq):
@@ -66,9 +66,9 @@ class RuntimePreferredModelViewTest(TestCase):
         self.assertEqual(body["model_tier"], "starter")
         self.assertEqual(body["preferred_model"], "")
         model_ids = {m["model_id"] for m in body["allowed_models"]}
-        self.assertEqual(model_ids, {MINIMAX_MODEL, KIMI_MODEL, "openrouter/google/gemma-4-31b-it"})
+        self.assertEqual(model_ids, {MINIMAX_MODEL, DEEPSEEK_MODEL, "openrouter/google/gemma-4-31b-it"})
         aliases = {m["alias"] for m in body["allowed_models"]}
-        self.assertEqual(aliases, {"minimax", "kimi", "gemma"})
+        self.assertEqual(aliases, {"minimax", "deepseek", "gemma"})
 
     # ── POST allowed switch ────────────────────────────────────────────
 
@@ -76,23 +76,23 @@ class RuntimePreferredModelViewTest(TestCase):
         baseline_version = self.tenant.pending_config_version
         response = self.client.post(
             self.endpoint,
-            data={"model_id": KIMI_MODEL},
+            data={"model_id": DEEPSEEK_MODEL},
             content_type="application/json",
             **self._headers(),
         )
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertTrue(body["updated"])
-        self.assertEqual(body["preferred_model"], KIMI_MODEL)
+        self.assertEqual(body["preferred_model"], DEEPSEEK_MODEL)
 
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.preferred_model, KIMI_MODEL)
+        self.assertEqual(self.tenant.preferred_model, DEEPSEEK_MODEL)
         self.assertGreater(self.tenant.pending_config_version, baseline_version)
         mock_enq.assert_called_once()
 
     def test_post_clear_model(self, mock_enq):
         # Pre-set a model, then clear it
-        self.tenant.preferred_model = KIMI_MODEL
+        self.tenant.preferred_model = DEEPSEEK_MODEL
         self.tenant.save(update_fields=["preferred_model"])
 
         response = self.client.post(

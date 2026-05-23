@@ -14,8 +14,8 @@ from django.conf import settings
 
 from apps.billing.constants import (
     ANTHROPIC_SONNET_MODEL,
+    DEEPSEEK_MODEL,
     GEMMA_MODEL,
-    KIMI_MODEL,
     MINIMAX_MODEL,
 )
 from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION, generate_tool_config
@@ -832,16 +832,44 @@ _BACKGROUND_TASKS_PROMPT = (
     "the morning briefing will read those and surface anything relevant.**\n"
 )
 
-# Model mapping by tier
+# Model mapping by tier — DeepSeek V4 Pro is the chat primary as of
+# 2026-05-23. MiniMax stays in the allowlist (`TIER_MODEL_CONFIGS`) as
+# a selectable lower-latency alternative; users who pick it via the
+# settings UI keep DeepSeek on the reasoning-shaped crons through
+# `TIER_TASK_DEFAULTS` below.
 TIER_MODELS: dict[str, dict[str, str]] = {
-    "starter": {"primary": MINIMAX_MODEL},
+    "starter": {"primary": DEEPSEEK_MODEL},
 }
 
 TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     "starter": {
         MINIMAX_MODEL: {"alias": "minimax"},
-        KIMI_MODEL: {"alias": "kimi"},
+        DEEPSEEK_MODEL: {"alias": "deepseek"},
         GEMMA_MODEL: {"alias": "gemma"},
+    },
+}
+
+# Per-task model defaults — stamp these onto specific cron jobs when the
+# tenant hasn't set a `task_model_preferences` override. Crons not in this
+# map inherit the tier primary (or the user's `preferred_model` override).
+#
+# The split is workload-driven, not tier-driven. DeepSeek V4 Pro for
+# reasoning-shaped jobs (long context in, long output out, judgment about
+# what's worth surfacing). Crons absent from this map (Personal Question,
+# Background Tasks) inherit the chat primary so short one-shot prompts
+# stay on the cheap-input model. Heartbeat is reasoning-shaped too but
+# pinned separately via HEARTBEAT_MODEL so user `preferred_model` can't
+# redirect a platform-initiated turn onto a BYO subscription.
+#
+# Keys mirror the values of `_TASK_SLUG_MAP` defined later in this file.
+TIER_TASK_DEFAULTS: dict[str, dict[str, str]] = {
+    "starter": {
+        "morning_briefing": DEEPSEEK_MODEL,
+        "evening_checkin": DEEPSEEK_MODEL,
+        "weekly_reflection": DEEPSEEK_MODEL,
+        "week_review": DEEPSEEK_MODEL,
+        "project_checkin": DEEPSEEK_MODEL,
+        "gravity_weekly_checkin": DEEPSEEK_MODEL,
     },
 }
 
@@ -886,8 +914,14 @@ def _byo_model_extras(tenant: Tenant) -> dict[str, dict[str, Any]]:
 
 WHISPER_DEFAULT_MODEL = {"provider": "openai", "model": "gpt-4o-mini-transcribe"}
 
-# Heartbeat model — always cheap, regardless of tenant tier
-HEARTBEAT_MODEL = MINIMAX_MODEL
+# Heartbeat model — pinned to DeepSeek V4 Pro so heartbeat judgment runs
+# on a reasoning model regardless of the tenant's `preferred_model`. The
+# pin also guarantees platform-initiated turns never burn a BYO Anthropic
+# tenant's CLI subscription — repointing the constant preserves that
+# invariant (still a non-BYO model). See `_HEARTBEAT_CHECKIN_PROMPT` for
+# the judgment that lives in this turn — cross-referencing the morning
+# briefing + heartbeat-log to decide whether anything is genuinely new.
+HEARTBEAT_MODEL = DEEPSEEK_MODEL
 
 
 def _heartbeat_cron_expr(start_hour: int, window_hours: int) -> str:
@@ -1432,18 +1466,32 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
         "Week Ahead Review": "week_review",
         "Background Tasks": "background_tasks",
         "Project Check-in": "project_checkin",
+        "Gravity Weekly Check-in": "gravity_weekly_checkin",
         "Heartbeat Check-in": "heartbeat",
     }
+    # Resolve model per cron job: user-set `task_model_preferences` wins,
+    # then `TIER_TASK_DEFAULTS` for reasoning-shaped crons, then inherit
+    # the chat primary (no stamp). Allowlist guard stays — same lapsed-BYO
+    # preflight failure mode the original `if prefs` block was guarding.
+    tier = tenant.model_tier or "starter"
+    allowed_models = set(TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["starter"]))
+    allowed_models.update(_byo_model_extras(tenant))
     prefs = getattr(tenant, "task_model_preferences", None) or {}
-    if prefs:
-        tier = tenant.model_tier or "starter"
-        allowed_models = set(TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["starter"]))
-        allowed_models.update(_byo_model_extras(tenant))
-        for job in jobs:
-            slug = _TASK_SLUG_MAP.get(job["name"], "")
-            model = prefs.get(slug)
-            if model and model in allowed_models:
-                job["model"] = model
+    task_defaults = TIER_TASK_DEFAULTS.get(tier, {})
+    for job in jobs:
+        slug = _TASK_SLUG_MAP.get(job["name"], "")
+        if not slug:
+            continue
+        # User preference wins if it's in the allowlist; otherwise fall
+        # through to the tier default. A stale-but-set pref pointing at a
+        # disallowed model (e.g. anthropic-cli/... left over from a torn-
+        # down BYO setup) still gets dropped, but the cron lands on the
+        # tier default rather than silently un-stamped.
+        candidate = prefs.get(slug)
+        if not candidate or candidate not in allowed_models:
+            candidate = task_defaults.get(slug)
+        if candidate and candidate in allowed_models:
+            job["model"] = candidate
 
     return jobs
 

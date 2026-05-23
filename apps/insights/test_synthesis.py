@@ -262,7 +262,7 @@ class RecordUsageIsSystemTests(TestCase):
             event_type="weekly_reflection",
             input_tokens=100,
             output_tokens=50,
-            model_used="openrouter/moonshotai/kimi-k2.6",
+            model_used="openrouter/deepseek/deepseek-v4-pro",
             is_system=True,
         )
         after = (
@@ -285,7 +285,7 @@ class RecordUsageIsSystemTests(TestCase):
             event_type="message",
             input_tokens=100,
             output_tokens=50,
-            model_used="openrouter/moonshotai/kimi-k2.6",
+            model_used="openrouter/deepseek/deepseek-v4-pro",
         )
         after = Tenant.objects.filter(id=self.tenant.id).values_list("tokens_this_month", flat=True).first()
         self.assertEqual(after, before + 150)

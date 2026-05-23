@@ -13,9 +13,9 @@ export interface ModelUI {
 }
 
 export const MODELS: ModelUI[] = [
-  { model_id: "openrouter/minimax/minimax-m2.7", name: "MiniMax M2.7", tagline: "Fast and efficient", intelligence: 6, input_rate: 0.3, output_rate: 1.2 },
-  { model_id: "openrouter/moonshotai/kimi-k2.6", name: "Kimi K2.6", tagline: "Balanced capability and cost", intelligence: 7, input_rate: 0.60, output_rate: 2.80 },
-  { model_id: "openrouter/google/gemma-4-31b-it", name: "Gemma 4 31B", tagline: "Lightweight and affordable", intelligence: 6, input_rate: 0.14, output_rate: 0.40 },
+  { model_id: "openrouter/minimax/minimax-m2.7", name: "MiniMax M2.7", tagline: "Fast and efficient", intelligence: 6, input_rate: 0.28, output_rate: 1.20 },
+  { model_id: "openrouter/deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro", tagline: "Reasoning + 1M context", intelligence: 8, input_rate: 0.435, output_rate: 0.87 },
+  { model_id: "openrouter/google/gemma-4-31b-it", name: "Gemma 4 31B", tagline: "Lightweight and affordable", intelligence: 6, input_rate: 0.12, output_rate: 0.37 },
   {
     // BYO Anthropic models use the canonical `anthropic/<model>` prefix.
     // CLI routing (so the tenant's Pro/Max subscription is billed instead
@@ -45,7 +45,7 @@ export const MODELS: ModelUI[] = [
 
 export const ACTIVE_MODELS = MODELS.filter((m) => !m.comingSoon);
 
-export const DEFAULT_MODEL = "openrouter/minimax/minimax-m2.7";
+export const DEFAULT_MODEL = "openrouter/deepseek/deepseek-v4-pro";
 
 export function modelSummary(): string {
   const names = ACTIVE_MODELS.filter((m) => !m.requires).map((m) => m.name);

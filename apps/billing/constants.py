@@ -7,15 +7,24 @@ Rates are per 1M tokens in USD. Update when providers change pricing.
 # Change these once here; every other module imports from this file.
 MINIMAX_MODEL = "openrouter/minimax/minimax-m2.7"
 MINIMAX_DISPLAY = "MiniMax M2.7"
-MINIMAX_RATE = {"input": 0.3, "output": 1.2}
+MINIMAX_RATE = {"input": 0.28, "output": 1.20}
 
+# Kimi K2.6 is no longer offered as a user-selectable model (replaced by
+# DeepSeek V4 Pro on 2026-05-23 — cheaper output, 1M context, configurable
+# reasoning). The constant + rate stay so historical UsageEvent rows
+# continue to render correctly in billing; no code path adds Kimi to a
+# tier's allowlist anymore.
 KIMI_MODEL = "openrouter/moonshotai/kimi-k2.6"
 KIMI_DISPLAY = "Kimi 2.6"
-KIMI_RATE = {"input": 0.60, "output": 2.80}
+KIMI_RATE = {"input": 0.73, "output": 3.49}
+
+DEEPSEEK_MODEL = "openrouter/deepseek/deepseek-v4-pro"
+DEEPSEEK_DISPLAY = "DeepSeek V4 Pro"
+DEEPSEEK_RATE = {"input": 0.435, "output": 0.87}
 
 GEMMA_MODEL = "openrouter/google/gemma-4-31b-it"
 GEMMA_DISPLAY = "Gemma 4 31B"
-GEMMA_RATE = {"input": 0.14, "output": 0.40}
+GEMMA_RATE = {"input": 0.12, "output": 0.37}
 
 # BYO subscription models — tenant pays the provider directly via their
 # Pro/Max/Plus account. Not in MODEL_RATES because NBHD doesn't bill
@@ -53,6 +62,14 @@ MODEL_RATES: dict[str, dict[str, float]] = {
     KIMI_MODEL.removeprefix("openrouter/"): {
         **KIMI_RATE,
         "display_name": KIMI_DISPLAY,
+    },
+    DEEPSEEK_MODEL: {
+        **DEEPSEEK_RATE,
+        "display_name": DEEPSEEK_DISPLAY,
+    },
+    DEEPSEEK_MODEL.removeprefix("openrouter/"): {
+        **DEEPSEEK_RATE,
+        "display_name": DEEPSEEK_DISPLAY,
     },
     GEMMA_MODEL: {
         **GEMMA_RATE,
@@ -104,8 +121,8 @@ def display_name_for_model(model_used: str) -> str:
 # The router gives them a higher forwarding timeout and sends a
 # "still thinking" notice so users know the system hasn't stalled.
 REASONING_MODELS: set[str] = {
-    KIMI_MODEL,
-    KIMI_MODEL.removeprefix("openrouter/"),
+    DEEPSEEK_MODEL,
+    DEEPSEEK_MODEL.removeprefix("openrouter/"),
 }
 
 # ── BYO slow models ──────────────────────────────────────────────────────

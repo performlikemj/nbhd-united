@@ -56,7 +56,7 @@ class ConfigGeneratorTest(TestCase):
     def test_starter_tier_model(self):
         self.tenant.model_tier = "starter"
         config = generate_openclaw_config(self.tenant)
-        self.assertIn("minimax", config["agents"]["defaults"]["model"]["primary"].lower())
+        self.assertIn("deepseek", config["agents"]["defaults"]["model"]["primary"].lower())
 
     def test_starter_tier_uses_openrouter(self):
         self.tenant.model_tier = "starter"
@@ -75,7 +75,7 @@ class ConfigGeneratorTest(TestCase):
         config = generate_openclaw_config(self.tenant)
         models = config["agents"]["defaults"]["models"]
         aliases = sorted(v.get("alias") for v in models.values())
-        self.assertEqual(aliases, ["gemma", "kimi", "minimax"])
+        self.assertEqual(aliases, ["deepseek", "gemma", "minimax"])
 
     def test_audio_model_defaults_to_whisper(self):
         self.tenant.model_tier = "starter"
@@ -438,25 +438,43 @@ class ConfigGeneratorTest(TestCase):
     # ── Task model preferences ──────────────────────────────────────
 
     def test_task_model_preferences_override_cron_jobs(self):
-        # Use a model from the tier's allowlist (starter ⇒ kimi). Without
+        # Use a model from the tier's allowlist (starter ⇒ minimax). Without
         # the allowlist guard added 2026-05-14, ``build_cron_seed_jobs``
         # would stamp anything the user requested, including models the
         # OpenClaw runtime rejects at preflight.
-        from apps.billing.constants import KIMI_MODEL
+        from apps.billing.constants import MINIMAX_MODEL
 
         self.tenant.model_tier = "starter"
-        self.tenant.task_model_preferences = {"morning_briefing": KIMI_MODEL}
+        self.tenant.task_model_preferences = {"morning_briefing": MINIMAX_MODEL}
         self.tenant.save()
         jobs = build_cron_seed_jobs(self.tenant)
         morning = next(j for j in jobs if j["name"] == "Morning Briefing")
-        self.assertEqual(morning["model"], KIMI_MODEL)
+        # User override beats the DeepSeek default.
+        self.assertEqual(morning["model"], MINIMAX_MODEL)
 
-    def test_task_model_preferences_no_override_leaves_default(self):
+    def test_task_model_defaults_stamp_deepseek_on_reasoning_crons(self):
+        """When the tenant has no `task_model_preferences` override, the
+        reasoning-shaped crons get DeepSeek V4 Pro via TIER_TASK_DEFAULTS;
+        cheap one-shot crons (Personal Question, Background Tasks) keep
+        inheriting the chat primary (no model stamp).
+        """
+        from apps.billing.constants import DEEPSEEK_MODEL
+
+        self.tenant.model_tier = "starter"
         self.tenant.task_model_preferences = {}
         self.tenant.save()
         jobs = build_cron_seed_jobs(self.tenant)
-        morning = next(j for j in jobs if j["name"] == "Morning Briefing")
-        self.assertNotIn("model", morning)
+        by_name = {j["name"]: j for j in jobs}
+        for name in (
+            "Morning Briefing",
+            "Evening Check-in",
+            "Weekly Reflection",
+            "Week Ahead Review",
+            "Project Check-in",
+        ):
+            self.assertEqual(by_name[name].get("model"), DEEPSEEK_MODEL, name)
+        for name in ("Personal Question", "Background Tasks"):
+            self.assertNotIn("model", by_name[name], name)
 
     def test_task_model_preferences_outside_allowlist_are_dropped(self):
         """Stale preferences pointing at models not in the tenant's tier
@@ -468,8 +486,10 @@ class ConfigGeneratorTest(TestCase):
         ``anthropic-cli/claude-sonnet-4-6`` entries from a BYO setup.
         With a ``starter`` tier (no anthropic-cli in allowlist) and no
         active BYO credential, the prefs were dropped, the cron
-        fell back to the agent default, and Morning Briefing fired.
+        fell back to the tier default, and Morning Briefing fired.
         """
+        from apps.billing.constants import DEEPSEEK_MODEL
+
         self.tenant.model_tier = "starter"
         self.tenant.task_model_preferences = {
             "morning_briefing": "anthropic-cli/claude-sonnet-4-6",
@@ -477,7 +497,9 @@ class ConfigGeneratorTest(TestCase):
         self.tenant.save()
         jobs = build_cron_seed_jobs(self.tenant)
         morning = next(j for j in jobs if j["name"] == "Morning Briefing")
-        self.assertNotIn("model", morning)
+        # Stale pref dropped; cron falls through to TIER_TASK_DEFAULTS
+        # (DeepSeek for Morning Briefing) — not silently un-stamped.
+        self.assertEqual(morning.get("model"), DEEPSEEK_MODEL)
 
     # ── Morning briefing prompt shape ──────────────────────────────
 

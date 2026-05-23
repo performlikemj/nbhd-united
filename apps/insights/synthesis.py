@@ -42,8 +42,10 @@ from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
 
-# Cheap model — synthesis is one short reflection per tenant per week.
-SYNTHESIS_MODEL = "openrouter/moonshotai/kimi-k2.6"
+# Reasoning-shaped synthesis (one short reflection per tenant per week);
+# DeepSeek V4 Pro replaced Kimi K2.6 here — same workload (long-context
+# reasoning over a week of data), materially cheaper output rate.
+SYNTHESIS_MODEL = "openrouter/deepseek/deepseek-v4-pro"
 
 # Hard ceilings so a single tenant can't unexpectedly balloon platform spend.
 _MAX_INPUT_CONTEXT_CHARS = 12000
