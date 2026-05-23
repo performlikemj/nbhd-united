@@ -487,3 +487,34 @@ class RuntimeVoicePrefListView(APIView):
                 "voice_prefs": [_serialize_voice_pref(r) for r in rows],
             }
         )
+
+
+# ── Cross-pillar yesterday's signals (for PQ + HB prompts) ────────────────
+
+
+class RuntimeYesterdaysSignalsView(APIView):
+    """Internal: cross-pillar day-scoped roll-up across Fuel / Journal / Lessons.
+
+    Distinct from ``RuntimePillarSignalsView`` (which is per-pillar +
+    per-topic Phase 3 register signals). This endpoint is called by the
+    ``nbhd_yesterdays_signals`` tool from the Personal Question and
+    Heartbeat cron prompts.
+
+    The local re-import sidesteps the lint-on-Edit hook that strips
+    module-level imports without a same-edit usage (see
+    ``feedback_lint_hook_strips_unused_imports``). Python caches the
+    module after first import, so the runtime cost is one dict lookup.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, tenant_id):
+        from .yesterdays_signals import compute as compute_yesterdays_signals
+
+        if err := _internal_auth_or_401(request, tenant_id):
+            return err
+        tenant = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant, Response):
+            return tenant
+
+        return Response(compute_yesterdays_signals(tenant))

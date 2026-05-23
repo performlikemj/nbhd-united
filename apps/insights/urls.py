@@ -12,6 +12,7 @@ from .runtime_views import (
     RuntimeRefuteInsightView,
     RuntimeVoicePrefListView,
     RuntimeVoicePrefSetView,
+    RuntimeYesterdaysSignalsView,
 )
 from .views import (
     ConfirmInsightView,
@@ -114,5 +115,11 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/voice-prefs/set/",
         RuntimeVoicePrefSetView.as_view(),
         name="runtime-insights-voice-prefs-set",
+    ),
+    # Cross-pillar yesterday's-signals roll-up (PQ + HB prompts)
+    path(
+        "runtime/<uuid:tenant_id>/yesterdays-signals/",
+        RuntimeYesterdaysSignalsView.as_view(),
+        name="runtime-insights-yesterdays-signals",
     ),
 ]

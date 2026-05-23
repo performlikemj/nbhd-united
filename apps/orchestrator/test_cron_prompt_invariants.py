@@ -39,3 +39,47 @@ class CronPromptPrefixInvariantTest(SimpleTestCase):
             "_PERSONAL_QUESTION_PROMPT",
             config_generator._PERSONAL_QUESTION_PROMPT,
         )
+
+
+class YesterdaysSignalsToolInPromptsTest(SimpleTestCase):
+    """The Personal Question + Heartbeat prompts must instruct the agent to
+    call ``nbhd_yesterdays_signals``. Without the call the cron-time
+    signal map never materializes, and option (f) in PQ + sub-bullet 5
+    in HB become no-ops.
+
+    If the tool is renamed or moved, this test breaks and reminds the
+    author to update both prompts. If a future refactor inlines the
+    signals via a plugin hook instead, delete this test.
+    """
+
+    def test_personal_question_prompt_calls_signals_tool(self):
+        self.assertIn(
+            "nbhd_yesterdays_signals",
+            config_generator._PERSONAL_QUESTION_PROMPT,
+            "Personal Question prompt no longer instructs the agent to call "
+            "nbhd_yesterdays_signals — signal-driven option (f) in step 3 "
+            "becomes a no-op.",
+        )
+        self.assertIn(
+            "notable_gaps",
+            config_generator._PERSONAL_QUESTION_PROMPT,
+            "Personal Question prompt no longer mentions notable_gaps — the "
+            "agent has no contract for what the tool returns.",
+        )
+
+    def test_heartbeat_prompt_calls_signals_tool(self):
+        self.assertIn(
+            "nbhd_yesterdays_signals",
+            config_generator._HEARTBEAT_CHECKIN_PROMPT,
+            "Heartbeat prompt no longer instructs the agent to call "
+            "nbhd_yesterdays_signals — sub-bullet 5 of step 1 becomes a "
+            "no-op.",
+        )
+
+    def test_heartbeat_prompt_forbids_signal_asking(self):
+        # The whole point of giving HB signal awareness without asking
+        # authority. If this guard rail disappears, HB will start asking
+        # questions and compete with PQ's once-daily dedup'd cadence.
+        body = config_generator._HEARTBEAT_CHECKIN_PROMPT
+        self.assertIn("DO NOT turn this into a quiz", body)
+        self.assertIn("Personal Question cron", body)
