@@ -832,9 +832,13 @@ _BACKGROUND_TASKS_PROMPT = (
     "the morning briefing will read those and surface anything relevant.**\n"
 )
 
-# Model mapping by tier
+# Model mapping by tier — DeepSeek V4 Pro is the chat primary as of
+# 2026-05-23. MiniMax stays in the allowlist (`TIER_MODEL_CONFIGS`) as
+# a selectable lower-latency alternative; users who pick it via the
+# settings UI keep DeepSeek on the reasoning-shaped crons through
+# `TIER_TASK_DEFAULTS` below.
 TIER_MODELS: dict[str, dict[str, str]] = {
-    "starter": {"primary": MINIMAX_MODEL},
+    "starter": {"primary": DEEPSEEK_MODEL},
 }
 
 TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
