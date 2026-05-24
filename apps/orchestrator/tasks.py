@@ -863,36 +863,10 @@ def nightly_extraction_task() -> dict:
     return {"total": len(results), "extracted": extracted, "skipped": skipped}
 
 
-def nightly_task_propagation_task() -> dict:
-    """Propagate checked-off tasks from documents to the tasks document.
-
-    Iterates every active tenant and calls propagate_completions_for_tenant().
-    Each tenant is handled independently — one failure doesn't block the rest.
-    """
-    import logging
-
-    from apps.journal.propagation import propagate_completions_for_tenant
-    from apps.tenants.models import Tenant
-
-    logger = logging.getLogger(__name__)
-
-    tenants = Tenant.objects.filter(
-        status=Tenant.Status.ACTIVE,
-    ).select_related("user")
-
-    results = []
-    for tenant in tenants:
-        try:
-            result = propagate_completions_for_tenant(tenant)
-        except Exception:
-            logger.exception("nightly_task_propagation: failed for tenant %s", str(tenant.id)[:8])
-            result = {"skipped": "error"}
-        results.append({"tenant": str(tenant.id)[:8], **result})
-
-    propagated = sum(1 for r in results if not r.get("skipped"))
-    skipped = sum(1 for r in results if r.get("skipped"))
-    logger.info("nightly_task_propagation: total=%d propagated=%d skipped=%d", len(results), propagated, skipped)
-    return {"total": len(results), "propagated": propagated, "skipped": skipped}
+# nightly_task_propagation_task removed 2026-05-24 — was a half-stub
+# (imported apps.journal.propagation, never written) that was never
+# registered as a cron. Task / Goal reconciliation now happens inline in
+# nightly_extraction_task via apps.journal.reconciliation.
 
 
 def dedup_cron_jobs_task(tenant_id: str) -> None:

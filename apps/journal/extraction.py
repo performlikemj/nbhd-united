@@ -26,7 +26,10 @@ from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
 
-EXTRACTION_MODEL = "openai/gpt-4o-mini"
+# Sonnet 4.6 over gpt-4o-mini: reconciliation (matching journal evidence
+# against an open-task list) is materially harder than emitting net-new
+# items. One call per tenant per day; cost absorbed on the platform key.
+EXTRACTION_MODEL = "anthropic/claude-sonnet-4-6"
 MIN_NOTE_LENGTH = 100  # chars — below this we skip or fall back
 DEDUP_SIMILARITY_THRESHOLD = 0.65  # cosine similarity for semantic dedup
 TELEGRAM_API_BASE = "https://api.telegram.org/bot"
@@ -63,12 +66,66 @@ Rules:
 - Keep each item concise (1-2 sentences max).
 """
 
+# Reconciliation prompt: extends the base extraction with three additional
+# arrays for state deltas against the tenant's existing typed Task/Goal
+# rows. The user message carries the open items as JSON; the model
+# matches journal evidence against ids and proposes per-item actions.
+EXTRACTION_RECONCILE_SYSTEM = (
+    EXTRACTION_SYSTEM.rstrip()
+    + """
 
-def _call_extraction_llm(content: str) -> tuple[dict, dict]:
-    """Call LLM via OpenRouter and return (parsed extraction JSON, usage dict)."""
+You will ALSO receive a JSON block titled "Open items" with the user's
+current open tasks + active goals. Reconcile today's journal against
+those items and return THREE additional arrays:
+
+  "task_updates": [
+    {"task_id": "<uuid from open_tasks>", "action": "complete|in_progress|skip|defer", "evidence": "<verbatim journal quote, <=140 chars>"}
+  ],
+  "subtasks_added": [
+    {"parent_task_id": "<uuid from open_tasks>", "title": "<short>"}
+  ],
+  "goal_updates": [
+    {"goal_id": "<uuid from active_goals>", "action": "achieve|abandon", "evidence": "<verbatim journal quote>"}
+  ]
+
+Reconciliation rules:
+- task_id / goal_id / parent_task_id MUST be UUIDs from the provided "Open items" lists. Do not invent ids.
+- "complete" requires explicit completion language ("did X", "finished Y", "X is done").
+- "in_progress" requires evidence of partial progress without completion.
+- "skip" requires explicit decision not to do it ("I'm not going to bother with X").
+- "defer" requires intent to do it later ("doing X tomorrow", "pushing X to next week").
+- "achieve" (goal): the user stated they reached the goal's outcome.
+- "abandon" (goal): explicit decision to stop pursuing.
+- Subtasks: only emit when the journal reveals work that is a sub-step of an open task.
+- evidence MUST be a verbatim quote from the journal, <=140 chars.
+- If you propose ANY task_update for an item, do NOT also list it under "tasks". Same for goals.
+- If the journal mentions something that matches an existing open task by intent but the user did NOT change its state, omit it entirely — do not duplicate it as a new task.
+- Be conservative. When in doubt, omit.
+"""
+)
+
+
+def _call_extraction_llm(
+    content: str,
+    reconciliation_context: dict | None = None,
+) -> tuple[dict, dict]:
+    """Call LLM via OpenRouter and return (parsed extraction JSON, usage dict).
+
+    When ``reconciliation_context`` is provided, the LLM also reconciles the
+    journal against the supplied open items and returns task/goal deltas.
+    """
     api_key = getattr(settings, "OPENROUTER_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY not configured")
+
+    if reconciliation_context is not None:
+        system = EXTRACTION_RECONCILE_SYSTEM
+        user_message = (
+            f"Daily note:\n\n{content[:6000]}\n\nOpen items:\n\n{json.dumps(reconciliation_context, indent=2)[:4000]}"
+        )
+    else:
+        system = EXTRACTION_SYSTEM
+        user_message = f"Extract from this daily note:\n\n{content[:6000]}"
 
     resp = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
@@ -76,13 +133,13 @@ def _call_extraction_llm(content: str) -> tuple[dict, dict]:
         json={
             "model": EXTRACTION_MODEL,
             "messages": [
-                {"role": "system", "content": EXTRACTION_SYSTEM},
-                {"role": "user", "content": f"Extract from this daily note:\n\n{content[:6000]}"},
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_message},
             ],
             "response_format": {"type": "json_object"},
             "temperature": 0.1,
         },
-        timeout=30,
+        timeout=60,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -212,39 +269,88 @@ def _send_telegram_with_buttons(
         return None
 
 
+_TASK_ACTION_LABEL = {
+    "task_complete": ("☑️", "marked done"),
+    "task_progress": ("🟡", "marked in progress"),
+    "task_skip": ("⏭️", "skipped"),
+    "task_defer": ("📅", "deferred"),
+    "subtask_create": ("➕", "added subtask"),
+    "goal_achieve": ("🏁", "marked achieved"),
+    "goal_abandon": ("🚫", "abandoned"),
+}
+
+
+def _format_task_action_line(action) -> str:
+    """One-line summary for a reconciliation action, e.g. '☑️ Gym session — marked done'."""
+    emoji, verb = _TASK_ACTION_LABEL.get(action.kind, ("•", action.kind))
+    title = (action.task.title if action.task_id else action.goal.title if action.goal_id else "(unknown)")[:60]
+    return f"{emoji} {title} — {verb}"
+
+
 def _deliver_summary_telegram(
     bot_token: str,
     chat_id: int,
     items: list[PendingExtraction],
+    task_actions: list | None = None,
 ) -> None:
-    """Send ONE summary message with per-item Remove buttons."""
+    """Send ONE summary message with per-item Remove buttons.
+
+    When ``task_actions`` is non-empty (reconciliation deltas applied),
+    they're rendered below the net-new extractions with their own
+    ``task_action:undo:<id>`` callback prefix.
+    """
+    task_actions = task_actions or []
     kind_emoji = {"lesson": "💡", "goal": "🎯", "task": "✅"}
-    lines = ["From today's notes, I added:\n"]
+    lines = []
     buttons: list[list[dict]] = []
 
-    for p in items:
-        emoji = kind_emoji.get(p.kind, "•")
-        lines.append(f"{emoji} {p.text}")
-        undo_action = f"undo_{p.kind}"
-        # Telegram callback_data max is 64 bytes
-        buttons.append(
-            [
-                {
-                    "text": f"Remove: {p.text[:30]}",
-                    "callback_data": f"extract:{undo_action}:{p.id}",
-                }
-            ]
-        )
+    if items:
+        lines.append("From today's notes, I added:\n")
+        for p in items:
+            emoji = kind_emoji.get(p.kind, "•")
+            lines.append(f"{emoji} {p.text}")
+            undo_action = f"undo_{p.kind}"
+            buttons.append(
+                [
+                    {
+                        "text": f"Remove: {p.text[:30]}",
+                        "callback_data": f"extract:{undo_action}:{p.id}",
+                    }
+                ]
+            )
 
-    lines.append("\nTap Remove to undo any item.")
+    if task_actions:
+        if lines:
+            lines.append("")
+        lines.append("From today's journal, I also updated:\n")
+        for a in task_actions:
+            lines.append(_format_task_action_line(a))
+            buttons.append(
+                [
+                    {
+                        "text": f"Undo: {_format_task_action_line(a)[:30]}",
+                        "callback_data": f"task_action:undo:{a.id}",
+                    }
+                ]
+            )
+
+    if not (items or task_actions):
+        return
+
+    lines.append("\nTap Remove/Undo to revert any item.")
     text = "\n".join(lines)
 
     msg_id = _send_telegram_with_buttons(bot_token, chat_id, text, buttons)
     if msg_id:
         msg_id_str = str(msg_id)
-        for p in items:
-            p.telegram_message_id = msg_id_str
-        PendingExtraction.objects.bulk_update(items, ["telegram_message_id"])
+        if items:
+            for p in items:
+                p.telegram_message_id = msg_id_str
+            PendingExtraction.objects.bulk_update(items, ["telegram_message_id"])
+        if task_actions:
+            for a in task_actions:
+                a.telegram_message_id = msg_id_str
+            type(task_actions[0]).objects.bulk_update(task_actions, ["telegram_message_id"])
 
 
 # ── LINE delivery ────────────────────────────────────────────────────────────
@@ -254,15 +360,26 @@ def _deliver_summary_line(
     channel_token: str,
     line_user_id: str,
     items: list[PendingExtraction],
+    task_actions: list | None = None,
 ) -> bool:
-    """Send a Flex Message carousel — one bubble per item with a Remove button.
+    """Send a Flex Message carousel — one bubble per item with a Remove/Undo button.
 
+    Reconciliation deltas (task_actions) render as additional bubbles in the
+    same carousel with their own ``task_action:undo:<id>`` postback prefix.
     Returns True if delivery succeeded, False otherwise.
     """
+    task_actions = task_actions or []
     kind_emoji = {"lesson": "💡", "goal": "🎯", "task": "✅"}
     bubbles = []
 
-    for p in items[:10]:  # LINE carousel max 10 bubbles
+    # LINE carousel max is 10 bubbles total — prioritise extractions, fill
+    # remainder with reconciliation actions
+    remaining = 10
+    items_to_send = items[:remaining]
+    remaining -= len(items_to_send)
+    actions_to_send = task_actions[:remaining]
+
+    for p in items_to_send:
         emoji = kind_emoji.get(p.kind, "•")
         undo_action = f"undo_{p.kind}"
         label = re.sub(r"^[^\w]*", "", "Remove").strip()[:20]
@@ -304,6 +421,53 @@ def _deliver_summary_line(
                                 "label": label,
                                 "data": f"extract:{undo_action}:{p.id}",
                                 "displayText": f"Remove: {p.text[:30]}",
+                            },
+                        }
+                    ],
+                },
+            }
+        )
+
+    for a in actions_to_send:
+        line = _format_task_action_line(a)
+        bubbles.append(
+            {
+                "type": "bubble",
+                "size": "kilo",
+                "styles": {
+                    "body": {"backgroundColor": "#f0eef9"},
+                    "footer": {"backgroundColor": "#f0eef9"},
+                },
+                "body": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "paddingAll": "16px",
+                    "contents": [
+                        {
+                            "type": "text",
+                            "text": line[:120],
+                            "wrap": True,
+                            "size": "sm",
+                            "color": "#12232c",
+                        }
+                    ],
+                },
+                "footer": {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "spacing": "sm",
+                    "paddingAll": "12px",
+                    "paddingTop": "0px",
+                    "contents": [
+                        {
+                            "type": "button",
+                            "style": "secondary",
+                            "height": "sm",
+                            "action": {
+                                "type": "postback",
+                                "label": "Undo",
+                                "data": f"task_action:undo:{a.id}",
+                                "displayText": f"Undo: {line[:30]}",
                             },
                         }
                     ],
@@ -380,17 +544,36 @@ def _resolve_delivery_channel(tenant: Tenant) -> tuple[str, str | int | None, st
 def run_extraction_for_tenant(tenant: Tenant) -> dict:
     """Run end-of-day extraction for a single tenant.
 
-    Returns a summary dict: {"lessons": n, "goals": n, "tasks": n, "skipped": reason|None}
+    For tenants with ``experimental_typed_journal_lifecycle`` on, the LLM
+    is given today's journal *plus* the tenant's open Tasks + active
+    Goals; its response carries both net-new extractions (lessons /
+    goals / tasks) and reconciliation deltas
+    (task_updates / subtasks_added / goal_updates) that get applied via
+    typed-model mutations and recorded as ``PendingTaskAction`` rows.
+
+    Returns: {"lessons": n, "goals": n, "tasks": n, "task_actions": n, "skipped": reason|None}
     """
+    # Local imports — module-level imports of reconciliation symbols are
+    # stripped by the lint-on-Edit hook when added in a separate patch
+    # from their first usage. Keeping them local mirrors the existing
+    # pattern for embed_daily_note / run_agenda_hint_pass below.
+    from apps.journal.reconciliation import gather_reconciliation_context
+
     today = date.today()
+    reconciling = bool(getattr(tenant, "experimental_typed_journal_lifecycle", False))
 
     # Resolve content
     content = _get_daily_note_content(tenant, today) or _get_fallback_content(tenant)
     if not content:
         logger.warning("extraction: no content for tenant %s, skipping", str(tenant.id)[:8])
-        return {"lessons": 0, "goals": 0, "tasks": 0, "skipped": "no_content"}
+        return {"lessons": 0, "goals": 0, "tasks": 0, "task_actions": 0, "skipped": "no_content"}
 
-    logger.info("extraction: tenant=%s content_length=%d", str(tenant.id)[:8], len(content))
+    logger.info(
+        "extraction: tenant=%s content_length=%d reconciling=%s",
+        str(tenant.id)[:8],
+        len(content),
+        reconciling,
+    )
 
     # Resolve delivery channel (Telegram or LINE)
     channel, recipient_id, channel_token = _resolve_delivery_channel(tenant)
@@ -402,14 +585,17 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
     )
     if channel == "none":
         logger.warning("extraction: no delivery channel for tenant %s, skipping", str(tenant.id)[:8])
-        return {"lessons": 0, "goals": 0, "tasks": 0, "skipped": "no_channel"}
+        return {"lessons": 0, "goals": 0, "tasks": 0, "task_actions": 0, "skipped": "no_channel"}
 
-    # Call LLM
+    # Gather reconciliation context (typed-lifecycle tenants only)
+    reconciliation_context = gather_reconciliation_context(tenant) if reconciling else None
+
+    # Call LLM — one pass, returns both new items and (when reconciling) state deltas
     try:
-        extracted, usage = _call_extraction_llm(content)
+        extracted, usage = _call_extraction_llm(content, reconciliation_context=reconciliation_context)
     except Exception:
         logger.exception("extraction: LLM call failed for tenant %s", str(tenant.id)[:8])
-        return {"lessons": 0, "goals": 0, "tasks": 0, "skipped": "llm_error"}
+        return {"lessons": 0, "goals": 0, "tasks": 0, "task_actions": 0, "skipped": "llm_error"}
 
     # Attribute cost to tenant
     record_usage(
@@ -504,12 +690,23 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
         added_items.append(pending)
         counts["tasks"] += 1
 
-    # Send ONE summary message with undo buttons
-    if added_items:
+    # Reconciliation deltas — typed-lifecycle tenants only. Apply state
+    # changes the LLM proposed against existing open Tasks / active Goals
+    # and record each one as a PendingTaskAction for undo from the
+    # morning summary.
+    task_actions = []
+    if reconciling:
+        from apps.journal.reconciliation import apply_reconciliation_deltas
+
+        task_actions = apply_reconciliation_deltas(tenant=tenant, deltas=extracted, source_date=today)
+    counts["task_actions"] = len(task_actions)
+
+    # Send ONE summary message — extractions + reconciliation actions in a single payload
+    if added_items or task_actions:
         if channel == "telegram":
-            _deliver_summary_telegram(channel_token, recipient_id, added_items)
+            _deliver_summary_telegram(channel_token, recipient_id, added_items, task_actions=task_actions)
         elif channel == "line":
-            ok = _deliver_summary_line(channel_token, recipient_id, added_items)
+            ok = _deliver_summary_line(channel_token, recipient_id, added_items, task_actions=task_actions)
             if not ok:
                 # Fallback to Telegram if LINE delivery fails
                 chat_id = getattr(tenant.user, "telegram_chat_id", None)
@@ -518,22 +715,26 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
                     logger.warning(
                         "extraction: LINE failed, falling back to Telegram for tenant %s", str(tenant.id)[:8]
                     )
-                    _deliver_summary_telegram(bot_token, chat_id, added_items)
+                    _deliver_summary_telegram(bot_token, chat_id, added_items, task_actions=task_actions)
     else:
         logger.warning(
-            "extraction: tenant=%s zero items after dedup (raw: lessons=%d goals=%d tasks=%d)",
+            "extraction: tenant=%s zero items after dedup (raw: lessons=%d goals=%d tasks=%d, deltas=%d)",
             str(tenant.id)[:8],
             len(extracted.get("lessons", [])),
             len(extracted.get("goals", [])),
             len(extracted.get("tasks", [])),
+            len(extracted.get("task_updates", []))
+            + len(extracted.get("subtasks_added", []))
+            + len(extracted.get("goal_updates", [])),
         )
 
     logger.info(
-        "extraction: tenant=%s added lessons=%d goals=%d tasks=%d channel=%s",
+        "extraction: tenant=%s added lessons=%d goals=%d tasks=%d task_actions=%d channel=%s",
         str(tenant.id)[:8],
         counts["lessons"],
         counts["goals"],
         counts["tasks"],
+        counts["task_actions"],
         channel,
     )
 
