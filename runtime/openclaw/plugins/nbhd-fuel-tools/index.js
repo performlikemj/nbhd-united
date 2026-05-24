@@ -378,7 +378,7 @@ export default function register(api) {
           detail_json: {
             type: "object",
             description:
-              "Updated category-specific structured data. For strength/calisthenics, every set in exercises[] must include its `type` (weighted_reps | bodyweight_reps | hold_time), same contract as nbhd_fuel_log_workout.",
+              'Updated category-specific structured data. For strength/calisthenics, every set in exercises[] must include its `type` (weighted_reps | bodyweight_reps | hold_time), same contract as nbhd_fuel_log_workout. For cardio, populate at least one of {distance_km, pace ("M:SS"), avg_hr, elevation, avg_power} — e.g. {"distance_km": 5, "pace": "5:30"}. For HIIT, set {rounds, work_s, rest_s} — e.g. {"rounds": 8, "work_s": 30, "rest_s": 30}. For mobility, set {"blocks": ["hip openers", "thoracic rotation"]}. Use this to fill in target prescriptions on planned workouts — do not leave a planned workout\'s detail_json empty.',
           },
         },
         required: ["workout_id"],
@@ -718,7 +718,8 @@ export default function register(api) {
                 duration_minutes: { type: "integer", description: "Estimated duration in minutes." },
                 detail_json: {
                   type: "object",
-                  description: "Category-specific data: exercises with sets/reps for strength, distance/pace for cardio, etc.",
+                  description:
+                    'Category-specific prescription. Populate every training day, not just strength. Strength/calisthenics: {"exercises": [{"name": "...", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 80}, ...]}]}. Cardio: {"distance_km": 5, "pace": "5:30"} (or duration-only if pace is left to feel). HIIT: {"rounds": 8, "work_s": 30, "rest_s": 30}. Mobility: {"blocks": ["hip openers", "thoracic rotation"]}. Leaving this empty means the user opens the workout in the UI and sees no plan for the day.',
                 },
               },
               required: ["activity", "category"],
