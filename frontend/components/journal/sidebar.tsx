@@ -284,38 +284,37 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
         })}
       </div>
 
-      {/* Recent Entries */}
-      {recentEntries && recentEntries.length > 0 && (
-        <div className="px-3 pt-3 border-t border-white/[0.03] mt-1.5">
-          <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint mb-2">
-            Recent
-          </p>
-          <div className="space-y-0.5">
-            {recentEntries.slice(0, 6).map((entry) => {
-              const isActive = activeKind === "daily" && activeSlug === entry.slug;
-              return (
-                <button
-                  key={entry.slug}
-                  type="button"
-                  onClick={() => onNavigate("daily", entry.slug)}
-                  onMouseEnter={() => prefetchDocument("daily", entry.slug)}
-                  className={clsx(
-                    "w-full rounded-lg px-2.5 py-1.5 text-left text-[12px] transition min-h-[32px] truncate",
-                    isActive
-                      ? "text-accent bg-accent/[0.05]"
-                      : "text-ink-faint/70 hover:bg-white/[0.03] hover:text-ink-muted",
-                  )}
-                >
-                  {entry.title}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* User documents */}
+      {/* Scrollable content: Recent + user documents */}
       <div className="flex-1 overflow-y-auto px-2 py-2 border-t border-white/[0.03] mt-1.5 custom-scrollbar">
+        {recentEntries && recentEntries.length > 0 && (
+          <div className="px-1 pb-3 mb-2 border-b border-white/[0.03]">
+            <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint mb-2 px-1.5">
+              Recent
+            </p>
+            <div className="space-y-0.5">
+              {recentEntries.map((entry) => {
+                const isActive = activeKind === "daily" && activeSlug === entry.slug;
+                return (
+                  <button
+                    key={entry.slug}
+                    type="button"
+                    onClick={() => onNavigate("daily", entry.slug)}
+                    onMouseEnter={() => prefetchDocument("daily", entry.slug)}
+                    className={clsx(
+                      "w-full rounded-lg px-2.5 py-1.5 text-left text-[12px] transition min-h-[32px] truncate",
+                      isActive
+                        ? "text-accent bg-accent/[0.05]"
+                        : "text-ink-faint/70 hover:bg-white/[0.03] hover:text-ink-muted",
+                    )}
+                  >
+                    {entry.title}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {isLoading ? (
           <div className="space-y-2 px-3 py-2">
             {[1, 2, 3].map((i) => (
