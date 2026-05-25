@@ -145,6 +145,10 @@ class StripeCheckoutViewTest(TestCase):
         self.tenant = create_tenant(display_name="Checkout", telegram_chat_id=600)
         self.user = self.tenant.user
         self.user.email = "checkout@example.com"
+        # The checkout endpoint requires a verified email before reaching
+        # any Stripe code; these tests target Stripe behavior, so mark
+        # the user verified to bypass the verification gate.
+        self.user.email_verified = True
         self.user.save()
         refresh = RefreshToken.for_user(self.user)
         self.auth_header = f"Bearer {refresh.access_token}"

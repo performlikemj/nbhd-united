@@ -123,6 +123,7 @@ export interface Integration {
 export interface AuthUser {
   id: string;
   email: string;
+  email_verified: boolean;
   username: string;
   display_name: string;
   language: string;

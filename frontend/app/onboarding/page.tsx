@@ -1,5 +1,8 @@
 "use client";
 
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
+
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
 import { PersonaScene } from "@/components/onboarding/persona-scene";
 import { MessagingScene } from "@/components/onboarding/messaging-scene";
@@ -12,9 +15,18 @@ import {
 } from "@/lib/queries";
 
 export default function OnboardingPage() {
+  const router = useRouter();
   const { data: me, isLoading } = useMeQuery();
   const tenant = me?.tenant;
   const hasTenant = Boolean(tenant);
+
+  // Email verification gate — bounce unverified users to /verify-email so
+  // they can't reach the Stripe step (which the backend would 403 anyway).
+  useEffect(() => {
+    if (me && !me.email_verified) {
+      router.replace("/verify-email");
+    }
+  }, [me, router]);
 
   const { data: telegramStatus } = useTelegramStatusQuery(hasTenant);
   const { data: lineStatus } = useLineStatusQuery(hasTenant);
