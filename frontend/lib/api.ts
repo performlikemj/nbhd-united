@@ -166,6 +166,26 @@ export async function confirmPasswordReset(
   );
 }
 
+export async function requestEmailVerification(): Promise<{ detail: string }> {
+  return apiFetch<{ detail: string }>("/api/v1/auth/email-verification/request/", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function confirmEmailVerification(
+  uid: string,
+  token: string,
+): Promise<{ detail: string; email_verified: boolean }> {
+  return apiFetch<{ detail: string; email_verified: boolean }>(
+    "/api/v1/auth/email-verification/confirm/",
+    {
+      method: "POST",
+      body: JSON.stringify({ uid, token }),
+    },
+  );
+}
+
 export function fetchMe(): Promise<AuthUser> {
   return apiFetch<AuthUser>("/api/v1/auth/me/");
 }

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 
-import { fetchMe, signup } from "@/lib/api";
+import { signup } from "@/lib/api";
 import { setTokens } from "@/lib/auth";
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
 import { PasswordStrengthMeter } from "@/components/onboarding/password-strength-meter";
@@ -35,13 +35,10 @@ export default function SignupPage() {
     try {
       const tokens = await signup(email, password, displayName || undefined);
       setTokens(tokens.access, tokens.refresh);
-      try {
-        const me = await fetchMe();
-        const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active" || !me.tenant.user.telegram_chat_id;
-        router.push(isOnboardingNeeded ? "/onboarding" : "/journal");
-      } catch {
-        router.push("/onboarding");
-      }
+      // Brand-new accounts are always unverified — go straight to the
+      // verification screen. /verify-email will redirect onward once the
+      // user clicks the link in their inbox.
+      router.push("/verify-email");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Signup failed.");
     } finally {

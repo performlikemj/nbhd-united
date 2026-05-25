@@ -73,6 +73,19 @@ class User(AbstractUser):
         help_text="Longitude for weather/location services",
     )
 
+    # Email verification — gates Stripe checkout. Existing users are
+    # migrated as verified (they already have tenants and subscriptions);
+    # only new signups go through the verify-email flow.
+    email_verified = models.BooleanField(
+        default=False,
+        help_text="True once the user has clicked the verification link.",
+    )
+    email_verified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When email verification was completed.",
+    )
+
     class Meta:
         db_table = "users"
 

@@ -2,6 +2,8 @@ from django.urls import path
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from .auth_views import (
+    EmailVerificationConfirmView,
+    EmailVerificationRequestView,
     LogoutView,
     MeView,
     PasswordResetConfirmView,
@@ -26,6 +28,17 @@ urlpatterns = [
         "password-reset/confirm/",
         PasswordResetConfirmView.as_view(),
         name="auth-password-reset-confirm",
+    ),
+    # Email verification
+    path(
+        "email-verification/request/",
+        EmailVerificationRequestView.as_view(),
+        name="auth-email-verification-request",
+    ),
+    path(
+        "email-verification/confirm/",
+        EmailVerificationConfirmView.as_view(),
+        name="auth-email-verification-confirm",
     ),
     # Personal Access Tokens
     path("tokens/", PATListView.as_view(), name="pat-list"),

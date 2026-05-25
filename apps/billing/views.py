@@ -166,6 +166,18 @@ class StripeCheckoutView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        # Email verification is the primary anti-abuse gate before money
+        # changes hands. Without this check, an attacker who scripted
+        # signup could trigger Stripe checkout sessions for any email.
+        if not getattr(request.user, "email_verified", False):
+            return Response(
+                {
+                    "detail": "Please verify your email before subscribing.",
+                    "code": "email_not_verified",
+                },
+                status=http_status.HTTP_403_FORBIDDEN,
+            )
+
         api_key = _require_stripe_api_key()
         if not api_key:
             return Response(

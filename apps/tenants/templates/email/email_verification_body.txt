@@ -1,0 +1,11 @@
+Hi {{ display_name }},
+
+Welcome to NBHD United. To finish creating your account, confirm your
+email address by opening this link in your browser:
+
+{{ verify_url }}
+
+The link expires in 3 days. If you didn't sign up, you can safely
+ignore this email.
+
+— NBHD United

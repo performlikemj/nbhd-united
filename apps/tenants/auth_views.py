@@ -1,4 +1,4 @@
-"""Authentication views — signup, login, logout, me, password reset."""
+"""Authentication views — signup, login, logout, me, password reset, email verification."""
 
 import logging
 
@@ -10,6 +10,7 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
+from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 from rest_framework import status
@@ -21,6 +22,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.common.cache import tenant_cache
 
+from .email_verification import email_verification_token_generator
 from .models import Tenant
 from .serializers import TenantSerializer, UserSerializer
 
@@ -34,6 +36,13 @@ logger = logging.getLogger(__name__)
 PASSWORD_RESET_RATE_LIMIT_PER_IP = 5
 PASSWORD_RESET_RATE_LIMIT_PER_EMAIL = 3
 PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS = 60 * 60  # 1 hour
+
+# Email verification uses the same policy. Signup already gates account
+# creation behind email uniqueness, so the per-email bucket primarily
+# protects an already-signed-up user from being mailbombed by someone
+# scripting the resend button.
+EMAIL_VERIFICATION_RATE_LIMIT_PER_IP = 5
+EMAIL_VERIFICATION_RATE_LIMIT_PER_EMAIL = 3
 
 
 def _client_ip(request) -> str:
@@ -82,6 +91,38 @@ def _send_password_reset_email(user, uid: str, token: str) -> None:
         # We deliberately don't surface email failures to the caller — that
         # would leak existence/non-existence of the account.
         logger.exception("password_reset.email_send_failed user_id=%s", user.pk)
+
+
+def _send_email_verification_email(user, uid: str, token: str) -> None:
+    """Send the verification link to the user. Failures are logged but do not surface."""
+    frontend_url = getattr(django_settings, "FRONTEND_URL", "").rstrip("/")
+    verify_url = f"{frontend_url}/verify-email/confirm?uid={uid}&token={token}"
+    context = {
+        "user": user,
+        "verify_url": verify_url,
+        "display_name": getattr(user, "display_name", None) or user.email,
+    }
+    subject = render_to_string("email/email_verification_subject.txt", context).strip()
+    text_body = render_to_string("email/email_verification_body.txt", context)
+    html_body = render_to_string("email/email_verification_body.html", context)
+    try:
+        send_mail(
+            subject=subject,
+            message=text_body,
+            from_email=None,  # uses DEFAULT_FROM_EMAIL
+            recipient_list=[user.email],
+            html_message=html_body,
+            fail_silently=False,
+        )
+    except Exception:
+        logger.exception("email_verification.email_send_failed user_id=%s", user.pk)
+
+
+def _issue_verification_email(user) -> None:
+    """Generate a uid/token for the user and mail the verification link."""
+    uid = urlsafe_base64_encode(force_bytes(user.pk))
+    token = email_verification_token_generator.make_token(user)
+    _send_email_verification_email(user, uid, token)
 
 
 class PasswordResetRequestView(APIView):
@@ -208,6 +249,12 @@ class SignupView(APIView):
             display_name=display_name,
         )
 
+        # New accounts start unverified; the signup flow drops the user on
+        # /verify-email and we send them the link here. We deliberately
+        # still issue JWTs so the frontend can poll /me for verification
+        # status and offer a resend button without a second login step.
+        _issue_verification_email(user)
+
         refresh = RefreshToken.for_user(user)
         return Response(
             {
@@ -215,6 +262,84 @@ class SignupView(APIView):
                 "refresh": str(refresh),
             },
             status=status.HTTP_201_CREATED,
+        )
+
+
+class EmailVerificationRequestView(APIView):
+    """POST → resend the verification email for the logged-in user.
+
+    Always returns 200 to avoid leaking whether a previous send succeeded.
+    Rate-limited per IP + per email.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        email = (user.email or "").strip().lower()
+        ip = _client_ip(request)
+
+        if email and _rate_limited(f"email_verify_email:{email}", EMAIL_VERIFICATION_RATE_LIMIT_PER_EMAIL):
+            return Response(status=status.HTTP_429_TOO_MANY_REQUESTS)
+        if ip and _rate_limited(f"email_verify_ip:{ip}", EMAIL_VERIFICATION_RATE_LIMIT_PER_IP):
+            return Response(status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+        # Already verified — return 200 idempotently so the frontend can
+        # safely call this on stale state.
+        if not getattr(user, "email_verified", False):
+            _issue_verification_email(user)
+
+        return Response(
+            {"detail": "If your email is unverified, a fresh link is on its way."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class EmailVerificationConfirmView(APIView):
+    """POST {uid, token} → mark the user's email verified."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        uid = request.data.get("uid") or ""
+        token = request.data.get("token") or ""
+
+        if not uid or not token:
+            return Response(
+                {"detail": "uid and token are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            user_pk = force_str(urlsafe_base64_decode(uid))
+            user = User.objects.get(pk=user_pk)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            return Response(
+                {"detail": "Verification link is invalid or has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Idempotent: if they're already verified, accept and move on so
+        # double-clicking the email link is harmless.
+        if user.email_verified:
+            return Response(
+                {"detail": "Email already verified.", "email_verified": True},
+                status=status.HTTP_200_OK,
+            )
+
+        if not email_verification_token_generator.check_token(user, token):
+            return Response(
+                {"detail": "Verification link is invalid or has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user.email_verified = True
+        user.email_verified_at = timezone.now()
+        user.save(update_fields=["email_verified", "email_verified_at"])
+
+        return Response(
+            {"detail": "Email verified.", "email_verified": True},
+            status=status.HTTP_200_OK,
         )
 
 

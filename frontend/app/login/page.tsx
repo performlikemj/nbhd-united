@@ -25,8 +25,15 @@ export default function LoginPage() {
       setTokens(tokens.access, tokens.refresh);
       try {
         const me = await fetchMe();
-        const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active" || !me.tenant.user.telegram_chat_id;
-        router.push(isOnboardingNeeded ? "/onboarding" : "/journal");
+        if (!me.email_verified) {
+          router.push("/verify-email");
+        } else {
+          const isOnboardingNeeded =
+            !me.tenant ||
+            me.tenant.status !== "active" ||
+            !me.tenant.user.telegram_chat_id;
+          router.push(isOnboardingNeeded ? "/onboarding" : "/journal");
+        }
       } catch {
         router.push("/onboarding");
       }
