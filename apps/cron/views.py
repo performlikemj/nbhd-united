@@ -164,6 +164,11 @@ TASK_MAP = {
     # synthesis for each tenant whose local time is Sunday 09:00.
     # Bills to platform (record_usage is_system=True), not user quota.
     "weekly_gravity_reflection": "apps.insights.tasks.weekly_gravity_reflection_task",
+    # PII arbiter — hourly sweep that asks Claude Haiku whether each
+    # newly-minted entity is actually PII. Rejected entries go on the
+    # tenant denylist so the next message stops re-minting them.
+    # See apps/pii/arbiter.py and issue #660.
+    "pii_arbiter": "apps.pii.arbiter.pii_arbiter_task",
 }
 
 

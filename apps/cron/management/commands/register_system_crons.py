@@ -75,6 +75,13 @@ SYSTEM_CRONS = [
     # Django-side via LiteLLM — no OpenClaw container wake, no user-quota cost.
     # Idempotent per (tenant, ISO week) via Document(kind=WEEKLY) slug check.
     ("weekly-gravity-reflection", "0 * * * *", "/api/cron/trigger/weekly_gravity_reflection/"),
+    # Hourly at :40 UTC — LLM-as-arbiter sweep over recent PII mints.
+    # Asks Claude Haiku whether each newly-minted entity is actually a
+    # person/location and promotes rejected ones to ``pii_denylist`` so
+    # the redactor stops driving redaction off them. Offset from :00,
+    # :05, :25 to avoid colliding with the other hourly system crons.
+    # See apps/pii/arbiter.py and issue #660.
+    ("pii-arbiter", "40 * * * *", "/api/cron/trigger/pii_arbiter/"),
     # Every minute — reaper for the per-tenant inbound message queue.
     # Republishes drain tasks for PendingMessage rows whose original drain
     # never ran (publish_task raised + swallowed, QStash 5xx → DLQ, worker

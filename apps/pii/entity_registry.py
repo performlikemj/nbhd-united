@@ -39,7 +39,10 @@ from collections.abc import Iterator
 from typing import Any
 
 # Keys allowed in an entity entry. Anything else is dropped on normalize.
-_KNOWN_FIELDS = ("name", "relationship", "notes", "updated_at")
+# ``arbiter_judged_at`` is an internal stamp written by the PII arbiter cron
+# (apps/pii/arbiter.py) so already-judged entries skip re-evaluation; it
+# stays out of ``get_metadata`` because it isn't user-facing identity context.
+_KNOWN_FIELDS = ("name", "relationship", "notes", "updated_at", "arbiter_judged_at")
 
 _PLACEHOLDER_NUM_RE = re.compile(r"\[[A-Z_]+_(\d+)\]")
 
