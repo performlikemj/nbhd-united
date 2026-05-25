@@ -1265,6 +1265,11 @@ class LineWebhookView(View):
             self._handle_extraction_postback(tenant, data)
             return
 
+        # Reconciliation task-action undo callbacks (nightly extraction deltas)
+        if data.startswith("task_action:"):
+            self._handle_task_action_postback(tenant, data)
+            return
+
         # Lesson approval callbacks (agent-suggested)
         if data.startswith("lesson:"):
             self._handle_lesson_postback(tenant, data)
@@ -1426,6 +1431,21 @@ class LineWebhookView(View):
 
         except Exception:
             logger.exception("Error handling extraction postback: %s", data)
+
+    @staticmethod
+    def _handle_task_action_postback(tenant, data: str) -> None:
+        """Handle reconciliation PendingTaskAction undo from LINE postback.
+
+        Data format: task_action:undo:<action_id>
+        """
+        from apps.router.task_action_callbacks import handle_task_action_postback_line
+
+        try:
+            ok, message = handle_task_action_postback_line(tenant, data)
+            tone = "success" if ok else "warning"
+            _send_line_status_bubble(tenant, message, tone=tone)
+        except Exception:
+            logger.exception("Error handling task_action postback: %s", data)
 
     @staticmethod
     def _handle_lesson_postback(tenant, data: str) -> None:

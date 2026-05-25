@@ -96,10 +96,22 @@ def _approve_lesson(pending: PendingExtraction) -> tuple[str, str | None]:
 
 
 def _approve_goal(pending: PendingExtraction) -> tuple[str, None]:
-    """Append goal to the tenant's goals Document (create if missing).
+    """Create a Goal — typed row when the tenant flag is on, legacy markdown otherwise.
 
-    Returns (user_message, None).
+    Returns (user_message, None). The created row id (if any) is stored on
+    the pending extraction so undo can find it later.
     """
+    if getattr(pending.tenant, "experimental_typed_journal_lifecycle", False):
+        from apps.journal.models import Goal
+
+        goal = Goal.objects.create(
+            tenant=pending.tenant,
+            title=pending.text[:256],
+        )
+        pending.goal = goal
+        pending.save(update_fields=["goal"])
+        return "Added to your goals! 🎯", None
+
     doc, _ = Document.objects.get_or_create(
         tenant=pending.tenant,
         kind=Document.Kind.GOAL,
@@ -109,7 +121,6 @@ def _approve_goal(pending: PendingExtraction) -> tuple[str, None]:
     today = date.today().isoformat()
     new_entry = f"\n### {pending.text}\n- Added: {today}\n- Status: active\n"
 
-    # Insert under ## Active
     if "## Active" in doc.markdown:
         doc.markdown = doc.markdown.replace("## Active", f"## Active\n{new_entry}", 1)
     else:
@@ -120,10 +131,22 @@ def _approve_goal(pending: PendingExtraction) -> tuple[str, None]:
 
 
 def _approve_task(pending: PendingExtraction) -> tuple[str, None]:
-    """Append task to the tenant's tasks Document (create if missing).
+    """Create a Task — typed row when the tenant flag is on, legacy markdown otherwise.
 
-    Returns (user_message, None).
+    Returns (user_message, None). The created row id (if any) is stored on
+    the pending extraction so undo can find it later.
     """
+    if getattr(pending.tenant, "experimental_typed_journal_lifecycle", False):
+        from apps.journal.models import Task
+
+        task = Task.objects.create(
+            tenant=pending.tenant,
+            title=pending.text[:256],
+        )
+        pending.task = task
+        pending.save(update_fields=["task"])
+        return "Added to your tasks! ✅", None
+
     doc, _ = Document.objects.get_or_create(
         tenant=pending.tenant,
         kind=Document.Kind.TASKS,
@@ -146,7 +169,14 @@ def _undo_lesson(pending: PendingExtraction) -> None:
 
 
 def _undo_goal(pending: PendingExtraction) -> None:
-    """Remove the goal block from the tenant's goals Document."""
+    """Reverse the goal approval — delete the typed row when present,
+    otherwise scrub the legacy markdown block."""
+    if pending.goal_id:
+        from apps.journal.models import Goal
+
+        Goal.objects.filter(id=pending.goal_id, tenant=pending.tenant).delete()
+        return
+
     doc = Document.objects.filter(tenant=pending.tenant, kind=Document.Kind.GOAL, slug="goals").first()
     if doc:
         pattern = r"\n" + re.escape(f"### {pending.text}") + r"\n- Added: \d{4}-\d{2}-\d{2}\n- Status: active\n"
@@ -155,7 +185,14 @@ def _undo_goal(pending: PendingExtraction) -> None:
 
 
 def _undo_task(pending: PendingExtraction) -> None:
-    """Remove the task line from the tenant's tasks Document."""
+    """Reverse the task approval — delete the typed row when present,
+    otherwise scrub the legacy markdown line."""
+    if pending.task_id:
+        from apps.journal.models import Task
+
+        Task.objects.filter(id=pending.task_id, tenant=pending.tenant).delete()
+        return
+
     doc = Document.objects.filter(tenant=pending.tenant, kind=Document.Kind.TASKS, slug="tasks").first()
     if doc:
         pattern = re.escape(f"- [ ] {pending.text}") + r"  _\(added \d{4}-\d{2}-\d{2}\)_\n"

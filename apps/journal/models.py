@@ -236,6 +236,20 @@ class PendingExtraction(models.Model):
     expires_at = models.DateTimeField()
     telegram_message_id = models.CharField(max_length=64, blank=True)
     lesson_id = models.BigIntegerField(null=True, blank=True)
+    goal = models.ForeignKey(
+        "Goal",
+        on_delete=models.SET_NULL,
+        related_name="pending_extractions",
+        null=True,
+        blank=True,
+    )
+    task = models.ForeignKey(
+        "Task",
+        on_delete=models.SET_NULL,
+        related_name="pending_extractions",
+        null=True,
+        blank=True,
+    )
 
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
     resolved_at = models.DateTimeField(null=True, blank=True)
@@ -368,6 +382,13 @@ class Task(models.Model):
         null=True,
         blank=True,
     )
+    parent_task = models.ForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        related_name="subtasks",
+        null=True,
+        blank=True,
+    )
     related_ref = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -406,6 +427,82 @@ class Task(models.Model):
     def defer(self) -> None:
         self.status = self.Status.DEFERRED
         self.save(update_fields=["status", "updated_at"])
+
+
+class PendingTaskAction(models.Model):
+    """An auto-applied reconciliation action on a Task or Goal with undo capability.
+
+    Created by the extended nightly extraction pass when journal evidence
+    matches an open ``Task`` or active ``Goal``. Mirrors the
+    ``PendingExtraction`` pattern: each action is applied immediately at
+    21:30 UTC, recorded here with a ``before_state`` snapshot, and the user
+    gets a morning Telegram/LINE summary with per-item Remove buttons that
+    revert by restoring the snapshot.
+
+    Distinct from ``PendingExtraction``: that table tracks net-new items
+    (lessons/goals/tasks) the LLM proposed; this one tracks state changes
+    on rows that already existed.
+    """
+
+    class Kind(models.TextChoices):
+        TASK_COMPLETE = "task_complete", "Task complete"
+        TASK_PROGRESS = "task_progress", "Task progress"
+        TASK_SKIP = "task_skip", "Task skip"
+        TASK_DEFER = "task_defer", "Task defer"
+        SUBTASK_CREATE = "subtask_create", "Subtask create"
+        GOAL_ACHIEVE = "goal_achieve", "Goal achieve"
+        GOAL_ABANDON = "goal_abandon", "Goal abandon"
+
+    class Status(models.TextChoices):
+        APPLIED = "applied", "Applied"
+        UNDONE = "undone", "Undone"
+        FAILED = "failed", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.CASCADE,
+        related_name="pending_task_actions",
+    )
+    kind = models.CharField(max_length=24, choices=Kind.choices)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.APPLIED)
+
+    task = models.ForeignKey(
+        Task,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="pending_actions",
+    )
+    goal = models.ForeignKey(
+        Goal,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="pending_actions",
+    )
+
+    evidence = models.TextField(blank=True, default="")
+    source_date = models.DateField()
+    before_state = models.JSONField(null=True, blank=True)
+
+    telegram_message_id = models.CharField(max_length=64, blank=True, default="")
+    line_message_token = models.CharField(max_length=128, blank=True, default="")
+
+    applied_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "journal_pending_task_actions"
+        ordering = ["-applied_at"]
+        indexes = [
+            models.Index(fields=["tenant", "status"]),
+            models.Index(fields=["tenant", "source_date"]),
+            models.Index(fields=["tenant", "kind", "status"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}:{self.kind}:{str(self.id)[:8]}"
 
 
 class DocumentChunk(models.Model):

@@ -197,6 +197,97 @@ class DocumentListCreateView(APIView):
         return Response(DocumentSerializer(doc).data, status=status_code)
 
 
+def _synthesize_tasks_markdown(tenant: Tenant) -> str:
+    """Render typed ``Task`` rows for a tenant as a tasks-document markdown blob.
+
+    Used by ``DocumentDetailView.get`` to keep the existing /journal/tasks
+    UI accurate when ``experimental_typed_journal_lifecycle`` is on (legacy
+    ``Document(kind=tasks).markdown`` is preserved as archive but no longer
+    the source of truth).
+    """
+    from .models import Task
+
+    qs = list(
+        Task.objects.filter(tenant=tenant).select_related("parent_task").order_by("status", "due_date", "-updated_at")
+    )
+    if not qs:
+        return "# Tasks\n\n_No tasks yet._\n"
+
+    by_status: dict[str, list[Task]] = defaultdict(list)
+    for t in qs:
+        by_status[t.status].append(t)
+
+    def render_task(task: Task, indent: int = 0) -> str:
+        prefix = "  " * indent
+        if task.status == Task.Status.DONE:
+            mark = "x"
+        elif task.status == Task.Status.SKIPPED:
+            mark = "~"
+        elif task.status == Task.Status.DEFERRED:
+            mark = "→"
+        else:
+            mark = " "
+        due = f" _(due {task.due_date.isoformat()})_" if task.due_date else ""
+        lines = [f"{prefix}- [{mark}] {task.title}{due}"]
+        for child in task.subtasks.order_by("status", "-updated_at"):
+            lines.append(render_task(child, indent + 1))
+        return "\n".join(lines)
+
+    sections = []
+    section_order = [
+        (Task.Status.OPEN, "Open"),
+        (Task.Status.IN_PROGRESS, "In progress"),
+        (Task.Status.DEFERRED, "Deferred"),
+        (Task.Status.DONE, "Done"),
+        (Task.Status.SKIPPED, "Skipped"),
+    ]
+    for status_key, label in section_order:
+        items = [t for t in by_status.get(status_key, []) if t.parent_task_id is None]
+        if not items:
+            continue
+        sections.append(f"## {label}\n\n" + "\n".join(render_task(t) for t in items))
+
+    return "# Tasks\n\n" + "\n\n".join(sections) + "\n"
+
+
+def _synthesize_goals_markdown(tenant: Tenant) -> str:
+    """Render typed ``Goal`` rows for a tenant as a goals-document markdown blob."""
+    from .models import Goal
+
+    qs = list(Goal.objects.filter(tenant=tenant).order_by("status", "target_date", "-updated_at"))
+    if not qs:
+        return "# Goals\n\n_No goals yet._\n"
+
+    by_status: dict[str, list[Goal]] = defaultdict(list)
+    for g in qs:
+        by_status[g.status].append(g)
+
+    def render_goal(g: Goal) -> str:
+        bullet = [f"### {g.title}"]
+        if g.target_date:
+            bullet.append(f"- Target: {g.target_date.isoformat()}")
+        if g.status == Goal.Status.ACHIEVED and g.achieved_at:
+            bullet.append(f"- Achieved: {g.achieved_at.date().isoformat()}")
+        if g.description:
+            bullet.append("")
+            bullet.append(g.description)
+        return "\n".join(bullet)
+
+    sections = []
+    section_order = [
+        (Goal.Status.ACTIVE, "Active"),
+        (Goal.Status.ACHIEVED, "Achieved"),
+        (Goal.Status.ABANDONED, "Abandoned"),
+    ]
+    for status_key, label in section_order:
+        items = by_status.get(status_key, [])
+        if not items:
+            continue
+        sections.append(f"## {label}\n\n" + "\n\n".join(render_goal(g) for g in items))
+
+    return "# Goals\n\n" + "\n\n".join(sections) + "\n"
+
+
 class DocumentDetailView(APIView):
     """GET/PATCH/DELETE /api/v1/journal/documents/<kind>/<slug>/"""
 
@@ -218,6 +309,17 @@ class DocumentDetailView(APIView):
                     {"error": "not_found", "detail": "Document not found."},
                     status=status.HTTP_404_NOT_FOUND,
                 )
+
+        # Typed-lifecycle synthesis: when the flag is on, the source of
+        # truth for tasks + goals is the typed Task / Goal rows, not the
+        # legacy Document(kind=tasks|goal).markdown archive. Replace the
+        # markdown in the response so the existing journal UI shows
+        # current state.
+        if getattr(tenant, "experimental_typed_journal_lifecycle", False):
+            if kind == "tasks":
+                doc.markdown = _synthesize_tasks_markdown(tenant)
+            elif kind == "goal":
+                doc.markdown = _synthesize_goals_markdown(tenant)
         return Response(DocumentSerializer(doc).data)
 
     def patch(self, request, kind: str, slug: str):
