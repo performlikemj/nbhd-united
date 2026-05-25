@@ -72,6 +72,14 @@ SYSTEM_CRONS = [
     # Django-side via LiteLLM — no OpenClaw container wake, no user-quota cost.
     # Idempotent per (tenant, ISO week) via Document(kind=WEEKLY) slug check.
     ("weekly-gravity-reflection", "0 * * * *", "/api/cron/trigger/weekly_gravity_reflection/"),
+    # Every minute — reaper for the per-tenant inbound message queue.
+    # Republishes drain tasks for PendingMessage rows whose original drain
+    # never ran (publish_task raised + swallowed, QStash 5xx → DLQ, worker
+    # died mid-claim). Steady-state ticks are no-ops; the cron exists to
+    # bound how long a stuck inbound can sit before being processed (or
+    # dropped with apology, if past the staleness threshold). See
+    # ``apps.router.pending_queue.reap_stuck_inbound_messages_task``.
+    ("reap-stuck-inbound-messages", "* * * * *", "/api/cron/trigger/reap_stuck_inbound_messages/"),
 ]
 
 
