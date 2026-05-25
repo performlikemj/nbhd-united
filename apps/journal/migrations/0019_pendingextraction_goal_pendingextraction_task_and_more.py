@@ -119,4 +119,14 @@ class Migration(migrations.Migration):
                 ],
             },
         ),
+        # Public-schema lockdown invariant — every owned public table must
+        # have RLS enabled (see tenants/0059 + tenants/0066, and the
+        # ``test_rls_enabled_on_owned_public_tables`` guard). No policies
+        # are defined here: the Django backend connects as the table owner
+        # and bypasses RLS by default; the anon role PostgREST exposes has
+        # no SELECT/INSERT/UPDATE grant on this table.
+        migrations.RunSQL(
+            sql="ALTER TABLE journal_pending_task_actions ENABLE ROW LEVEL SECURITY;",
+            reverse_sql=migrations.RunSQL.noop,
+        ),
     ]
