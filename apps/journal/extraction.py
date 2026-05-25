@@ -764,4 +764,11 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
     except Exception:
         logger.exception("extraction: agenda-hint pass failed for tenant %s (non-fatal)", str(tenant.id)[:8])
 
+    # Mark this tenant's nightly extraction as complete for their local day
+    # so the hourly per-tz dispatcher (apps.orchestrator.tasks) doesn't fire
+    # again within the same local 21-hour window. Records UTC now; the
+    # dispatcher compares against tenant local-date.
+    tenant.last_nightly_extraction_at = timezone.now()
+    tenant.save(update_fields=["last_nightly_extraction_at"])
+
     return {**counts, "skipped": None}

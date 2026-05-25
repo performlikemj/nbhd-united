@@ -349,6 +349,13 @@ class Tenant(models.Model):
         ),
     )
 
+    # When the most recent ``nightly_extraction_task`` run completed for this
+    # tenant. Used by the hourly per-tenant-tz dispatcher to skip tenants
+    # whose extraction has already run today (in their local timezone) — so
+    # a tenant whose local-21:xx hour ticks twice (DST boundary, manual
+    # backfill) doesn't pay for two LLM calls or get two morning summaries.
+    last_nightly_extraction_at = models.DateTimeField(null=True, blank=True)
+
     # Feature tips
     feature_tips_enabled = models.BooleanField(
         default=True,

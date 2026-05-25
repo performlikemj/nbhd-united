@@ -44,8 +44,11 @@ SYSTEM_CRONS = [
     ("hibernate-idle-tenants", "0 * * * *", "/api/cron/trigger/hibernate_idle_tenants/"),
     # Daily at 07:00 UTC — clean up delivered message buffers older than 7 days
     ("cleanup-delivered-buffers", "0 7 * * *", "/api/cron/trigger/cleanup_delivered_buffers/"),
-    # Daily at 21:30 UTC — extract goals/tasks/lessons from daily notes
-    ("nightly-extraction", "30 21 * * *", "/api/cron/trigger/nightly_extraction/"),
+    # Hourly dispatcher for nightly extraction. Fires for each tenant whose
+    # local time is 21:xx (timezone-aware). The dispatcher's own idempotency
+    # guard (Tenant.last_nightly_extraction_at) prevents double-fires within
+    # the same local day.
+    ("nightly-extraction", "0 * * * *", "/api/cron/trigger/nightly_extraction/"),
     # Every hour — reconcile derived Fuel session crons against Postgres truth
     # for tenants on the new per-session scheduling flow (catches drift).
     ("reconcile-fuel-crons", "0 * * * *", "/api/cron/trigger/reconcile_fuel_crons/"),
