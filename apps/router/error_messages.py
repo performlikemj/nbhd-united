@@ -73,6 +73,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             " had to drop it after a few tries. If it's important, please send"
             " it again.\n\nIt started with: \u201c{excerpt}\u201d"
         ),
+        "stale_message": (
+            "Heads up \u2014 a message you sent {age} ago didn't go through. I'm caught up"
+            " now, so if it still matters please resend."
+        ),
+        "stale_message_with_excerpt": (
+            "Heads up \u2014 a message you sent {age} ago didn't go through. I'm caught up"
+            " now, so if it still matters please resend.\n\nIt started with: \u201c{excerpt}\u201d"
+        ),
         "forwarding_timeout": (
             "That took longer than expected. Your message was received"
             " \u2014 just send a follow-up and I'll pick up where I left off."
@@ -144,6 +152,18 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
             "\u3054\u3081\u3093\u306a\u3055\u3044\u2014\u3044\u305f\u3060\u3044\u305f\u30e1\u30c3\u30bb\u30fc\u30b8\u306e\u4e00\u3064\u306b\u9001\u4fe1\u30a8\u30e9\u30fc\u304c\u767a\u751f\u3057\u3001"
             "\u4f55\u5ea6\u304b\u8a66\u884c\u3057\u305f\u5f8c\u30b9\u30ad\u30c3\u30d7\u3055\u305b\u3066\u3044\u305f\u3060\u304d\u307e\u3057\u305f\u3002"
             "\u91cd\u8981\u306a\u5185\u5bb9\u3067\u3057\u305f\u3089\u3001\u3082\u3046\u4e00\u5ea6\u9001\u3063\u3066\u3044\u305f\u3060\u3051\u307e\u3059\u304b\uff1f"
+            "\n\n\u30e1\u30c3\u30bb\u30fc\u30b8\u306e\u51b2\u982d\uff1a\u300c{excerpt}\u300d"
+        ),
+        # Stale-message guard \u2014 pending row not delivered within the
+        # freshness window (~10 min). English keys: stale_message,
+        # stale_message_with_excerpt. {age} renders like "5m" or "~2h".
+        "stale_message": (
+            "\u304a\u77e5\u3089\u305b\u3067\u3059 \u2014 {age}\u524d\u306b\u9001\u3063\u3066\u3044\u305f\u3060\u3044\u305f\u30e1\u30c3\u30bb\u30fc\u30b8\u304c\u5c4a\u3044\u3066\u3044\u307e\u305b\u3093\u3067\u3057\u305f\u3002"
+            "\u4eca\u306f\u8ffd\u3044\u3064\u3044\u3066\u3044\u307e\u3059\u306e\u3067\u3001\u307e\u3060\u5fc5\u8981\u3067\u3057\u305f\u3089\u3082\u3046\u4e00\u5ea6\u9001\u3063\u3066\u304f\u3060\u3055\u3044\u3002"
+        ),
+        "stale_message_with_excerpt": (
+            "\u304a\u77e5\u3089\u305b\u3067\u3059 \u2014 {age}\u524d\u306b\u9001\u3063\u3066\u3044\u305f\u3060\u3044\u305f\u30e1\u30c3\u30bb\u30fc\u30b8\u304c\u5c4a\u3044\u3066\u3044\u307e\u305b\u3093\u3067\u3057\u305f\u3002"
+            "\u4eca\u306f\u8ffd\u3044\u3064\u3044\u3066\u3044\u307e\u3059\u306e\u3067\u3001\u307e\u3060\u5fc5\u8981\u3067\u3057\u305f\u3089\u3082\u3046\u4e00\u5ea6\u9001\u3063\u3066\u304f\u3060\u3055\u3044\u3002"
             "\n\n\u30e1\u30c3\u30bb\u30fc\u30b8\u306e\u51b2\u982d\uff1a\u300c{excerpt}\u300d"
         ),
         "forwarding_timeout": (

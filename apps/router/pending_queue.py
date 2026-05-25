@@ -69,6 +69,37 @@ _MAX_DELIVERY_ATTEMPTS = 3
 # next task tick.
 _IN_FLIGHT_LEASE_FACTOR = 1.5
 
+# QStash retry count for the per-message drain publish. Three failure
+# modes can leave a row stuck PENDING with no follow-up drain — see the
+# ``reap_stuck_inbound_messages_task`` docstring — and the reaper covers
+# all three at 60s cadence. Three QStash retries here absorbs transient
+# OC cold-start 504s without waiting the full minute for the reaper.
+_DRAIN_PUBLISH_RETRIES = 3
+
+# Reaper sweep. Pending rows older than this with no live in-flight lease
+# are presumed stuck (publish_task raised + got swallowed, or QStash
+# delivered the drain task into the Django 5xx → DLQ pit, or a worker
+# died mid-claim). The reaper republishes a fresh drain task per key —
+# the drain's SKIP-LOCKED claim handles concurrency cleanly.
+_REAPER_STUCK_AGE_SECONDS = 90
+
+# Cap per reaper tick so a pathological backlog can't blow up the cron
+# worker budget. At 60s cadence + 200 keys/tick the steady-state ceiling
+# is ~3.3 republished drains/second across the entire fleet, which is
+# well under QStash's free-tier rate limit.
+_REAPER_BATCH_LIMIT = 200
+
+# Stale-message guard. Any pending row claimed by the drain task whose
+# created_at is older than this is dropped without POSTing to OC — the
+# user's conversational frame has long since moved on, and the assistant
+# would otherwise reply to a question they no longer remember asking
+# (the canonical bug behind this module's reaper: see the 2026-05-23
+# canary screenshot incident where two 7+h stale rows produced "this
+# was already done" replies after the gateway recovered). We send a
+# brief apology so the user knows what happened instead of receiving
+# silent message loss.
+_STALE_MESSAGE_AGE_SECONDS = 600  # 10 minutes
+
 # Telegram bot API base — matches poller.py for consistency.
 _TELEGRAM_API_BASE = "https://api.telegram.org/bot"
 
@@ -132,13 +163,14 @@ def enqueue_message_for_tenant(
 ) -> PendingMessage:
     """Insert a pending message row and schedule the drain task.
 
-    The drain task is published with ``retries=1`` (vs QStash's default
-    of 3) because the task already has application-level resilience: the
-    in-flight lease prevents duplicate POSTs, the per-message attempt
-    cap prevents wedged rows from blocking the queue forever, and the
-    drain re-schedules itself when more rows remain. Letting QStash
-    retry 3x would just spawn extra drain attempts that observe the
-    live lease and bail (cheap but noisy).
+    The drain task is published with ``retries=_DRAIN_PUBLISH_RETRIES``
+    (=3, QStash's default) so a transient OC cold-start 504 doesn't
+    immediately drop the message into DLQ. Application-level guards
+    still prevent duplicate work: the in-flight lease blocks overlapping
+    POSTs, and the per-message attempt cap caps total work on a wedged
+    row. Even if all three QStash attempts fail, the row sits PENDING
+    and the per-minute reaper (``reap_stuck_inbound_messages_task``)
+    republishes a fresh drain within ~60s.
 
     Returns the freshly created ``PendingMessage`` row so callers can
     log / inspect.
@@ -167,12 +199,15 @@ def enqueue_message_for_tenant(
             str(tenant.id),
             channel,
             channel_user_id or "",
-            retries=1,
+            retries=_DRAIN_PUBLISH_RETRIES,
         )
     except Exception:
+        # Reaper safety net: the per-minute cron picks up rows whose
+        # initial publish failed and republishes the drain. So a silent
+        # publish failure here means a ~60s delay, not a multi-hour stall
+        # (the historical failure mode this module was rewritten to fix).
         logger.exception(
-            "pending_queue: failed to publish drain task for tenant %s — "
-            "row %s will sit until the next drain tick reaches it",
+            "pending_queue: failed to publish drain task for tenant %s — reaper will pick up row %s within ~60s",
             str(tenant.id)[:8],
             msg.id,
         )
@@ -349,6 +384,39 @@ def drain_pending_messages_for_tenant_task(
             _reschedule_drain(tenant, channel, channel_user_id or "")
         return {"delivered": 0, "failed": 0, "dropped": 1, "skipped_in_flight": 0}
 
+    # Stale-message guard. The row was claimed (lease taken inside
+    # ``_claim_next_pending_message``) so the lease will need clearing on
+    # exit. If the row is older than ``_STALE_MESSAGE_AGE_SECONDS``, do
+    # NOT POST it to OC — the user's conversational frame has moved on
+    # and delivering now produces the "responding to questions from
+    # hours ago" UX bug this module was rewritten to fix.
+    msg_age_seconds = (timezone.now() - msg.created_at).total_seconds()
+    if msg_age_seconds > _STALE_MESSAGE_AGE_SECONDS:
+        logger.warning(
+            "drain_pending: msg %s for tenant %s is stale (age=%ds > %ds), "
+            "marking failed without OC POST and sending apology",
+            msg.id,
+            tenant_id[:8],
+            int(msg_age_seconds),
+            _STALE_MESSAGE_AGE_SECONDS,
+        )
+        msg.delivery_status = PendingMessage.Status.FAILED
+        msg.delivered_at = timezone.now()
+        msg.delivery_in_flight_until = None
+        msg.save(
+            update_fields=[
+                "delivery_status",
+                "delivered_at",
+                "delivery_in_flight_until",
+            ]
+        )
+        _send_apology_for_stale_pending_message(tenant, msg, msg_age_seconds)
+        # Behind a stale row might be a newer row that's still in-window —
+        # keep draining so a real reply still lands.
+        if _has_more_pending(tenant, channel, channel_user_id or ""):
+            _reschedule_drain(tenant, channel, channel_user_id or "")
+        return {"delivered": 0, "failed": 0, "dropped": 1, "skipped_in_flight": 0, "stale": 1}
+
     delivered = 0
     failed = 0
     try:
@@ -434,7 +502,7 @@ def _reschedule_drain(tenant: Tenant, channel: str, channel_user_id: str) -> Non
             str(tenant.id),
             channel,
             channel_user_id or "",
-            retries=1,
+            retries=_DRAIN_PUBLISH_RETRIES,
         )
     except Exception:
         logger.exception(
@@ -448,6 +516,79 @@ def _reschedule_drain(tenant: Tenant, channel: str, channel_user_id: str) -> Non
 # ---------------------------------------------------------------------------
 # Apology for messages dropped past the attempts cap
 # ---------------------------------------------------------------------------
+
+
+def _send_apology_for_stale_pending_message(
+    tenant: Tenant,
+    msg: PendingMessage,
+    age_seconds: float,
+) -> None:
+    """Notify the user we deliberately didn't process a message that sat
+    stuck in the queue too long.
+
+    Shape mirrors ``_send_apology_for_dropped_pending_message`` so the
+    LINE/Telegram send paths can stay identical, but the copy explains
+    delay (not "we tried and failed") and suggests the user resend if
+    still relevant. The minutes-since-send is included so the user can
+    place which message slipped through.
+    """
+    from apps.router.error_messages import error_msg
+
+    excerpt = (msg.user_text or "").strip().replace("\n", " ")
+    if len(excerpt) > 50:
+        excerpt = excerpt[:50] + "…"
+
+    # Human-friendly approximate age, capped to "hours" granularity past
+    # one hour so we don't render "423 minutes ago" for a 7-hour stall.
+    minutes = max(1, int(age_seconds // 60))
+    if minutes < 60:
+        age_label = f"{minutes}m"
+    else:
+        hours = minutes // 60
+        age_label = f"~{hours}h"
+
+    lang = getattr(tenant.user, "language", None) or "en"
+    if excerpt:
+        text = error_msg(lang, "stale_message_with_excerpt", excerpt=excerpt, age=age_label)
+    else:
+        text = error_msg(lang, "stale_message", age=age_label)
+
+    if msg.channel == PendingMessage.Channel.LINE:
+        line_user_id = msg.channel_user_id or getattr(tenant.user, "line_user_id", None)
+        if not line_user_id:
+            return
+        from apps.router.line_webhook import _send_line_text
+
+        try:
+            _send_line_text(line_user_id, text)
+        except Exception:
+            logger.exception(
+                "drain_pending: failed to push stale apology to LINE for tenant %s",
+                str(tenant.id)[:8],
+            )
+    elif msg.channel == PendingMessage.Channel.TELEGRAM:
+        try:
+            chat_id = int(msg.channel_user_id)
+        except (TypeError, ValueError):
+            logger.warning(
+                "drain_pending: cannot send telegram stale apology — invalid chat_id %r",
+                msg.channel_user_id,
+            )
+            return
+        base = _telegram_api_base()
+        if not base:
+            return
+        try:
+            httpx.post(
+                f"{base}/sendMessage",
+                json={"chat_id": chat_id, "text": text},
+                timeout=10,
+            )
+        except Exception:
+            logger.exception(
+                "drain_pending: failed to push stale apology to Telegram for tenant %s",
+                str(tenant.id)[:8],
+            )
 
 
 def _send_apology_for_dropped_pending_message(tenant: Tenant, msg: PendingMessage) -> None:
@@ -938,6 +1079,113 @@ def _record_usage_safe(tenant: Tenant, result: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Reaper — picks up rows whose original drain task never ran
+# ---------------------------------------------------------------------------
+
+
+def reap_stuck_inbound_messages_task() -> dict:
+    """Republish drain tasks for pending rows whose original drain
+    never ran (or ran and exited without state transition).
+
+    Why this exists
+    ---------------
+
+    ``enqueue_message_for_tenant`` publishes a per-row drain task to
+    QStash. Three failure modes can leave a row stuck in ``PENDING``
+    with no follow-up drain firing:
+
+      1. ``publish_task`` itself raised (network blip, QStash 5xx,
+         token rotation). The caller catches + swallows so the inbound
+         webhook still ACKs LINE/Telegram fast. No QStash entry exists,
+         so no retry ever fires.
+      2. ``publish_task`` succeeded but QStash's HTTP delivery to Django
+         hit a 5xx for all ``_DRAIN_PUBLISH_RETRIES`` attempts (e.g. OC
+         container down for >5 min). The message lands in DLQ and
+         nothing in this codebase reads the DLQ.
+      3. A drain task claimed the row (lease taken) but the gunicorn
+         worker died before the row's state transitioned past ``PENDING``
+         (OOM-kill, deploy mid-flight, 300s worker timeout). The lease
+         eventually expires but no event re-publishes the drain.
+
+    In all three cases the row sits ``PENDING`` until the user's NEXT
+    inbound arrives, at which point a fresh drain task drains the
+    backlog FIFO — producing "responding to questions from hours ago"
+    UX (the canary screenshot incident, 2026-05-23). This task closes
+    the gap: every minute it scans for stuck rows and republishes a
+    drain per ``(tenant, channel, channel_user_id)`` key. The drain's
+    ``SKIP-LOCKED`` claim handles concurrency cleanly even if the
+    original drain happens to fire at the same moment.
+
+    The reaper does NOT process rows itself — it only republishes drain
+    tasks. The drain task remains the single point where chat
+    completions get POSTed at OC, so its serialization guarantees
+    (one POST at a time per session, attempt cap, stale-age guard) hold
+    regardless of who scheduled the drain. The drain's stale-age guard
+    is what prevents the reaper from delivering 7-hour-old messages to
+    OC — it'll mark them ``failed`` with an apology instead.
+    """
+    from apps.cron.publish import publish_task
+
+    now = timezone.now()
+    cutoff = now - timedelta(seconds=_REAPER_STUCK_AGE_SECONDS)
+
+    # Distinct keys with stuck rows. Row-level locks aren't needed here —
+    # the per-row claim inside ``drain_pending_messages_for_tenant_task``
+    # provides serialization; the reaper just identifies which queues to
+    # kick. We sort by key for deterministic ordering across reaper
+    # ticks so test fixtures are easy to write.
+    stuck_keys = (
+        PendingMessage.objects.filter(
+            delivery_status=PendingMessage.Status.PENDING,
+            created_at__lt=cutoff,
+        )
+        .filter(models.Q(delivery_in_flight_until__isnull=True) | models.Q(delivery_in_flight_until__lt=now))
+        .values_list("tenant_id", "channel", "channel_user_id")
+        .distinct()
+        .order_by("tenant_id", "channel", "channel_user_id")[:_REAPER_BATCH_LIMIT]
+    )
+
+    keys = list(stuck_keys)
+    republished = 0
+    errors = 0
+    for tenant_id, channel, channel_user_id in keys:
+        try:
+            publish_task(
+                "drain_pending_messages_for_tenant",
+                str(tenant_id),
+                channel,
+                channel_user_id or "",
+                retries=_DRAIN_PUBLISH_RETRIES,
+            )
+            republished += 1
+        except Exception:
+            logger.exception(
+                "reap_stuck_inbound: failed to republish drain for tenant %s key=%s/%s",
+                str(tenant_id)[:8],
+                channel,
+                (channel_user_id or "")[:24],
+            )
+            errors += 1
+
+    # Only log when we actually did something — steady-state ticks
+    # (no stuck rows) should be silent so the platform_logs feed isn't
+    # buried in zero-op heartbeats.
+    if keys:
+        logger.warning(
+            "reap_stuck_inbound: %d stuck key(s), %d republished, %d errors",
+            len(keys),
+            republished,
+            errors,
+        )
+
+    return {
+        "stuck_keys": len(keys),
+        "republished": republished,
+        "errors": errors,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Misc — kept so callers can import this module without importing every
 # helper individually.
 # ---------------------------------------------------------------------------
@@ -947,5 +1195,6 @@ __all__ = [
     "PendingMessage",
     "drain_pending_messages_for_tenant_task",
     "enqueue_message_for_tenant",
+    "reap_stuck_inbound_messages_task",
     "relay_ai_response_to_telegram",
 ]

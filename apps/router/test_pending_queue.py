@@ -529,3 +529,345 @@ class PendingMessageTimeoutResolutionTest(TestCase):
         tenant.save(update_fields=["preferred_model"])
 
         self.assertEqual(_resolve_chat_timeout(tenant), REASONING_MODEL_TIMEOUT)
+
+
+# ---------------------------------------------------------------------------
+# Reaper tests — closes the gap when a drain task's original publish
+# never made it to QStash (or QStash dropped it into the DLQ pit).
+# Canonical bug: 2026-05-23 canary screenshot incident where two 7+h
+# stale rows produced "this was already done" replies after gateway
+# recovery. Reaper exists to bound how long a stuck row can sit.
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    NBHD_INTERNAL_API_KEY="test-key",
+    LINE_CHANNEL_ACCESS_TOKEN="test-token",
+)
+class ReapStuckInboundMessagesTest(TestCase):
+    """``reap_stuck_inbound_messages_task`` republishes drain tasks for
+    rows whose original drain never ran."""
+
+    def _make_pending(
+        self,
+        tenant: Tenant,
+        channel_user_id: str,
+        age_seconds: int,
+        *,
+        channel: str = "line",
+        in_flight_until=None,
+        status: str = PendingMessage.Status.PENDING,
+    ) -> PendingMessage:
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=channel,
+            channel_user_id=channel_user_id,
+            payload={
+                "message_text": "test",
+                "user_param": channel_user_id,
+                "user_timezone": "UTC",
+            },
+            user_text="test",
+            delivery_status=status,
+            delivery_in_flight_until=in_flight_until,
+        )
+        # Bypass auto_now_add to backdate created_at deterministically.
+        PendingMessage.objects.filter(id=msg.id).update(
+            created_at=timezone.now() - timedelta(seconds=age_seconds),
+        )
+        msg.refresh_from_db()
+        return msg
+
+    @patch("apps.cron.publish.publish_task")
+    def test_reaper_ignores_fresh_rows(self, mock_publish):
+        from apps.router.pending_queue import reap_stuck_inbound_messages_task
+
+        user = _make_user(line_user_id="U_fresh")
+        tenant = _make_tenant(user)
+        # 30s old — under the 90s stuck threshold
+        self._make_pending(tenant, "U_fresh", age_seconds=30)
+
+        result = reap_stuck_inbound_messages_task()
+
+        self.assertEqual(result["stuck_keys"], 0)
+        self.assertEqual(result["republished"], 0)
+        mock_publish.assert_not_called()
+
+    @patch("apps.cron.publish.publish_task")
+    def test_reaper_republishes_stuck_row(self, mock_publish):
+        from apps.router.pending_queue import reap_stuck_inbound_messages_task
+
+        user = _make_user(line_user_id="U_stuck")
+        tenant = _make_tenant(user)
+        # 5 minutes old, no in-flight lease — the canonical "stuck" case
+        self._make_pending(tenant, "U_stuck", age_seconds=300)
+
+        result = reap_stuck_inbound_messages_task()
+
+        self.assertEqual(result["stuck_keys"], 1)
+        self.assertEqual(result["republished"], 1)
+        self.assertEqual(result["errors"], 0)
+        mock_publish.assert_called_once()
+        # Verify it republished the drain task with the right key
+        args, kwargs = mock_publish.call_args
+        self.assertEqual(args[0], "drain_pending_messages_for_tenant")
+        self.assertEqual(args[1], str(tenant.id))
+        self.assertEqual(args[2], "line")
+        self.assertEqual(args[3], "U_stuck")
+        self.assertEqual(kwargs.get("retries"), 3)
+
+    @patch("apps.cron.publish.publish_task")
+    def test_reaper_skips_rows_with_live_lease(self, mock_publish):
+        from apps.router.pending_queue import reap_stuck_inbound_messages_task
+
+        user = _make_user(line_user_id="U_inflight")
+        tenant = _make_tenant(user)
+        # Row is old, but a concurrent drain is mid-POST (lease alive)
+        self._make_pending(
+            tenant,
+            "U_inflight",
+            age_seconds=300,
+            in_flight_until=timezone.now() + timedelta(seconds=60),
+        )
+
+        result = reap_stuck_inbound_messages_task()
+
+        self.assertEqual(result["stuck_keys"], 0)
+        mock_publish.assert_not_called()
+
+    @patch("apps.cron.publish.publish_task")
+    def test_reaper_includes_rows_with_expired_lease(self, mock_publish):
+        """A row whose lease expired (claim succeeded but POST never
+        completed — e.g. worker died mid-flight) still needs reaping."""
+        from apps.router.pending_queue import reap_stuck_inbound_messages_task
+
+        user = _make_user(line_user_id="U_expired_lease")
+        tenant = _make_tenant(user)
+        self._make_pending(
+            tenant,
+            "U_expired_lease",
+            age_seconds=300,
+            in_flight_until=timezone.now() - timedelta(seconds=10),
+        )
+
+        result = reap_stuck_inbound_messages_task()
+
+        self.assertEqual(result["stuck_keys"], 1)
+        self.assertEqual(result["republished"], 1)
+        mock_publish.assert_called_once()
+
+    @patch("apps.cron.publish.publish_task")
+    def test_reaper_dedups_multiple_stuck_rows_per_key(self, mock_publish):
+        """Two stuck rows for the same (tenant, channel, user) get
+        ONE drain republish (the drain itself walks the queue FIFO)."""
+        from apps.router.pending_queue import reap_stuck_inbound_messages_task
+
+        user = _make_user(line_user_id="U_double")
+        tenant = _make_tenant(user)
+        self._make_pending(tenant, "U_double", age_seconds=300)
+        self._make_pending(tenant, "U_double", age_seconds=180)
+
+        result = reap_stuck_inbound_messages_task()
+
+        self.assertEqual(result["stuck_keys"], 1)
+        self.assertEqual(result["republished"], 1)
+        mock_publish.assert_called_once()
+
+    @patch("apps.cron.publish.publish_task")
+    def test_reaper_ignores_delivered_and_failed_rows(self, mock_publish):
+        """Terminal-state rows must never be republished. The reaper
+        filters by delivery_status=PENDING."""
+        from apps.router.pending_queue import reap_stuck_inbound_messages_task
+
+        user = _make_user(line_user_id="U_done")
+        tenant = _make_tenant(user)
+        self._make_pending(tenant, "U_done", age_seconds=600, status=PendingMessage.Status.DELIVERED)
+        self._make_pending(tenant, "U_done", age_seconds=600, status=PendingMessage.Status.FAILED)
+
+        result = reap_stuck_inbound_messages_task()
+
+        self.assertEqual(result["stuck_keys"], 0)
+        mock_publish.assert_not_called()
+
+    @patch("apps.cron.publish.publish_task")
+    def test_reaper_publishes_distinct_keys_separately(self, mock_publish):
+        """Two different (tenant, channel, user) keys → two separate
+        republishes so each queue gets its own drain."""
+        from apps.router.pending_queue import reap_stuck_inbound_messages_task
+
+        user_a = _make_user(line_user_id="U_a")
+        user_b = _make_user(line_user_id="U_b")
+        tenant_a = _make_tenant(user_a, container_fqdn="oc-a.example.com")
+        tenant_b = _make_tenant(user_b, container_fqdn="oc-b.example.com")
+        self._make_pending(tenant_a, "U_a", age_seconds=300)
+        self._make_pending(tenant_b, "U_b", age_seconds=300)
+
+        result = reap_stuck_inbound_messages_task()
+
+        self.assertEqual(result["stuck_keys"], 2)
+        self.assertEqual(result["republished"], 2)
+        self.assertEqual(mock_publish.call_count, 2)
+
+    @patch("apps.cron.publish.publish_task")
+    def test_reaper_swallows_individual_publish_errors(self, mock_publish):
+        """A per-key publish failure must NOT abort the whole sweep —
+        the next minute's tick will retry that key, and other keys
+        must still get a chance this tick."""
+        from apps.router.pending_queue import reap_stuck_inbound_messages_task
+
+        # First call raises; second succeeds
+        mock_publish.side_effect = [Exception("qstash down"), None]
+
+        user_a = _make_user(line_user_id="U_err_a")
+        user_b = _make_user(line_user_id="U_err_b")
+        tenant_a = _make_tenant(user_a, container_fqdn="oc-erra.example.com")
+        tenant_b = _make_tenant(user_b, container_fqdn="oc-errb.example.com")
+        self._make_pending(tenant_a, "U_err_a", age_seconds=300)
+        self._make_pending(tenant_b, "U_err_b", age_seconds=300)
+
+        result = reap_stuck_inbound_messages_task()
+
+        self.assertEqual(result["stuck_keys"], 2)
+        self.assertEqual(result["republished"], 1)
+        self.assertEqual(result["errors"], 1)
+
+
+# ---------------------------------------------------------------------------
+# Stale-message guard tests — when a row is finally claimed but the
+# user has long since moved on, don't POST it to OC. Mark it failed and
+# send an apology instead. This is the defense-in-depth that prevents
+# the canary "responding to questions from hours ago" bug even if the
+# reaper itself misfires for some reason.
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    NBHD_INTERNAL_API_KEY="test-key",
+    LINE_CHANNEL_ACCESS_TOKEN="test-token",
+)
+class StaleMessageGuardTest(TestCase):
+    """When a drain claims a row older than the staleness threshold,
+    no chat completion should fire."""
+
+    @patch("apps.router.pending_queue._send_apology_for_stale_pending_message")
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_stale_line_message_skips_oc_and_sends_apology(self, mock_post, _mock_send, mock_apology):
+        user = _make_user(line_user_id="U_stale")
+        tenant = _make_tenant(user)
+
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel="line",
+            channel_user_id="U_stale",
+            payload={
+                "message_text": "old message",
+                "user_param": "U_stale",
+                "user_timezone": "UTC",
+            },
+            user_text="old message",
+        )
+        # 15 minutes old — past the 600s staleness threshold
+        PendingMessage.objects.filter(id=msg.id).update(
+            created_at=timezone.now() - timedelta(minutes=15),
+        )
+
+        result = drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_stale")
+
+        self.assertEqual(result["dropped"], 1)
+        self.assertEqual(result.get("stale"), 1)
+        self.assertEqual(result["delivered"], 0)
+
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_status, PendingMessage.Status.FAILED)
+        self.assertIsNotNone(msg.delivered_at)
+
+        # Critical: no POST to OC for the stale row
+        oc_posts = [c for c in mock_post.call_args_list if "/v1/chat/completions" in (c.args[0] if c.args else "")]
+        self.assertEqual(oc_posts, [], "stale row must not be POSTed to OC")
+
+        # Apology helper was called with the row + an age_seconds value
+        mock_apology.assert_called_once()
+        called_args = mock_apology.call_args.args
+        self.assertEqual(called_args[0], tenant)
+        self.assertEqual(called_args[1].id, msg.id)
+        self.assertGreaterEqual(called_args[2], 600)
+
+    @patch("apps.router.pending_queue._send_apology_for_stale_pending_message")
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_fresh_message_still_posts_to_oc(self, mock_post, _mock_send, mock_apology):
+        """Regression: a row well under the threshold must still POST
+        to OC and deliver normally. Sanity check that the stale guard
+        didn't accidentally block the happy path."""
+        mock_post.return_value = _ok_chat_response("hello back")
+
+        user = _make_user(line_user_id="U_fresh_drain")
+        tenant = _make_tenant(user)
+
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel="line",
+            channel_user_id="U_fresh_drain",
+            payload={
+                "message_text": "fresh",
+                "user_param": "U_fresh_drain",
+                "user_timezone": "UTC",
+            },
+            user_text="fresh",
+        )
+        # Default created_at is auto_now_add (i.e. ~now) → fresh.
+
+        result = drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_fresh_drain")
+
+        self.assertEqual(result["delivered"], 1)
+        self.assertIsNone(result.get("stale"))
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_status, PendingMessage.Status.DELIVERED)
+        mock_apology.assert_not_called()
+
+    @patch("apps.router.pending_queue._send_apology_for_stale_pending_message")
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_stale_drain_reschedules_when_more_pending(self, mock_post, _mock_send, mock_apology):
+        """A stale row at head of queue must not block fresher rows
+        behind it — drain reschedules itself after dropping the stale
+        head so the next row gets a chance."""
+        from apps.router.pending_queue import _reschedule_drain  # noqa: F401
+
+        mock_post.return_value = _ok_chat_response("hi")
+
+        user = _make_user(line_user_id="U_chain")
+        tenant = _make_tenant(user)
+
+        stale = PendingMessage.objects.create(
+            tenant=tenant,
+            channel="line",
+            channel_user_id="U_chain",
+            payload={"message_text": "old", "user_param": "U_chain", "user_timezone": "UTC"},
+            user_text="old",
+        )
+        PendingMessage.objects.filter(id=stale.id).update(
+            created_at=timezone.now() - timedelta(minutes=20),
+        )
+
+        fresh = PendingMessage.objects.create(
+            tenant=tenant,
+            channel="line",
+            channel_user_id="U_chain",
+            payload={"message_text": "now", "user_param": "U_chain", "user_timezone": "UTC"},
+            user_text="now",
+        )
+
+        with patch("apps.router.pending_queue._reschedule_drain") as mock_resched:
+            result = drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_chain")
+            self.assertEqual(result.get("stale"), 1)
+            # _has_more_pending should have returned True (fresh row exists)
+            mock_resched.assert_called_once()
+
+        stale.refresh_from_db()
+        fresh.refresh_from_db()
+        self.assertEqual(stale.delivery_status, PendingMessage.Status.FAILED)
+        # Fresh row should still be PENDING (the reschedule would drain it
+        # on the next task tick; we don't actually run that here).
+        self.assertEqual(fresh.delivery_status, PendingMessage.Status.PENDING)

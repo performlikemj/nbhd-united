@@ -144,6 +144,11 @@ TASK_MAP = {
     # OpenClaw claude-cli backend never sees overlapping turns on the
     # same live session.
     "drain_pending_messages_for_tenant": "apps.router.pending_queue.drain_pending_messages_for_tenant_task",
+    # Per-minute reaper for the message queue. Republishes drain tasks
+    # for PendingMessage rows whose original drain never ran. Safety net
+    # for QStash publish failures, DLQ-bound drain attempts, and worker
+    # deaths mid-claim. See pending_queue.reap_stuck_inbound_messages_task.
+    "reap_stuck_inbound_messages": "apps.router.pending_queue.reap_stuck_inbound_messages_task",
     # Atomic fleet-bump fan-out (rollout-atomic-bump endpoint). Per-tenant
     # version + config + image bump that survives gunicorn 300s budget
     # for any fleet size. Differs from apply_single_tenant_image (image-only,
