@@ -1,7 +1,7 @@
 """Tasks for async provisioning/deprovisioning (executed via QStash)."""
 
 import time
-from datetime import UTC
+from datetime import UTC, datetime
 
 import httpx
 
@@ -831,11 +831,60 @@ def refresh_user_md_fleet_task() -> dict:
     return {"pushed": pushed, "failed": failed}
 
 
-def nightly_extraction_task() -> dict:
-    """Run nightly extraction for all active tenants.
+NIGHTLY_EXTRACTION_LOCAL_HOUR = 21
 
-    Iterates every active tenant and calls run_extraction_for_tenant().
-    Each tenant is handled independently — one failure doesn't block the rest.
+
+def _is_nightly_extraction_window_local(tenant, *, now, hour: int = NIGHTLY_EXTRACTION_LOCAL_HOUR) -> bool:
+    """True when ``now`` in the tenant's local timezone falls in the ``hour``:xx window.
+
+    Mirrors ``apps.insights.tasks._is_sunday_morning_local`` — we match on
+    the local hour only (not the minute) so the hourly dispatcher has a
+    full 60-minute acceptance window and tenants in half-hour-offset
+    timezones (IST, IRST, NPT) still get a clean hit once per local day.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz_name = (str(getattr(tenant.user, "timezone", "") or "UTC")).strip()
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo("UTC")
+    return now.astimezone(tz).hour == hour
+
+
+def _already_ran_today_local(tenant, *, now) -> bool:
+    """True when nightly extraction has already completed for this tenant's local today.
+
+    Uses ``Tenant.last_nightly_extraction_at`` as the source of truth so we
+    skip even runs that emitted zero items (which leave no PendingExtraction
+    trace). Comparison is on local *date*, not wall-clock, so the entire
+    local-21 hour can hit without re-firing.
+    """
+    last = getattr(tenant, "last_nightly_extraction_at", None)
+    if not last:
+        return False
+    from zoneinfo import ZoneInfo
+
+    tz_name = (str(getattr(tenant.user, "timezone", "") or "UTC")).strip()
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo("UTC")
+    return last.astimezone(tz).date() == now.astimezone(tz).date()
+
+
+def nightly_extraction_task() -> dict:
+    """Hourly dispatcher: run nightly extraction for any tenant in their local 21:xx slot.
+
+    The QStash cron fires every hour at :00 UTC (see ``register_system_crons``).
+    For each active tenant we check whether *their* local time falls in the
+    21:xx window — only then do we call ``run_extraction_for_tenant``. The
+    ``Tenant.last_nightly_extraction_at`` guard makes the inner call
+    idempotent per local day so a transient duplicate fire doesn't pay
+    for two LLM calls or send two morning summaries.
+
+    Returns counts the QStash trigger log surfaces so we can see, per
+    hourly tick, how many tenants matched / skipped / errored.
     """
     import logging
 
@@ -843,24 +892,42 @@ def nightly_extraction_task() -> dict:
     from apps.tenants.models import Tenant
 
     logger = logging.getLogger(__name__)
+    now = datetime.now(UTC)
 
-    tenants = Tenant.objects.filter(
-        status=Tenant.Status.ACTIVE,
-    ).select_related("user")
+    counts = {
+        "considered": 0,
+        "fired": 0,
+        "skipped_window": 0,
+        "skipped_already_ran": 0,
+        "errored": 0,
+    }
 
-    results = []
-    for tenant in tenants:
+    tenants = Tenant.objects.filter(status=Tenant.Status.ACTIVE).select_related("user")
+
+    for tenant in tenants.iterator():
+        counts["considered"] += 1
+        if not _is_nightly_extraction_window_local(tenant, now=now):
+            counts["skipped_window"] += 1
+            continue
+        if _already_ran_today_local(tenant, now=now):
+            counts["skipped_already_ran"] += 1
+            continue
         try:
-            result = run_extraction_for_tenant(tenant)
+            run_extraction_for_tenant(tenant)
+            counts["fired"] += 1
         except Exception:
+            counts["errored"] += 1
             logger.exception("nightly_extraction: failed for tenant %s", str(tenant.id)[:8])
-            result = {"skipped": "error"}
-        results.append({"tenant": str(tenant.id)[:8], **result})
 
-    extracted = sum(1 for r in results if not r.get("skipped"))
-    skipped = sum(1 for r in results if r.get("skipped"))
-    logger.info("nightly_extraction: total=%d extracted=%d skipped=%d", len(results), extracted, skipped)
-    return {"total": len(results), "extracted": extracted, "skipped": skipped}
+    logger.info(
+        "nightly_extraction: considered=%d fired=%d skipped_window=%d skipped_already_ran=%d errored=%d",
+        counts["considered"],
+        counts["fired"],
+        counts["skipped_window"],
+        counts["skipped_already_ran"],
+        counts["errored"],
+    )
+    return counts
 
 
 # nightly_task_propagation_task removed 2026-05-24 — was a half-stub
