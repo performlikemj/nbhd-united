@@ -41,6 +41,17 @@ logger = logging.getLogger(__name__)
 _PLACEHOLDER_RE = re.compile(r"\[([A-Z_]+)_(\d+)\]")
 
 
+def _hit_inside_placeholder(hit: DetectedEntity, ranges: list[tuple[int, int]]) -> bool:
+    """True when an NER hit overlaps any existing placeholder range.
+
+    We drop these hits entirely — running token classification over the
+    partially-redacted output can flag the internal tokens of a placeholder
+    (``EMAIL_ADDRESS_1`` etc.) as PERSON/USERNAME and the replacement loop
+    would corrupt the placeholder into nested garbage like ``[[PERSON_2]]``.
+    """
+    return any(hit.start < ph_end and ph_start < hit.end for ph_start, ph_end in ranges)
+
+
 @dataclass
 class DetectedEntity:
     """A detected PII span — unified interface for DeBERTa + Presidio results."""
@@ -319,8 +330,12 @@ def _redact_user_message(
     results = _detect_pii(out, entities, score_threshold)
     results = _filter_results(results, out, allow_names, denylist=denylist)
 
-    # Filter out results that overlap with already-replaced placeholders
-    results = [r for r in results if not _PLACEHOLDER_RE.match(out[r.start : r.end])]
+    # Drop NER hits that fall inside an existing placeholder. Some models
+    # (lakshyakh93/deberta_finetuned_pii in particular) classify tokens
+    # inside ``[EMAIL_ADDRESS_1]`` as PERSON/USERNAME and the redactor used
+    # to corrupt the placeholder into nested garbage like ``[[PERSON_1]]``.
+    placeholder_ranges = [(m.start(), m.end()) for m in _PLACEHOLDER_RE.finditer(out)]
+    results = [r for r in results if not _hit_inside_placeholder(r, placeholder_ranges)]
 
     if not results:
         return out

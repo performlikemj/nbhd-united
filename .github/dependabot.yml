@@ -26,19 +26,14 @@ updates:
       interval: "daily"
     open-pull-requests-limit: 10
     ignore:
-      # transformers 5.x removed `is_tf_available` and other utility symbols
-      # that ecosystem code paths still reference. Last verified incident:
-      # PR #652 (5.8 → 5.9) re-broke prod 2026-05-21. requirements.in
-      # caps at <5.0; this ignore stops the cycle of PRs we have to
-      # repeatedly revert. Lift after the upstream ABI gap is resolved.
+      # transformers majors lag a release behind upstream PII model checkpoints
+      # we depend on (lakshyakh93/deberta_finetuned_pii); pin majors so a
+      # coordinated model + library bump is the only path through. Minor +
+      # patch bumps within 5.x have repeatedly broken prod imports —
+      # PR #447 (5.7→5.8), PR #652 (5.8→5.9), the model swap in #695 — so
+      # keep those off the table too.
       - dependency-name: "transformers"
         update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
-      # optimum / onnxruntime are version-coupled with transformers; pin
-      # the floor + ignore majors so a coordinated bump is the only path.
-      - dependency-name: "optimum"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "onnxruntime"
-        update-types: ["version-update:semver-major"]
       # azure-storage-file-share / azure-core: the file-share 12.24
       # + azure-core 1.39 + requests 2.32 triplet currently leaks the
       # ``overwrite=True`` kwarg into ``requests.Session.request`` on
