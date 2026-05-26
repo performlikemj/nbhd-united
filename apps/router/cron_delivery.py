@@ -333,6 +333,11 @@ class CronDeliveryView(APIView):
                             resp.status_code,
                             resp.text[:200],
                         )
+                        # Trip the fleet-wide quota gate if this is the
+                        # monthly-cap 429 (vs a transient rate-limit).
+                        from apps.router.line_webhook import _maybe_trip_monthly_quota
+
+                        _maybe_trip_monthly_quota(resp.status_code, resp.text)
                         return Response(
                             {"error": "line_send_failed", "detail": resp.text[:200]},
                             status=http_status.HTTP_502_BAD_GATEWAY,

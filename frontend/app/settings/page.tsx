@@ -11,6 +11,7 @@ import { StatusPill } from "@/components/status-pill";
 import {
   useCancelDeletionMutation,
   useDeleteAccountMutation,
+  useLineStatusQuery,
   useMeQuery,
   usePersonasQuery,
   usePreferencesQuery,
@@ -420,6 +421,8 @@ export default function SettingsPage() {
   };
 
   const setPreferredChannel = useSetPreferredChannelMutation();
+  const lineStatus = useLineStatusQuery();
+  const lineQuotaExhausted = lineStatus.data?.quota?.exhausted ?? false;
 
   const isSaving = savingField !== null || updatePrefs.isPending;
   const isRefreshingConfig = refreshConfigMutation.isPending;
@@ -738,18 +741,29 @@ export default function SettingsPage() {
                     <button
                       type="button"
                       onClick={() => setPreferredChannel.mutate("line")}
-                      disabled={setPreferredChannel.isPending}
+                      disabled={setPreferredChannel.isPending || lineQuotaExhausted}
+                      title={
+                        lineQuotaExhausted
+                          ? "LINE monthly messaging allowance reached. Selectable again at the start of next month."
+                          : undefined
+                      }
                       className={`rounded-full px-4 py-1.5 text-sm transition ${
                         me.preferred_channel === "line"
                           ? "bg-[#06C755] text-white"
                           : "border border-border text-ink-muted hover:border-border-strong"
-                      }`}
+                      } disabled:cursor-not-allowed disabled:opacity-50`}
                     >
                       LINE
                     </button>
                   </div>
                   <p className="mt-1 text-xs text-ink-faint">
-                    Used for scheduled messages and notifications
+                    {lineQuotaExhausted ? (
+                      <>
+                        LINE monthly messaging allowance reached — selectable again at the start of next month.
+                      </>
+                    ) : (
+                      <>Used for scheduled messages and notifications</>
+                    )}
                   </p>
                 </dd>
               </div>

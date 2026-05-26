@@ -369,6 +369,11 @@ STRIPE_PRICE_ID = env("STRIPE_PRICE_STARTER", default="")
 
 # Frontend URL (for redirects)
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
+
+# Recipient for operational platform alerts (LINE quota pre-warn, etc.).
+# Already referenced by env-var in apps/tenants/migrations/0044_set_owner_exempt.py;
+# also exposed here so app code can read it via settings rather than os.environ.
+PLATFORM_OWNER_EMAIL = env("PLATFORM_OWNER_EMAIL", default="")
 USAGE_DASHBOARD_SUBSCRIPTION_PRICE = env.float(
     "USAGE_DASHBOARD_SUBSCRIPTION_PRICE",
     default=12.0,

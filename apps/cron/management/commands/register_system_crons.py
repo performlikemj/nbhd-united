@@ -90,6 +90,14 @@ SYSTEM_CRONS = [
     # dropped with apology, if past the staleness threshold). See
     # ``apps.router.pending_queue.reap_stuck_inbound_messages_task``.
     ("reap-stuck-inbound-messages", "* * * * *", "/api/cron/trigger/reap_stuck_inbound_messages/"),
+    # Daily at 03:15 UTC — poll LINE Messaging API for monthly Push usage,
+    # update the fleet-wide quota state, and dispatch the user-facing
+    # fan-out (90% pre-warn, exhaustion emails + channel flips, recovery
+    # emails) on any threshold crossing. The 429 tripwire on the Push
+    # send paths handles intra-day exhaustion so emails go out within
+    # seconds rather than waiting for the next daily poll.
+    # See apps/router/line_quota.py and apps/router/line_quota_handlers.py.
+    ("poll-line-quota", "15 3 * * *", "/api/cron/trigger/poll_line_quota/"),
 ]
 
 

@@ -1,0 +1,12 @@
+LINE Messaging API Push quota is at {{ used }}/{{ limit }} ({{ used_pct }}%)
+for this billing cycle.
+
+When usage hits 100%, every Push message returns 429 until the cycle
+resets. Tenants whose preferred_channel is LINE will be auto-flipped to
+Telegram (if linked) and emailed; LINE-only tenants will be emailed a
+"connect Telegram" prompt.
+
+To raise the cap, upgrade the LINE Messaging API plan in the Developers
+Console.
+
+— NBHD ops bot

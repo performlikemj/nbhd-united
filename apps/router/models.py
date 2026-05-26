@@ -373,3 +373,112 @@ class LineOutboundMessage(models.Model):
 
     def __str__(self) -> str:
         return f"LineOutboundMessage({self.line_message_id})"
+
+
+class LineQuotaState(models.Model):
+    """Fleet-wide LINE Messaging API Push-message quota state.
+
+    Singleton row (``pk=1``) updated by the daily poll task in
+    ``apps.router.line_quota`` and by the 429 tripwire in the Push send
+    paths. Frontend channel-selector + state-transition handlers read
+    this row to decide whether LINE is currently selectable and whether
+    to fire user-facing emails (90% pre-warn, exhaustion fan-out,
+    recovery fan-out).
+
+    Why a singleton, not per-tenant: every tenant shares the *same*
+    LINE Messaging API channel (one bot, one access token, one monthly
+    Push allowance). When the cap is hit, no tenant can receive Push.
+    Per-tenant rows would invert the model — quota is a property of the
+    bot, not the tenant.
+    """
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1)
+
+    line_quota_limit = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text=("Monthly Push-message cap from /v2/bot/message/quota. Null before the first successful poll."),
+    )
+    line_quota_used = models.PositiveIntegerField(
+        default=0,
+        help_text="Push messages used this month from /v2/bot/message/quota/consumption.",
+    )
+    line_quota_checked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp of the last successful poll.",
+    )
+    line_quota_pre_warn_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When the 90% pre-warn email was last sent. Cleared when usage "
+            "drops back below the threshold (next month) so the next event "
+            "fires fresh."
+        ),
+    )
+    line_quota_exhausted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When the system entered the exhausted state. Set by the 429 "
+            "tripwire or by the daily poll seeing used >= limit. Cleared "
+            "by the poll when usage drops back below the cap. Presence "
+            "drives the frontend LINE-disabled gate."
+        ),
+    )
+    line_quota_exhausted_notified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When the exhaustion fan-out (user emails + channel flips) "
+            "last completed. Compared against ``line_quota_exhausted_at`` "
+            "for idempotency: if the handler is dispatched twice for the "
+            "same exhaustion event (tripwire + poll race), the second "
+            "dispatch bails. Cleared on recovery so the next event fires "
+            "fresh."
+        ),
+    )
+    line_quota_recovered_notified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When the 'LINE is back — want to switch?' fan-out emails "
+            "last completed. Cleared the next time we enter exhausted."
+        ),
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "line_quota_state"
+
+    def save(self, *args, **kwargs):
+        # Enforce singleton — pk=1 always.
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def get(cls) -> "LineQuotaState":
+        """Return the singleton row, creating it on first access."""
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    @property
+    def is_exhausted(self) -> bool:
+        return self.line_quota_exhausted_at is not None
+
+    @property
+    def usage_ratio(self) -> float | None:
+        """Fraction of the monthly cap consumed (0.0–1.0+), or None if
+        the cap is unknown."""
+        if not self.line_quota_limit:
+            return None
+        return self.line_quota_used / self.line_quota_limit
+
+    def __str__(self) -> str:
+        if not self.line_quota_limit:
+            return "LineQuotaState(uninitialized)"
+        return (
+            f"LineQuotaState({self.line_quota_used}/{self.line_quota_limit}"
+            f"{', exhausted' if self.is_exhausted else ''})"
+        )
