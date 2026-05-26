@@ -15,10 +15,22 @@ python manage.py poll_telegram &
 POLLER_PID=$!
 
 echo "Starting gunicorn..."
+# Worker config (issue #693 OOM mitigation):
+# - gthread (not sync) so the PII model (~600 MB resident) is loaded once
+#   per process and shared across threads, capping per-container PII memory
+#   at 2 × 600 MB = 1.2 GB instead of 4 × 600 MB = 2.4 GB > cgroup limit.
+# - 2 workers × 4 threads = 8 concurrent requests (up from 4 sync workers).
+# - max-requests recycles each worker after ~1000 requests (±100 jitter so
+#   they don't all recycle simultaneously) — bounds the long-tail memory
+#   growth that drove the May 24 SIGKILL incident.
 gunicorn config.wsgi:application \
   --bind 0.0.0.0:8000 \
-  --workers 4 \
+  --worker-class gthread \
+  --workers 2 \
+  --threads 4 \
   --timeout 300 \
+  --max-requests 1000 \
+  --max-requests-jitter 100 \
   --access-logfile - \
   --access-logformat '%(h)s %(m)s %(U)s %(s)s %(D)sµs' &
 GUNICORN_PID=$!
