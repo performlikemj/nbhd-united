@@ -29,23 +29,17 @@ pgvector
 
 # PII redaction (outgoing LLM traffic)
 presidio-analyzer>=2.2    # Pattern recognizers only (credit card Luhn, IBAN checksum)
-onnxruntime>=1.26.0
-# Neural PII is currently disabled in practice — `optimum 1.17.1`'s
-# `optimum.utils.input_generators` does
-#     from transformers.utils import is_tf_available, is_torch_available
-# but that symbol is gone from every transformers version we have access
-# to (5.7.0, 5.8.x, 5.9.x). `apps.pii.engine.get_pii_pipeline()` catches
-# the ImportError and falls back to Presidio pattern recognizers — that's
-# the production behavior on the canary today. Restoring neural PII
-# requires either an upstream optimum fix (>=2.x drops the broken import)
-# or our own engine refactor; tracked as a separate piece of work.
-#
-# Until then: keep the pin range that origin/main runs (so we don't
-# stir up a new pip resolution), and lean on the dependabot ignore in
-# .github/dependabot.yml to prevent further drift across this whole
-# triplet (transformers / optimum / onnxruntime).
-transformers>=5.9.0,<5.10.0
-optimum[onnxruntime]>=1.14
+onnxruntime>=1.25.0
+# Neural PII restoration: optimum 2.x splits onnx support into the
+# `optimum-onnx` package and drops the broken `transformers.utils.is_tf_available`
+# import that plagued 1.17. The tradeoff: optimum-onnx 0.1.0 caps
+# transformers at <4.58, so we move OFF the 5.x range that prod has
+# been stuck on (and ImportError-failing on every cold start since
+# 2026-05-07). Onnbekend/nbhd-pii-model loads + infers cleanly on this
+# pair locally; the existing apps/pii/tests.py integration tests pass.
+# See issue #695.
+transformers>=4.50.0,<4.58.0
+optimum[onnxruntime]>=2.0,<3.0
 sentencepiece>=0.2
 
 # HTTP client (for routing to OpenClaw instances)

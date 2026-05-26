@@ -26,11 +26,12 @@ updates:
       interval: "daily"
     open-pull-requests-limit: 10
     ignore:
-      # transformers 5.x removed `is_tf_available` and other utility symbols
-      # that ecosystem code paths still reference. Last verified incident:
-      # PR #652 (5.8 → 5.9) re-broke prod 2026-05-21. requirements.in
-      # caps at <5.0; this ignore stops the cycle of PRs we have to
-      # repeatedly revert. Lift after the upstream ABI gap is resolved.
+      # transformers / optimum / onnxruntime are version-coupled and the
+      # safe pair has churned twice (PR #447 5.7→5.8 broke prod 2026-05-07,
+      # PR #652 5.8→5.9 re-broke it 2026-05-21). requirements.in now pins
+      # transformers at >=4.50,<4.58 (because optimum-onnx 0.1.0 caps it),
+      # which restored neural PII (#695). Keep the ignore so dependabot
+      # can't walk us back into the 5.x ImportError state.
       - dependency-name: "transformers"
         update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
       # optimum / onnxruntime are version-coupled with transformers; pin
