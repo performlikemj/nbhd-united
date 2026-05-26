@@ -67,7 +67,7 @@ that will be sent to a third-party LLM.
 Return ONLY valid JSON matching this schema:
 {
   "decisions": [
-    {"key": "<canonical_key>", "is_pii": true|false}
+    {"id": <integer>, "is_pii": true|false}
   ]
 }
 
@@ -77,6 +77,7 @@ Rules:
   (e.g. "goal", "calendar", "intro", "wins", "tracker", "session").
 - App / brand / product names are NOT PII for redaction purposes
   (e.g. "Sautai", "Spotify", "OpenAI", "ChatGPT").
+- Bar / restaurant / venue names are NOT PII ("The Angel's Share", "Eleven Madison Park").
 - Emoji, single punctuation marks, and obvious non-name fragments are NOT PII.
 - Month and weekday names ("Mar", "Jan", "Mon") are NOT PII.
 - Exercise names and gym jargon are NOT PII ("Pallof", "deadlift").
@@ -84,8 +85,8 @@ Rules:
   (city, neighborhood, address, employer name).
 - Generic geographic terms are NOT PII ("home", "office", "the gym").
 - When in doubt, default to is_pii=true — we'd rather keep redacting than leak.
-- Echo back the "key" field verbatim so the caller can map decisions.
-- Return one decision per input item. Do not invent keys we did not send."""
+- Echo back the integer "id" field verbatim. Return one decision per input item.
+- Do not invent ids we did not send."""
 
 
 def _entries_to_judge(tenant: Any) -> list[dict[str, Any]]:
@@ -142,7 +143,13 @@ def _call_arbiter_llm(items: list[dict[str, Any]]) -> tuple[dict[str, bool], dic
     if not api_key or not items:
         return {}, {}
 
-    payload_lines = [f"- key={item['key']!r} name={item['name']!r}" for item in items]
+    # Send integer ids the LLM echoes back, NOT the canonical key string.
+    # Earlier shape round-tripped the key through the LLM and lost decisions
+    # whenever the model normalized Unicode quotes / dashes / diacritics
+    # (e.g. "The Angel’s Share" with U+2019 came back as straight
+    # ASCII "'", so ``decisions.get(key)`` missed every time). Integers
+    # have no normalization surface.
+    payload_lines = [f"- id={i} name={item['name']!r}" for i, item in enumerate(items)]
     user_message = "Decide is_pii for each entry:\n\n" + "\n".join(payload_lines)
 
     try:
@@ -175,15 +182,36 @@ def _call_arbiter_llm(items: list[dict[str, Any]]) -> tuple[dict[str, bool], dic
         logger.warning("pii_arbiter returned non-JSON: %r", raw[:200])
         return {}, {}
 
-    decisions = parsed.get("decisions", [])
+    raw_decisions = parsed.get("decisions", [])
     out: dict[str, bool] = {}
-    for d in decisions:
+    for d in raw_decisions:
         if not isinstance(d, dict):
             continue
-        key = d.get("key")
+        idx = d.get("id")
         is_pii = d.get("is_pii")
-        if isinstance(key, str) and isinstance(is_pii, bool):
-            out[key] = is_pii
+        # Accept ``true``/``false`` and integer ``1``/``0``; some models emit
+        # the numeric form even with ``response_format=json_object`` set.
+        # ``isinstance(True, int)`` is True (bool subclasses int), so we
+        # have to exclude bools from the numeric branch explicitly.
+        if isinstance(is_pii, bool):
+            decision_bool = is_pii
+        elif isinstance(is_pii, int) and is_pii in (0, 1):
+            decision_bool = bool(is_pii)
+        else:
+            continue
+        if isinstance(idx, int) and 0 <= idx < len(items):
+            out[items[idx]["key"]] = decision_bool
+
+    if raw_decisions and not out:
+        # Items were sent and the LLM responded, but we couldn't extract a
+        # single usable decision. Surfaces drift in the response shape so
+        # future regressions don't loop silently for days (cf. the 2026-05-25
+        # Unicode-apostrophe stuck-batch incident on canary).
+        logger.warning(
+            "pii_arbiter parsed %d decisions but matched none — raw=%r",
+            len(raw_decisions),
+            raw[:300],
+        )
 
     usage = data.get("usage") or {}
     if not isinstance(usage, dict):
