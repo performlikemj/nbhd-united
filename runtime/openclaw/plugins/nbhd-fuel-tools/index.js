@@ -11,7 +11,7 @@ const wrap = (def) => wrapTool(def, { plugin: "nbhd-fuel-tools" });
  * - Update fitness profile progressively during onboarding
  */
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 20000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 60000;
 
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
