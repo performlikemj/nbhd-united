@@ -1,0 +1,15 @@
+Hi {{ display_name }},
+
+Heads-up: our LINE messaging allowance for this month is used up. That
+means scheduled check-ins and proactive messages from your assistant
+can't reach you on LINE until the start of next month.
+
+To keep getting them in the meantime, connect Telegram from your
+Settings page:
+
+{{ settings_url }}
+
+If you'd rather wait, no action needed — LINE will resume on its own
+once the cycle resets.
+
+— NBHD United

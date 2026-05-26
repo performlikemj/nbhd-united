@@ -72,3 +72,50 @@ def cleanup_inbound_media_task() -> None:
                 logger.debug("Failed to check/delete %s in %s", item["name"], share_name)
 
     logger.info("Media cleanup complete: deleted %d files across %d tenants", total_deleted, tenants.count())
+
+
+def poll_line_quota_task() -> dict:
+    """Daily poll of the LINE Push monthly quota.
+
+    Refreshes :class:`apps.router.models.LineQuotaState` from the LINE
+    Messaging API and, on any threshold crossing, enqueues
+    ``dispatch_line_quota_handler`` so the fan-out (emails + channel
+    flips) happens out-of-band. The handler is idempotent, so it's
+    fine for both this task and the 429 tripwire to enqueue it for
+    the same event.
+
+    Cadence: once daily (registered via ``register_system_crons``).
+    """
+    from apps.cron.publish import publish_task
+    from apps.router.line_quota import refresh_quota_state
+
+    result = refresh_quota_state()
+
+    if result.transitions:
+        try:
+            publish_task("dispatch_line_quota_handler")
+        except Exception:
+            logger.exception("poll_line_quota: failed to enqueue handler dispatch")
+
+    return {
+        "polled": result.polled,
+        "limit": result.limit,
+        "used": result.used,
+        "transitions": list(result.transitions),
+    }
+
+
+def dispatch_line_quota_handler_task() -> dict:
+    """Run the LINE quota state-transition handlers (pre-warn email,
+    exhaustion fan-out, recovery fan-out). Idempotent — each handler
+    short-circuits if its event has already been notified.
+
+    Enqueued by:
+      - ``poll_line_quota_task`` when the daily poll detects a transition
+      - The 429 tripwire in ``apps.router.line_webhook._maybe_trip_monthly_quota``
+        immediately on exhaustion (so users don't wait up to 24h for
+        the email after the cap is hit mid-day).
+    """
+    from apps.router.line_quota_handlers import dispatch_for_current_state
+
+    return dispatch_for_current_state()

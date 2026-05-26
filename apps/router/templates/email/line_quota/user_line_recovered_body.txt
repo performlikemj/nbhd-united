@@ -1,0 +1,14 @@
+Hi {{ display_name }},
+
+LINE messaging is back for the new cycle. You're currently set to
+Telegram (we moved you there when LINE hit its cap last month).
+
+If you want to switch back to LINE for proactive messages, you can do
+it from your Settings page:
+
+{{ settings_url }}
+
+If you'd rather stay on Telegram, no action needed — that's where your
+assistant will keep reaching you.
+
+— NBHD United

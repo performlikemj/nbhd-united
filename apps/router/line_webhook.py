@@ -277,6 +277,7 @@ def _post_line_push(line_user_id: str, messages: list[dict]) -> dict | None:
                 resp.status_code,
                 resp.text[:300],
             )
+            _maybe_trip_monthly_quota(resp.status_code, resp.text)
             return None
         try:
             return resp.json()
@@ -285,6 +286,33 @@ def _post_line_push(line_user_id: str, messages: list[dict]) -> dict | None:
     except Exception:
         logger.exception("Failed to send LINE push message to %s", line_user_id)
         return None
+
+
+def _maybe_trip_monthly_quota(status_code: int, body: str) -> None:
+    """If a Push response indicates monthly-cap exhaustion, flip the
+    fleet-wide quota state and enqueue the user-facing fan-out handler.
+    Safe to call on every non-success — the helper short-circuits when
+    the body isn't the monthly-limit signal.
+
+    The fan-out is dispatched via QStash (out-of-band) rather than
+    inline so we don't block the user-facing send path on N email
+    sends + N user-row writes. The handler is idempotent (compares
+    ``exhausted_notified_at`` against ``exhausted_at``) so the daily
+    poll re-dispatching for the same event is a no-op."""
+    from apps.router.line_quota import is_monthly_limit_429, mark_quota_exhausted_from_429
+
+    if not is_monthly_limit_429(status_code, body):
+        return
+    if mark_quota_exhausted_from_429():
+        logger.warning("LINE Push monthly quota exhausted — fleet-wide gate engaged")
+        try:
+            from apps.cron.publish import publish_task
+
+            publish_task("dispatch_line_quota_handler")
+        except Exception:
+            # Don't break the send path — the next daily poll will
+            # re-dispatch via the same idempotent handler.
+            logger.exception("line_quota: failed to enqueue handler dispatch from tripwire")
 
 
 def _send_line_push(line_user_id: str, messages: list[dict]) -> bool:

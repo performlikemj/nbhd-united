@@ -1,0 +1,15 @@
+Hi {{ display_name }},
+
+Heads-up: our LINE messaging allowance for this month is used up, so
+we've temporarily switched your assistant's proactive messages
+(morning briefings, check-ins, reminders) over to Telegram. Your
+existing Telegram link is being used — nothing to do on your end.
+
+LINE conversations still work for replies the assistant sends back to
+you in the moment, but scheduled and proactive messages will arrive on
+Telegram until LINE resets at the start of next month.
+
+If you'd rather stay on Telegram even after LINE comes back, you can
+keep your channel preference there from Settings.
+
+— NBHD United

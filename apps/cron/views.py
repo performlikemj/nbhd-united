@@ -83,6 +83,12 @@ TASK_MAP = {
     "repair_stale_tenant_provisioning": "apps.orchestrator.tasks.repair_stale_tenant_provisioning_task",
     # Media cleanup (daily)
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
+    # LINE Push monthly quota — daily poll + on-demand handler dispatch.
+    # poll_line_quota refreshes the singleton state and emits transitions;
+    # dispatch_line_quota_handler runs the user-facing fan-out (idempotent
+    # so it's safe to invoke from the 429 tripwire and the poll alike).
+    "poll_line_quota": "apps.router.tasks.poll_line_quota_task",
+    "dispatch_line_quota_handler": "apps.router.tasks.dispatch_line_quota_handler_task",
     # Lesson constellation maintenance
     "dedup_lessons": "apps.lessons.tasks.dedup_lessons_task",
     "reseed_lessons": "apps.lessons.tasks.reseed_lessons_task",

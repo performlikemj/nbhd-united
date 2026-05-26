@@ -960,6 +960,16 @@ def _build_heartbeat_defaults(tenant: Tenant) -> dict:
         # (see _build_heartbeat_cron) fires our own check-in flow.
         return {"every": "0m"}
 
+    # Hard gate: built-in heartbeat is every-1h Push (proactive) traffic,
+    # so for tenants whose proactive channel is LINE it accelerates
+    # monthly-Push-quota exhaustion. Disable it here regardless of the
+    # experimental flag — LINE-preferring tenants get scheduled
+    # check-ins via the cron-based heartbeat path instead, which is far
+    # less frequent and uses the same Push allowance more sparingly.
+    # See apps/router/line_quota.py for the quota state machine.
+    if (getattr(tenant.user, "preferred_channel", "") or "") == "line":
+        return {"every": "0m"}
+
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
     start_hour = tenant.heartbeat_start_hour
     end_hour = (start_hour + tenant.heartbeat_window_hours) % 24
@@ -989,6 +999,12 @@ def _build_commitments_config(tenant: Tenant) -> dict:
     commitments on the same flag as the built-in heartbeat.
     """
     if not tenant.experimental_built_in_heartbeat:
+        return {"enabled": False}
+    # LINE-preferring tenants have built-in heartbeat force-disabled (see
+    # _build_heartbeat_defaults) to preserve LINE Push quota. Commitments
+    # only deliver via the heartbeat, so disable here too — otherwise the
+    # extractor burns LLM tokens post-reply with nothing to surface.
+    if (getattr(tenant.user, "preferred_channel", "") or "") == "line":
         return {"enabled": False}
     return {"enabled": True, "maxPerDay": 3}
 

@@ -400,6 +400,14 @@ export interface LineLinkResponse {
 export interface LineStatus {
   linked: boolean;
   line_display_name?: string;
+  // Fleet-wide LINE Push monthly-quota state. Surfaced so the channel
+  // selector can disable the LINE radio when the cap is hit and show
+  // the user why. Backed by apps/router/models.py:LineQuotaState.
+  quota?: {
+    exhausted: boolean;
+    checked_at: string | null;
+    exhausted_at: string | null;
+  };
 }
 
 export function generateLineLink(): Promise<LineLinkResponse> {

@@ -58,8 +58,20 @@ def line_unlink(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def line_status(request):
-    """Get the user's LINE link status."""
-    return Response(svc.get_line_status(request.user))
+    """Get the user's LINE link status + fleet-wide LINE Push quota
+    state. The quota state is included so the frontend channel selector
+    can disable the LINE radio when the monthly cap has been hit (see
+    apps/router/line_quota.py)."""
+    from apps.router.models import LineQuotaState
+
+    payload = svc.get_line_status(request.user)
+    state = LineQuotaState.get()
+    payload["quota"] = {
+        "exhausted": state.is_exhausted,
+        "checked_at": state.line_quota_checked_at.isoformat() if state.line_quota_checked_at else None,
+        "exhausted_at": state.line_quota_exhausted_at.isoformat() if state.line_quota_exhausted_at else None,
+    }
+    return Response(payload)
 
 
 @api_view(["PATCH"])
@@ -86,6 +98,24 @@ def line_set_preferred_channel(request):
             {"error": "Telegram is not linked. Connect Telegram first."},
             status=400,
         )
+
+    # Fleet-wide gate: block LINE selection while Push quota is
+    # exhausted. The frontend disables the LINE radio for UX, but
+    # enforce server-side too in case the request bypasses the UI.
+    if channel == "line":
+        from apps.router.line_quota import is_quota_exhausted
+
+        if is_quota_exhausted():
+            return Response(
+                {
+                    "error": (
+                        "LINE messaging is at its monthly cap right now. "
+                        "It will be selectable again at the start of next month."
+                    ),
+                    "code": "line_quota_exhausted",
+                },
+                status=409,
+            )
 
     user.preferred_channel = channel
     user.save(update_fields=["preferred_channel"])
