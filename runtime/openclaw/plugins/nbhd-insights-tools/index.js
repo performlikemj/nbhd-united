@@ -650,4 +650,31 @@ export default function register(api) {
     }),
     { optional: true },
   );
+
+  // ── Yesterday's signals — cross-pillar day-scoped roll-up ───────────
+  //
+  // Distinct from nbhd_insights_history / baseline (which are per-pillar +
+  // per-topic over multi-week windows). This one is used by the Personal
+  // Question and Heartbeat cron prompts to ground asking / nudge decisions
+  // in what actually happened yesterday across Fuel / Journal / Lessons.
+  api.registerTool(
+    wrap({
+      name: "nbhd_yesterdays_signals",
+      description:
+        "Cross-pillar snapshot of yesterday's activity across Fuel (workouts), Journal (entries, energy), and Lessons (approved, pending). Includes 'today_so_far' to catch late-logging and 'notable_gaps' flags (e.g. 'journal_dark_3_days') the backend pre-computes as cheap hints — you decide whether to act on them. Use this before deciding whether to ask a signal-driven Personal Question or to ground a Heartbeat nudge in a fresh fact. Tenant-tz-aware; 'yesterday' is the previous calendar day in the user's local timezone. The Core pillar is intentionally omitted (no data model yet).",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {},
+      },
+      async execute(_id, _params) {
+        const payload = await callRuntime(api, {
+          path: insightsPath(api, "/yesterdays-signals/"),
+          method: "GET",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
 }
