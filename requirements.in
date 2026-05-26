@@ -29,23 +29,19 @@ pgvector
 
 # PII redaction (outgoing LLM traffic)
 presidio-analyzer>=2.2    # Pattern recognizers only (credit card Luhn, IBAN checksum)
-onnxruntime>=1.26.0
-# Neural PII is currently disabled in practice — `optimum 1.17.1`'s
-# `optimum.utils.input_generators` does
-#     from transformers.utils import is_tf_available, is_torch_available
-# but that symbol is gone from every transformers version we have access
-# to (5.7.0, 5.8.x, 5.9.x). `apps.pii.engine.get_pii_pipeline()` catches
-# the ImportError and falls back to Presidio pattern recognizers — that's
-# the production behavior on the canary today. Restoring neural PII
-# requires either an upstream optimum fix (>=2.x drops the broken import)
-# or our own engine refactor; tracked as a separate piece of work.
-#
-# Until then: keep the pin range that origin/main runs (so we don't
-# stir up a new pip resolution), and lean on the dependabot ignore in
-# .github/dependabot.yml to prevent further drift across this whole
-# triplet (transformers / optimum / onnxruntime).
+# Neural PII detection: lakshyakh93/deberta_finetuned_pii loaded via
+# vanilla PyTorch CPU. We deliberately do NOT route through
+# `optimum.onnxruntime`: the prior INT8-quantized ONNX path produced
+# different detection output on Linux x86 (prod) than on macOS dev
+# machines, AND the optimum / transformers ABI churn broke imports
+# outright between 2026-05-07 and the model swap (#695). Vanilla
+# PyTorch CPU inference is deterministic across both platforms and
+# frees us from the optimum dependency triangle entirely.
+# transformers needs an explicit torch (or TF/JAX) backend; we use the
+# PyTorch path for AutoModelForTokenClassification. Pin to CPU-only torch
+# via the `torch` package — production images don't have CUDA.
+torch>=2.0,<3.0
 transformers>=5.9.0,<5.10.0
-optimum[onnxruntime]>=1.14
 sentencepiece>=0.2
 
 # HTTP client (for routing to OpenClaw instances)
