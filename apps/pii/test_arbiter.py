@@ -142,6 +142,35 @@ class _FakeLLMResponse:
         return self._payload
 
 
+def _fake_post_by_name(name_to_pii: dict[str, bool], *, status: int = 200):
+    """Build a ``requests.post`` side_effect that returns id-keyed decisions
+    based on the names actually sent in the call's payload.
+
+    The arbiter assigns each item a positional ``id`` integer; tests want to
+    say "if you see name X, return is_pii=Y" without caring about ordering
+    or batching. This helper parses the outgoing user message back into
+    (id, name) pairs and constructs the matching decision array.
+    """
+    import ast
+    import json as _json
+    import re as _re
+
+    _line_re = _re.compile(r"^- id=(\d+) name=(.+)$", _re.MULTILINE)
+
+    def side_effect(*args, **kwargs):
+        body = kwargs.get("json") or {}
+        user_msg = body["messages"][1]["content"]
+        decisions = []
+        for match in _line_re.finditer(user_msg):
+            idx = int(match.group(1))
+            name = ast.literal_eval(match.group(2))
+            if name in name_to_pii:
+                decisions.append({"id": idx, "is_pii": name_to_pii[name]})
+        return _FakeLLMResponse(raw_content=_json.dumps({"decisions": decisions}), status=status)
+
+    return side_effect
+
+
 class ArbiterTaskTests(TestCase):
     def setUp(self):
         # `record_usage` writes a MonthlyBudget row; the patch isolates the
@@ -170,15 +199,10 @@ class ArbiterTaskTests(TestCase):
             },
         )
 
-        fake = _FakeLLMResponse(
-            decisions=[
-                {"key": "sarah chen", "is_pii": True},
-                {"key": "goal", "is_pii": False},
-                {"key": "calendar", "is_pii": False},
-            ]
-        )
-
-        with patch("apps.pii.arbiter.requests.post", return_value=fake) as post_mock:
+        with patch(
+            "apps.pii.arbiter.requests.post",
+            side_effect=_fake_post_by_name({"Sarah Chen": True, "goal": False, "calendar": False}),
+        ) as post_mock:
             result = pii_arbiter_task()
 
         self.assertEqual(post_mock.call_count, 1)
@@ -196,14 +220,78 @@ class ArbiterTaskTests(TestCase):
             entry = tenant.pii_entity_map[placeholder]
             self.assertIn("arbiter_judged_at", entry, f"missing stamp on {placeholder}")
 
+    def test_curly_apostrophe_name_round_trips(self):
+        # Regression for the 2026-05-25 stuck-batch incident: "The Angel's
+        # Share" (U+2019 curly apostrophe) looped every hour because the
+        # key-shaped response normalized it to a straight ASCII '. Integer
+        # ids have no normalization surface, so this should now stamp.
+        tenant = _make_tenant(
+            chat_id=20007,
+            entity_map={"[PERSON_448]": "The Angel’s Share"},
+        )
+
+        with patch(
+            "apps.pii.arbiter.requests.post",
+            side_effect=_fake_post_by_name({"The Angel’s Share": False}),
+        ):
+            result = pii_arbiter_task()
+
+        self.assertEqual(result["entries_denied"], 1)
+        tenant.refresh_from_db()
+        self.assertIn("the angel’s share", tenant.pii_denylist)
+        # Legacy string entry converted to dict with the stamp.
+        self.assertIn("arbiter_judged_at", tenant.pii_entity_map["[PERSON_448]"])
+
+    def test_integer_is_pii_accepted(self):
+        # Some models emit ``1``/``0`` for ``is_pii`` instead of ``true``/``false``
+        # despite ``response_format=json_object``. Parser accepts both.
+        tenant = _make_tenant(
+            chat_id=20008,
+            entity_map={"[PERSON_1]": {"name": "Sarah"}, "[PERSON_2]": {"name": "goal"}},
+        )
+
+        import json as _json
+
+        fake = _FakeLLMResponse(
+            raw_content=_json.dumps({"decisions": [{"id": 0, "is_pii": 1}, {"id": 1, "is_pii": 0}]})
+        )
+        with patch("apps.pii.arbiter.requests.post", return_value=fake):
+            result = pii_arbiter_task()
+
+        self.assertEqual(result["entries_denied"], 1)
+        self.assertEqual(result["entries_confirmed"], 1)
+        tenant.refresh_from_db()
+        self.assertIn("goal", tenant.pii_denylist)
+        self.assertNotIn("sarah", tenant.pii_denylist)
+
+    def test_warns_when_decisions_returned_but_none_matched(self):
+        # The 2026-05-25 silent loop bug: items sent, response parsed, but
+        # nothing matched. We want a warning so the next regression shows up
+        # in logs immediately instead of looping unnoticed for days.
+        _make_tenant(chat_id=20009, entity_map={"[PERSON_1]": {"name": "Sarah"}})
+
+        import json as _json
+
+        fake = _FakeLLMResponse(raw_content=_json.dumps({"decisions": [{"id": 999, "is_pii": True}]}))
+        with (
+            self.assertLogs("apps.pii.arbiter", level="WARNING") as captured,
+            patch("apps.pii.arbiter.requests.post", return_value=fake),
+        ):
+            result = pii_arbiter_task()
+
+        self.assertEqual(result["entries_judged"], 0)
+        self.assertTrue(any("matched none" in msg for msg in captured.output))
+
     def test_idempotent_when_rerun(self):
         tenant = _make_tenant(
             chat_id=20002,
             entity_map={"[PERSON_1]": {"name": "Sarah Chen"}},
         )
 
-        fake = _FakeLLMResponse(decisions=[{"key": "sarah chen", "is_pii": True}])
-        with patch("apps.pii.arbiter.requests.post", return_value=fake) as post_mock:
+        with patch(
+            "apps.pii.arbiter.requests.post",
+            side_effect=_fake_post_by_name({"Sarah Chen": True}),
+        ) as post_mock:
             first = pii_arbiter_task()
             second = pii_arbiter_task()
 
@@ -211,6 +299,10 @@ class ArbiterTaskTests(TestCase):
         self.assertEqual(first["entries_judged"], 1)
         self.assertEqual(second["entries_judged"], 0)
         self.assertEqual(second["tenants_with_work"], 0)
+
+        # Confirmed entries also get stamped so the second sweep skips them.
+        tenant.refresh_from_db()
+        self.assertIn("arbiter_judged_at", tenant.pii_entity_map["[PERSON_1]"])
 
     def test_malformed_llm_response_defers(self):
         tenant = _make_tenant(
@@ -252,8 +344,10 @@ class ArbiterTaskTests(TestCase):
             },
         )
 
-        fake = _FakeLLMResponse(decisions=[{"key": "sautai", "is_pii": False}])
-        with patch("apps.pii.arbiter.requests.post", return_value=fake) as post_mock:
+        with patch(
+            "apps.pii.arbiter.requests.post",
+            side_effect=_fake_post_by_name({"Sautai": False}),
+        ) as post_mock:
             result = pii_arbiter_task()
 
         # One LLM call covered all three duplicates.
@@ -269,10 +363,12 @@ class ArbiterTaskTests(TestCase):
         entity_map = {f"[PERSON_{i}]": {"name": f"Person{i}"} for i in range(1, ARBITER_BATCH_SIZE + 5)}
         _make_tenant(chat_id=20006, entity_map=entity_map)
 
-        # Both calls return only "person1" as a decision so we can verify
+        # Both calls return only "Person1" as a decision so we can verify
         # multi-batch flow without depending on which item lands where.
-        fake = _FakeLLMResponse(decisions=[{"key": "person1", "is_pii": True}])
-        with patch("apps.pii.arbiter.requests.post", return_value=fake) as post_mock:
+        with patch(
+            "apps.pii.arbiter.requests.post",
+            side_effect=_fake_post_by_name({"Person1": True}),
+        ) as post_mock:
             pii_arbiter_task()
 
         self.assertEqual(post_mock.call_count, 2)
