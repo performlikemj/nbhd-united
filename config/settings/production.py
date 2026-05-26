@@ -29,6 +29,27 @@ DEBUG = False
 # setting is the canonical Django-on-Supabase pattern.
 DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"] = True
 
+# Persistent connections to Supavisor. Until 2026-05-26 CONN_MAX_AGE was
+# the Django default (0) — every request opened a fresh client socket
+# to the pooler, paid the TLS + handshake tax (~100-300ms per request),
+# then closed it. Under the morning cron burst that thrash dominated
+# request latency and pushed individual OC tool calls past the 20s wall.
+#
+# Holding the Django→Supavisor socket for 10 minutes is fine in
+# transaction mode: Supavisor multiplexes Postgres backend connections
+# per transaction, not per client socket, so we don't pin server conns.
+# CONN_HEALTH_CHECKS replaces a dead socket lazily on the next request
+# instead of failing it.
+DATABASES["default"]["CONN_MAX_AGE"] = 600
+DATABASES["default"]["CONN_HEALTH_CHECKS"] = True
+
+# psycopg3 prepares any query seen ≥5 times by default. In transaction
+# mode the backend conn serving a "EXECUTE <prepared-name>" may not be
+# the one that created the prepared statement, which errors. Setting
+# prepare_threshold=None disables auto-preparation; queries are parsed
+# server-side each time (negligible overhead vs the win from CONN_MAX_AGE).
+DATABASES["default"].setdefault("OPTIONS", {})["prepare_threshold"] = None
+
 # Security
 SECURE_SSL_REDIRECT = True
 SECURE_HSTS_SECONDS = 31536000
