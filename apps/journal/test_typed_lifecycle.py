@@ -359,10 +359,15 @@ class TypedLifecycleSwapsTest(TestCase):
             "Step 2: Append a new task via `nbhd_document_append` (kind='tasks', slug='tasks')."
         )
         out = self._prepare(legacy_prompt)
+        # Legacy patterns in the prompt body itself are preserved verbatim —
+        # _TYPED_LIFECYCLE_SWAPS doesn't fire when the flag is off.
         self.assertIn("`nbhd_document_get` with kind='tasks', slug='tasks'", out)
         self.assertIn("`nbhd_document_append` (kind='tasks', slug='tasks')", out)
         self.assertNotIn("nbhd_task_create", out)
-        self.assertNotIn("nbhd_task_list", out)
+        # ``nbhd_task_list`` IS mentioned in the shared cron preamble's
+        # zombie-reminder cross-reference rule (#696). That applies fleet-wide
+        # and isn't subject to the flag — for flag-off tenants the typed list
+        # is empty so the cross-check is a no-op.
 
     def test_flag_on_swaps_tasks_write_to_typed_tool(self):
         self.tenant.experimental_typed_journal_lifecycle = True
