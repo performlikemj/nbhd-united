@@ -93,11 +93,34 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (response.status === 401) {
+    // Distinguish "your session expired" from "those credentials don't work".
+    // The first case requires a prior refresh token; the second is the
+    // backend rejecting login / signup / password-reset-confirm payloads.
+    // Showing "Session expired" on a fresh login attempt was confusing —
+    // see PR fixing #696-adjacent UX.
+    const hadSession = !!getRefreshToken();
     clearTokens();
-    if (typeof window !== "undefined" && window.location.pathname !== "/login") {
-      window.location.href = "/login";
+    if (hadSession) {
+      if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+        window.location.href = "/login";
+      }
+      throw new Error("Session expired. Please sign in again.");
     }
-    throw new Error("Session expired. Please sign in again.");
+    // No prior session. Surface the server's actual detail so callers can
+    // suggest the right next step (e.g., the login page can show a
+    // password-reset CTA on credentials failures).
+    let detail = "Incorrect email or password.";
+    try {
+      const body = await response.json();
+      if (body && typeof body.detail === "string" && body.detail.trim()) {
+        detail = body.detail;
+      }
+    } catch {
+      // Body isn't JSON — keep the default detail.
+    }
+    const err = new Error(detail);
+    (err as Error & { status: number }).status = 401;
+    throw err;
   }
 
   if (!response.ok) {
