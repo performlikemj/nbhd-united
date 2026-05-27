@@ -54,7 +54,6 @@ from django.utils import timezone
 from apps.billing.services import (
     record_usage,
     resolve_model_for_attribution,
-    resolve_tenant_primary_model,
 )
 from apps.router.models import PendingMessage
 from apps.tenants.models import Tenant
@@ -975,10 +974,14 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
     gateway_token = get_gateway_token_for_tenant(tenant)
 
     chat_payload = {
-        # Send the resolved tenant primary so OpenClaw echoes it back at
-        # top-level. The "openclaw" literal fallback is defensive — only
-        # hits if the tier-default lookup raises (effectively never).
-        "model": resolve_tenant_primary_model(tenant) or "openclaw",
+        # OpenClaw 5.7's /v1/chat/completions handler hard-rejects any
+        # body ``model`` value that isn't ``openclaw``, ``openclaw/default``,
+        # ``openclaw:<id>``, or ``agent:<id>`` (returns 400). The real
+        # upstream model is selected inside the runtime; attribution is
+        # done client-side in ``_record_usage_safe`` via
+        # ``resolve_model_for_attribution`` (response → tenant primary
+        # fallback). See PR following #720 for the regression context.
+        "model": "openclaw",
         "messages": [{"role": "user", "content": content}],
         "user": user_param,
     }
@@ -1033,7 +1036,9 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
     gateway_token = get_gateway_token_for_tenant(tenant)
 
     chat_payload = {
-        "model": resolve_tenant_primary_model(tenant) or "openclaw",
+        # See ``_drain_line_batch`` for why this stays the ``openclaw``
+        # sentinel rather than a resolved tenant primary.
+        "model": "openclaw",
         "messages": [{"role": "user", "content": content}],
         "user": user_param,
     }
