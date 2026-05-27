@@ -66,7 +66,7 @@ Tested width: 600px. Mobile breakpoint: 600px → full-width 24px gutter.
 
 <body style="margin: 0; padding: 0; background-color: #0b0f13; color: #e2e8f0;">
   <div style="display: none; max-height: 0; overflow: hidden; mso-hide: all; font-size: 1px; line-height: 1px; color: #0b0f13;">
-    {% if telegram_connected %}Your assistant just said hello in Telegram — open the chat to reply.{% else %}Your assistant is set up. Connect Telegram or LINE to start chatting.{% endif %}
+    {% if telegram_connected %}Your assistant just said hello in Telegram — open the chat to reply.{% else %}Your assistant is set up. Connect {{ channel_label }} to start chatting.{% endif %}
   </div>
 
   <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #0b0f13;" bgcolor="#0b0f13">
@@ -102,7 +102,7 @@ Tested width: 600px. Mobile breakpoint: 600px → full-width 24px gutter.
           <tr>
             <td class="px-page" align="left" style="padding: 0 48px 28px 48px;">
               <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 14px; line-height: 1.5; color: rgba(226,232,240,0.62); font-weight: 500;">
-                {% if telegram_connected %}Set up and waiting — your hello is already in your Telegram chat.{% else %}Set up and waiting — connect Telegram or LINE to start chatting.{% endif %}
+                {% if telegram_connected %}Set up and waiting — your hello is already in your Telegram chat.{% else %}Set up and waiting — connect {{ channel_label }} to start chatting.{% endif %}
               </p>
             </td>
           </tr>
@@ -122,7 +122,7 @@ Tested width: 600px. Mobile breakpoint: 600px → full-width 24px gutter.
               </p>
               {% else %}
               <p style="margin: 0 0 18px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
-                Your assistant lives in your favorite messaging app. To start chatting, connect it to Telegram or LINE from your dashboard.
+                Your assistant lives in your favorite messaging app. To start chatting, connect it to {{ channel_label }} from your dashboard.
               </p>
               {% endif %}
             </td>
@@ -143,13 +143,13 @@ Tested width: 600px. Mobile breakpoint: 600px → full-width 24px gutter.
                 fillcolor="#7C6BF0">
                 <w:anchorlock/>
                 <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:15px;font-weight:700;letter-spacing:0.01em;">
-                  Connect Telegram or LINE
+                  Connect {{ channel_label }}
                 </center>
               </v:roundrect>
               <![endif]-->
               <!--[if !mso]><!-- -->
               <a href="{{ settings_url }}" class="cta-glow" target="_blank" rel="noopener" style="display: inline-block; background-color: #7C6BF0; color: #ffffff; text-decoration: none; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; font-weight: 700; padding: 16px 36px; border-radius: 999px; letter-spacing: 0.01em; box-shadow: 0 0 0 1px rgba(124, 107, 240, 0.35), 0 12px 32px rgba(124, 107, 240, 0.40);">
-                Connect Telegram or LINE
+                Connect {{ channel_label }}
               </a>
               <!--<![endif]-->
             </td>

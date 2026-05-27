@@ -40,6 +40,24 @@ class WelcomeEmailTests(TestCase):
         )
         return Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE)
 
+    # --- Subject line branching ---
+
+    def test_subject_branches_on_telegram_connected(self):
+        # Telegram-known: subject acknowledges the in-app hello already fired.
+        send_welcome_email(self.tenant)
+        self.assertEqual(
+            mail.outbox[0].subject,
+            "Welcome — your assistant just said hi",
+        )
+
+        # Web-signup: subject signals there's a step left.
+        web = self._make_web_signup_tenant()
+        send_welcome_email(web)
+        self.assertEqual(
+            mail.outbox[1].subject,
+            "Welcome — pick a channel to start chatting",
+        )
+
     # --- Telegram-connected branch ---
 
     def test_telegram_connected_email_references_telegram_chat(self):
@@ -131,6 +149,28 @@ class WelcomeEmailTests(TestCase):
         send_welcome_email(web)
         msg = mail.outbox[0]
         self.assertNotIn("also use your assistant on LINE", msg.body)
+
+    def test_line_quota_exhausted_web_signup_drops_line_from_cta(self):
+        # When LINE is currently capped, the web-signup CTA shortens to
+        # "Connect Telegram" so we don't push toward a channel the user
+        # would see disabled on the dashboard.
+        LineQuotaState.objects.update_or_create(
+            pk=1,
+            defaults={
+                "line_quota_limit": 1000,
+                "line_quota_used": 1000,
+                "line_quota_exhausted_at": timezone.now(),
+            },
+        )
+        web = self._make_web_signup_tenant()
+        send_welcome_email(web)
+        msg = mail.outbox[0]
+        html = next((b for b, mt in msg.alternatives if mt == "text/html"), "")
+        # Both the text body and the HTML CTA collapse to Telegram-only.
+        self.assertIn("connect it to Telegram from your", msg.body)
+        self.assertNotIn("Telegram or LINE", msg.body)
+        self.assertIn("Connect Telegram", html)
+        self.assertNotIn("Connect Telegram or LINE", html)
 
     # --- Video URL gating ---
 

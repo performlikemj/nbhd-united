@@ -11,7 +11,7 @@ Some things to try first:
   • Log     "I ran 5K this morning"
   • Plan    "Remind me to drink water at 8am every day"
   • Just chat   "Hi, who are you?"
-{% else %}To start using your assistant, connect it to Telegram or LINE from your
+{% else %}To start using your assistant, connect it to {{ channel_label }} from your
 dashboard:
 
   {{ settings_url }}

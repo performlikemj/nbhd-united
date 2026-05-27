@@ -60,12 +60,20 @@ def send_welcome_email(tenant: Tenant) -> bool:
 
     video_url = getattr(django_settings, "WELCOME_VIDEO_URL", "") or ""
 
+    line_quota_available = _line_quota_available()
+    # When LINE is currently capped, dropping the "or LINE" half of the
+    # CTA keeps the email honest at send-time. The dashboard already
+    # disables the LINE option visually when exhausted; this avoids the
+    # awkward "you suggested LINE, then I couldn't pick it" UX.
+    channel_label = "Telegram or LINE" if line_quota_available else "Telegram"
+
     context = {
         "display_name": user.display_name or "there",
         "telegram_connected": bool(user.telegram_chat_id),
         "settings_url": settings_url,
         "video_url": video_url,
-        "line_quota_available": _line_quota_available(),
+        "line_quota_available": line_quota_available,
+        "channel_label": channel_label,
     }
 
     subject = render_to_string("email/welcome_subject.txt", context).strip()
