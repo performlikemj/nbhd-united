@@ -375,6 +375,54 @@ class TelegramPollerForwardTest(TestCase):
         self.assertIn("[Now:", msg.payload["message_text"])
         self.assertIn("[chat:", msg.payload["message_text"])
 
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_pending_user_text_strips_system_update_framing(self, mock_post):
+        """The post-update + restart-during-message replay paths prepend
+        ``[System: just updated. User's message from before the update:]\\n``
+        (poller.py:759) and ``[System: assistant was restarting…]\\n``
+        (poller.py:1224) before forwarding. The apology must quote the
+        user's actual words, not the System framing, so those call sites
+        pass ``raw_user_text=pending_text``."""
+        import httpx
+
+        from apps.router.models import PendingMessage
+
+        mock_post.side_effect = httpx.HTTPError("force enqueue without delivery")
+
+        pending_text = "thanks. i'll read through these."
+        framed = f"[System: just updated. User's message from before the update:]\n{pending_text}"
+        self.poller._forward_to_container(123, self.tenant, framed, raw_user_text=pending_text)
+
+        msg = PendingMessage.objects.filter(tenant=self.tenant).order_by("-created_at").first()
+        self.assertIsNotNone(msg)
+        self.assertEqual(msg.user_text, pending_text)
+        self.assertNotIn("[System:", msg.user_text)
+        # The agent-facing payload still carries the framing so the agent
+        # knows the message was deferred across a restart.
+        self.assertIn("[System: just updated.", msg.payload["message_text"])
+
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_pending_user_text_strips_button_tap_framing(self, mock_post):
+        """The agent-button-callback path (poller.py:793) forwards
+        ``[User tapped button: "<label>"]`` to the container. The apology
+        must quote the button label, not the framing — so the call site
+        passes ``raw_user_text=button_value``."""
+        import httpx
+
+        from apps.router.models import PendingMessage
+
+        mock_post.side_effect = httpx.HTTPError("force enqueue without delivery")
+
+        button_value = "Yes, schedule it"
+        framed = f'[User tapped button: "{button_value}"]'
+        self.poller._forward_to_container(123, self.tenant, framed, raw_user_text=button_value)
+
+        msg = PendingMessage.objects.filter(tenant=self.tenant).order_by("-created_at").first()
+        self.assertIsNotNone(msg)
+        self.assertEqual(msg.user_text, button_value)
+        self.assertNotIn("[User tapped button:", msg.user_text)
+        self.assertIn("[User tapped button:", msg.payload["message_text"])
+
 
 @override_settings(TELEGRAM_BOT_TOKEN="TEST-BOT-TOKEN")
 class TelegramPollerSendMessageTest(TestCase):

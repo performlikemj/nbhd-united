@@ -8,6 +8,7 @@ than runtime LLM calls.
 Follows the same MESSAGES dict + helper pattern as onboarding.py.
 """
 
+
 # ---------------------------------------------------------------------------
 # Error message templates
 # ---------------------------------------------------------------------------
@@ -940,3 +941,46 @@ def error_msg(lang: str, key: str, **kwargs: str) -> str:
     msgs = ERROR_MESSAGES.get(lang, ERROR_MESSAGES["en"])
     template = msgs.get(key, ERROR_MESSAGES["en"][key])
     return template.format(**kwargs) if kwargs else template
+
+
+# ---------------------------------------------------------------------------
+# Internal framing scrubber
+# ---------------------------------------------------------------------------
+# The chat pipeline prepends markers like ``[Now: …]``, ``[chat: …]``,
+# ``[System: just updated. …]``, ``[User tapped button: …]`` to outbound
+# payloads so the agent has context (see apps/router/services.py and the
+# update/restart replay paths in apps/router/poller.py). If a delivery
+# fails three times and we send the dropped-message apology, the quoted
+# excerpt must NOT echo these agent-only markers back at the user.
+#
+# When introducing a new internal marker, add its tag here.
+import re  # noqa: E402  -- kept next to the scrubber it powers
+
+_INTERNAL_FRAMING_TAGS: tuple[str, ...] = (
+    "System",
+    "Now",
+    "chat",
+    "User tapped button",
+    "Photo attached",
+)
+_INTERNAL_FRAMING_RE = re.compile(
+    r"^\s*\[(?:" + "|".join(re.escape(t) for t in _INTERNAL_FRAMING_TAGS) + r")\b[^\]]*\]\s*",
+    flags=re.IGNORECASE,
+)
+
+
+def strip_internal_framing(text: str) -> str:
+    """Peel leading agent-context markers off a user-facing excerpt.
+
+    Iterates so stacked markers (``[Now: …]\\n[chat: …]\\nhi``) all come
+    off and only the actual user-typed text remains. Returns ``text``
+    unchanged when no marker is present.
+    """
+    if not text:
+        return text
+    cleaned = text
+    prev: str | None = None
+    while prev != cleaned:
+        prev = cleaned
+        cleaned = _INTERNAL_FRAMING_RE.sub("", cleaned, count=1)
+    return cleaned

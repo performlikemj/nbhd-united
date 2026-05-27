@@ -1003,3 +1003,31 @@ class PendingMessageApologyLocalizationTest(TestCase):
         _send_apology_for_dropped_pending_message(tenant, msg)
         body = mock_send_text.call_args[0][1]
         self.assertIn("Sorry", body)
+
+    @patch("apps.router.line_webhook._send_line_text", return_value=True)
+    def test_apology_excerpt_strips_internal_framing(self, mock_send_text):
+        """Belt-and-suspenders: even if a row somehow lands in the queue
+        with ``[System: …]`` framing baked into ``user_text`` (regression
+        of the raw_user_text plumbing in poller.py), the rendered apology
+        must NOT echo that framing back at the user."""
+        from apps.router.models import PendingMessage
+        from apps.router.pending_queue import _send_apology_for_dropped_pending_message
+
+        tenant = self._make_user_tenant("en", "U_loc_apology_strip")
+        pending_text = "thanks. i'll read through these"
+        framed = f"[System: just updated. User's message from before the update:]\n{pending_text}"
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_loc_apology_strip",
+            payload={"message_text": framed},
+            # Simulate the regression: framed text leaked into user_text.
+            user_text=framed,
+        )
+
+        _send_apology_for_dropped_pending_message(tenant, msg)
+        body = mock_send_text.call_args[0][1]
+        self.assertNotIn("[System:", body)
+        self.assertNotIn("User's message from before", body)
+        # The clean user text should still surface as the excerpt.
+        self.assertIn("thanks. i'll read through these", body)
