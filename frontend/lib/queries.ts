@@ -1152,6 +1152,12 @@ export function useWorkoutQuery(id: string | null) {
     queryKey: ["fuel-workout", id],
     queryFn: () => fetchWorkout(id!),
     staleTime: 60_000,
+    // Always re-validate against the server when the detail drawer mounts.
+    // Without this, the persisted-cache + schedule-list-priming path can
+    // surface a row id that's been deleted upstream (assistant runtime,
+    // plan regeneration, another tab) — the user types into a phantom
+    // form and only finds out at save time.
+    refetchOnMount: "always",
     enabled: isLoggedIn() && !!id,
     // A 404 here means the workout was deleted by another actor (the
     // assistant runtime, another browser tab, etc.). Retrying won't bring
@@ -1196,6 +1202,9 @@ export function useUpdateWorkoutMutation() {
       void qc.invalidateQueries({ queryKey: ["fuel-workout"] });
       void qc.invalidateQueries({ queryKey: ["fuel-progress"] });
     },
+    onError: (err) => {
+      if (isNotFound(err)) invalidateFuelLists(qc);
+    },
   });
 }
 
@@ -1209,6 +1218,9 @@ export function useDeleteWorkoutMutation() {
       void qc.invalidateQueries({ queryKey: ["fuel-progress"] });
       void qc.invalidateQueries({ queryKey: ["fuel-workout-count"] });
       void qc.invalidateQueries({ queryKey: ["fuel-schedule"] });
+    },
+    onError: (err) => {
+      if (isNotFound(err)) invalidateFuelLists(qc);
     },
   });
 }
@@ -1237,11 +1249,22 @@ function invalidateFuelLists(qc: ReturnType<typeof useQueryClient>) {
   void qc.invalidateQueries({ queryKey: ["fuel-progress"] });
 }
 
+// 404 on any workout write means the row was deleted upstream (assistant
+// runtime, plan regen, another tab) since the cache was last populated.
+// Drop our stale schedule/list caches so the dead row stops appearing,
+// but let the caller decide what UX to show.
+function isNotFound(err: unknown): boolean {
+  return (err as Error & { status?: number })?.status === 404;
+}
+
 export function useSkipWorkoutMutation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, reason }: { id: string; reason?: string }) => skipWorkout(id, reason),
     onSuccess: () => invalidateFuelLists(qc),
+    onError: (err) => {
+      if (isNotFound(err)) invalidateFuelLists(qc);
+    },
   });
 }
 
@@ -1256,6 +1279,9 @@ export function useCompleteWorkoutMutation() {
       data?: { notes?: string; rpe?: number; duration_minutes?: number };
     }) => completeWorkout(id, data),
     onSuccess: () => invalidateFuelLists(qc),
+    onError: (err) => {
+      if (isNotFound(err)) invalidateFuelLists(qc);
+    },
   });
 }
 
