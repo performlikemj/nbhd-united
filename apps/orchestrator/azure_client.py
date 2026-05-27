@@ -733,6 +733,7 @@ def create_container_app(
     workspace_env: dict[str, str] | None = None,
     internal_api_key_kv_secret_name: str | None = None,
     internal_api_key_plain_value: str | None = None,
+    openrouter_kv_secret_name: str | None = None,
 ) -> dict[str, str]:
     """Create an Azure Container App for an OpenClaw instance.
 
@@ -755,6 +756,12 @@ def create_container_app(
     internal_plain = (
         internal_api_key_plain_value if internal_api_key_plain_value is not None else settings.NBHD_INTERNAL_API_KEY
     )
+    # PR #1.6: per-tenant OR sub-key support. When the caller passes a
+    # per-tenant KV secret name we use that; otherwise fall back to the
+    # shared platform key. The container's secret-ref name
+    # ("openrouter-key") and env var name ("OPENROUTER_API_KEY") stay
+    # constant — only the KV binding changes.
+    openrouter_kv_secret = openrouter_kv_secret_name or settings.AZURE_KV_SECRET_OPENROUTER_API_KEY
 
     client = get_container_client()
     secrets = [
@@ -785,7 +792,7 @@ def create_container_app(
         _build_container_secret(
             "openrouter-key",
             plain_value=settings.OPENROUTER_API_KEY,
-            key_vault_secret_name=settings.AZURE_KV_SECRET_OPENROUTER_API_KEY,
+            key_vault_secret_name=openrouter_kv_secret,
             identity_id=identity_id,
         ),
     ]
@@ -990,6 +997,64 @@ def update_container_internal_api_key_secret(
     ).result()
     logger.info(
         "Updated nbhd-internal-api-key secret for %s -> %s (revision_suffix=%s)",
+        container_name,
+        kv_secret_name,
+        app.template.revision_suffix,
+    )
+
+
+def update_container_openrouter_key_secret(
+    container_name: str,
+    identity_id: str,
+    kv_secret_name: str,
+) -> None:
+    """Rebind the `openrouter-key` secret to a different Key Vault entry.
+
+    PR #1.6 backfill: an existing tenant container references the shared
+    ``openrouter-api-key`` secret by default; once the backfill command
+    has created the tenant's own OR sub-key and written it to KV at
+    ``<key_vault_prefix>-openrouter-key``, this helper rebinds the
+    container's ``openrouter-key`` ref to that per-tenant entry. Forces a
+    new revision so Container Apps re-fetches the KV value — a plain
+    restart would keep the cached old binding.
+
+    Mirrors ``update_container_internal_api_key_secret`` (the Phase 1c
+    pattern from 2026-05-12). Idempotent at the Azure layer; safe to call
+    repeatedly with the same kv_secret_name.
+    """
+    if _is_mock():
+        logger.info("[MOCK] Updated openrouter-key secret for %s -> %s", container_name, kv_secret_name)
+        return
+
+    client = get_container_client()
+    app = client.container_apps.get(
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+    )
+
+    secrets = [s for s in (app.configuration.secrets or []) if _entry_name(s) != "openrouter-key"]
+    secrets.append(
+        _build_container_secret(
+            "openrouter-key",
+            plain_value="",
+            key_vault_secret_name=kv_secret_name,
+            identity_id=identity_id,
+        )
+    )
+    app.configuration.secrets = secrets
+
+    import hashlib
+    import time
+
+    app.template.revision_suffix = f"o{hashlib.sha256(f'ork-{int(time.time_ns())}'.encode()).hexdigest()[:6]}"
+
+    client.container_apps.begin_create_or_update(
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+        app,
+    ).result()
+    logger.info(
+        "Updated openrouter-key secret for %s -> %s (revision_suffix=%s)",
         container_name,
         kv_secret_name,
         app.template.revision_suffix,

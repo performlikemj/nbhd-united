@@ -889,6 +889,85 @@ class ProvisioningTest(TestCase):
         self.assertEqual(self.tenant.status, Tenant.Status.DELETED)
         self.assertEqual(self.tenant.container_id, "")
 
+    # ── PR #1.6: per-tenant OpenRouter sub-keys ─────────────────────
+
+    def test_provision_skips_or_subkey_when_flag_off(self):
+        """Default behaviour — feature flag off, tenant uses shared key."""
+        with patch("apps.billing.openrouter_admin.create_sub_key") as mock_create:
+            provision_tenant(str(self.tenant.id))
+        mock_create.assert_not_called()
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.openrouter_key_secret_name, "")
+        self.assertEqual(self.tenant.openrouter_key_hash, "")
+
+    @override_settings(OPENROUTER_PER_TENANT_KEYS_ENABLED=True)
+    @patch("apps.byo_models.services._write_secret_to_kv")
+    @patch("apps.billing.openrouter_admin.create_sub_key")
+    def test_provision_creates_or_subkey_when_flag_on(self, mock_create, mock_kv_write):
+        mock_create.return_value = ("sk-or-v1-xyz", "hash-abc123")
+        provision_tenant(str(self.tenant.id))
+        mock_create.assert_called_once()
+        # Label format includes the first 8 chars of the tenant id
+        args, kwargs = mock_create.call_args
+        self.assertTrue(args[0].startswith("tenant-"))
+        # Limit defaults to TIER_COST_BUDGETS["starter"] = 5.00
+        self.assertEqual(kwargs.get("limit_dollars"), 5.0)
+        self.assertEqual(kwargs.get("limit_reset"), "monthly")
+        # KV write happened with the per-tenant key string
+        mock_kv_write.assert_called_once()
+        kv_args = mock_kv_write.call_args.args
+        self.assertEqual(kv_args[1], "sk-or-v1-xyz")
+        # Tenant row updated
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.openrouter_key_hash, "hash-abc123")
+        self.assertTrue(self.tenant.openrouter_key_secret_name.endswith("-openrouter-key"))
+        # Provisioning still succeeded — tenant is ACTIVE
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+
+    @override_settings(OPENROUTER_PER_TENANT_KEYS_ENABLED=True)
+    @patch("apps.billing.openrouter_admin.create_sub_key")
+    def test_provision_falls_back_to_shared_key_when_or_api_fails(self, mock_create):
+        """OR-side failure must NOT block provisioning — the tenant just
+        uses the shared OPENROUTER_API_KEY until the backfill command
+        retries the sub-key creation later."""
+        from apps.billing.openrouter_admin import OpenRouterAdminError
+
+        mock_create.side_effect = OpenRouterAdminError("403 forbidden", status=403)
+        provision_tenant(str(self.tenant.id))
+        self.tenant.refresh_from_db()
+        # Tenant fields stay empty — no sub-key was persisted.
+        self.assertEqual(self.tenant.openrouter_key_secret_name, "")
+        self.assertEqual(self.tenant.openrouter_key_hash, "")
+        # But provisioning succeeded.
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+
+    @override_settings(OPENROUTER_PER_TENANT_KEYS_ENABLED=True)
+    @patch("apps.byo_models.services._delete_secret_from_kv")
+    @patch("apps.billing.openrouter_admin.delete_sub_key")
+    @patch("apps.byo_models.services._write_secret_to_kv")
+    @patch("apps.billing.openrouter_admin.create_sub_key")
+    def test_deprovision_deletes_or_subkey_and_clears_fields(
+        self, mock_create, mock_kv_write, mock_delete_sub, mock_kv_delete
+    ):
+        mock_create.return_value = ("sk-or-v1-xyz", "hash-abc123")
+        provision_tenant(str(self.tenant.id))
+        self.tenant.refresh_from_db()
+        original_hash = self.tenant.openrouter_key_hash
+        original_secret = self.tenant.openrouter_key_secret_name
+        self.assertEqual(original_hash, "hash-abc123")
+        self.assertTrue(original_secret)
+
+        deprovision_tenant(str(self.tenant.id))
+        # Sub-key delete called with the stored hash.
+        mock_delete_sub.assert_called_once_with("hash-abc123")
+        # KV secret delete called with the stored name.
+        mock_kv_delete.assert_called_once_with(original_secret)
+        # Tenant fields cleared.
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.openrouter_key_secret_name, "")
+        self.assertEqual(self.tenant.openrouter_key_hash, "")
+        self.assertEqual(self.tenant.status, Tenant.Status.DELETED)
+
     @patch("apps.orchestrator.services.refresh_system_cron_rows_from_seed")
     @patch("apps.orchestrator.services.upload_config_to_file_share")
     def test_update_tenant_config_pushes_new_config(self, mock_upload, mock_cron_refresh):
