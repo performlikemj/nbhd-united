@@ -30,41 +30,27 @@ class LooksLikeOpenRouterCreditLimitTest(TestCase):
         self.assertTrue(_looks_like_openrouter_credit_limit(_resp(402, "any body")))
 
     def test_429_with_credit_text_matches(self):
-        self.assertTrue(
-            _looks_like_openrouter_credit_limit(
-                _resp(429, '{"error":{"message":"Credit limit reached"}}')
-            )
-        )
+        self.assertTrue(_looks_like_openrouter_credit_limit(_resp(429, '{"error":{"message":"Credit limit reached"}}')))
 
     def test_4xx_with_quota_text_matches(self):
         self.assertTrue(
-            _looks_like_openrouter_credit_limit(
-                _resp(403, '{"error":{"message":"insufficient credit balance"}}')
-            )
+            _looks_like_openrouter_credit_limit(_resp(403, '{"error":{"message":"insufficient credit balance"}}'))
         )
 
     def test_200_with_unrelated_error_does_not_match(self):
-        self.assertFalse(
-            _looks_like_openrouter_credit_limit(
-                _resp(200, '{"error":{"message":"model not found"}}')
-            )
-        )
+        self.assertFalse(_looks_like_openrouter_credit_limit(_resp(200, '{"error":{"message":"model not found"}}')))
 
     def test_500_with_generic_internal_error_does_not_match(self):
         # OpenClaw 5.7 wraps everything as "internal error" — by design
         # we don't fire on those (the hourly reconcile cron catches the
         # cap hit within ~1h instead).
         self.assertFalse(
-            _looks_like_openrouter_credit_limit(
-                _resp(500, '{"error":{"message":"internal error","type":"api_error"}}')
-            )
+            _looks_like_openrouter_credit_limit(_resp(500, '{"error":{"message":"internal error","type":"api_error"}}'))
         )
 
     def test_4xx_unrelated_does_not_match(self):
         self.assertFalse(
-            _looks_like_openrouter_credit_limit(
-                _resp(400, '{"error":{"message":"invalid_request_error"}}')
-            )
+            _looks_like_openrouter_credit_limit(_resp(400, '{"error":{"message":"invalid_request_error"}}'))
         )
 
     def test_empty_body_4xx_does_not_match_without_402(self):
@@ -80,9 +66,7 @@ class HandleOpenRouterCreditLimitTest(TestCase):
     @patch("apps.router.line_webhook._send_line_text")
     @patch("apps.router.views._hibernate_for_quota")
     def test_line_path_bumps_cap_hibernates_and_messages(self, mock_hibernate, mock_send):
-        _handle_openrouter_credit_limit(
-            self.tenant, channel="line", channel_user_id="U123"
-        )
+        _handle_openrouter_credit_limit(self.tenant, channel="line", channel_user_id="U123")
 
         self.tenant.refresh_from_db()
         # Bumped to effective_cost_budget so check_budget fires next time.
@@ -100,9 +84,7 @@ class HandleOpenRouterCreditLimitTest(TestCase):
     @patch("apps.router.pending_queue._send_telegram_markdown")
     @patch("apps.router.views._hibernate_for_quota")
     def test_telegram_path_bumps_cap_hibernates_and_messages(self, mock_hibernate, mock_send):
-        _handle_openrouter_credit_limit(
-            self.tenant, channel="telegram", channel_user_id="123456"
-        )
+        _handle_openrouter_credit_limit(self.tenant, channel="telegram", channel_user_id="123456")
 
         self.tenant.refresh_from_db()
         self.assertEqual(
@@ -116,12 +98,8 @@ class HandleOpenRouterCreditLimitTest(TestCase):
 
     @patch("apps.router.pending_queue._send_telegram_markdown")
     @patch("apps.router.views._hibernate_for_quota")
-    def test_telegram_invalid_chat_id_skips_send_without_crashing(
-        self, mock_hibernate, mock_send
-    ):
-        _handle_openrouter_credit_limit(
-            self.tenant, channel="telegram", channel_user_id="not-an-int"
-        )
+    def test_telegram_invalid_chat_id_skips_send_without_crashing(self, mock_hibernate, mock_send):
+        _handle_openrouter_credit_limit(self.tenant, channel="telegram", channel_user_id="not-an-int")
         # Hibernation + cap update still happen even when the message
         # can't be delivered.
         self.tenant.refresh_from_db()

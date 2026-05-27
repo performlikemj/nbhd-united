@@ -78,10 +78,7 @@ class Command(BaseCommand):
         except OpenRouterAdminError as exc:
             raise CommandError(f"list_sub_keys failed: {exc}") from exc
 
-        known_hashes = set(
-            Tenant.objects.exclude(openrouter_key_hash="")
-            .values_list("openrouter_key_hash", flat=True)
-        )
+        known_hashes = set(Tenant.objects.exclude(openrouter_key_hash="").values_list("openrouter_key_hash", flat=True))
 
         orphan_count = 0
         deleted = 0
@@ -100,9 +97,7 @@ class Command(BaseCommand):
 
             if created is None or created > cutoff:
                 skipped_young += 1
-                self.stdout.write(
-                    f"[skip-young] hash={key_hash[:12]}… label={label!r} created={created}"
-                )
+                self.stdout.write(f"[skip-young] hash={key_hash[:12]}… label={label!r} created={created}")
                 continue
 
             if options["dry_run"]:

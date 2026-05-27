@@ -117,9 +117,7 @@ def _backfill_one(tenant: Tenant, dry_run: bool, stdout) -> bool:
             # re-run won't re-create the sub-key, but the container is
             # still pointed at the shared secret. Operator should retry
             # the rebind manually or via the apply_pending_configs path.
-            stdout.write(
-                f"[WARN] tenant={tid} sub-key persisted but container rebind failed: {exc}"
-            )
+            stdout.write(f"[WARN] tenant={tid} sub-key persisted but container rebind failed: {exc}")
             logger.warning("Container rebind failed for tenant=%s; manual retry needed", tid)
             return True  # still report success — partial state recoverable
 
@@ -154,7 +152,9 @@ class Command(BaseCommand):
             self.stdout.write("Nothing to do — no eligible tenants without sub-keys.")
             return
 
-        self.stdout.write(f"Backfilling sub-keys for {len(tenants)} tenant(s){' (dry-run)' if options['dry_run'] else ''}...")
+        self.stdout.write(
+            f"Backfilling sub-keys for {len(tenants)} tenant(s){' (dry-run)' if options['dry_run'] else ''}..."
+        )
         ok = 0
         fail = 0
         for tenant in tenants:
