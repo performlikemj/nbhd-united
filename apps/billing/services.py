@@ -103,6 +103,7 @@ def record_usage(
     model_used: str = "",
     *,
     is_system: bool = False,
+    message_count: int = 1,
 ) -> UsageRecord:
     """Record a usage event.
 
@@ -112,6 +113,14 @@ def record_usage(
     is still incremented (the platform still pays for it), but the per-tenant
     counters that drive quota enforcement are left alone. Phase 4's weekly
     reflection synthesis uses this path.
+
+    ``message_count`` (default 1) controls how many user-perceived messages
+    this single billing event represents. The cold-start coalescing path
+    folds N inbound webhooks into one chat-completion call, but the user
+    still typed N messages — pass ``message_count=N`` so the per-tenant
+    ``messages_today`` / ``messages_this_month`` counters stay accurate.
+    Tokens + cost are NOT multiplied because they reflect actual LLM work
+    done (the coalesced prompt was a single inference).
     """
     costs = MODEL_COSTS.get(model_used, DEFAULT_COST)
     cost = Decimal(str((input_tokens * costs["input"] + output_tokens * costs["output"]) / 1_000_000))
@@ -128,9 +137,10 @@ def record_usage(
 
     if not is_system:
         total_tokens = input_tokens + output_tokens
+        msg_increment = message_count if event_type == "message" else 0
         Tenant.objects.filter(id=tenant.id).update(
-            messages_today=F("messages_today") + (1 if event_type == "message" else 0),
-            messages_this_month=F("messages_this_month") + (1 if event_type == "message" else 0),
+            messages_today=F("messages_today") + msg_increment,
+            messages_this_month=F("messages_this_month") + msg_increment,
             tokens_this_month=F("tokens_this_month") + total_tokens,
             estimated_cost_this_month=F("estimated_cost_this_month") + cost,
         )

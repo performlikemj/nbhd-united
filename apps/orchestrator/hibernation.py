@@ -938,21 +938,47 @@ def _send_apology_for_dropped_message(tenant: Tenant, msg) -> None:
         )
 
 
+def _buffered_row_is_voice(msg) -> bool:
+    """LINE/Telegram-shape buffered-row voice detection.
+
+    BufferedMessage stores the raw provider payload (Telegram update or
+    LINE event). For LINE we look at the first event's ``message.type``;
+    for Telegram we look at the message body. Voice rows are excluded
+    from cold-start LINE coalescing — they're a different content shape
+    (transcribed audio) and shouldn't fold into a multi-message text
+    bundle.
+    """
+    payload = msg.payload or {}
+    # LINE webhook shape: {"events": [{"message": {"type": "audio"|"text"|...}}]}
+    events = payload.get("events")
+    if isinstance(events, list) and events:
+        first = events[0]
+        if isinstance(first, dict):
+            message = first.get("message") or {}
+            mtype = (message.get("type") or "").lower() if isinstance(message, dict) else ""
+            if mtype in {"audio", "voice"}:
+                return True
+    # Telegram update shape: {"message": {"voice": {...}}} or {"voice": {...}}
+    tg_message = payload.get("message") or payload.get("edited_message") or {}
+    if isinstance(tg_message, dict) and tg_message.get("voice"):
+        return True
+    return False
+
+
 def _claim_next_buffered_message(tenant, timeout_seconds: float):
-    """Claim the next deliverable BufferedMessage row, honouring the
-    in-flight lease.
+    """Backwards-compatible single-row claim, kept for Telegram path.
+
+    Telegram hibernation delivery forwards raw payloads to
+    ``/telegram-webhook`` one row at a time (see PR plan: coalescing the
+    Telegram hibernated path requires constructing synthetic Telegram
+    updates and is deferred). LINE hibernation delivery uses
+    ``_claim_buffered_batch_for_tenant`` instead, which can return >1
+    rows for a single coalesced ``/v1/chat/completions`` POST.
 
     Returns the claimed row (with ``delivery_in_flight_until`` extended)
     or ``None`` if no row is available — either the queue is empty for
     this tenant or every undelivered row currently has a live lease held
     by a concurrent task.
-
-    The claim runs inside a SELECT ... FOR UPDATE SKIP LOCKED transaction
-    so two concurrent QStash deliveries can't both grab the same row.
-    The lease prevents the second worker from re-firing the chat
-    completion while the first is still mid-POST (which is what caused
-    the OpenClaw claude-cli backend to fall back off to MiniMax during
-    the 2026-05-02 BYO Claude incident on tenant 148ccf1c).
     """
     from datetime import timedelta
 
@@ -981,6 +1007,79 @@ def _claim_next_buffered_message(tenant, timeout_seconds: float):
         msg.delivery_in_flight_until = now + timedelta(seconds=lease_seconds)
         msg.save(update_fields=["delivery_in_flight_until"])
         return msg
+
+
+def _claim_buffered_batch_for_tenant(tenant, channel: str, timeout_seconds: float):
+    """Claim a contiguous head batch of BufferedMessage rows for one channel.
+
+    Used by the hibernated-LINE coalescing path: when the user fires off
+    N messages during the ~45s revision-activate window, we want OpenClaw
+    to see ONE turn with delineated follow-ups instead of N consecutive
+    single-message turns. This helper picks up the entire current LINE
+    backlog (under the cap, fresh, non-voice) in a single
+    ``SELECT ... FOR UPDATE SKIP LOCKED`` transaction so concurrent drain
+    workers can never end up with overlapping batches for the same
+    tenant.
+
+    Returns ``(batch, info)`` mirroring the warm-path semantics in
+    ``apps/router/pending_queue._claim_pending_batch_for_key``:
+
+      - ``info["past_cap_head"]`` — head row past the attempts cap, no
+        lease; caller drops + apologizes.
+      - Otherwise ``batch`` is the leased head batch (always at least
+        1 element if non-empty). Voice rows are singletons.
+
+    Hibernated-side rows have no ``channel_user_id`` scope (the
+    BufferedMessage model is single-user-per-tenant by construction —
+    delivery uses ``tenant.user.line_user_id`` directly), so the batch
+    can safely span every LINE row for the tenant.
+    """
+    from datetime import timedelta
+
+    from django.db import transaction
+
+    from apps.router.models import BufferedMessage
+
+    lease_seconds = timeout_seconds * _IN_FLIGHT_LEASE_FACTOR
+
+    with transaction.atomic():
+        now = timezone.now()
+        qs = (
+            BufferedMessage.objects.select_for_update(skip_locked=True)
+            .filter(tenant=tenant, channel=channel, delivered=False)
+            .filter(models.Q(delivery_in_flight_until__isnull=True) | models.Q(delivery_in_flight_until__lt=now))
+            .order_by("created_at")
+        )
+        rows = list(qs)
+        if not rows:
+            return ([], {})
+
+        head = rows[0]
+
+        if head.delivery_attempts >= _MAX_DELIVERY_ATTEMPTS:
+            return ([], {"past_cap_head": head})
+
+        # Voice head → singleton batch (voice stays singular).
+        if _buffered_row_is_voice(head):
+            head.delivery_in_flight_until = now + timedelta(seconds=lease_seconds)
+            head.save(update_fields=["delivery_in_flight_until"])
+            return ([head], {})
+
+        # Build contiguous head batch: same channel (guaranteed by filter),
+        # under cap, non-voice. Break at first row that fails.
+        batch = [head]
+        for row in rows[1:]:
+            if row.delivery_attempts >= _MAX_DELIVERY_ATTEMPTS:
+                break
+            if _buffered_row_is_voice(row):
+                break
+            batch.append(row)
+
+        for row in batch:
+            row.delivery_in_flight_until = now + timedelta(seconds=lease_seconds)
+            row.save(update_fields=["delivery_in_flight_until"])
+
+        return (batch, {})
 
 
 def deliver_buffered_messages_task(tenant_id: str) -> dict:
@@ -1025,13 +1124,144 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
     skipped_in_flight = 0
 
     while True:
+        # Decide channel for this iteration. We process LINE rows as
+        # coalesced batches (cold-start coalescing) and Telegram rows
+        # as singletons (the TG hibernated path forwards raw updates to
+        # ``/telegram-webhook`` which doesn't currently accept synthetic
+        # multi-message updates — out of scope for this change).
+        next_undelivered = BufferedMessage.objects.filter(tenant=tenant, delivered=False).order_by("created_at").first()
+        if next_undelivered is None:
+            break
+
+        if next_undelivered.channel == BufferedMessage.Channel.LINE:
+            line_batch, info = _claim_buffered_batch_for_tenant(tenant, BufferedMessage.Channel.LINE, chat_timeout)
+            past_cap_head = info.get("past_cap_head")
+            if past_cap_head is not None:
+                logger.warning(
+                    "deliver_buffered: dropping msg %s for tenant %s after %d attempts",
+                    past_cap_head.id,
+                    tenant_id[:8],
+                    past_cap_head.delivery_attempts,
+                )
+                past_cap_head.delivered = True
+                past_cap_head.delivered_at = timezone.now()
+                past_cap_head.delivery_status = BufferedMessage.Status.FAILED
+                past_cap_head.delivery_in_flight_until = None
+                past_cap_head.save(
+                    update_fields=[
+                        "delivered",
+                        "delivered_at",
+                        "delivery_status",
+                        "delivery_in_flight_until",
+                    ]
+                )
+                _send_apology_for_dropped_message(tenant, past_cap_head)
+                dropped += 1
+                continue
+
+            if not line_batch:
+                # Held by a concurrent in-flight lease.
+                undelivered = BufferedMessage.objects.filter(tenant=tenant, delivered=False).count()
+                if undelivered:
+                    skipped_in_flight = undelivered
+                    logger.info(
+                        "deliver_buffered: tenant %s — %d msg(s) held by concurrent in-flight lease",
+                        tenant_id[:8],
+                        undelivered,
+                    )
+                break
+
+            batch_size = len(line_batch)
+            if batch_size > 1:
+                logger.info(
+                    "deliver_buffered: tenant %s — coalescing %d LINE messages into one OC turn (cold-start)",
+                    tenant_id[:8],
+                    batch_size,
+                )
+
+            try:
+                url = f"https://{tenant.container_fqdn}/v1/chat/completions"
+                from apps.cron.gateway_client import get_gateway_token_for_tenant
+                from apps.router.services import format_coalesced_user_content
+
+                gateway_token = get_gateway_token_for_tenant(tenant)
+                user_tz = tenant.user.timezone or "UTC"
+                line_user_id = tenant.user.line_user_id or ""
+
+                if batch_size == 1:
+                    content = line_batch[0].user_text or "..."
+                else:
+                    raw_texts = [(row.user_text or "") for row in line_batch]
+                    timestamps = [row.created_at for row in line_batch]
+                    content = format_coalesced_user_content(
+                        raw_texts,
+                        user_timezone=user_tz,
+                        timestamps=timestamps,
+                    )
+
+                result = _post_chat_completion_with_backoff(
+                    url,
+                    payload={
+                        "model": "openclaw",
+                        "messages": [{"role": "user", "content": content}],
+                        "user": line_user_id,
+                    },
+                    headers={
+                        "Authorization": f"Bearer {gateway_token}",
+                        "X-User-Timezone": user_tz,
+                        "X-Line-User-Id": line_user_id,
+                    },
+                    timeout=chat_timeout,
+                )
+
+                # Send response back via LINE — use the same pipeline as the
+                # live webhook so markdown stripping, Flex bubbles, charts,
+                # and PII rehydration all apply (no reply_token: buffered
+                # delivery happens long after the webhook reply window).
+                ai_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if ai_text and line_user_id:
+                    from apps.router.line_webhook import relay_ai_response_to_line
+
+                    relay_ai_response_to_line(tenant, line_user_id, ai_text)
+
+                now = timezone.now()
+                for row in line_batch:
+                    row.delivered = True
+                    row.delivered_at = now
+                    row.delivery_status = BufferedMessage.Status.DELIVERED
+                    row.delivery_in_flight_until = None
+                    row.save(
+                        update_fields=[
+                            "delivered",
+                            "delivered_at",
+                            "delivery_status",
+                            "delivery_in_flight_until",
+                        ]
+                    )
+                delivered += batch_size
+
+            except Exception:
+                logger.exception(
+                    "deliver_buffered: failed to deliver LINE batch of %d for tenant %s (rows %s)",
+                    batch_size,
+                    tenant_id[:8],
+                    ",".join(str(r.id)[:8] for r in line_batch),
+                )
+                for row in line_batch:
+                    row.delivery_attempts += 1
+                    row.delivery_in_flight_until = None
+                    row.save(update_fields=["delivery_attempts", "delivery_in_flight_until"])
+                failed += batch_size
+                # Stop processing further batches to preserve order.
+                # QStash will retry the task and the same batch will be
+                # re-claimed and re-attempted (or dropped past cap).
+                break
+
+            continue
+
+        # Telegram path (singleton, unchanged from pre-coalesce semantics).
         msg = _claim_next_buffered_message(tenant, chat_timeout)
         if msg is None:
-            # Either the queue is drained or every remaining row has a
-            # live in-flight lease held by a concurrent task. Either way
-            # this run has nothing more to do — bail without erroring so
-            # we don't trigger another QStash retry that would just hit
-            # the same lease.
             undelivered = BufferedMessage.objects.filter(tenant=tenant, delivered=False).count()
             if undelivered:
                 skipped_in_flight = undelivered
@@ -1043,8 +1273,6 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
                 )
             break
 
-        # Drop messages past the attempts cap so they don't block the
-        # queue forever, then notify the user. No lease was taken.
         if msg.delivery_attempts >= _MAX_DELIVERY_ATTEMPTS:
             logger.warning(
                 "deliver_buffered: dropping msg %s for tenant %s after %d attempts",
@@ -1069,55 +1297,21 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
             continue
 
         try:
-            if msg.channel == BufferedMessage.Channel.TELEGRAM:
-                loop = asyncio.new_event_loop()
-                try:
-                    user_tz = tenant.user.timezone or "UTC"
-                    loop.run_until_complete(
-                        forward_to_openclaw(
-                            tenant.container_fqdn,
-                            msg.payload,
-                            user_timezone=user_tz,
-                            timeout=30.0,
-                            max_retries=1,
-                            retry_delay=5.0,
-                        )
-                    )
-                finally:
-                    loop.close()
-
-            elif msg.channel == BufferedMessage.Channel.LINE:
-                url = f"https://{tenant.container_fqdn}/v1/chat/completions"
-                from apps.cron.gateway_client import get_gateway_token_for_tenant
-
-                gateway_token = get_gateway_token_for_tenant(tenant)
+            loop = asyncio.new_event_loop()
+            try:
                 user_tz = tenant.user.timezone or "UTC"
-                line_user_id = tenant.user.line_user_id or ""
-
-                result = _post_chat_completion_with_backoff(
-                    url,
-                    payload={
-                        "model": "openclaw",
-                        "messages": [{"role": "user", "content": msg.user_text or "..."}],
-                        "user": line_user_id,
-                    },
-                    headers={
-                        "Authorization": f"Bearer {gateway_token}",
-                        "X-User-Timezone": user_tz,
-                        "X-Line-User-Id": line_user_id,
-                    },
-                    timeout=chat_timeout,
+                loop.run_until_complete(
+                    forward_to_openclaw(
+                        tenant.container_fqdn,
+                        msg.payload,
+                        user_timezone=user_tz,
+                        timeout=30.0,
+                        max_retries=1,
+                        retry_delay=5.0,
+                    )
                 )
-
-                # Send response back via LINE — use the same pipeline as the
-                # live webhook so markdown stripping, Flex bubbles, charts,
-                # and PII rehydration all apply (no reply_token: buffered
-                # delivery happens long after the webhook reply window).
-                ai_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-                if ai_text and line_user_id:
-                    from apps.router.line_webhook import relay_ai_response_to_line
-
-                    relay_ai_response_to_line(tenant, line_user_id, ai_text)
+            finally:
+                loop.close()
 
             msg.delivered = True
             msg.delivered_at = timezone.now()

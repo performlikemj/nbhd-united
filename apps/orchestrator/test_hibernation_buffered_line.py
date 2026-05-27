@@ -595,3 +595,144 @@ class ResolveChatTimeoutTest(TestCase):
         mock_post.assert_called_once()
         # Timeout kwarg passed through to httpx.post by the backoff helper.
         self.assertEqual(mock_post.call_args.kwargs["timeout"], REASONING_MODEL_TIMEOUT)
+
+
+@override_settings(
+    NBHD_INTERNAL_API_KEY="test-key",
+    LINE_CHANNEL_ACCESS_TOKEN="test-token",
+)
+class DeliverBufferedLineColdStartCoalesceTest(TestCase):
+    """Hibernated LINE delivery coalesces N buffered messages into one
+    OC turn (cold-start coalesce). Mirrors the warm-tenant coalesce in
+    ``apps/router/pending_queue`` so the user gets one coherent reply
+    after the ~45s wake instead of N separate replies (potentially N
+    near-identical "you there?" pings)."""
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("httpx.post")
+    def test_three_buffered_line_messages_coalesce_into_one_post(self, mock_post, _mock_send):
+        from apps.orchestrator.hibernation import deliver_buffered_messages_task
+
+        mock_post.return_value = _ok_chat_response("ack")
+
+        user = _make_user(line_user_id="U_coalesce")
+        tenant = _make_tenant(user)
+        texts = ["please check fuel", "actually yesterday too", "you there?"]
+        for txt in texts:
+            BufferedMessage.objects.create(
+                tenant=tenant,
+                channel=BufferedMessage.Channel.LINE,
+                payload={"events": []},
+                user_text=txt,
+            )
+
+        result = deliver_buffered_messages_task(str(tenant.id))
+        self.assertEqual(result["delivered"], 3)
+        self.assertEqual(mock_post.call_count, 1)
+
+        content = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
+        # All three texts present in arrival order, with index markers.
+        last_pos = -1
+        for i, txt in enumerate(texts, start=1):
+            self.assertIn(txt, content)
+            self.assertIn(f"[{i}]", content)
+            pos = content.find(txt)
+            self.assertGreater(pos, last_pos, msg=f"text #{i} ({txt!r}) out of order")
+            last_pos = pos
+        # Coalesced framing marker — agent treats as one combined request.
+        self.assertIn("rapid succession", content)
+
+        # Every BufferedMessage row now marked delivered.
+        delivered_count = BufferedMessage.objects.filter(
+            tenant=tenant, delivery_status=BufferedMessage.Status.DELIVERED
+        ).count()
+        self.assertEqual(delivered_count, 3)
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("httpx.post")
+    def test_voice_buffered_row_is_singleton_among_text(self, mock_post, _mock_send):
+        """A voice BufferedMessage row in the middle of a LINE backlog
+        must not fold into the surrounding text coalesce. The text rows
+        before it coalesce together; the voice row drains as a singleton
+        on the next loop iteration; any text rows behind it then form a
+        new coalesced batch (or drain singleton if alone)."""
+        from apps.orchestrator.hibernation import deliver_buffered_messages_task
+
+        mock_post.return_value = _ok_chat_response("ack")
+
+        user = _make_user(line_user_id="U_v_split")
+        tenant = _make_tenant(user)
+        BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={"events": [{"message": {"type": "text", "text": "first text"}}]},
+            user_text="first text",
+        )
+        BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={"events": [{"message": {"type": "text", "text": "second text"}}]},
+            user_text="second text",
+        )
+        BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={"events": [{"message": {"type": "audio", "duration": 1200}}]},
+            user_text="[voice transcript]",
+        )
+        BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={"events": [{"message": {"type": "text", "text": "third text"}}]},
+            user_text="third text",
+        )
+
+        result = deliver_buffered_messages_task(str(tenant.id))
+        self.assertEqual(result["delivered"], 4)
+        # 3 POSTs: [text1+text2 coalesced] → [voice singleton] → [text3 singleton].
+        self.assertEqual(mock_post.call_count, 3)
+
+        first_content = mock_post.call_args_list[0].kwargs["json"]["messages"][0]["content"]
+        self.assertIn("first text", first_content)
+        self.assertIn("second text", first_content)
+        self.assertNotIn("voice transcript", first_content)
+        self.assertNotIn("third text", first_content)
+
+        second_content = mock_post.call_args_list[1].kwargs["json"]["messages"][0]["content"]
+        self.assertIn("voice transcript", second_content)
+        # Singleton voice drain: no coalesce framing.
+        self.assertNotIn("rapid succession", second_content)
+
+        third_content = mock_post.call_args_list[2].kwargs["json"]["messages"][0]["content"]
+        self.assertIn("third text", third_content)
+        # Singleton text drain after the voice break: no coalesce framing.
+        self.assertNotIn("rapid succession", third_content)
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("httpx.post")
+    def test_singleton_line_row_preserves_pre_coalesce_shape(self, mock_post, _mock_send):
+        """One LINE BufferedMessage row → one POST with raw ``user_text``
+        as the content (no coalesce framing). This keeps the over-the-wire
+        shape identical to the pre-coalesce behaviour so canary verification
+        and tenants on older OpenClaw builds don't see a sudden prompt
+        format change for the common single-message case."""
+        from apps.orchestrator.hibernation import deliver_buffered_messages_task
+
+        mock_post.return_value = _ok_chat_response("ack")
+
+        user = _make_user(line_user_id="U_single")
+        tenant = _make_tenant(user)
+        BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={"events": []},
+            user_text="just one message",
+        )
+
+        result = deliver_buffered_messages_task(str(tenant.id))
+        self.assertEqual(result["delivered"], 1)
+        self.assertEqual(mock_post.call_count, 1)
+
+        content = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
+        self.assertEqual(content, "just one message")
+        self.assertNotIn("rapid succession", content)

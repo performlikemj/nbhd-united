@@ -208,13 +208,21 @@ class PendingMessageInFlightLockTest(TestCase):
     LINE_CHANNEL_ACCESS_TOKEN="test-token",
 )
 class PendingMessageOrderingTest(TestCase):
-    """Multiple messages for the same key drain in FIFO order."""
+    """Multiple messages for the same key drain as a single coalesced turn.
+
+    Pre-coalesce contract was "N inbound rows → N POSTs in arrival order";
+    post-coalesce contract is "N inbound rows → 1 POST whose
+    ``content`` contains all N raw texts, delineated, in arrival order".
+    The intent — FIFO with no overlapping turns — is preserved; only the
+    over-the-wire shape changes.
+    """
 
     @patch("apps.router.line_webhook._send_line_messages", return_value=True)
     @patch("apps.router.pending_queue.httpx.post")
-    def test_two_messages_drain_in_arrival_order(self, mock_post, _mock_send):
-        """Two messages enqueued back-to-back must arrive at the
-        container in FIFO order."""
+    def test_two_messages_coalesce_into_one_post(self, mock_post, _mock_send):
+        """Two messages enqueued back-to-back during a cold-start window
+        fold into ONE chat-completion POST that lists both texts in
+        arrival order."""
         mock_post.return_value = _ok_chat_response("ack")
 
         user = _make_user(line_user_id="U_order")
@@ -236,24 +244,26 @@ class PendingMessageOrderingTest(TestCase):
             user_text="second",
         )
 
-        # First drain — should pick up m1, then re-schedule itself (sync
-        # fallback) and deliver m2 in the same call chain.
         result1 = drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_order")
-        self.assertEqual(result1["delivered"], 1)
+        self.assertEqual(result1["delivered"], 2)
+        self.assertEqual(result1["batch_size"], 2)
 
         m1.refresh_from_db()
         m2.refresh_from_db()
         self.assertEqual(m1.delivery_status, PendingMessage.Status.DELIVERED)
         self.assertEqual(m2.delivery_status, PendingMessage.Status.DELIVERED)
 
-        # Two POSTs total, in arrival order. ``call_args`` reflects the
-        # last call (m2's "second"), so check ``call_args_list[0]`` for
-        # the FIFO head.
-        self.assertEqual(mock_post.call_count, 2)
-        first_payload = mock_post.call_args_list[0].kwargs["json"]
-        self.assertEqual(first_payload["messages"][0]["content"], "first")
-        second_payload = mock_post.call_args_list[1].kwargs["json"]
-        self.assertEqual(second_payload["messages"][0]["content"], "second")
+        # One POST with both texts in arrival order in the coalesced content.
+        self.assertEqual(mock_post.call_count, 1)
+        content = mock_post.call_args_list[0].kwargs["json"]["messages"][0]["content"]
+        first_pos = content.find("first")
+        second_pos = content.find("second")
+        self.assertNotEqual(first_pos, -1, msg=f"'first' missing from coalesced content: {content!r}")
+        self.assertNotEqual(second_pos, -1, msg=f"'second' missing from coalesced content: {content!r}")
+        self.assertLess(first_pos, second_pos, msg="texts not in arrival order")
+        # Coalesced framing marker — agent must know this is a batched bundle,
+        # not a single conversational utterance.
+        self.assertIn("rapid succession", content)
 
 
 @override_settings(
@@ -871,3 +881,245 @@ class StaleMessageGuardTest(TestCase):
         # Fresh row should still be PENDING (the reschedule would drain it
         # on the next task tick; we don't actually run that here).
         self.assertEqual(fresh.delivery_status, PendingMessage.Status.PENDING)
+
+
+@override_settings(
+    NBHD_INTERNAL_API_KEY="test-key",
+    LINE_CHANNEL_ACCESS_TOKEN="test-token",
+)
+class PendingMessageColdStartCoalesceTest(TestCase):
+    """Cold-start coalescing: N rapid-fire messages during the warm-tenant
+    in-flight-lease window fold into one OC turn with delineated content.
+
+    Mirrors the user-perceived UX: agent reads the burst as one combined
+    request instead of replying N times to near-identical or
+    superseded-by-followup messages.
+    """
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_three_messages_coalesce_into_one_post(self, mock_post, _mock_send):
+        """Three rapid-fire LINE messages → one POST whose content lists
+        all three in arrival order with index + timestamp framing."""
+        mock_post.return_value = _ok_chat_response("ack")
+
+        user = _make_user(line_user_id="U_three")
+        tenant = _make_tenant(user)
+        texts = ["check fuel", "actually also yesterday", "you there?"]
+        for txt in texts:
+            PendingMessage.objects.create(
+                tenant=tenant,
+                channel=PendingMessage.Channel.LINE,
+                channel_user_id="U_three",
+                payload={
+                    "message_text": txt,
+                    "user_param": "U_three",
+                    "user_timezone": "UTC",
+                },
+                user_text=txt,
+            )
+
+        result = drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_three")
+        self.assertEqual(result["delivered"], 3)
+        self.assertEqual(result["batch_size"], 3)
+        self.assertEqual(mock_post.call_count, 1)
+
+        content = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
+        # Each raw text present, in arrival order, with index markers.
+        last_pos = -1
+        for i, txt in enumerate(texts, start=1):
+            self.assertIn(txt, content)
+            self.assertIn(f"[{i}]", content)
+            pos = content.find(txt)
+            self.assertGreater(pos, last_pos, msg=f"text #{i} ({txt!r}) out of order")
+            last_pos = pos
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_voice_row_breaks_batch(self, mock_post, _mock_send):
+        """A voice row in the queue is never coalesced with text. The
+        batch ends at the first voice row; voice rows are claimed as
+        singletons on a subsequent drain tick."""
+        mock_post.return_value = _ok_chat_response("ack")
+
+        user = _make_user(line_user_id="U_voice")
+        tenant = _make_tenant(user)
+        text1 = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_voice",
+            payload={"message_text": "text one", "user_param": "U_voice", "user_timezone": "UTC"},
+            user_text="text one",
+        )
+        text2 = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_voice",
+            payload={"message_text": "text two", "user_param": "U_voice", "user_timezone": "UTC"},
+            user_text="text two",
+        )
+        voice = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_voice",
+            payload={
+                "message_text": "[voice transcript]",
+                "user_param": "U_voice",
+                "user_timezone": "UTC",
+                "is_voice": True,
+            },
+            user_text="[voice transcript]",
+        )
+
+        # First drain: coalesces text1+text2, leaves voice for next tick.
+        # Sync-fallback reschedule will drain the voice singleton, then
+        # exit (no more pending). Total = 2 POSTs.
+        drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_voice")
+
+        text1.refresh_from_db()
+        text2.refresh_from_db()
+        voice.refresh_from_db()
+        self.assertEqual(text1.delivery_status, PendingMessage.Status.DELIVERED)
+        self.assertEqual(text2.delivery_status, PendingMessage.Status.DELIVERED)
+        self.assertEqual(voice.delivery_status, PendingMessage.Status.DELIVERED)
+
+        # First POST: coalesced text1+text2. Second POST: voice singleton.
+        self.assertEqual(mock_post.call_count, 2)
+        first_content = mock_post.call_args_list[0].kwargs["json"]["messages"][0]["content"]
+        self.assertIn("text one", first_content)
+        self.assertIn("text two", first_content)
+        self.assertNotIn("voice transcript", first_content)
+        second_content = mock_post.call_args_list[1].kwargs["json"]["messages"][0]["content"]
+        self.assertIn("voice transcript", second_content)
+        # The voice row drained as a singleton (no coalescing framing).
+        self.assertNotIn("rapid succession", second_content)
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_voice_head_is_singleton(self, mock_post, _mock_send):
+        """A voice row at the head of the queue stays a singleton even
+        when text rows are queued behind it. Voice and text don't fold
+        together regardless of arrival order."""
+        mock_post.return_value = _ok_chat_response("ack")
+
+        user = _make_user(line_user_id="U_vhead")
+        tenant = _make_tenant(user)
+        voice = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_vhead",
+            payload={
+                "message_text": "[voice transcript]",
+                "user_param": "U_vhead",
+                "user_timezone": "UTC",
+                "is_voice": True,
+            },
+            user_text="[voice transcript]",
+        )
+        text_row = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_vhead",
+            payload={"message_text": "follow up text", "user_param": "U_vhead", "user_timezone": "UTC"},
+            user_text="follow up text",
+        )
+
+        drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_vhead")
+
+        voice.refresh_from_db()
+        text_row.refresh_from_db()
+        self.assertEqual(voice.delivery_status, PendingMessage.Status.DELIVERED)
+        self.assertEqual(text_row.delivery_status, PendingMessage.Status.DELIVERED)
+
+        # Two POSTs total — voice alone, then text alone (no coalescing
+        # framing since the next batch was a singleton too).
+        self.assertEqual(mock_post.call_count, 2)
+        first_content = mock_post.call_args_list[0].kwargs["json"]["messages"][0]["content"]
+        self.assertIn("voice transcript", first_content)
+        self.assertNotIn("follow up text", first_content)
+        # Singleton drains preserve the pre-coalesce on-the-wire shape:
+        # no coalescing marker.
+        self.assertNotIn("rapid succession", first_content)
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_message_counter_bumps_by_batch_size(self, mock_post, _mock_send):
+        """``messages_today`` / ``messages_this_month`` count user-perceived
+        sends, not LLM turns. A coalesced batch of N rows must bump the
+        per-tenant counters by N (otherwise the user sends 5 messages,
+        sees 1 reply, and "5 messages today" undercounts to 1)."""
+        # Response with real token counts so _record_usage_safe actually
+        # makes it past the early-exit.
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.is_success = True
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "ack"}}],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 20},
+            "model": "test",
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_post.return_value = mock_resp
+
+        user = _make_user(line_user_id="U_counter")
+        tenant = _make_tenant(user)
+        for txt in ("one", "two", "three"):
+            PendingMessage.objects.create(
+                tenant=tenant,
+                channel=PendingMessage.Channel.LINE,
+                channel_user_id="U_counter",
+                payload={"message_text": txt, "user_param": "U_counter", "user_timezone": "UTC"},
+                user_text=txt,
+            )
+
+        tenant.refresh_from_db()
+        before_today = tenant.messages_today
+        before_month = tenant.messages_this_month
+
+        drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_counter")
+
+        tenant.refresh_from_db()
+        self.assertEqual(tenant.messages_today - before_today, 3)
+        self.assertEqual(tenant.messages_this_month - before_month, 3)
+        # Only one POST despite three messages — that's the coalesce win.
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_in_flight_lease_blocks_batch_claim(self, mock_post, _mock_send):
+        """If ANY row in the key's queue has a live in-flight lease, the
+        batch claim must return empty (skipped_in_flight) instead of
+        racing the concurrent drain. Preserves the single-turn invariant
+        the Claude CLI backend requires."""
+        mock_post.return_value = _ok_chat_response("ack")
+
+        user = _make_user(line_user_id="U_lease")
+        tenant = _make_tenant(user)
+        leased = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_lease",
+            payload={"message_text": "leased", "user_param": "U_lease", "user_timezone": "UTC"},
+            user_text="leased",
+            delivery_in_flight_until=timezone.now() + timedelta(minutes=5),
+        )
+        fresh = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_lease",
+            payload={"message_text": "fresh", "user_param": "U_lease", "user_timezone": "UTC"},
+            user_text="fresh",
+        )
+
+        result = drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_lease")
+        # Nothing delivered — both rows held back.
+        self.assertEqual(result["delivered"], 0)
+        self.assertEqual(result["skipped_in_flight"], 2)
+        mock_post.assert_not_called()
+
+        leased.refresh_from_db()
+        fresh.refresh_from_db()
+        self.assertEqual(leased.delivery_status, PendingMessage.Status.PENDING)
+        self.assertEqual(fresh.delivery_status, PendingMessage.Status.PENDING)
+        # Fresh row didn't get a lease — the batch claim is all-or-nothing.
+        self.assertIsNone(fresh.delivery_in_flight_until)
