@@ -174,6 +174,26 @@ class Tenant(models.Model):
         default="",
         help_text="Key Vault secret prefix (e.g. tenants-<uuid>)",
     )
+
+    # Per-tenant OpenRouter sub-key (PR #1.6). Tenant has a dedicated
+    # OpenRouter sub-key with a server-side spending limit so OR enforces
+    # the per-tenant cap; the key string is stored in Key Vault at
+    # ``openrouter_key_secret_name`` and injected into the container as
+    # ``OPENROUTER_API_KEY``. ``openrouter_key_hash`` is OR's stable
+    # identifier for the key (returned at create time) and is what
+    # ``DELETE /api/v1/keys/{hash}`` takes on deprovision.
+    openrouter_key_secret_name = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Key Vault secret name holding this tenant's OpenRouter sub-key (PR #1.6)",
+    )
+    openrouter_key_hash = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        help_text="OpenRouter-side hash identifying this tenant's sub-key (for management DELETE)",
+    )
     managed_identity_id = models.CharField(
         max_length=512,
         blank=True,

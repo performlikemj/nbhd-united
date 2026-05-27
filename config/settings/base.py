@@ -344,6 +344,27 @@ AZURE_KV_SECRET_OPENROUTER_API_KEY = env(
     "AZURE_KV_SECRET_OPENROUTER_API_KEY",
     default="openrouter-api-key",
 )
+
+# Per-tenant OpenRouter sub-keys (PR #1.6).
+#
+# OPENROUTER_API_BASE: API root for /v1/keys (POST/DELETE), /v1/key (GET).
+# AZURE_KV_SECRET_OPENROUTER_MANAGEMENT_KEY: central KV secret holding the
+#   OR management key. Distinct from the regular API key — must be created
+#   manually in the OpenRouter dashboard and written to KV by an operator.
+# OPENROUTER_PER_TENANT_KEYS_ENABLED: feature flag. When False, provisioning
+#   skips sub-key creation and containers continue to use the shared
+#   OPENROUTER_API_KEY. When True, new tenants get a sub-key + per-tenant
+#   env-var injection. Existing tenants are migrated via the
+#   ``backfill_openrouter_keys`` management command.
+OPENROUTER_API_BASE = env("OPENROUTER_API_BASE", default="https://openrouter.ai/api/v1")
+AZURE_KV_SECRET_OPENROUTER_MANAGEMENT_KEY = env(
+    "AZURE_KV_SECRET_OPENROUTER_MANAGEMENT_KEY",
+    default="openrouter-management-key",
+)
+OPENROUTER_PER_TENANT_KEYS_ENABLED = env.bool(
+    "OPENROUTER_PER_TENANT_KEYS_ENABLED",
+    default=False,
+)
 AZURE_KV_SECRET_SOUL_MD = env(
     "AZURE_KV_SECRET_SOUL_MD",
     default="nbhd-soul-md",
