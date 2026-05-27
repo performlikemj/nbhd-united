@@ -253,6 +253,18 @@ jobs:
           node --test runtime/openclaw/redact-stdout.test.mjs
           node --test runtime/openclaw/plugins/nbhd-routing-context/test.js
 
+      - name: Run suppress-chmod-eperm.js Layer 1 tests
+        run: |
+          node --test runtime/openclaw/suppress-chmod-eperm.test.mjs
+
+      - name: Audit OpenClaw chmod call-site inventory
+        # Diffs the chmod-family callee shapes in the pinned OpenClaw npm
+        # package against runtime/openclaw/chmod-audit-baseline.txt. Fails
+        # if OC introduces a new variant that suppress-chmod-eperm.js
+        # Layer 1 may not cover. Context: PR #504 / 2026-05-10 incident.
+        run: |
+          ./scripts/openclaw_chmod_audit.sh
+
   # ==========================================================================
   # Deploy Backend (push to main only, after tests pass)
   # ==========================================================================

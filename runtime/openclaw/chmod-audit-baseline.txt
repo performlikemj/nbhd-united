@@ -1,0 +1,64 @@
+# OpenClaw chmod call-site audit baseline.
+#
+# runtime/openclaw/suppress-chmod-eperm.js Layer 1 monkey-patches fs.chmodSync
+# and fs.promises.chmod to suppress EPERM/EACCES/ENOTSUP on Azure Container
+# Apps' root-owned mounts. Coverage is fragile to OpenClaw refactors — a new
+# chmod variant slipping into OC dist/ silently breaks production
+# (see PR #504 / 2026-05-10 incident).
+#
+# CI runs scripts/openclaw_chmod_audit.sh on every push. The script extracts
+# the pinned OpenClaw npm package, scans dist/ for chmod-family call
+# expressions, and diffs the observed callee-shape set against this file.
+# Any diff fails the build. To accept a change:
+#
+#   1. Run `./scripts/openclaw_chmod_audit.sh --update` locally
+#   2. Inspect the diff and decide for each new shape:
+#        - Does Layer 1 cover it? (Patch on fs.chmodSync covers bare
+#          chmodSync destructured from fs; patch on fs.promises.chmod
+#          covers fs$N.chmod aliases that point at node:fs/promises.)
+#        - If not, does it run in a path that throws to caller? (Check
+#          OC source for surrounding try/catch.)
+#   3. Update Layer 1 if needed, then commit the refreshed baseline with
+#      a rationale in the commit message.
+#
+# Coverage notes (most recent review):
+#   COVERED — Layer 1 monkey-patch catches:
+#     fs.chmodSync(           direct sync
+#     chmodSync(              destructured `import { chmodSync } from "node:fs"`
+#                             (covered because suppress-chmod-eperm.js loads
+#                             via NODE_OPTIONS=--require BEFORE OpenClaw
+#                             modules, so the destructured binding reads our
+#                             patched fs.chmodSync)
+#     fs.promises.chmod(      direct promise
+#     fs$1.chmod(             rollup alias for `import fs$1 from "node:fs/promises"`
+#     chmod(                  bare; either destructured from fs.promises or
+#                             aliased via `options.chmodSync ?? fs.chmodSync`
+#
+#   BENIGN — uncovered but harmless on our containers as of this review:
+#     fs.chmod(               callback form; concentrated in launchd-*.js
+#                             (macOS install path) — never runs on Linux.
+#                             One uncatchable site at launchd:434 is inside
+#                             a try/catch{} block, so even on macOS it would
+#                             swallow.
+#     fs.fchmodSync(          wrapped in try/catch by OpenClaw at the call
+#                             site (runtime-*.js trajectory pointer write)
+#     handle.chmod(           FileHandle prototype; trajectory writer calls
+#                             this only on files OpenClaw just created
+#                             (node-owned), so no EPERM in practice
+#
+# If a NEW shape appears (e.g. lchmod, lchmodSync, fchmod via fs.promises,
+# fchmodSync from a non-try/catch site, *Sync on a FileHandle), re-evaluate
+# whether Layer 1 needs extending.
+
+# Pinned OpenClaw version (must match Dockerfile.openclaw `ARG OPENCLAW_VERSION`):
+openclaw-version: 2026.5.7
+
+# Observed callee shapes (one per line, sorted):
+chmod(
+chmodSync(
+fs.chmod(
+fs.chmodSync(
+fs.fchmodSync(
+fs.promises.chmod(
+fs$1.chmod(
+handle.chmod(
