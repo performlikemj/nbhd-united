@@ -55,12 +55,14 @@ def handle_hibernated_message(
     oldest = BufferedMessage.objects.filter(tenant=tenant, delivered=False).order_by("created_at").first()
     stuck = bool(oldest and (timezone.now() - oldest.created_at) > _WAKE_STALL_THRESHOLD)
 
-    # Buffer the incoming message
+    # Buffer the incoming message. ``user_text`` stays untruncated so the
+    # hibernated-drain coalesce path can stitch full raw user texts together
+    # (apologies + log lines slice locally where they need a short excerpt).
     BufferedMessage.objects.create(
         tenant=tenant,
         channel=channel,
         payload=payload,
-        user_text=(user_text or "")[:200],
+        user_text=user_text or "",
     )
 
     # Update last_message_at even while hibernated

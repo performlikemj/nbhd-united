@@ -72,6 +72,67 @@ def build_chat_context_marker() -> str:
     return _CHAT_CONTEXT_MARKER
 
 
+_COALESCED_CHAT_MARKER = (
+    "[chat: user sent these messages in rapid succession while you were "
+    "waking up — treat as one combined request; if any later message "
+    "supersedes an earlier one, follow the later one; do not reply to "
+    "each message separately]\n"
+)
+
+
+def build_coalesced_chat_marker() -> str:
+    """Marker variant for coalesced multi-message turns.
+
+    Replaces the standard ``build_chat_context_marker()`` when N>1 inbound
+    messages are folded into a single OpenClaw turn (typically because they
+    arrived during a cold-start window and were queued in
+    ``BufferedMessage`` / ``PendingMessage``). Tells the agent to treat the
+    bundle as one request, prefer later messages over earlier ones when
+    they conflict, and not produce N separate answers.
+    """
+    return _COALESCED_CHAT_MARKER
+
+
+def format_coalesced_user_content(
+    raw_texts: list[str],
+    *,
+    user_timezone: str,
+    timestamps: list[datetime] | None = None,
+    workspace_prefix: str = "",
+) -> str:
+    """Build the user-message content for a coalesced multi-message turn.
+
+    Produces a single prompt string with the freshly-built datetime context
+    + coalesced chat marker + optional workspace prefix, followed by the
+    delineated, timestamped raw user texts.
+
+    Markers are built ONCE from the latest-arrival context (the caller is
+    expected to pass texts in arrival order and timestamps aligned to them).
+    ``raw_texts`` must contain at least 2 entries — callers should fall back
+    to the single-row path otherwise to keep the on-the-wire shape identical
+    to today's per-row drains.
+    """
+    if len(raw_texts) < 2:
+        raise ValueError("format_coalesced_user_content requires >= 2 entries")
+
+    header = build_datetime_context(user_timezone) + build_coalesced_chat_marker() + (workspace_prefix or "")
+
+    lines: list[str] = []
+    for idx, raw in enumerate(raw_texts, start=1):
+        ts_str = ""
+        if timestamps and idx - 1 < len(timestamps) and timestamps[idx - 1] is not None:
+            ts = timestamps[idx - 1]
+            try:
+                tz = zoneinfo.ZoneInfo(user_timezone or "UTC")
+            except (KeyError, Exception):
+                tz = _UTC
+            local = ts.astimezone(tz)
+            ts_str = f" ({local.strftime('%H:%M:%S')})"
+        lines.append(f"[{idx}]{ts_str} {(raw or '').strip()}")
+
+    return header + "\n".join(lines)
+
+
 # In-memory cache: chat_id → (container_fqdn, timestamp)
 ROUTE_CACHE_TTL = 60  # seconds
 _route_cache: dict[int, tuple[str, float]] = {}

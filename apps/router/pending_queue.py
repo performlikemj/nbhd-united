@@ -188,7 +188,7 @@ def enqueue_message_for_tenant(
         channel=channel,
         channel_user_id=channel_user_id or "",
         payload=payload,
-        user_text=(user_text_excerpt or "")[:200],
+        user_text=user_text_excerpt or "",
     )
 
     try:
@@ -220,30 +220,83 @@ def enqueue_message_for_tenant(
 # ---------------------------------------------------------------------------
 
 
-def _claim_next_pending_message(
+def _row_is_voice(msg: PendingMessage) -> bool:
+    """A row is "voice" if its payload carries ``is_voice=True``.
+
+    Voice rows are excluded from cold-start coalescing — they're a
+    different content shape (transcribed audio with its own prefix in
+    OpenClaw) and shouldn't get folded into a multi-message text bundle.
+    """
+    payload = msg.payload or {}
+    return bool(payload.get("is_voice"))
+
+
+def _claim_pending_batch_for_key(
     tenant: Tenant,
     channel: str,
     channel_user_id: str,
     timeout_seconds: float,
-) -> PendingMessage | None:
-    """Claim the next deliverable pending row for the given key.
+) -> tuple[list[PendingMessage], dict]:
+    """Claim a deliverable head-of-queue batch for the given key.
 
-    Returns the claimed row (with ``delivery_in_flight_until`` extended)
-    or ``None`` if no row is available — either the queue is empty for
-    this key or every undelivered row currently has a live lease held
-    by a concurrent drain task.
+    Returns ``(batch, info)`` where ``batch`` is an ordered list (oldest →
+    newest) of rows with fresh leases, and ``info`` is a small dict for
+    the caller to handle head-of-queue drops:
 
-    The claim runs inside a ``SELECT ... FOR UPDATE SKIP LOCKED``
-    transaction so two concurrent drain invocations (e.g. the row's
-    initial scheduled drain and a webhook-triggered drain for the next
-    row) can't both grab the same row and fire overlapping POSTs at the
-    container — the exact failure mode the OpenClaw claude-cli backend
-    rejects with "Claude CLI live session is already handling a turn".
+      - ``info["past_cap_head"]``: head row is past the attempts cap and
+        must be dropped + apologized. No lease is taken.
+      - ``info["stale_head"]``: head row is older than
+        ``_STALE_MESSAGE_AGE_SECONDS`` — lease IS taken so caller can
+        atomically flip ``status=FAILED`` and clear the lease without a
+        concurrent drain racing for the same row.
+
+    Batch composition rules (preserves the per-key single-turn invariant
+    that prevents the OpenClaw claude-cli backend from rejecting
+    overlapping turns):
+
+      - Always starts with the oldest unleased PENDING row.
+      - Subsequent contiguous rows are folded in as long as they are
+        fresh (under stale threshold), under the attempts cap, and not
+        voice. The batch breaks at the first row that fails any of
+        these — that row stays PENDING and gets handled on the next
+        drain tick.
+      - Voice rows are always singletons: if the head row is voice, the
+        batch is ``[voice_row]``; otherwise voice rows in the tail end
+        the batch.
+
+    All claim + lease writes happen inside one
+    ``SELECT ... FOR UPDATE SKIP LOCKED`` transaction so a concurrent
+    drain task that observes a leased head row also sees the rest of
+    the batch as leased — no two drain tasks ever build overlapping
+    batches for the same key.
     """
     lease_seconds = timeout_seconds * _IN_FLIGHT_LEASE_FACTOR
 
     with transaction.atomic():
         now = timezone.now()
+        stale_cutoff = now - timedelta(seconds=_STALE_MESSAGE_AGE_SECONDS)
+
+        # Per-key single-turn invariant: if ANY row for this key already
+        # carries a live in-flight lease, a concurrent drain task is
+        # mid-POST for that key. We must NOT claim any other rows for
+        # the same (tenant, channel, channel_user_id) while that POST
+        # is in flight — overlapping ``/v1/chat/completions`` calls into
+        # the same OpenClaw session trigger the Claude CLI's "live
+        # session is already handling a turn" rejection. Pre-coalesce,
+        # this invariant was weaker (only same-row was guarded by
+        # SKIP LOCKED, not same-key); coalescing strengthens it so
+        # follow-up messages naturally fall into the next batch instead
+        # of racing the in-flight turn.
+        has_live_lease = PendingMessage.objects.filter(
+            tenant=tenant,
+            channel=channel,
+            channel_user_id=channel_user_id or "",
+            delivery_status=PendingMessage.Status.PENDING,
+            delivery_in_flight_until__gt=now,
+        ).exists()
+        if has_live_lease:
+            return ([], {})
+
         qs = (
             PendingMessage.objects.select_for_update(skip_locked=True)
             .filter(
@@ -255,18 +308,44 @@ def _claim_next_pending_message(
             .filter(models.Q(delivery_in_flight_until__isnull=True) | models.Q(delivery_in_flight_until__lt=now))
             .order_by("created_at")
         )
-        msg = qs.first()
-        if not msg:
-            return None
+        rows = list(qs)
+        if not rows:
+            return ([], {})
 
-        # Past the cap → return without taking a lease. The drain loop
-        # handles dropping it (no network call needed).
-        if msg.delivery_attempts >= _MAX_DELIVERY_ATTEMPTS:
-            return msg
+        head = rows[0]
 
-        msg.delivery_in_flight_until = now + timedelta(seconds=lease_seconds)
-        msg.save(update_fields=["delivery_in_flight_until"])
-        return msg
+        # Past-cap head → caller drops + apologizes. No lease.
+        if head.delivery_attempts >= _MAX_DELIVERY_ATTEMPTS:
+            return ([], {"past_cap_head": head})
+
+        # Stale head → take lease so the FAILED-flip is uncontended.
+        if head.created_at < stale_cutoff:
+            head.delivery_in_flight_until = now + timedelta(seconds=lease_seconds)
+            head.save(update_fields=["delivery_in_flight_until"])
+            return ([], {"stale_head": head})
+
+        # Voice head → singleton batch (voice is never coalesced).
+        if _row_is_voice(head):
+            head.delivery_in_flight_until = now + timedelta(seconds=lease_seconds)
+            head.save(update_fields=["delivery_in_flight_until"])
+            return ([head], {})
+
+        # Build a contiguous head batch of fresh, under-cap, non-voice rows.
+        batch: list[PendingMessage] = [head]
+        for row in rows[1:]:
+            if row.delivery_attempts >= _MAX_DELIVERY_ATTEMPTS:
+                break
+            if row.created_at < stale_cutoff:
+                break
+            if _row_is_voice(row):
+                break
+            batch.append(row)
+
+        for row in batch:
+            row.delivery_in_flight_until = now + timedelta(seconds=lease_seconds)
+            row.save(update_fields=["delivery_in_flight_until"])
+
+        return (batch, {})
 
 
 def _has_more_pending(tenant: Tenant, channel: str, channel_user_id: str) -> bool:
@@ -330,9 +409,63 @@ def drain_pending_messages_for_tenant_task(
         return {"delivered": 0, "failed": 0, "dropped": 0, "skipped_in_flight": 0}
 
     chat_timeout = _resolve_chat_timeout(tenant)
-    msg = _claim_next_pending_message(tenant, channel, channel_user_id or "", chat_timeout)
+    batch, info = _claim_pending_batch_for_key(tenant, channel, channel_user_id or "", chat_timeout)
 
-    if msg is None:
+    # Past-cap head — no lease taken; drop + apologize + reschedule if more.
+    past_cap_head = info.get("past_cap_head")
+    if past_cap_head is not None:
+        logger.warning(
+            "drain_pending: dropping msg %s for tenant %s after %d attempts",
+            past_cap_head.id,
+            tenant_id[:8],
+            past_cap_head.delivery_attempts,
+        )
+        past_cap_head.delivery_status = PendingMessage.Status.FAILED
+        past_cap_head.delivered_at = timezone.now()
+        past_cap_head.delivery_in_flight_until = None
+        past_cap_head.save(
+            update_fields=[
+                "delivery_status",
+                "delivered_at",
+                "delivery_in_flight_until",
+            ]
+        )
+        _send_apology_for_dropped_pending_message(tenant, past_cap_head)
+        if _has_more_pending(tenant, channel, channel_user_id or ""):
+            _reschedule_drain(tenant, channel, channel_user_id or "")
+        return {"delivered": 0, "failed": 0, "dropped": 1, "skipped_in_flight": 0}
+
+    # Stale head — lease IS already taken by the batch claim; flip to
+    # FAILED and apologize. The user's conversational frame has moved on
+    # so delivering now produces "responding to questions from hours ago"
+    # UX bug this module was rewritten to fix.
+    stale_head = info.get("stale_head")
+    if stale_head is not None:
+        msg_age_seconds = (timezone.now() - stale_head.created_at).total_seconds()
+        logger.warning(
+            "drain_pending: msg %s for tenant %s is stale (age=%ds > %ds), "
+            "marking failed without OC POST and sending apology",
+            stale_head.id,
+            tenant_id[:8],
+            int(msg_age_seconds),
+            _STALE_MESSAGE_AGE_SECONDS,
+        )
+        stale_head.delivery_status = PendingMessage.Status.FAILED
+        stale_head.delivered_at = timezone.now()
+        stale_head.delivery_in_flight_until = None
+        stale_head.save(
+            update_fields=[
+                "delivery_status",
+                "delivered_at",
+                "delivery_in_flight_until",
+            ]
+        )
+        _send_apology_for_stale_pending_message(tenant, stale_head, msg_age_seconds)
+        if _has_more_pending(tenant, channel, channel_user_id or ""):
+            _reschedule_drain(tenant, channel, channel_user_id or "")
+        return {"delivered": 0, "failed": 0, "dropped": 1, "skipped_in_flight": 0, "stale": 1}
+
+    if not batch:
         # Either the key's queue is drained or every remaining row has
         # a live in-flight lease held by a concurrent task. Either way
         # this run has nothing more to do — bail without erroring so we
@@ -360,123 +493,87 @@ def drain_pending_messages_for_tenant_task(
             "skipped_in_flight": held_count,
         }
 
-    # Past the cap → drop and surface (no lease was taken inside _claim).
-    if msg.delivery_attempts >= _MAX_DELIVERY_ATTEMPTS:
-        logger.warning(
-            "drain_pending: dropping msg %s for tenant %s after %d attempts",
-            msg.id,
+    batch_size = len(batch)
+    if batch_size > 1:
+        logger.info(
+            "drain_pending: tenant %s key=%s/%s — coalescing %d messages into one OC turn (cold-start coalesce)",
             tenant_id[:8],
-            msg.delivery_attempts,
+            channel,
+            (channel_user_id or "")[:24],
+            batch_size,
         )
-        msg.delivery_status = PendingMessage.Status.FAILED
-        msg.delivered_at = timezone.now()
-        msg.delivery_in_flight_until = None
-        msg.save(
-            update_fields=[
-                "delivery_status",
-                "delivered_at",
-                "delivery_in_flight_until",
-            ]
-        )
-        _send_apology_for_dropped_pending_message(tenant, msg)
-        # Schedule another drain in case the next message is deliverable.
-        if _has_more_pending(tenant, channel, channel_user_id or ""):
-            _reschedule_drain(tenant, channel, channel_user_id or "")
-        return {"delivered": 0, "failed": 0, "dropped": 1, "skipped_in_flight": 0}
-
-    # Stale-message guard. The row was claimed (lease taken inside
-    # ``_claim_next_pending_message``) so the lease will need clearing on
-    # exit. If the row is older than ``_STALE_MESSAGE_AGE_SECONDS``, do
-    # NOT POST it to OC — the user's conversational frame has moved on
-    # and delivering now produces the "responding to questions from
-    # hours ago" UX bug this module was rewritten to fix.
-    msg_age_seconds = (timezone.now() - msg.created_at).total_seconds()
-    if msg_age_seconds > _STALE_MESSAGE_AGE_SECONDS:
-        logger.warning(
-            "drain_pending: msg %s for tenant %s is stale (age=%ds > %ds), "
-            "marking failed without OC POST and sending apology",
-            msg.id,
-            tenant_id[:8],
-            int(msg_age_seconds),
-            _STALE_MESSAGE_AGE_SECONDS,
-        )
-        msg.delivery_status = PendingMessage.Status.FAILED
-        msg.delivered_at = timezone.now()
-        msg.delivery_in_flight_until = None
-        msg.save(
-            update_fields=[
-                "delivery_status",
-                "delivered_at",
-                "delivery_in_flight_until",
-            ]
-        )
-        _send_apology_for_stale_pending_message(tenant, msg, msg_age_seconds)
-        # Behind a stale row might be a newer row that's still in-window —
-        # keep draining so a real reply still lands.
-        if _has_more_pending(tenant, channel, channel_user_id or ""):
-            _reschedule_drain(tenant, channel, channel_user_id or "")
-        return {"delivered": 0, "failed": 0, "dropped": 1, "skipped_in_flight": 0, "stale": 1}
 
     delivered = 0
     failed = 0
     try:
         if channel == PendingMessage.Channel.LINE:
-            _drain_line_message(tenant, msg, chat_timeout)
+            _drain_line_batch(tenant, batch, chat_timeout)
         elif channel == PendingMessage.Channel.TELEGRAM:
-            _drain_telegram_message(tenant, msg, chat_timeout)
+            _drain_telegram_batch(tenant, batch, chat_timeout)
         else:
             raise ValueError(f"Unknown channel: {channel!r}")
 
-        msg.delivery_status = PendingMessage.Status.DELIVERED
-        msg.delivered_at = timezone.now()
-        msg.delivery_in_flight_until = None
-        msg.save(
-            update_fields=[
-                "delivery_status",
-                "delivered_at",
-                "delivery_in_flight_until",
-            ]
-        )
-        delivered = 1
+        now = timezone.now()
+        for row in batch:
+            row.delivery_status = PendingMessage.Status.DELIVERED
+            row.delivered_at = now
+            row.delivery_in_flight_until = None
+            row.save(
+                update_fields=[
+                    "delivery_status",
+                    "delivered_at",
+                    "delivery_in_flight_until",
+                ]
+            )
+        delivered = batch_size
 
     except Exception:
+        # Batch-level failure: every row in the batch shared the failed
+        # POST, so every row's attempt counter advances by one. A row
+        # hitting the cap will be dropped+apologized on the next drain
+        # tick (it'll surface via ``past_cap_head``); rows still under
+        # cap will retry as a (possibly smaller) batch.
         logger.exception(
-            "drain_pending: failed to deliver msg %s for tenant %s (attempt %d/%d)",
-            msg.id,
+            "drain_pending: failed to deliver batch of %d for tenant %s (rows %s, attempts now %d-%d/%d)",
+            batch_size,
             tenant_id[:8],
-            msg.delivery_attempts + 1,
+            ",".join(str(r.id)[:8] for r in batch),
+            batch[0].delivery_attempts + 1,
+            batch[-1].delivery_attempts + 1,
             _MAX_DELIVERY_ATTEMPTS,
         )
-        msg.delivery_attempts += 1
-        msg.delivery_in_flight_until = None
-        msg.save(
-            update_fields=[
-                "delivery_attempts",
-                "delivery_in_flight_until",
-            ]
-        )
-        failed = 1
+        for row in batch:
+            row.delivery_attempts += 1
+            row.delivery_in_flight_until = None
+            row.save(
+                update_fields=[
+                    "delivery_attempts",
+                    "delivery_in_flight_until",
+                ]
+            )
+        failed = batch_size
 
     # On success: if more pending rows remain for this key, schedule the
     # next drain immediately so back-to-back messages keep flowing.
     #
     # On failure we deliberately do NOT re-schedule. The QStash retry
-    # (``retries=1`` set when the drain was first published) handles the
-    # second-chance attempt with QStash's natural backoff, and the
-    # per-message ``delivery_attempts`` counter still caps total attempts
-    # at ``_MAX_DELIVERY_ATTEMPTS``. Re-scheduling here would synchronously
+    # (``retries=_DRAIN_PUBLISH_RETRIES``) handles second-chance attempts
+    # with QStash's natural backoff, and the per-message
+    # ``delivery_attempts`` counter still caps total attempts at
+    # ``_MAX_DELIVERY_ATTEMPTS``. Re-scheduling here would synchronously
     # cascade through the cap in tests and burn the attempts budget on a
     # request that's almost certainly going to keep failing.
     if delivered and _has_more_pending(tenant, channel, channel_user_id or ""):
         _reschedule_drain(tenant, channel, channel_user_id or "")
 
     if failed:
-        # Surface a non-2xx so QStash retries the task once. The
+        # Surface a non-2xx so QStash retries the task. The
         # application-level lease + attempt cap prevents this from
         # spawning a duplicate POST against the container.
         raise RuntimeError(
-            f"drain_pending: msg {msg.id} for tenant {tenant_id[:8]} failed "
-            f"(attempt {msg.delivery_attempts}/{_MAX_DELIVERY_ATTEMPTS})"
+            f"drain_pending: batch of {batch_size} for tenant {tenant_id[:8]} failed "
+            f"(rows {','.join(str(r.id)[:8] for r in batch)}, "
+            f"attempts now {batch[0].delivery_attempts}-{batch[-1].delivery_attempts}/{_MAX_DELIVERY_ATTEMPTS})"
         )
 
     return {
@@ -484,6 +581,7 @@ def drain_pending_messages_for_tenant_task(
         "failed": failed,
         "dropped": 0,
         "skipped_in_flight": 0,
+        "batch_size": batch_size,
     }
 
 
@@ -662,15 +760,72 @@ def _send_apology_for_dropped_pending_message(tenant: Tenant, msg: PendingMessag
 # ---------------------------------------------------------------------------
 
 
-def _drain_line_message(tenant: Tenant, msg: PendingMessage, timeout: float) -> None:
-    """Forward one LINE message to the container and relay the reply back."""
+def _build_batch_chat_content(batch: list[PendingMessage], fallback_user_id: str) -> tuple[str, str, str]:
+    """Build the ``content`` string + routing context for a deliverable batch.
+
+    Returns ``(content, user_param, user_timezone)``.
+
+    Singleton batches (``len(batch) == 1``) preserve the existing per-row
+    on-the-wire shape: the row's pre-decorated ``payload.message_text``
+    flows straight through, with markers as baked in at enqueue time.
+
+    Coalesced batches (``len(batch) > 1``) build a fresh prompt at drain
+    time using ``format_coalesced_user_content``: the datetime + coalesced
+    chat marker are emitted ONCE (from the latest row's routing context),
+    then each row's raw ``user_text`` is appended with an index +
+    timestamp. The intent is the agent reads N delineated follow-ups
+    instead of N separate per-turn replies.
+    """
+    from apps.router.services import format_coalesced_user_content
+
+    if len(batch) == 1:
+        msg = batch[0]
+        payload = msg.payload or {}
+        content = payload.get("message_text") or ""
+        user_param = payload.get("user_param") or msg.channel_user_id or fallback_user_id
+        user_tz = payload.get("user_timezone") or "UTC"
+        return content, user_param, user_tz
+
+    # Coalesced: build markers fresh from the latest row's context so the
+    # datetime marker reflects "now", not whatever was true at enqueue
+    # time for row #1 (which could be many seconds older during a real
+    # cold-start burst).
+    latest = batch[-1]
+    latest_payload = latest.payload or {}
+    user_param = latest_payload.get("user_param") or latest.channel_user_id or fallback_user_id
+    user_tz = latest_payload.get("user_timezone") or "UTC"
+
+    raw_texts = [(row.user_text or "") for row in batch]
+    timestamps = [row.created_at for row in batch]
+    content = format_coalesced_user_content(
+        raw_texts,
+        user_timezone=user_tz,
+        timestamps=timestamps,
+    )
+    return content, user_param, user_tz
+
+
+def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float) -> None:
+    """Forward a deliverable LINE batch to the container as one OC turn.
+
+    ``len(batch) == 1`` preserves the historical per-row shape verbatim
+    (same on-the-wire payload, same single ``record_usage`` call with
+    ``message_count=1``). ``len(batch) > 1`` is the cold-start coalesce
+    path: one POST, one relay, one ``record_usage`` with
+    ``message_count=len(batch)`` so per-tenant message counters track
+    user-perceived sends, not LLM turns.
+
+    The batch claim guarantees all rows share ``channel_user_id`` and
+    none are voice rows once ``len(batch) > 1`` — voice always stays a
+    singleton (see ``_claim_pending_batch_for_key``).
+    """
+    if not batch:
+        return
+
     from apps.router.line_webhook import relay_ai_response_to_line
 
-    payload = msg.payload or {}
-    line_user_id = msg.channel_user_id
-    message_text = payload.get("message_text") or ""
-    user_param = payload.get("user_param") or line_user_id
-    user_tz = payload.get("user_timezone") or "UTC"
+    line_user_id = batch[0].channel_user_id
+    content, user_param, user_tz = _build_batch_chat_content(batch, line_user_id)
     # ``reply_token`` is intentionally NOT used: by the time the queue
     # drains, the LINE Reply API window (~1 min) is almost always
     # closed. We always Push.
@@ -682,7 +837,7 @@ def _drain_line_message(tenant: Tenant, msg: PendingMessage, timeout: float) -> 
 
     chat_payload = {
         "model": "openclaw",
-        "messages": [{"role": "user", "content": message_text}],
+        "messages": [{"role": "user", "content": content}],
         "user": user_param,
     }
     headers = {
@@ -706,21 +861,26 @@ def _drain_line_message(tenant: Tenant, msg: PendingMessage, timeout: float) -> 
                 str(tenant.id)[:8],
             )
 
-    _record_usage_safe(tenant, result)
+    _record_usage_safe(tenant, result, message_count=len(batch))
 
 
-def _drain_telegram_message(tenant: Tenant, msg: PendingMessage, timeout: float) -> None:
-    """Forward one Telegram message to the container and relay the reply back."""
-    payload = msg.payload or {}
-    chat_id_str = msg.channel_user_id
+def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float) -> None:
+    """Forward a deliverable Telegram batch to the container as one OC turn.
+
+    Singleton vs coalesced behaviour mirrors ``_drain_line_batch``; see
+    that docstring. The batch claim guarantees all rows share
+    ``channel_user_id`` (so all rows belong to the same Telegram chat).
+    """
+    if not batch:
+        return
+
+    chat_id_str = batch[0].channel_user_id
     try:
         chat_id = int(chat_id_str)
     except (TypeError, ValueError):
         raise ValueError(f"telegram drain: invalid chat_id {chat_id_str!r}")
 
-    message_text = payload.get("message_text") or ""
-    user_param = payload.get("user_param") or chat_id_str
-    user_tz = payload.get("user_timezone") or "UTC"
+    content, user_param, user_tz = _build_batch_chat_content(batch, chat_id_str)
 
     url = f"https://{tenant.container_fqdn}/v1/chat/completions"
     from apps.cron.gateway_client import get_gateway_token_for_tenant
@@ -729,7 +889,7 @@ def _drain_telegram_message(tenant: Tenant, msg: PendingMessage, timeout: float)
 
     chat_payload = {
         "model": "openclaw",
-        "messages": [{"role": "user", "content": message_text}],
+        "messages": [{"role": "user", "content": content}],
         "user": user_param,
     }
     headers = {
@@ -750,7 +910,7 @@ def _drain_telegram_message(tenant: Tenant, msg: PendingMessage, timeout: float)
     if ai_text:
         relay_ai_response_to_telegram(tenant, chat_id, ai_text)
 
-    _record_usage_safe(tenant, result)
+    _record_usage_safe(tenant, result, message_count=len(batch))
 
 
 # ---------------------------------------------------------------------------
@@ -1050,9 +1210,15 @@ def _extract_ai_response(result: Any) -> str | None:
     return None
 
 
-def _record_usage_safe(tenant: Tenant, result: Any) -> None:
+def _record_usage_safe(tenant: Tenant, result: Any, *, message_count: int = 1) -> None:
     """Record token usage from a chat-completions response. Swallows
-    errors so a billing failure can never wedge the queue."""
+    errors so a billing failure can never wedge the queue.
+
+    ``message_count`` defaults to 1; the cold-start coalesce path passes
+    ``len(batch)`` so per-tenant ``messages_today`` / ``messages_this_month``
+    track user-perceived sends instead of LLM turns. Tokens + cost reflect
+    actual inference work and are NOT scaled.
+    """
     if not isinstance(result, dict):
         return
     usage = result.get("usage")
@@ -1073,6 +1239,7 @@ def _record_usage_safe(tenant: Tenant, result: Any) -> None:
             input_tokens=int(input_tokens),
             output_tokens=int(output_tokens),
             model_used=model_used,
+            message_count=max(1, int(message_count)),
         )
     except Exception:
         logger.exception("drain_pending: failed to record usage for tenant %s", tenant.id)
