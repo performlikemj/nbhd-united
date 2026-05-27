@@ -1,0 +1,20 @@
+Hi {{ display_name|default:"there" }},
+
+A quick heads up — your assistant's worked through about {{ used_pct }}% of
+this month's chat budget ({{ used_dollars }} of {{ cap_dollars }}).
+
+If you hit the full cap, chat pauses until {{ reset_date }}, when next month's
+budget resets and your assistant comes back online automatically.
+
+You don't have to do anything. Just letting you know so it's not a surprise.
+
+What counts toward this:
+  • Conversations with your assistant via Telegram, LINE, or web
+  • The morning briefing, evening check-in, and other scheduled turns
+
+What doesn't count:
+  • If you've connected your own Claude subscription, those messages are
+    on your own plan and aren't included in this number.
+
+— NBHD United
+neighborhoodunited.org

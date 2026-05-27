@@ -252,6 +252,21 @@ class Tenant(models.Model):
         help_text="Exempt from personal and global budget enforcement. Usage still tracked.",
     )
 
+    # Quota-email idempotency markers (PR #1.8). Each is set when the
+    # corresponding email goes out, and cleared by the monthly counter
+    # reset. The reconcile cron checks these before sending to avoid
+    # duplicate notifications when usage hovers around the threshold.
+    cost_warn_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the 90%-of-cap warning email was last sent (cleared monthly).",
+    )
+    cost_exhausted_email_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the cap-exhausted email was last sent (cleared monthly).",
+    )
+
     # Per-tenant internal API key. When non-empty, internal_auth.py validates
     # the X-NBHD-Internal-Key header against this value instead of the legacy
     # global settings.NBHD_INTERNAL_API_KEY. Restored 2026-05-12 (Phase 1)

@@ -1,0 +1,1 @@
+Heads up — you're {{ used_pct }}% through this month's chat budget

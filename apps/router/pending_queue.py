@@ -204,6 +204,20 @@ def _handle_openrouter_credit_limit(
     except Exception:
         logger.exception("OR credit-limit: hibernate failed for tenant=%s", str(tenant.id)[:8])
 
+    # PR #1.8: send the branded HTML cap-exhausted email so the tenant
+    # has an inbox artifact explaining when chat resumes (the in-channel
+    # text below is the immediate signal; the email is the durable one).
+    # Idempotent — per-tenant sent-at marker on the Tenant row.
+    try:
+        from apps.router.billing_quota_handlers import send_cost_exhausted_email
+
+        send_cost_exhausted_email(tenant)
+    except Exception:
+        logger.exception(
+            "OR credit-limit: cap-exhausted email dispatch failed for tenant=%s",
+            str(tenant.id)[:8],
+        )
+
     lang = getattr(getattr(tenant, "user", None), "language", None) or "en"
     msg_key = "budget_exhausted_trial" if getattr(tenant, "is_trial", False) else "budget_exhausted_paid"
     frontend_url = str(getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org")).rstrip("/")
