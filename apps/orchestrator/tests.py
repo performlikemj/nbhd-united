@@ -904,7 +904,7 @@ class ProvisioningTest(TestCase):
     @patch("apps.byo_models.services._write_secret_to_kv")
     @patch("apps.billing.openrouter_admin.create_sub_key")
     def test_provision_creates_or_subkey_when_flag_on(self, mock_create, mock_kv_write):
-        mock_create.return_value = ("sk-or-v1-xyz", "hash-abc123")
+        mock_create.return_value = ("mock-or-key-xyz", "hash-abc123")
         provision_tenant(str(self.tenant.id))
         mock_create.assert_called_once()
         # Label format includes the first 8 chars of the tenant id
@@ -916,7 +916,7 @@ class ProvisioningTest(TestCase):
         # KV write happened with the per-tenant key string
         mock_kv_write.assert_called_once()
         kv_args = mock_kv_write.call_args.args
-        self.assertEqual(kv_args[1], "sk-or-v1-xyz")
+        self.assertEqual(kv_args[1], "mock-or-key-xyz")
         # Tenant row updated
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.openrouter_key_hash, "hash-abc123")
@@ -949,7 +949,7 @@ class ProvisioningTest(TestCase):
     def test_deprovision_deletes_or_subkey_and_clears_fields(
         self, mock_create, mock_kv_write, mock_delete_sub, mock_kv_delete
     ):
-        mock_create.return_value = ("sk-or-v1-xyz", "hash-abc123")
+        mock_create.return_value = ("mock-or-key-xyz", "hash-abc123")
         provision_tenant(str(self.tenant.id))
         self.tenant.refresh_from_db()
         original_hash = self.tenant.openrouter_key_hash
