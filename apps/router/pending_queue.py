@@ -117,6 +117,127 @@ _GATEWAY_ERROR_STRINGS: frozenset[str] = frozenset(
     }
 )
 
+# Substrings that indicate OpenRouter rejected a call due to the
+# per-tenant sub-key's spending limit being exhausted (PR #1.6 Phase 4).
+# OpenClaw 5.7's chat-completion handler wraps upstream exceptions in a
+# generic "internal error" envelope (see openai-http-CtQN39Ne.js), so we
+# also match on the inner error message when it leaks through. The match
+# is case-insensitive substring on the JSON-serialised response body.
+_OR_CREDIT_LIMIT_NEEDLES: tuple[str, ...] = (
+    "insufficient credit",
+    "insufficient_credit",
+    "credit limit",
+    "credit_limit",
+    "quota exceeded",
+    "quota_exceeded",
+)
+
+
+def _looks_like_openrouter_credit_limit(resp) -> bool:
+    """Return True when a chat-completion response indicates the tenant's
+    OpenRouter sub-key has hit its spending limit.
+
+    Detection sources, most-specific first:
+      1. HTTP 402 (Payment Required — the canonical OR signal)
+      2. Any 4xx with a body string containing one of the credit-limit
+         needles (OpenRouter's actual error text leaks through some
+         OpenClaw error paths).
+      3. HTTP 200 / 5xx whose JSON body has the same needles inside
+         ``error.message`` or top-level ``message`` (OpenClaw 5.7's
+         generic envelope when it preserves the upstream message).
+
+    Conservative — false positives would cause spurious hibernation, so
+    we require an explicit credit-limit string for the non-402 paths.
+    """
+    try:
+        status = getattr(resp, "status_code", 0) or 0
+        if status == 402:
+            return True
+
+        body_text = (getattr(resp, "text", "") or "").lower()
+        if not body_text:
+            return False
+        if 400 <= status < 600:
+            for needle in _OR_CREDIT_LIMIT_NEEDLES:
+                if needle in body_text:
+                    return True
+        return False
+    except Exception:
+        # Defensive — never let detection itself blow up the drain task.
+        return False
+
+
+def _handle_openrouter_credit_limit(
+    tenant: Tenant,
+    *,
+    channel: str,
+    channel_user_id: str,
+) -> None:
+    """Trip the budget circuit breaker after OR rejected a chat call.
+
+    1. Set ``estimated_cost_this_month`` to the tenant's effective cap so
+       the existing ``check_budget`` short-circuit fires on the user's
+       next inbound message.
+    2. Hibernate the container via the existing ``_hibernate_for_quota``
+       helper.
+    3. Send a channel-appropriate budget-exhausted notification so the
+       user sees an explanation instead of silence.
+
+    PR #1.6 Phase 4. Called from the LINE + Telegram drain paths when
+    ``_looks_like_openrouter_credit_limit`` returns True on the chat-
+    completion response.
+    """
+    from decimal import Decimal
+
+    from apps.router.error_messages import error_msg
+    from apps.router.views import _hibernate_for_quota
+
+    try:
+        cap = Decimal(str(tenant.effective_cost_budget))
+        Tenant.objects.filter(id=tenant.id).update(estimated_cost_this_month=cap)
+        tenant.estimated_cost_this_month = cap
+    except Exception:
+        logger.exception("OR credit-limit: failed to bump estimated_cost for tenant=%s", str(tenant.id)[:8])
+
+    try:
+        _hibernate_for_quota(tenant)
+    except Exception:
+        logger.exception("OR credit-limit: hibernate failed for tenant=%s", str(tenant.id)[:8])
+
+    lang = getattr(getattr(tenant, "user", None), "language", None) or "en"
+    msg_key = "budget_exhausted_trial" if getattr(tenant, "is_trial", False) else "budget_exhausted_paid"
+    frontend_url = str(getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org")).rstrip("/")
+    text = error_msg(lang, msg_key, plus_message="", billing_url=f"{frontend_url}/billing")
+
+    try:
+        if channel == "line":
+            from apps.router.line_webhook import _send_line_text
+
+            _send_line_text(channel_user_id, text)
+        elif channel == "telegram":
+            try:
+                chat_id_int = int(channel_user_id)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "OR credit-limit: invalid telegram chat_id %r for tenant=%s",
+                    channel_user_id,
+                    str(tenant.id)[:8],
+                )
+                return
+            _send_telegram_markdown(chat_id_int, text)
+    except Exception:
+        logger.exception(
+            "OR credit-limit: failed to send budget-exhausted message for tenant=%s channel=%s",
+            str(tenant.id)[:8],
+            channel,
+        )
+
+    logger.info(
+        "OR credit-limit: tripped budget circuit for tenant=%s channel=%s — hibernated + cap-set + user notified",
+        str(tenant.id)[:8],
+        channel,
+    )
+
 
 def _resolve_chat_timeout(tenant: Tenant) -> float:
     """Return the per-attempt chat-completion timeout for a tenant.
@@ -855,6 +976,9 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
     }
 
     resp = httpx.post(url, json=chat_payload, headers=headers, timeout=timeout)
+    if _looks_like_openrouter_credit_limit(resp):
+        _handle_openrouter_credit_limit(tenant, channel="line", channel_user_id=line_user_id)
+        return
     resp.raise_for_status()
     result = resp.json()
 
@@ -910,6 +1034,9 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
     _send_telegram_typing_safe(chat_id)
 
     resp = httpx.post(url, json=chat_payload, headers=headers, timeout=timeout)
+    if _looks_like_openrouter_credit_limit(resp):
+        _handle_openrouter_credit_limit(tenant, channel="telegram", channel_user_id=str(chat_id))
+        return
     resp.raise_for_status()
     result = resp.json()
 
