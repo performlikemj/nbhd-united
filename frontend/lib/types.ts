@@ -768,6 +768,8 @@ export interface SleepEntry {
 
 export type FuelOnboardingStatus = "pending" | "in_progress" | "completed" | "declined";
 
+export type DistanceUnit = "km" | "mi";
+
 export interface FuelProfile {
   id: string;
   onboarding_status: FuelOnboardingStatus;
@@ -777,6 +779,7 @@ export interface FuelProfile {
   equipment: string[];
   days_per_week: number | null;
   additional_context: string;
+  distance_unit: DistanceUnit;
   created_at: string;
   updated_at: string;
 }

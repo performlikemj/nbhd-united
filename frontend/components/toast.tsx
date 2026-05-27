@@ -9,6 +9,22 @@ export interface ToastProps {
   onDismiss?: () => void;
 }
 
+type ToastListener = (toast: ToastState) => void;
+const _globalListeners = new Set<ToastListener>();
+
+/**
+ * Module-level emitter for app-wide toasts.
+ *
+ * Use this from non-React code (e.g. the QueryClient `onError` default)
+ * when you can't easily call `useToast()`. Pair with a single mounted
+ * `<GlobalToastHost />` in the providers tree.
+ */
+export function emitToast(message: string, type: "success" | "error" = "success") {
+  _toastCounter += 1;
+  const toast: ToastState = { id: _toastCounter, message, type };
+  _globalListeners.forEach((l) => l(toast));
+}
+
 /**
  * A simple self-dismissing toast notification.
  * Renders fixed at the bottom-center of the screen.
@@ -84,4 +100,25 @@ export function useToast(): [ToastState | null, (message: string, type?: "succes
   };
 
   return [toast, showToast];
+}
+
+/**
+ * Renders any toast emitted via `emitToast(...)`. Mount once near the root
+ * of the app (in `Providers`). Subscribes to the module-level emitter so
+ * non-React callers (QueryClient defaults, top-level fetch wrappers) can
+ * surface user-visible failures without threading a hook through.
+ */
+export function GlobalToastHost() {
+  const [toast, setToast] = useState<ToastState | null>(null);
+
+  useEffect(() => {
+    const listener: ToastListener = (t) => setToast(t);
+    _globalListeners.add(listener);
+    return () => {
+      _globalListeners.delete(listener);
+    };
+  }, []);
+
+  if (!toast) return null;
+  return <Toast key={toast.id} {...toast} onDismiss={() => setToast(null)} />;
 }

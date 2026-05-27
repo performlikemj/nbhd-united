@@ -1,11 +1,21 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { SkelBar } from "@/components/ui/skeleton";
+import { getErrorMessage, isNotFoundError } from "@/lib/errors";
 import { useCompleteWorkoutMutation, useCreateWorkoutTemplateMutation, useDeleteWorkoutMutation, useDuplicateWorkoutMutation, useUpdateWorkoutMutation, useWorkoutQuery } from "@/lib/queries";
 import type { FuelWorkout, WorkoutCategory } from "@/lib/types";
 import { CATEGORIES, CATEGORY_IDS } from "./category-meta";
+import {
+  displayToKm,
+  displayToMeters,
+  elevationLabel,
+  kmToDisplay,
+  metersToDisplay,
+  useDistanceUnit,
+} from "./use-distance-unit";
 import { displayToKg, kgToDisplay, useWeightUnit } from "./use-weight-unit";
 
 function fmtLongDate(iso: string): string {
@@ -171,7 +181,8 @@ export function WorkoutDetail({ workoutId, onClose }: WorkoutDetailProps) {
 }
 
 function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose: () => void }) {
-  const { data: workout } = useWorkoutQuery(workoutId);
+  const qc = useQueryClient();
+  const { data: workout, error: workoutError } = useWorkoutQuery(workoutId);
   const updateMutation = useUpdateWorkoutMutation();
   const completeMutation = useCompleteWorkoutMutation();
   const deleteMutation = useDeleteWorkoutMutation();
@@ -181,6 +192,19 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Partial<FuelWorkout>>({});
   const [initialized, setInitialized] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Stale client state: the workout exists in the in-memory React Query
+  // cache (e.g. seeded from a list response) but the server doesn't have it
+  // anymore — usually because the assistant runtime deleted/replaced it.
+  // Invalidate the parent lists so the next render purges the phantom.
+  useEffect(() => {
+    if (isNotFoundError(workoutError)) {
+      void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
+      void qc.invalidateQueries({ queryKey: ["fuel-schedule"] });
+    }
+  }, [workoutError, qc]);
 
   if (workout && !initialized) {
     setInitialized(true);
@@ -197,26 +221,41 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
     setEditing(workout.status === "planned");
   }
 
-  if (!workout) return <WorkoutDetailSkeleton onClose={onClose} />;
+  if (!workout) {
+    if (isNotFoundError(workoutError)) {
+      return <PhantomWorkoutRecovery onClose={onClose} />;
+    }
+    return <WorkoutDetailSkeleton onClose={onClose} />;
+  }
 
   const meta = CATEGORIES[workout.category as WorkoutCategory];
 
-  const save = () => {
-    updateMutation.mutate({ id: workout.id, data: draft });
-    setEditing(false);
+  const save = async () => {
+    setSaveError(null);
+    try {
+      await updateMutation.mutateAsync({ id: workout.id, data: draft });
+      setEditing(false);
+    } catch (e) {
+      setSaveError(getErrorMessage(e));
+    }
   };
 
-  const markComplete = () => {
-    completeMutation.mutate({
-      id: workout.id,
-      data: {
-        notes: draft.notes ?? undefined,
-        rpe: draft.rpe ?? undefined,
-        duration_minutes: draft.duration_minutes ?? undefined,
-      },
-    });
-    setDraft((d) => ({ ...d, status: "done" }));
-    setEditing(false);
+  const markComplete = async () => {
+    setSaveError(null);
+    try {
+      await completeMutation.mutateAsync({
+        id: workout.id,
+        data: {
+          notes: draft.notes ?? undefined,
+          rpe: draft.rpe ?? undefined,
+          duration_minutes: draft.duration_minutes ?? undefined,
+        },
+      });
+      setDraft((d) => ({ ...d, status: "done" }));
+      setEditing(false);
+    } catch (e) {
+      setSaveError(getErrorMessage(e));
+    }
   };
 
   const handleDelete = () => {
@@ -346,7 +385,10 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
                 <div className="font-mono text-sm">{workout.duration_minutes ?? "\u2014"} min</div>
               )}
             </FieldBox>
-            <FieldBox label="RPE · 1–10">
+            <FieldBox
+              label="RPE · 1–10"
+              hint="Rate of perceived exertion: 1 = barely working, 10 = absolute max."
+            >
               {editing ? (
                 <input type="number" min="1" max="10" value={draft.rpe ?? ""} onChange={(e) => setDraft({ ...draft, rpe: e.target.value ? +e.target.value : null })} placeholder="—" className="w-full bg-transparent font-mono text-sm text-ink focus:outline-none" />
               ) : (
@@ -360,13 +402,7 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
             <StrengthEditor detail={detail} editing={editing} onChange={updateDetailJson} />
           )}
           {(draft.category || workout.category) === "cardio" && (
-            <StatsEditor detail={detail} editing={editing} onChange={updateDetailJson} fields={[
-              ["distance_km", "DISTANCE", "km"],
-              ["pace", "PACE", "/km"],
-              ["avg_hr", "AVG HR", "bpm"],
-              ["elevation", "ELEVATION", "m"],
-              ["avg_power", "AVG POWER", "w"],
-            ]} />
+            <CardioStatsEditor detail={detail} editing={editing} onChange={updateDetailJson} />
           )}
           {(draft.category || workout.category) === "hiit" && (
             <StatsEditor detail={detail} editing={editing} onChange={updateDetailJson} fields={[
@@ -401,19 +437,31 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
             )}
           </div>
 
+          {/* Inline save error — keeps the user in edit mode with their
+              draft intact so they can copy values out or retry. */}
+          {saveError && (
+            <div
+              role="alert"
+              className="rounded-xl border border-rose-border bg-rose-bg px-4 py-2.5 text-sm text-rose-text"
+            >
+              <div className="font-medium">Couldn&apos;t save</div>
+              <div className="mt-0.5 text-rose-text/80">{saveError}</div>
+            </div>
+          )}
+
           {/* Action bar */}
           <div className="flex flex-col sm:flex-row gap-2 pt-4 border-t border-border">
             {workout.status !== "done" && (
               <button
                 onClick={markComplete}
-                disabled={completeMutation.isPending}
-                className="flex-1 rounded-full bg-emerald-bg text-emerald-text border border-emerald-border font-medium min-h-[44px] py-2.5 text-sm hover:opacity-90 transition disabled:opacity-50"
+                disabled={completeMutation.isPending || updateMutation.isPending}
+                className="flex-1 rounded-full bg-emerald-bg text-emerald-text border border-emerald-border font-medium min-h-[44px] py-2.5 text-sm hover:opacity-90 transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {completeMutation.isPending ? "Completing…" : "Mark complete"}
               </button>
             )}
             {editing ? (
-              <button onClick={save} disabled={updateMutation.isPending} className="flex-1 glow-purple rounded-full bg-accent text-white font-semibold min-h-[44px] py-2.5 text-sm hover:brightness-110 active:scale-[0.98] transition disabled:opacity-50">
+              <button onClick={save} disabled={updateMutation.isPending || completeMutation.isPending} className="flex-1 glow-purple rounded-full bg-accent text-white font-semibold min-h-[44px] py-2.5 text-sm hover:brightness-110 active:scale-[0.98] transition disabled:opacity-50 disabled:cursor-not-allowed">
                 {updateMutation.isPending ? "Saving\u2026" : draft.status === "planned" ? "Save plan" : "Save changes"}
               </button>
             ) : (
@@ -449,11 +497,53 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
   );
 }
 
-function FieldBox({ label, children }: { label: string; children: React.ReactNode }) {
+function FieldBox({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-border bg-surface-elevated px-3 py-2.5">
+    <div className="rounded-lg border border-border bg-surface-elevated px-3 py-2.5" title={hint}>
       <div className="text-[8px] font-bold uppercase tracking-[0.2em] text-ink-faint">{label}</div>
       <div className="mt-1">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Recovery UI shown when a workout 404s — almost always because the
+ * assistant runtime removed it after a planning pass, or another browser
+ * tab deleted it. The 404 effect in `WorkoutDetailInner` already
+ * refetches the parent lists.
+ */
+function PhantomWorkoutRecovery({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-[55] flex" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative ml-auto h-full w-full sm:w-[520px] bg-surface border-l border-border overflow-y-auto animate-reveal"
+      >
+        <div className="sticky top-0 z-10 backdrop-blur bg-surface/90 border-b border-border px-4 sm:px-6 py-3 flex items-center justify-end">
+          <button
+            onClick={onClose}
+            className="h-11 w-11 rounded-full hover:bg-surface-hover text-ink-muted flex items-center justify-center"
+            aria-label="Close"
+          >
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12" /></svg>
+          </button>
+        </div>
+        <div className="p-6 sm:p-8 space-y-4">
+          <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-ink-faint">WORKOUT NOT FOUND</div>
+          <h2 className="text-2xl sm:text-3xl font-semibold italic">This session was removed.</h2>
+          <p className="text-sm text-ink-muted">
+            Your fitness assistant or another browser tab deleted this workout. The list has been refreshed —
+            head back to the Fuel page to see the current plan.
+          </p>
+          <button
+            onClick={onClose}
+            className="rounded-full bg-accent text-white font-semibold min-h-[44px] px-5 py-2.5 text-sm glow-purple hover:brightness-110 active:scale-[0.98] transition"
+          >
+            Back to Fuel
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -642,6 +732,12 @@ function StrengthEditor({ detail, editing, onChange }: { detail: Record<string, 
 }
 
 /* ---- Stats Editor (Cardio, HIIT) ---- */
+/**
+ * Convention: stat boxes always render in read mode, with an em-dash for
+ * empty values. Hiding empty boxes makes successful saves with partial
+ * data look broken ("where did my fields go?") and is one of the two
+ * root causes behind the Fuel "data disappeared" bug class.
+ */
 function StatsEditor({ detail, editing, onChange, fields }: {
   detail: Record<string, unknown>;
   editing: boolean;
@@ -653,38 +749,204 @@ function StatsEditor({ detail, editing, onChange, fields }: {
       <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint mb-2">STATS</div>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
         {fields.map(([key, label, unit]) => (
-          (editing || detail[key] != null) && (
-            <div key={key} className="rounded-lg border border-border bg-surface-elevated px-3 py-2.5">
-              <div className="text-[8px] font-bold uppercase tracking-[0.2em] text-ink-faint">{label}</div>
-              {editing ? (
-                key === "pace" ? (
-                  <input
-                    type="text"
-                    value={(detail[key] as string) ?? ""}
-                    onChange={(e) => onChange({ [key]: e.target.value })}
-                    placeholder="—"
-                    className="mt-1 w-full bg-transparent font-mono text-base text-ink focus:outline-none"
-                  />
-                ) : (
-                  <NumericInput
-                    value={(detail[key] as number | null) ?? null}
-                    onCommit={(v) => onChange({ [key]: v })}
-                    allowDecimal={key === "distance_km"}
-                    placeholder="—"
-                    aria-label={label}
-                    className="mt-1 w-full bg-transparent font-mono text-base text-ink focus:outline-none"
-                  />
-                )
-              ) : (
-                <div className="mt-1 text-xl font-semibold italic">
-                  {String(detail[key] ?? "\u2014")}
-                  <span className="text-[10px] font-sans text-ink-faint ml-1">{unit}</span>
-                </div>
-              )}
-            </div>
-          )
+          <StatBox
+            key={key}
+            label={label}
+            unit={unit}
+            editing={editing}
+            displayValue={(detail[key] as string | number | null | undefined) ?? null}
+          >
+            <NumericInput
+              value={(detail[key] as number | null) ?? null}
+              onCommit={(v) => onChange({ [key]: v })}
+              placeholder="—"
+              aria-label={label}
+              className="min-w-0 flex-1 bg-transparent font-mono text-base text-ink focus:outline-none placeholder:text-ink-faint"
+            />
+          </StatBox>
         ))}
       </div>
+    </div>
+  );
+}
+
+/* ---- Cardio Stats Editor ---- */
+/**
+ * Cardio-specific stats with km/mi unit toggle, pace MM:SS hint, and
+ * every field labeled with its unit + a hover tooltip describing what
+ * the value means. Storage is canonical (km for distance, m for
+ * elevation) — conversion happens only at the display boundary.
+ */
+function CardioStatsEditor({ detail, editing, onChange }: {
+  detail: Record<string, unknown>;
+  editing: boolean;
+  onChange: (u: Record<string, unknown>) => void;
+}) {
+  const { unit, setUnit, isPending: unitPending } = useDistanceUnit();
+  const elevUnit = elevationLabel(unit);
+
+  const storedKm = typeof detail.distance_km === "number" ? (detail.distance_km as number) : null;
+  const distanceDisplay = storedKm != null ? kmToDisplay(storedKm, unit) : null;
+
+  const storedElevM = typeof detail.elevation === "number" ? (detail.elevation as number) : null;
+  const elevationDisplay = storedElevM != null ? metersToDisplay(storedElevM, unit) : null;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint">STATS</div>
+        {editing && (
+          <button
+            type="button"
+            onClick={() => setUnit(unit === "km" ? "mi" : "km")}
+            disabled={unitPending}
+            className="rounded-full border border-border hover:border-border-strong text-[10px] font-mono uppercase tracking-wider min-h-[28px] px-2.5 py-1 text-ink-muted hover:text-ink transition disabled:opacity-50"
+            aria-label="Toggle distance unit"
+            title="Switch between kilometers and miles. The change saves to your fitness profile."
+          >
+            {unit}
+          </button>
+        )}
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+        <StatBox
+          label="DISTANCE"
+          unit={unit}
+          editing={editing}
+          displayValue={distanceDisplay}
+          hint={`Total distance covered, in ${unit === "mi" ? "miles" : "kilometers"}.`}
+        >
+          <NumericInput
+            value={distanceDisplay}
+            onCommit={(v) =>
+              onChange({ distance_km: v != null ? displayToKm(v, unit) : null })
+            }
+            allowDecimal
+            placeholder={unit === "mi" ? "3.1" : "5.0"}
+            aria-label="Distance"
+            className="min-w-0 flex-1 bg-transparent font-mono text-base text-ink focus:outline-none placeholder:text-ink-faint"
+          />
+        </StatBox>
+        <StatBox
+          label="PACE"
+          unit={`/${unit}`}
+          editing={editing}
+          displayValue={(detail.pace as string | null | undefined) ?? null}
+          hint={`Format MM:SS per ${unit} (e.g. 5:30). Free-form text saves but won't graph in Progress.`}
+        >
+          <input
+            type="text"
+            // inputMode="text" so iOS keyboards include `:` (numeric/decimal
+            // pads hide it). pattern is advisory — the backend accepts
+            // any string but only MM:SS graphs in Progress
+            // (apps/fuel/services.py).
+            inputMode="text"
+            pattern="[0-9]{1,2}:[0-9]{2}"
+            maxLength={5}
+            value={(detail.pace as string) ?? ""}
+            onChange={(e) => onChange({ pace: e.target.value || null })}
+            placeholder="5:30"
+            aria-label="Pace"
+            className="min-w-0 flex-1 bg-transparent font-mono text-base text-ink focus:outline-none placeholder:text-ink-faint"
+          />
+        </StatBox>
+        <StatBox
+          label="AVG HR"
+          unit="bpm"
+          editing={editing}
+          displayValue={(detail.avg_hr as number | null | undefined) ?? null}
+          hint="Average heart rate during the session, in beats per minute (whole numbers)."
+        >
+          <NumericInput
+            value={(detail.avg_hr as number | null) ?? null}
+            onCommit={(v) => onChange({ avg_hr: v != null ? Math.round(v) : null })}
+            placeholder="150"
+            aria-label="Average heart rate"
+            className="min-w-0 flex-1 bg-transparent font-mono text-base text-ink focus:outline-none placeholder:text-ink-faint"
+          />
+        </StatBox>
+        <StatBox
+          label="ELEVATION"
+          unit={elevUnit}
+          editing={editing}
+          displayValue={elevationDisplay}
+          hint={`Total elevation gain (sum of all climbs) in ${elevUnit === "ft" ? "feet" : "meters"}.`}
+        >
+          <NumericInput
+            value={elevationDisplay}
+            onCommit={(v) =>
+              onChange({ elevation: v != null ? displayToMeters(v, unit) : null })
+            }
+            placeholder={unit === "mi" ? "200" : "60"}
+            aria-label="Elevation"
+            className="min-w-0 flex-1 bg-transparent font-mono text-base text-ink focus:outline-none placeholder:text-ink-faint"
+          />
+        </StatBox>
+        <StatBox
+          label="AVG POWER"
+          unit="w"
+          editing={editing}
+          displayValue={(detail.avg_power as number | null | undefined) ?? null}
+          hint={"Optional — average watts from a power meter (cyclist) or Stryd pod (runner)."}
+        >
+          <NumericInput
+            value={(detail.avg_power as number | null) ?? null}
+            onCommit={(v) => onChange({ avg_power: v != null ? Math.round(v) : null })}
+            placeholder="—"
+            aria-label="Average power"
+            className="min-w-0 flex-1 bg-transparent font-mono text-base text-ink focus:outline-none placeholder:text-ink-faint"
+          />
+        </StatBox>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Generic stat-box primitive used by both StatsEditor (HIIT) and
+ * CardioStatsEditor. Always rendered — empty values show an em-dash
+ * so saves with partial data don't visually drop fields. The caller
+ * provides the edit-mode input (NumericInput, plain text, etc.) as
+ * children.
+ */
+function StatBox({
+  label,
+  unit,
+  editing,
+  displayValue,
+  hint,
+  children,
+}: {
+  label: string;
+  unit: string;
+  editing: boolean;
+  displayValue: string | number | null;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className="rounded-lg border border-border bg-surface-elevated px-3 py-2.5"
+      title={hint}
+    >
+      <div className="text-[8px] font-bold uppercase tracking-[0.2em] text-ink-faint">{label}</div>
+      {editing ? (
+        <div className="mt-1 flex items-baseline gap-1.5">
+          {children}
+          {unit && <span className="text-[10px] text-ink-faint shrink-0">{unit}</span>}
+        </div>
+      ) : (
+        <div className="mt-1 text-xl font-semibold italic">
+          {displayValue != null && displayValue !== "" ? (
+            <>
+              {String(displayValue)}
+              {unit && <span className="text-[10px] font-sans text-ink-faint ml-1">{unit}</span>}
+            </>
+          ) : (
+            <span className="text-ink-faint">—</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
