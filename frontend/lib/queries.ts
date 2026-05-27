@@ -1153,6 +1153,14 @@ export function useWorkoutQuery(id: string | null) {
     queryFn: () => fetchWorkout(id!),
     staleTime: 60_000,
     enabled: isLoggedIn() && !!id,
+    // A 404 here means the workout was deleted by another actor (the
+    // assistant runtime, another browser tab, etc.). Retrying won't bring
+    // it back; surface the error so the caller renders a recovery UI.
+    retry: (failureCount, err) => {
+      const status = (err as Error & { status?: number })?.status;
+      if (status === 404 || status === 401) return false;
+      return failureCount < 1;
+    },
   });
 }
 

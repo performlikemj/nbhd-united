@@ -171,6 +171,11 @@ class OnboardingStatus(models.TextChoices):
     DECLINED = "declined", "Declined"
 
 
+class DistanceUnit(models.TextChoices):
+    KM = "km", "Kilometers"
+    MI = "mi", "Miles"
+
+
 class FuelProfile(models.Model):
     """Per-tenant fitness profile — populated via assistant-led onboarding."""
 
@@ -180,6 +185,15 @@ class FuelProfile(models.Model):
         max_length=16,
         choices=OnboardingStatus.choices,
         default=OnboardingStatus.PENDING,
+    )
+    distance_unit = models.CharField(
+        max_length=4,
+        choices=DistanceUnit.choices,
+        default=DistanceUnit.KM,
+        help_text=(
+            "User's preferred distance unit for cardio. Storage is always km; "
+            "the UI converts on display. Elevation follows: km → meters, mi → feet."
+        ),
     )
     fitness_level = models.CharField(
         max_length=16,
