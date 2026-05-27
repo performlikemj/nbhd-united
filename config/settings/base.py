@@ -374,6 +374,13 @@ FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
 # Already referenced by env-var in apps/tenants/migrations/0044_set_owner_exempt.py;
 # also exposed here so app code can read it via settings rather than os.environ.
 PLATFORM_OWNER_EMAIL = env("PLATFORM_OWNER_EMAIL", default="")
+
+# Password reset link TTL — 7 days (Django default is 3). Picked so a
+# user who receives a campaign-driven reset email and opens it on a
+# Wednesday isn't locked out by the weekend. Applies to every reset
+# flow, not just campaigns; 7 days is a reasonable security ceiling
+# for emailed reset links.
+PASSWORD_RESET_TIMEOUT = 60 * 60 * 24 * 7
 USAGE_DASHBOARD_SUBSCRIPTION_PRICE = env.float(
     "USAGE_DASHBOARD_SUBSCRIPTION_PRICE",
     default=12.0,

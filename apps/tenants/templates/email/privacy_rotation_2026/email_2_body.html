@@ -1,0 +1,240 @@
+{% comment %}
+─────────────────────────────────────────────────────────────────────
+NBHD United — Privacy Rotation 2026 — Email 2 (Promo: 14 days free)
+─────────────────────────────────────────────────────────────────────
+
+Django template variables:
+  - {{ display_name }}  — User.display_name (falls back to "Friend")
+  - {{ promo_url }}     — HMAC-signed redemption URL; one-shot, per-user
+
+Outlook (2019 / 365 / Win-desktop) fallback strategy:
+  - Serif italic headline:
+      Modern clients use 'Instrument Serif' (Google Fonts), italic.
+      Outlook ignores the web font and falls through the stack:
+      Georgia (italic, available everywhere). The italic mood
+      survives.
+  - Tagline gradient text:
+      Webkit clients render `linear-gradient` + `bg-clip:text`.
+      Outlook ignores both and inherits the parent's solid
+      `color: #4ECDC4` (signal teal).
+  - CTA button glow:
+      Modern clients honor `box-shadow`. Outlook strips it; the
+      VML `<v:roundrect>` block draws a solid teal-bordered purple
+      pill button as the fallback, anchor-locked.
+  - Accents:
+      Pure Unicode (✦, ✧, ·) — no SVG, no images. Renders in every
+      client including Outlook with the system symbol font fallback.
+
+This email intentionally diverges from Email 1's aesthetic. Email 1 is
+institutional and structured; Email 2 is centered, slower, more
+intimate — reads like a handwritten note rather than a service
+announcement.
+
+Tested width: 600px. Mobile breakpoint: 600px → full-width with
+24px horizontal padding.
+{% endcomment %}<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" lang="en">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="supported-color-schemes" content="dark" />
+  <title>A second look — 14 days, on us</title>
+
+  <!--[if mso]>
+  <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+  <![endif]-->
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Space+Grotesk:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet" />
+
+  <style type="text/css">
+    /* Reset */
+    body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+    table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+    img { border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; -ms-interpolation-mode: bicubic; }
+    body { margin: 0 !important; padding: 0 !important; width: 100% !important; }
+
+    /* Gradient text — webkit only */
+    .gradient-text-warm {
+      background: #4ECDC4;
+      background: linear-gradient(90deg, #4ECDC4 0%, #E8B4B8 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    /* CTA glow */
+    .cta-glow {
+      box-shadow: 0 0 0 1px rgba(124, 107, 240, 0.35), 0 12px 32px rgba(124, 107, 240, 0.40);
+    }
+    .cta-glow:hover {
+      box-shadow: 0 0 0 1px rgba(155, 141, 245, 0.55), 0 16px 40px rgba(124, 107, 240, 0.55);
+    }
+
+    /* Mobile */
+    @media only screen and (max-width: 600px) {
+      .container { width: 100% !important; max-width: 100% !important; }
+      .px-page { padding-left: 24px !important; padding-right: 24px !important; }
+      .h1 { font-size: 44px !important; line-height: 1.05 !important; }
+      .h1-sub { font-size: 18px !important; }
+      .constellation-row { letter-spacing: 0.5em !important; }
+    }
+  </style>
+</head>
+
+<body style="margin: 0; padding: 0; background-color: #0b0f13; color: #e2e8f0;">
+  <!-- Preheader -->
+  <div style="display: none; max-height: 0; overflow: hidden; mso-hide: all; font-size: 1px; line-height: 1px; color: #0b0f13;">
+    14 days on us — a small welcome-back. No card needed. Good through June 6.
+  </div>
+
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #0b0f13;" bgcolor="#0b0f13">
+    <tr>
+      <td align="center" style="padding: 48px 16px;">
+
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" class="container" style="max-width: 600px; background-color: #0b0f13; border: 1px solid rgba(226,232,240,0.10); border-radius: 16px;" bgcolor="#0b0f13">
+
+          <!-- Constellation row — three stars on a thin axis -->
+          <tr>
+            <td class="px-page" align="center" style="padding: 56px 48px 0 48px;">
+              <p class="constellation-row" style="margin: 0; font-size: 13px; letter-spacing: 0.9em; color: rgba(226,232,240,0.32); line-height: 1;">
+                <span style="color: rgba(124,107,240,0.55);">✦</span><span style="color: rgba(232,180,184,0.55);">·</span><span style="color: rgba(232,180,184,0.55);">·</span><span style="color: rgba(232,180,184,0.55);">✧</span><span style="color: rgba(78,205,196,0.55);">·</span><span style="color: rgba(78,205,196,0.55);">·</span><span style="color: rgba(78,205,196,0.65);">✦</span>
+              </p>
+            </td>
+          </tr>
+
+          <!-- Eyebrow -->
+          <tr>
+            <td class="px-page" align="center" style="padding: 28px 48px 0 48px;">
+              <p style="margin: 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 11px; letter-spacing: 0.28em; text-transform: uppercase; color: rgba(226,232,240,0.42); font-weight: 500;">
+                A small offer
+              </p>
+            </td>
+          </tr>
+
+          <!-- Hero headline — Instrument Serif italic, centered -->
+          <tr>
+            <td class="px-page" align="center" style="padding: 18px 48px 6px 48px;">
+              <h1 class="h1" style="margin: 0; font-family: 'Instrument Serif', Georgia, 'Times New Roman', serif; font-size: 56px; line-height: 1.02; font-weight: 400; font-style: italic; color: #e2e8f0; letter-spacing: -0.01em;">
+                A second look.
+              </h1>
+            </td>
+          </tr>
+
+          <!-- Subhead -->
+          <tr>
+            <td class="px-page" align="center" style="padding: 12px 48px 0 48px;">
+              <p class="h1-sub" style="margin: 0; font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 20px; line-height: 1.3; font-weight: 500; color: #4ECDC4; letter-spacing: -0.005em;">
+                <!--[if mso]>
+                <span style="color: #4ECDC4;">14 days, on us.</span>
+                <![endif]-->
+                <!--[if !mso]><!-- -->
+                <span class="gradient-text-warm" style="background: linear-gradient(90deg, #4ECDC4 0%, #E8B4B8 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: #4ECDC4;">14 days, on us.</span>
+                <!--<![endif]-->
+              </p>
+            </td>
+          </tr>
+
+          <!-- Body copy -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 44px 64px 8px 64px;">
+              <p style="margin: 0 0 18px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 16px; line-height: 1.6; color: #e2e8f0;">
+                Hi {{ display_name|default:"there" }},
+              </p>
+              <p style="margin: 0 0 18px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
+                Thanks for sticking with us through the privacy upgrade. As a small thank-you, we'd like to put fourteen days back on your account — on us.
+              </p>
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
+                No card, no checkout. Your trial extends the moment you click.
+              </p>
+            </td>
+          </tr>
+
+          <!-- CTA -->
+          <tr>
+            <td class="px-page" align="center" style="padding: 36px 48px 8px 48px;">
+              <!--[if mso]>
+              <v:roundrect
+                xmlns:v="urn:schemas-microsoft-com:vml"
+                xmlns:w="urn:schemas-microsoft-com:office:word"
+                href="{{ promo_url }}"
+                style="height:54px;v-text-anchor:middle;width:240px;"
+                arcsize="50%"
+                stroke="f"
+                fillcolor="#7C6BF0">
+                <w:anchorlock/>
+                <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:15px;font-weight:700;letter-spacing:0.01em;">
+                  Claim 14 days
+                </center>
+              </v:roundrect>
+              <![endif]-->
+              <!--[if !mso]><!-- -->
+              <a href="{{ promo_url }}" class="cta-glow" target="_blank" rel="noopener" style="display: inline-block; background-color: #7C6BF0; color: #ffffff; text-decoration: none; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; font-weight: 700; padding: 16px 40px; border-radius: 999px; letter-spacing: 0.01em; box-shadow: 0 0 0 1px rgba(124, 107, 240, 0.35), 0 12px 32px rgba(124, 107, 240, 0.40);">
+                Claim 14 days
+              </a>
+              <!--<![endif]-->
+            </td>
+          </tr>
+
+          <!-- Validity note -->
+          <tr>
+            <td class="px-page" align="center" style="padding: 18px 48px 8px 48px;">
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 13px; line-height: 1.6; color: rgba(226,232,240,0.42);">
+                Good through <span style="color: rgba(226,232,240,0.78);">June&nbsp;6,&nbsp;2026</span>.
+              </p>
+            </td>
+          </tr>
+
+          <!-- Spacer -->
+          <tr>
+            <td class="px-page" style="padding: 32px 48px 0 48px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                <tr>
+                  <td align="center" style="font-size: 13px; letter-spacing: 1.6em; color: rgba(226,232,240,0.18); line-height: 1;">
+                    ·&nbsp;·&nbsp;·
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Signoff -->
+          <tr>
+            <td class="px-page" align="center" style="padding: 28px 48px 48px 48px;">
+              <p style="margin: 0; font-family: 'Instrument Serif', Georgia, 'Times New Roman', serif; font-size: 18px; line-height: 1.5; color: rgba(226,232,240,0.78); font-style: italic;">
+                — NBHD United
+              </p>
+            </td>
+          </tr>
+
+        </table>
+
+        <!-- Outer footer + raw URL for clients that strip the CTA -->
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" class="container" style="max-width: 600px;">
+          <tr>
+            <td class="px-page" align="center" style="padding: 24px 48px 0 48px;">
+              <p style="margin: 0 0 8px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 11px; line-height: 1.5; color: rgba(226,232,240,0.30);">
+                If the button doesn't open, paste this URL into your browser:
+              </p>
+              <p style="margin: 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 11px; line-height: 1.5; color: rgba(78,205,196,0.55); word-break: break-all;">
+                {{ promo_url }}
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding: 24px 48px 0 48px;">
+              <p style="margin: 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(226,232,240,0.30);">
+                neighborhoodunited.org &nbsp;·&nbsp; ✦
+              </p>
+            </td>
+          </tr>
+        </table>
+
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

@@ -2,6 +2,7 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .line_views import line_generate_link, line_set_preferred_channel, line_status, line_unlink
+from .promo_views import redeem_promo
 from .runtime_views import (
     RuntimeAgendaEngagementView,
     RuntimeCommitmentRecordView,
@@ -74,6 +75,10 @@ urlpatterns = [
     path("line/unlink/", line_unlink, name="line-unlink"),
     path("line/status/", line_status, name="line-status"),
     path("line/preferred-channel/", line_set_preferred_channel, name="line-preferred-channel"),
+    # Promotional campaign redemption — unauthenticated, the per-user
+    # HMAC token in the URL carries the authorization. See
+    # apps/tenants/promo_views.py and promo_signing.py.
+    path("promos/redeem/", redeem_promo, name="promo-redeem"),
     path("heartbeat/", HeartbeatConfigView.as_view(), name="heartbeat-config"),
     path("delete-account/", DeleteAccountView.as_view(), name="delete-account"),
     path("cancel-deletion/", CancelDeletionView.as_view(), name="cancel-deletion"),

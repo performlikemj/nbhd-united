@@ -1,0 +1,14 @@
+{% autoescape off %}Hi {{ display_name|default:"there" }},
+
+Thanks for sticking with us through the privacy upgrade. As a small
+thank-you, we'd like to put fourteen days back on your account — on us.
+
+No card, no checkout. Your trial extends the moment you click.
+
+  {{ promo_url }}
+
+Good through June 6, 2026.
+
+— NBHD United
+neighborhoodunited.org
+{% endautoescape %}

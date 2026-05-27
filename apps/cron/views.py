@@ -72,6 +72,17 @@ TASK_MAP = {
     "reset_daily_counters": "apps.tenants.tasks.reset_daily_counters_task",
     "reset_monthly_counters": "apps.tenants.tasks.reset_monthly_counters_task",
     "cleanup_expired_telegram_tokens": "apps.tenants.tasks.cleanup_expired_telegram_tokens",
+    # Privacy-rotation campaign (June 2026) — one-off scheduled fires.
+    # Set via the upstash QStash MCP a day or two before the campaign
+    # dates. See apps/tenants/management/commands/rotate_all_passwords.py
+    # and send_promo_campaign.py for the underlying commands.
+    "rotate_all_passwords": "apps.tenants.tasks.rotate_all_passwords_task",
+    "send_promo_campaign": "apps.tenants.tasks.send_promo_campaign_task",
+    # Operator-fired preview of the campaign emails — accepts
+    # {"kwargs": {"kind": 1|2, "to": "<email>", "display_name": "..."}}
+    # in the QStash body. Used pre-launch to sanity-check rendered HTML
+    # in the platform owner's inbox.
+    "preview_email": "apps.tenants.tasks.preview_email_task",
     "refresh_expiring_integrations": "apps.integrations.tasks.refresh_expiring_integrations_task",
     # Journal memory sync (on-demand via signal or QStash publish)
     "sync_documents_to_workspace": "apps.journal.tasks.sync_documents_to_workspace",

@@ -1,0 +1,24 @@
+{% autoescape off %}Hi {{ display_name|default:"there" }},
+
+As part of our move to stronger privacy controls — including end-to-end
+PII placeholder substitution for the AI providers your assistant talks
+to — we've rotated platform credentials this week as a hygiene measure.
+
+To get back into NBHD United, please set a new password:
+
+  {{ reset_url }}
+
+This link works through June 8, 2026.
+
+— — —
+
+What we changed
+The text your assistant exchanges with model providers now passes through
+a placeholder substitution layer — names, emails, financial figures, and
+locations are swapped for tags like [PERSON_1] before they leave our
+infrastructure, and rehydrated on the way back to you. Credential
+rotation pairs with that change as a hygiene step.
+
+— NBHD United
+neighborhoodunited.org
+{% endautoescape %}

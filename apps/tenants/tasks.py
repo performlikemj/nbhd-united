@@ -21,3 +21,78 @@ def cleanup_expired_telegram_tokens():
     cutoff = timezone.now() - timezone.timedelta(hours=1)
     deleted, _ = TelegramLinkToken.objects.filter(expires_at__lt=cutoff).delete()
     return f"Deleted {deleted} expired tokens"
+
+
+def rotate_all_passwords_task() -> dict:
+    """QStash-dispatched wrapper around the ``rotate_all_passwords``
+    management command. Used for the scheduled June 1 fire — registered
+    in apps/cron/views.py TASK_MAP and triggered by a one-off QStash
+    message that's set via the upstash MCP before the campaign date.
+
+    Defaults to the privacy-hygiene reason; pulls all settings from the
+    campaign date (today). For ad-hoc rotations, use the management
+    command directly with custom flags.
+    """
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    buf = StringIO()
+    call_command(
+        "rotate_all_passwords",
+        reason="june-2026-privacy-hygiene",
+        stdout=buf,
+    )
+    return {"output": buf.getvalue()[-2000:]}  # tail of stdout for audit
+
+
+def preview_email_task(kind: int = 1, to: str = "", display_name: str = "Preview") -> dict:
+    """QStash-dispatched wrapper around the ``preview_email`` command.
+
+    Lets the operator fire a render-and-send from outside the box
+    (e.g. via the upstash MCP) without needing TTY access or
+    ``containerapp exec``. Picks up the live Mailgun config the same
+    way every other Django send does, so the rendered output mirrors
+    what real recipients will see.
+
+    Args (delivered via QStash body kwargs):
+      kind: 1 for the password-reset email, 2 for the promo email
+      to: recipient email address
+      display_name: sample display name to render into the template
+    """
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    if kind not in (1, 2):
+        raise ValueError(f"preview_email_task: invalid kind={kind!r}")
+    if not to:
+        raise ValueError("preview_email_task: 'to' is required")
+
+    buf = StringIO()
+    call_command("preview_email", kind=kind, to=to, display_name=display_name, stdout=buf)
+    return {"output": buf.getvalue()}
+
+
+def send_promo_campaign_task() -> dict:
+    """QStash-dispatched wrapper around ``send_promo_campaign`` for the
+    June 2 trial-extension blast.
+
+    Constants are inlined here on purpose — this task fires exactly once
+    on a known date. The management command remains available for
+    ad-hoc / future campaigns with different parameters.
+    """
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    buf = StringIO()
+    call_command(
+        "send_promo_campaign",
+        code="privacy-june-2026",
+        kind="trial_extension",
+        days=14,
+        valid_until="2026-06-06T00:00:00+00:00",
+        stdout=buf,
+    )
+    return {"output": buf.getvalue()[-2000:]}

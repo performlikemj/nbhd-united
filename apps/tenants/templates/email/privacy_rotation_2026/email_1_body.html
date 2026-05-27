@@ -1,0 +1,237 @@
+{% comment %}
+─────────────────────────────────────────────────────────────────────
+NBHD United — Privacy Rotation 2026 — Email 1 (Password Reset)
+─────────────────────────────────────────────────────────────────────
+
+Django template variables:
+  - {{ display_name }}  — User.display_name (falls back to "Friend")
+  - {{ reset_url }}     — Full password-reset URL with token
+
+Outlook (2019 / 365 / Win-desktop) fallback strategy:
+  - Tri-color gradient headline:
+      Modern clients use `linear-gradient` + `-webkit-background-clip:text`.
+      Outlook ignores the gradient and inherits the parent <h1>'s solid
+      `color: #9B8DF5` (accent-hover). The MSO conditional block emits
+      a fallback <span>; the non-MSO block emits the gradient <span>.
+  - CTA button glow:
+      Modern clients render a `box-shadow` purple glow. Outlook strips
+      shadows. The VML `<v:roundrect>` block draws a solid pill-shaped
+      purple button as the fallback, anchor-locked, click-targeted.
+  - Web fonts:
+      Loaded via Google Fonts <link>. Outlook 2019/365 desktop ignores
+      web fonts and falls through the font-stack to Arial/Helvetica;
+      the stack is ordered intentionally so the fallback still reads
+      cleanly.
+  - Background image / SVG:
+      Avoided entirely. Constellation accents are Unicode (✦, ✧) so
+      they render in every client, including Outlook with system
+      symbol fallback.
+
+Inline styles cover layout + color; <style> in <head> handles
+media-query mobile breakpoint, gradient text, and box-shadow glow —
+everything else has an inline equivalent.
+
+Tested width: 600px. Mobile breakpoint: 600px → full-width with
+24px horizontal padding.
+{% endcomment %}<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" lang="en">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="supported-color-schemes" content="dark" />
+  <title>Reset your NBHD United password</title>
+
+  <!--[if mso]>
+  <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+  <![endif]-->
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet" />
+
+  <style type="text/css">
+    /* Reset */
+    body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+    table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+    img { border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; -ms-interpolation-mode: bicubic; }
+    body { margin: 0 !important; padding: 0 !important; width: 100% !important; }
+
+    /* Gradient text — webkit only; falls back to inherited color in Outlook */
+    .gradient-text {
+      background: #7C6BF0;
+      background: linear-gradient(90deg, #7C6BF0 0%, #E8B4B8 50%, #4ECDC4 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    /* CTA glow — clients that honor box-shadow */
+    .cta-glow {
+      box-shadow: 0 0 0 1px rgba(124, 107, 240, 0.35), 0 12px 32px rgba(124, 107, 240, 0.40);
+    }
+
+    /* Hover state — Apple Mail + Gmail web */
+    .cta-glow:hover {
+      box-shadow: 0 0 0 1px rgba(155, 141, 245, 0.55), 0 16px 40px rgba(124, 107, 240, 0.55);
+    }
+
+    /* Mobile */
+    @media only screen and (max-width: 600px) {
+      .container { width: 100% !important; max-width: 100% !important; }
+      .px-page { padding-left: 24px !important; padding-right: 24px !important; }
+      .h1 { font-size: 30px !important; line-height: 1.12 !important; }
+      .py-hero-top { padding-top: 32px !important; }
+      .py-hero-bot { padding-bottom: 28px !important; }
+    }
+  </style>
+</head>
+
+<body style="margin: 0; padding: 0; background-color: #0b0f13; color: #e2e8f0;">
+  <!-- Preheader (preview text) -->
+  <div style="display: none; max-height: 0; overflow: hidden; mso-hide: all; font-size: 1px; line-height: 1px; color: #0b0f13;">
+    Privacy hygiene upgrade — please set a new password. Link valid through June 8.
+  </div>
+
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #0b0f13;" bgcolor="#0b0f13">
+    <tr>
+      <td align="center" style="padding: 48px 16px;">
+
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" class="container" style="max-width: 600px; background-color: #0b0f13; border: 1px solid rgba(226,232,240,0.10); border-radius: 16px;" bgcolor="#0b0f13">
+
+          <!-- Eyebrow -->
+          <tr>
+            <td class="px-page py-hero-top" align="center" style="padding: 40px 48px 0 48px;">
+              <p style="margin: 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase; color: rgba(226,232,240,0.42); font-weight: 500;">
+                <span style="color: rgba(124,107,240,0.65);">✦</span>&nbsp;&nbsp;NBHD&nbsp;UNITED&nbsp;&nbsp;<span style="color: rgba(78,205,196,0.55);">✧</span>
+              </p>
+            </td>
+          </tr>
+
+          <!-- Hero headline -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 36px 48px 20px 48px;">
+              <h1 class="h1" style="margin: 0; font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 38px; line-height: 1.08; font-weight: 700; color: #9B8DF5; letter-spacing: -0.015em;">
+                <!--[if mso]>
+                <span style="color: #9B8DF5; font-family: 'Space Grotesk', Arial, sans-serif; font-weight: 700;">Reset your password.</span>
+                <![endif]-->
+                <!--[if !mso]><!-- -->
+                <span class="gradient-text" style="background: linear-gradient(90deg, #7C6BF0 0%, #E8B4B8 50%, #4ECDC4 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: #9B8DF5;">Reset your password.</span>
+                <!--<![endif]-->
+              </h1>
+            </td>
+          </tr>
+
+          <!-- Subhead / context -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 0 48px 28px 48px;">
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 14px; line-height: 1.5; color: rgba(226,232,240,0.62); font-weight: 500;">
+                A small change to keep your assistant — and your data — on better footing.
+              </p>
+            </td>
+          </tr>
+
+          <!-- Body copy -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 0 48px 8px 48px;">
+              <p style="margin: 0 0 18px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 16px; line-height: 1.6; color: #e2e8f0;">
+                Hi {{ display_name|default:"there" }},
+              </p>
+              <p style="margin: 0 0 18px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
+                As part of our move to stronger privacy controls — including end-to-end PII placeholder substitution for the AI providers your assistant talks to — we've rotated platform credentials this week as a hygiene measure.
+              </p>
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
+                To get back into NBHD United, please set a new password below.
+              </p>
+            </td>
+          </tr>
+
+          <!-- CTA -->
+          <tr>
+            <td class="px-page py-hero-bot" align="left" style="padding: 32px 48px 12px 48px;">
+              <!--[if mso]>
+              <v:roundrect
+                xmlns:v="urn:schemas-microsoft-com:vml"
+                xmlns:w="urn:schemas-microsoft-com:office:word"
+                href="{{ reset_url }}"
+                style="height:52px;v-text-anchor:middle;width:220px;"
+                arcsize="50%"
+                stroke="f"
+                fillcolor="#7C6BF0">
+                <w:anchorlock/>
+                <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:15px;font-weight:700;letter-spacing:0.01em;">
+                  Set new password
+                </center>
+              </v:roundrect>
+              <![endif]-->
+              <!--[if !mso]><!-- -->
+              <a href="{{ reset_url }}" class="cta-glow" target="_blank" rel="noopener" style="display: inline-block; background-color: #7C6BF0; color: #ffffff; text-decoration: none; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; font-weight: 700; padding: 16px 36px; border-radius: 999px; letter-spacing: 0.01em; box-shadow: 0 0 0 1px rgba(124, 107, 240, 0.35), 0 12px 32px rgba(124, 107, 240, 0.40);">
+                Set new password
+              </a>
+              <!--<![endif]-->
+            </td>
+          </tr>
+
+          <!-- Link expiry + raw URL fallback -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 16px 48px 36px 48px;">
+              <p style="margin: 0 0 10px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 13px; line-height: 1.6; color: rgba(226,232,240,0.42);">
+                This link works through <span style="color: rgba(226,232,240,0.78);">June&nbsp;8,&nbsp;2026</span>. If the button doesn't open, paste this URL into your browser:
+              </p>
+              <p style="margin: 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 12px; line-height: 1.5; color: rgba(78,205,196,0.85); word-break: break-all;">
+                {{ reset_url }}
+              </p>
+            </td>
+          </tr>
+
+          <!-- Divider -->
+          <tr>
+            <td class="px-page" style="padding: 0 48px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                <tr>
+                  <td style="border-top: 1px solid rgba(226,232,240,0.12); height: 1px; line-height: 1px; font-size: 1px;">&nbsp;</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Footnote: what we changed -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 28px 48px 8px 48px;">
+              <p style="margin: 0 0 10px 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(226,232,240,0.42); font-weight: 500;">
+                What we changed
+              </p>
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 13px; line-height: 1.65; color: rgba(226,232,240,0.62);">
+                The text your assistant exchanges with model providers now passes through a placeholder substitution layer — names, emails, financial figures, and locations are swapped for tags like <span style="font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; color: #4ECDC4; font-size: 12px;">[PERSON_1]</span> before they leave our infrastructure, and rehydrated on the way back to you. Credential rotation pairs with that change as a hygiene step.
+              </p>
+            </td>
+          </tr>
+
+          <!-- Signoff -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 24px 48px 40px 48px;">
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 14px; line-height: 1.6; color: rgba(226,232,240,0.78);">
+                — NBHD United
+              </p>
+            </td>
+          </tr>
+
+        </table>
+
+        <!-- Outer footer -->
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" class="container" style="max-width: 600px;">
+          <tr>
+            <td align="center" style="padding: 24px 48px 0 48px;">
+              <p style="margin: 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(226,232,240,0.30);">
+                neighborhoodunited.org &nbsp;·&nbsp; ✦
+              </p>
+            </td>
+          </tr>
+        </table>
+
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
