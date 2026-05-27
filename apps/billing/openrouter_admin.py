@@ -227,6 +227,51 @@ def get_key_usage(api_key: str) -> Decimal:
         return Decimal("0")
 
 
+def list_sub_keys(include_disabled: bool = True) -> list[dict]:
+    """List all sub-keys under the platform's OpenRouter account.
+
+    Used by the sweeper command to find OR-side keys with no matching
+    Tenant row (orphans). Paginated server-side via ``offset``; we walk
+    until the server returns an empty page.
+
+    Returns a list of key metadata dicts (each contains ``hash``, ``label``,
+    ``created_at``, etc.). Raises ``OpenRouterAdminError`` on any HTTP
+    failure — the sweeper is best-effort but should not silently swallow
+    a misconfigured management key.
+    """
+    url = f"{_api_base()}/keys"
+    out: list[dict] = []
+    offset = 0
+    page_size = 100  # OR returns up to this per page; we walk until empty.
+
+    while True:
+        params: dict[str, Any] = {"offset": offset, "include_disabled": "true" if include_disabled else "false"}
+        try:
+            resp = httpx.get(url, headers=_management_headers(), params=params, timeout=_HTTP_TIMEOUT)
+        except httpx.HTTPError as exc:
+            raise OpenRouterAdminError(f"list_sub_keys network failure: {exc}") from exc
+
+        if resp.status_code >= 400:
+            raise OpenRouterAdminError(
+                f"list_sub_keys HTTP {resp.status_code}: {resp.text[:200]}",
+                status=resp.status_code,
+                response=resp,
+            )
+
+        payload = resp.json()
+        # OR wraps in {"data": [...]} per the create-key shape; defensively
+        # also accept a bare list (some endpoints differ).
+        page = payload.get("data") if isinstance(payload, dict) else payload
+        if not isinstance(page, list) or len(page) == 0:
+            break
+        out.extend(page)
+        if len(page) < page_size:
+            break
+        offset += len(page)
+
+    return out
+
+
 def get_shared_key_usage() -> Decimal:
     """Convenience: ``get_key_usage`` against ``settings.OPENROUTER_API_KEY``.
 
