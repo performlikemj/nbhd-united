@@ -174,11 +174,11 @@ class CronJob(models.Model):
             # escape hatch without the confirmation, or a typed row without a
             # pattern.
             models.CheckConstraint(
-                check=(~models.Q(creation_path="freeform") | models.Q(user_confirmed_at__isnull=False)),
+                condition=(~models.Q(creation_path="freeform") | models.Q(user_confirmed_at__isnull=False)),
                 name="cron_freeform_requires_user_confirmation",
             ),
             models.CheckConstraint(
-                check=(~models.Q(creation_path="typed") | models.Q(pattern__isnull=False)),
+                condition=(~models.Q(creation_path="typed") | models.Q(pattern__isnull=False)),
                 name="cron_typed_requires_pattern",
             ),
         ]
