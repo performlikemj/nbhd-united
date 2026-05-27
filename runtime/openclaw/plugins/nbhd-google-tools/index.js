@@ -247,11 +247,23 @@ export default function register(api) {
 
   registerTool(api, {
     name: "nbhd_calendar_list_events",
-    description: "List upcoming Google Calendar events for the tenant (read-only).",
+    description:
+      "List upcoming Google Calendar events for the tenant (read-only). " +
+      "PREFER `window_kind` (server resolves the date range in the tenant's tz) " +
+      "over hand-computing `time_min`/`time_max` from the `[Now: ...]` header — the " +
+      "latter drifts near midnight in the user's local time. " +
+      "window_kind options: today | yesterday | tomorrow | all | last_n_days | next_n_days | " +
+      "last_n_weeks | last_n_months | this_week | last_week | month_to_date | last_month | " +
+      "year_to_date | last_year | since | between. " +
+      "For value-bearing kinds, pass `window_value`: integer for last_n_*/next_n_days, " +
+      "\"YYYY-MM-DD\" for since, \"YYYY-MM-DD,YYYY-MM-DD\" for between. " +
+      "If you must pass `time_min`/`time_max` directly, omit window_kind — they're mutually exclusive.",
     parameters: {
       type: "object",
       additionalProperties: false,
       properties: {
+        window_kind: { type: "string" },
+        window_value: { type: "string" },
         time_min: { type: "string" },
         time_max: { type: "string" },
         max_results: { type: "number", minimum: 1, maximum: 20 },
@@ -263,6 +275,8 @@ export default function register(api) {
         path: tenantPath(api, "/google-calendar/events/"),
         method: "GET",
         query: {
+          window_kind: asTrimmedString(input.window_kind),
+          window_value: asTrimmedString(input.window_value),
           time_min: asTrimmedString(input.time_min),
           time_max: asTrimmedString(input.time_max),
           max_results: parseInteger(input.max_results, {
@@ -278,11 +292,16 @@ export default function register(api) {
 
   registerTool(api, {
     name: "nbhd_calendar_get_freebusy",
-    description: "Get busy windows from the tenant's primary Google Calendar (read-only).",
+    description:
+      "Get busy windows from the tenant's primary Google Calendar (read-only). " +
+      "Accepts the same window_kind / window_value parameters as nbhd_calendar_list_events; " +
+      "prefer those over hand-computed time_min/time_max.",
     parameters: {
       type: "object",
       additionalProperties: false,
       properties: {
+        window_kind: { type: "string" },
+        window_value: { type: "string" },
         time_min: { type: "string" },
         time_max: { type: "string" },
       },
@@ -293,6 +312,8 @@ export default function register(api) {
         path: tenantPath(api, "/google-calendar/freebusy/"),
         method: "GET",
         query: {
+          window_kind: asTrimmedString(input.window_kind),
+          window_value: asTrimmedString(input.window_value),
           time_min: asTrimmedString(input.time_min),
           time_max: asTrimmedString(input.time_max),
         },

@@ -122,13 +122,27 @@ def reconcile_all() -> dict:
         status=Tenant.Status.ACTIVE,
     ).exclude(Q(openrouter_key_secret_name="") | Q(openrouter_key_secret_name__isnull=True))
 
+    # Lazy import — keeps the management command importable from
+    # migrations / Django setup paths that may not have apps.router loaded.
+    from apps.router.billing_quota_handlers import fire_threshold_emails_if_crossed
+
     updated = 0
     failed = 0
     for tenant in candidates:
         try:
-            changed, _before, _after = _reconcile_tenant(tenant)
+            changed, before, after = _reconcile_tenant(tenant)
             if changed:
                 updated += 1
+                # If the trued-up counter crossed 90% or 100% of the
+                # tenant's cap, fire the corresponding email. Idempotent
+                # via per-tenant sent-at markers (PR #1.8).
+                try:
+                    fire_threshold_emails_if_crossed(tenant, before=before, after=after)
+                except Exception:
+                    logger.exception(
+                        "reconcile_or: threshold-email dispatch failed for tenant=%s",
+                        str(tenant.id)[:8],
+                    )
         except Exception:
             logger.exception("reconcile_or: tenant=%s failed", str(tenant.id)[:8])
             failed += 1

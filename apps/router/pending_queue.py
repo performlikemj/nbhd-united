@@ -54,7 +54,6 @@ from django.utils import timezone
 from apps.billing.services import (
     record_usage,
     resolve_model_for_attribution,
-    resolve_tenant_primary_model,
 )
 from apps.router.models import PendingMessage
 from apps.tenants.models import Tenant
@@ -203,6 +202,20 @@ def _handle_openrouter_credit_limit(
         _hibernate_for_quota(tenant)
     except Exception:
         logger.exception("OR credit-limit: hibernate failed for tenant=%s", str(tenant.id)[:8])
+
+    # PR #1.8: send the branded HTML cap-exhausted email so the tenant
+    # has an inbox artifact explaining when chat resumes (the in-channel
+    # text below is the immediate signal; the email is the durable one).
+    # Idempotent — per-tenant sent-at marker on the Tenant row.
+    try:
+        from apps.router.billing_quota_handlers import send_cost_exhausted_email
+
+        send_cost_exhausted_email(tenant)
+    except Exception:
+        logger.exception(
+            "OR credit-limit: cap-exhausted email dispatch failed for tenant=%s",
+            str(tenant.id)[:8],
+        )
 
     lang = getattr(getattr(tenant, "user", None), "language", None) or "en"
     msg_key = "budget_exhausted_trial" if getattr(tenant, "is_trial", False) else "budget_exhausted_paid"
@@ -968,10 +981,14 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
     gateway_token = get_gateway_token_for_tenant(tenant)
 
     chat_payload = {
-        # Send the resolved tenant primary so OpenClaw echoes it back at
-        # top-level. The "openclaw" literal fallback is defensive — only
-        # hits if the tier-default lookup raises (effectively never).
-        "model": resolve_tenant_primary_model(tenant) or "openclaw",
+        # OpenClaw 5.7's /v1/chat/completions handler hard-rejects any
+        # body ``model`` value that isn't ``openclaw``, ``openclaw/default``,
+        # ``openclaw:<id>``, or ``agent:<id>`` (returns 400). The real
+        # upstream model is selected inside the runtime; attribution is
+        # done client-side in ``_record_usage_safe`` via
+        # ``resolve_model_for_attribution`` (response → tenant primary
+        # fallback). See PR following #720 for the regression context.
+        "model": "openclaw",
         "messages": [{"role": "user", "content": content}],
         "user": user_param,
     }
@@ -1026,7 +1043,9 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
     gateway_token = get_gateway_token_for_tenant(tenant)
 
     chat_payload = {
-        "model": resolve_tenant_primary_model(tenant) or "openclaw",
+        # See ``_drain_line_batch`` for why this stays the ``openclaw``
+        # sentinel rather than a resolved tenant primary.
+        "model": "openclaw",
         "messages": [{"role": "user", "content": content}],
         "user": user_param,
     }

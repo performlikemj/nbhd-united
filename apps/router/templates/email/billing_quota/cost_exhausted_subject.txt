@@ -1,0 +1,1 @@
+Your assistant's chat is paused until {{ reset_date }}

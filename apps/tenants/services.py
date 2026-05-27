@@ -67,11 +67,22 @@ def reset_daily_counters() -> int:
 
 
 def reset_monthly_counters() -> int:
-    """Reset monthly counters. Run via QStash cron on 1st of month."""
+    """Reset monthly counters. Run via QStash cron on 1st of month.
+
+    Also clears the quota-email idempotency markers (PR #1.8) so a tenant
+    who hit their cap last month can receive a fresh notification chain
+    this month. Cleared unconditionally — markers without a corresponding
+    elevated cost are harmless (next-month's reconcile cron just resends
+    on the next 90% crossing).
+    """
     count = Tenant.objects.filter(messages_this_month__gt=0).update(
         messages_this_month=0,
         tokens_this_month=0,
         estimated_cost_this_month=0,
+    )
+    Tenant.objects.update(
+        cost_warn_sent_at=None,
+        cost_exhausted_email_sent_at=None,
     )
     logger.info("Reset monthly counters for %d tenants", count)
     return count

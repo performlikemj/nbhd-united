@@ -116,6 +116,14 @@ def _hibernate_for_quota(tenant: Tenant) -> None:
 
     Skips if already hibernated. Uses the same deactivation path as idle
     hibernation so the container can be re-woken when budget resets.
+
+    Also fires the branded cap-exhausted email (PR #1.8) so the tenant
+    has an inbox artifact explaining when chat resumes — the in-channel
+    Telegram/LINE notification from ``_build_budget_exhausted_message``
+    is the immediate signal, the email is the durable one.
+    Email dispatch is idempotent via ``Tenant.cost_exhausted_email_sent_at``
+    and won't double-fire if this helper is called multiple times in a
+    cap cycle.
     """
     if tenant.hibernated_at or not tenant.container_id:
         return
@@ -129,6 +137,16 @@ def _hibernate_for_quota(tenant: Tenant) -> None:
         logger.info("Hibernated container %s — tenant over budget", tenant.container_id)
     except Exception:
         logger.exception("Failed to hibernate over-budget container %s", tenant.container_id)
+
+    try:
+        from apps.router.billing_quota_handlers import send_cost_exhausted_email
+
+        send_cost_exhausted_email(tenant)
+    except Exception:
+        logger.exception(
+            "_hibernate_for_quota: cap-exhausted email dispatch failed for tenant=%s",
+            str(tenant.id)[:8],
+        )
 
 
 def _build_budget_exhausted_message(chat_id: int, tenant: Tenant, reason: str) -> dict:

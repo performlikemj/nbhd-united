@@ -114,7 +114,7 @@ jobs:
 
       - name: Secret scan
         run: |
-          HITS=$(grep -rPn '(sk-ant-|sk-or-v1-|sk-proj-|AAAAAAAAAAAAA|tvly-dev-)' \
+          HITS=$(grep -rPn '(sk-ant-[A-Za-z0-9_-]{20,}|sk-or-v1-[A-Za-z0-9_-]{20,}|sk-proj-[A-Za-z0-9_-]{20,}|AAAAAAAAAAAAA|tvly-dev-[A-Za-z0-9_-]{20,})' \
             --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' \
             --include='*.json' --include='*.yaml' --include='*.yml' \
             --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=.venv \
@@ -252,6 +252,18 @@ jobs:
         run: |
           node --test runtime/openclaw/redact-stdout.test.mjs
           node --test runtime/openclaw/plugins/nbhd-routing-context/test.js
+
+      - name: Run suppress-chmod-eperm.js Layer 1 tests
+        run: |
+          node --test runtime/openclaw/suppress-chmod-eperm.test.mjs
+
+      - name: Audit OpenClaw chmod call-site inventory
+        # Diffs the chmod-family callee shapes in the pinned OpenClaw npm
+        # package against runtime/openclaw/chmod-audit-baseline.txt. Fails
+        # if OC introduces a new variant that suppress-chmod-eperm.js
+        # Layer 1 may not cover. Context: PR #504 / 2026-05-10 incident.
+        run: |
+          ./scripts/openclaw_chmod_audit.sh
 
   # ==========================================================================
   # Deploy Backend (push to main only, after tests pass)

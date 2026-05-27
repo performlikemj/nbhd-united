@@ -9,6 +9,7 @@ from .document_views import (
     TodayView,
 )
 from .extraction_views import NightlyExtractionView
+from .query_views import JournalQueryView
 from .views import (
     DailyNoteEntryDetailView,
     DailyNoteEntryListView,
@@ -52,4 +53,11 @@ urlpatterns = [
     # Extraction approval (web)
     path("extractions/<uuid:extraction_id>/approve/", ExtractionApproveView.as_view(), name="extraction-approve"),
     path("extractions/<uuid:extraction_id>/dismiss/", ExtractionDismissView.as_view(), name="extraction-dismiss"),
+    # Runtime — parameterized query (OC plugin, internal auth). Add-don't-replace
+    # companion to the legacy journal-runtime endpoints in apps.integrations.
+    path(
+        "runtime/<uuid:tenant_id>/query/",
+        JournalQueryView.as_view(),
+        name="runtime-journal-query",
+    ),
 ]
