@@ -667,6 +667,26 @@ class RenderManagedRegionTest(TestCase):
         out = render_managed_region(self.tenant)
         self.assertIn("coherent snapshot", out)
 
+    def test_includes_current_local_time_line(self):
+        """USER.md must carry a live local-time line that OC reads on every turn.
+
+        This is what stops cron-fired Heartbeats from claiming the user
+        hasn't worked 'today' when in fact the snapshot in their cron
+        prompt is from yesterday's reconcile.
+        """
+        self.tenant.user.timezone = "Asia/Tokyo"
+        self.tenant.user.save(update_fields=["timezone"])
+        out = render_managed_region(self.tenant)
+        self.assertIn("Current local time:", out)
+        self.assertIn("Asia/Tokyo", out)
+
+    def test_current_local_time_falls_back_to_utc_on_bad_tz(self):
+        self.tenant.user.timezone = "Not/A/Real/Zone"
+        self.tenant.user.save(update_fields=["timezone"])
+        out = render_managed_region(self.tenant)
+        self.assertIn("Current local time:", out)
+        self.assertIn("(UTC)", out)
+
     def test_includes_all_three_when_all_present(self):
         Document.objects.create(
             tenant=self.tenant,
@@ -962,6 +982,16 @@ class PrepareCronPromptTest(TestCase):
         self.assertNotIn("Pre-loaded user state", out)
         self.assertNotIn("Ship the canary", out)
         self.assertTrue(out.endswith("BODY"))
+
+    def test_date_line_is_labeled_as_stale_snapshot_pointing_to_user_md(self):
+        """The cron payload's date line lives in storage and goes stale —
+        the prompt must tell the agent to prefer USER.md's live line for
+        any 'today / earlier today / has the user done X' reasoning.
+        """
+        out = _prepare_cron_prompt("BODY", self.tenant)
+        self.assertIn("SNAPSHOT", out)
+        self.assertIn("USER.md", out)
+        self.assertIn("Current local time", out)
 
     def test_message_still_starts_with_date_line_so_default_prefix_match_holds(self):
         out = _prepare_cron_prompt("BODY", self.tenant)

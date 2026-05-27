@@ -29,6 +29,7 @@ class FuelProfileSerializer(serializers.ModelSerializer):
             "preferred_days",
             "preferred_time",
             "additional_context",
+            "distance_unit",
             "created_at",
             "updated_at",
         ]

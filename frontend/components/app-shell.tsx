@@ -369,7 +369,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         id="main-content"
         className="mx-auto w-full max-w-6xl flex-1 flex flex-col min-h-0 overflow-y-auto px-4 py-4 sm:py-6 sm:px-6 lg:py-8"
       >
-        <div className="content-fade-up">
+        <div className="content-fade-up flex-1 min-h-0 flex flex-col">
           <ErrorBoundary
             fallback={
               <div className="rounded-2xl border border-rose-border bg-rose-bg p-6 text-center">

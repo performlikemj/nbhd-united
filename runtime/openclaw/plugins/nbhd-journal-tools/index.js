@@ -163,7 +163,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_document_put",
       description:
-        "Create or replace a document. Use for writing full documents like goals, project notes, weekly reviews. For daily notes, prefer nbhd_daily_note_set_section or nbhd_daily_note_append.",
+        "Create or replace a free-form narrative document. Use for daily notes, weekly/monthly reviews, project narratives, ideas, long-term memory. Do NOT use for goals or tasks — those have dedicated lifecycle tools (nbhd_goal_* and nbhd_task_*) so their status, due dates, and completion are queryable instead of buried in markdown. Kinds: daily, weekly, monthly, project, ideas, memory.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -408,7 +408,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_daily_note_append",
       description:
-        "Append a quick timestamped log entry to the daily note. Auto-timestamps with current time and author=agent.",
+        "Append a quick timestamped log entry to the daily note. Auto-timestamps with current time and author=agent. Use ONLY for narrative reflection, mood, observations, or prose journaling. For ACTIONABLE ITEMS the user wants to remember to do (reminders, follow-ups, todos, 'remind me to X') use `nbhd_task_create` instead — even if mentioned casually in chat. Tasks have status + due_date and are queryable; daily-note prose is not.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -601,6 +601,44 @@ export default function register(api) {
             q: query,
             kind: asTrimmedString(input.kind) || undefined,
             limit: parseInteger(input.limit, { defaultValue: 10, min: 1, max: 50 }),
+          },
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  // ── Reconcile Scan (conversational gate function) ───────────────────
+  api.registerTool(wrap({
+      name: "nbhd_reconcile_scan",
+      description:
+        "Call this BEFORE replying on a conversational turn when the user just reported a concrete action that could change a goal, task, finance account, or fuel log — payments, transactions, workouts, body weight, task completion, goal progress, project status. Pass `claim` as a one-sentence summary of what they reported. Returns the active goals, open tasks, finance accounts, and fuel rows already filtered against the claim, each annotated with which typed write tool (`nbhd_goal_*`, `nbhd_task_*`, `nbhd_finance_*`, `nbhd_fuel_*`) to call to apply the update. Do NOT call this for questions, planning, venting, hypotheticals, or small talk.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          claim: {
+            type: "string",
+            description: "One-sentence summary of the concrete action the user just reported (e.g. 'paid credit card $400', 'did push workout today', 'lost 2 lbs').",
+          },
+          limit: {
+            type: "number",
+            description: "Max candidates to return (default 15, max 25).",
+          },
+        },
+        required: ["claim"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const claim = asTrimmedString(input.claim);
+        if (!claim) throw new Error("claim is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/reconcile/scan/"),
+          method: "GET",
+          query: {
+            claim,
+            limit: parseInteger(input.limit, { defaultValue: 15, min: 1, max: 25 }),
           },
         });
         return renderPayload(payload);
@@ -896,6 +934,57 @@ export default function register(api) {
     },
   }));
 
+  // ── Cron Phase 2 sync summary ─────────────────────────────────────
+  // Final step for any foreground scheduled task that messaged the user.
+  // Calling this tool delegates the entire sync-cron creation to Django:
+  // the agent provides only a 2-3 sentence summary; Django composes the
+  // cron expression, sessionTarget, payload, and self-removal text.
+  //
+  // If the run did NOT send the user a message, do not call this tool —
+  // absence of call = no sync needed.
+  api.registerTool(wrap({
+    name: "nbhd_cron_phase2_summary",
+    description:
+      "FINAL STEP for scheduled tasks (cron jobs): if you sent the user a " +
+      "message during this run via nbhd_send_to_user, call this tool with " +
+      "a 2-3 sentence summary of what happened so the user's main chat " +
+      "session has context when they reply. Do NOT call this if the run " +
+      "was silent (no user message sent). Backend handles all sync-cron " +
+      "creation — you only provide the summary.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["summary", "job_name"],
+      properties: {
+        summary: {
+          type: "string",
+          description:
+            "2-3 sentence summary, written for the main chat session's context. " +
+            "Mention what sections you wrote and what you sent the user.",
+        },
+        job_name: {
+          type: "string",
+          description:
+            "The name of the cron job that ran (e.g. 'Evening Check-in', " +
+            "'Morning Briefing'). Find this in the prompt preamble.",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const input = asObject(params);
+      const summary = asTrimmedString(input.summary);
+      const jobName = asTrimmedString(input.job_name);
+      if (!summary) throw new Error("summary is required");
+      if (!jobName) throw new Error("job_name is required");
+      const payload = await callRuntime(api, {
+        path: tenantPath(api, "/cron-phase2-summary/"),
+        method: "POST",
+        body: { summary, job_name: jobName },
+      });
+      return renderPayload(payload);
+    },
+  }));
+
   // ── Update user profile (timezone, display_name, language) ─────────
   api.registerTool(wrap({
     name: "nbhd_update_profile",
@@ -963,7 +1052,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_workspace_list",
       description:
-        "List the user's conversation workspaces. Each workspace is a separate context (e.g. Work, Personal, Translation) with its own conversation history. Returns name, slug, description, is_default, is_active, last_used_at for each.",
+        "List the user's workspaces. Workspaces are a content-organization label only — they do NOT route chat messages or create separate conversation contexts. Returns name, slug, description, is_default, last_used_at for each. Only call when the user explicitly asks to see their workspaces.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -984,7 +1073,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_workspace_create",
       description:
-        "Create a new conversation workspace. Use when the user explicitly asks (e.g. 'create a workspace for translation work') OR when you've detected a recurring topic that deserves its own focused context. The first workspace creation also auto-creates a 'General' default workspace as a catch-all. Maximum 4 workspaces per user. The new workspace becomes active immediately.",
+        "Create a new workspace label. Use ONLY when the user explicitly asks ('create a workspace for X'). Workspaces are a content-organization label — they do NOT route chat messages, so do not proactively create one because you detected a recurring topic. Maximum 4 workspaces per user.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -997,7 +1086,7 @@ export default function register(api) {
           description: {
             type: "string",
             description:
-              "What topics this workspace covers. Used to route incoming messages to the right workspace. E.g. 'Q3 budget prep, team standups, project deadlines, client communications'.",
+              "What topics this workspace label covers. Free-form note — not used for routing.",
           },
         },
         required: ["name"],
@@ -1024,7 +1113,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_workspace_update",
       description:
-        "Update a workspace's name or description. Re-embeds the description for routing classification when changed. Use to refine a workspace as the user's needs evolve.",
+        "Update a workspace label's name or description. Workspaces no longer route chat messages — description changes are free-form notes only. Use when the user explicitly asks to refine a workspace label.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1069,7 +1158,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_workspace_delete",
       description:
-        "Delete a workspace. The default workspace cannot be deleted. If the deleted workspace was active, the active workspace falls back to General. The conversation history in the deleted workspace's session will no longer be reachable. Always confirm with the user before deleting.",
+        "Delete a workspace label. The default workspace cannot be deleted. Workspaces no longer route chat messages — deletion only removes the label, not any conversation history. Always confirm with the user before deleting.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1095,30 +1184,416 @@ export default function register(api) {
     { optional: true },
   );
 
-  // ── Workspace: Switch ────────────────────────────────────────────────
+  // nbhd_workspace_switch was removed 2026-05-20 along with workspace
+  // chat routing — see docs/implementation/remove-workspace-chat-routing.md.
+  // Workspaces remain as a dormant content-organization primitive accessible
+  // via nbhd_workspace_list / _create / _update / _delete above, but no
+  // longer steer chat sessions.
+
+  // ── Typed Goal lifecycle ─────────────────────────────────────────────
+  // Replaces Document(kind="goal") for tenants with experimental_typed_journal_lifecycle.
+  // Goals have state (active/achieved/abandoned/expired). Status changes are
+  // DATABASE UPDATES, not prose edits — so completed goals don't linger in
+  // context as if they were still active.
+
+  const PILLAR_ENUM = ["gravity", "fuel", "core", "lessons", "journal", "constellation"];
+
   api.registerTool(wrap({
-      name: "nbhd_workspace_switch",
+      name: "nbhd_goal_create",
       description:
-        "Switch the active workspace. Call this whenever the user asks to switch workspaces — either explicitly ('switch to X', 'go to my X workspace', 'open X', 'change to X') or implicitly ('this is work stuff', 'let's talk about translation'). VERBALLY confirming a switch is NOT enough — you must call this tool, otherwise the database doesn't update, the dashboard stays on the old workspace, and routing keeps sending messages to the old session. The user's NEXT message will route to the new workspace's session. After calling, add the [WorkspaceName] chip indicator on your response.",
+        "Create a new goal — a durable intention with a target outcome. Use for anything the user wants to achieve. Do NOT use nbhd_document_put with kind='goal' (deprecated). Examples of GOOD goal titles: 'Achieve debt-free status on student loans', 'Build a daily journaling habit'. Examples of BAD goal titles (these are tasks, not goals): 'Pay April loan payment', 'Buy groceries'.",
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
-          slug: {
-            type: "string",
-            description: "The workspace slug to switch to.",
-          },
+          title: { type: "string", description: "Short goal description." },
+          description: { type: "string", description: "Optional longer narrative." },
+          pillar: { type: "string", enum: PILLAR_ENUM, description: "Pillar this goal belongs to (optional)." },
+          target: { type: "object", description: "Optional structured target — shape is free, e.g. {kind: 'numeric', value: 40000, unit: 'usd'}." },
+          target_date: { type: "string", description: "ISO date YYYY-MM-DD (optional)." },
+          parent_goal_id: { type: "string", description: "Parent Goal UUID for sub-goals (optional)." },
         },
-        required: ["slug"],
+        required: ["title"],
       },
       async execute(_id, params) {
         const input = asObject(params);
-        const slug = asTrimmedString(input.slug);
-        if (!slug) throw new Error("slug is required");
         const payload = await callRuntime(api, {
-          path: tenantPath(api, "/workspaces/switch/"),
+          path: tenantPath(api, "/goals/"),
           method: "POST",
-          body: { slug },
+          body: {
+            title: asTrimmedString(input.title),
+            description: asTrimmedString(input.description) || undefined,
+            pillar: asTrimmedString(input.pillar) || undefined,
+            target: input.target || undefined,
+            target_date: asTrimmedString(input.target_date) || undefined,
+            parent_goal_id: asTrimmedString(input.parent_goal_id) || undefined,
+          },
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_goal_update",
+      description:
+        "Update a goal — change title, description, target, target_date, pillar, or parent. Use PATCH semantics (only included fields are updated). For status changes, prefer nbhd_goal_achieve or nbhd_goal_abandon.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          goal_id: { type: "string", description: "Goal UUID." },
+          title: { type: "string" },
+          description: { type: "string" },
+          pillar: { type: "string", enum: PILLAR_ENUM },
+          target: { type: "object" },
+          target_date: { type: "string" },
+          parent_goal_id: { type: "string" },
+        },
+        required: ["goal_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const goalId = asTrimmedString(input.goal_id);
+        if (!goalId) throw new Error("goal_id is required");
+        const body = {};
+        for (const k of ["title", "description", "pillar", "target_date", "parent_goal_id"]) {
+          const v = asTrimmedString(input[k]);
+          if (v) body[k] = v;
+        }
+        if (input.target !== undefined) body.target = input.target;
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/goals/${encodeURIComponent(goalId)}/`),
+          method: "PATCH",
+          body,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_goal_achieve",
+      description:
+        "Mark a goal as achieved. Sets status=achieved and achieved_at=now. Use whenever the user confirms or you observe a goal has been reached.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          goal_id: { type: "string", description: "Goal UUID." },
+        },
+        required: ["goal_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const goalId = asTrimmedString(input.goal_id);
+        if (!goalId) throw new Error("goal_id is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/goals/${encodeURIComponent(goalId)}/achieve/`),
+          method: "POST",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_goal_abandon",
+      description:
+        "Mark a goal as abandoned. Use when the user has decided not to pursue it further. Does NOT delete the goal — preserved for history.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          goal_id: { type: "string", description: "Goal UUID." },
+        },
+        required: ["goal_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const goalId = asTrimmedString(input.goal_id);
+        if (!goalId) throw new Error("goal_id is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/goals/${encodeURIComponent(goalId)}/abandon/`),
+          method: "POST",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_goal_list",
+      description:
+        "List goals. Filter by status (active/achieved/abandoned/expired), pillar, or parent_goal_id. Default returns all goals for the tenant. Use this BEFORE stating any goal-related fact — long-term memory should not contain goal lists.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          status: { type: "string", enum: ["active", "achieved", "abandoned", "expired"] },
+          pillar: { type: "string", enum: PILLAR_ENUM },
+          parent_goal_id: { type: "string" },
+        },
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const query = {};
+        for (const k of ["status", "pillar", "parent_goal_id"]) {
+          const v = asTrimmedString(input[k]);
+          if (v) query[k] = v;
+        }
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/goals/"),
+          method: "GET",
+          query,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_goal_get",
+      description: "Fetch a single goal by ID with full details.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          goal_id: { type: "string", description: "Goal UUID." },
+        },
+        required: ["goal_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const goalId = asTrimmedString(input.goal_id);
+        if (!goalId) throw new Error("goal_id is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/goals/${encodeURIComponent(goalId)}/`),
+          method: "GET",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  // ── Typed Task lifecycle ─────────────────────────────────────────────
+  // Replaces Document(kind="tasks") markdown bullets. One row per task; status
+  // changes are database UPDATES, so a completed task drops out of "open" queries
+  // immediately and no stale "- [ ] X" line lingers in agent context.
+
+  api.registerTool(wrap({
+      name: "nbhd_task_create",
+      description:
+        "PREFERRED tool for ANY actionable item the user mentions wanting to do — reminders, follow-ups, todos, 'remind me to X', 'I should Y', 'don't forget Z' — even when mentioned casually in chat. Captures intent as a queryable database row with status (open/in_progress/done/skipped/deferred) and due_date instead of as prose buried in a daily note. ALWAYS prefer this over `nbhd_daily_note_append` for items the user might want to come back to. Do NOT use `nbhd_document_put` with kind='tasks' (deprecated). If the task pertains to a specific object in another pillar (e.g. paying a particular loan tracked in Gravity), pass `related_ref` so the task points to the source-of-truth row. Do NOT record CURRENT VALUES in the title or description (no balances, no totals, no '$X owed') — values live in their tracking systems and should be queried fresh.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          title: { type: "string", description: "Short task description." },
+          description: { type: "string", description: "Optional longer context." },
+          pillar: { type: "string", enum: PILLAR_ENUM, description: "Pillar this task belongs to (optional)." },
+          due_date: { type: "string", description: "ISO date YYYY-MM-DD (optional)." },
+          parent_goal_id: { type: "string", description: "Goal UUID to attach to (optional)." },
+          related_ref: {
+            type: "object",
+            description:
+              "Pointer to a specific tracked object: {pillar: 'gravity', object_type: 'FinanceAccount', object_id: '<uuid>'}.",
+          },
+        },
+        required: ["title"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/tasks/"),
+          method: "POST",
+          body: {
+            title: asTrimmedString(input.title),
+            description: asTrimmedString(input.description) || undefined,
+            pillar: asTrimmedString(input.pillar) || undefined,
+            due_date: asTrimmedString(input.due_date) || undefined,
+            parent_goal_id: asTrimmedString(input.parent_goal_id) || undefined,
+            related_ref: input.related_ref || undefined,
+          },
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_task_update",
+      description:
+        "Update a task — change title, description, pillar, due_date, parent goal, or related_ref. PATCH semantics. For status changes, prefer nbhd_task_complete / nbhd_task_skip / nbhd_task_defer.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          task_id: { type: "string", description: "Task UUID." },
+          title: { type: "string" },
+          description: { type: "string" },
+          pillar: { type: "string", enum: PILLAR_ENUM },
+          due_date: { type: "string" },
+          parent_goal_id: { type: "string" },
+          related_ref: { type: "object" },
+        },
+        required: ["task_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const taskId = asTrimmedString(input.task_id);
+        if (!taskId) throw new Error("task_id is required");
+        const body = {};
+        for (const k of ["title", "description", "pillar", "due_date", "parent_goal_id"]) {
+          const v = asTrimmedString(input[k]);
+          if (v) body[k] = v;
+        }
+        if (input.related_ref !== undefined) body.related_ref = input.related_ref;
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/tasks/${encodeURIComponent(taskId)}/`),
+          method: "PATCH",
+          body,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_task_complete",
+      description:
+        "Mark a task as done. Sets status=done and completed_at=now. Use whenever the user confirms or you observe completion. Do NOT instead add 'verified ✅' to a note — that creates stale prose; this updates the source of truth so future queries return correct state.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          task_id: { type: "string", description: "Task UUID." },
+        },
+        required: ["task_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const taskId = asTrimmedString(input.task_id);
+        if (!taskId) throw new Error("task_id is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/tasks/${encodeURIComponent(taskId)}/complete/`),
+          method: "POST",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_task_skip",
+      description: "Mark a task as skipped. Use when the user decided not to do it.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          task_id: { type: "string", description: "Task UUID." },
+        },
+        required: ["task_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const taskId = asTrimmedString(input.task_id);
+        if (!taskId) throw new Error("task_id is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/tasks/${encodeURIComponent(taskId)}/skip/`),
+          method: "POST",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_task_defer",
+      description: "Mark a task as deferred. Use when the user is postponing it.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          task_id: { type: "string", description: "Task UUID." },
+        },
+        required: ["task_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const taskId = asTrimmedString(input.task_id);
+        if (!taskId) throw new Error("task_id is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/tasks/${encodeURIComponent(taskId)}/defer/`),
+          method: "POST",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_task_list",
+      description:
+        "List tasks. Filter by status (open/in_progress/done/skipped/deferred), pillar, parent_goal_id, due_before, due_after. Use this BEFORE stating any task status — never rely on memory for what's open vs done. Example: 'any open finance tasks?' → nbhd_task_list({status: 'open', pillar: 'gravity'}).",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          status: { type: "string", enum: ["open", "in_progress", "done", "skipped", "deferred"] },
+          pillar: { type: "string", enum: PILLAR_ENUM },
+          parent_goal_id: { type: "string" },
+          due_before: { type: "string", description: "ISO date YYYY-MM-DD." },
+          due_after: { type: "string", description: "ISO date YYYY-MM-DD." },
+        },
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const query = {};
+        for (const k of ["status", "pillar", "parent_goal_id", "due_before", "due_after"]) {
+          const v = asTrimmedString(input[k]);
+          if (v) query[k] = v;
+        }
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/tasks/"),
+          method: "GET",
+          query,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_task_get",
+      description: "Fetch a single task by ID with full details.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          task_id: { type: "string", description: "Task UUID." },
+        },
+        required: ["task_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const taskId = asTrimmedString(input.task_id);
+        if (!taskId) throw new Error("task_id is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/tasks/${encodeURIComponent(taskId)}/`),
+          method: "GET",
         });
         return renderPayload(payload);
       },

@@ -62,21 +62,41 @@ function StardustSkeleton() {
   );
 }
 
-/** Floating pencil FAB for mobile */ 
-function PencilFab({ onClick, style }: { onClick: () => void; style: React.CSSProperties }) {
+/** Inline pencil button for the mobile bottom dock */
+function PencilButton({ onClick }: { onClick: () => void }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="fixed right-5 z-40 rounded-full bg-accent text-white p-3.5 shadow-[0_4px_16px_rgba(124,107,240,0.35)] touch-none select-none transition active:scale-90 hover:shadow-[0_4px_20px_rgba(124,107,240,0.5)]"
-      style={style}
       aria-label="Edit note"
+      className="shrink-0 rounded-full bg-accent text-white transition active:scale-90 hover:brightness-110 shadow-[0_2px_8px_rgba(124,107,240,0.25)] min-h-[44px] min-w-[44px] flex items-center justify-center"
     >
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
         <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
         <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5Z" />
       </svg>
     </button>
+  );
+}
+
+type SaveStatus = "idle" | "saving" | "saved";
+
+function SaveStatusIndicator({ status }: { status: SaveStatus }) {
+  return (
+    <span
+      className="flex shrink-0 items-center gap-1 text-xs text-ink-faint min-w-[64px] justify-end"
+      aria-live="polite"
+    >
+      {status === "saving" && <span>Saving…</span>}
+      {status === "saved" && (
+        <>
+          <svg className="h-3 w-3 text-signal-text" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+          </svg>
+          <span className="text-signal-text/80">Saved</span>
+        </>
+      )}
+    </span>
   );
 }
 
@@ -86,14 +106,20 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
   const [helpOpen, setHelpOpen] = useState(false);
   const [savedIndicator, setSavedIndicator] = useState(false);
   const saveIndicatorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  const lastSavedRef = useRef<string>("");
+  const portalRef = useRef<HTMLDivElement | null>(null);
 
+  // Align with the app shell's mobile tab bar (`lg:hidden` = max-width: 1023px).
+  // Below this width the sidebar collapses and the tab bar shows, so the journal
+  // also needs its mobile chrome (fixed-bottom action bar, full-screen editor).
   const isMobile = useSyncExternalStore(
     (cb) => {
-      const mq = window.matchMedia("(max-width: 767px)");
+      const mq = window.matchMedia("(max-width: 1023px)");
       mq.addEventListener("change", cb);
       return () => mq.removeEventListener("change", cb);
     },
-    () => window.matchMedia("(max-width: 767px)").matches,
+    () => window.matchMedia("(max-width: 1023px)").matches,
     () => null as boolean | null,
   );
 
@@ -126,6 +152,59 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
     }
   }, [editing, isMobile]);
 
+  // Track the visual viewport while the mobile editor is open so the dock
+  // sits directly above the on-screen keyboard. iOS Safari doesn't shrink the
+  // layout viewport when the keyboard opens, so fixed-bottom elements end up
+  // hidden behind the keyboard — resize the portal to vv.height instead.
+  useEffect(() => {
+    if (!(editing && isMobile === true)) return;
+    if (typeof window === "undefined" || !window.visualViewport) return;
+    const vv = window.visualViewport;
+    const update = () => {
+      const el = portalRef.current;
+      if (!el) return;
+      el.style.height = `${vv.height}px`;
+      el.style.transform = `translateY(${vv.offsetTop}px)`;
+    };
+    update();
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+    };
+  }, [editing, isMobile]);
+
+  // Autosave on mobile: debounced write 1.5s after the last keystroke.
+  useEffect(() => {
+    if (!(editing && isMobile === true)) return;
+    if (draft === lastSavedRef.current) return;
+    const payload = draft;
+    const t = setTimeout(() => {
+      setSaveStatus("saving");
+      updateMutation.mutate(
+        { kind, slug, data: { markdown: payload } },
+        {
+          onSuccess: () => {
+            lastSavedRef.current = payload;
+            setSaveStatus("saved");
+          },
+          onError: () => setSaveStatus("idle"),
+        },
+      );
+    }, 1500);
+    return () => clearTimeout(t);
+    // updateMutation is stable from React Query; intentionally excluded.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, editing, isMobile, kind, slug]);
+
+  // Fade the "Saved" pip back to idle after 2s.
+  useEffect(() => {
+    if (saveStatus !== "saved") return;
+    const t = setTimeout(() => setSaveStatus("idle"), 2000);
+    return () => clearTimeout(t);
+  }, [saveStatus]);
+
   const { data: doc, isLoading, error } = useDocumentQuery(kind, slug);
   const updateMutation = useUpdateDocumentMutation();
   const appendMutation = useAppendDocumentMutation();
@@ -141,8 +220,29 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
   }, [slug, kind, queryClient]);
 
   const handleEdit = () => {
-    setDraft(doc?.markdown || "");
+    const initial = doc?.markdown || "";
+    setDraft(initial);
+    lastSavedRef.current = initial;
+    setSaveStatus("idle");
     setEditing(true);
+  };
+
+  // Mobile "Done" — flush any pending diff, then exit. Stays in editor on
+  // failure so unsaved keystrokes aren't silently lost.
+  const handleDone = async () => {
+    try {
+      if (draft !== lastSavedRef.current) {
+        setSaveStatus("saving");
+        await updateMutation.mutateAsync({ kind, slug, data: { markdown: draft } });
+        lastSavedRef.current = draft;
+      }
+      setEditing(false);
+      setMobileEditor(null);
+      mobileEditorRef.current = null;
+      setSaveStatus("idle");
+    } catch {
+      setSaveStatus("idle");
+    }
   };
 
   const handleSave = async () => {
@@ -212,78 +312,47 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
     );
   }
 
-  // Document doesn't exist yet
-  if (!doc) {
-    return (
-      <div className="flex h-full flex-col">
-        <DocumentHeader
-          kind={kind}
-          slug={slug}
-          isToday={isToday}
-          onNavigate={onNavigate ?? (() => {})}
-          onEdit={handleEdit}
-          editing={false}
-          onSave={handleSave}
-          onCancel={handleCancel}
-          updatePending={updateMutation.isPending}
-          isMobile={isMobile}
-          showSavedIndicator={false}
-          onToggleSidebar={onToggleSidebar}
-        />
-        <EmptyState />
-      </div>
-    );
-  }
+  // Note: a missing `doc` is handled inline by the main render path below —
+  // the PATCH endpoint upserts, so the editor still works on a blank day.
 
   // ── Mobile full-screen editing portal ──
   if (editing && isMobile === true) {
     return createPortal(
       <div
-        className="fixed inset-0 z-[9999] flex flex-col bg-[#0B0F13]"
-        style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+        ref={portalRef}
+        className="fixed left-0 top-0 right-0 z-[9999] flex flex-col bg-[#0B0F13]"
+        style={{ height: "100dvh" }}
       >
-        {/* Minimal top bar */}
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-2.5">
-          <span className="min-w-0 truncate text-sm font-semibold text-ink">
+        {/* Top bar — context only, no destination-action buttons */}
+        <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.06] px-2 py-2">
+          <button
+            type="button"
+            onClick={handleDone}
+            disabled={updateMutation.isPending}
+            aria-label="Close editor"
+            className="flex shrink-0 items-center justify-center rounded-xl p-2 text-ink-faint hover:bg-white/[0.04] hover:text-ink transition min-h-[40px] min-w-[40px] disabled:opacity-50"
+          >
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+          <span className="min-w-0 flex-1 truncate text-sm font-semibold text-ink">
             {kind === "daily"
               ? new Date(slug + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
               : (doc?.title ?? "Edit")}
           </span>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={updateMutation.isPending}
-              className="rounded-full bg-accent px-4 py-1.5 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-50 min-h-[36px]"
-            >
-              {updateMutation.isPending ? "Saving…" : "Save"}
-            </button>
-            <button
-              type="button"
-              onClick={handleCancel}
-              className="rounded-full border border-white/[0.08] px-4 py-1.5 text-sm text-ink-muted min-h-[36px] transition hover:bg-white/[0.03]"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-
-        {/* Floating toolbar — slim, centered */}
-        <div className="shrink-0 border-b border-white/[0.04] bg-white/[0.01] px-2 py-1">
-          <EditorToolbar editor={mobileEditor} className="border-0 justify-center" />
+          <SaveStatusIndicator status={saveStatus} />
         </div>
 
         {/* Scrollable editor */}
         <div
           className="flex-1 overflow-y-auto overscroll-y-contain"
-          style={{
-            WebkitOverflowScrolling: "touch",
-          }}
+          style={{ WebkitOverflowScrolling: "touch" }}
         >
           <MarkdownEditor
             value={draft}
             onChange={setDraft}
-            onSave={handleSave}
+            onSave={handleDone}
             onHelpToggle={() => setHelpOpen(true)}
             autoFocus
             cursorKey={`doc-cursor-${kind}-${slug}`}
@@ -296,9 +365,20 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
           />
         </div>
 
-        {/* Pull-to-dismiss keyboard affordance */}
-        <div className="shrink-0 h-7 flex items-center justify-center border-t border-white/[0.04]">
-          <div className="h-1 w-8 rounded-full bg-white/[0.08]" />
+        {/* Dock — formatting + Done, pinned above the keyboard */}
+        <div className="shrink-0 border-t border-white/[0.06] bg-[#0B0F13]/95 backdrop-blur-xl">
+          <div className="flex items-center gap-1 px-1 py-1.5">
+            <EditorToolbar editor={mobileEditor} className="min-w-0 flex-1 border-0" />
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={handleDone}
+              disabled={updateMutation.isPending}
+              className="shrink-0 rounded-full bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-50 min-h-[40px]"
+            >
+              Done
+            </button>
+          </div>
         </div>
 
         <MarkdownHelpSheet open={helpOpen} onClose={() => setHelpOpen(false)} />
@@ -380,19 +460,31 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
         )}
       </div>
 
-      {/* Mobile pencil FAB */}
+      {/* Mobile bottom action bar — quick-log + open-editor in one row. */}
       {isMobile === true && !editing && (
-        <PencilFab
-          onClick={handleEdit}
-          style={{
-            bottom: "calc(1.25rem + env(safe-area-inset-bottom) + 56px)",
-          }}
-        />
+        <div className="shrink-0 border-t border-white/[0.04] px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+          <div className="flex items-center gap-2">
+            {kind === "daily" ? (
+              <div className="min-w-0 flex-1">
+                <QuickLogInput
+                  onSubmit={handleQuickLog}
+                  isPending={appendMutation.isPending}
+                />
+              </div>
+            ) : (
+              <div className="flex-1" />
+            )}
+            <PencilButton onClick={handleEdit} />
+          </div>
+          {appendMutation.isError && (
+            <p className="mt-1 text-xs text-rose-text">Failed to add entry.</p>
+          )}
+        </div>
       )}
 
-      {/* Quick log */}
-      {kind === "daily" && !editing && (
-        <div className="border-t border-white/[0.04] px-4 py-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] lg:px-6 lg:py-3">
+      {/* Desktop quick log (daily only) */}
+      {kind === "daily" && !editing && isMobile !== true && (
+        <div className="border-t border-white/[0.04] px-4 py-2.5 lg:px-6 lg:py-3">
           <QuickLogInput
             onSubmit={handleQuickLog}
             isPending={appendMutation.isPending}

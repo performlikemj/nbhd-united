@@ -15,7 +15,6 @@ from django.conf import settings
 from apps.billing.constants import (
     ANTHROPIC_SONNET_MODEL,
     GEMMA_MODEL,
-    KIMI_MODEL,
     MINIMAX_MODEL,
 )
 from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION, generate_tool_config
@@ -134,14 +133,22 @@ def _build_cron_message(
 def _prepare_cron_prompt(prompt: str, tenant: Tenant) -> str:
     """Prepend date context and shared preamble to a cron prompt.
 
-    Every cron job gets:
-    1. Current date/time (cheap models struggle with date math).
-    2. Shared preamble: cross-reference instructions; load today's daily note
-       (still volatile, agent fetches via tool).
+    The embedded ``Current date and time:`` line is a **snapshot** taken
+    when this cron payload was last reconciled into OpenClaw — it can be
+    hours or days old by fire time. The live authoritative value is in
+    ``workspace/USER.md`` (``_Current local time: ..._``), which OpenClaw
+    re-reads on every agent turn. The snapshot here is kept only so the
+    "do future-date math" math instruction has a concrete anchor and so
+    cheap models that never load USER.md still have some time signal.
 
-    Pre-loaded user state (goals, tasks, lessons, profile) is delivered via
-    ``workspace/USER.md`` — refreshed by Django on signal-driven post_save
-    events and force-pushed by ``update_system_cron_prompts``.
+    The reconciler in ``cron_drift.strip_date_line`` strips this preamble
+    before diffing, so daily drift of the snapshot doesn't churn the
+    cron-prompt store; staleness is bounded instead by the periodic
+    ``refresh_user_md_fleet`` push that re-renders USER.md fleet-wide.
+
+    The string prefix ``Current date and time:`` is load-bearing — do not
+    change it without also updating ``cron_drift.strip_date_line`` (and
+    accepting a one-time fleet-wide cron recreate during the cutover).
     """
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
     try:
@@ -151,9 +158,17 @@ def _prepare_cron_prompt(prompt: str, tenant: Tenant) -> str:
 
     now = datetime.now(tz)
     date_line = (
-        f"Current date and time: {now.strftime('%A, %B %d, %Y at %H:%M')} ({user_tz})\n"
-        f"When mentioning future events, compute exact days: "
-        f"event_date minus {now.strftime('%Y-%m-%d')} = X days from now. "
+        f"Current date and time: {now.strftime('%A, %B %d, %Y at %H:%M')} ({user_tz}) "
+        f"— SNAPSHOT taken when this cron payload was last reconciled, may be stale.\n"
+        f"For live time, read `_Current local time: ..._` from USER.md "
+        f"(loaded fresh on every agent turn). Prefer USER.md over the snapshot above "
+        f"whenever you reason about 'today', 'this morning', 'earlier today', or "
+        f"whether the user has already done something today. Before claiming the user "
+        f"has or hasn't done X today, verify against today's daily note and journal "
+        f"entries — don't infer activity from the snapshot date.\n"
+        f"When mentioning future events, compute exact days from USER.md's live date "
+        f"(fall back to {now.strftime('%Y-%m-%d')} only if USER.md isn't loaded): "
+        f"event_date minus today = X days from now. "
         f"Never say 'tomorrow' unless the math confirms exactly 1 day away.\n\n"
     )
     return date_line + _CRON_CONTEXT_PREAMBLE + prompt
@@ -742,8 +757,35 @@ TIER_MODELS: dict[str, dict[str, str]] = {
 TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     "starter": {
         MINIMAX_MODEL: {"alias": "minimax"},
-        KIMI_MODEL: {"alias": "kimi"},
+        DEEPSEEK_MODEL: {"alias": "deepseek"},
         GEMMA_MODEL: {"alias": "gemma"},
+    },
+}
+
+# Per-task model defaults — stamp these onto specific cron jobs when the
+# tenant hasn't set a `task_model_preferences` override. Crons not in this
+# map inherit the tier primary (or the user's `preferred_model` override).
+#
+# The split is workload-driven, not tier-driven:
+#   • DeepSeek V4 Pro for reasoning-shaped jobs (long context in, long
+#     output out, judgment about what's worth surfacing) — Morning Briefing,
+#     Evening Check-in, Weekly Reflection, Week Ahead Review, Project
+#     Check-in, Gravity Weekly Check-in. Heartbeat is also reasoning-shaped
+#     but pinned separately via HEARTBEAT_MODEL so user `preferred_model`
+#     can't redirect a platform-initiated turn onto a BYO subscription.
+#   • Crons absent from this map (Personal Question, Background Tasks)
+#     inherit the chat primary — keeps short one-shot prompts on the
+#     cheap-input model.
+#
+# Keys mirror `_TASK_SLUG_MAP` values below.
+TIER_TASK_DEFAULTS: dict[str, dict[str, str]] = {
+    "starter": {
+        "morning_briefing": DEEPSEEK_MODEL,
+        "evening_checkin": DEEPSEEK_MODEL,
+        "weekly_reflection": DEEPSEEK_MODEL,
+        "week_review": DEEPSEEK_MODEL,
+        "project_checkin": DEEPSEEK_MODEL,
+        "gravity_weekly_checkin": DEEPSEEK_MODEL,
     },
 }
 
