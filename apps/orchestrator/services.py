@@ -403,7 +403,18 @@ def provision_tenant(tenant_id: str) -> None:
         except Exception:
             logger.warning("Could not send welcome message for tenant %s", tenant_id, exc_info=True)
 
-    # 4c. Seed USER.md with the platform-managed envelope so the container
+    # 4c. Send Day-0 welcome email. Web-signup tenants never get the
+    # Telegram welcome above (chat_id is None) — the email is the only
+    # nudge they get. Idempotent via welcome_email_sent_at; safe on
+    # provisioning retries.
+    try:
+        from apps.tenants.emails import send_welcome_email
+
+        send_welcome_email(tenant)
+    except Exception:
+        logger.warning("Could not send welcome email for tenant %s", tenant_id, exc_info=True)
+
+    # 4d. Seed USER.md with the platform-managed envelope so the container
     # picks up profile + state on first boot. force=True bypasses debounce.
     try:
         from .workspace_envelope import push_user_md

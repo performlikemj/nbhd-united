@@ -391,6 +391,12 @@ STRIPE_PRICE_ID = env("STRIPE_PRICE_STARTER", default="")
 # Frontend URL (for redirects)
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
 
+# Optional URL for the 2-minute walkthrough embedded in the Day-0
+# welcome email. Empty (default) → the walkthrough block is omitted
+# from the email body, so we can ship without a video and swap one
+# in later via env var without touching code.
+WELCOME_VIDEO_URL = env("WELCOME_VIDEO_URL", default="")
+
 # Recipient for operational platform alerts (LINE quota pre-warn, etc.).
 # Already referenced by env-var in apps/tenants/migrations/0044_set_owner_exempt.py;
 # also exposed here so app code can read it via settings rather than os.environ.

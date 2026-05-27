@@ -329,6 +329,13 @@ def enqueue_message_for_tenant(
         user_text=user_text_excerpt or "",
     )
 
+    # Stamp first_message_at on the tenant's first-ever inbound. Conditional
+    # UPDATE so concurrent first messages from a never-messaged tenant don't
+    # race-overwrite an earlier timestamp; the filter makes the second write
+    # a no-op. This is the activation signal used to measure the onboarding
+    # drop-off cohort.
+    Tenant.objects.filter(id=tenant.id, first_message_at__isnull=True).update(first_message_at=timezone.now())
+
     try:
         from apps.cron.publish import publish_task
 

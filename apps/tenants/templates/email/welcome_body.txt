@@ -1,0 +1,37 @@
+Hi {{ display_name }},
+
+Your NBHD United assistant is set up and ready to use.
+
+{% if telegram_connected %}We just sent your assistant's hello message to Telegram — open the chat
+you started signup from and reply to get going.
+
+Some things to try first:
+
+  • Ask     "What can you help me with?"
+  • Log     "I ran 5K this morning"
+  • Plan    "Remind me to drink water at 8am every day"
+  • Just chat   "Hi, who are you?"
+{% else %}To start using your assistant, connect it to {{ channel_label }} from your
+dashboard:
+
+  {{ settings_url }}
+
+Once you're connected, try one of these:
+
+  • Ask     "What can you help me with?"
+  • Log     "I ran 5K this morning"
+  • Plan    "Remind me to drink water at 8am every day"
+  • Just chat   "Hi, who are you?"
+{% endif %}
+{% if video_url %}
+Prefer a quick walkthrough? Watch the 2-min intro:
+
+  {{ video_url }}
+{% endif %}
+Questions or stuck? Just reply to this email — we read every one.
+
+— NBHD United
+{% if line_quota_available and telegram_connected %}
+P.S. You can also use your assistant on LINE. Connect it from your
+dashboard at {{ settings_url }}.
+{% endif %}

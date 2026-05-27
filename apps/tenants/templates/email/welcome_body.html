@@ -1,0 +1,287 @@
+{% comment %}
+─────────────────────────────────────────────────────────────────────
+NBHD United — Welcome email (Day 0, on provisioning)
+─────────────────────────────────────────────────────────────────────
+
+Django template variables:
+  - {{ display_name }}           — User.display_name (falls back to "there")
+  - {{ telegram_connected }}     — bool: True if tenant.user.telegram_chat_id is set
+  - {{ settings_url }}           — Full dashboard URL to /settings/integrations
+  - {{ video_url }}              — Optional 2-min walkthrough URL (empty → block omitted)
+  - {{ line_quota_available }}   — bool: not LineQuotaState.get().is_exhausted
+
+Styling mirrors privacy_rotation_2026/email_1_body.html (Constellation
+aesthetic): dark canvas, gradient hero with Outlook fallback, pill CTA
+with VML fallback, monospace footnote labels, Constellation glyphs.
+
+Tested width: 600px. Mobile breakpoint: 600px → full-width 24px gutter.
+{% endcomment %}<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" lang="en">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="supported-color-schemes" content="dark" />
+  <title>Welcome to NBHD United</title>
+
+  <!--[if mso]>
+  <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+  <![endif]-->
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet" />
+
+  <style type="text/css">
+    body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+    table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+    img { border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; -ms-interpolation-mode: bicubic; }
+    body { margin: 0 !important; padding: 0 !important; width: 100% !important; }
+
+    .gradient-text {
+      background: #7C6BF0;
+      background: linear-gradient(90deg, #7C6BF0 0%, #E8B4B8 50%, #4ECDC4 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .cta-glow {
+      box-shadow: 0 0 0 1px rgba(124, 107, 240, 0.35), 0 12px 32px rgba(124, 107, 240, 0.40);
+    }
+    .cta-glow:hover {
+      box-shadow: 0 0 0 1px rgba(155, 141, 245, 0.55), 0 16px 40px rgba(124, 107, 240, 0.55);
+    }
+
+    @media only screen and (max-width: 600px) {
+      .container { width: 100% !important; max-width: 100% !important; }
+      .px-page { padding-left: 24px !important; padding-right: 24px !important; }
+      .h1 { font-size: 30px !important; line-height: 1.12 !important; }
+      .py-hero-top { padding-top: 32px !important; }
+      .py-hero-bot { padding-bottom: 28px !important; }
+    }
+  </style>
+</head>
+
+<body style="margin: 0; padding: 0; background-color: #0b0f13; color: #e2e8f0;">
+  <div style="display: none; max-height: 0; overflow: hidden; mso-hide: all; font-size: 1px; line-height: 1px; color: #0b0f13;">
+    {% if telegram_connected %}Your assistant just said hello in Telegram — open the chat to reply.{% else %}Your assistant is set up. Connect {{ channel_label }} to start chatting.{% endif %}
+  </div>
+
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #0b0f13;" bgcolor="#0b0f13">
+    <tr>
+      <td align="center" style="padding: 48px 16px;">
+
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" class="container" style="max-width: 600px; background-color: #0b0f13; border: 1px solid rgba(226,232,240,0.10); border-radius: 16px;" bgcolor="#0b0f13">
+
+          <!-- Eyebrow -->
+          <tr>
+            <td class="px-page py-hero-top" align="center" style="padding: 40px 48px 0 48px;">
+              <p style="margin: 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase; color: rgba(226,232,240,0.42); font-weight: 500;">
+                <span style="color: rgba(124,107,240,0.65);">✦</span>&nbsp;&nbsp;NBHD&nbsp;UNITED&nbsp;&nbsp;<span style="color: rgba(78,205,196,0.55);">✧</span>
+              </p>
+            </td>
+          </tr>
+
+          <!-- Hero headline -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 36px 48px 20px 48px;">
+              <h1 class="h1" style="margin: 0; font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 38px; line-height: 1.08; font-weight: 700; color: #9B8DF5; letter-spacing: -0.015em;">
+                <!--[if mso]>
+                <span style="color: #9B8DF5; font-family: 'Space Grotesk', Arial, sans-serif; font-weight: 700;">Your assistant is ready.</span>
+                <![endif]-->
+                <!--[if !mso]><!-- -->
+                <span class="gradient-text" style="background: linear-gradient(90deg, #7C6BF0 0%, #E8B4B8 50%, #4ECDC4 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: #9B8DF5;">Your assistant is ready.</span>
+                <!--<![endif]-->
+              </h1>
+            </td>
+          </tr>
+
+          <!-- Subhead -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 0 48px 28px 48px;">
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 14px; line-height: 1.5; color: rgba(226,232,240,0.62); font-weight: 500;">
+                {% if telegram_connected %}Set up and waiting — your hello is already in your Telegram chat.{% else %}Set up and waiting — connect {{ channel_label }} to start chatting.{% endif %}
+              </p>
+            </td>
+          </tr>
+
+          <!-- Body copy -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 0 48px 8px 48px;">
+              <p style="margin: 0 0 18px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 16px; line-height: 1.6; color: #e2e8f0;">
+                Hi {{ display_name|default:"there" }},
+              </p>
+              {% if telegram_connected %}
+              <p style="margin: 0 0 18px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
+                We just sent your assistant's first message to Telegram — the chat you started signup from. Open it and reply to get going.
+              </p>
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
+                Not sure what to say? Pick one of these to start:
+              </p>
+              {% else %}
+              <p style="margin: 0 0 18px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
+                Your assistant lives in your favorite messaging app. To start chatting, connect it to {{ channel_label }} from your dashboard.
+              </p>
+              {% endif %}
+            </td>
+          </tr>
+
+          {% if not telegram_connected %}
+          <!-- CTA: Connect a channel -->
+          <tr>
+            <td class="px-page py-hero-bot" align="left" style="padding: 24px 48px 12px 48px;">
+              <!--[if mso]>
+              <v:roundrect
+                xmlns:v="urn:schemas-microsoft-com:vml"
+                xmlns:w="urn:schemas-microsoft-com:office:word"
+                href="{{ settings_url }}"
+                style="height:52px;v-text-anchor:middle;width:260px;"
+                arcsize="50%"
+                stroke="f"
+                fillcolor="#7C6BF0">
+                <w:anchorlock/>
+                <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:15px;font-weight:700;letter-spacing:0.01em;">
+                  Connect {{ channel_label }}
+                </center>
+              </v:roundrect>
+              <![endif]-->
+              <!--[if !mso]><!-- -->
+              <a href="{{ settings_url }}" class="cta-glow" target="_blank" rel="noopener" style="display: inline-block; background-color: #7C6BF0; color: #ffffff; text-decoration: none; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; font-weight: 700; padding: 16px 36px; border-radius: 999px; letter-spacing: 0.01em; box-shadow: 0 0 0 1px rgba(124, 107, 240, 0.35), 0 12px 32px rgba(124, 107, 240, 0.40);">
+                Connect {{ channel_label }}
+              </a>
+              <!--<![endif]-->
+            </td>
+          </tr>
+
+          <!-- Subbody after CTA -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 16px 48px 0 48px;">
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
+                Once you're connected, here are some things to try:
+              </p>
+            </td>
+          </tr>
+          {% endif %}
+
+          <!-- Prompt list -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 20px 48px 8px 48px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                <tr>
+                  <td style="padding: 10px 0; border-top: 1px solid rgba(226,232,240,0.10);">
+                    <p style="margin: 0 0 4px 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(124,107,240,0.75); font-weight: 500;">
+                      Ask
+                    </p>
+                    <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.5; color: #e2e8f0;">
+                      "What can you help me with?"
+                    </p>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 10px 0; border-top: 1px solid rgba(226,232,240,0.10);">
+                    <p style="margin: 0 0 4px 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(232,180,184,0.85); font-weight: 500;">
+                      Log
+                    </p>
+                    <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.5; color: #e2e8f0;">
+                      "I ran 5K this morning"
+                    </p>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 10px 0; border-top: 1px solid rgba(226,232,240,0.10);">
+                    <p style="margin: 0 0 4px 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(78,205,196,0.85); font-weight: 500;">
+                      Plan
+                    </p>
+                    <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.5; color: #e2e8f0;">
+                      "Remind me to drink water at 8am every day"
+                    </p>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 10px 0; border-top: 1px solid rgba(226,232,240,0.10); border-bottom: 1px solid rgba(226,232,240,0.10);">
+                    <p style="margin: 0 0 4px 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(226,232,240,0.55); font-weight: 500;">
+                      Just chat
+                    </p>
+                    <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.5; color: #e2e8f0;">
+                      "Hi, who are you?"
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          {% if video_url %}
+          <!-- Optional walkthrough CTA -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 28px 48px 0 48px;">
+              <p style="margin: 0 0 12px 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(226,232,240,0.42); font-weight: 500;">
+                Prefer a walkthrough
+              </p>
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.6; color: rgba(226,232,240,0.78);">
+                <a href="{{ video_url }}" target="_blank" rel="noopener" style="color: #4ECDC4; text-decoration: none; border-bottom: 1px solid rgba(78,205,196,0.45);">Watch the 2-min intro →</a>
+              </p>
+            </td>
+          </tr>
+          {% endif %}
+
+          <!-- Divider -->
+          <tr>
+            <td class="px-page" style="padding: 32px 48px 0 48px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                <tr>
+                  <td style="border-top: 1px solid rgba(226,232,240,0.12); height: 1px; line-height: 1px; font-size: 1px;">&nbsp;</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Stuck / reply prompt -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 24px 48px 8px 48px;">
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 14px; line-height: 1.6; color: rgba(226,232,240,0.62);">
+                Questions or stuck? Just reply to this email — we read every one.
+              </p>
+            </td>
+          </tr>
+
+          {% if line_quota_available and telegram_connected %}
+          <!-- LINE P.S. (only if Telegram is the primary channel and LINE quota is available) -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 20px 48px 0 48px;">
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 13px; line-height: 1.6; color: rgba(226,232,240,0.55);">
+                <span style="font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(78,205,196,0.85);">P.S.</span>&nbsp;&nbsp;You can also use your assistant on LINE. Connect it from <a href="{{ settings_url }}" target="_blank" rel="noopener" style="color: #4ECDC4; text-decoration: none; border-bottom: 1px solid rgba(78,205,196,0.45);">your dashboard</a>.
+              </p>
+            </td>
+          </tr>
+          {% endif %}
+
+          <!-- Signoff -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 28px 48px 40px 48px;">
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 14px; line-height: 1.6; color: rgba(226,232,240,0.78);">
+                — NBHD United
+              </p>
+            </td>
+          </tr>
+
+        </table>
+
+        <!-- Outer footer -->
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" class="container" style="max-width: 600px;">
+          <tr>
+            <td align="center" style="padding: 24px 48px 0 48px;">
+              <p style="margin: 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(226,232,240,0.30);">
+                neighborhoodunited.org &nbsp;·&nbsp; ✦
+              </p>
+            </td>
+          </tr>
+        </table>
+
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
