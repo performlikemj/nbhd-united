@@ -12,12 +12,15 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from django.utils import timezone as tz
+from pydantic import ValidationError as PydanticValidationError
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.billing.services import record_usage
+from apps.common.tenant_tz import safe_zoneinfo, tenant_tz_name
+from apps.common.windows import Window, resolve_window
 from apps.journal.document_views import _default_markdown, _default_title
 from apps.journal.models import DailyNote, Document, JournalEntry
 from apps.journal.serializers import (
@@ -174,20 +177,98 @@ def _parse_iso_date(raw_value: str | None, *, field_name: str) -> date | None:
 
 
 def _tenant_timezone_name(tenant: Tenant) -> str:
-    timezone_name = str(getattr(tenant.user, "timezone", "") or "UTC")
-    try:
-        ZoneInfo(timezone_name)
-        return timezone_name
-    except ZoneInfoNotFoundError:
-        return "UTC"
+    """Thin wrapper kept for callers in this module — use ``apps.common.tenant_tz``."""
+    return tenant_tz_name(tenant)
 
 
 def _tenant_now(tenant: Tenant) -> datetime:
-    return tz.now().astimezone(ZoneInfo(_tenant_timezone_name(tenant)))
+    return tz.now().astimezone(safe_zoneinfo(tenant_tz_name(tenant)))
 
 
 def _tenant_today(tenant: Tenant) -> date:
     return _tenant_now(tenant).date()
+
+
+def _resolve_calendar_window(request, tenant: Tenant) -> tuple[str | None, str | None] | Response:
+    """Resolve query-string window params to RFC3339 ``time_min``/``time_max``.
+
+    Accepts two shapes:
+
+      • ``?window_kind=<enum>[&window_value=<v>]`` — preferred. The window
+        resolves server-side via ``apps.common.windows.resolve_window`` in
+        the tenant's tz. The agent never does the date math.
+      • ``?time_min=<rfc3339>&time_max=<rfc3339>`` — legacy. Passed through.
+
+    Returns the resolved ``(time_min, time_max)`` pair, or a 400 ``Response``
+    when both shapes are supplied or the window is invalid.
+    """
+    qp = request.query_params
+    window_kind = (qp.get("window_kind") or "").strip()
+    window_value_raw = qp.get("window_value")
+    time_min = qp.get("time_min")
+    time_max = qp.get("time_max")
+
+    if not window_kind:
+        return (time_min, time_max)
+
+    if time_min or time_max:
+        return Response(
+            {
+                "error": "invalid_request",
+                "detail": "window_kind cannot be combined with time_min/time_max",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        window_obj = _build_window(window_kind, window_value_raw)
+    except (PydanticValidationError, ValueError) as exc:
+        return Response(
+            {"error": "invalid_window", "detail": str(exc)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    tz_name = tenant_tz_name(tenant)
+    resolved = resolve_window(window_obj, tz_name)
+    if resolved is None:
+        # kind='all' — let Google return everything; emit no time bounds.
+        return (None, None)
+
+    zone = safe_zoneinfo(tz_name)
+    from_dt = datetime.combine(resolved[0], datetime.min.time()).replace(tzinfo=zone)
+    to_dt = datetime.combine(resolved[1], datetime.max.time().replace(microsecond=0)).replace(tzinfo=zone)
+    return (from_dt.isoformat(), to_dt.isoformat())
+
+
+def _build_window(kind: str, value_raw: str | None) -> Window:
+    """Construct a ``Window`` from flat query-string parts."""
+    if kind in {
+        "today",
+        "yesterday",
+        "tomorrow",
+        "all",
+        "this_week",
+        "last_week",
+        "month_to_date",
+        "last_month",
+        "year_to_date",
+        "last_year",
+    }:
+        return Window(kind=kind)  # type: ignore[arg-type]
+    if kind in {"last_n_days", "next_n_days", "last_n_weeks", "last_n_months"}:
+        if value_raw is None or value_raw == "":
+            raise ValueError(f"window_kind={kind!r} requires window_value=<int>")
+        return Window(kind=kind, value=int(value_raw))  # type: ignore[arg-type]
+    if kind == "since":
+        if not value_raw:
+            raise ValueError("window_kind='since' requires window_value=YYYY-MM-DD")
+        return Window(kind=kind, value=date.fromisoformat(value_raw))  # type: ignore[arg-type]
+    if kind == "between":
+        if not value_raw or "," not in value_raw:
+            raise ValueError("window_kind='between' requires window_value='YYYY-MM-DD,YYYY-MM-DD'")
+        a, b = [s.strip() for s in value_raw.split(",", 1)]
+        return Window(kind=kind, value=[date.fromisoformat(a), date.fromisoformat(b)])  # type: ignore[arg-type]
+    raise ValueError(f"unknown window_kind={kind!r}")
 
 
 def _parse_journal_date_range(request) -> tuple[date | None, date | None]:
@@ -810,6 +891,11 @@ class RuntimeCalendarEventsView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        resolved = _resolve_calendar_window(request, tenant)
+        if isinstance(resolved, Response):
+            return resolved
+        time_min, time_max = resolved
+
         try:
             token = get_valid_provider_access_token(
                 tenant=tenant,
@@ -817,8 +903,8 @@ class RuntimeCalendarEventsView(APIView):
             )
             payload = list_calendar_events(
                 access_token=token.access_token,
-                time_min=request.query_params.get("time_min"),
-                time_max=request.query_params.get("time_max"),
+                time_min=time_min,
+                time_max=time_max,
                 max_results=max_results,
             )
         except (
@@ -955,6 +1041,11 @@ class RuntimeCalendarFreeBusyView(APIView):
         if tenant_failure is not None or tenant is None:
             return tenant_failure
 
+        resolved = _resolve_calendar_window(request, tenant)
+        if isinstance(resolved, Response):
+            return resolved
+        time_min, time_max = resolved
+
         try:
             token = get_valid_provider_access_token(
                 tenant=tenant,
@@ -962,8 +1053,8 @@ class RuntimeCalendarFreeBusyView(APIView):
             )
             payload = get_calendar_freebusy(
                 access_token=token.access_token,
-                time_min=request.query_params.get("time_min"),
-                time_max=request.query_params.get("time_max"),
+                time_min=time_min,
+                time_max=time_max,
             )
         except (
             IntegrationNotConnectedError,
