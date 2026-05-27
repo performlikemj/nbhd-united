@@ -387,6 +387,30 @@ class ApologyHelperTest(TestCase):
         body = mock_send_text.call_args[0][1]
         self.assertIn("Sorry", body)  # English fallback
 
+    @patch("apps.router.line_webhook._send_line_text", return_value=True)
+    def test_apology_excerpt_strips_internal_framing(self, mock_send_text):
+        """Belt-and-suspenders: if a BufferedMessage's ``user_text`` somehow
+        contains agent-only framing (``[System: just updated…]`` etc.), the
+        apology must strip it before quoting back to the user."""
+        from apps.orchestrator.hibernation import _send_apology_for_dropped_message
+
+        user = _make_user(line_user_id="U_apology_strip")
+        tenant = _make_tenant(user)
+        pending_text = "log today's run, 5k in 24:30"
+        framed = f"[System: just updated. User's message from before the update:]\n{pending_text}"
+        msg = BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={"events": []},
+            user_text=framed,
+        )
+
+        _send_apology_for_dropped_message(tenant, msg)
+        body = mock_send_text.call_args[0][1]
+        self.assertNotIn("[System:", body)
+        self.assertNotIn("User's message from before", body)
+        self.assertIn("log today's run", body)
+
 
 @override_settings(
     NBHD_INTERNAL_API_KEY="test-key",

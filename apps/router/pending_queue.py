@@ -828,9 +828,13 @@ def _send_apology_for_dropped_pending_message(tenant: Tenant, msg: PendingMessag
     (e.g. different copy for warm-tenant vs cold-start failures) doesn't
     require splitting one helper into two with awkward conditionals.
     """
-    from apps.router.error_messages import error_msg
+    from apps.router.error_messages import error_msg, strip_internal_framing
 
-    excerpt = (msg.user_text or "").strip().replace("\n", " ")
+    # Defense in depth: even though every call site is supposed to pass
+    # ``raw_user_text`` so PendingMessage.user_text is clean, peel any
+    # ``[System: \u2026]`` / ``[Now: \u2026]`` / ``[chat: \u2026]`` / ``[User tapped button: \u2026]``
+    # framing off the head before quoting. The user shouldn't see this.
+    excerpt = strip_internal_framing(msg.user_text or "").strip().replace("\n", " ")
     if len(excerpt) > 50:
         excerpt = excerpt[:50] + "\u2026"
 

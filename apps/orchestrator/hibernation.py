@@ -902,10 +902,14 @@ def _send_apology_for_dropped_message(tenant: Tenant, msg) -> None:
     `relay_ai_response_to_line`) since this is system status, not assistant
     content. Localized via the existing `error_msg` framework — falls back
     to English for languages without a translated key."""
-    from apps.router.error_messages import error_msg
+    from apps.router.error_messages import error_msg, strip_internal_framing
     from apps.router.models import BufferedMessage
 
-    excerpt = (msg.user_text or "").strip().replace("\n", " ")
+    # Defense in depth: peel any agent-only ``[System: \u2026]`` / ``[Now: \u2026]``
+    # framing off the head before quoting back to the user. The call sites
+    # are supposed to pass clean ``raw_user_text`` but this catches any
+    # future site that forgets.
+    excerpt = strip_internal_framing(msg.user_text or "").strip().replace("\n", " ")
     if len(excerpt) > 50:
         excerpt = excerpt[:50] + "\u2026"
 

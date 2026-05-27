@@ -755,10 +755,13 @@ class TelegramPoller:
                             if pending_text:
                                 # Wait for container gateway to be healthy before forwarding
                                 if self._wait_for_container_ready(tenant, timeout=120):
-                                    # Prepend context note so agent isn't cold
+                                    # Prepend context note so agent isn't cold. Pass
+                                    # ``raw_user_text=pending_text`` so the dropped-message
+                                    # apology quotes the user's actual words instead of
+                                    # the ``[System: just updated…]`` framing.
                                     context_msg = f"[System: just updated. User's message from before the update:]\n{pending_text}"
                                     self._send_typing(chat_id)
-                                    self._forward_to_container(chat_id, tenant, context_msg)
+                                    self._forward_to_container(chat_id, tenant, context_msg, raw_user_text=pending_text)
                                 else:
                                     # Container didn't come up in time — tell user, let them resend
                                     self._send_message(chat_id, "✅ Update complete! You can send your message again.")
@@ -788,9 +791,16 @@ class TelegramPoller:
                 orig_msg_id = update["callback_query"].get("message", {}).get("message_id")
                 if orig_msg_id:
                     self._edit_message_reply_markup(chat_id, orig_msg_id, None)
-                # Forward the button tap to the agent
+                # Forward the button tap to the agent. ``raw_user_text=button_value``
+                # so the dropped-message apology quotes the button label rather than
+                # the ``[User tapped button: …]`` framing if delivery fails.
                 self._send_typing(chat_id)
-                self._forward_to_container(chat_id, tenant, f'[User tapped button: "{button_value}"]')
+                self._forward_to_container(
+                    chat_id,
+                    tenant,
+                    f'[User tapped button: "{button_value}"]',
+                    raw_user_text=button_value,
+                )
                 return
 
         # Unknown user → onboarding
@@ -1220,11 +1230,14 @@ class TelegramPoller:
         def _retry():
             try:
                 if self._wait_for_container_ready(tenant, timeout=120):
+                    # Pass ``raw_user_text=message_text`` so the dropped-message
+                    # apology quotes the user's actual words instead of the
+                    # ``[System: assistant was restarting…]`` framing.
                     context_msg = (
                         f"[System: assistant was restarting when this arrived. User's message:]\n{message_text}"
                     )
                     self._send_typing(chat_id)
-                    self._forward_to_container(chat_id, tenant, context_msg)
+                    self._forward_to_container(chat_id, tenant, context_msg, raw_user_text=message_text)
                 else:
                     self._send_message(chat_id, error_msg(lang, "telegram_resend_after_failed_wait"))
             finally:
