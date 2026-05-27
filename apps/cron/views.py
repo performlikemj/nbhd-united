@@ -84,6 +84,8 @@ TASK_MAP = {
     # in the platform owner's inbox.
     "preview_email": "apps.tenants.tasks.preview_email_task",
     "refresh_expiring_integrations": "apps.integrations.tasks.refresh_expiring_integrations_task",
+    # PR #1.6: hourly OR-spend truing-up (per-tenant + platform).
+    "reconcile_openrouter_spend": "apps.billing.tasks.reconcile_openrouter_spend_task",
     # Journal memory sync (on-demand via signal or QStash publish)
     "sync_documents_to_workspace": "apps.journal.tasks.sync_documents_to_workspace",
     # Provisioning (on-demand via QStash publish)
