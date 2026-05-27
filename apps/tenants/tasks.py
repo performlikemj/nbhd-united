@@ -46,6 +46,34 @@ def rotate_all_passwords_task() -> dict:
     return {"output": buf.getvalue()[-2000:]}  # tail of stdout for audit
 
 
+def preview_email_task(kind: int = 1, to: str = "", display_name: str = "Preview") -> dict:
+    """QStash-dispatched wrapper around the ``preview_email`` command.
+
+    Lets the operator fire a render-and-send from outside the box
+    (e.g. via the upstash MCP) without needing TTY access or
+    ``containerapp exec``. Picks up the live Mailgun config the same
+    way every other Django send does, so the rendered output mirrors
+    what real recipients will see.
+
+    Args (delivered via QStash body kwargs):
+      kind: 1 for the password-reset email, 2 for the promo email
+      to: recipient email address
+      display_name: sample display name to render into the template
+    """
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    if kind not in (1, 2):
+        raise ValueError(f"preview_email_task: invalid kind={kind!r}")
+    if not to:
+        raise ValueError("preview_email_task: 'to' is required")
+
+    buf = StringIO()
+    call_command("preview_email", kind=kind, to=to, display_name=display_name, stdout=buf)
+    return {"output": buf.getvalue()}
+
+
 def send_promo_campaign_task() -> dict:
     """QStash-dispatched wrapper around ``send_promo_campaign`` for the
     June 2 trial-extension blast.
