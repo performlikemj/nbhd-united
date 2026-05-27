@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("tenants", "0074_tenant_openrouter_key_hash_and_more"),
+        ("tenants", "0075_tenant_cost_exhausted_email_sent_at_and_more"),
     ]
 
     operations = [
