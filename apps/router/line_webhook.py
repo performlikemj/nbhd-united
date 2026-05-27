@@ -28,7 +28,11 @@ from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 
-from apps.billing.services import check_budget, extract_model_from_response, record_usage
+from apps.billing.services import (
+    check_budget,
+    record_usage,
+    resolve_model_for_attribution,
+)
 from apps.router.error_messages import error_msg
 from apps.router.line_flex import (
     attach_quick_reply,
@@ -1552,7 +1556,7 @@ class LineWebhookView(View):
 
         input_tokens = usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0) or 0
         output_tokens = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0) or 0
-        model_used = extract_model_from_response(result)
+        model_used = resolve_model_for_attribution(tenant, result)
 
         if input_tokens or output_tokens:
             try:

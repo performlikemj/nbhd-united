@@ -95,6 +95,67 @@ def extract_model_from_response(result: object) -> str:
     return ""
 
 
+def resolve_tenant_primary_model(tenant: Tenant) -> str:
+    """Return the chat-primary model id this tenant's turns should bill to.
+
+    Chain: ``applied_model`` (what the container is actually running with
+    after the last reconciliation) → ``preferred_model`` (user/admin
+    override that may not yet be applied) → ``TIER_MODELS[tier]["primary"]``
+    (tier default). Empty string only if all three are missing — should be
+    impossible in practice but caller is expected to defend against it.
+
+    Used by the chat-completions request builders to populate
+    ``payload.model`` (so OpenClaw 5.7+ echoes a real model id back at
+    top-level), and by ``resolve_model_for_attribution`` as the final
+    fallback when the response itself carries no upstream id.
+    """
+    primary = getattr(tenant, "applied_model", "") or getattr(tenant, "preferred_model", "")
+    if primary:
+        return primary
+    # Lazy import — config_generator pulls in a chunk of the orchestrator
+    # graph; deferring keeps billing/services importable from migrations.
+    try:
+        from apps.orchestrator.config_generator import TIER_MODELS
+
+        tier = getattr(tenant, "model_tier", "starter") or "starter"
+        return TIER_MODELS.get(tier, TIER_MODELS["starter"])["primary"]
+    except Exception:
+        logger.exception("tier-default primary lookup failed for tenant=%s", getattr(tenant, "id", ""))
+        return ""
+
+
+def resolve_model_for_attribution(tenant: Tenant, result: object) -> str:
+    """Resolve the model id to record on a usage row for this tenant + response.
+
+    Prefer the upstream id surfaced by ``extract_model_from_response``. When
+    the response is empty / carries only the ``"openclaw"`` placeholder
+    (the case for OpenClaw ≥ 4.21 chat-completions responses, which strictly
+    follow the OpenAI spec and don't surface the upstream model id), fall
+    back to ``resolve_tenant_primary_model`` — we know which model we asked
+    for, so attribute the turn to that.
+
+    The fallback is wrong only when OpenClaw's ``runWithModelFallback``
+    silently swapped to another model mid-call (provider rate-limit /
+    outage). That's the safer error direction: over-attribute to the
+    primary (typically the more expensive reasoning model) rather than
+    leave the row unattributed and collapse into ``DEFAULT_RATE``.
+
+    Logs at INFO when fallback fires so the rate can be quantified.
+    """
+    extracted = extract_model_from_response(result)
+    if extracted:
+        return extracted
+    fallback = resolve_tenant_primary_model(tenant)
+    if fallback:
+        logger.info(
+            "model attribution fallback: response carried no upstream id; "
+            "attributing to tenant primary tenant=%s model=%s",
+            str(getattr(tenant, "id", ""))[:8],
+            fallback,
+        )
+    return fallback
+
+
 def record_usage(
     tenant: Tenant,
     event_type: str,
