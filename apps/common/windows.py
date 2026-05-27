@@ -18,21 +18,31 @@ of calendar days, weeks (7-day rolling), or same-day-of-month spans:
   last_n_months(1) on 2026-05-19 → (2026-04-20, 2026-05-19)  # ~30 days
 
 Same-day-of-month math clamps to the last day of the target month for short
-months (e.g. ``last_n_months(1)`` on March 31 lands on Feb 28/29). Tenant
-timezone is sourced via ``tenant.user.timezone`` by callers; this module
-just takes the IANA name.
+months (e.g. ``last_n_months(1)`` on March 31 lands on Feb 28/29). This
+module takes an IANA name; callers go through ``apps.common.tenant_tz`` to
+get that name from a tenant.
 
 See ``CONTINUITY_agent-context-via-queries.md`` for the rationale.
+
+See also
+--------
+``apps.common.tenant_tz`` — canonical tenant-tz lookup. Use
+``tenant_tz_name(tenant)`` to feed ``resolve_window``'s ``tz_name`` arg.
+
+``apps.common.llm_contracts`` — point math (``resolve_relative_date``,
+``today_in_tenant_tz``). Reach for that when you need a single date,
+not a range.
 """
 
 from __future__ import annotations
 
 import calendar
-import zoneinfo
 from datetime import date, datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, model_validator
+
+from apps.common.tenant_tz import safe_zoneinfo
 
 WindowKind = Literal[
     "today",
@@ -137,10 +147,7 @@ def resolve_window(
     supplied naive, it is interpreted in ``tz_name``; when supplied aware,
     it is converted into ``tz_name``.
     """
-    try:
-        tz = zoneinfo.ZoneInfo(tz_name)
-    except Exception:
-        tz = zoneinfo.ZoneInfo("UTC")
+    tz = safe_zoneinfo(tz_name)
 
     if now is None:
         now = datetime.now(tz)

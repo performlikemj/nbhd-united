@@ -24,7 +24,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import zoneinfo
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, ClassVar
@@ -36,6 +35,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.tenant_tz import safe_zoneinfo, tenant_tz_name
 from apps.common.windows import Window, resolve_window
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
 from apps.tenants.middleware import set_rls_context
@@ -132,7 +132,7 @@ class BaseQueryView(APIView):
         if isinstance(tenant, Response):
             return tenant
 
-        tz_name = self._tenant_tz(tenant)
+        tz_name = tenant_tz_name(tenant)
 
         try:
             query = self.query_model(**(request.data or {}))
@@ -163,7 +163,7 @@ class BaseQueryView(APIView):
                 "schema_version": getattr(query, "schema_version", 1),
                 "computed_at": now.isoformat(),
                 "tenant_tz": tz_name,
-                "as_of": now.astimezone(self._zoneinfo(tz_name)).isoformat(),
+                "as_of": now.astimezone(safe_zoneinfo(tz_name)).isoformat(),
                 "window_resolved_to": (
                     {"from": window_resolved[0].isoformat(), "to": window_resolved[1].isoformat()}
                     if window_resolved
@@ -216,17 +216,6 @@ class BaseQueryView(APIView):
         raise NotImplementedError
 
     # ── Internals ──────────────────────────────────────────────────────
-
-    @staticmethod
-    def _zoneinfo(tz_name: str) -> zoneinfo.ZoneInfo:
-        try:
-            return zoneinfo.ZoneInfo(tz_name)
-        except Exception:
-            return zoneinfo.ZoneInfo("UTC")
-
-    @staticmethod
-    def _tenant_tz(tenant: Tenant) -> str:
-        return str(getattr(getattr(tenant, "user", None), "timezone", "") or "UTC")
 
     @staticmethod
     def _auth(request, tenant_id) -> Response | None:

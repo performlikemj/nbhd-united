@@ -16,17 +16,27 @@ Two responsibilities:
 
 Both are used by ``apps.fuel`` first; rolling out to other plugins is
 follow-up work tracked in ``CONTINUITY_deterministic-ops.md``.
+
+See also
+--------
+``apps.common.tenant_tz`` — canonical tenant-timezone resolution, source
+of truth for both this module's point math and ``windows.resolve_window``'s
+range math.
+
+``apps.common.windows`` — range resolution (``resolve_window``). Reach
+for that when you need a date range; this module handles single dates.
 """
 
 from __future__ import annotations
 
 import re
-import zoneinfo
 from datetime import date, timedelta
 from typing import Any
 
 from django.utils import timezone as dj_tz
 from pydantic import BaseModel, ValidationError
+
+from apps.common.tenant_tz import tenant_tz
 
 _WEEKDAY_INDEX = {
     "monday": 0,
@@ -74,7 +84,7 @@ def resolve_relative_date(tenant: Any, phrase: str) -> date | None:
     zone. ``tenant`` is typed as ``Any`` to keep this module free of a
     direct apps.tenants import.
     """
-    tz = _tenant_zone(tenant)
+    tz = tenant_tz(tenant)
     today = dj_tz.now().astimezone(tz).date()
 
     if phrase is None:
@@ -110,21 +120,7 @@ def resolve_relative_date(tenant: Any, phrase: str) -> date | None:
 
 def today_in_tenant_tz(tenant: Any) -> date:
     """Shortcut for ``resolve_relative_date(tenant, "today")``."""
-    return dj_tz.now().astimezone(_tenant_zone(tenant)).date()
-
-
-def _tenant_zone(tenant: Any) -> zoneinfo.ZoneInfo:
-    """Return the user's IANA timezone, or UTC if unset/invalid."""
-    name = "UTC"
-    user = getattr(tenant, "user", None)
-    if user is not None:
-        candidate = getattr(user, "timezone", None)
-        if candidate:
-            name = str(candidate)
-    try:
-        return zoneinfo.ZoneInfo(name)
-    except zoneinfo.ZoneInfoNotFoundError:
-        return zoneinfo.ZoneInfo("UTC")
+    return dj_tz.now().astimezone(tenant_tz(tenant)).date()
 
 
 # ── Validation error envelope ──────────────────────────────────────────

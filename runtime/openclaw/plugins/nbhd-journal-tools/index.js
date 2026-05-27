@@ -127,6 +127,11 @@ function tenantPath(api, suffix) {
   return `/api/v1/integrations/runtime/${encodeURIComponent(runtime.tenantId)}${suffix}`;
 }
 
+function journalPath(api, suffix) {
+  const runtime = getRuntimeConfig(api);
+  return `/api/v1/journal/runtime/${encodeURIComponent(runtime.tenantId)}${suffix}`;
+}
+
 export default function register(api) {
   // ── Document: Get ────────────────────────────────────────────────────
   api.registerTool(wrap({
@@ -1612,6 +1617,95 @@ export default function register(api) {
         const payload = await callRuntime(api, {
           path: tenantPath(api, `/tasks/${encodeURIComponent(taskId)}/`),
           method: "GET",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  // ── Parameterized Journal query ──────────────────────────────────────
+  api.registerTool(wrap({
+      name: "nbhd_journal_query",
+      description:
+        "Query the journal (entries, tasks, goals) by structured filters. " +
+        "USE THIS for any quantitative or list-shaped journal claim — task counts by status, " +
+        "open tasks for a goal, entries in a date range, overdue items. Never recite a count or " +
+        "list from memory; if you don't see the rows in this turn, query for them.\n\n" +
+        "Parameters:\n" +
+        "  • resource (required): one of \"entries\", \"tasks\", \"goals\".\n" +
+        "  • window: time range. Shape: {\"kind\": <enum>, \"value\": <if needed>}.\n" +
+        "      Enum: today | yesterday | tomorrow | all | last_n_days (+value: int 1-730) | next_n_days |\n" +
+        "      last_n_weeks (+value: int 1-104) | last_n_months (+value: int 1-24) | this_week | last_week |\n" +
+        "      month_to_date | last_month | year_to_date | last_year | since (+value: \"YYYY-MM-DD\") |\n" +
+        "      between (+value: [\"YYYY-MM-DD\", \"YYYY-MM-DD\"]).\n" +
+        "  • window_field: which date column the window resolves against. Per-resource options:\n" +
+        "      entries:  \"date\" (default) | \"created_at\"\n" +
+        "      tasks:    \"due_date\" (default) | \"created_at\" | \"updated_at\" | \"completed_at\"\n" +
+        "      goals:    \"target_date\" (default) | \"created_at\" | \"updated_at\" | \"achieved_at\"\n" +
+        "  • filter: dict, resource-specific:\n" +
+        "      entries: {mood?: str (fuzzy), energy?: \"low\"|\"medium\"|\"high\"}\n" +
+        "      tasks:   {status?: \"open\"|\"in_progress\"|\"done\"|\"skipped\"|\"deferred\", pillar?: str,\n" +
+        "                parent_goal_id?: uuid, has_due_date?: bool, overdue?: bool}\n" +
+        "      goals:   {status?: \"active\"|\"achieved\"|\"abandoned\"|\"expired\", pillar?: str,\n" +
+        "                parent_goal_id?: uuid, has_target_date?: bool}\n" +
+        "  • fields: optional list of field names; id is always included. Omit for all fields.\n" +
+        "  • aggregate: \"count\" only — journal rows have no numeric columns to sum/avg.\n" +
+        "  • group_by: optional. entries: \"energy\"|\"mood\". tasks/goals: \"status\"|\"pillar\".\n" +
+        "  • order_by: optional. Prefix with \"-\" for descending. Defaults: entries \"-date\", tasks \"status,due_date\", goals \"status,target_date\".\n" +
+        "  • limit: optional. Default 50, max 500. meta.has_more is true if cap was reached.\n\n" +
+        "Returns: {\"data\": [...], \"meta\": {schema_version, computed_at, tenant_tz, as_of, window_resolved_to: {from,to}, row_count, has_more, query_hash}}\n\n" +
+        "Examples:\n" +
+        "  Open tasks due this week:\n" +
+        "    {\"resource\": \"tasks\", \"window\": {\"kind\": \"this_week\"}, \"filter\": {\"status\": \"open\"}}\n" +
+        "  How many tasks closed last month:\n" +
+        "    {\"resource\": \"tasks\", \"window\": {\"kind\": \"last_month\"}, \"window_field\": \"completed_at\", \"filter\": {\"status\": \"done\"}, \"aggregate\": \"count\"}\n" +
+        "  Overdue items right now:\n" +
+        "    {\"resource\": \"tasks\", \"filter\": {\"overdue\": true}}\n" +
+        "  Active goals for the lessons pillar:\n" +
+        "    {\"resource\": \"goals\", \"filter\": {\"status\": \"active\", \"pillar\": \"lessons\"}}\n" +
+        "  Mood frequency in the last 30 days:\n" +
+        "    {\"resource\": \"entries\", \"window\": {\"kind\": \"last_n_days\", \"value\": 30}, \"aggregate\": \"count\", \"group_by\": \"mood\"}\n\n" +
+        "GROUNDING CONTRACT: Any journal count or list you state to the user MUST come from a query " +
+        "result returned in this turn. Don't infer. Don't recall. If row_count is 0, say so plainly.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          resource: { type: "string", enum: ["entries", "tasks", "goals"] },
+          window: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              kind: {
+                type: "string",
+                enum: [
+                  "today", "yesterday", "tomorrow", "all",
+                  "last_n_days", "next_n_days", "last_n_weeks", "last_n_months",
+                  "this_week", "last_week", "month_to_date", "last_month",
+                  "year_to_date", "last_year", "since", "between",
+                ],
+              },
+              value: {},
+            },
+            required: ["kind"],
+          },
+          window_field: { type: "string" },
+          filter: { type: "object", additionalProperties: true },
+          fields: { type: "array", items: { type: "string" } },
+          aggregate: { type: "string", enum: ["count", "sum", "avg", "min", "max"] },
+          aggregate_field: { type: "string" },
+          group_by: { type: "string" },
+          order_by: { type: "string" },
+          limit: { type: "integer", minimum: 1, maximum: 500 },
+        },
+        required: ["resource"],
+      },
+      async execute(_id, params) {
+        const payload = await callRuntime(api, {
+          path: journalPath(api, "/query/"),
+          method: "POST",
+          body: asObject(params),
         });
         return renderPayload(payload);
       },
