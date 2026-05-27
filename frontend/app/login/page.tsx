@@ -86,9 +86,9 @@ export default function LoginPage() {
                 </label>
                 <Link
                   href="/forgot-password"
-                  className="font-mono text-[10px] uppercase tracking-[0.14em] text-white/40 hover:text-white/70"
+                  className="text-xs text-[#9B8DF5] hover:text-[#c7bfff] transition-colors"
                 >
-                  Forgot?
+                  Forgot password?
                 </Link>
               </div>
               <input
@@ -103,9 +103,15 @@ export default function LoginPage() {
             </div>
 
             {error && (
-              <p className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-2.5 text-sm text-rose-300">
-                {error}
-              </p>
+              <div className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-2.5 text-sm text-rose-300">
+                <p>{error}</p>
+                <p className="mt-1.5 text-rose-200/80">
+                  <Link href="/forgot-password" className="underline hover:text-white">
+                    Reset your password
+                  </Link>{" "}
+                  if you don&apos;t remember it.
+                </p>
+              </div>
             )}
 
             <button
