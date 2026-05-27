@@ -12,7 +12,23 @@ logger = logging.getLogger(__name__)
 
 
 class JWTAuthenticationWithRLS(JWTAuthentication):
-    """Wrap SimpleJWT to set Postgres RLS session variables on success."""
+    """Wrap SimpleJWT to set Postgres RLS session variables on success
+    and to enforce password-rotation-based force-logout.
+
+    Force-logout protocol: tokens carry a ``pw_iat`` claim (set by
+    ``EmailTokenObtainPairSerializer.get_token``) holding the unix
+    timestamp of the user's ``password_last_changed_at`` at issue time.
+    On every request, we compare it against the current
+    ``user.password_last_changed_at`` and reject if the password has
+    been rotated since the token was minted. Both access and refresh
+    tokens carry the claim, so a rotation invalidates every outstanding
+    session without needing the simplejwt token_blacklist app.
+
+    Legacy tokens (issued before this code shipped) carry no claim;
+    we treat that as ``pw_iat=0`` and only reject if the user has a
+    non-null ``password_last_changed_at`` — meaning a rotation has
+    happened since the token's issue.
+    """
 
     def authenticate(self, request):
         result = super().authenticate(request)
@@ -20,6 +36,23 @@ class JWTAuthenticationWithRLS(JWTAuthentication):
             return None
 
         user, token = result
+
+        # Force-logout enforcement.
+        pw_changed_at = getattr(user, "password_last_changed_at", None)
+        if pw_changed_at is not None:
+            token_pw_iat = int(token.get("pw_iat") or 0)
+            if token_pw_iat < int(pw_changed_at.timestamp()):
+                logger.info(
+                    "Rejecting JWT for user %s — token pw_iat=%d < password_last_changed_at=%s",
+                    user.id,
+                    token_pw_iat,
+                    pw_changed_at.isoformat(),
+                )
+                raise exceptions.AuthenticationFailed(
+                    "Session expired due to a security update. Please sign in again.",
+                    code="password_rotated",
+                )
+
         tenant = getattr(user, "tenant", None)
         if tenant:
             _tenant_context.tenant = tenant

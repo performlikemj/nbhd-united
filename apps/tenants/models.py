@@ -15,6 +15,7 @@ from .line_models import LineLinkToken  # noqa: F401
 
 # Import so Django discovers the models for migrations
 from .pat_models import PersonalAccessToken  # noqa: F401
+from .promo_models import PromoCampaign, PromoRedemption  # noqa: F401
 from .telegram_models import TelegramLinkToken  # noqa: F401
 
 
@@ -73,8 +74,47 @@ class User(AbstractUser):
         help_text="Longitude for weather/location services",
     )
 
+    # Force-logout marker — JWTs carry `pw_iat` and are rejected when
+    # ``pw_iat < password_last_changed_at``. Bumped automatically by
+    # ``set_password`` (override below). Null means "never rotated" and
+    # the JWT validator treats any token as valid for legacy users.
+    password_last_changed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Stamp updated whenever ``set_password`` is called. Used by "
+            "the JWT validator to invalidate access + refresh tokens "
+            "issued before a password rotation, without needing the "
+            "simplejwt token_blacklist app."
+        ),
+    )
+
     class Meta:
         db_table = "users"
+
+    def set_password(self, raw_password):
+        """Override to bump ``password_last_changed_at`` on every change.
+
+        Called by createsuperuser, password reset flow, admin password
+        change, and ``rotate_all_passwords``. Bumping the stamp here
+        catches every path. See ``apps/tenants/authentication.py`` for
+        the JWT-side enforcement.
+        """
+        super().set_password(raw_password)
+        from django.utils import timezone
+
+        self.password_last_changed_at = timezone.now()
+
+    def set_unusable_password(self):
+        """Override to bump the stamp the same way ``set_password`` does.
+
+        ``rotate_all_passwords`` calls this to force every user through
+        the reset flow; without bumping the stamp here, existing JWTs
+        would survive the rotation."""
+        super().set_unusable_password()
+        from django.utils import timezone
+
+        self.password_last_changed_at = timezone.now()
 
     def __str__(self) -> str:
         return self.display_name or self.username

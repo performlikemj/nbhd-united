@@ -173,6 +173,22 @@ class HeartbeatConfigSerializer(serializers.Serializer):
 class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
     username_field = "email"
 
+    @classmethod
+    def get_token(cls, user):
+        """Inject a ``pw_iat`` claim so the auth class can invalidate
+        tokens issued before a password rotation. The claim is the
+        user's ``password_last_changed_at`` as a unix timestamp, or 0
+        when never set (legacy users — any token is accepted).
+
+        Paired with ``JWTAuthenticationWithRLS.authenticate`` which
+        rejects tokens where ``pw_iat`` is older than the current
+        ``password_last_changed_at`` on the user row.
+        """
+        token = super().get_token(user)
+        pw_changed_at = getattr(user, "password_last_changed_at", None)
+        token["pw_iat"] = int(pw_changed_at.timestamp()) if pw_changed_at else 0
+        return token
+
     def validate(self, attrs):
         self.user = authenticate(
             request=self.context.get("request"),
