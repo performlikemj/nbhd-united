@@ -7,6 +7,7 @@ import { Calendar } from "@/components/fuel/calendar";
 import { DayDrawer } from "@/components/fuel/day-drawer";
 import { History } from "@/components/fuel/history";
 import { NewWorkoutDialog } from "@/components/fuel/new-workout-dialog";
+import { OrphanDraftsBanner } from "@/components/fuel/orphan-drafts-banner";
 import { ProfileCard } from "@/components/fuel/profile-card";
 import { Progress } from "@/components/fuel/progress";
 import { RestingHeartRate } from "@/components/fuel/resting-heart-rate";
@@ -14,7 +15,7 @@ import { ScheduleWeek } from "@/components/fuel/schedule-week";
 import { Sleep } from "@/components/fuel/sleep";
 import { WeeklySummary } from "@/components/fuel/weekly-summary";
 import { WorkoutDetail } from "@/components/fuel/workout-detail";
-import { useWorkoutCountQuery } from "@/lib/queries";
+import { useMeQuery, useWorkoutCountQuery } from "@/lib/queries";
 
 type Tab = "schedule" | "calendar" | "history" | "progress";
 
@@ -25,7 +26,9 @@ export default function FuelPage() {
   const [newSheet, setNewSheet] = useState<{ open: boolean; date: string | null }>({ open: false, date: null });
 
   const { data: countData } = useWorkoutCountQuery({ status: "done" });
+  const { data: me } = useMeQuery();
   const doneCount = countData?.count ?? 0;
+  const tenantId = me?.tenant?.id ?? null;
 
   const navigateDay = (delta: number) => {
     if (!dayIso) return;
@@ -69,6 +72,10 @@ export default function FuelPage() {
           <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14" /></svg>
           Log workout
         </button>
+      </div>
+
+      <div className="mb-4">
+        <OrphanDraftsBanner tenantId={tenantId} />
       </div>
 
       <ProfileCard />

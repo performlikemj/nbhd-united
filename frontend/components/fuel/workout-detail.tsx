@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { SkelBar } from "@/components/ui/skeleton";
 import { getErrorMessage, isNotFoundError } from "@/lib/errors";
-import { useCompleteWorkoutMutation, useCreateWorkoutTemplateMutation, useDeleteWorkoutMutation, useDuplicateWorkoutMutation, useUpdateWorkoutMutation, useWorkoutQuery } from "@/lib/queries";
+import { stashOrphan } from "@/lib/orphan-drafts";
+import { useCompleteWorkoutMutation, useCreateWorkoutTemplateMutation, useDeleteWorkoutMutation, useDuplicateWorkoutMutation, useMeQuery, useUpdateWorkoutMutation, useWorkoutQuery } from "@/lib/queries";
 import type { FuelWorkout, WorkoutCategory } from "@/lib/types";
 import { CATEGORIES, CATEGORY_IDS } from "./category-meta";
 import {
@@ -204,6 +205,8 @@ export function WorkoutDetail({ workoutId, onClose }: WorkoutDetailProps) {
 function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose: () => void }) {
   const qc = useQueryClient();
   const { data: workout, error: workoutError } = useWorkoutQuery(workoutId);
+  const { data: me } = useMeQuery();
+  const tenantId = me?.tenant?.id ?? null;
   const updateMutation = useUpdateWorkoutMutation();
   const completeMutation = useCompleteWorkoutMutation();
   const deleteMutation = useDeleteWorkoutMutation();
@@ -215,16 +218,46 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
   const [initialized, setInitialized] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  // Always-current view of `draft` for callbacks that fire outside React's
+  // render flow (404 useEffect, mutation onError catches). Avoids stale
+  // closure on the typed draft at stash time.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const stashedRef = useRef(false);
+
+  const stashCurrentDraft = (source: "phantom_404" | "mutation_404") => {
+    if (!tenantId || stashedRef.current) return;
+    const d = draftRef.current;
+    const stashId = stashOrphan(tenantId, {
+      originalWorkoutId: workoutId,
+      date: d.date ?? workout?.date ?? new Date().toISOString().slice(0, 10),
+      category: (d.category ?? workout?.category ?? "other") as string,
+      activity: d.activity ?? workout?.activity ?? "",
+      duration_minutes: d.duration_minutes ?? null,
+      rpe: d.rpe ?? null,
+      notes: d.notes ?? "",
+      detail_json: (d.detail_json ?? {}) as Record<string, unknown>,
+      source,
+    });
+    if (stashId) stashedRef.current = true;
+  };
+
   // Stale client state: the workout exists in the in-memory React Query
   // cache (e.g. seeded from a list response) but the server doesn't have it
   // anymore — usually because the assistant runtime deleted/replaced it.
-  // Invalidate the parent lists so the next render purges the phantom.
+  // Invalidate the parent lists so the next render purges the phantom,
+  // and stash any meaningful in-progress edits to the orphan-drafts
+  // store so the Fuel-page banner can offer recovery.
   useEffect(() => {
     if (isNotFoundError(workoutError)) {
       void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
       void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
       void qc.invalidateQueries({ queryKey: ["fuel-schedule"] });
+      stashCurrentDraft("phantom_404");
     }
+    // tenantId & workoutId are stable per drawer lifetime; intentionally
+    // omitted to keep the stash a one-shot side-effect of the 404.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workoutError, qc]);
 
   if (workout && !initialized) {
@@ -257,6 +290,11 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
       await updateMutation.mutateAsync({ id: workout.id, data: draft });
       setEditing(false);
     } catch (e) {
+      if (isNotFoundError(e)) {
+        stashCurrentDraft("mutation_404");
+        onClose();
+        return;
+      }
       setSaveError(getErrorMessage(e));
     }
   };
@@ -275,6 +313,11 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
       setDraft((d) => ({ ...d, status: "done" }));
       setEditing(false);
     } catch (e) {
+      if (isNotFoundError(e)) {
+        stashCurrentDraft("mutation_404");
+        onClose();
+        return;
+      }
       setSaveError(getErrorMessage(e));
     }
   };
