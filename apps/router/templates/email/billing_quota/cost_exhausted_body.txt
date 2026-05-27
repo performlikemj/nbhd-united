@@ -1,0 +1,16 @@
+Hi {{ display_name|default:"there" }},
+
+You've reached this month's chat budget ({{ used_dollars }} of {{ cap_dollars }}).
+Your assistant will pause chat until {{ reset_date }}, when next month's budget
+resets and it comes back online automatically — no action needed on your end.
+
+Things that still work in the meantime:
+  • Anything you've already scheduled and stored stays as it is
+  • Your journal and memory aren't affected
+  • If you've connected your own Claude subscription, that channel
+    keeps working independently of this cap
+
+We'll see you on {{ reset_date }}.
+
+— NBHD United
+neighborhoodunited.org

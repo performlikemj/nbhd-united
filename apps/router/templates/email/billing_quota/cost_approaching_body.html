@@ -1,0 +1,173 @@
+{% comment %}
+─────────────────────────────────────────────────────────────────────
+NBHD United — Cost-cap approaching (90% threshold)
+─────────────────────────────────────────────────────────────────────
+
+Django template variables:
+  - {{ display_name }}   — User.display_name (falls back to "there")
+  - {{ used_dollars }}   — e.g. "$4.51" (already $-formatted by sender)
+  - {{ cap_dollars }}    — e.g. "$5.00"
+  - {{ used_pct }}       — integer percentage 0-100
+  - {{ reset_date }}     — e.g. "June 1, 2026"
+
+Inherits the privacy_rotation_2026 template's Outlook-compatibility
+strategy: MSO conditional gradient fallback, web-font progressive
+enhancement, VML-free since this email has no CTA button.
+Tested width: 600px. Mobile breakpoint: 600px.
+{% endcomment %}<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" lang="en">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="supported-color-schemes" content="dark" />
+  <title>You're nearing this month's chat budget</title>
+
+  <!--[if mso]>
+  <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+  <![endif]-->
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet" />
+
+  <style type="text/css">
+    body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+    table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+    img { border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; -ms-interpolation-mode: bicubic; }
+    body { margin: 0 !important; padding: 0 !important; width: 100% !important; }
+
+    .gradient-text {
+      background: #7C6BF0;
+      background: linear-gradient(90deg, #7C6BF0 0%, #E8B4B8 50%, #4ECDC4 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    @media only screen and (max-width: 600px) {
+      .container { width: 100% !important; max-width: 100% !important; }
+      .px-page { padding-left: 24px !important; padding-right: 24px !important; }
+      .h1 { font-size: 30px !important; line-height: 1.12 !important; }
+      .py-hero-top { padding-top: 32px !important; }
+      .py-hero-bot { padding-bottom: 28px !important; }
+    }
+  </style>
+</head>
+
+<body style="margin: 0; padding: 0; background-color: #0b0f13; color: #e2e8f0;">
+  <!-- Preheader (preview text) -->
+  <div style="display: none; max-height: 0; overflow: hidden; mso-hide: all; font-size: 1px; line-height: 1px; color: #0b0f13;">
+    {{ used_pct }}% used. Chat resumes on {{ reset_date }} if you hit the full cap.
+  </div>
+
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #0b0f13;" bgcolor="#0b0f13">
+    <tr>
+      <td align="center" style="padding: 48px 16px;">
+
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" class="container" style="max-width: 600px; background-color: #0b0f13; border: 1px solid rgba(226,232,240,0.10); border-radius: 16px;" bgcolor="#0b0f13">
+
+          <!-- Eyebrow -->
+          <tr>
+            <td class="px-page py-hero-top" align="center" style="padding: 40px 48px 0 48px;">
+              <p style="margin: 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase; color: rgba(226,232,240,0.42); font-weight: 500;">
+                <span style="color: rgba(124,107,240,0.65);">✦</span>&nbsp;&nbsp;NBHD&nbsp;UNITED&nbsp;&nbsp;<span style="color: rgba(78,205,196,0.55);">✧</span>
+              </p>
+            </td>
+          </tr>
+
+          <!-- Hero headline -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 36px 48px 20px 48px;">
+              <h1 class="h1" style="margin: 0; font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 38px; line-height: 1.08; font-weight: 700; color: #9B8DF5; letter-spacing: -0.015em;">
+                <!--[if mso]>
+                <span style="color: #9B8DF5; font-family: 'Space Grotesk', Arial, sans-serif; font-weight: 700;">Heading toward this month's cap.</span>
+                <![endif]-->
+                <!--[if !mso]><!-- -->
+                <span class="gradient-text" style="background: linear-gradient(90deg, #7C6BF0 0%, #E8B4B8 50%, #4ECDC4 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: #9B8DF5;">Heading toward this month's cap.</span>
+                <!--<![endif]-->
+              </h1>
+            </td>
+          </tr>
+
+          <!-- Subhead / context -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 0 48px 28px 48px;">
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 14px; line-height: 1.5; color: rgba(226,232,240,0.62); font-weight: 500;">
+                A friendly heads up so it's not a surprise.
+              </p>
+            </td>
+          </tr>
+
+          <!-- Body copy -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 0 48px 8px 48px;">
+              <p style="margin: 0 0 18px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 16px; line-height: 1.6; color: #e2e8f0;">
+                Hi {{ display_name|default:"there" }},
+              </p>
+              <p style="margin: 0 0 18px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
+                Your assistant's worked through about <span style="color: #4ECDC4; font-weight: 600;">{{ used_pct }}%</span> of this month's chat budget — <span style="font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; color: rgba(226,232,240,0.92); font-size: 14px;">{{ used_dollars }}</span> of <span style="font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; color: rgba(226,232,240,0.92); font-size: 14px;">{{ cap_dollars }}</span>.
+              </p>
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
+                If you hit the full cap, chat pauses until <span style="color: rgba(226,232,240,0.92); font-weight: 500;">{{ reset_date }}</span>, when next month's budget resets and your assistant comes back online automatically. You don't need to do anything.
+              </p>
+            </td>
+          </tr>
+
+          <!-- Spacer -->
+          <tr><td style="height: 32px; line-height: 32px; font-size: 1px;">&nbsp;</td></tr>
+
+          <!-- Divider -->
+          <tr>
+            <td class="px-page" style="padding: 0 48px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                <tr>
+                  <td style="border-top: 1px solid rgba(226,232,240,0.12); height: 1px; line-height: 1px; font-size: 1px;">&nbsp;</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Footnote: what counts -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 28px 48px 8px 48px;">
+              <p style="margin: 0 0 10px 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(226,232,240,0.42); font-weight: 500;">
+                What counts toward this
+              </p>
+              <p style="margin: 0 0 14px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 13px; line-height: 1.65; color: rgba(226,232,240,0.62);">
+                Conversations with your assistant — Telegram, LINE, or the web dashboard — plus scheduled turns like the morning briefing and evening check-in.
+              </p>
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 13px; line-height: 1.65; color: rgba(226,232,240,0.62);">
+                If you've connected your own <span style="color: rgba(226,232,240,0.92);">Claude</span> subscription, those turns run on your own plan and don't count toward this number.
+              </p>
+            </td>
+          </tr>
+
+          <!-- Signoff -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 24px 48px 40px 48px;">
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 14px; line-height: 1.6; color: rgba(226,232,240,0.78);">
+                — NBHD United
+              </p>
+            </td>
+          </tr>
+
+        </table>
+
+        <!-- Outer footer -->
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" class="container" style="max-width: 600px;">
+          <tr>
+            <td align="center" style="padding: 24px 48px 0 48px;">
+              <p style="margin: 0; font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(226,232,240,0.30);">
+                neighborhoodunited.org &nbsp;·&nbsp; ✦
+              </p>
+            </td>
+          </tr>
+        </table>
+
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
