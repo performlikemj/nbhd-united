@@ -253,12 +253,69 @@ def provision_tenant(tenant_id: str) -> None:
         tenant.internal_api_key = internal_api_key_plain
         tenant.save(update_fields=["internal_api_key", "updated_at"])
 
+        # 2a2. (PR #1.6) Per-tenant OpenRouter sub-key. When the feature
+        # flag is on AND the management key is configured, create a
+        # dedicated OR sub-key with a server-side spending limit. OR
+        # enforces the per-tenant cap so we don't rely solely on our
+        # internal estimate. The key string goes to KV; the hash is
+        # saved on the Tenant row so deprovision can DELETE it later.
+        # Failure here MUST NOT block provisioning — fall back to the
+        # shared key with a warning.
+        openrouter_kv_secret_name: str | None = None
+        if getattr(settings, "OPENROUTER_PER_TENANT_KEYS_ENABLED", False) and secret_backend == "keyvault":
+            try:
+                from apps.billing.constants import TIER_COST_BUDGETS
+                from apps.billing.openrouter_admin import (
+                    OpenRouterAdminError,
+                    create_sub_key,
+                    secret_name_for_tenant,
+                )
+                from apps.byo_models.services import _write_secret_to_kv
+
+                tier = tenant.model_tier or "starter"
+                limit = float(TIER_COST_BUDGETS.get(tier, 5.00))
+                label = f"tenant-{str(tenant.id)[:8]}"
+
+                _log_provisioning_event(
+                    tenant_id=str(tenant.id),
+                    user_id=user_id,
+                    stage="create_openrouter_subkey",
+                )
+                api_key, key_hash = create_sub_key(label, limit_dollars=limit, limit_reset="monthly")
+                openrouter_kv_secret_name = secret_name_for_tenant(tenant)
+                _write_secret_to_kv(openrouter_kv_secret_name, api_key)
+                tenant.openrouter_key_secret_name = openrouter_kv_secret_name
+                tenant.openrouter_key_hash = key_hash
+                tenant.save(
+                    update_fields=[
+                        "openrouter_key_secret_name",
+                        "openrouter_key_hash",
+                        "updated_at",
+                    ]
+                )
+            except OpenRouterAdminError as exc:
+                logger.warning(
+                    "OpenRouter sub-key creation failed for tenant %s; falling back to shared key: %s",
+                    tenant_id,
+                    exc,
+                )
+                openrouter_kv_secret_name = None
+            except Exception:
+                logger.warning(
+                    "Unexpected error creating OpenRouter sub-key for tenant %s; falling back to shared key",
+                    tenant_id,
+                    exc_info=True,
+                )
+                openrouter_kv_secret_name = None
+
         # 2b. Grant identity Key Vault access for secret references (keyvault backend only)
         if secret_backend == "keyvault":
             _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="assign_key_vault_role")
             secret_names_to_grant = list(DEFAULT_TENANT_KV_SECRETS)
             if internal_api_key_kv_secret_name:
                 secret_names_to_grant.append(internal_api_key_kv_secret_name)
+            if openrouter_kv_secret_name:
+                secret_names_to_grant.append(openrouter_kv_secret_name)
             assign_key_vault_role(identity["principal_id"], secret_names=secret_names_to_grant)
 
         # 2b2. Grant identity ACR pull access for container image
@@ -291,6 +348,7 @@ def provision_tenant(tenant_id: str) -> None:
             workspace_env=workspace_env,
             internal_api_key_kv_secret_name=internal_api_key_kv_secret_name,
             internal_api_key_plain_value=internal_api_key_plain,
+            openrouter_kv_secret_name=openrouter_kv_secret_name,
         )
 
         # 4. Update tenant record
@@ -620,6 +678,42 @@ def deprovision_tenant(tenant_id: str) -> None:
     tenant.save(update_fields=["status", "updated_at"])
 
     try:
+        # 0. (PR #1.6) Delete the per-tenant OpenRouter sub-key + KV
+        # secret first. Errors here log + continue — leftover sub-keys
+        # are reaped by the sweep_orphan_openrouter_keys command, and a
+        # KV secret without a container is harmless until the next
+        # tenant happens to share the same key_vault_prefix (impossible
+        # because the prefix embeds the user id).
+        if tenant.openrouter_key_hash:
+            try:
+                from apps.billing.openrouter_admin import OpenRouterAdminError, delete_sub_key
+
+                delete_sub_key(tenant.openrouter_key_hash)
+            except OpenRouterAdminError as exc:
+                logger.warning(
+                    "OR sub-key delete failed for tenant %s (hash=%s); reap via sweeper: %s",
+                    tenant_id,
+                    tenant.openrouter_key_hash,
+                    exc,
+                )
+            except Exception:
+                logger.warning(
+                    "Unexpected error deleting OR sub-key for tenant %s; reap via sweeper",
+                    tenant_id,
+                    exc_info=True,
+                )
+        if tenant.openrouter_key_secret_name:
+            try:
+                from apps.byo_models.services import _delete_secret_from_kv
+
+                _delete_secret_from_kv(tenant.openrouter_key_secret_name)
+            except Exception:
+                logger.warning(
+                    "OR KV secret delete failed for tenant %s",
+                    tenant_id,
+                    exc_info=True,
+                )
+
         # 1. Delete container
         if tenant.container_id:
             delete_container_app(tenant.container_id)
@@ -635,12 +729,16 @@ def deprovision_tenant(tenant_id: str) -> None:
         tenant.container_id = ""
         tenant.container_fqdn = ""
         tenant.managed_identity_id = ""
+        tenant.openrouter_key_secret_name = ""
+        tenant.openrouter_key_hash = ""
         tenant.save(
             update_fields=[
                 "status",
                 "container_id",
                 "container_fqdn",
                 "managed_identity_id",
+                "openrouter_key_secret_name",
+                "openrouter_key_hash",
                 "updated_at",
             ]
         )
