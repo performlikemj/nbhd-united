@@ -13,7 +13,12 @@ from .runtime_views import (
     RuntimeBYOErrorReportView,
     RuntimeCalendarEventsView,
     RuntimeCalendarFreeBusyView,
+    RuntimeCronCreateDomainSummaryView,
+    RuntimeCronCreatePureReminderView,
+    RuntimeCronCreateQuoteUserIntentView,
+    RuntimeCronPatternContextView,
     RuntimeCronPhase2SummaryView,
+    RuntimeCronValidateOutboundView,
     RuntimeDailyNoteAppendView,
     RuntimeDailyNotesView,
     RuntimeDocumentAppendView,
@@ -261,6 +266,36 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/cron-phase2-summary/",
         RuntimeCronPhase2SummaryView.as_view(),
         name="runtime-cron-phase2-summary",
+    ),
+    # Typed cron creation (feat/cron-typed-patterns) — one endpoint per
+    # agent-creatable pattern. See CONTINUITY_cron-typed-patterns.md.
+    path(
+        "runtime/<uuid:tenant_id>/crons/pure_reminder/",
+        RuntimeCronCreatePureReminderView.as_view(),
+        name="runtime-cron-create-pure-reminder",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/crons/quote_user_intent/",
+        RuntimeCronCreateQuoteUserIntentView.as_view(),
+        name="runtime-cron-create-quote-user-intent",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/crons/domain_summary/",
+        RuntimeCronCreateDomainSummaryView.as_view(),
+        name="runtime-cron-create-domain-summary",
+    ),
+    # Pattern-context lookup — consumed by the nbhd-cron-enforcement
+    # plugin's cron_changed hook to resolve which validator/prompt
+    # injection to apply for a firing cron.
+    path(
+        "runtime/<uuid:tenant_id>/crons/<str:cron_name>/pattern_context/",
+        RuntimeCronPatternContextView.as_view(),
+        name="runtime-cron-pattern-context",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/crons/<str:cron_name>/validate_outbound/",
+        RuntimeCronValidateOutboundView.as_view(),
+        name="runtime-cron-validate-outbound",
     ),
     # Reddit runtime endpoints
     path(

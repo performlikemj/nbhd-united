@@ -45,6 +45,8 @@ COPY runtime/openclaw/plugins/nbhd-fuel-tools /opt/nbhd/plugins/nbhd-fuel-tools
 COPY runtime/openclaw/plugins/nbhd-insights-tools /opt/nbhd/plugins/nbhd-insights-tools
 COPY runtime/openclaw/plugins/nbhd-settings-tools /opt/nbhd/plugins/nbhd-settings-tools
 COPY runtime/openclaw/plugins/nbhd-routing-context /opt/nbhd/plugins/nbhd-routing-context
+COPY runtime/openclaw/plugins/nbhd-automation-tools /opt/nbhd/plugins/nbhd-automation-tools
+COPY runtime/openclaw/plugins/nbhd-cron-enforcement /opt/nbhd/plugins/nbhd-cron-enforcement
 COPY skills/gws-* /opt/nbhd/skills/
 COPY agent-skills /opt/nbhd/agent-skills
 COPY templates/openclaw /opt/nbhd/templates/openclaw
@@ -87,6 +89,10 @@ ENV OPENCLAW_USAGE_REPORTER_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-usage-reporter
 ENV OPENCLAW_JOURNAL_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-journal-tools
 ENV OPENCLAW_IMAGE_GEN_PLUGIN_ID=nbhd-image-gen
 ENV OPENCLAW_IMAGE_GEN_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-image-gen
+ENV OPENCLAW_AUTOMATION_PLUGIN_ID=nbhd-automation-tools
+ENV OPENCLAW_AUTOMATION_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-automation-tools
+ENV OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID=nbhd-cron-enforcement
+ENV OPENCLAW_CRON_ENFORCEMENT_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-cron-enforcement
 
 EXPOSE 8080
 

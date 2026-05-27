@@ -3216,3 +3216,211 @@ class RedditToolView(APIView):
         result = redact_tool_response(result, tenant)
 
         return Response(result, status=status.HTTP_200_OK)
+
+
+# ── Typed cron creation (feat/cron-typed-patterns) ──────────────────────
+#
+# Three runtime endpoints — one per agent-creatable pattern. Each maps to
+# the pattern's Pydantic payload schema. See CONTINUITY_cron-typed-patterns.md
+# for why we split per-pattern (concrete tool schemas beat discriminated
+# unions in real-world model behaviour).
+#
+# Imports of services + handler symbols are intentionally LOCAL inside
+# each method, matching the pattern in this file (see
+# ``feedback_local_reimport_pattern.md``).
+
+
+class _RuntimeCronCreateBase(APIView):
+    """Common boilerplate for typed cron creation endpoints.
+
+    Subclasses set ``pattern`` (CronPattern value) and ``_extract_payload``
+    (turns request.data into the pattern's typed_payload dict).
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    pattern: str = ""
+
+    def _extract_payload(self, request) -> dict:
+        raise NotImplementedError
+
+    def post(self, request, tenant_id):
+        from apps.cron.services import (
+            CronNameConflictError,
+            TypedCronError,
+            create_typed_cron,
+        )
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        name = (request.data.get("name") or "").strip()
+        schedule = request.data.get("schedule") or {}
+        try:
+            payload = self._extract_payload(request)
+        except (TypeError, ValueError) as exc:
+            return Response(
+                {"error": "invalid_payload", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            cron = create_typed_cron(
+                tenant=tenant,
+                pattern=self.pattern,
+                typed_payload=payload,
+                name=name,
+                schedule=schedule,
+            )
+        except CronNameConflictError as exc:
+            return Response(
+                {"error": exc.code, "detail": str(exc), "name": exc.name},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except TypedCronError as exc:
+            return Response(
+                {"error": exc.code, "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception as exc:
+            # Pydantic ValidationError, etc. — surface with the message so
+            # the agent can correct its call.
+            return Response(
+                {"error": "validation_failed", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {
+                "tenant_id": str(tenant.id),
+                "cron": {
+                    "id": str(cron.pk),
+                    "name": cron.name,
+                    "pattern": cron.pattern,
+                    "schedule": (cron.data or {}).get("schedule"),
+                    "managed": cron.managed,
+                    "gateway_job_id": cron.gateway_job_id or None,
+                },
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class RuntimeCronCreatePureReminderView(_RuntimeCronCreateBase):
+    """POST /runtime/<tenant_id>/crons/pure_reminder/
+
+    Body: {name, schedule, text}
+    """
+
+    pattern = "pure_reminder"
+
+    def _extract_payload(self, request) -> dict:
+        return {"text": request.data.get("text", "")}
+
+
+class RuntimeCronCreateQuoteUserIntentView(_RuntimeCronCreateBase):
+    """POST /runtime/<tenant_id>/crons/quote_user_intent/
+
+    Body: {name, schedule, text, refresh_facts_via?}
+    """
+
+    pattern = "quote_user_intent"
+
+    def _extract_payload(self, request) -> dict:
+        payload = {"text": request.data.get("text", "")}
+        refresh = request.data.get("refresh_facts_via")
+        if refresh:
+            payload["refresh_facts_via"] = refresh
+        return payload
+
+
+class RuntimeCronCreateDomainSummaryView(_RuntimeCronCreateBase):
+    """POST /runtime/<tenant_id>/crons/domain_summary/
+
+    Body: {name, schedule, query_tool, query_args, render_block}
+    """
+
+    pattern = "domain_summary"
+
+    def _extract_payload(self, request) -> dict:
+        return {
+            "query_tool": request.data.get("query_tool", ""),
+            "query_args": request.data.get("query_args") or {},
+            "render_block": request.data.get("render_block", ""),
+        }
+
+
+class RuntimeCronPatternContextView(APIView):
+    """GET /runtime/<tenant_id>/crons/<cron_name>/pattern_context/
+
+    Returns (pattern, typed_payload, name, prompt_injection) for a typed
+    cron — consumed by the nbhd-cron-enforcement plugin's
+    ``cron_changed`` / ``before_prompt_build`` hooks so it can resolve
+    the right validator + prompt addition for a firing cron.
+
+    Returns 404 if the cron isn't typed or doesn't exist.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id, cron_name: str):
+        from apps.cron.services import fetch_cron_pattern_context
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        ctx = fetch_cron_pattern_context(tenant.id, cron_name)
+        if ctx is None:
+            return Response(
+                {"error": "not_typed", "detail": "Cron is not a typed pattern."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(ctx, status=status.HTTP_200_OK)
+
+
+class RuntimeCronValidateOutboundView(APIView):
+    """POST /runtime/<tenant_id>/crons/<cron_name>/validate_outbound/
+
+    Called by the enforcement plugin's ``message_sending`` hook to
+    validate that an outbound message satisfies the firing cron's
+    pattern contract.
+
+    Body: {content: str}
+    Response: {ok: bool, reason?: str, fallback_content?: str}
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id, cron_name: str):
+        from apps.cron.services import validate_typed_cron_outbound
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        content = request.data.get("content")
+        if not isinstance(content, str):
+            return Response(
+                {"error": "invalid_payload", "detail": "content must be a string"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        result = validate_typed_cron_outbound(
+            tenant_id=tenant.id,
+            cron_name=cron_name,
+            content=content,
+        )
+        return Response(result, status=status.HTTP_200_OK)

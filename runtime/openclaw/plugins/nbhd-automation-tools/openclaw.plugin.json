@@ -1,0 +1,28 @@
+{
+  "id": "nbhd-automation-tools",
+  "name": "NBHD Automation Tools",
+  "description": "Typed cron pattern tools — the agent's only path to create scheduled messages. Each pattern (pure_reminder / quote_user_intent / domain_summary) has its own concrete tool with a per-pattern parameter schema; this is the structural alternative to a discriminated-union tool and to raw cron access. See CONTINUITY_cron-typed-patterns.md.",
+  "contracts": {
+    "tools": [
+      "nbhd_cron_create_pure_reminder",
+      "nbhd_cron_create_quote_user_intent",
+      "nbhd_cron_create_domain_summary"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string",
+        "description": "Override NBHD API base URL. Defaults to NBHD_API_BASE_URL env var."
+      },
+      "requestTimeoutMs": {
+        "type": "number",
+        "minimum": 1000,
+        "maximum": 60000,
+        "description": "HTTP timeout for NBHD runtime endpoint requests."
+      }
+    }
+  }
+}
