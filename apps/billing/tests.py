@@ -4,7 +4,7 @@ from django.test import TestCase
 
 from apps.tenants.services import create_tenant
 
-from .constants import DEEPSEEK_MODEL, MINIMAX_MODEL
+from .constants import ANTHROPIC_OPUS_MODEL, ANTHROPIC_SONNET_MODEL, DEEPSEEK_MODEL, MINIMAX_MODEL
 from .services import (
     check_budget,
     extract_model_from_response,
@@ -61,6 +61,96 @@ class UsageTrackingTest(TestCase):
         self.tenant.is_budget_exempt = True
         self.tenant.save()
         self.assertEqual(check_budget(self.tenant), "")
+
+
+class BYOBillingTest(TestCase):
+    """Coverage for the fix landed in PR #1.7: BYO model usage must NOT
+    increment the tenant's $5 cap counter or the platform MonthlyBudget,
+    because the tenant pays the provider (Anthropic / future OpenAI Codex)
+    directly via their own subscription. We still write the audit row
+    (with cost_estimate = 0) and still bump message + token counters."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="BYO Billing", telegram_chat_id=555444333)
+
+    def _baseline_cost(self):
+        self.tenant.refresh_from_db()
+        return self.tenant.estimated_cost_this_month
+
+    def test_byo_sonnet_chat_records_zero_cost(self):
+        before = self._baseline_cost()
+        record = record_usage(
+            tenant=self.tenant,
+            event_type="message",
+            input_tokens=10000,
+            output_tokens=3000,
+            model_used=ANTHROPIC_SONNET_MODEL,
+        )
+        # Audit row is written for visibility.
+        self.assertEqual(record.model_used, ANTHROPIC_SONNET_MODEL)
+        self.assertEqual(float(record.cost_estimate), 0.0)
+        # Tenant counter is unchanged on the dollar side …
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.estimated_cost_this_month, before)
+        # … but message + token counters still tick (rate-limit accounting).
+        self.assertEqual(self.tenant.messages_today, 1)
+        self.assertEqual(self.tenant.tokens_this_month, 13000)
+
+    def test_byo_opus_chat_records_zero_cost(self):
+        # Same shape, different BYO model id, including the dotted variant
+        # that OpenRouter sometimes echoes back (claude-opus-4.7).
+        for model_id in (ANTHROPIC_OPUS_MODEL, ANTHROPIC_OPUS_MODEL.replace("-4-7", "-4.7")):
+            with self.subTest(model_id=model_id):
+                tenant = create_tenant(
+                    display_name=f"BYO opus {model_id}",
+                    telegram_chat_id=555000000 + abs(hash(model_id)) % 999,
+                )
+                record = record_usage(
+                    tenant=tenant,
+                    event_type="message",
+                    input_tokens=5000,
+                    output_tokens=2000,
+                    model_used=model_id,
+                )
+                self.assertEqual(float(record.cost_estimate), 0.0)
+                tenant.refresh_from_db()
+                self.assertEqual(float(tenant.estimated_cost_this_month), 0.0)
+
+    def test_non_byo_chat_still_charges_normally(self):
+        # DeepSeek IS in MODEL_RATES — must continue to charge against
+        # the tenant cap exactly as before this PR.
+        before = self._baseline_cost()
+        record = record_usage(
+            tenant=self.tenant,
+            event_type="message",
+            input_tokens=10000,
+            output_tokens=3000,
+            model_used=DEEPSEEK_MODEL,
+        )
+        self.assertGreater(record.cost_estimate, 0)
+        self.tenant.refresh_from_db()
+        self.assertGreater(self.tenant.estimated_cost_this_month, before)
+
+    def test_system_byo_call_still_charges_platform(self):
+        # System-side extraction / synthesis hits OR with the shared key
+        # even when targeting an anthropic/* model. The platform pays OR,
+        # so cost must be non-zero (recorded against MonthlyBudget;
+        # the personal counter stays untouched via is_system=True).
+        record = record_usage(
+            tenant=self.tenant,
+            event_type="extraction",
+            input_tokens=3000,
+            output_tokens=400,
+            model_used=ANTHROPIC_SONNET_MODEL,
+            is_system=True,
+        )
+        # Cost is computed (falls to DEFAULT_RATE since anthropic isn't
+        # in MODEL_RATES — separate follow-up bug for system-side OR
+        # routing, but at least it's not zeroed here).
+        self.assertGreater(record.cost_estimate, 0)
+        # Personal counter untouched (is_system=True).
+        self.tenant.refresh_from_db()
+        self.assertEqual(float(self.tenant.estimated_cost_this_month), 0.0)
 
 
 class ResolveTenantPrimaryModelTest(TestCase):

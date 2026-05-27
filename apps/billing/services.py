@@ -10,8 +10,8 @@ from django.db.models import F
 
 from apps.tenants.models import Tenant
 
+from .constants import BYO_MODEL_DISPLAY, MODEL_RATES
 from .constants import DEFAULT_RATE as MODELS_DEFAULT_RATE
-from .constants import MODEL_RATES
 from .models import MonthlyBudget, UsageRecord
 
 logger = logging.getLogger(__name__)
@@ -182,9 +182,29 @@ def record_usage(
     ``messages_today`` / ``messages_this_month`` counters stay accurate.
     Tokens + cost are NOT multiplied because they reflect actual LLM work
     done (the coalesced prompt was a single inference).
+
+    BYO models (Claude via the Anthropic CLI subscription, future Codex
+    via OpenAI's CLI) cost the platform $0 when called from a tenant's
+    container — the tenant pays the provider directly via their own
+    subscription. For those rows we still write the audit record (with
+    ``cost_estimate = 0`` for visibility) and still bump message + token
+    counters (the user sent a real message; rate-limit accounting still
+    owed), but we DON'T increment ``estimated_cost_this_month`` or
+    ``MonthlyBudget.spent_dollars`` — either would falsely trip the
+    per-tenant $5 cap or the platform-wide circuit breaker on spend the
+    platform never incurred.
+
+    Gate is ``not is_system``: system-side calls (extraction, agenda
+    hints, weekly synthesis) hit OpenRouter directly from Django with
+    the shared key, so even when they target an ``anthropic/...`` model
+    the platform IS paying OR. Those rows keep their computed cost.
     """
-    costs = MODEL_COSTS.get(model_used, DEFAULT_COST)
-    cost = Decimal(str((input_tokens * costs["input"] + output_tokens * costs["output"]) / 1_000_000))
+    is_byo_user_call = model_used in BYO_MODEL_DISPLAY and not is_system
+    if is_byo_user_call:
+        cost = Decimal("0")
+    else:
+        costs = MODEL_COSTS.get(model_used, DEFAULT_COST)
+        cost = Decimal(str((input_tokens * costs["input"] + output_tokens * costs["output"]) / 1_000_000))
 
     record = UsageRecord.objects.create(
         tenant=tenant,
@@ -199,6 +219,9 @@ def record_usage(
     if not is_system:
         total_tokens = input_tokens + output_tokens
         msg_increment = message_count if event_type == "message" else 0
+        # `cost` is already 0 for BYO; the F-expression is a no-op
+        # increment in that case (intentional — keeps the code path
+        # uniform and the counter math safe under concurrent writes).
         Tenant.objects.filter(id=tenant.id).update(
             messages_today=F("messages_today") + msg_increment,
             messages_this_month=F("messages_this_month") + msg_increment,
@@ -206,7 +229,7 @@ def record_usage(
             estimated_cost_this_month=F("estimated_cost_this_month") + cost,
         )
 
-    # Update global budget
+    # Update global budget — also a no-op for BYO since cost == 0.
     today = date.today()
     first_of_month = today.replace(day=1)
     budget, _ = MonthlyBudget.objects.get_or_create(
