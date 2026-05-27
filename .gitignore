@@ -54,3 +54,23 @@ CONTINUITY.md
 pii-model/
 pii-model-output/
 pii-model-test/
+pii-model-multilingual/
+
+# Claude Code / agent harness local state (per-machine, never commit)
+.agents/
+.claude/scheduled_tasks.lock
+.claude/skills/
+.claude/worktrees/
+.claude/settings.local.json
+
+# Locally-installed skill dependencies (managed via skills-lock.json)
+# These are symlinks into .agents/skills/ — no trailing slash so git matches the symlink as a file.
+skills-lock.json
+skills/supabase
+skills/supabase-postgres-best-practices
+
+# HyperFrames compositions scratch dir
+compositions/
+
+# Local ML model artifacts (downloaded weights, training output)
+models/
