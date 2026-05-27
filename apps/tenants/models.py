@@ -607,6 +607,24 @@ class Tenant(models.Model):
 
     # Metadata
     last_message_at = models.DateTimeField(null=True, blank=True)
+    first_message_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Timestamp of the tenant's first-ever inbound message across "
+            "any channel. Set once at the first PendingMessage insert and "
+            "never bumped again — used to measure onboarding activation."
+        ),
+    )
+    welcome_email_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When the Day-0 welcome email was delivered to the tenant's "
+            "User.email. Set after a successful send; checked as the "
+            "idempotency guard so provisioning retries don't re-send."
+        ),
+    )
     config_version = models.IntegerField(
         default=0,
         help_text="Current applied config version",
