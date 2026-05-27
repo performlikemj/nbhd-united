@@ -1,0 +1,30 @@
+{
+  "id": "nbhd-cron-enforcement",
+  "name": "NBHD Cron Enforcement",
+  "description": "Fire-time enforcement for typed cron patterns. Observes cron_changed to cache pattern context per firing session, injects pattern-specific prompt addenda via before_prompt_build (appendSystemContext to avoid collision with nbhd-routing-context), validates outbound messages via message_sending. Registers no tools. See CONTINUITY_cron-typed-patterns.md.",
+  "contracts": {
+    "tools": []
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string",
+        "description": "Override NBHD API base URL. Defaults to NBHD_API_BASE_URL env var."
+      },
+      "requestTimeoutMs": {
+        "type": "number",
+        "minimum": 1000,
+        "maximum": 30000,
+        "description": "HTTP timeout for the Django runtime calls. Default 8s — these are on the agent-turn critical path."
+      },
+      "cacheTtlSeconds": {
+        "type": "number",
+        "minimum": 60,
+        "maximum": 1800,
+        "description": "How long a cached pattern-context entry lives before forced refresh. Default 600s."
+      }
+    }
+  }
+}

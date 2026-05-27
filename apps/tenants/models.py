@@ -389,6 +389,32 @@ class Tenant(models.Model):
         ),
     )
 
+    # Experimental: typed cron patterns.
+    # When True:
+    #   - The nbhd-automation-tools plugin is loaded, giving the agent
+    #     typed cron-create tools (nbhd_cron_create_pure_reminder,
+    #     nbhd_cron_create_quote_user_intent,
+    #     nbhd_cron_create_domain_summary).
+    #   - System-defined patterns (daily_briefing) are used for system
+    #     crons; CronJob rows carry pattern + typed_payload so fire-time
+    #     content is rendered against the pattern contract instead of
+    #     freeform prose.
+    #   - The nbhd-cron-enforcement plugin's hooks validate fire-time
+    #     output against the pattern's contract.
+    # Eventually the agent's raw ``cron`` tool will be added to the deny
+    # list (apps/orchestrator/tool_policy.py) so the only path to create
+    # a cron is the typed wrapper. That cutover is gated on this flag
+    # being True fleet-wide.
+    experimental_typed_crons = models.BooleanField(
+        default=False,
+        help_text=(
+            "Experimental: typed cron patterns (pure_reminder, "
+            "quote_user_intent, domain_summary, daily_briefing). "
+            "Loads nbhd-automation-tools + nbhd-cron-enforcement plugins. "
+            "Canary-gated rollout."
+        ),
+    )
+
     # When the most recent ``nightly_extraction_task`` run completed for this
     # tenant. Used by the hourly per-tenant-tz dispatcher to skip tenants
     # whose extraction has already run today (in their local timezone) — so

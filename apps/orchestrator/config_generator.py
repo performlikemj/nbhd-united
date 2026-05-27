@@ -1804,6 +1804,35 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             )
         )
 
+    # Typed cron patterns (feat/cron-typed-patterns) — canary-gated.
+    # nbhd-automation-tools registers the per-pattern create tools the
+    # agent calls (nbhd_cron_create_pure_reminder etc.). It is gated on
+    # experimental_typed_crons because the matching deny-list addition for
+    # raw `cron` only flips after fleet rollout — until then both surfaces
+    # coexist and we want only canary tenants reaching for the typed
+    # surface.
+    if getattr(tenant, "experimental_typed_crons", False):
+        _plugin_defs.append(
+            (
+                str(getattr(settings, "OPENCLAW_AUTOMATION_PLUGIN_ID", "nbhd-automation-tools") or "").strip(),
+                str(
+                    getattr(settings, "OPENCLAW_AUTOMATION_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-automation-tools")
+                    or ""
+                ).strip(),
+            )
+        )
+
+    # nbhd-cron-enforcement — fire-time hooks. Loads unconditionally in
+    # production (the hooks short-circuit when the run is not a typed cron
+    # — they look up pattern context from Django and only act if a typed
+    # row exists). Tests / smoke disable by setting the ID to "".
+    _plugin_defs.append(
+        (
+            str(getattr(settings, "OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID", "") or "").strip(),
+            str(getattr(settings, "OPENCLAW_CRON_ENFORCEMENT_PLUGIN_PATH", "") or "").strip(),
+        )
+    )
+
     _active_plugins = [(pid, ppath) for pid, ppath in _plugin_defs if pid]
 
     api_base = str(getattr(settings, "API_BASE_URL", "") or "").strip().rstrip("/")

@@ -10,6 +10,13 @@ start, and via an hourly fleet reconcile.
 Cutover is per-tenant via ``Tenant.postgres_cron_canonical``. While that
 flag is False (legacy default), the gateway is still the source of truth
 and this table is just a read cache as before.
+
+Typed pattern overlay (CONTINUITY_cron-typed-patterns.md): new ``pattern``
++ ``typed_payload`` columns let agent-created and system-defined crons
+declare their intent up-front. ``data`` becomes a derived view of
+``pattern + typed_payload`` for rows with ``creation_path == "typed"``;
+for ``"legacy"`` and ``"freeform"`` rows, ``data`` remains the source of
+truth.
 """
 
 from __future__ import annotations
@@ -26,6 +33,47 @@ class CronJobSource(models.TextChoices):
     AGENT = "agent", "Agent-created in-session (_sync:* etc.)"
 
 
+class CronPattern(models.TextChoices):
+    """Typed pattern for a cron's fire-time behavior.
+
+    The pattern is the contract: each value maps to a handler in
+    ``apps/cron/patterns/`` that owns building the OC payload, validating
+    fire-time output, and listing the tools the agent turn may call.
+
+    ``daily_briefing`` is system-defined — the agent's ``nbhd_cron_create_*``
+    tools do not accept it. System crons set it directly via
+    ``apps/cron/services.py``.
+    """
+
+    PURE_REMINDER = "pure_reminder", "Pure reminder"
+    QUOTE_USER_INTENT = "quote_user_intent", "Quote user intent"
+    DOMAIN_SUMMARY = "domain_summary", "Domain summary"
+    DAILY_BRIEFING = "daily_briefing", "Daily briefing (system)"
+
+
+class CronCreationPath(models.TextChoices):
+    """Discriminator for who created a CronJob row and via what path.
+
+    Determines whether ``data`` is derived (``typed``) or source-of-truth
+    (everything else), and whether the row is eligible for the
+    enforcement plugin's fire-time validation.
+
+    - ``legacy``: pre-typed rows; ``data`` is whatever was on the gateway
+      at sync time or whatever the legacy CronJobListCreateView wrote.
+    - ``typed``: created via the typed pattern flow; ``data`` is derived
+      from ``pattern + typed_payload`` by the pre_save signal.
+    - ``freeform``: explicit user-opt-in escape hatch from the console UI.
+      Requires ``user_confirmed_at`` to be set. Not creatable by the agent.
+    - ``internal``: agent-created internal-sync crons (``_sync:*``).
+      Reconciler leaves these alone (``managed=False``).
+    """
+
+    LEGACY = "legacy", "Legacy (pre-typed)"
+    TYPED = "typed", "Typed pattern"
+    FREEFORM = "freeform", "Freeform (UI-only, user-confirmed)"
+    INTERNAL = "internal", "Internal sync (agent-managed)"
+
+
 class CronJob(models.Model):
     tenant = models.ForeignKey(
         "tenants.Tenant",
@@ -36,7 +84,13 @@ class CronJob(models.Model):
     gateway_job_id = models.CharField(max_length=64, blank=True, default="")
     data = models.JSONField(
         default=dict,
-        help_text="The full job dict (schedule, payload, delivery, sessionTarget) — same shape as the OpenClaw gateway response.",
+        help_text=(
+            "Full job dict (schedule, payload, delivery, sessionTarget) — same "
+            "shape as the OpenClaw gateway response. For creation_path='typed' "
+            "this is DERIVED from pattern + typed_payload by the pre_save signal "
+            "and should not be edited directly. For legacy/freeform rows this "
+            "is the source of truth."
+        ),
     )
     source = models.CharField(
         max_length=16,
@@ -48,13 +102,53 @@ class CronJob(models.Model):
         default=True,
         help_text=(
             "If False, the reconciler leaves the gateway-side cron alone. "
-            "Used for agent-created _sync:* crons that live in SQLite-only."
+            "Used for agent-created _sync:* crons that live in SQLite-only, "
+            "and for typed one-off (kind:'at') crons that OC auto-deletes."
         ),
     )
     enabled = models.BooleanField(
         default=True,
         help_text="Lifted out of `data` for query clarity; toggles update this column.",
     )
+
+    # Typed pattern overlay — see CronPattern / CronCreationPath above.
+    pattern = models.CharField(
+        max_length=32,
+        choices=CronPattern.choices,
+        null=True,
+        blank=True,
+        help_text=(
+            "Typed pattern for this cron. NULL when creation_path is "
+            "legacy/freeform/internal. NOT NULL when creation_path='typed'."
+        ),
+    )
+    typed_payload = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Schema-validated payload for the typed pattern (see "
+            "apps/cron/patterns/<pattern>.py). Empty dict for legacy/freeform."
+        ),
+    )
+    creation_path = models.CharField(
+        max_length=16,
+        choices=CronCreationPath.choices,
+        default=CronCreationPath.LEGACY,
+        help_text=(
+            "Discriminator: who created this row and through which path. "
+            "Determines whether `data` is derived or source-of-truth."
+        ),
+    )
+    user_confirmed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Required when creation_path='freeform' — timestamp of the "
+            "explicit user confirmation that this cron's content will not "
+            "be validated. NULL for all other creation_paths."
+        ),
+    )
+
     last_synced_at = models.DateTimeField(
         null=True,
         blank=True,
@@ -74,10 +168,24 @@ class CronJob(models.Model):
                 fields=["tenant", "name"],
                 name="cron_unique_tenant_name",
             ),
+            # Freeform crons must carry an explicit user confirmation timestamp.
+            # Typed crons must carry a pattern. Enforced at the DB level so a
+            # buggy code path can't write an unvalidated cron via the freeform
+            # escape hatch without the confirmation, or a typed row without a
+            # pattern.
+            models.CheckConstraint(
+                condition=(~models.Q(creation_path="freeform") | models.Q(user_confirmed_at__isnull=False)),
+                name="cron_freeform_requires_user_confirmation",
+            ),
+            models.CheckConstraint(
+                condition=(~models.Q(creation_path="typed") | models.Q(pattern__isnull=False)),
+                name="cron_typed_requires_pattern",
+            ),
         ]
         indexes = [
             models.Index(fields=["tenant", "last_synced_at"]),
             models.Index(fields=["tenant", "source", "managed"]),
+            models.Index(fields=["tenant", "pattern"]),
         ]
 
     def __str__(self) -> str:
