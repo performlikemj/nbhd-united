@@ -4,7 +4,14 @@ from django.test import TestCase
 
 from apps.tenants.services import create_tenant
 
-from .services import check_budget, record_usage
+from .constants import DEEPSEEK_MODEL, MINIMAX_MODEL
+from .services import (
+    check_budget,
+    extract_model_from_response,
+    record_usage,
+    resolve_model_for_attribution,
+    resolve_tenant_primary_model,
+)
 
 
 class UsageTrackingTest(TestCase):
@@ -54,3 +61,85 @@ class UsageTrackingTest(TestCase):
         self.tenant.is_budget_exempt = True
         self.tenant.save()
         self.assertEqual(check_budget(self.tenant), "")
+
+
+class ResolveTenantPrimaryModelTest(TestCase):
+    """Coverage for the chain: applied_model → preferred_model → tier default."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Resolve Test", telegram_chat_id=555666777)
+
+    def test_uses_applied_model_first(self):
+        self.tenant.applied_model = MINIMAX_MODEL
+        self.tenant.preferred_model = DEEPSEEK_MODEL
+        self.tenant.save()
+        self.assertEqual(resolve_tenant_primary_model(self.tenant), MINIMAX_MODEL)
+
+    def test_falls_back_to_preferred_when_applied_empty(self):
+        self.tenant.applied_model = ""
+        self.tenant.preferred_model = DEEPSEEK_MODEL
+        self.tenant.save()
+        self.assertEqual(resolve_tenant_primary_model(self.tenant), DEEPSEEK_MODEL)
+
+    def test_falls_back_to_tier_default_when_both_empty(self):
+        # TIER_MODELS["starter"]["primary"] is DeepSeek as of PR #684.
+        self.tenant.applied_model = ""
+        self.tenant.preferred_model = ""
+        self.tenant.save()
+        self.assertEqual(resolve_tenant_primary_model(self.tenant), DEEPSEEK_MODEL)
+
+
+class ResolveModelForAttributionTest(TestCase):
+    """Coverage for the response-extract → fallback-to-primary chain."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Attribution Test", telegram_chat_id=666777888)
+
+    def test_prefers_response_extraction_when_present(self):
+        # Provider truth in the response wins, even if the tenant primary is different.
+        self.tenant.applied_model = DEEPSEEK_MODEL
+        self.tenant.save()
+        result = {"usage": {"model_used": "openrouter/some/other-model"}}
+        self.assertEqual(
+            resolve_model_for_attribution(self.tenant, result),
+            "openrouter/some/other-model",
+        )
+
+    def test_falls_back_to_tenant_primary_when_response_empty(self):
+        # OpenClaw 5.7's strict OpenAI-spec response has no upstream model id.
+        self.tenant.applied_model = DEEPSEEK_MODEL
+        self.tenant.save()
+        result = {"usage": {"prompt_tokens": 100, "completion_tokens": 50}}
+        self.assertEqual(resolve_model_for_attribution(self.tenant, result), DEEPSEEK_MODEL)
+
+    def test_falls_back_when_only_openclaw_placeholder_present(self):
+        # The "openclaw" top-level placeholder is the request-side echo and
+        # carries no information; fall back to the tenant primary.
+        self.tenant.applied_model = DEEPSEEK_MODEL
+        self.tenant.save()
+        result = {"model": "openclaw", "usage": {"prompt_tokens": 100, "completion_tokens": 50}}
+        self.assertEqual(resolve_model_for_attribution(self.tenant, result), DEEPSEEK_MODEL)
+
+    def test_falls_back_when_result_is_not_a_dict(self):
+        self.tenant.applied_model = DEEPSEEK_MODEL
+        self.tenant.save()
+        self.assertEqual(resolve_model_for_attribution(self.tenant, None), DEEPSEEK_MODEL)
+        self.assertEqual(resolve_model_for_attribution(self.tenant, "garbage"), DEEPSEEK_MODEL)
+
+
+class ExtractModelFromResponseTest(TestCase):
+    """Direct coverage for the legacy extract helper — preserves the
+    pre-PR-#614 invariants in case a future OpenClaw bump starts emitting
+    the upstream id again."""
+
+    def test_reads_usage_model_used_first(self):
+        result = {"model": "openclaw", "usage": {"model_used": "openrouter/x/y"}}
+        self.assertEqual(extract_model_from_response(result), "openrouter/x/y")
+
+    def test_skips_openclaw_placeholder(self):
+        result = {"model": "openclaw", "usage": {"prompt_tokens": 10}}
+        self.assertEqual(extract_model_from_response(result), "")
+
+    def test_reads_top_level_model_when_real(self):
+        result = {"model": "openrouter/x/y", "usage": {"prompt_tokens": 10}}
+        self.assertEqual(extract_model_from_response(result), "openrouter/x/y")

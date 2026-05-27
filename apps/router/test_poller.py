@@ -306,9 +306,16 @@ class TelegramPollerForwardTest(TestCase):
         url = completions_calls[0].args[0]
         self.assertIn("oc-test.internal", url)
 
-        # Verify chat completions payload
+        # Verify chat completions payload. Since PR #1.5 the model field
+        # carries the resolved tenant primary (so OpenClaw echoes it back
+        # at top-level and `extract_model_from_response` can read it),
+        # rather than the historic "openclaw" placeholder.
         payload = completions_calls[0].kwargs["json"]
-        self.assertEqual(payload["model"], "openclaw")
+        from apps.billing.constants import DEEPSEEK_MODEL
+
+        # Tenant has no preferred_model override → falls through to tier
+        # default (DeepSeek on starter).
+        self.assertEqual(payload["model"], DEEPSEEK_MODEL)
         content = payload["messages"][0]["content"]
         # Time header is injected before the user message
         self.assertIn("[Now: ", content)

@@ -17,7 +17,11 @@ from django.conf import settings
 from django.db import close_old_connections
 from django.utils import timezone
 
-from apps.billing.services import check_budget, extract_model_from_response, record_usage
+from apps.billing.services import (
+    check_budget,
+    record_usage,
+    resolve_model_for_attribution,
+)
 from apps.tenants.models import Tenant
 
 from .error_messages import error_msg
@@ -1376,7 +1380,7 @@ class TelegramPoller:
 
         input_tokens = usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0) or 0
         output_tokens = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0) or 0
-        model_used = extract_model_from_response(result)
+        model_used = resolve_model_for_attribution(tenant, result)
 
         if not (input_tokens or output_tokens):
             logger.warning(

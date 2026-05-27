@@ -51,7 +51,11 @@ from django.conf import settings
 from django.db import models, transaction
 from django.utils import timezone
 
-from apps.billing.services import extract_model_from_response, record_usage
+from apps.billing.services import (
+    record_usage,
+    resolve_model_for_attribution,
+    resolve_tenant_primary_model,
+)
 from apps.router.models import PendingMessage
 from apps.tenants.models import Tenant
 
@@ -836,7 +840,10 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
     gateway_token = get_gateway_token_for_tenant(tenant)
 
     chat_payload = {
-        "model": "openclaw",
+        # Send the resolved tenant primary so OpenClaw echoes it back at
+        # top-level. The "openclaw" literal fallback is defensive — only
+        # hits if the tier-default lookup raises (effectively never).
+        "model": resolve_tenant_primary_model(tenant) or "openclaw",
         "messages": [{"role": "user", "content": content}],
         "user": user_param,
     }
@@ -888,7 +895,7 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
     gateway_token = get_gateway_token_for_tenant(tenant)
 
     chat_payload = {
-        "model": "openclaw",
+        "model": resolve_tenant_primary_model(tenant) or "openclaw",
         "messages": [{"role": "user", "content": content}],
         "user": user_param,
     }
@@ -1227,7 +1234,7 @@ def _record_usage_safe(tenant: Tenant, result: Any, *, message_count: int = 1) -
 
     input_tokens = usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0) or 0
     output_tokens = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0) or 0
-    model_used = extract_model_from_response(result)
+    model_used = resolve_model_for_attribution(tenant, result)
 
     if not (input_tokens or output_tokens):
         return
