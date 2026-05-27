@@ -42,7 +42,7 @@ class CreateSubKeyTest(TestCase):
         mock_post.return_value = _mock_response(
             201,
             {
-                "key": "sk-or-v1-xyz",
+                "key": "mock-or-key-xyz",
                 "data": {
                     "hash": "abc123",
                     "name": "tenant-148ccf1c",
@@ -56,7 +56,7 @@ class CreateSubKeyTest(TestCase):
 
         api_key, key_hash = create_sub_key("tenant-148ccf1c", limit_dollars=5.0)
 
-        self.assertEqual(api_key, "sk-or-v1-xyz")
+        self.assertEqual(api_key, "mock-or-key-xyz")
         self.assertEqual(key_hash, "abc123")
 
         # Verify request shape: Bearer header + correct body.
@@ -154,23 +154,23 @@ class GetKeyUsageTest(TestCase):
                 }
             },
         )
-        self.assertEqual(get_key_usage("sk-or-v1-xyz"), Decimal("1.23"))
+        self.assertEqual(get_key_usage("mock-or-key-xyz"), Decimal("1.23"))
         # Verify Bearer header uses the supplied API key, not management.
         self.assertEqual(
             mock_get.call_args.kwargs["headers"]["Authorization"],
-            "Bearer sk-or-v1-xyz",
+            "Bearer mock-or-key-xyz",
         )
 
     @patch("apps.billing.openrouter_admin.httpx.get")
     def test_returns_zero_on_http_error(self, mock_get):
         mock_get.return_value = _mock_response(500, text_body="boom")
         # Reconcile cron tolerates per-tenant failures; should not raise.
-        self.assertEqual(get_key_usage("sk-or-v1-xyz"), Decimal("0"))
+        self.assertEqual(get_key_usage("mock-or-key-xyz"), Decimal("0"))
 
     @patch("apps.billing.openrouter_admin.httpx.get")
     def test_returns_zero_when_field_missing(self, mock_get):
         mock_get.return_value = _mock_response(200, {"data": {"usage": 5.0}})
-        self.assertEqual(get_key_usage("sk-or-v1-xyz"), Decimal("0"))
+        self.assertEqual(get_key_usage("mock-or-key-xyz"), Decimal("0"))
 
     @patch("apps.billing.openrouter_admin.httpx.get")
     def test_empty_api_key_returns_zero_without_calling(self, mock_get):

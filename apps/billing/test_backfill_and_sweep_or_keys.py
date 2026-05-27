@@ -48,8 +48,8 @@ class BackfillTest(TestCase):
     @patch("apps.billing.openrouter_admin.create_sub_key")
     def test_creates_keys_only_for_eligible_tenants(self, mock_create, mock_kv, mock_rebind):
         mock_create.side_effect = [
-            ("sk-or-v1-t1", "hash-t1"),
-            ("sk-or-v1-t3", "hash-t3"),
+            ("mock-or-key-t1", "hash-t1"),
+            ("mock-or-key-t3", "hash-t3"),
         ]
         out = StringIO()
         call_command("backfill_openrouter_keys", stdout=out)
@@ -81,7 +81,7 @@ class BackfillTest(TestCase):
     @patch("apps.byo_models.services._write_secret_to_kv")
     @patch("apps.billing.openrouter_admin.create_sub_key")
     def test_filter_by_single_tenant(self, mock_create, mock_kv, mock_rebind):
-        mock_create.return_value = ("sk-or-v1-only", "hash-only")
+        mock_create.return_value = ("mock-or-key-only", "hash-only")
         out = StringIO()
         call_command("backfill_openrouter_keys", f"--tenant={self.t1.id}", stdout=out)
 

@@ -28,7 +28,7 @@ class ReconcileTenantTest(TestCase):
     @patch("apps.billing.management.commands.reconcile_openrouter_spend.get_key_usage")
     @patch("apps.orchestrator.azure_client.read_key_vault_secret")
     def test_trues_up_when_provider_exceeds_internal(self, mock_kv, mock_usage):
-        mock_kv.return_value = "sk-or-v1-xyz"
+        mock_kv.return_value = "mock-or-key-xyz"
         mock_usage.return_value = Decimal("3.75")
 
         updated, before, after = _reconcile_tenant(self.tenant)
@@ -45,7 +45,7 @@ class ReconcileTenantTest(TestCase):
         # Internal is HIGHER than provider — keep internal (BYO calls
         # don't show up in provider truth, so reducing would let the
         # tenant chat past their effective cap).
-        mock_kv.return_value = "sk-or-v1-xyz"
+        mock_kv.return_value = "mock-or-key-xyz"
         mock_usage.return_value = Decimal("1.00")
 
         updated, _before, _after = _reconcile_tenant(self.tenant)
@@ -95,7 +95,7 @@ class ReconcileAllTest(TestCase):
     @patch("apps.billing.management.commands.reconcile_openrouter_spend.get_key_usage")
     @patch("apps.orchestrator.azure_client.read_key_vault_secret")
     def test_iterates_only_active_tenants_with_keys(self, mock_kv, mock_usage, mock_shared):
-        mock_kv.return_value = "sk-or-v1-xyz"
+        mock_kv.return_value = "mock-or-key-xyz"
         mock_usage.return_value = Decimal("2.00")
         mock_shared.return_value = Decimal("0.50")
 
@@ -120,7 +120,7 @@ class ReconcileAllTest(TestCase):
     @patch("apps.orchestrator.azure_client.read_key_vault_secret")
     def test_one_tenant_failure_does_not_stop_others(self, mock_kv, mock_usage, mock_shared):
         # First call raises, second returns a valid value.
-        mock_kv.side_effect = [RuntimeError("KV blew up"), "sk-or-v1-good"]
+        mock_kv.side_effect = [RuntimeError("KV blew up"), "mock-or-key-good"]
         mock_usage.return_value = Decimal("1.00")
         mock_shared.return_value = Decimal("0")
 
