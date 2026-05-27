@@ -39,6 +39,27 @@ function est1RM(weight: number, reps: number): number {
   return Math.round(weight * (1 + reps / 30) * 10) / 10;
 }
 
+/**
+ * Normalize a raw pace string to canonical MM:SS for storage.
+ *
+ * Accepts colon (8:34), prime/double-prime (8'34"), period (8.34),
+ * comma (8,34), or m/s markers (8m34s). Strips an optional /km or /mi
+ * suffix that Garmin/Strava pastes carry. Seconds are zero-padded.
+ *
+ * Pass-through: anything that doesn't match the digit-separator-digit
+ * shape (descriptive entries like "tempo" or "comfortably hard") is
+ * returned trimmed but otherwise unchanged. Backend stores either form
+ * — only MM:SS graphs in apps/fuel/services.py.
+ */
+function normalizePace(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  const m = trimmed.match(/^(\d{1,2})\s*[':,.m:]\s*(\d{1,2})\s*["s]?\s*(?:\/(?:km|mi))?\s*$/i);
+  if (!m) return trimmed;
+  const [, mins, secs] = m;
+  return `${parseInt(mins, 10)}:${secs.padStart(2, "0")}`;
+}
+
 /* ---- Per-set metric contract (#593 Phase 5) ----
  *
  * Mirrors apps/fuel/set_contract.set_metric: prefer the explicit `type`
@@ -386,7 +407,7 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
               )}
             </FieldBox>
             <FieldBox
-              label="RPE · 1–10"
+              label="RPE · effort 1–10"
               hint="Rate of perceived exertion: 1 = barely working, 10 = absolute max."
             >
               {editing ? (
@@ -409,8 +430,8 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
               ["rounds", "ROUNDS", ""],
               ["work_s", "WORK", "sec"],
               ["rest_s", "REST", "sec"],
-              ["peak_hr", "PEAK HR", "bpm"],
-              ["avg_hr", "AVG HR", "bpm"],
+              ["peak_hr", "HEART RATE · PEAK", "bpm"],
+              ["avg_hr", "HEART RATE · AVG", "bpm"],
               ["calories", "KCAL", ""],
             ]} />
           )}
@@ -772,10 +793,16 @@ function StatsEditor({ detail, editing, onChange, fields }: {
 
 /* ---- Cardio Stats Editor ---- */
 /**
- * Cardio-specific stats with km/mi unit toggle, pace MM:SS hint, and
- * every field labeled with its unit + a hover tooltip describing what
- * the value means. Storage is canonical (km for distance, m for
- * elevation) — conversion happens only at the display boundary.
+ * Cardio-specific stats with km/mi unit toggle and tolerant pace input.
+ * Storage is canonical (km for distance, m for elevation, MM:SS for pace)
+ * — conversion + normalization happen only at the display/commit boundary.
+ *
+ * Label convention: plain English over abbreviations, with optional
+ * middle-dot qualifiers for domain context ("HEART RATE", not "AVG HR";
+ * "RPE · effort 1–10"). The `title=` hover tooltip is desktop-only
+ * progressive enhancement — never the primary surface for what a field
+ * means, since mobile users get no hover. If a label needs a tooltip to
+ * be understood, rename the label.
  */
 function CardioStatsEditor({ detail, editing, onChange }: {
   detail: Record<string, unknown>;
@@ -832,26 +859,31 @@ function CardioStatsEditor({ detail, editing, onChange }: {
           unit={`/${unit}`}
           editing={editing}
           displayValue={(detail.pace as string | null | undefined) ?? null}
-          hint={`Format MM:SS per ${unit} (e.g. 5:30). Free-form text saves but won't graph in Progress.`}
+          hint={`Try 5:30, 5'30", or 5m30s per ${unit} — all save as MM:SS. Descriptive text ("tempo") saves but won't graph.`}
         >
           <input
             type="text"
-            // inputMode="text" so iOS keyboards include `:` (numeric/decimal
-            // pads hide it). pattern is advisory — the backend accepts
-            // any string but only MM:SS graphs in Progress
-            // (apps/fuel/services.py).
+            // inputMode="text" so iOS keyboards include `:`, `'`, `"` etc.
+            // The numeric/decimal pads hide most of these. Normalization
+            // happens on blur via normalizePace(), so users can type any
+            // common notation and the stored value is canonical MM:SS.
             inputMode="text"
-            pattern="[0-9]{1,2}:[0-9]{2}"
-            maxLength={5}
+            maxLength={10}
             value={(detail.pace as string) ?? ""}
             onChange={(e) => onChange({ pace: e.target.value || null })}
+            onBlur={(e) => {
+              const normalized = normalizePace(e.target.value);
+              if (normalized !== e.target.value) {
+                onChange({ pace: normalized || null });
+              }
+            }}
             placeholder="5:30"
             aria-label="Pace"
             className="min-w-0 flex-1 bg-transparent font-mono text-base text-ink focus:outline-none placeholder:text-ink-faint"
           />
         </StatBox>
         <StatBox
-          label="AVG HR"
+          label="HEART RATE"
           unit="bpm"
           editing={editing}
           displayValue={(detail.avg_hr as number | null | undefined) ?? null}
@@ -883,7 +915,7 @@ function CardioStatsEditor({ detail, editing, onChange }: {
           />
         </StatBox>
         <StatBox
-          label="AVG POWER"
+          label="POWER"
           unit="w"
           editing={editing}
           displayValue={(detail.avg_power as number | null | undefined) ?? null}
