@@ -70,6 +70,19 @@ def _backfill_one(tenant: Tenant, dry_run: bool, stdout) -> bool:
     limit = float(TIER_COST_BUDGETS.get(tier, 5.00))
     label = f"tenant-{tid}"
 
+    # Resolve the per-tenant KV secret name BEFORE any side-effecting OR
+    # call. Tenants from the pre-key_vault_prefix-backfill era (and any
+    # other tenant where the prefix is empty) would otherwise leak an
+    # orphan OR sub-key on every run — create_sub_key would succeed, then
+    # secret_name_for_tenant would raise, and the freshly-issued OR key
+    # has nowhere to land. Cost us 9 orphans on the 2026-05-28 fleet
+    # backfill; the secondary fix in this PR is the order swap below.
+    try:
+        secret_name = secret_name_for_tenant(tenant)
+    except OpenRouterAdminError as exc:
+        stdout.write(f"[FAIL] tenant={tid} secret_name lookup (no OR sub-key created): {exc}")
+        return False
+
     if dry_run:
         stdout.write(f"[DRY-RUN] would create sub-key for tenant={tid} label={label} limit=${limit:.2f}/mo")
         return True
@@ -78,12 +91,6 @@ def _backfill_one(tenant: Tenant, dry_run: bool, stdout) -> bool:
         api_key, key_hash = create_sub_key(label, limit_dollars=limit, limit_reset="monthly")
     except OpenRouterAdminError as exc:
         stdout.write(f"[FAIL] tenant={tid} create_sub_key: {exc}")
-        return False
-
-    try:
-        secret_name = secret_name_for_tenant(tenant)
-    except OpenRouterAdminError as exc:
-        stdout.write(f"[FAIL] tenant={tid} secret_name lookup: {exc}")
         return False
 
     try:
