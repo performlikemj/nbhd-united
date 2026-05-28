@@ -574,6 +574,15 @@ class Tenant(models.Model):
         default=False,
         help_text="Enable workout tracking and fitness logging",
     )
+    fuel_version = models.PositiveIntegerField(
+        default=0,
+        help_text=(
+            "Monotonic counter bumped on every Workout / WorkoutPlan write. "
+            "Embedded in schedule / calendar responses so the frontend can "
+            "detect an out-of-band write by the assistant runtime and prompt "
+            "the user to refresh before saving an open drawer."
+        ),
+    )
 
     # Welcome-cron delivery telemetry. Keys are feature names ("fuel",
     # "finance"), values are ISO-8601 timestamps of successful welcome
