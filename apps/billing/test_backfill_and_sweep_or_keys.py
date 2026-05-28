@@ -44,9 +44,15 @@ class BackfillTest(TestCase):
             call_command("backfill_openrouter_keys")
 
     @patch("apps.orchestrator.azure_client.update_container_openrouter_key_secret")
+    @patch("apps.orchestrator.azure_client.assign_key_vault_role")
+    @patch("apps.orchestrator.azure_client.get_identity_client")
     @patch("apps.byo_models.services._write_secret_to_kv")
     @patch("apps.billing.openrouter_admin.create_sub_key")
-    def test_creates_keys_only_for_eligible_tenants(self, mock_create, mock_kv, mock_rebind):
+    def test_creates_keys_only_for_eligible_tenants(self, mock_create, mock_kv, mock_idc, mock_grant, mock_rebind):
+        # Identity-client stub: principal_id read from the MI lookup feeds
+        # into assign_key_vault_role. Just needs to return SOMETHING with
+        # a .principal_id attr.
+        mock_idc.return_value.user_assigned_identities.get.return_value.principal_id = "test-principal"
         mock_create.side_effect = [
             ("mock-or-key-t1", "hash-t1"),
             ("mock-or-key-t3", "hash-t3"),
@@ -66,6 +72,10 @@ class BackfillTest(TestCase):
         self.assertEqual(self.t3.openrouter_key_hash, "hash-t3")
         self.assertEqual(self.t4.openrouter_key_hash, "")
 
+        # KV role granted only for t1 — t3 has no managed_identity_id in
+        # setUp ("eligible, but no container update") so the grant is
+        # skipped (would be a no-op anyway with no MI to grant to).
+        self.assertEqual(mock_grant.call_count, 1)
         # Only ACTIVE tenants get a container rebind. t3 is SUSPENDED → skipped.
         self.assertEqual(mock_rebind.call_count, 1)
 
@@ -78,9 +88,12 @@ class BackfillTest(TestCase):
         self.assertEqual(self.t1.openrouter_key_secret_name, "")
 
     @patch("apps.orchestrator.azure_client.update_container_openrouter_key_secret")
+    @patch("apps.orchestrator.azure_client.assign_key_vault_role")
+    @patch("apps.orchestrator.azure_client.get_identity_client")
     @patch("apps.byo_models.services._write_secret_to_kv")
     @patch("apps.billing.openrouter_admin.create_sub_key")
-    def test_filter_by_single_tenant(self, mock_create, mock_kv, mock_rebind):
+    def test_filter_by_single_tenant(self, mock_create, mock_kv, mock_idc, mock_grant, mock_rebind):
+        mock_idc.return_value.user_assigned_identities.get.return_value.principal_id = "test-principal"
         mock_create.return_value = ("mock-or-key-only", "hash-only")
         out = StringIO()
         call_command("backfill_openrouter_keys", f"--tenant={self.t1.id}", stdout=out)
