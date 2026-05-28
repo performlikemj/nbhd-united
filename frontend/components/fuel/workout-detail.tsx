@@ -99,6 +99,16 @@ function reshapeSet(s: RawSet, m: SetMetric): RawSet {
   return { type: m, reps, weight, ...pr };
 }
 
+function TrashIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 6h18" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
+
 function MetricToggle({
   value,
   onChange,
@@ -713,6 +723,16 @@ function StrengthEditor({ detail, editing, onChange }: { detail: Record<string, 
                   1RM est {dw(oneRm)} {unit}
                 </div>
               )}
+              {editing && (
+                <button
+                  type="button"
+                  onClick={() => onChange({ exercises: exercises.filter((_, k) => k !== i) })}
+                  aria-label={`Delete exercise ${ex.name || i + 1}`}
+                  className="rounded-md min-h-[36px] min-w-[36px] -mr-1.5 px-2 text-ink-faint hover:text-rose-text hover:bg-rose-bg/40 transition shrink-0"
+                >
+                  <TrashIcon />
+                </button>
+              )}
             </div>
             <div className="space-y-1">
               {ex.sets.map((s, j) => {
@@ -728,6 +748,16 @@ function StrengthEditor({ detail, editing, onChange }: { detail: Record<string, 
                     <span className="font-mono text-[10px] text-ink-faint">{j + 1}</span>
                     {editing && <MetricToggle value={metric} onChange={setType} />}
                     {s.pr && <span className="ml-auto text-[8px] font-bold uppercase tracking-wider text-accent">PR</span>}
+                    {editing && (
+                      <button
+                        type="button"
+                        onClick={() => updateEx(i, { ...ex, sets: ex.sets.filter((_, k) => k !== j) })}
+                        aria-label={`Delete set ${j + 1}`}
+                        className={`${s.pr ? "" : "ml-auto"} rounded-md min-h-[28px] min-w-[28px] -mr-0.5 px-1 text-ink-faint hover:text-rose-text hover:bg-rose-bg/40 transition shrink-0`}
+                      >
+                        <TrashIcon size={12} />
+                      </button>
+                    )}
                   </div>
                   <div className="flex items-center gap-2 text-xs">
                     {metric === "hold_time" ? (
@@ -1056,6 +1086,16 @@ function CalisthenicsEditor({ detail, editing, onChange }: { detail: Record<stri
                 ) : (
                   <div className="flex-1 text-sm font-medium text-ink">{sk.name}</div>
                 )}
+                {editing && (
+                  <button
+                    type="button"
+                    onClick={() => onChange({ skills: skills.filter((_, k) => k !== i) })}
+                    aria-label={`Delete skill ${sk.name || i + 1}`}
+                    className="rounded-md min-h-[36px] min-w-[36px] -mr-1.5 px-2 text-ink-faint hover:text-rose-text hover:bg-rose-bg/40 transition shrink-0"
+                  >
+                    <TrashIcon />
+                  </button>
+                )}
               </div>
               <div className="space-y-1.5">
                 {sk.sets.map((s, j) => {
@@ -1078,6 +1118,16 @@ function CalisthenicsEditor({ detail, editing, onChange }: { detail: Record<stri
                         />
                       )}
                       {s.pr && <span className="ml-auto text-[8px] font-bold uppercase tracking-wider text-accent">PR</span>}
+                      {editing && (
+                        <button
+                          type="button"
+                          onClick={() => updateSkill(i, { ...sk, sets: sk.sets.filter((_, k) => k !== j) })}
+                          aria-label={`Delete set ${j + 1}`}
+                          className={`${s.pr ? "" : "ml-auto"} rounded-md min-h-[28px] min-w-[28px] -mr-0.5 px-1 text-ink-faint hover:text-rose-text hover:bg-rose-bg/40 transition shrink-0`}
+                        >
+                          <TrashIcon size={12} />
+                        </button>
+                      )}
                     </div>
                     <div className="flex items-center gap-1 text-xs">
                       {editing ? (
