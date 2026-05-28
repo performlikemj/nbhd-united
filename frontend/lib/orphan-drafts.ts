@@ -34,6 +34,13 @@ export interface OrphanDraft {
   notes: string;
   detail_json: Record<string, unknown>;
   source: OrphanDraftSource;
+  /**
+   * The original workout's status at the time of stash. Optional for
+   * backwards compatibility with drafts captured before phase 6 of the
+   * plan-reconciler work — those default to ``"planned"`` on recovery so
+   * a future-dated edit isn't silently downgraded to a completed log.
+   */
+  status?: "done" | "planned";
 }
 
 type StashShape = Record<string /* tenantId */, Record<string /* stashId */, OrphanDraft>>;

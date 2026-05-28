@@ -91,10 +91,24 @@ class WorkoutSerializer(serializers.ModelSerializer):
             "detail_json",
             "plan_id",
             "plan_name",
+            "version",
+            "edit_lock_until",
+            "edit_lock_owner",
+            "last_edited_by_user_at",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "plan_id", "plan_name", "created_at", "updated_at"]
+        read_only_fields = [
+            "id",
+            "plan_id",
+            "plan_name",
+            "version",
+            "edit_lock_until",
+            "edit_lock_owner",
+            "last_edited_by_user_at",
+            "created_at",
+            "updated_at",
+        ]
 
     def validate_detail_json(self, value):
         """Basic shape validation per category."""

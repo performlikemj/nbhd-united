@@ -4,6 +4,7 @@ import calendar
 import logging
 from collections import defaultdict
 from datetime import date as date_cls
+from datetime import timedelta
 
 from django.db.models import Count, Sum
 from rest_framework import status
@@ -331,9 +332,12 @@ class WorkoutDetailView(APIView):
         return Response(WorkoutSerializer(workout).data)
 
     def patch(self, request, workout_id):
+        from django.utils import timezone
+
         workout, err = self._get_workout(request, workout_id)
         if err:
             return err
+        was_done = workout.status == "done"
         serializer = WorkoutSerializer(
             workout,
             data=request.data,
@@ -343,7 +347,21 @@ class WorkoutDetailView(APIView):
         serializer.is_valid(raise_exception=True)
         updated = serializer.save()
         detect_prs(workout.tenant, updated)
-        return Response(serializer.data)
+        # Phase 7 — stamp last_edited_by_user_at when a user PATCH lands on
+        # a `done` workout more than 24h after creation, so the drawer can
+        # surface a small "Edited <relative>" footnote. Skip the stamp when
+        # the user is the one transitioning the workout into done in this
+        # same request (the initial completion isn't a post-completion edit).
+        is_post_completion_edit = (
+            was_done
+            and updated.status == "done"
+            and updated.created_at is not None
+            and (timezone.now() - updated.created_at).total_seconds() > 24 * 3600
+        )
+        if is_post_completion_edit:
+            updated.last_edited_by_user_at = timezone.now()
+            updated.save(update_fields=["last_edited_by_user_at"])
+        return Response(WorkoutSerializer(updated).data)
 
     def delete(self, request, workout_id):
         workout, err = self._get_workout(request, workout_id)
@@ -351,6 +369,85 @@ class WorkoutDetailView(APIView):
             return err
         workout.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class WorkoutEditLockView(APIView):
+    """POST/DELETE the per-workout edit lock.
+
+    The browser POSTs when it enters edit mode and again every ~half the
+    TTL while the drawer stays open (heartbeat). The runtime ``PATCH``
+    paths refuse to mutate a workout whose ``edit_lock_until`` is in the
+    future — see :class:`apps.fuel.runtime_views.RuntimeWorkoutDetailView`.
+
+    DELETE is the explicit release on close/save. Cookies and reconnects
+    can still wedge the lock — it self-expires after
+    :setting:`FUEL_EDIT_LOCK_TTL_SECONDS` so a stranded lock can't block
+    assistant writes indefinitely.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def _get_workout(self, request, workout_id):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return None, Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            workout = Workout.objects.get(id=workout_id, tenant=tenant)
+        except Workout.DoesNotExist:
+            return None, Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        return workout, None
+
+    def post(self, request, workout_id):
+        from django.conf import settings as django_settings
+        from django.utils import timezone
+
+        workout, err = self._get_workout(request, workout_id)
+        if err:
+            return err
+        ttl = int(getattr(django_settings, "FUEL_EDIT_LOCK_TTL_SECONDS", 60))
+        workout.edit_lock_until = timezone.now() + timedelta(seconds=ttl)
+        workout.edit_lock_owner = "user"
+        workout.save(update_fields=["edit_lock_until", "edit_lock_owner", "updated_at"])
+        return Response(
+            {
+                "workout_id": str(workout.id),
+                "edit_lock_until": workout.edit_lock_until.isoformat(),
+                "edit_lock_owner": workout.edit_lock_owner,
+                "ttl_seconds": ttl,
+                "version": workout.version,
+            }
+        )
+
+    def delete(self, request, workout_id):
+        workout, err = self._get_workout(request, workout_id)
+        if err:
+            return err
+        if workout.edit_lock_until is None and not workout.edit_lock_owner:
+            # Already released — return 204 either way for idempotency.
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        workout.edit_lock_until = None
+        workout.edit_lock_owner = ""
+        workout.save(update_fields=["edit_lock_until", "edit_lock_owner", "updated_at"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class FuelVersionView(APIView):
+    """GET: the tenant's monotonic Fuel write counter.
+
+    Cheap endpoint the frontend polls so a workout-detail drawer can show
+    a "Updated by your assistant — refresh?" pill when the counter bumps
+    while the drawer is open. The counter is bumped by post_save /
+    post_delete signals on Workout + WorkoutPlan (see
+    ``apps.fuel.signals``).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"fuel_version": tenant.fuel_version})
 
 
 class WorkoutCalendarView(APIView):

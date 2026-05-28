@@ -107,6 +107,9 @@ import {
   deleteWorkout,
   skipWorkout,
   completeWorkout,
+  acquireEditLock,
+  fetchFuelVersion,
+  releaseEditLock,
   swapWorkouts,
   fetchFuelProgress,
   fetchBodyWeight,
@@ -1305,6 +1308,28 @@ export function useSwapWorkoutsMutation() {
   return useMutation({
     mutationFn: ({ a, b }: { a: string; b: string }) => swapWorkouts(a, b),
     onSuccess: () => invalidateFuelLists(qc),
+  });
+}
+
+export function useFuelVersionQuery(opts?: { refetchInterval?: number; enabled?: boolean }) {
+  return useQuery({
+    queryKey: ["fuel-version"],
+    queryFn: fetchFuelVersion,
+    staleTime: 0,
+    refetchInterval: opts?.refetchInterval ?? 30_000,
+    enabled: opts?.enabled !== false && isLoggedIn(),
+  });
+}
+
+export function useAcquireEditLockMutation() {
+  return useMutation({
+    mutationFn: (workoutId: string) => acquireEditLock(workoutId),
+  });
+}
+
+export function useReleaseEditLockMutation() {
+  return useMutation({
+    mutationFn: (workoutId: string) => releaseEditLock(workoutId),
   });
 }
 
