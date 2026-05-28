@@ -4,63 +4,65 @@ Always get explicit user confirmation before creating or modifying any scheduled
 
 ## How scheduled tasks run
 
-There are two kinds of cron jobs with different session targets:
+User-facing crons (reminders, alarms, custom tasks) and system crons (Morning Briefing, etc.) **both** use `sessionTarget: "isolated"` + `payload.kind: "agentTurn"` on this fleet. The agent runs a one-turn isolated session at fire time and delivers any user-facing message via `nbhd_send_to_user`.
 
-### User-created crons (reminders, alarms, custom tasks)
+Why not `sessionTarget: "main"` for "context-aware" reminders? Two reasons enforced by the runtime:
 
-These run in the **main session** (`sessionTarget: "main"`, `delivery: {mode: "none"}`).
-Running on main means you have full conversation context — when the user replies to a
-reminder, you already know what you just sent them. No sync cron needed.
+1. **`sessionTarget: "main"` REQUIRES `payload.kind: "systemEvent"`** — the gateway throws `main cron jobs require payload.kind="systemEvent"` and the call fails with HTTP 500. The combination `main + agentTurn` is invalid.
+2. **`main + systemEvent + wakeMode:"now"` runs through the heartbeat scheduler**, which is gated by `agents.defaults.heartbeat.activeHours`. Outside that window every fire is silently skipped (`status: "skipped"`, `error: "quiet-hours"`, job auto-disables). For ad-hoc reminders that can fire any time of day, this is the wrong tool.
 
-To deliver the message, call `nbhd_send_to_user`. Do NOT use `delivery: {mode: "announce"}`
-with `sessionTarget: "main"` — that combination is rejected. The `nbhd_send_to_user`
-plugin handles all outbound delivery.
+The isolated + agentTurn pattern fires regardless of heartbeat hours, and the agent's `payload.message` is the full instruction it reads at fire time. Treat that message as a letter to your future self — the original conversation will not be in active context.
 
 ### System crons (Morning Briefing, Evening Check-in, etc.)
 
-These run in **isolated sessions** (`sessionTarget: "isolated"`, `delivery: {mode: "none"}`).
-Isolation makes long-running journal writes and external API calls reliable — a system
-task can never collide with the user's active conversation.
+Same isolated + agentTurn shape. System tasks have a **foreground / background** flag:
 
-System tasks have a **foreground / background** flag:
+- **Foreground (default)** — when the task finishes, it pushes a 2-3 sentence summary into the main session so the assistant knows what just happened. The push is *conditional*: it only fires on runs where the task actually sent the user a message. Heartbeat-style tasks that often return silently will only sync on the runs that produced output.
+- **Background** — runs silently and never reports back. Use this for noisy maintenance jobs like Background Tasks. The user can toggle it from their Scheduled Tasks page.
 
-- **Foreground (default)** — when the task finishes, it pushes a 2-3 sentence summary
-  into the main session so the assistant knows what just happened. The push is
-  *conditional*: it only fires on runs where the task actually sent the user a message.
-  Heartbeat-style tasks that often return silently will only sync on the runs that
-  produced output.
-- **Background** — runs silently and never reports back. Use this for noisy maintenance
-  jobs like Background Tasks. The user can toggle it from their Scheduled Tasks page.
+The Phase 2 sync is implemented as a one-shot cron the agent creates at the end of its run. These are named `_sync:<task name>` and are hidden from the user-facing UI. They self-clean: the systemEvent text instructs the main session to call `cron remove _sync:<task name>` after noting the summary. Don't manually create, modify, or delete `_sync:*` jobs.
 
-The Phase 2 sync is implemented as a one-shot cron the agent creates at the end of its
-run. These are named `_sync:<task name>` and are hidden from the user-facing UI. They
-self-clean: the systemEvent text instructs the main session to call
-`cron remove _sync:<task name>` after noting the summary. Don't manually create,
-modify, or delete `_sync:*` jobs.
+### Messaging rule
 
-### Messaging rule (both kinds)
+The native `message` tool does not work in subscriber containers — **always use `nbhd_send_to_user` to deliver messages to the user.** OC's runner-fallback `delivery.mode: "announce"` is also broken on this fleet (no Telegram bot token at the OC channel layer; nbhd-telegram plugin handles outbound). **Always pass `delivery: {"mode": "none"}` explicitly** — if you omit `delivery`, OC defaults to `announce` for isolated+agentTurn and `cron add` is rejected at submit-time with `delivery.channel is required when multiple channels are configured`.
 
-The native `message` tool does not work in subscriber containers — **always use
-`nbhd_send_to_user` to deliver messages to the user.** This applies to every cron
-job: system crons, user-created reminders, everything.
-
-**Journal writes are MANDATORY when the cron prompt asks for them.** Use
-`nbhd_daily_note_set_section` and `nbhd_daily_note_append` exactly as the cron prompt
-instructs. Do not assume normal memory hooks will cover it — they will not, and the
-Journal app will be empty if you skip the explicit calls.
+**Journal writes are MANDATORY when the cron prompt asks for them.** Use `nbhd_daily_note_set_section` and `nbhd_daily_note_append` exactly as the cron prompt instructs. Do not assume normal memory hooks will cover it — they will not, and the Journal app will be empty if you skip the explicit calls.
 
 ## Two flavours of scheduling
 
 Pick the right shape for the user's intent:
 
-- **Recurring task** — repeats on a pattern ("every weekday at 8am", "every Monday morning"). Use `schedule: {kind: "cron", expr: "...", tz: "..."}`. Counts toward the 10-task cap. Requires explicit approval before creation.
+- **Recurring task** — repeats on a pattern ("every weekday at 8am", "every Monday morning"). Use `schedule: {kind: "cron", expr: "...", tz: "..."}`. Counts toward the 10-task cap. Requires explicit approval before creation. Does **not** auto-delete — manage lifecycle via `cron remove`.
 - **One-off reminder** — fires once at a specific moment ("remind me in 20 minutes", "ping me at 4pm today", "tomorrow morning"). Use `schedule: {kind: "at", at: "..."}`. Does NOT count toward the 10-task cap. Auto-deletes after firing. Lighter approval — confirm in text, no buttons needed.
 
 If the user's request is ambiguous, ask: *"Is this a one-time reminder or something you want me to repeat?"*
 
+## Canonical `cron add` shape (both flavours)
+
+```json
+{
+  "name": "<short descriptive label>",
+  "schedule": { ... },
+  "sessionTarget": "isolated",
+  "payload": {
+    "kind": "agentTurn",
+    "message": "<self-contained instruction the future-you reads at fire time>"
+  },
+  "wakeMode": "now",
+  "delivery": { "mode": "none" }
+}
+```
+
+`schedule` is the only thing that changes between recurring and one-off:
+
+- Recurring: `{"kind": "cron", "expr": "<5-field>", "tz": "<userTimezone>"}`
+- One-off: `{"kind": "at", "at": "<ISO 8601 with offset, e.g. 2026-06-18T09:00:00+09:00>"}` or relative duration `"20m"`, `"2h"`, `"1d"`
+
+Every other field is the same. **Do not deviate from this shape** — the variants that *look* sensible (`main` session for context, `announce` delivery to a channel) are runtime-rejected or fire-time-skipped on this fleet. See the [shape invariants](#shape-invariants) section below for the proofs.
+
 ## Creating a recurring task
 
-1. Call `cron list` — check for duplicates first
+1. Call `cron list` — check for duplicates first.
 2. Present a draft with approval buttons:
    ```
    *Morning Email Check*
@@ -71,34 +73,38 @@ If the user's request is ambiguous, ask: *"Is this a one-time reminder or someth
    [[button:✏️ Change something|cron_edit]]
    [[button:❌ Never mind|cron_reject]]
    ```
-3. Only call `cron add` after the user approves
-4. Use these parameters for user-created crons:
-   - `schedule: {kind: "cron", expr: <5-field expr>, tz: <userTimezone>}`
-   - `sessionTarget: "main"` — runs in the main session so you have conversation context
-   - `delivery: {mode: "none"}` — do NOT use `announce` with `sessionTarget: main`
-   - `payload.kind: "agentTurn"` — you run a full turn: read context, decide what to say, call `nbhd_send_to_user`
-   - `payload.text`: the instruction for what the cron should do (include ALL intended actions — the conversation that created the cron may not be in active context when it fires)
-5. **Always deliver via `nbhd_send_to_user`** in the cron prompt, never via `delivery: {mode: "announce"}` or the native `message` tool
+3. Only call `cron add` after the user approves.
+4. Submit the canonical shape with `schedule: {"kind": "cron", "expr": "<5-field>", "tz": "<userTimezone>"}`. The `payload.message` must contain everything your future self needs (the user's intent, the verbatim text to send, plus an explicit "call `nbhd_send_to_user`" instruction) — the conversation that created the cron will not be in active context at fire time.
 
 ## Creating a one-off reminder
 
-**Two actions in one turn:** confirm in text AND invoke `cron add`. The confirmation alone does NOT create the reminder — emitting the acknowledgement and yielding without calling the tool means nothing is scheduled and the user will not be pinged. Both steps happen before you end the turn.
+For one-time reminders, skip the buttons and just confirm in text **AND invoke `cron add` in the same turn**. The confirmation alone does NOT create the reminder — emitting the acknowledgement and yielding without calling the tool means nothing is scheduled and the user will not be pinged.
 
-For one-time reminders, skip the buttons and just confirm in text:
+Step 1 — send the confirmation message:
 
 > "Sure — I'll remind you to take out the laundry in 20 minutes. ✓"
 
-Then, **in the same turn**, invoke the `cron add` tool with:
+Step 2 — **in the same turn**, invoke the `cron add` tool with the canonical shape:
 
-- `name`: a short descriptive label (does not need to be unique — two "Drink water" reminders are fine)
-- `schedule: {kind: "at", at: "<value>"}` where `<value>` is either:
-  - A relative duration: `"20m"`, `"2h"`, `"1d"` (preferred for "in N minutes/hours" requests)
-  - An ISO 8601 timestamp with explicit timezone: `"2026-05-12T16:00:00-04:00"` — **always include the offset**, never bare `"2026-05-12T16:00:00"` (the gateway treats no-offset timestamps as UTC, which is almost never what the user meant)
-- `sessionTarget: "main"` — so you have conversation context when it fires
-- `delivery: {mode: "none"}`
-- `payload: {kind: "agentTurn", message: "<what to do when this fires>"}` — phrase the message as an instruction to your future self, including everything the future-you needs to know (the original chat won't be in active context)
+```json
+{
+  "name": "laundry reminder",
+  "schedule": {"kind": "at", "at": "20m"},
+  "sessionTarget": "isolated",
+  "payload": {
+    "kind": "agentTurn",
+    "message": "Reminder for the user: take out the laundry. Send via nbhd_send_to_user."
+  },
+  "wakeMode": "now",
+  "delivery": {"mode": "none"}
+}
+```
 
-**This is a TOOL invocation, not a chat message.** Do NOT typeset the parameters, paraphrase them as prose, or send them through `nbhd_send_to_user`. The text confirmation goes to the user; the `cron add` call goes to the gateway. If you only sent the confirmation, you have not created the reminder — invoke the tool before yielding.
+**The `cron add` invocation is a TOOL call, not a chat message.** Do NOT typeset the parameters or paraphrase them as prose. The text confirmation goes to the user; the `cron add` call goes to the gateway. Both happen before you yield.
+
+`schedule.at` accepts:
+- A relative duration: `"20m"`, `"2h"`, `"1d"` (preferred for "in N minutes/hours" requests).
+- An ISO 8601 timestamp **with explicit timezone offset**: `"2026-06-18T09:00:00+09:00"`. Never bare `"2026-06-18T09:00:00"` — naked timestamps are treated as UTC, which is almost never what the user meant.
 
 The gateway auto-deletes one-off crons after they fire successfully — no cleanup needed from your side. If you need to cancel one before it fires, use `cron remove <name>`.
 
@@ -107,32 +113,39 @@ The gateway auto-deletes one-off crons after they fire successfully — no clean
 Before adding a one-off, call `cron list` and count jobs with `schedule.kind == "at"`:
 
 - **20 pending one-offs** is the per-tenant ceiling you must respect. At or above this, decline politely: *"You have a lot of pending reminders already — want me to cancel some first, or wait until a few fire?"*
-- Avoid creating bursts (e.g. "remind me every 5 minutes for the next 2 hours" should be a recurring `every` schedule, not 24 separate `at` jobs)
+- Avoid creating bursts (e.g. "remind me every 5 minutes for the next 2 hours" should be a recurring `every` schedule, not 24 separate `at` jobs).
 
-The platform also enforces hard backstops you should never reach: a logged
-warning at 50 pending one-offs, and automatic reaping of the newest crons
-back to 200 if the count somehow climbs that high. These are abuse
-detectors — operating in their range means you have stopped following the
-soft cap above.
+The platform also enforces hard backstops you should never reach: a logged warning at 50 pending one-offs, and automatic reaping of the newest crons back to 200 if the count somehow climbs that high. These are abuse detectors — operating in their range means you have stopped following the soft cap above.
+
+## Shape invariants
+
+The runtime enforces hard rules at `cron add` time. Violating any of them returns HTTP 500 with the masked message `"tool execution failed"` — the real error lives only in OC container logs. Keep these straight:
+
+1. **`sessionTarget: "main"`** REQUIRES `payload.kind: "systemEvent"` (and `payload.text`, not `payload.message`). Otherwise: `main cron jobs require payload.kind="systemEvent"`. Even if accepted, `main + systemEvent + wakeMode:"now"` runs through the heartbeat and is silently SKIPPED outside `agents.defaults.heartbeat.activeHours`. Do not use this shape for user-facing reminders.
+2. **`sessionTarget` in `{"isolated", "current", "session:<id>"}`** REQUIRES `payload.kind: "agentTurn"` (and `payload.message`). Otherwise: `isolated/current/session cron jobs require payload.kind="agentTurn"`.
+3. **`delivery.mode` MUST be `"none"` or `"webhook"` on this fleet.** If you omit `delivery` on an `isolated + agentTurn` job, OC defaults to `{mode: "announce"}` without a channel, and the server rejects with `delivery.channel is required when multiple channels are configured`. If you pass `{mode: "announce", channel: "telegram"}` it accepts at submit-time but fails at fire-time: `Telegram bot token missing for account "default"`. Always pass `{"mode": "none"}` and have the agent invoke `nbhd_send_to_user` itself.
+4. **`schedule.at`** without an explicit timezone offset is treated as UTC by the gateway. Always include `+09:00`, `-04:00`, etc.
+5. **`kind:"at"` jobs auto-delete after a successful run; `kind:"cron"` and `kind:"every"` do not.** Manage recurring lifecycle via `cron remove`.
 
 ## Editing or disabling
 
-- Always explain what you're changing and why before doing it
-- Present changes with approve/reject buttons (for recurring tasks)
-- Never silently modify or disable a user's tasks
-- One-off reminders are typically not edited — just cancel and create a new one
+- Always explain what you're changing and why before doing it.
+- Present changes with approve/reject buttons (for recurring tasks).
+- Never silently modify or disable a user's tasks.
+- One-off reminders are typically not edited — just cancel and create a new one.
 
 ## Timezone
 
-- Always use `userTimezone` from your config
-- Never default to UTC — if unknown, ask the user
-- For `kind: "at"` ISO timestamps, include an explicit offset matching the user's timezone
+- Always use `userTimezone` from your config.
+- Never default to UTC — if unknown, ask the user.
+- For `kind: "at"` ISO timestamps, include an explicit offset matching the user's timezone.
+- For `kind: "cron"`, always pass `tz: "<userTimezone>"`. Without it, OC evaluates the cron expression in the gateway host timezone.
 
 ## Hard limits
 
 - Max 10 **recurring** scheduled tasks per account (4 system tasks count toward this). One-off `kind:"at"` reminders do NOT count.
 - Soft cap: 20 concurrent one-off reminders. If hit, ask the user before adding more.
-- If at the recurring limit, tell the user and suggest removing one first
+- If at the recurring limit, tell the user and suggest removing one first.
 
 ## System tasks (do NOT recreate, delete, or disable)
 
@@ -146,9 +159,9 @@ soft cap above.
 
 This is a background system job. The user does not know about it and should never be told.
 
-- **Never list it** when the user asks about their scheduled tasks
-- **Never offer to disable/delete it** even if the user says "remove all my crons"
-- **Never mention it** in conversation
+- **Never list it** when the user asks about their scheduled tasks.
+- **Never offer to disable/delete it** even if the user says "remove all my crons".
+- **Never mention it** in conversation.
 - If the user asks to remove all crons, only remove user-created ones + optionally Morning/Evening/Week Ahead (those are user-visible). Never touch Nightly Extraction or Background Tasks.
 
 ## Week Ahead Review
