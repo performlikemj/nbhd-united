@@ -76,8 +76,80 @@ class WorkoutPlan(models.Model):
         return f"{self.name} ({self.status}, {self.weeks}w)"
 
 
+class PlanSlot(models.Model):
+    """A stable identity for a planned session.
+
+    The natural key is `(plan, week_index, weekday)`. The slot owns the
+    *intent* ("Friday push session, week 2"); the workout row owns the
+    *instance* (uuid, date, detail_json, status). The assistant's plan
+    regen mutates slots in place — it never deletes a slot that still
+    backs a workout history — so a workout uuid survives a regen and the
+    user's browser doesn't 404 mid-edit.
+
+    `archived_at` is set when the assistant removes a slot from
+    `schedule_json` but a workout row still references it. The slot
+    stays around so historical workouts keep their FK; only future
+    workouts on the archived slot stop being generated.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.CASCADE,
+        related_name="plan_slots",
+        help_text="Denormalized for RLS scoping; matches Workout/WorkoutPlan pattern.",
+    )
+    plan = models.ForeignKey(
+        WorkoutPlan,
+        on_delete=models.CASCADE,
+        related_name="slots",
+        help_text="Slots are owned by a plan; cascade-delete when the plan dies.",
+    )
+    week_index = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(0), MaxValueValidator(51)],
+        help_text="0-indexed week within the plan (0..plan.weeks-1).",
+    )
+    weekday = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(0), MaxValueValidator(6)],
+        help_text="Weekday index, 0=Monday..6=Sunday (matches Python's date.weekday()).",
+    )
+    archived_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When set, the slot has been removed from the active schedule "
+        "but lingers because a workout row still references it.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "fuel_plan_slots"
+        ordering = ["plan_id", "week_index", "weekday"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["plan", "week_index", "weekday"],
+                condition=models.Q(archived_at__isnull=True),
+                name="unique_active_plan_slot",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "archived_at"]),
+            models.Index(fields=["plan", "archived_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"slot plan={self.plan_id} w{self.week_index}d{self.weekday}"
+
+
 class Workout(models.Model):
-    """A single workout session — planned or completed."""
+    """A single workout session — planned or completed.
+
+    Status policy: a workout in any status (planned / done / skipped / etc.)
+    remains fully editable indefinitely. Fitness logs are personal data, not
+    financial transactions; there is no audit-trail reason to lock them.
+    Do NOT add a status gate to `WorkoutDetailView.patch`. If you need to
+    surface "this was edited after the fact", use `last_edited_by_user_at`.
+    """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="workouts")
@@ -88,6 +160,16 @@ class Workout(models.Model):
         blank=True,
         related_name="workouts",
         help_text="The workout plan this belongs to, if any.",
+    )
+    slot = models.ForeignKey(
+        PlanSlot,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="workouts",
+        help_text="Stable plan-slot identity. Survives plan regen so the row's "
+        "uuid stays valid for an open browser drawer. Null for standalone "
+        "(non-plan) workouts or backfill-mismatched rows.",
     )
     date = models.DateField(help_text="Day of the workout (derived from scheduled_at when present).")
     scheduled_at = models.DateTimeField(
@@ -145,6 +227,32 @@ class Workout(models.Model):
         default=dict,
         blank=True,
         help_text="Category-specific data: exercises/sets for strength, distance/pace for cardio, etc.",
+    )
+    version = models.PositiveIntegerField(
+        default=0,
+        help_text="Monotonic write counter. Bumped on every save (user or runtime). "
+        "Used by clients for optimistic-concurrency If-Match checks.",
+    )
+    edit_lock_until = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When set and in the future, the user is actively editing this "
+        "workout. Runtime PATCHes during the lock window return 409. The browser "
+        "acquires on edit-mode entry and heartbeats every 30s.",
+    )
+    edit_lock_owner = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        help_text="Owner of the active edit lock; 'user' or 'assistant' (currently always 'user'). "
+        "Empty when no lock is held.",
+    )
+    last_edited_by_user_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Most recent user-side PATCH timestamp. Populated when status=done "
+        "and the edit happened more than 24h after creation, so the UI can show an "
+        "'Edited <relative>' footnote on completed sessions.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
