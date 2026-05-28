@@ -9,6 +9,9 @@ import {
   useCreateSleepMutation,
   useRestingHRQuery,
   useSleepQuery,
+  useUpdateBodyWeightMutation,
+  useUpdateRestingHRMutation,
+  useUpdateSleepMutation,
 } from "@/lib/queries";
 import { displayToKg, kgToDisplay, useWeightUnit } from "./use-weight-unit";
 
@@ -33,8 +36,11 @@ export function TodayCheckIn() {
   const { data: hrEntries, isPending: hrLoading } = useRestingHRQuery();
 
   const createBW = useCreateBodyWeightMutation();
+  const updateBW = useUpdateBodyWeightMutation();
   const createSleep = useCreateSleepMutation();
+  const updateSleep = useUpdateSleepMutation();
   const createHR = useCreateRestingHRMutation();
+  const updateHR = useUpdateRestingHRMutation();
 
   const todayBW = useMemo(() => bwEntries?.find((e) => e.date === logDate), [bwEntries, logDate]);
   const todaySleep = useMemo(() => sleepEntries?.find((e) => e.date === logDate), [sleepEntries, logDate]);
@@ -45,44 +51,136 @@ export function TodayCheckIn() {
   const allLogged = !!todayBW && !!todaySleep;
   const collapsed = !forceEdit && allLogged && isToday;
 
+  // Form state — pre-populated from logged entries when present.
   const [weight, setWeight] = useState("");
   const [hours, setHours] = useState("");
   const [quality, setQuality] = useState<number | null>(null);
   const [bpm, setBpm] = useState("");
 
-  // Show HR row by default if already logged today, or user opens it explicitly.
-  const hrVisible = showHR || !!todayHR;
+  // Render-phase sync: when the underlying entry (or display unit) changes,
+  // reset the input to the entry's value. Cheaper than useEffect + setState
+  // and avoids the cascading-render lint rule.
+  const bwKey = todayBW ? `${todayBW.id}|${todayBW.weight_kg}|${unit}` : `none|${logDate}`;
+  const [bwBaseline, setBwBaseline] = useState(bwKey);
+  if (bwKey !== bwBaseline) {
+    setBwBaseline(bwKey);
+    setWeight(todayBW ? kgToDisplay(parseFloat(todayBW.weight_kg), unit).toFixed(1) : "");
+  }
 
-  const submitting = createBW.isPending || createSleep.isPending || createHR.isPending;
+  const sleepKey = todaySleep
+    ? `${todaySleep.id}|${todaySleep.duration_hours}|${todaySleep.quality ?? "_"}`
+    : `none|${logDate}`;
+  const [sleepBaseline, setSleepBaseline] = useState(sleepKey);
+  if (sleepKey !== sleepBaseline) {
+    setSleepBaseline(sleepKey);
+    setHours(todaySleep ? parseFloat(todaySleep.duration_hours).toFixed(1) : "");
+    setQuality(todaySleep?.quality ?? null);
+  }
+
+  const hrKey = todayHR ? `${todayHR.id}|${todayHR.bpm}` : `none|${logDate}`;
+  const [hrBaseline, setHrBaseline] = useState(hrKey);
+  if (hrKey !== hrBaseline) {
+    setHrBaseline(hrKey);
+    setBpm(todayHR ? String(todayHR.bpm) : "");
+  }
+
+  // HR row shown if logged today, explicitly opened, or has typed value.
+  const hrVisible = showHR || !!todayHR || bpm.length > 0;
+
+  const submitting =
+    createBW.isPending ||
+    updateBW.isPending ||
+    createSleep.isPending ||
+    updateSleep.isPending ||
+    createHR.isPending ||
+    updateHR.isPending;
+
+  // Detect dirty state — only enable submit if user actually changed something.
+  const weightDirty = (() => {
+    if (!weight.trim()) return false;
+    const parsed = parseFloat(weight);
+    if (!Number.isFinite(parsed)) return false;
+    if (!todayBW) return true;
+    const currentKg = parseFloat(todayBW.weight_kg);
+    const newKg = displayToKg(parsed, unit);
+    return Math.abs(newKg - currentKg) >= 0.005;
+  })();
+
+  const hoursDirty = (() => {
+    if (!hours.trim()) return false;
+    const parsed = parseFloat(hours);
+    if (!Number.isFinite(parsed)) return false;
+    if (!todaySleep) return true;
+    return Math.abs(parsed - parseFloat(todaySleep.duration_hours)) >= 0.05;
+  })();
+
+  const qualityDirty =
+    !!todaySleep && quality !== (todaySleep.quality ?? null) && (hours.trim().length > 0);
+
+  const bpmDirty = (() => {
+    if (!bpm.trim()) return false;
+    const parsed = parseInt(bpm, 10);
+    if (!Number.isFinite(parsed)) return false;
+    if (!todayHR) return true;
+    return parsed !== todayHR.bpm;
+  })();
+
+  const canSubmit = weightDirty || hoursDirty || qualityDirty || bpmDirty;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const jobs: Promise<unknown>[] = [];
 
-    if (!todayBW && weight.trim()) {
+    if (weight.trim()) {
       const parsed = parseFloat(weight);
       if (Number.isFinite(parsed)) {
-        jobs.push(createBW.mutateAsync({ date: logDate, weight_kg: displayToKg(parsed, unit) }));
+        const newKg = displayToKg(parsed, unit);
+        if (todayBW) {
+          if (Math.abs(newKg - parseFloat(todayBW.weight_kg)) >= 0.005) {
+            jobs.push(updateBW.mutateAsync({ id: todayBW.id, data: { weight_kg: newKg } }));
+          }
+        } else {
+          jobs.push(createBW.mutateAsync({ date: logDate, weight_kg: newKg }));
+        }
       }
     }
 
-    if (!todaySleep && hours.trim()) {
+    if (hours.trim()) {
       const parsed = parseFloat(hours);
       if (Number.isFinite(parsed)) {
-        jobs.push(
-          createSleep.mutateAsync({
-            date: logDate,
-            duration_hours: parsed,
-            ...(quality ? { quality } : {}),
-          }),
-        );
+        if (todaySleep) {
+          const patch: { duration_hours?: number; quality?: number | null } = {};
+          if (Math.abs(parsed - parseFloat(todaySleep.duration_hours)) >= 0.05) {
+            patch.duration_hours = parsed;
+          }
+          if (quality !== (todaySleep.quality ?? null)) {
+            patch.quality = quality;
+          }
+          if (Object.keys(patch).length > 0) {
+            jobs.push(updateSleep.mutateAsync({ id: todaySleep.id, data: patch }));
+          }
+        } else {
+          jobs.push(
+            createSleep.mutateAsync({
+              date: logDate,
+              duration_hours: parsed,
+              ...(quality ? { quality } : {}),
+            }),
+          );
+        }
       }
     }
 
-    if (!todayHR && bpm.trim()) {
+    if (bpm.trim()) {
       const parsed = parseInt(bpm, 10);
       if (Number.isFinite(parsed)) {
-        jobs.push(createHR.mutateAsync({ date: logDate, bpm: parsed }));
+        if (todayHR) {
+          if (parsed !== todayHR.bpm) {
+            jobs.push(updateHR.mutateAsync({ id: todayHR.id, data: { bpm: parsed } }));
+          }
+        } else {
+          jobs.push(createHR.mutateAsync({ date: logDate, bpm: parsed }));
+        }
       }
     }
 
@@ -92,10 +190,6 @@ export function TodayCheckIn() {
     }
 
     await Promise.allSettled(jobs);
-    setWeight("");
-    setHours("");
-    setQuality(null);
-    setBpm("");
     setForceEdit(false);
   };
 
@@ -199,14 +293,7 @@ export function TodayCheckIn() {
       <form onSubmit={handleSubmit} className="space-y-3">
         <div className="grid grid-cols-2 gap-3">
           {/* WEIGHT */}
-          <FieldShell
-            label="Weight"
-            logged={todayBW != null}
-            loggedValue={
-              todayBW ? `${kgToDisplay(parseFloat(todayBW.weight_kg), unit).toFixed(1)} ${unit}` : null
-            }
-            suffix={unit}
-          >
+          <FieldShell label="Weight" suffix={unit} logged={!!todayBW}>
             <input
               type="text"
               inputMode="decimal"
@@ -222,18 +309,7 @@ export function TodayCheckIn() {
           </FieldShell>
 
           {/* SLEEP */}
-          <FieldShell
-            label="Sleep"
-            logged={todaySleep != null}
-            loggedValue={
-              todaySleep
-                ? `${parseFloat(todaySleep.duration_hours).toFixed(1)} h${
-                    todaySleep.quality != null ? ` · ${todaySleep.quality}/5` : ""
-                  }`
-                : null
-            }
-            suffix="h"
-          >
+          <FieldShell label="Sleep" suffix="h" logged={!!todaySleep}>
             <input
               type="text"
               inputMode="decimal"
@@ -249,8 +325,8 @@ export function TodayCheckIn() {
           </FieldShell>
         </div>
 
-        {/* Quality dots — only when sleep is being entered */}
-        {!todaySleep && (
+        {/* Quality dots — visible whenever there are sleep hours (typed or logged) */}
+        {(hours.trim().length > 0 || todaySleep) && (
           <div className="flex items-center gap-2 pt-1">
             <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint w-12 shrink-0">
               Quality
@@ -292,13 +368,7 @@ export function TodayCheckIn() {
 
         {/* HR — collapsed by default */}
         {hrVisible ? (
-          <FieldShell
-            label="Resting HR"
-            logged={todayHR != null}
-            loggedValue={todayHR ? `${todayHR.bpm} bpm` : null}
-            suffix="bpm"
-            compact
-          >
+          <FieldShell label="Resting HR" suffix="bpm" logged={!!todayHR} compact>
             <input
               type="text"
               inputMode="numeric"
@@ -328,7 +398,9 @@ export function TodayCheckIn() {
             {anyLoading
               ? "Loading today…"
               : todayBW || todaySleep || todayHR
-                ? "Add anything missing."
+                ? canSubmit
+                  ? "Tap save to update."
+                  : "Tap a field to edit."
                 : "Tap a field to log."}
           </p>
           <div className="flex items-center gap-2 shrink-0">
@@ -343,13 +415,14 @@ export function TodayCheckIn() {
             )}
             <button
               type="submit"
-              disabled={
-                submitting ||
-                (!weight.trim() && !hours.trim() && !bpm.trim())
-              }
+              disabled={submitting || !canSubmit}
               className="glow-purple rounded-full bg-accent text-white min-h-[40px] px-5 text-sm font-semibold hover:brightness-110 active:scale-[0.98] transition disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {submitting ? "Logging…" : "Log"}
+              {submitting
+                ? "Saving…"
+                : todayBW || todaySleep || todayHR
+                  ? "Save"
+                  : "Log"}
             </button>
           </div>
         </div>
@@ -360,41 +433,34 @@ export function TodayCheckIn() {
 
 function FieldShell({
   label,
-  logged,
-  loggedValue,
   suffix,
+  logged,
   compact,
   children,
 }: {
   label: string;
-  logged: boolean;
-  loggedValue: string | null;
   suffix: string;
+  logged: boolean;
   compact?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div
       className={`rounded-xl border bg-surface px-3 ${compact ? "py-2" : "py-2.5"} transition ${
-        logged ? "border-emerald-text/40 bg-emerald-bg/30" : "border-border focus-within:border-accent"
+        logged ? "border-emerald-text/40" : "border-border focus-within:border-accent"
       }`}
     >
       <div className="flex items-center justify-between gap-2">
         <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-ink-faint">{label}</span>
-        {logged && (
+        {logged ? (
           <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-text">
             Logged ✓
           </span>
-        )}
-        {!logged && <span className="font-mono text-[10px] text-ink-faint">{suffix}</span>}
-      </div>
-      <div className="mt-0.5">
-        {logged ? (
-          <div className="font-mono text-lg text-ink">{loggedValue}</div>
         ) : (
-          children
+          <span className="font-mono text-[10px] text-ink-faint">{suffix}</span>
         )}
       </div>
+      <div className="mt-0.5">{children}</div>
     </div>
   );
 }
