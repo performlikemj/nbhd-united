@@ -13,6 +13,7 @@ import { Progress } from "@/components/fuel/progress";
 import { RestingHeartRate } from "@/components/fuel/resting-heart-rate";
 import { ScheduleWeek } from "@/components/fuel/schedule-week";
 import { Sleep } from "@/components/fuel/sleep";
+import { TodayCheckIn } from "@/components/fuel/today-checkin";
 import { WeeklySummary } from "@/components/fuel/weekly-summary";
 import { WorkoutDetail } from "@/components/fuel/workout-detail";
 import { useMeQuery, useWorkoutCountQuery } from "@/lib/queries";
@@ -77,6 +78,8 @@ export default function FuelPage() {
       <div className="mb-4">
         <OrphanDraftsBanner tenantId={tenantId} />
       </div>
+
+      <TodayCheckIn />
 
       <ProfileCard />
       <WeeklySummary />

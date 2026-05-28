@@ -1,30 +1,10 @@
 "use client";
 
-import { useState } from "react";
-
-import { useCreateSleepMutation, useSleepQuery } from "@/lib/queries";
+import { useSleepQuery } from "@/lib/queries";
 import { SkelBar } from "@/components/ui/skeleton";
 
 export function Sleep() {
   const { data: entries, isPending } = useSleepQuery();
-  const createMutation = useCreateSleepMutation();
-  const todayISO = new Date().toISOString().slice(0, 10);
-  const [date, setDate] = useState(todayISO);
-  const [hours, setHours] = useState("");
-  const [quality, setQuality] = useState("");
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!hours) return;
-    createMutation.mutate(
-      {
-        date,
-        duration_hours: parseFloat(hours),
-        ...(quality ? { quality: parseInt(quality, 10) } : {}),
-      },
-      { onSuccess: () => { setHours(""); setQuality(""); } },
-    );
-  };
 
   const sorted = [...(entries || [])].sort((a, b) => a.date.localeCompare(b.date));
   const pts = sorted.map((e) => ({ value: parseFloat(e.duration_hours) }));
@@ -62,46 +42,6 @@ export function Sleep() {
           <div className="mt-4 text-xs text-ink-faint">Log more entries to see the trend.</div>
         )}
       </div>
-
-      <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-2">
-        <div className="flex gap-2">
-          <input
-            type="date"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-            className="flex-1 sm:flex-none rounded-lg border border-border bg-surface-elevated px-3 min-h-[44px] py-2 font-mono text-sm text-ink focus:outline-none focus:border-accent"
-          />
-          <input
-            type="number"
-            step="0.5"
-            min="0"
-            max="24"
-            value={hours}
-            onChange={(e) => setHours(e.target.value)}
-            placeholder="hrs"
-            className="w-16 sm:w-20 rounded-lg border border-border bg-surface-elevated px-3 min-h-[44px] py-2 font-mono text-sm text-ink focus:outline-none focus:border-accent placeholder:text-ink-faint"
-          />
-          <select
-            value={quality}
-            onChange={(e) => setQuality(e.target.value)}
-            className="rounded-lg border border-border bg-surface-elevated px-2 min-h-[44px] py-2 text-sm text-ink focus:outline-none focus:border-accent"
-          >
-            <option value="">Quality</option>
-            <option value="1">1 - Poor</option>
-            <option value="2">2</option>
-            <option value="3">3 - OK</option>
-            <option value="4">4</option>
-            <option value="5">5 - Great</option>
-          </select>
-        </div>
-        <button
-          type="submit"
-          disabled={!hours || createMutation.isPending}
-          className="glow-purple rounded-full bg-accent text-white min-h-[44px] px-4 py-2 text-sm font-semibold hover:brightness-110 active:scale-[0.98] transition disabled:opacity-50"
-        >
-          {createMutation.isPending ? "Logging\u2026" : "Log"}
-        </button>
-      </form>
 
       {isPending ? (
         <div className="space-y-1" role="status" aria-busy="true" aria-label="Loading sleep history">
