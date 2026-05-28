@@ -59,7 +59,11 @@ def _backfill_one(tenant: Tenant, dry_run: bool, stdout) -> bool:
         secret_name_for_tenant,
     )
     from apps.byo_models.services import _write_secret_to_kv
-    from apps.orchestrator.azure_client import update_container_openrouter_key_secret
+    from apps.orchestrator.azure_client import (
+        assign_key_vault_role,
+        get_identity_client,
+        update_container_openrouter_key_secret,
+    )
 
     tid = str(tenant.id)[:8]
     tier = tenant.model_tier or "starter"
@@ -90,6 +94,26 @@ def _backfill_one(tenant: Tenant, dry_run: bool, stdout) -> bool:
         logger.warning("Orphan OR sub-key hash=%s for tenant=%s (KV write failed)", key_hash, tid)
         return False
 
+    # Grant the tenant's managed identity read access on the brand-new KV
+    # secret. ``provision_tenant`` bundles this into its single
+    # ``assign_key_vault_role`` call; the backfill has to do it explicitly,
+    # otherwise the rebind below fails with "Unable to get value using
+    # Managed identity ... for secret openrouter-key" — the secret-set
+    # API resolves the KV ref synchronously, so the container's MI must
+    # already be authorized.
+    if tenant.managed_identity_id:
+        try:
+            mi_name = tenant.managed_identity_id.rsplit("/", 1)[-1]
+            mi = get_identity_client().user_assigned_identities.get(
+                resource_group_name=settings.AZURE_RESOURCE_GROUP,
+                resource_name=mi_name,
+            )
+            assign_key_vault_role(mi.principal_id, secret_names=[secret_name])
+        except Exception as exc:
+            stdout.write(f"[FAIL] tenant={tid} KV role grant for {secret_name}: {exc}")
+            logger.warning("KV role grant failed for tenant=%s secret=%s", tid, secret_name)
+            return False
+
     tenant.openrouter_key_secret_name = secret_name
     tenant.openrouter_key_hash = key_hash
     tenant.pending_config_version = (tenant.pending_config_version or 0) + 1
@@ -113,13 +137,19 @@ def _backfill_one(tenant: Tenant, dry_run: bool, stdout) -> bool:
                 kv_secret_name=secret_name,
             )
         except Exception as exc:
-            # Container env-var update failed — fields are persisted so a
-            # re-run won't re-create the sub-key, but the container is
-            # still pointed at the shared secret. Operator should retry
-            # the rebind manually or via the apply_pending_configs path.
-            stdout.write(f"[WARN] tenant={tid} sub-key persisted but container rebind failed: {exc}")
-            logger.warning("Container rebind failed for tenant=%s; manual retry needed", tid)
-            return True  # still report success — partial state recoverable
+            # Container env-var update failed. DB fields are persisted so a
+            # re-run won't re-create the sub-key (the eligibility filter
+            # would skip this tenant), but the container is still pointed
+            # at the SHARED secret — chat traffic will keep billing the
+            # shared key, not the per-tenant one. Operator must retry the
+            # rebind manually via update_container_openrouter_key_secret
+            # for this specific container.
+            stdout.write(
+                f"[FAIL] tenant={tid} sub-key persisted in DB+KV but CONTAINER REBIND FAILED — "
+                f"manual rebind required for {tenant.container_id}: {exc}"
+            )
+            logger.error("Container rebind failed for tenant=%s; manual retry needed", tid)
+            return False
 
     stdout.write(f"[OK]   tenant={tid} hash={key_hash} secret={secret_name}")
     return True
