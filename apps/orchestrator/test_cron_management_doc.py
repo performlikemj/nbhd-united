@@ -21,7 +21,8 @@ class CronManagementDocShapeTests(SimpleTestCase):
     """The doc must prescribe the runtime-validated shape, not the broken one."""
 
     @classmethod
-    def setUpTestData(cls):
+    def setUpClass(cls):
+        super().setUpClass()
         cls.doc = _load_doc_template("cron-management.md") or ""
 
     def test_doc_is_loaded(self):
