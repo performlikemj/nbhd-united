@@ -60,8 +60,8 @@ class CronManagementDocShapeTests(SimpleTestCase):
         """The doc must warn that `mode: "announce"` is broken on this fleet."""
         self.assertRegex(
             self.doc,
-            r'(?i)announce.*(?:broken|fail|reject|no telegram|bot token missing)',
-            "cron-management.md must explain why `delivery.mode: \"announce\"` "
+            r"(?i)announce.*(?:broken|fail|reject|no telegram|bot token missing)",
+            'cron-management.md must explain why `delivery.mode: "announce"` '
             "is unsafe on this fleet (OC has no built-in Telegram token; "
             "nbhd-telegram plugin handles outbound via nbhd_send_to_user).",
         )
@@ -73,9 +73,8 @@ class CronManagementDocShapeTests(SimpleTestCase):
         """
         self.assertRegex(
             self.doc,
-            r'(?i)(quiet[- ]?hours|active[- ]?hours|heartbeat)',
-            "cron-management.md must explain the heartbeat active-hours gate "
-            "on `main + systemEvent` jobs.",
+            r"(?i)(quiet[- ]?hours|active[- ]?hours|heartbeat)",
+            "cron-management.md must explain the heartbeat active-hours gate on `main + systemEvent` jobs.",
         )
 
     def test_doc_documents_main_requires_systemevent(self):
@@ -84,16 +83,15 @@ class CronManagementDocShapeTests(SimpleTestCase):
         """
         self.assertRegex(
             self.doc,
-            r'(?i)main.*(?:require|enforce).*systemEvent',
-            "cron-management.md must document the `main REQUIRES "
-            "payload.kind=systemEvent` invariant.",
+            r"(?i)main.*(?:require|enforce).*systemEvent",
+            "cron-management.md must document the `main REQUIRES payload.kind=systemEvent` invariant.",
         )
 
     def test_doc_documents_isolated_requires_agentturn(self):
         """Symmetric invariant: isolated/current/session REQUIRES agentTurn."""
         self.assertRegex(
             self.doc,
-            r'(?i)(isolated|current|session).*(?:require|enforce).*agentTurn',
+            r"(?i)(isolated|current|session).*(?:require|enforce).*agentTurn",
             "cron-management.md must document the `isolated/current/session "
             "REQUIRES payload.kind=agentTurn` invariant.",
         )
@@ -102,16 +100,14 @@ class CronManagementDocShapeTests(SimpleTestCase):
         """`schedule.at` without timezone is treated as UTC. The doc must say so."""
         self.assertRegex(
             self.doc,
-            r'(?i)(timezone offset|with.*offset|treated as utc)',
-            "cron-management.md must call out the UTC-default trap on "
-            "naked ISO 8601 timestamps in `schedule.at`.",
+            r"(?i)(timezone offset|with.*offset|treated as utc)",
+            "cron-management.md must call out the UTC-default trap on naked ISO 8601 timestamps in `schedule.at`.",
         )
 
     def test_doc_notes_at_jobs_auto_delete_others_do_not(self):
         """One-off `kind:"at"` jobs auto-delete; recurring do not."""
         self.assertRegex(
             self.doc,
-            r'(?i)kind.*at.*auto[- ]?delete',
-            "cron-management.md must explain that `kind:\"at\"` jobs auto-delete "
-            "but recurring jobs do not.",
+            r"(?i)kind.*at.*auto[- ]?delete",
+            'cron-management.md must explain that `kind:"at"` jobs auto-delete but recurring jobs do not.',
         )
