@@ -4,7 +4,6 @@ import { useMemo, useRef, useState } from "react";
 
 import {
   useBodyWeightQuery,
-  useCreateBodyWeightMutation,
   useDeleteBodyWeightMutation,
   useUpdateBodyWeightMutation,
 } from "@/lib/queries";
@@ -14,24 +13,11 @@ import { displayToKg, kgToDisplay, useWeightUnit } from "./use-weight-unit";
 
 export function BodyWeight() {
   const { data: entries, isPending } = useBodyWeightQuery();
-  const createMutation = useCreateBodyWeightMutation();
   const deleteMutation = useDeleteBodyWeightMutation();
   const updateMutation = useUpdateBodyWeightMutation();
   const { unit, setUnit } = useWeightUnit();
-  const todayISO = new Date().toISOString().slice(0, 10);
-  const [date, setDate] = useState(todayISO);
-  const [weight, setWeight] = useState("");
   const [pendingDelete, setPendingDelete] = useState<BodyWeightEntry | null>(null);
   const [pendingEdit, setPendingEdit] = useState<BodyWeightEntry | null>(null);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!weight) return;
-    const kg = displayToKg(parseFloat(weight), unit);
-    createMutation.mutate({ date, weight_kg: kg }, {
-      onSuccess: () => setWeight(""),
-    });
-  };
 
   const sorted = [...(entries || [])].sort((a, b) => a.date.localeCompare(b.date));
 
@@ -91,33 +77,6 @@ export function BodyWeight() {
           <div className="mt-4 text-[11px] text-ink-faint">Log more entries to see the trend.</div>
         )}
       </div>
-
-      {/* Quick add — stacks on mobile */}
-      <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-2">
-        <div className="flex gap-2">
-          <input
-            type="date"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-            className="flex-1 sm:flex-none rounded-lg border border-border bg-surface-elevated px-3 min-h-[44px] py-2 font-mono text-sm text-ink focus:outline-none focus:border-accent"
-          />
-          <input
-            type="number"
-            step="0.1"
-            value={weight}
-            onChange={(e) => setWeight(e.target.value)}
-            placeholder={unit}
-            className="w-20 sm:w-24 rounded-lg border border-border bg-surface-elevated px-3 min-h-[44px] py-2 font-mono text-sm text-ink focus:outline-none focus:border-accent placeholder:text-ink-faint"
-          />
-        </div>
-        <button
-          type="submit"
-          disabled={!weight || createMutation.isPending}
-          className="glow-purple rounded-full bg-accent text-white min-h-[44px] px-4 py-2 text-sm font-semibold hover:brightness-110 active:scale-[0.98] transition disabled:opacity-50"
-        >
-          {createMutation.isPending ? "Logging\u2026" : "Log"}
-        </button>
-      </form>
 
       {/* Recent entries */}
       {isPending ? (
