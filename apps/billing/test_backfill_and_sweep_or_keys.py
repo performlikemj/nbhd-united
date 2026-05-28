@@ -92,6 +92,32 @@ class BackfillTest(TestCase):
     @patch("apps.orchestrator.azure_client.get_identity_client")
     @patch("apps.byo_models.services._write_secret_to_kv")
     @patch("apps.billing.openrouter_admin.create_sub_key")
+    def test_missing_key_vault_prefix_fails_before_create_sub_key(
+        self, mock_create, mock_kv, mock_idc, mock_grant, mock_rebind
+    ):
+        """Regression: tenants without a key_vault_prefix must fail BEFORE
+        create_sub_key fires. 2026-05-28 fleet backfill leaked 9 orphan
+        OR sub-keys because the call order was inverted."""
+        self.t1.key_vault_prefix = ""  # prefix missing → secret_name lookup raises
+        self.t1.save()
+
+        out = StringIO()
+        call_command("backfill_openrouter_keys", f"--tenant={self.t1.id}", stdout=out)
+
+        # No OR sub-key call should have been made — the prefix check fails fast.
+        mock_create.assert_not_called()
+        # No KV/role/rebind side-effects either.
+        mock_kv.assert_not_called()
+        mock_grant.assert_not_called()
+        mock_rebind.assert_not_called()
+        self.t1.refresh_from_db()
+        self.assertEqual(self.t1.openrouter_key_hash, "")
+
+    @patch("apps.orchestrator.azure_client.update_container_openrouter_key_secret")
+    @patch("apps.orchestrator.azure_client.assign_key_vault_role")
+    @patch("apps.orchestrator.azure_client.get_identity_client")
+    @patch("apps.byo_models.services._write_secret_to_kv")
+    @patch("apps.billing.openrouter_admin.create_sub_key")
     def test_filter_by_single_tenant(self, mock_create, mock_kv, mock_idc, mock_grant, mock_rebind):
         mock_idc.return_value.user_assigned_identities.get.return_value.principal_id = "test-principal"
         mock_create.return_value = ("mock-or-key-only", "hash-only")
