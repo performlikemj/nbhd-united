@@ -127,8 +127,12 @@ import {
   deleteFuelGoal,
   fetchRestingHR,
   createRestingHR,
+  updateRestingHR,
+  deleteRestingHR,
   fetchSleep,
   createSleep,
+  updateSleep,
+  deleteSleep,
   fetchPATs,
   mintPAT,
   revokePAT,
@@ -1498,6 +1502,27 @@ export function useCreateRestingHRMutation() {
   });
 }
 
+export function useUpdateRestingHRMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { date?: string; bpm?: number } }) =>
+      updateRestingHR(id, data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-resting-hr"] });
+    },
+  });
+}
+
+export function useDeleteRestingHRMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteRestingHR,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-resting-hr"] });
+    },
+  });
+}
+
 // Sleep
 export function useSleepQuery() {
   return useQuery({
@@ -1512,6 +1537,32 @@ export function useCreateSleepMutation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: createSleep,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-sleep"] });
+    },
+  });
+}
+
+export function useUpdateSleepMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: { date?: string; duration_hours?: number; quality?: number | null; notes?: string };
+    }) => updateSleep(id, data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["fuel-sleep"] });
+    },
+  });
+}
+
+export function useDeleteSleepMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteSleep,
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["fuel-sleep"] });
     },

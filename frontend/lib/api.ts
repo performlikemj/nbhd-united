@@ -1249,6 +1249,20 @@ export function createRestingHR(data: { date: string; bpm: number }): Promise<im
   });
 }
 
+export function updateRestingHR(
+  id: string,
+  data: { date?: string; bpm?: number },
+): Promise<import("@/lib/types").RestingHeartRateEntry> {
+  return apiFetch<import("@/lib/types").RestingHeartRateEntry>(`/api/v1/fuel/resting-hr/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteRestingHR(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/fuel/resting-hr/${id}/`, { method: "DELETE" });
+}
+
 // Sleep
 export function fetchSleep(): Promise<import("@/lib/types").SleepEntry[]> {
   return apiFetch<import("@/lib/types").SleepEntry[]>("/api/v1/fuel/sleep/");
@@ -1264,6 +1278,20 @@ export function createSleep(data: {
     method: "POST",
     body: JSON.stringify(data),
   });
+}
+
+export function updateSleep(
+  id: string,
+  data: { date?: string; duration_hours?: number; quality?: number | null; notes?: string },
+): Promise<import("@/lib/types").SleepEntry> {
+  return apiFetch<import("@/lib/types").SleepEntry>(`/api/v1/fuel/sleep/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteSleep(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/fuel/sleep/${id}/`, { method: "DELETE" });
 }
 
 // Personal Access Tokens (Connected Apps)
