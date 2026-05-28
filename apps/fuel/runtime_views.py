@@ -48,6 +48,36 @@ def _serialize_profile(profile: FuelProfile) -> dict:
     return {f: getattr(profile, f) for f in _PROFILE_FIELDS}
 
 
+def _edit_locked_response(workout: Workout) -> Response | None:
+    """Return a 409 response if the workout is user-edit-locked, else None.
+
+    OpenClaw's runtime documents 429 + Retry-After as retry-able; 409 is
+    undocumented, so we include Retry-After on the 409 too plus a
+    structured body so any reasonable assistant runtime can interpret
+    the conflict instead of treating it as terminal.
+    """
+    from django.utils import timezone
+
+    if workout.edit_lock_until is None:
+        return None
+    now = timezone.now()
+    if workout.edit_lock_until <= now:
+        return None
+    retry_after_s = max(1, int((workout.edit_lock_until - now).total_seconds()) + 1)
+    resp = Response(
+        {
+            "error": "edit_locked",
+            "lock_owner": workout.edit_lock_owner or "user",
+            "retry_after_s": retry_after_s,
+            "edit_lock_until": workout.edit_lock_until.isoformat(),
+            "workout_id": str(workout.id),
+        },
+        status=status.HTTP_409_CONFLICT,
+    )
+    resp["Retry-After"] = str(retry_after_s)
+    return resp
+
+
 def _internal_auth_or_401(request, tenant_id: UUID) -> Response | None:
     try:
         validate_internal_runtime_request(
@@ -198,6 +228,10 @@ class RuntimeWorkoutDetailView(APIView):
         tenant, workout, err = self._get_workout(request, tenant_id, workout_id)
         if err:
             return err
+        lock_resp = _edit_locked_response(workout)
+        if lock_resp is not None:
+            logger.info("runtime.patch.edit_locked workout=%s", workout_id)
+            return lock_resp
 
         data = request.data
         updated_fields = []
@@ -302,6 +336,10 @@ class RuntimeWorkoutDetailView(APIView):
         _tenant, workout, err = self._get_workout(request, tenant_id, workout_id)
         if err:
             return err
+        lock_resp = _edit_locked_response(workout)
+        if lock_resp is not None:
+            logger.info("runtime.delete.edit_locked workout=%s", workout_id)
+            return lock_resp
         workout_info = {"id": str(workout.id), "activity": workout.activity, "date": str(workout.date)}
         workout.delete()
         return Response({"deleted": True, **workout_info})
@@ -327,6 +365,10 @@ class RuntimeWorkoutSkipView(APIView):
             workout = Workout.objects.get(id=workout_id, tenant=tenant_or_resp)
         except Workout.DoesNotExist:
             return Response({"error": "workout_not_found"}, status=status.HTTP_404_NOT_FOUND)
+        lock_resp = _edit_locked_response(workout)
+        if lock_resp is not None:
+            logger.info("runtime.skip.edit_locked workout=%s", workout_id)
+            return lock_resp
         reason = str(request.data.get("reason") or "")[:128]
         workout.status = WorkoutStatus.SKIPPED
         workout.skip_reason = reason
@@ -360,6 +402,10 @@ class RuntimeWorkoutCompleteView(APIView):
             workout = Workout.objects.get(id=workout_id, tenant=tenant_or_resp)
         except Workout.DoesNotExist:
             return Response({"error": "workout_not_found"}, status=status.HTTP_404_NOT_FOUND)
+        lock_resp = _edit_locked_response(workout)
+        if lock_resp is not None:
+            logger.info("runtime.complete.edit_locked workout=%s", workout_id)
+            return lock_resp
         workout.status = WorkoutStatus.DONE
         if "notes" in request.data:
             workout.notes = str(request.data.get("notes") or "")
@@ -809,14 +855,26 @@ def _serialize_plan(plan, include_workouts=False):
 
 
 def _expand_plan_workouts(plan, tenant, schedule_json, start_date, weeks):
-    """Bulk-create planned Workout rows from a schedule template."""
+    """Create planned Workout rows + matching PlanSlot rows from a schedule.
+
+    Each workout gets its ``slot`` FK set so the reconciler (Phase 5) can
+    later mutate slots in place without tombstoning workout uuids.
+
+    Switched from ``bulk_create`` to per-row create so each row can carry
+    the slot FK we create alongside it. Typical plan size is bounded
+    (max ~52 weeks × 7 weekdays = 364 slots), so the per-row cost is
+    negligible vs. the safety it buys.
+    """
     from datetime import timedelta
 
-    # Align to Monday of the start_date's week
-    plan_monday = start_date - timedelta(days=start_date.weekday())
-    workouts_to_create = []
+    from .models import PlanSlot
 
-    for week_idx in range(weeks):
+    plan_monday = start_date - timedelta(days=start_date.weekday())
+    elapsed_weeks = max(0, (start_date - plan.start_date).days // 7)
+    workouts_created = 0
+
+    for week_offset in range(weeks):
+        week_idx = elapsed_weeks + week_offset
         for day_str, workout_def in schedule_json.items():
             try:
                 day_int = int(day_str)
@@ -825,8 +883,7 @@ def _expand_plan_workouts(plan, tenant, schedule_json, start_date, weeks):
             if day_int < 0 or day_int > 6:
                 continue
 
-            workout_date = plan_monday + timedelta(weeks=week_idx, days=day_int)
-            # Skip days before the plan's actual start_date in the first week
+            workout_date = plan_monday + timedelta(weeks=week_offset, days=day_int)
             if workout_date < start_date:
                 continue
 
@@ -834,22 +891,36 @@ def _expand_plan_workouts(plan, tenant, schedule_json, start_date, weeks):
             if category not in WorkoutCategory.values:
                 category = "other"
 
-            workouts_to_create.append(
-                Workout(
+            # get_or_create can't take an ``archived_at__isnull`` lookup as a
+            # field-set; query active rows first, fall back to create.
+            slot = PlanSlot.objects.filter(
+                plan=plan,
+                week_index=week_idx,
+                weekday=day_int,
+                archived_at__isnull=True,
+            ).first()
+            if slot is None:
+                slot = PlanSlot.objects.create(
                     tenant=tenant,
                     plan=plan,
-                    date=workout_date,
-                    status=WorkoutStatus.PLANNED,
-                    category=category,
-                    activity=str(workout_def.get("activity", WorkoutCategory(category).label)).strip(),
-                    duration_minutes=workout_def.get("duration_minutes"),
-                    detail_json=workout_def.get("detail_json", {}),
+                    week_index=week_idx,
+                    weekday=day_int,
                 )
-            )
 
-    if workouts_to_create:
-        Workout.objects.bulk_create(workouts_to_create)
-    return len(workouts_to_create)
+            Workout.objects.create(
+                tenant=tenant,
+                plan=plan,
+                slot=slot,
+                date=workout_date,
+                status=WorkoutStatus.PLANNED,
+                category=category,
+                activity=str(workout_def.get("activity", WorkoutCategory(category).label)).strip(),
+                duration_minutes=workout_def.get("duration_minutes"),
+                detail_json=workout_def.get("detail_json", {}),
+            )
+            workouts_created += 1
+
+    return workouts_created
 
 
 def _manage_fuel_cron(tenant, plan, action="create"):
@@ -1097,55 +1168,37 @@ class RuntimeWorkoutPlanDetailView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # Regenerate future planned workouts if schedule or weeks changed.
-        # Snapshot per-workout customisations BEFORE the delete so a one-line
-        # tweak (e.g. "swap Tuesday for a longer run") doesn't wipe per-day
-        # exercise prescriptions across the rest of the plan. Match on
-        # (date, activity) — same intent, same row. Activity rename =
-        # different intent, intentionally not restored.
+        # Reconcile slot/workout state with the desired schedule. Replaces
+        # the old DELETE+INSERT regen — the slot model now provides stable
+        # identity so a workout uuid the user's browser is holding stays
+        # valid across regens. User-actively-edited workouts (with an
+        # active edit_lock) are skipped from deletion; see
+        # apps.fuel.services.apply_reconciliation.
         if needs_regeneration:
-            today = date.today()
-            future_qs = Workout.objects.filter(plan=plan, status=WorkoutStatus.PLANNED, date__gte=today)
-            preserved = {
-                (w.date.isoformat(), w.activity): {
-                    "detail_json": w.detail_json,
-                    "duration_minutes": w.duration_minutes,
-                    "scheduled_at": w.scheduled_at,
-                    "notes": w.notes,
-                }
-                for w in future_qs
-            }
-            future_qs.delete()
+            from django.utils import timezone
 
-            elapsed_days = (today - plan.start_date).days
-            elapsed_weeks = max(0, elapsed_days // 7)
-            remaining_weeks = max(0, plan.weeks - elapsed_weeks)
-            if remaining_weeks > 0:
-                regen_start = max(today, plan.start_date)
-                _expand_plan_workouts(plan, tenant, plan.schedule_json, regen_start, remaining_weeks)
+            from .services import apply_reconciliation, reconcile_plan_state
 
-            # Restore customisations into the freshly-expanded rows where
-            # the template didn't provide a value. Template wins on conflict.
-            if preserved:
-                for w in Workout.objects.filter(plan=plan, status=WorkoutStatus.PLANNED, date__gte=today):
-                    snap = preserved.get((w.date.isoformat(), w.activity))
-                    if not snap:
-                        continue
-                    update_fields: list[str] = []
-                    if (not isinstance(w.detail_json, dict) or not w.detail_json) and snap["detail_json"]:
-                        w.detail_json = snap["detail_json"]
-                        update_fields.append("detail_json")
-                    if w.duration_minutes is None and snap["duration_minutes"] is not None:
-                        w.duration_minutes = snap["duration_minutes"]
-                        update_fields.append("duration_minutes")
-                    if w.scheduled_at is None and snap["scheduled_at"] is not None:
-                        w.scheduled_at = snap["scheduled_at"]
-                        update_fields.append("scheduled_at")
-                    if not w.notes and snap["notes"]:
-                        w.notes = snap["notes"]
-                        update_fields.append("notes")
-                    if update_fields:
-                        w.save(update_fields=update_fields)
+            def _is_edit_locked(workout) -> bool:
+                if workout.edit_lock_until is None:
+                    return False
+                return workout.edit_lock_until > timezone.now()
+
+            rec = reconcile_plan_state(plan, plan.schedule_json, plan.weeks)
+            try:
+                counts = apply_reconciliation(
+                    rec,
+                    plan=plan,
+                    tenant=tenant,
+                    edit_lock_check=_is_edit_locked,
+                )
+                logger.info("fuel.plan_reconciled plan=%s counts=%s", plan.id, counts)
+            except Exception:
+                logger.exception("fuel.plan_reconcile_failed plan=%s", plan.id)
+                return Response(
+                    {"error": "regen_failed"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
 
         # Manage fuel cron based on status/schedule changes (best-effort)
         if "status" in updated_fields or needs_regeneration:

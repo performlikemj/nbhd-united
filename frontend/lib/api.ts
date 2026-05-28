@@ -1068,6 +1068,30 @@ export function skipWorkout(id: string, reason?: string): Promise<import("@/lib/
   });
 }
 
+export interface EditLockResponse {
+  workout_id: string;
+  edit_lock_until: string;
+  edit_lock_owner: string;
+  ttl_seconds: number;
+  version: number;
+}
+
+export function fetchFuelVersion(): Promise<{ fuel_version: number }> {
+  return apiFetch<{ fuel_version: number }>("/api/v1/fuel/version/");
+}
+
+export function acquireEditLock(workoutId: string): Promise<EditLockResponse> {
+  return apiFetch<EditLockResponse>(`/api/v1/fuel/workouts/${workoutId}/edit-lock/`, {
+    method: "POST",
+  });
+}
+
+export function releaseEditLock(workoutId: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/fuel/workouts/${workoutId}/edit-lock/`, {
+    method: "DELETE",
+  });
+}
+
 export function completeWorkout(
   id: string,
   data?: { notes?: string; rpe?: number; duration_minutes?: number },

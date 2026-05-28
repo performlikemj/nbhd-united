@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date
+from datetime import UTC, date, timedelta
 from decimal import Decimal
 from unittest import TestCase as UnitTestCase
 from unittest.mock import patch
@@ -338,6 +338,372 @@ class BackfillPlanSlotsTests(TestCase):
         self._run()
         w.refresh_from_db()
         self.assertEqual(w.slot_id, existing_slot.id)
+
+
+class ReconcilePlanStateTests(TestCase):
+    """Phase 3 — diff + apply for the plan reconciler.
+
+    Every test pins ``today`` so the date-window logic is deterministic
+    regardless of when the suite actually runs.
+    """
+
+    def setUp(self):
+        from apps.fuel.services import apply_reconciliation, reconcile_plan_state
+
+        self._reconcile = reconcile_plan_state
+        self._apply = apply_reconciliation
+        self.tenant = create_tenant(display_name="Recon Test", telegram_chat_id=800100)
+        # 2026-06-01 is a Monday. start_date == today keeps things obvious.
+        self.today = date(2026, 6, 1)
+        self.plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Reconciler",
+            start_date=self.today,
+            weeks=2,
+            days_per_week=2,
+            schedule_json={
+                "0": {"category": "strength", "activity": "Push Day", "duration_minutes": 60},
+                "3": {"category": "strength", "activity": "Pull Day", "duration_minutes": 50},
+            },
+        )
+
+    # --- Diff (no writes) -----------------------------------------------
+
+    def test_empty_plan_produces_full_grid_of_new_slots(self):
+        rec = self._reconcile(self.plan, self.plan.schedule_json, self.plan.weeks, today=self.today)
+        self.assertEqual(len(rec.new_slot_keys), 4)
+        self.assertEqual(rec.slots_to_archive, [])
+        self.assertEqual(rec.workouts_to_delete, [])
+        self.assertEqual(len(rec.workouts_to_create), 4)
+        # Workout specs carry the template fields.
+        first = next(s for s in rec.workouts_to_create if s.slot_key.week_index == 0 and s.slot_key.weekday == 0)
+        self.assertEqual(first.activity, "Push Day")
+        self.assertEqual(first.duration_minutes, 60)
+        self.assertEqual(first.date, date(2026, 6, 1))
+
+    def test_already_synced_plan_is_noop(self):
+        rec = self._reconcile(self.plan, self.plan.schedule_json, self.plan.weeks, today=self.today)
+        self._apply(rec, plan=self.plan, tenant=self.tenant)
+        # Second reconcile against same desired state == noop.
+        rec2 = self._reconcile(self.plan, self.plan.schedule_json, self.plan.weeks, today=self.today)
+        self.assertTrue(rec2.is_noop, msg=f"Expected noop, got: {rec2}")
+        self.assertEqual(len(rec2.slots_kept), 4)
+
+    def test_extending_weeks_adds_slots(self):
+        rec = self._reconcile(self.plan, self.plan.schedule_json, self.plan.weeks, today=self.today)
+        self._apply(rec, plan=self.plan, tenant=self.tenant)
+        # Extend.
+        rec2 = self._reconcile(self.plan, self.plan.schedule_json, weeks=4, today=self.today)
+        self.assertEqual(len(rec2.new_slot_keys), 4)
+        self.assertEqual(rec2.slots_to_archive, [])
+        self.assertEqual(len(rec2.slots_kept), 4)
+
+    def test_shrinking_weeks_archives_slots(self):
+        rec = self._reconcile(self.plan, self.plan.schedule_json, weeks=4, today=self.today)
+        self._apply(rec, plan=self.plan, tenant=self.tenant)
+        # Shrink.
+        rec2 = self._reconcile(self.plan, self.plan.schedule_json, weeks=2, today=self.today)
+        self.assertEqual(rec2.new_slot_keys, [])
+        self.assertEqual(len(rec2.slots_to_archive), 4)
+        self.assertEqual(len(rec2.slots_kept), 4)
+        # The archived ones are weeks 2 and 3.
+        archived_keys = {(s.week_index, s.weekday) for s in rec2.slots_to_archive}
+        self.assertEqual(archived_keys, {(2, 0), (2, 3), (3, 0), (3, 3)})
+
+    def test_changing_weekday_archives_and_creates(self):
+        rec = self._reconcile(self.plan, self.plan.schedule_json, self.plan.weeks, today=self.today)
+        self._apply(rec, plan=self.plan, tenant=self.tenant)
+        # Schedule moves Push from Monday to Tuesday.
+        new_sched = {
+            "1": {"category": "strength", "activity": "Push Day"},
+            "3": {"category": "strength", "activity": "Pull Day"},
+        }
+        rec2 = self._reconcile(self.plan, new_sched, self.plan.weeks, today=self.today)
+        new_keys = {(k.week_index, k.weekday) for k in rec2.new_slot_keys}
+        archived_keys = {(s.week_index, s.weekday) for s in rec2.slots_to_archive}
+        self.assertEqual(new_keys, {(0, 1), (1, 1)})
+        self.assertEqual(archived_keys, {(0, 0), (1, 0)})
+
+    def test_past_slots_are_out_of_scope(self):
+        # today moves forward by 1 week — week 0 is now in the past.
+        future_today = self.today + timedelta(weeks=1)
+        # Seed week-0 slots so they exist when we pretend "today" is week 1.
+        rec_init = self._reconcile(self.plan, self.plan.schedule_json, self.plan.weeks, today=self.today)
+        self._apply(rec_init, plan=self.plan, tenant=self.tenant)
+        # Now reconcile with future_today: same desired schedule.
+        rec = self._reconcile(self.plan, self.plan.schedule_json, self.plan.weeks, today=future_today)
+        # Week 0 slots are past — not in scope, not in any diff bucket.
+        archive_keys = {(s.week_index, s.weekday) for s in rec.slots_to_archive}
+        kept_keys = {(s.week_index, s.weekday) for s in rec.slots_kept}
+        self.assertNotIn((0, 0), archive_keys)
+        self.assertNotIn((0, 3), archive_keys)
+        self.assertNotIn((0, 0), kept_keys)
+        # Week 1 slots are kept.
+        self.assertIn((1, 0), kept_keys)
+        self.assertIn((1, 3), kept_keys)
+
+    # --- Apply (writes) -------------------------------------------------
+
+    def test_apply_creates_slots_and_workouts(self):
+        rec = self._reconcile(self.plan, self.plan.schedule_json, self.plan.weeks, today=self.today)
+        counts = self._apply(rec, plan=self.plan, tenant=self.tenant)
+        self.assertEqual(counts["slots_created"], 4)
+        self.assertEqual(counts["workouts_created"], 4)
+        self.assertEqual(counts["slots_archived"], 0)
+        self.assertEqual(counts["workouts_deleted"], 0)
+        # Every new workout has a slot FK and PLANNED status.
+        ws = list(Workout.objects.filter(plan=self.plan))
+        self.assertEqual(len(ws), 4)
+        for w in ws:
+            self.assertIsNotNone(w.slot_id)
+            self.assertEqual(w.status, "planned")
+            self.assertEqual(w.source, "assistant")
+
+    def test_apply_preserves_workout_uuid_when_slot_is_kept(self):
+        rec1 = self._reconcile(self.plan, self.plan.schedule_json, self.plan.weeks, today=self.today)
+        self._apply(rec1, plan=self.plan, tenant=self.tenant)
+        original_uuids = set(Workout.objects.filter(plan=self.plan).values_list("id", flat=True))
+        # A second reconcile + apply with the SAME schedule must NOT change uuids.
+        rec2 = self._reconcile(self.plan, self.plan.schedule_json, self.plan.weeks, today=self.today)
+        self._apply(rec2, plan=self.plan, tenant=self.tenant)
+        new_uuids = set(Workout.objects.filter(plan=self.plan).values_list("id", flat=True))
+        self.assertEqual(
+            original_uuids, new_uuids, "Workout uuids must survive a noop reconcile — that's the whole point."
+        )
+
+    def test_apply_archives_slot_and_deletes_future_planned_workouts(self):
+        rec = self._reconcile(self.plan, self.plan.schedule_json, weeks=4, today=self.today)
+        self._apply(rec, plan=self.plan, tenant=self.tenant)
+        # Shrink and apply.
+        rec2 = self._reconcile(self.plan, self.plan.schedule_json, weeks=2, today=self.today)
+        counts = self._apply(rec2, plan=self.plan, tenant=self.tenant)
+        self.assertEqual(counts["slots_archived"], 4)
+        self.assertEqual(counts["workouts_deleted"], 4)
+        # Archived slots persist with archived_at set.
+        archived = PlanSlot.objects.filter(plan=self.plan, archived_at__isnull=False)
+        self.assertEqual(archived.count(), 4)
+        # Remaining workouts only on weeks 0 and 1.
+        weeks_left = set(Workout.objects.filter(plan=self.plan).values_list("slot__week_index", flat=True))
+        self.assertEqual(weeks_left, {0, 1})
+
+    def test_apply_preserves_done_workout_on_archived_slot(self):
+        rec = self._reconcile(self.plan, self.plan.schedule_json, weeks=4, today=self.today)
+        self._apply(rec, plan=self.plan, tenant=self.tenant)
+        # Mark a week-3 workout as done.
+        w_done = Workout.objects.get(plan=self.plan, slot__week_index=3, slot__weekday=0)
+        w_done.status = "done"
+        w_done.save()
+        # Shrink to weeks=2.
+        rec2 = self._reconcile(self.plan, self.plan.schedule_json, weeks=2, today=self.today)
+        counts = self._apply(rec2, plan=self.plan, tenant=self.tenant)
+        # Done workout survives; only PLANNED gets deleted.
+        self.assertEqual(counts["workouts_deleted"], 3)  # 4 archived slots, 1 is done -> 3 deleted
+        w_done.refresh_from_db()
+        self.assertEqual(w_done.status, "done")
+        # Its slot is now archived.
+        self.assertIsNotNone(w_done.slot.archived_at)
+
+    def test_edit_lock_skips_workout_deletion(self):
+        from django.utils import timezone
+
+        rec = self._reconcile(self.plan, self.plan.schedule_json, weeks=4, today=self.today)
+        self._apply(rec, plan=self.plan, tenant=self.tenant)
+        # Mid-edit lock on a soon-to-be-archived workout.
+        w_locked = Workout.objects.get(plan=self.plan, slot__week_index=3, slot__weekday=0)
+        w_locked.edit_lock_until = timezone.now() + timedelta(seconds=60)
+        w_locked.edit_lock_owner = "user"
+        w_locked.save(update_fields=["edit_lock_until", "edit_lock_owner"])
+        # Shrink and apply with a lock check that honors the lock.
+        rec2 = self._reconcile(self.plan, self.plan.schedule_json, weeks=2, today=self.today)
+
+        def lock_check(w):
+            return bool(w.edit_lock_until and w.edit_lock_until > timezone.now())
+
+        counts = self._apply(rec2, plan=self.plan, tenant=self.tenant, edit_lock_check=lock_check)
+        self.assertEqual(counts["workouts_locked_skip"], 1)
+        self.assertEqual(counts["workouts_deleted"], 3)
+        # Locked workout still exists; its slot IS archived (orphan-for-audit).
+        w_locked.refresh_from_db()
+        self.assertEqual(Workout.objects.filter(id=w_locked.id).count(), 1)
+        self.assertIsNotNone(w_locked.slot.archived_at)
+
+    def test_apply_is_atomic_on_failure(self):
+        # If the create_workout step blows up, no slots should remain.
+        # We simulate this by setting plan.start_date to None partway through.
+        rec = self._reconcile(self.plan, self.plan.schedule_json, self.plan.weeks, today=self.today)
+        # Patch the Workout.create to raise on the third call.
+        from unittest.mock import patch as mock_patch
+
+        from apps.fuel.models import Workout as WModel
+
+        call_count = {"n": 0}
+        original_create = WModel.objects.create
+
+        def bombing_create(*a, **kw):
+            call_count["n"] += 1
+            if call_count["n"] == 3:
+                raise RuntimeError("boom")
+            return original_create(*a, **kw)
+
+        with (
+            mock_patch.object(WModel.objects, "create", side_effect=bombing_create),
+            self.assertRaises(RuntimeError),
+        ):
+            self._apply(rec, plan=self.plan, tenant=self.tenant)
+        # Atomic transaction rolled back — no slots, no workouts.
+        self.assertEqual(PlanSlot.objects.filter(plan=self.plan).count(), 0)
+        self.assertEqual(Workout.objects.filter(plan=self.plan).count(), 0)
+
+
+class WorkoutEditLockEndpointTests(TestCase):
+    """Phase 4 — consumer-facing acquire/release."""
+
+    def setUp(self):
+        from django.utils import timezone
+
+        self.tenant = create_tenant(display_name="Lock Test", telegram_chat_id=800200)
+        self.user = self.tenant.user
+        self.workout = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 6, 5),
+            category="strength",
+            activity="Push",
+        )
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+        self._tz_now = timezone.now
+
+    def _url(self, wid=None):
+        return f"/api/v1/fuel/workouts/{wid or self.workout.id}/edit-lock/"
+
+    def test_post_acquires_lock_with_ttl(self):
+        before = self._tz_now()
+        resp = self.client.post(self._url())
+        self.assertEqual(resp.status_code, 200)
+        self.workout.refresh_from_db()
+        self.assertIsNotNone(self.workout.edit_lock_until)
+        self.assertEqual(self.workout.edit_lock_owner, "user")
+        delta = (self.workout.edit_lock_until - before).total_seconds()
+        # TTL is 60 by default; allow a 5s margin for test scheduling.
+        self.assertGreater(delta, 55)
+        self.assertLess(delta, 70)
+        self.assertEqual(resp.data["workout_id"], str(self.workout.id))
+        self.assertEqual(resp.data["ttl_seconds"], 60)
+
+    def test_post_heartbeat_extends_lock(self):
+        r1 = self.client.post(self._url())
+        first_until = r1.data["edit_lock_until"]
+        # Re-acquire; the new edit_lock_until should be >= the first one.
+        r2 = self.client.post(self._url())
+        self.assertGreaterEqual(r2.data["edit_lock_until"], first_until)
+
+    def test_delete_releases_lock(self):
+        self.client.post(self._url())
+        resp = self.client.delete(self._url())
+        self.assertEqual(resp.status_code, 204)
+        self.workout.refresh_from_db()
+        self.assertIsNone(self.workout.edit_lock_until)
+        self.assertEqual(self.workout.edit_lock_owner, "")
+
+    def test_delete_is_idempotent_when_no_lock(self):
+        resp = self.client.delete(self._url())
+        self.assertEqual(resp.status_code, 204)
+
+    def test_cannot_lock_other_tenants_workout(self):
+        other_tenant = create_tenant(display_name="Other", telegram_chat_id=800201)
+        other_workout = Workout.objects.create(
+            tenant=other_tenant,
+            date=date(2026, 6, 5),
+            category="strength",
+            activity="Push",
+        )
+        resp = self.client.post(self._url(wid=other_workout.id))
+        self.assertEqual(resp.status_code, 404)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+class RuntimeEditLockGateTests(TestCase):
+    """Phase 4 — runtime PATCH / DELETE / skip / complete refuse when locked."""
+
+    def setUp(self):
+        from django.utils import timezone
+
+        self.tenant = create_tenant(display_name="Gate Test", telegram_chat_id=800210)
+        self.workout = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 6, 5),
+            category="strength",
+            activity="Push",
+            status="planned",
+        )
+        self.workout.edit_lock_until = timezone.now() + timedelta(seconds=60)
+        self.workout.edit_lock_owner = "user"
+        self.workout.save(update_fields=["edit_lock_until", "edit_lock_owner"])
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def _runtime_url(self, suffix=""):
+        return f"/api/v1/fuel/runtime/{self.tenant.id}/workouts/{self.workout.id}/{suffix}"
+
+    def test_patch_returns_409_with_retry_after(self):
+        resp = self.client.patch(
+            self._runtime_url(),
+            data={"activity": "Renamed"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["error"], "edit_locked")
+        self.assertIn("retry_after_s", resp.data)
+        self.assertIn("Retry-After", resp.headers)
+        self.workout.refresh_from_db()
+        self.assertEqual(self.workout.activity, "Push")
+
+    def test_delete_returns_409_when_locked(self):
+        resp = self.client.delete(self._runtime_url(), **self.headers)
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(Workout.objects.filter(id=self.workout.id).count(), 1)
+
+    def test_skip_returns_409_when_locked(self):
+        resp = self.client.post(
+            self._runtime_url("skip/"),
+            data={"reason": "from assistant"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 409)
+        self.workout.refresh_from_db()
+        self.assertEqual(self.workout.status, "planned")
+
+    def test_complete_returns_409_when_locked(self):
+        resp = self.client.post(
+            self._runtime_url("complete/"),
+            data={"notes": "from assistant"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 409)
+        self.workout.refresh_from_db()
+        self.assertEqual(self.workout.status, "planned")
+
+    def test_expired_lock_does_not_gate(self):
+        from django.utils import timezone
+
+        self.workout.edit_lock_until = timezone.now() - timedelta(seconds=10)
+        self.workout.save(update_fields=["edit_lock_until"])
+        resp = self.client.patch(
+            self._runtime_url(),
+            data={"activity": "Renamed"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.workout.refresh_from_db()
+        self.assertEqual(self.workout.activity, "Renamed")
 
 
 class BodyWeightLogModelTests(TestCase):
@@ -1920,7 +2286,10 @@ class RuntimeWorkoutPlanTests(TestCase):
 
     def test_update_plan_preserves_detail_json(self):
         """Regen preserves per-workout exercise prescriptions when the new
-        schedule_json doesn't override them, matched by (date, activity).
+        schedule_json doesn't override them. Under the reconciler (phase 5)
+        the existing workout row is adopted to a slot in place — its uuid
+        stays the same, and all user fields the new template doesn't speak
+        to are left untouched.
         """
         from datetime import timedelta
 
@@ -1966,10 +2335,13 @@ class RuntimeWorkoutPlanTests(TestCase):
         self.assertEqual(resp.status_code, 200)
 
         regen = Workout.objects.get(tenant=self.tenant, plan=plan, date=plan_start, activity="Upper Push")
-        self.assertNotEqual(regen.id, customised.id)
+        # Reconciler keeps the uuid stable — the row is the same row.
+        self.assertEqual(regen.id, customised.id)
         self.assertEqual(regen.detail_json, customised.detail_json)
         self.assertEqual(regen.duration_minutes, 55)
         self.assertEqual(regen.notes, "Pre-meet taper week")
+        # And it now has a slot FK (adopted by the reconciler).
+        self.assertIsNotNone(regen.slot_id)
 
     def test_update_plan_template_overrides_duration(self):
         """When the new schedule_json supplies duration_minutes, it wins
@@ -2010,9 +2382,11 @@ class RuntimeWorkoutPlanTests(TestCase):
         regen = Workout.objects.get(plan=plan, date=plan_start, activity="Push")
         self.assertEqual(regen.duration_minutes, 75)
 
-    def test_update_plan_renamed_activity_is_new_intent(self):
-        """If the activity name changes for the same day, the snapshot
-        doesn't restore — treated as a different workout.
+    def test_update_plan_renamed_activity_propagates_to_slot(self):
+        """If the schedule renames the activity for a weekday, the slot's
+        existing workout is renamed in place (uuid stable). Detail fields
+        the new template doesn't speak to are left alone — slot identity
+        is what preserves user customizations across regens.
         """
         from datetime import timedelta
 
@@ -2052,7 +2426,18 @@ class RuntimeWorkoutPlanTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         regen = Workout.objects.get(plan=plan, date=plan_start)
         self.assertEqual(regen.activity, "Pull")
-        self.assertEqual(regen.detail_json, {})
+        # detail_json was a user customization the new template doesn't
+        # touch — slot identity preserves it across the rename. Improves
+        # on the old DELETE+INSERT behavior where a rename clobbered it.
+        self.assertEqual(
+            regen.detail_json,
+            {
+                "exercises": [
+                    {"name": "Bench", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 80}]},
+                ]
+            },
+        )
+        self.assertIsNotNone(regen.slot_id)
 
     def test_delete_plan_preserves_done(self):
         """DELETE removes planned workouts but preserves completed ones."""
@@ -2142,6 +2527,262 @@ class RuntimeWorkoutPlanTests(TestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, 401)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+class PlanReconcilerRaceTests(TestCase):
+    """The deterministic race test the durable fix is supposed to win.
+
+    Sequence:
+    1. Tenant has a planned workout (uuid X) that the user is mid-editing.
+    2. User holds an active edit-lock on uuid X.
+    3. Assistant fires a plan PATCH that would (under the old code)
+       DELETE+INSERT the workout into a fresh uuid.
+
+    Under the new code:
+    - The slot identity preserves uuid X across the regen.
+    - The edit-lock blocks any field-level retemplate during the lock
+      window.
+    - The user's in-flight edits remain savable; no 404 on the browser
+      side, no orphan-drafts dialog.
+    """
+
+    def setUp(self):
+        from django.utils import timezone
+
+        self.tenant = create_tenant(display_name="Race Test", telegram_chat_id=800300)
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+        self._tz_now = timezone.now
+
+    def _make_plan_with_workout(self, schedule):
+        """Create a plan + its workouts via the runtime API so slots are
+        populated end-to-end (same code path production hits)."""
+        resp = self.client.post(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/",
+            {
+                "name": "Race Plan",
+                "start_date": (date.today() + timedelta(days=1)).isoformat(),
+                "weeks": 2,
+                "days_per_week": len(schedule),
+                "schedule_json": schedule,
+            },
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 201)
+        return WorkoutPlan.objects.get(id=resp.data["id"])
+
+    def test_uuid_survives_assistant_regen_with_unchanged_schedule(self):
+        plan = self._make_plan_with_workout({"0": {"activity": "Push", "category": "strength"}})
+        workouts_before = list(Workout.objects.filter(plan=plan).order_by("date"))
+        uuids_before = {w.id for w in workouts_before}
+
+        # Assistant fires PATCH with same schedule — equivalent to "no real change".
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan.id}/",
+            {"schedule_json": {"0": {"activity": "Push", "category": "strength"}}},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        workouts_after = list(Workout.objects.filter(plan=plan).order_by("date"))
+        uuids_after = {w.id for w in workouts_after}
+        self.assertEqual(
+            uuids_before,
+            uuids_after,
+            "Workout uuids must survive a no-op regen — that's the property that fixes MJ's browser-mid-edit 404.",
+        )
+
+    def test_edit_lock_blocks_runtime_field_overwrite(self):
+        plan = self._make_plan_with_workout({"0": {"activity": "Push", "category": "strength", "duration_minutes": 60}})
+        workout = Workout.objects.filter(plan=plan).first()
+        original_uuid = workout.id
+        original_activity = workout.activity
+
+        # User locks the workout (simulating mid-edit drawer).
+        workout.edit_lock_until = self._tz_now() + timedelta(seconds=60)
+        workout.edit_lock_owner = "user"
+        workout.save(update_fields=["edit_lock_until", "edit_lock_owner"])
+
+        # Assistant fires PATCH with a renamed activity + new duration.
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan.id}/",
+            {"schedule_json": {"0": {"activity": "Pull", "category": "strength", "duration_minutes": 90}}},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        # Same uuid — slot identity preserved.
+        workout.refresh_from_db()
+        self.assertEqual(workout.id, original_uuid)
+        # Activity NOT overwritten because lock check skipped the retemplate.
+        self.assertEqual(workout.activity, original_activity)
+        # Same for duration.
+        self.assertEqual(workout.duration_minutes, 60)
+
+    def test_archived_slot_with_locked_workout_keeps_workout(self):
+        plan = self._make_plan_with_workout(
+            {
+                "0": {"activity": "Push", "category": "strength"},
+                "3": {"activity": "Pull", "category": "strength"},
+            },
+        )
+        pull = Workout.objects.filter(plan=plan, activity="Pull").first()
+        original_uuid = pull.id
+
+        pull.edit_lock_until = self._tz_now() + timedelta(seconds=60)
+        pull.edit_lock_owner = "user"
+        pull.save(update_fields=["edit_lock_until", "edit_lock_owner"])
+
+        # Assistant removes Pull from the schedule.
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan.id}/",
+            {"schedule_json": {"0": {"activity": "Push", "category": "strength"}}},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        # Pull workout still exists (lock prevented deletion).
+        pull.refresh_from_db()
+        self.assertEqual(pull.id, original_uuid)
+        # Its slot got archived — orphan-for-audit pattern.
+        self.assertIsNotNone(pull.slot.archived_at)
+
+
+class CompletedWorkoutEditabilityTests(TestCase):
+    """Phase 7 — completed workouts stay fully editable; the consumer PATCH
+    endpoint stamps ``last_edited_by_user_at`` so the UI can footnote
+    post-completion retouches.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Done Edit Test", telegram_chat_id=800400)
+        self.user = self.tenant.user
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def _patch(self, w, data):
+        return self.client.patch(f"/api/v1/fuel/workouts/{w.id}/", data, format="json")
+
+    def test_patch_done_workout_succeeds_no_status_gate(self):
+        from django.utils import timezone
+
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            status="done",
+            category="strength",
+            activity="Push",
+            duration_minutes=45,
+        )
+        # Backdate created_at so post-completion stamp fires.
+        Workout.objects.filter(id=w.id).update(created_at=timezone.now() - timedelta(days=2))
+        resp = self._patch(w, {"notes": "Felt strong"})
+        self.assertEqual(resp.status_code, 200, msg=resp.data)
+        w.refresh_from_db()
+        self.assertEqual(w.notes, "Felt strong")
+        self.assertEqual(w.status, "done")  # status preserved
+        self.assertIsNotNone(w.last_edited_by_user_at)
+
+    def test_patch_done_within_24h_does_not_stamp_footnote(self):
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            status="done",
+            category="strength",
+            activity="Push",
+        )
+        resp = self._patch(w, {"notes": "Same-day amendment"})
+        self.assertEqual(resp.status_code, 200)
+        w.refresh_from_db()
+        # Same-day edits don't surface a footnote — only retouches that
+        # land >24h after creation indicate "edited after the fact".
+        self.assertIsNone(w.last_edited_by_user_at)
+
+    def test_patch_planned_workout_does_not_stamp_footnote(self):
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            status="planned",
+            category="strength",
+            activity="Push",
+        )
+        resp = self._patch(w, {"notes": "Adjustment"})
+        self.assertEqual(resp.status_code, 200)
+        w.refresh_from_db()
+        self.assertIsNone(w.last_edited_by_user_at)
+
+
+class TenantFuelVersionTests(TestCase):
+    """Phase 6 — every Workout/WorkoutPlan write bumps tenant.fuel_version,
+    and ``GET /api/v1/fuel/version/`` surfaces the counter for the
+    frontend's stale-edit-warning pill.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Fuel Version", telegram_chat_id=800401)
+        self.user = self.tenant.user
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def test_workout_save_bumps_fuel_version(self):
+        self.tenant.refresh_from_db()
+        before = self.tenant.fuel_version
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Push",
+        )
+        self.tenant.refresh_from_db()
+        self.assertGreater(self.tenant.fuel_version, before)
+
+    def test_workout_delete_bumps_fuel_version(self):
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Push",
+        )
+        self.tenant.refresh_from_db()
+        before = self.tenant.fuel_version
+        w.delete()
+        self.tenant.refresh_from_db()
+        self.assertGreater(self.tenant.fuel_version, before)
+
+    def test_plan_save_bumps_fuel_version(self):
+        self.tenant.refresh_from_db()
+        before = self.tenant.fuel_version
+        WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Bump",
+            start_date=date(2026, 6, 1),
+            weeks=1,
+            days_per_week=1,
+        )
+        self.tenant.refresh_from_db()
+        self.assertGreater(self.tenant.fuel_version, before)
+
+    def test_version_endpoint_returns_current_counter(self):
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Push",
+        )
+        resp = self.client.get("/api/v1/fuel/version/")
+        self.assertEqual(resp.status_code, 200)
+        self.tenant.refresh_from_db()
+        self.assertEqual(resp.data["fuel_version"], self.tenant.fuel_version)
 
 
 class ConsumerWorkoutPlanTests(TestCase):

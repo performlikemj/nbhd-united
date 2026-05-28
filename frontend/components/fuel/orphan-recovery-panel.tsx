@@ -150,7 +150,7 @@ export function OrphanRecoveryPanel({ tenantId, draft, onClose }: OrphanRecovery
             <CaseSaveAsNew
               draft={draft}
               submitting={submitting}
-              onSaveAsNew={() => saveAsNew("done")}
+              onSaveAsNew={() => saveAsNew(draft.status ?? "planned")}
               onDiscard={() => discardAndClose()}
             />
           ) : action.kind === "fill_in" ? (
@@ -159,7 +159,7 @@ export function OrphanRecoveryPanel({ tenantId, draft, onClose }: OrphanRecovery
               sameActivity={action.sameActivity}
               submitting={submitting}
               onApply={() => applyToCandidate(action.candidate, true)}
-              onSaveAsSecond={() => saveAsNew("done")}
+              onSaveAsSecond={() => saveAsNew(draft.status ?? "planned")}
               onDiscard={() => discardAndClose()}
             />
           ) : (
@@ -169,7 +169,7 @@ export function OrphanRecoveryPanel({ tenantId, draft, onClose }: OrphanRecovery
               draft={draft}
               submitting={submitting}
               onSame={() => discardAndClose("Discarded duplicate draft.")}
-              onDifferent={() => saveAsNew("done")}
+              onDifferent={() => saveAsNew(draft.status ?? "planned")}
               onMergeNotes={() => mergeNotesOnly(action.candidate)}
             />
           )}

@@ -22,6 +22,7 @@ from .views import (
     FuelProfileView,
     FuelRestartView,  # noqa: F401
     FuelSettingsView,
+    FuelVersionView,
     PRFeedView,
     RestingHRDetailView,
     RestingHRListView,
@@ -33,6 +34,7 @@ from .views import (
     WorkoutCountView,
     WorkoutDetailView,
     WorkoutDuplicateView,
+    WorkoutEditLockView,
     WorkoutListView,
     WorkoutPlanDetailView,
     WorkoutPlanListView,
@@ -56,6 +58,11 @@ urlpatterns = [
         name="fuel-workout-detail",
     ),
     path(
+        "workouts/<uuid:workout_id>/edit-lock/",
+        WorkoutEditLockView.as_view(),
+        name="fuel-workout-edit-lock",
+    ),
+    path(
         "workouts/<uuid:workout_id>/duplicate/",
         WorkoutDuplicateView.as_view(),
         name="fuel-workout-duplicate",
@@ -72,6 +79,7 @@ urlpatterns = [
     ),
     path("workouts/swap/", WorkoutSwapView.as_view(), name="fuel-workout-swap"),
     path("calendar/", WorkoutCalendarView.as_view(), name="fuel-calendar"),
+    path("version/", FuelVersionView.as_view(), name="fuel-version"),
     path("progress/", WorkoutProgressView.as_view(), name="fuel-progress"),
     path("weekly-summary/", WeeklyVolumeSummaryView.as_view(), name="fuel-weekly-summary"),
     path("templates/", WorkoutTemplateListView.as_view(), name="fuel-templates"),

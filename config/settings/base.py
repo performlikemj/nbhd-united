@@ -436,6 +436,12 @@ COMPOSIO_ALLOW_MULTIPLE_ACCOUNTS = env.bool(
     default=True,
 )
 
+# Fuel edit-lock TTL — how long a single user-side acquire keeps the runtime
+# from clobbering the workout. Heartbeats every ~half this value renew the
+# lock; release endpoint clears it explicitly. Defaults to 60s and is
+# tunable via env if telemetry shows misfires.
+FUEL_EDIT_LOCK_TTL_SECONDS = env.int("FUEL_EDIT_LOCK_TTL_SECONDS", default=60)
+
 # Custom test runner — disconnects the CronJob → reconciler signal during
 # test runs so the publish_task sync fallback (no QSTASH_TOKEN) doesn't
 # accumulate DB connections + outbound HTTP attempts on every CronJob save.

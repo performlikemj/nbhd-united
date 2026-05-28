@@ -691,6 +691,12 @@ export interface FuelWorkout {
   notes: string;
   notes_thread: { at: string; who: string; text: string }[];
   detail_json: Record<string, unknown>;
+  version?: number;
+  edit_lock_until?: string | null;
+  edit_lock_owner?: string;
+  last_edited_by_user_at?: string | null;
+  plan_id?: string | null;
+  plan_name?: string | null;
   created_at: string;
   updated_at: string;
 }
