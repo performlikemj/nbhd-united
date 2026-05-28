@@ -82,11 +82,13 @@ If the user's request is ambiguous, ask: *"Is this a one-time reminder or someth
 
 ## Creating a one-off reminder
 
+**Two actions in one turn:** confirm in text AND invoke `cron add`. The confirmation alone does NOT create the reminder — emitting the acknowledgement and yielding without calling the tool means nothing is scheduled and the user will not be pinged. Both steps happen before you end the turn.
+
 For one-time reminders, skip the buttons and just confirm in text:
 
 > "Sure — I'll remind you to take out the laundry in 20 minutes. ✓"
 
-Then call `cron add` with:
+Then, **in the same turn**, invoke the `cron add` tool with:
 
 - `name`: a short descriptive label (does not need to be unique — two "Drink water" reminders are fine)
 - `schedule: {kind: "at", at: "<value>"}` where `<value>` is either:
@@ -95,6 +97,8 @@ Then call `cron add` with:
 - `sessionTarget: "main"` — so you have conversation context when it fires
 - `delivery: {mode: "none"}`
 - `payload: {kind: "agentTurn", message: "<what to do when this fires>"}` — phrase the message as an instruction to your future self, including everything the future-you needs to know (the original chat won't be in active context)
+
+**This is a TOOL invocation, not a chat message.** Do NOT typeset the parameters, paraphrase them as prose, or send them through `nbhd_send_to_user`. The text confirmation goes to the user; the `cron add` call goes to the gateway. If you only sent the confirmation, you have not created the reminder — invoke the tool before yielding.
 
 The gateway auto-deletes one-off crons after they fire successfully — no cleanup needed from your side. If you need to cancel one before it fires, use `cron remove <name>`.
 
