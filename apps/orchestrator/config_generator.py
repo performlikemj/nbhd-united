@@ -1584,6 +1584,24 @@ def _build_tools_section(tier: str, version: str = OPENCLAW_CURRENT_VERSION) -> 
     tools["loopDetection"] = {
         "enabled": True,
     }
+    # Tool Search — on-demand tool discovery (structured search/describe/call).
+    # Collapses the per-turn tool-schema payload (~79 tools, ~20-30K tokens
+    # re-sent every turn) to a compact search interface WITHOUT removing any
+    # tool: tool policy (deny) is still enforced before discovery, so denied
+    # tools (memory_search — see the SQLite-on-share invariant) stay
+    # unreachable. Structured `mode: "tools"` rather than code mode — code
+    # mode needs the model to emit executable JS, unreliable on
+    # DeepSeek-via-OpenRouter; the 3-tool structured form works with any
+    # tool-caller. Gated to >= 2026.5.28: the key does NOT exist in 5.7's
+    # config schema (verified via `npm pack openclaw@<v>` + `openclaw
+    # doctor`), and the redactor masks the resulting validation error, so
+    # tenants still on the 5.7 image must NOT receive it. The canary's
+    # openclaw_version is bumped to 2026.5.28 in lock-step with its image.
+    # See CONTINUITY_openclaw-528-toolsearch.md.
+    from apps.orchestrator.tool_policy import _parse_version
+
+    if _parse_version(version) >= (2026, 5, 28):
+        tools["toolSearch"] = {"enabled": True, "mode": "tools"}
     return tools
 
 

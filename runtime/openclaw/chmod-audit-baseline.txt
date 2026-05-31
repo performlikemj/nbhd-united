@@ -51,7 +51,7 @@
 # whether Layer 1 needs extending.
 
 # Pinned OpenClaw version (must match Dockerfile.openclaw `ARG OPENCLAW_VERSION`):
-openclaw-version: 2026.5.7
+openclaw-version: 2026.5.28
 
 # Observed callee shapes (one per line, sorted):
 chmod(
