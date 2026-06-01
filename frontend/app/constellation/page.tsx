@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { useConstellationQuery, usePendingLessonsQuery } from "@/lib/queries";
+import { useConstellationQuery, useDeleteLessonMutation, usePendingLessonsQuery } from "@/lib/queries";
 import {
   ConstellationData,
   ConstellationNode,
@@ -158,10 +158,11 @@ function GlyphFor({ kind, color, r = 16, selected = false }: { kind: GraphNodeKi
 
 // ── Property Inspector ───────────────────────────────────────────────────────
 
-function Inspector({ node, neighbors, onClose, onJump }: { node: GraphNode; neighbors: Array<{ other: GraphNode; type: GraphRelType; dir: "in" | "out"; similarity?: number }>; onClose: () => void; onJump: (id: string | number) => void }) {
+function Inspector({ node, neighbors, onClose, onJump, onDelete, deleting }: { node: GraphNode; neighbors: Array<{ other: GraphNode; type: GraphRelType; dir: "in" | "out"; similarity?: number }>; onClose: () => void; onJump: (id: string | number) => void; onDelete: (id: number) => void; deleting: boolean }) {
   const color = node.kind === "Cluster" ? node.color || KIND_COLORS[node.kind] : KIND_COLORS[node.kind];
   const cypher = cypherPathFor(node);
   const [copied, setCopied] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const props = useMemo(() => {
     const out: Array<[string, string | number]> = [];
     if (node.kind === "Lesson") { out.push(["id", node.id as number], ["title", nodeLabel(node)]); if (node.cluster_id != null) out.push(["cluster_id", node.cluster_id]); if (node.weight) out.push(["weight", node.weight]); if (node.source_type) out.push(["source_type", node.source_type]); if (node.source_ref) out.push(["source_ref", node.source_ref]); if (node.created_at) out.push(["created_at", node.created_at.slice(0, 10)]); if (node.tags?.length) out.push(["tags", node.tags.join(", ")]); }
@@ -205,6 +206,19 @@ function Inspector({ node, neighbors, onClose, onJump }: { node: GraphNode; neig
             <span className="text-[11px] text-[#CBD5E1] group-hover:text-white truncate min-w-0 flex-1">{nodeLabel(nb.other)}</span>
           </button>); })}</div>
       </div>)}
+      {node.kind === "Lesson" && (<div className="mt-6 pt-5 border-t border-white/[0.06]">
+        {!confirmDelete ? (
+          <button type="button" onClick={() => setConfirmDelete(true)} className="w-full rounded-lg border border-[#F87171]/30 text-[#F87171] hover:bg-[#F87171]/10 px-3 py-2.5 text-[10px] uppercase tracking-[0.22em] font-headline transition">Remove from constellation</button>
+        ) : (
+          <div className="rounded-lg border border-[#F87171]/30 bg-[#F87171]/[0.06] p-3">
+            <p className="text-[12px] text-[#E2E8F0] leading-relaxed mb-3">Delete this lesson permanently? This can&rsquo;t be undone.</p>
+            <div className="flex gap-2">
+              <button type="button" disabled={deleting} onClick={() => onDelete(node.id as number)} className="flex-1 rounded-lg bg-[#F87171] text-[#04070b] px-3 py-2 text-[10px] uppercase tracking-[0.22em] font-headline hover:bg-[#FCA5A5] disabled:opacity-50 transition">{deleting ? "Deleting…" : "Delete"}</button>
+              <button type="button" disabled={deleting} onClick={() => setConfirmDelete(false)} className="flex-1 rounded-lg border border-white/10 text-[#94A3B8] hover:text-white hover:border-white/20 px-3 py-2 text-[10px] uppercase tracking-[0.22em] font-headline transition">Cancel</button>
+            </div>
+          </div>
+        )}
+      </div>)}
     </div>
   );
 }
@@ -216,6 +230,7 @@ const EMPTY_CONSTELLATION: ConstellationData = { nodes: [], edges: [], affinity_
 export default function ConstellationPage() {
   const { data: rawData = EMPTY_CONSTELLATION, isLoading, error: queryError } = useConstellationQuery();
   const { data: pendingLessons = [] } = usePendingLessonsQuery();
+  const deleteLesson = useDeleteLessonMutation();
   const loading = isLoading;
   const error = queryError instanceof Error ? queryError.message : queryError ? "Failed to load constellation." : "";
   const pendingCount = pendingLessons.length;
@@ -487,7 +502,7 @@ export default function ConstellationPage() {
 
         {/* Inspector */}
         {selected && (<aside data-no-drag className="absolute md:relative right-0 top-0 bottom-0 z-30 w-full sm:w-[380px] md:w-[400px] border-l border-white/[0.08] bg-[#06090e]/95 backdrop-blur-2xl overflow-y-auto animate-slide-in" style={{ boxShadow: "-24px 0 60px rgba(0,0,0,0.5)" }}>
-          <Inspector node={selected} neighbors={neighbors} onClose={() => setSelectedId(null)} onJump={focusNode} />
+          <Inspector key={String(selected.id)} node={selected} neighbors={neighbors} onClose={() => setSelectedId(null)} onJump={focusNode} onDelete={(id) => deleteLesson.mutate(id, { onSuccess: () => setSelectedId(null) })} deleting={deleteLesson.isPending} />
         </aside>)}
 
         {/* Empty state */}

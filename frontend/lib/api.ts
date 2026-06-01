@@ -722,6 +722,10 @@ export function dismissLesson(id: number): Promise<Lesson> {
   });
 }
 
+export function deleteLesson(id: number): Promise<void> {
+  return apiFetch<void>(`/api/v1/lessons/${id}/`, { method: "DELETE" });
+}
+
 export function fetchConstellation(): Promise<ConstellationData> {
   return apiFetch<ConstellationData>("/api/v1/lessons/constellation/").then((data) => ({
     ...data,

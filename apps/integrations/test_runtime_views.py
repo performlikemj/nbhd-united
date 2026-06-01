@@ -423,7 +423,9 @@ class RuntimeMemorySyncViewTest(TestCase):
         self.assertIn("memory/journal/memory/long-term.md", body["files"])
         self.assertIn("# Long-Term Memory", body["files"]["memory/journal/memory/long-term.md"])
 
-    def test_runtime_lessons_create_endpoint_creates_pending_lesson(self):
+    @patch("apps.lessons.clustering.refresh_constellation")
+    @patch("apps.lessons.services.process_approved_lesson")
+    def test_runtime_lessons_create_endpoint_auto_approves_lesson(self, mock_process, mock_refresh):
         response = self.client.post(
             f"/api/v1/integrations/runtime/{self.tenant.id}/lessons/",
             data={
@@ -439,8 +441,11 @@ class RuntimeMemorySyncViewTest(TestCase):
 
         self.assertEqual(response.status_code, 201)
         created = Lesson.objects.filter(tenant=self.tenant).get(text="Keep your promises to yourself")
-        self.assertEqual(created.status, "pending")
+        self.assertEqual(created.status, "approved")
+        self.assertIsNotNone(created.approved_at)
         self.assertEqual(created.source_type, "reflection")
+        # Embedding + connections run on the auto-approval path.
+        mock_process.assert_called_once_with(created)
 
     @patch("apps.integrations.runtime_views.search_lessons")
     def test_runtime_lesson_search_endpoint_supports_query(self, mock_search):
