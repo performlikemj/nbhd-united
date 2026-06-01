@@ -115,7 +115,7 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
     from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
     from azure.storage.fileshare import ShareClient, ShareDirectoryClient, ShareFileClient
 
-    from apps.orchestrator.azure_client import get_storage_client
+    from apps.orchestrator.azure_client import get_storage_client, sanitize_share_text
 
     storage_client = get_storage_client()
     keys = storage_client.storage_accounts.list_keys(
@@ -185,7 +185,10 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
             credential=account_key,
         )
 
-        encoded = content.encode("utf-8")
+        # Same corruption guard as the azure_client write chokepoint — this
+        # batch loop reuses one client for perf, so it sanitizes inline rather
+        # than routing each file through _put_share_file.
+        encoded = sanitize_share_text(content).encode("utf-8")
 
         # Check if content changed before writing
         try:
