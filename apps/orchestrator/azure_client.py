@@ -387,6 +387,99 @@ def download_config_from_file_share(tenant_id: str) -> bytes | None:
         return None
 
 
+# C0 control codepoints to strip from any text written to the file share —
+# every control byte except tab (0x09), newline (0x0A), CR (0x0D). A trailing
+# NUL run is the signature of the file-share corruption class (see
+# upload_config_to_file_share's docstring + the 2026-05-22 incident); NUL is
+# never valid in our JSON / markdown anyway, so we strip it anywhere.
+_SHARE_TEXT_STRIP = dict.fromkeys((c for c in range(0x20) if c not in (0x09, 0x0A, 0x0D)), None)
+
+
+def sanitize_share_text(content: str) -> str:
+    """Single source of truth for the file-share text-corruption guard.
+
+    Strips NUL bytes + C0 control junk (keeps tab/newline/CR). Every *text*
+    write to the SMB share routes through here (via ``_put_share_file``), so a
+    partial/padded write — or a corrupted read carried forward by a merge —
+    can never persist ``\\x00`` into a config or workspace file. Binary writes
+    deliberately bypass this.
+    """
+    if not content:
+        return content
+    return content.translate(_SHARE_TEXT_STRIP)
+
+
+def _put_share_file(
+    tenant_id: str,
+    file_path: str,
+    *,
+    text: str | None = None,
+    data: bytes | None = None,
+    ensure_dirs: bool = True,
+    skip_if_exists: bool = False,
+) -> None:
+    """The single chokepoint for every Azure File Share write.
+
+    Pass ``text=`` for text files (auto-sanitized via ``sanitize_share_text``)
+    or ``data=`` for binary (passed through untouched). Consolidates the
+    client/auth setup, parent-directory creation, skip-if-exists, and the
+    single atomic ``upload_file`` PUT (no tmp+rename — that race produced the
+    2026-05-22 null-byte corruption). Routing all writes through here means the
+    text sanitize can never be forgotten by a future writer.
+    """
+    if (text is None) == (data is None):
+        raise ValueError("_put_share_file requires exactly one of text= or data=")
+
+    share_name = f"ws-{str(tenant_id)[:20]}"
+
+    if _is_mock():
+        logger.info("[MOCK] Uploaded %s to file share %s", file_path, share_name)
+        return
+
+    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
+    if not account_name:
+        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
+
+    from azure.core.exceptions import ResourceNotFoundError
+    from azure.storage.fileshare import ShareDirectoryClient, ShareFileClient
+
+    storage_client = get_storage_client()
+    keys = storage_client.storage_accounts.list_keys(settings.AZURE_RESOURCE_GROUP, account_name)
+    account_key = keys.keys[0].value
+    account_url = f"https://{account_name}.file.core.windows.net"
+
+    if skip_if_exists:
+        check_client = ShareFileClient(
+            account_url=account_url, share_name=share_name, file_path=file_path, credential=account_key
+        )
+        try:
+            check_client.get_file_properties()
+            logger.info("Skipping upload of %s to file share %s (already exists)", file_path, share_name)
+            return
+        except ResourceNotFoundError:
+            pass  # File missing — fall through and write it
+
+    if ensure_dirs:
+        parts = file_path.split("/")
+        for i in range(1, len(parts)):
+            dir_path = "/".join(parts[:i])
+            dir_client = ShareDirectoryClient(
+                account_url=account_url, share_name=share_name, directory_path=dir_path, credential=account_key
+            )
+            try:
+                dir_client.create_directory()
+            except Exception:
+                pass  # Already exists
+
+    payload = sanitize_share_text(text).encode("utf-8") if text is not None else data
+
+    file_client = ShareFileClient(
+        account_url=account_url, share_name=share_name, file_path=file_path, credential=account_key
+    )
+    file_client.upload_file(payload, length=len(payload))
+    logger.info("Uploaded %s (%d bytes) to file share %s", file_path, len(payload), share_name)
+
+
 def upload_config_to_file_share(tenant_id: str, config_json: str) -> None:
     """Upload openclaw.json to the tenant's Azure File Share.
 
@@ -412,35 +505,7 @@ def upload_config_to_file_share(tenant_id: str, config_json: str) -> None:
     *does not* advance ``config_version`` — so partial-write semantics
     are preserved end-to-end without the rename dance.
     """
-    share_name = f"ws-{str(tenant_id)[:20]}"
-
-    if _is_mock():
-        logger.info("[MOCK] Uploaded config to file share %s", share_name)
-        return
-
-    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
-    if not account_name:
-        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
-
-    from azure.storage.fileshare import ShareFileClient
-
-    storage_client = get_storage_client()
-    keys = storage_client.storage_accounts.list_keys(
-        settings.AZURE_RESOURCE_GROUP,
-        account_name,
-    )
-    account_key = keys.keys[0].value
-    account_url = f"https://{account_name}.file.core.windows.net"
-
-    file_client = ShareFileClient(
-        account_url=account_url,
-        share_name=share_name,
-        file_path="openclaw.json",
-        credential=account_key,
-    )
-    data = config_json.encode("utf-8")
-    file_client.upload_file(data, length=len(data))
-    logger.info("Uploaded openclaw.json to file share %s", share_name)
+    _put_share_file(tenant_id, "openclaw.json", text=config_json, ensure_dirs=False)
 
 
 def upload_workspace_file(
@@ -459,75 +524,7 @@ def upload_workspace_file(
     (SOUL.md, IDENTITY.md) so later config refreshes don't overwrite agent
     edits — this matches the `[ ! -f ]` guards in `runtime/openclaw/entrypoint.sh`.
     """
-    share_name = f"ws-{str(tenant_id)[:20]}"
-
-    if _is_mock():
-        if skip_if_exists:
-            logger.info("[MOCK] Skip-if-exists upload of %s to file share %s", file_path, share_name)
-        else:
-            logger.info("[MOCK] Uploaded %s to file share %s", file_path, share_name)
-        return
-
-    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
-    if not account_name:
-        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
-
-    from azure.storage.fileshare import ShareFileClient
-
-    storage_client = get_storage_client()
-    keys = storage_client.storage_accounts.list_keys(
-        settings.AZURE_RESOURCE_GROUP,
-        account_name,
-    )
-    account_key = keys.keys[0].value
-    account_url = f"https://{account_name}.file.core.windows.net"
-
-    if skip_if_exists:
-        from azure.core.exceptions import ResourceNotFoundError
-
-        check_client = ShareFileClient(
-            account_url=account_url,
-            share_name=share_name,
-            file_path=file_path,
-            credential=account_key,
-        )
-        try:
-            check_client.get_file_properties()
-            logger.info(
-                "Skipping upload of %s to file share %s (already exists)",
-                file_path,
-                share_name,
-            )
-            return
-        except ResourceNotFoundError:
-            pass  # File missing — fall through and seed it
-
-    from azure.storage.fileshare import ShareDirectoryClient
-
-    # Ensure parent directories exist (e.g. workspace/docs/)
-    parts = file_path.split("/")
-    for i in range(1, len(parts)):
-        dir_path = "/".join(parts[:i])
-        dir_client = ShareDirectoryClient(
-            account_url=account_url,
-            share_name=share_name,
-            directory_path=dir_path,
-            credential=account_key,
-        )
-        try:
-            dir_client.create_directory()
-        except Exception:
-            pass  # Already exists
-
-    file_client = ShareFileClient(
-        account_url=account_url,
-        share_name=share_name,
-        file_path=file_path,
-        credential=account_key,
-    )
-    data = content.encode("utf-8")
-    file_client.upload_file(data, length=len(data))
-    logger.info("Uploaded %s to file share %s", file_path, share_name)
+    _put_share_file(tenant_id, file_path, text=content, ensure_dirs=True, skip_if_exists=skip_if_exists)
 
 
 def upload_workspace_file_binary(tenant_id: str, file_path: str, data: bytes) -> None:
@@ -536,48 +533,7 @@ def upload_workspace_file_binary(tenant_id: str, file_path: str, data: bytes) ->
     file_path is relative to the workspace root, e.g. 'workspace/media/inbound/photo.jpg'.
     Creates intermediate directories if needed.
     """
-    share_name = f"ws-{str(tenant_id)[:20]}"
-
-    if _is_mock():
-        logger.info("[MOCK] Uploaded binary %s to file share %s", file_path, share_name)
-        return
-
-    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
-    if not account_name:
-        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
-
-    from azure.storage.fileshare import ShareDirectoryClient, ShareFileClient
-
-    storage_client = get_storage_client()
-    keys = storage_client.storage_accounts.list_keys(
-        settings.AZURE_RESOURCE_GROUP,
-        account_name,
-    )
-    account_key = keys.keys[0].value
-
-    # Ensure parent directories exist
-    parts = file_path.split("/")
-    for i in range(1, len(parts)):
-        dir_path = "/".join(parts[:i])
-        dir_client = ShareDirectoryClient(
-            account_url=f"https://{account_name}.file.core.windows.net",
-            share_name=share_name,
-            directory_path=dir_path,
-            credential=account_key,
-        )
-        try:
-            dir_client.create_directory()
-        except Exception:
-            pass  # Already exists
-
-    file_client = ShareFileClient(
-        account_url=f"https://{account_name}.file.core.windows.net",
-        share_name=share_name,
-        file_path=file_path,
-        credential=account_key,
-    )
-    file_client.upload_file(data, length=len(data))
-    logger.info("Uploaded binary %s (%d bytes) to file share %s", file_path, len(data), share_name)
+    _put_share_file(tenant_id, file_path, data=data, ensure_dirs=True)
 
 
 def download_workspace_file(tenant_id: str, file_path: str) -> str | None:
