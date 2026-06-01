@@ -2122,6 +2122,24 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         cli_backends = config["agents"]["defaults"].setdefault("cliBackends", {})
         cli_backends["claude-cli"] = {"command": "/opt/nbhd/claude-with-token.sh"}
 
+    # Prompt caching + tool-output pruning — 5.28+ cost levers (no capability
+    # loss). cacheRetention: the provider reuses the stable prompt prefix
+    # (system prompt + tool defs + bootstrap) across turns instead of
+    # reprocessing it every turn; OpenRouter caches deepseek/* so this applies
+    # to our default model, billing the unchanged prefix at cache-read price.
+    # contextPruning (cache-ttl) trims OLD tool results before each LLM call
+    # (conversation text untouched), shrinking cache-write size. Both gated
+    # >= 2026.5.28: the keys are absent from 5.7's config schema and the
+    # redactor masks the resulting validation error (same reason toolSearch is
+    # gated — see _build_tools_section). Cache hits require a byte-stable
+    # prefix; a churning USER.md (see bootstrap note above) busts the cache.
+    from apps.orchestrator.tool_policy import _parse_version
+
+    if _parse_version(oc_version) >= (2026, 5, 28):
+        _ts_defaults = config["agents"]["defaults"]
+        _ts_defaults["params"] = {"cacheRetention": "long"}
+        _ts_defaults["contextPruning"] = {"mode": "cache-ttl"}
+
     return config
 
 
