@@ -1513,7 +1513,13 @@ class RuntimeSessionMarkProcessedView(APIView):
 
 
 class RuntimeLessonCreateView(APIView):
-    """Create runtime lesson suggestions for a tenant."""
+    """Create lessons captured by the assistant for a tenant.
+
+    Lessons are auto-approved on creation (status="approved") — they join the
+    constellation immediately and get an embedding + connections, matching the
+    journal-extraction approval path. Users prune unwanted lessons from the
+    constellation UI rather than gating each one through an approval queue.
+    """
 
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -1569,16 +1575,28 @@ class RuntimeLessonCreateView(APIView):
             source_type=source_type,
             source_ref=source_ref,
             tags=tags,
-            status="pending",
+            status="approved",
+            approved_at=tz.now(),
         )
 
-        # Send approval buttons to the user's preferred channel (best-effort)
+        # Generate embedding + connections, then re-cluster once enough lessons
+        # exist — same post-approval pipeline as the journal-extraction path
+        # (apps/router/extraction_callbacks.py). Best-effort: a failure here
+        # must not fail the capture.
         try:
-            from apps.lessons.notifications import send_lesson_approval_buttons
+            from apps.lessons.services import process_approved_lesson
 
-            send_lesson_approval_buttons(tenant, lesson)
+            process_approved_lesson(lesson)
         except Exception:
-            logger.exception("runtime: failed to send lesson notification for tenant %s", str(tenant.id)[:8])
+            logger.exception("runtime: embedding failed for lesson %s", lesson.id)
+
+        try:
+            from apps.lessons.clustering import refresh_constellation
+
+            if Lesson.objects.filter(tenant=tenant, status="approved").count() >= 5:
+                refresh_constellation(tenant)
+        except Exception:
+            logger.exception("runtime: clustering failed for tenant %s", str(tenant.id)[:8])
 
         return Response(
             {

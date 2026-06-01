@@ -143,6 +143,7 @@ import {
   fetchPendingLessons,
   approveLesson,
   dismissLesson,
+  deleteLesson,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -1694,6 +1695,17 @@ export function useDismissLessonMutation() {
   return useMutation({
     mutationFn: dismissLesson,
     onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["pending-lessons"] });
+    },
+  });
+}
+
+export function useDeleteLessonMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteLesson,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["constellation"] });
       void qc.invalidateQueries({ queryKey: ["pending-lessons"] });
     },
   });
