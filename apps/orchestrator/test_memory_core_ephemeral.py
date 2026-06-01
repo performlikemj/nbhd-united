@@ -64,11 +64,13 @@ class MemoryToolPolicyTest(TestCase):
         # check that pre-4.15 behavior isn't disturbed.
         self.assertEqual(len(denied), 7)
 
-    def test_current_version_is_5_7(self):
+    def test_current_version_is_5_28(self):
         # If the canary bumps to a newer OC version, the policy registry
         # entries above need re-verification — this test fails so we
-        # remember to look.
-        self.assertEqual(OPENCLAW_CURRENT_VERSION, "2026.5.7")
+        # remember to look. 5.28 reuses the 2026.5.7 policy entry
+        # (_resolve_policy returns the newest entry <= version); verified on
+        # canary 148ccf1c — the 11-tool tools.deny fired correctly on 5.28.
+        self.assertEqual(OPENCLAW_CURRENT_VERSION, "2026.5.28")
 
     def test_starter_allow_unchanged_across_4_15_to_5_7(self):
         allow_4_15 = set(get_allowed_tools(version="2026.4.15"))

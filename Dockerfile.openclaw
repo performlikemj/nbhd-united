@@ -1,12 +1,11 @@
 FROM node:22-bookworm-slim
 
-# Normally kept in sync with OPENCLAW_CURRENT_VERSION in
-# apps/orchestrator/tool_policy.py. DURING the 5.7→5.28 migration these
-# intentionally diverge: the image builds 5.28, but OPENCLAW_CURRENT_VERSION
-# (the fleet config default) stays 5.7 until every tenant is bumped — canary
-# tenants get openclaw_version=2026.5.28 explicitly so only they receive the
-# 5.28-only config (e.g. tools.toolSearch). Re-sync this to 2026.5.28 once the
-# fleet rollout completes. See CONTINUITY_openclaw-528-toolsearch.md.
+# Kept in sync with OPENCLAW_CURRENT_VERSION in
+# apps/orchestrator/tool_policy.py — both at 2026.5.28 as of the fleet
+# lock-in (PR #745 toolSearch config + #746 usage-reporter registerHook fix).
+# tools.toolSearch is version-gated (>= 2026.5.28) in config_generator, so it
+# applies to a tenant once their openclaw_version reaches 5.28 (new provisions
+# + reactivations default to OPENCLAW_CURRENT_VERSION).
 ARG OPENCLAW_VERSION=2026.5.28
 # Pinned for Phase 1 BYO Anthropic CLI subscription. Binary is dormant
 # until a tenant with byo_models_enabled=True connects via /settings/ai-provider.
