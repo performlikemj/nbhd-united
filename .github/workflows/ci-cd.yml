@@ -294,13 +294,20 @@ jobs:
 
       - name: Build and push OpenClaw runtime image
         run: |
+          # Immutable, human-readable tag: <oc-version>-<short-sha>, where the
+          # version is the OpenClaw binary baked into the image (Dockerfile.openclaw
+          # ARG OPENCLAW_VERSION). Deliberately NO :latest — a moving tag can pull
+          # an unvalidated build into a tenant on the next restart/wake. Each build
+          # is frozen; tenants are bumped onto a specific, canary-validated tag.
+          OC_VERSION=$(grep -oP 'ARG OPENCLAW_VERSION=\K[0-9.]+' Dockerfile.openclaw)
+          OC_TAG="${OC_VERSION}-${GITHUB_SHA::7}"
+          echo "OC_IMAGE_TAG=${OC_TAG}" >> "$GITHUB_ENV"
+          echo "Building nbhd-openclaw:${OC_TAG}"
           docker build --platform linux/amd64 \
             -f Dockerfile.openclaw \
-            -t ${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:${{ github.sha }} \
-            -t ${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:latest \
+            -t ${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:${OC_TAG} \
             .
-          docker push ${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:${{ github.sha }}
-          docker push ${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:latest
+          docker push ${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:${OC_TAG}
 
       - name: Deploy Django to Container Apps
         run: |
@@ -315,7 +322,7 @@ jobs:
             --name ${{ env.DJANGO_APP }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --image ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }} \
-            --set-env-vars OPENCLAW_IMAGE_TAG=${{ github.sha }}
+            --set-env-vars OPENCLAW_IMAGE_TAG=${{ env.OC_IMAGE_TAG }}
 
       - name: Wait for Django to be healthy
         run: |
