@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useConstellationQuery, useDeleteLessonMutation, usePendingLessonsQuery } from "@/lib/queries";
+import { isPlayEnabled } from "@/lib/constellation-game/flag";
 import {
   ConstellationData,
   ConstellationNode,
@@ -235,6 +236,10 @@ export default function ConstellationPage() {
   const error = queryError instanceof Error ? queryError.message : queryError ? "Failed to load constellation." : "";
   const pendingCount = pendingLessons.length;
 
+  // Gated "exploration mode" (Phase-1 beta — hidden unless opted in). See lib/constellation-game/flag.
+  const [playEnabled, setPlayEnabled] = useState(false);
+  useEffect(() => setPlayEnabled(isPlayEnabled()), []);
+
   const effectiveData = useMemo(() => {
     if (rawData.clusters.length > 0 || !(rawData.nodes.length > 0 && rawData.nodes.every((n) => n.cluster_id == null))) return rawData;
     const { clusters, clusterMap } = clusterByTags(rawData.nodes);
@@ -433,6 +438,11 @@ export default function ConstellationPage() {
             <span className="h-4 w-px bg-white/10 mx-0.5" />
             <button type="button" onClick={() => setPositions(baseLayout)} title="Relayout" className="px-2.5 h-7 rounded-full hover:bg-white/10 text-[#94A3B8] hover:text-white text-[10px] uppercase tracking-wider flex items-center gap-1.5 font-headline">
               <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M8 2v3H5M2 8V5h3" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" /><path d="M8 5a3 3 0 11-5.2-2M2 5a3 3 0 015.2 2" stroke="currentColor" strokeWidth="1" strokeLinecap="round" /></svg>Relayout</button>
+            {playEnabled && (
+              <Link href="/constellation/play" title="Fly your galaxy (beta)" className="px-2.5 h-7 rounded-full text-accent hover:text-accent-hover hover:bg-accent/15 text-[10px] uppercase tracking-wider flex items-center gap-1.5 font-headline">
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M2 1.4l6.2 3.6L2 8.6z" fill="currentColor" /></svg>Play
+              </Link>
+            )}
             <button type="button" onClick={() => { setPan({ x: 0, y: 0 }); setZoom(0.85); setSelectedId(null); setIsolated(null); }} className="px-2.5 h-7 rounded-full hover:bg-white/10 text-[#94A3B8] hover:text-white text-[10px] uppercase tracking-wider font-headline">Reset view</button>
           </div>
         </div>
