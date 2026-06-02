@@ -87,6 +87,11 @@ class TutoringHardeningTests(TestCase):
     @patch("apps.lessons.tutoring._tutor_request")
     def test_phase_complete_on_last_phase_also_closes(self, mock_tutor):
         """continue_tutoring closes when phase_complete fires while on apply."""
+        mock_tutor.return_value = {
+            "text": "Let's begin.",
+            "current_phase": "restate",
+            "phase_complete": False,
+        }
         star = self._create_star(self.tenant)
 
         start = tutoring.start_tutoring(star)
@@ -171,6 +176,11 @@ class TutoringHardeningTests(TestCase):
     @patch("apps.lessons.tutoring._tutor_request")
     def test_honest_signals_from_explicit_model_fields(self, mock_tutor):
         """restated_accurately / found_edge_cases come from the model, not phase-advance."""
+        mock_tutor.return_value = {
+            "text": "Let's begin.",
+            "current_phase": "restate",
+            "phase_complete": False,
+        }
         star = self._create_star(self.tenant)
         start = tutoring.start_tutoring(star)
         session_id = start["session_id"]
@@ -220,6 +230,11 @@ class TutoringHardeningTests(TestCase):
             from_lesson=neighbor, to_lesson=star, similarity=1.0, connection_type="user_linked"
         )
 
+        mock_tutor.return_value = {
+            "text": "Let's begin.",
+            "current_phase": "restate",
+            "phase_complete": False,
+        }
         start = tutoring.start_tutoring(star)
         session_id = start["session_id"]
 
@@ -241,6 +256,11 @@ class TutoringHardeningTests(TestCase):
     def test_connection_falls_back_to_free_text_without_candidates(self, mock_tutor):
         """With no neighbors, a connection is captured as free text (to_star_id None)."""
         star = self._create_star(self.tenant, text="Lonely star")
+        mock_tutor.return_value = {
+            "text": "Let's begin.",
+            "current_phase": "restate",
+            "phase_complete": False,
+        }
         start = tutoring.start_tutoring(star)
         session_id = start["session_id"]
 
@@ -273,6 +293,11 @@ class TutoringHardeningTests(TestCase):
             from_lesson=neighbor, to_lesson=star, similarity=1.0, connection_type="user_linked"
         )
 
+        mock_tutor.return_value = {
+            "text": "Let's begin.",
+            "current_phase": "restate",
+            "phase_complete": False,
+        }
         start = tutoring.start_tutoring(star)
         session_id = start["session_id"]
 
