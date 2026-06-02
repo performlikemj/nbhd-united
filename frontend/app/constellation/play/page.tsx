@@ -54,7 +54,10 @@ export default function ConstellationPlayPage() {
   const [allowed, setAllowed] = useState<boolean | null>(null);
 
   useEffect(() => {
+    // Reading a client-only flag (env / localStorage) once after mount, then redirecting if
+    // off — intentional and hydration-safe (matches the project pattern in journal/document-view).
     const ok = isPlayEnabled();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAllowed(ok);
     if (!ok) router.replace("/constellation");
   }, [router]);

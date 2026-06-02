@@ -96,7 +96,6 @@ interface Encounter {
   cy: number;
   resolved: boolean;
   cooldownUntil: number;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   nega: any;
 }
 
@@ -112,13 +111,11 @@ export class GalaxyScene extends Phaser.Scene {
   private encounterActive: Encounter | null = null;
   private encPrevZoom = 1;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private ship!: any;
   private flame!: Phaser.GameObjects.Particles.ParticleEmitter;
   private ring!: Phaser.GameObjects.Graphics;
   private prompt!: Phaser.GameObjects.Text;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private keys!: any;
   private landBtn!: HTMLElement | null;
   private encEl!: HTMLElement | null;
@@ -438,7 +435,6 @@ export class GalaxyScene extends Phaser.Scene {
     const nx = sx + side * 200;
     const ny = sy;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const nega: any = this.add.image(nx, ny, "nega").setDepth(9).setScale(0.1).setAlpha(0);
     nega.rotation = Phaser.Math.Angle.Between(nx, ny, sx, sy);
     nega.encBaseX = nx; nega.encBaseY = ny; nega.encBaseRot = nega.rotation;
