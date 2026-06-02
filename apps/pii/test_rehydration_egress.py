@@ -141,9 +141,7 @@ class ExtractionSummaryRehydrationTests(SimpleTestCase):
         )
         # Return None so the post-send bulk_update (DB) is skipped.
         with patch.object(extraction, "_send_telegram_with_buttons", return_value=None) as send:
-            extraction._deliver_summary_telegram(
-                "tok", 123, [item], task_actions=[action], entity_map=ENTITY_MAP
-            )
+            extraction._deliver_summary_telegram("tok", 123, [item], task_actions=[action], entity_map=ENTITY_MAP)
         text = send.call_args.args[2]
         self.assertIn("Sarah", text)
         self.assertNotIn("PERSON_1", text)
