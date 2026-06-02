@@ -82,6 +82,10 @@ def handle_lesson_callback(update: dict, tenant: Tenant) -> JsonResponse:
     if not lesson:
         return _answer_callback(callback_id, "Lesson not found or already processed")
 
+    from apps.pii.redactor import rehydrate_for_tenant
+
+    safe_text = rehydrate_for_tenant(tenant, lesson.text)
+
     if action == "approve":
         lesson.status = "approved"
         lesson.approved_at = timezone.now()
@@ -110,7 +114,7 @@ def handle_lesson_callback(update: dict, tenant: Tenant) -> JsonResponse:
             callback_id,
             chat_id,
             message_id,
-            f"✅ Approved: {lesson.text[:100]}",
+            f"✅ Approved: {safe_text[:100]}",
             "Added to your learning graph!",
         )
 
@@ -121,7 +125,7 @@ def handle_lesson_callback(update: dict, tenant: Tenant) -> JsonResponse:
             callback_id,
             chat_id,
             message_id,
-            f"❌ Dismissed: {lesson.text[:100]}",
+            f"❌ Dismissed: {safe_text[:100]}",
             "Dismissed",
         )
 
