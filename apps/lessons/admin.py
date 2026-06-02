@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Lesson, LessonConnection
+from .models import Lesson, LessonConnection, StarJournalEntry, TutoringSession
 
 
 @admin.register(Lesson)
@@ -36,4 +36,35 @@ class LessonConnectionAdmin(admin.ModelAdmin):
         "to_lesson__text",
         "connection_type",
     )
+    ordering = ("-created_at",)
+
+
+@admin.register(TutoringSession)
+class TutoringSessionAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "star",
+        "mastery_achieved",
+        "new_star_stage",
+        "skipped",
+        "created_at",
+    )
+    list_filter = ("mastery_achieved", "new_star_stage", "skipped")
+    search_fields = ("star__text", "messages")
+    readonly_fields = ("id", "created_at")
+    ordering = ("-created_at",)
+
+
+@admin.register(StarJournalEntry)
+class StarJournalEntryAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "tenant",
+        "star",
+        "entry_type",
+        "created_at",
+    )
+    list_filter = ("entry_type", "tenant")
+    search_fields = ("text", "star__text")
+    readonly_fields = ("id", "created_at")
     ordering = ("-created_at",)
