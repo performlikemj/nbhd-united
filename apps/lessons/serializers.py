@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from .models import Lesson, LessonConnection, StarJournalEntry
+from .models import Lesson, LessonConnection, StarJournalEntry, TutoringSession
 
 # ── Base CRUD serializers (existing, preserved) ────────────────
 
@@ -263,3 +263,38 @@ class GalaxySummarySerializer(serializers.Serializer):
     supernova_count = serializers.IntegerField()
     cluster_count = serializers.IntegerField()
     recent_activity = serializers.ListField(child=serializers.DictField())
+
+
+class TutoringInsightSerializer(serializers.ModelSerializer):
+    """What a tutoring session taught the assistant about the player.
+
+    Loop-closing read surface: a future OpenClaw ``nbhd_tutoring_insights``
+    tool calls this so the assistant can reference the honest signals the
+    game captured (did the player restate accurately, find edge cases, make
+    connections, shift topic, achieve mastery) without re-reading the whole
+    transcript.
+    """
+
+    star_id = serializers.IntegerField(read_only=True)
+    star_text = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TutoringSession
+        fields = [
+            "id",
+            "star_id",
+            "star_text",
+            "phases_completed",
+            "player_restated_accurately",
+            "player_found_edge_cases",
+            "connections_made",
+            "topic_shifted",
+            "mastery_achieved",
+            "new_star_stage",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_star_text(self, obj) -> str:
+        text = obj.star.text or ""
+        return text[:120] + ("..." if len(text) > 120 else "")

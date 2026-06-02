@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from collections import Counter
 
-from django.db.models import Count, QuerySet
+from django.db.models import Count, Q, QuerySet
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import Lesson, LessonConnection, StarJournalEntry
+from .models import Lesson, LessonConnection, StarJournalEntry, TutoringSession
 from .serializers import (
     ConstellationEdgeSerializer,
     ConstellationNodeSerializer,
@@ -23,6 +23,7 @@ from .serializers import (
     StarJournalEntryCreateSerializer,
     StarJournalEntrySerializer,
     StarNoteSerializer,
+    TutoringInsightSerializer,
     TutoringMessageSerializer,
 )
 from .services import process_approved_lesson, search_lessons
@@ -231,10 +232,10 @@ class LessonViewSet(viewsets.ModelViewSet):
 
         stage_counts = dict(
             approved.aggregate(
-                proto=Count("pk", filter={"star_stage": "proto"}),
-                ignited=Count("pk", filter={"star_stage": "ignited"}),
-                radiant=Count("pk", filter={"star_stage": "radiant"}),
-                supernova=Count("pk", filter={"star_stage": "supernova"}),
+                proto=Count("pk", filter=Q(star_stage="proto")),
+                ignited=Count("pk", filter=Q(star_stage="ignited")),
+                radiant=Count("pk", filter=Q(star_stage="radiant")),
+                supernova=Count("pk", filter=Q(star_stage="supernova")),
             )
         )
 
@@ -259,6 +260,33 @@ class LessonViewSet(viewsets.ModelViewSet):
             ],
         }
         return Response(data)
+
+    @action(detail=False, methods=["get"], url_path="galaxy/insights")
+    def galaxy_insights(self, request):
+        """Recent tutoring signals for the caller tenant's stars.
+
+        Loop-closing read surface: a future OpenClaw ``nbhd_tutoring_insights``
+        tool calls this so the assistant can reference what the game learned
+        about the player (restated accurately, found edge cases, connections
+        made, topic shifts, mastery) without re-reading transcripts.
+        """
+        if not hasattr(request.user, "tenant"):
+            return Response({"error": "tenant_required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            limit = int(request.query_params.get("limit", 10))
+            if limit <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return Response({"detail": "Invalid 'limit' value."}, status=status.HTTP_400_BAD_REQUEST)
+
+        sessions = (
+            TutoringSession.objects.filter(star__tenant=request.user.tenant)
+            .select_related("star")
+            .order_by("-created_at")[:limit]
+        )
+
+        return Response(TutoringInsightSerializer(sessions, many=True).data)
 
     # ── Star Landing ────────────────────────────────────────────
 
