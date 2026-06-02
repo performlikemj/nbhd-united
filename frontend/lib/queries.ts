@@ -140,6 +140,7 @@ import {
   connectByoCredential,
   disconnectByoCredential,
   fetchConstellation,
+  fetchGalaxy,
   fetchPendingLessons,
   approveLesson,
   dismissLesson,
@@ -194,6 +195,15 @@ export function useDashboardQuery() {
     queryKey: ["dashboard"],
     queryFn: fetchDashboard,
     staleTime: 60_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useGalaxyQuery() {
+  return useQuery({
+    queryKey: ["galaxy"],
+    queryFn: fetchGalaxy,
+    staleTime: 5 * 60_000,
     enabled: isLoggedIn(),
   });
 }
