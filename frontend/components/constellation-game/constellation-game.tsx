@@ -33,7 +33,13 @@ export function ConstellationGame({ galaxy }: { galaxy: GalaxyData }) {
       <div ref={canvasRef} className="cg-canvas" aria-hidden="true" />
 
       <div id="cg-help" className="cg-help">
-        <b>WASD / arrows</b> fly &nbsp;·&nbsp; <b>E</b> land on a star &nbsp;·&nbsp; <b>Esc</b> back
+        {/* CSS swaps these by pointer type — coarse/touch devices can't press keys. */}
+        <span className="cg-help-keys">
+          <b>WASD / arrows</b> fly &nbsp;·&nbsp; <b>E</b> land on a star &nbsp;·&nbsp; <b>Esc</b> back
+        </span>
+        <span className="cg-help-touch">
+          <b>Drag</b> to fly &nbsp;·&nbsp; <b>tap</b> a star to travel &nbsp;·&nbsp; <b>Land</b> when close
+        </span>
       </div>
       <button id="cg-land-btn" className="cg-land-btn" type="button">🛸 Land here</button>
 

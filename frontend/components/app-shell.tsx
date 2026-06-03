@@ -270,9 +270,12 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   };
 
-  // Full-bleed pages — no shell chrome
+  // Full-bleed pages — no shell chrome. The playable galaxy is a fixed-overlay,
+  // full-screen experience with its own Exit affordance; it must own the viewport
+  // on mobile too, or the sticky header + mobile tab bar paint over the canvas and
+  // steal touch at the top/bottom edges (making portrait feel unplayable).
   const fullBleedPages = ["/", "/signup", "/login", "/onboarding"];
-  if (fullBleedPages.includes(pathname)) {
+  if (fullBleedPages.includes(pathname) || pathname === "/constellation/play") {
     return (
       <ErrorBoundary>
         <a href="#main-content" className="skip-link">Skip to main content</a>

@@ -35,6 +35,13 @@
   letter-spacing: 0.2px; line-height: 1.45;
 }
 .cg-help b { color: var(--ink, #e2e8f0); font-weight: 600; }
+/* Keyboard hints by default; swap to touch hints on coarse pointers (phones /
+   tablets) where WASD / E / Esc are meaningless. */
+.cg-help-touch { display: none; }
+@media (hover: none) and (pointer: coarse) {
+  .cg-help-keys { display: none; }
+  .cg-help-touch { display: inline; }
+}
 
 /* land button */
 .cg-land-btn {
