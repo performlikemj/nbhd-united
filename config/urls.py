@@ -2,12 +2,18 @@ from django.contrib import admin
 from django.urls import include, path
 
 from apps.integrations.runtime_views import RuntimeBYOErrorReportView, RuntimeUsageReportView
-from apps.router.views import serve_chart_image
+from apps.router.views import serve_chart_image, serve_meditation_audio
 
 urlpatterns = [
     path("admin/", admin.site.urls),
     # Chart images — unauthenticated, served for LINE image messages
     path("api/v1/charts/<uuid:tenant_id>/<str:filename>", serve_chart_image, name="serve-chart-image"),
+    # Meditation audio (Core pillar) — unauthenticated, unguessable UUID filename
+    path(
+        "api/v1/meditations/<uuid:tenant_id>/<str:filename>",
+        serve_meditation_audio,
+        name="serve-meditation-audio",
+    ),
     path("api/v1/auth/", include("apps.tenants.auth_urls")),
     # `byo-credentials/` MUST come before `tenants/` — the latter's
     # DefaultRouter has a catch-all `<pk>/` route that would otherwise

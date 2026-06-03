@@ -429,3 +429,67 @@ def serve_chart_image(request, tenant_id, filename):
     except Exception:
         logger.exception("Failed to serve chart %s for tenant %s", filename, tenant_id)
         return HttpResponseNotFound("Not found")
+
+
+# ── Meditation audio serving (Core pillar) ───────────────────────────────
+
+
+@csrf_exempt
+def serve_meditation_audio(request, tenant_id, filename):
+    """Serve a rendered meditation (mp3/ogg) from a tenant's Azure File Share.
+
+    No authentication — security is the unguessable UUID filename (same model as
+    ``serve_chart_image``). The web Core tab's ``<audio>`` element plays this URL,
+    and LINE/Telegram voice delivery fetches it.
+    """
+    import re
+
+    if request.method != "GET":
+        return HttpResponseBadRequest("GET only")
+
+    # Validate filename to prevent path traversal; only UUID-shaped mp3/ogg.
+    match = re.match(r"^[\w-]+\.(mp3|ogg)$", filename)
+    if not match:
+        return HttpResponseNotFound("Not found")
+    content_type = "audio/mpeg" if match.group(1) == "mp3" else "audio/ogg"
+
+    try:
+        from apps.orchestrator.azure_client import _is_mock
+
+        if _is_mock():
+            return HttpResponseNotFound("Not found (mock)")
+
+        account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
+        if not account_name:
+            return HttpResponseNotFound("Not found")
+
+        from azure.storage.fileshare import ShareFileClient
+
+        from apps.orchestrator.azure_client import get_storage_client
+
+        storage_client = get_storage_client()
+        keys = storage_client.storage_accounts.list_keys(
+            settings.AZURE_RESOURCE_GROUP,
+            account_name,
+        )
+        account_key = keys.keys[0].value
+        share_name = f"ws-{str(tenant_id)[:20]}"
+
+        file_client = ShareFileClient(
+            account_url=f"https://{account_name}.file.core.windows.net",
+            share_name=share_name,
+            file_path=f"workspace/meditations/{filename}",
+            credential=account_key,
+        )
+        data = file_client.download_file().readall()
+
+        # Full-body 200 only — we don't honor Range requests, so we must not
+        # advertise Accept-Ranges (audio elements fall back to full GETs fine for
+        # these short files; range support is a future enhancement if needed).
+        response = HttpResponse(data, content_type=content_type)
+        response["Cache-Control"] = "public, max-age=3600"
+        return response
+
+    except Exception:
+        logger.exception("Failed to serve meditation %s for tenant %s", filename, tenant_id)
+        return HttpResponseNotFound("Not found")
