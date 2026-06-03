@@ -38,7 +38,11 @@ def _send_telegram_lesson(tenant: Tenant, lesson: Lesson) -> bool:
     if not chat_id:
         return False
 
-    text = f'\U0001f4a1 *Something worth remembering:*\n\n"{lesson.text}"'
+    from apps.pii.redactor import rehydrate_for_tenant
+
+    lesson_text = rehydrate_for_tenant(tenant, lesson.text)
+
+    text = f'\U0001f4a1 *Something worth remembering:*\n\n"{lesson_text}"'
     keyboard = {
         "inline_keyboard": [
             [
@@ -66,7 +70,7 @@ def _send_telegram_lesson(tenant: Tenant, lesson: Lesson) -> bool:
             f"{TELEGRAM_API_BASE}{bot_token}/sendMessage",
             json={
                 "chat_id": chat_id,
-                "text": f'Something worth remembering:\n\n"{lesson.text}"',
+                "text": f'Something worth remembering:\n\n"{lesson_text}"',
                 "reply_markup": keyboard,
             },
             timeout=10,
@@ -94,6 +98,10 @@ def _send_line_lesson(tenant: Tenant, lesson: Lesson) -> bool:
     if not line_user_id:
         return False
 
+    from apps.pii.redactor import rehydrate_for_tenant
+
+    lesson_text = rehydrate_for_tenant(tenant, lesson.text)
+
     flex_content = {
         "type": "bubble",
         "body": {
@@ -108,7 +116,7 @@ def _send_line_lesson(tenant: Tenant, lesson: Lesson) -> bool:
                 },
                 {
                     "type": "text",
-                    "text": lesson.text,
+                    "text": lesson_text,
                     "wrap": True,
                     "margin": "md",
                 },
@@ -150,7 +158,7 @@ def _send_line_lesson(tenant: Tenant, lesson: Lesson) -> bool:
                 "messages": [
                     {
                         "type": "flex",
-                        "altText": f'Lesson: "{lesson.text[:40]}..."',
+                        "altText": f'Lesson: "{lesson_text[:40]}..."',
                         "contents": flex_content,
                     }
                 ],

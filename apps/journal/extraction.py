@@ -21,6 +21,7 @@ from apps.billing.services import record_usage
 from apps.journal.models import DailyNote, Document, PendingExtraction
 from apps.lessons.models import Lesson
 from apps.lessons.services import generate_embedding
+from apps.pii.redactor import rehydrate_text
 from apps.router.extraction_callbacks import _approve_goal, _approve_lesson, _approve_task
 from apps.tenants.models import Tenant
 
@@ -280,10 +281,18 @@ _TASK_ACTION_LABEL = {
 }
 
 
-def _format_task_action_line(action) -> str:
-    """One-line summary for a reconciliation action, e.g. '☑️ Gym session — marked done'."""
+def _format_task_action_line(action, entity_map: dict | None = None) -> str:
+    """One-line summary for a reconciliation action, e.g. '☑️ Gym session — marked done'.
+
+    ``entity_map`` (the tenant's ``pii_entity_map``) rehydrates any PII
+    placeholder in the task/goal title before it is shown to the user —
+    these titles are agent-authored and persist in placeholder space.
+    """
     emoji, verb = _TASK_ACTION_LABEL.get(action.kind, ("•", action.kind))
-    title = (action.task.title if action.task_id else action.goal.title if action.goal_id else "(unknown)")[:60]
+    raw_title = action.task.title if action.task_id else action.goal.title if action.goal_id else "(unknown)"
+    if entity_map:
+        raw_title = rehydrate_text(raw_title, entity_map)
+    title = raw_title[:60]
     return f"{emoji} {title} — {verb}"
 
 
@@ -292,6 +301,7 @@ def _deliver_summary_telegram(
     chat_id: int,
     items: list[PendingExtraction],
     task_actions: list | None = None,
+    entity_map: dict | None = None,
 ) -> None:
     """Send ONE summary message with per-item Remove buttons.
 
@@ -299,6 +309,7 @@ def _deliver_summary_telegram(
     they're rendered below the net-new extractions with their own
     ``task_action:undo:<id>`` callback prefix.
     """
+
     task_actions = task_actions or []
     kind_emoji = {"lesson": "💡", "goal": "🎯", "task": "✅"}
     lines = []
@@ -308,12 +319,13 @@ def _deliver_summary_telegram(
         lines.append("From today's notes, I added:\n")
         for p in items:
             emoji = kind_emoji.get(p.kind, "•")
-            lines.append(f"{emoji} {p.text}")
+            ptext = rehydrate_text(p.text, entity_map) if entity_map else p.text
+            lines.append(f"{emoji} {ptext}")
             undo_action = f"undo_{p.kind}"
             buttons.append(
                 [
                     {
-                        "text": f"Remove: {p.text[:30]}",
+                        "text": f"Remove: {ptext[:30]}",
                         "callback_data": f"extract:{undo_action}:{p.id}",
                     }
                 ]
@@ -324,11 +336,12 @@ def _deliver_summary_telegram(
             lines.append("")
         lines.append("From today's journal, I also updated:\n")
         for a in task_actions:
-            lines.append(_format_task_action_line(a))
+            action_line = _format_task_action_line(a, entity_map)
+            lines.append(action_line)
             buttons.append(
                 [
                     {
-                        "text": f"Undo: {_format_task_action_line(a)[:30]}",
+                        "text": f"Undo: {action_line[:30]}",
                         "callback_data": f"task_action:undo:{a.id}",
                     }
                 ]
@@ -361,6 +374,7 @@ def _deliver_summary_line(
     line_user_id: str,
     items: list[PendingExtraction],
     task_actions: list | None = None,
+    entity_map: dict | None = None,
 ) -> bool:
     """Send a Flex Message carousel — one bubble per item with a Remove/Undo button.
 
@@ -368,6 +382,7 @@ def _deliver_summary_line(
     same carousel with their own ``task_action:undo:<id>`` postback prefix.
     Returns True if delivery succeeded, False otherwise.
     """
+
     task_actions = task_actions or []
     kind_emoji = {"lesson": "💡", "goal": "🎯", "task": "✅"}
     bubbles = []
@@ -381,6 +396,7 @@ def _deliver_summary_line(
 
     for p in items_to_send:
         emoji = kind_emoji.get(p.kind, "•")
+        ptext = rehydrate_text(p.text, entity_map) if entity_map else p.text
         undo_action = f"undo_{p.kind}"
         label = re.sub(r"^[^\w]*", "", "Remove").strip()[:20]
         bubbles.append(
@@ -398,7 +414,7 @@ def _deliver_summary_line(
                     "contents": [
                         {
                             "type": "text",
-                            "text": f"{emoji} {p.text[:120]}",
+                            "text": f"{emoji} {ptext[:120]}",
                             "wrap": True,
                             "size": "sm",
                             "color": "#12232c",
@@ -420,7 +436,7 @@ def _deliver_summary_line(
                                 "type": "postback",
                                 "label": label,
                                 "data": f"extract:{undo_action}:{p.id}",
-                                "displayText": f"Remove: {p.text[:30]}",
+                                "displayText": f"Remove: {ptext[:30]}",
                             },
                         }
                     ],
@@ -429,7 +445,7 @@ def _deliver_summary_line(
         )
 
     for a in actions_to_send:
-        line = _format_task_action_line(a)
+        line = _format_task_action_line(a, entity_map)
         bubbles.append(
             {
                 "type": "bubble",
@@ -704,9 +720,13 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
     # Send ONE summary message — extractions + reconciliation actions in a single payload
     if added_items or task_actions:
         if channel == "telegram":
-            _deliver_summary_telegram(channel_token, recipient_id, added_items, task_actions=task_actions)
+            _deliver_summary_telegram(
+                channel_token, recipient_id, added_items, task_actions=task_actions, entity_map=tenant.pii_entity_map
+            )
         elif channel == "line":
-            ok = _deliver_summary_line(channel_token, recipient_id, added_items, task_actions=task_actions)
+            ok = _deliver_summary_line(
+                channel_token, recipient_id, added_items, task_actions=task_actions, entity_map=tenant.pii_entity_map
+            )
             if not ok:
                 # Fallback to Telegram if LINE delivery fails
                 chat_id = getattr(tenant.user, "telegram_chat_id", None)
@@ -715,7 +735,9 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
                     logger.warning(
                         "extraction: LINE failed, falling back to Telegram for tenant %s", str(tenant.id)[:8]
                     )
-                    _deliver_summary_telegram(bot_token, chat_id, added_items, task_actions=task_actions)
+                    _deliver_summary_telegram(
+                        bot_token, chat_id, added_items, task_actions=task_actions, entity_map=tenant.pii_entity_map
+                    )
     else:
         logger.warning(
             "extraction: tenant=%s zero items after dedup (raw: lessons=%d goals=%d tasks=%d, deltas=%d)",

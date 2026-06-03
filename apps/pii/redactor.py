@@ -1,8 +1,10 @@
 """PII redaction for outgoing LLM provider traffic.
 
 Detects and replaces PII in text before it's sent to model providers.
-Uses tier-based policies: starter tier gets full redaction (OpenRouter),
-premium gets financial-only (Anthropic direct), BYOK is off.
+Uses tier-based policies from ``TIER_POLICIES``. Only ``starter`` is
+defined today; every tier resolves to it via ``.get(tier, starter)``, so
+redaction is effectively full for all tiers (the historical
+premium=financial-only / BYOK=off split is not currently implemented).
 
 Detection uses a custom DeBERTa ONNX model (contextual PII) combined
 with Presidio pattern recognizers (credit cards, IBANs).
@@ -223,6 +225,24 @@ def rehydrate_text(text: str, entity_map: dict[str, Any]) -> str:
         return name or placeholder
 
     return _PLACEHOLDER_RE.sub(_replace, text)
+
+
+def rehydrate_for_tenant(tenant: Tenant | None, text: str) -> str:
+    """Rehydrate ``[TYPE_N]`` placeholders to real values for a tenant.
+
+    The single egress seam for the common outbound pattern
+    ``if tenant.pii_entity_map: rehydrate_text(text, tenant.pii_entity_map)``.
+    EVERY user-facing send path that may carry agent-authored text MUST
+    route the text through this (or ``rehydrate_text``) before delivery —
+    otherwise a raw ``[PERSON_1]`` placeholder leaks to the user. Safe on a
+    None tenant, an empty/absent map, or empty text: returns text unchanged.
+    """
+    if not text or tenant is None:
+        return text
+    entity_map = getattr(tenant, "pii_entity_map", None)
+    if not entity_map:
+        return text
+    return rehydrate_text(text, entity_map)
 
 
 def redact_user_message(
