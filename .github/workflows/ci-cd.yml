@@ -283,6 +283,26 @@ jobs:
       - name: Login to ACR
         run: az acr login --name ${{ env.REGISTRY }}
 
+      # The PII model is cached as an immutable layer in our own ACR so the Django
+      # build below never re-pulls it from HuggingFace (HF 429s used to fail the
+      # deploy). This step only touches HF when the tag is missing — i.e. once per
+      # tag, ever. Bump PII_MODEL_TAG here + the COPY line in Dockerfile together.
+      - name: Ensure PII model image
+        run: |
+          PII_MODEL_TAG=deberta-finetuned-pii-v1
+          if az acr repository show \
+              --name ${{ env.REGISTRY }} \
+              --image pii-model:${PII_MODEL_TAG} >/dev/null 2>&1; then
+            echo "pii-model:${PII_MODEL_TAG} already in ACR — skipping HuggingFace download"
+          else
+            echo "pii-model:${PII_MODEL_TAG} missing — building from HuggingFace (one-time)"
+            docker build --platform linux/amd64 \
+              -f Dockerfile.pii-model \
+              -t ${{ env.REGISTRY }}.azurecr.io/pii-model:${PII_MODEL_TAG} \
+              .
+            docker push ${{ env.REGISTRY }}.azurecr.io/pii-model:${PII_MODEL_TAG}
+          fi
+
       - name: Build and push Django image
         run: |
           docker build --platform linux/amd64 \
