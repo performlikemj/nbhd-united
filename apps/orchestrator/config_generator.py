@@ -1466,7 +1466,9 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
 
     # Gravity Weekly Check-in — Sunday 19:00 user TZ when finance is enabled.
     # Different hour from Weekly Reflection (20:00) so they don't collide.
-    if getattr(tenant, "finance_enabled", False):
+    # ``finance_active`` (not ``finance_enabled``) so the platform-level
+    # GRAVITY_ENABLED pause suppresses this cron everywhere.
+    if getattr(tenant, "finance_active", False):
         jobs.append(
             {
                 "name": "Gravity Weekly Check-in",
@@ -1788,8 +1790,11 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             )
         )
 
-    # Finance plugin — conditionally loaded when tenant has finance enabled
-    if getattr(tenant, "finance_enabled", False):
+    # Finance plugin — loaded only when finance is active for this tenant.
+    # ``finance_active`` folds in the platform-level GRAVITY_ENABLED kill
+    # switch, so a paused platform never ships the finance tools to any
+    # container (the primary financial-data egress surface).
+    if getattr(tenant, "finance_active", False):
         _plugin_defs.append(
             (
                 str(getattr(settings, "OPENCLAW_FINANCE_PLUGIN_ID", "nbhd-finance-tools") or "").strip(),
@@ -1810,9 +1815,9 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
 
     # Insights plugin — trajectory tools (history/drill/compare) over pillar
     # snapshots. Phase 1 only emits Gravity snapshots, so we gate on
-    # finance_enabled. Expand to all tenants once Fuel/Core snapshot
-    # pipelines ship.
-    if getattr(tenant, "finance_enabled", False):
+    # finance_active (which folds in the GRAVITY_ENABLED platform pause).
+    # Expand to all tenants once Fuel/Core snapshot pipelines ship.
+    if getattr(tenant, "finance_active", False):
         _plugin_defs.append(
             (
                 str(getattr(settings, "OPENCLAW_INSIGHTS_PLUGIN_ID", "nbhd-insights-tools") or "").strip(),

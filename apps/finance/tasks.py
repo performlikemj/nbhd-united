@@ -28,7 +28,7 @@ def schedule_finance_welcome_task(tenant_id: str) -> None:
         logger.warning("schedule_finance_welcome: tenant %s not found", tenant_id)
         return
 
-    if not tenant.finance_enabled:
+    if not tenant.finance_active:
         return
 
     try:

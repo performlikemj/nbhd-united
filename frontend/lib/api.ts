@@ -733,6 +733,11 @@ export function fetchConstellation(): Promise<ConstellationData> {
   }));
 }
 
+/** GET /api/v1/lessons/galaxy/ — the game client's star map (auth handled by apiFetch). */
+export function fetchGalaxy(): Promise<import("@/lib/constellation-game/encounter-logic").GalaxyData> {
+  return apiFetch<import("@/lib/constellation-game/encounter-logic").GalaxyData>("/api/v1/lessons/galaxy/");
+}
+
 
 // ── Journal v2 Documents ──────────────────────────────────────────────
 

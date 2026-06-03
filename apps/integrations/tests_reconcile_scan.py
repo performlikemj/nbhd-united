@@ -245,3 +245,64 @@ class RuntimeReconcileScanViewTest(TestCase):
         # Goal should have highest score (matches "credit" + "card" in both title + description).
         self.assertEqual(body["candidates"][0]["kind"], "goal")
         self.assertEqual(body["candidates"][0]["id"], str(goal.id))
+
+    # ── projects ─────────────────────────────────────────────────────
+
+    def test_matches_project_doc_by_token(self):
+        from apps.journal.models import Document
+
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="project",
+            slug="security-champions",
+            title="Security Champions program",
+            markdown="Rolling out a security champions program; Godot training game in progress.",
+        )
+        response = self.client.get(
+            self._url(),
+            {"claim": "the security champions budget meeting went well"},
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        project_candidates = [c for c in body["candidates"] if c["kind"] == "project"]
+        self.assertEqual(len(project_candidates), 1)
+        self.assertEqual(project_candidates[0]["id"], "security-champions")
+        self.assertEqual(project_candidates[0]["current_state"]["slug"], "security-champions")
+        self.assertIn("nbhd_document_append", project_candidates[0]["update_tools"])
+
+    def test_project_doc_not_matched_when_unrelated(self):
+        from apps.journal.models import Document
+
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="project",
+            slug="garden",
+            title="Backyard garden",
+            markdown="Planting tomatoes and basil this spring.",
+        )
+        response = self.client.get(
+            self._url(),
+            {"claim": "paid the credit card"},
+            **self._headers(),
+        )
+        body = response.json()
+        self.assertEqual([c for c in body["candidates"] if c["kind"] == "project"], [])
+
+    def test_other_tenants_projects_not_returned(self):
+        from apps.journal.models import Document
+
+        Document.objects.create(
+            tenant=self.other_tenant,
+            kind="project",
+            slug="security-champions",
+            title="Security Champions program",
+            markdown="Champions rollout notes.",
+        )
+        response = self.client.get(
+            self._url(),
+            {"claim": "security champions update"},
+            **self._headers(),
+        )
+        body = response.json()
+        self.assertEqual([c for c in body["candidates"] if c["kind"] == "project"], [])

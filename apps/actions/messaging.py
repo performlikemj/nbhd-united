@@ -39,10 +39,14 @@ def _send_telegram_confirmation(tenant: Tenant, action: PendingAction) -> str | 
         logger.warning("Tenant %s has no Telegram chat_id", tenant.id)
         return None
 
+    from apps.pii.redactor import rehydrate_for_tenant
+
+    summary = rehydrate_for_tenant(tenant, action.display_summary)
+
     text = (
         "⚠️ *Action Confirmation Required*\n\n"
         f"Your agent wants to:\n"
-        f"*{_escape_markdown(action.display_summary)}*\n\n"
+        f"*{_escape_markdown(summary)}*\n\n"
         "This action cannot be undone\\.\n\n"
         "_Expires in 5 minutes_"
     )
@@ -79,7 +83,7 @@ def _send_telegram_confirmation(tenant: Tenant, action: PendingAction) -> str | 
                     "text": (
                         "⚠️ Action Confirmation Required\n\n"
                         f"Your agent wants to:\n"
-                        f"{action.display_summary}\n\n"
+                        f"{summary}\n\n"
                         "This action cannot be undone.\n\n"
                         "Expires in 5 minutes"
                     ),
@@ -109,6 +113,10 @@ def _edit_telegram_message(tenant: Tenant, action: PendingAction) -> None:
     if not chat_id:
         return
 
+    from apps.pii.redactor import rehydrate_for_tenant
+
+    summary = rehydrate_for_tenant(tenant, action.display_summary)
+
     if action.status == ActionStatus.APPROVED:
         icon, label = "✅", "APPROVED"
     elif action.status == ActionStatus.DENIED:
@@ -116,7 +124,7 @@ def _edit_telegram_message(tenant: Tenant, action: PendingAction) -> None:
     else:
         icon, label = "⏰", "EXPIRED"
 
-    new_text = f"{icon} Action {label}\n\n{action.display_summary}"
+    new_text = f"{icon} Action {label}\n\n{summary}"
 
     try:
         httpx.post(
@@ -155,6 +163,10 @@ def _send_line_confirmation(tenant: Tenant, action: PendingAction) -> str | None
         logger.warning("Tenant %s has no LINE user_id", tenant.id)
         return None
 
+    from apps.pii.redactor import rehydrate_for_tenant
+
+    summary = rehydrate_for_tenant(tenant, action.display_summary)
+
     # Build Flex Message with action buttons
     flex_content = {
         "type": "bubble",
@@ -170,7 +182,7 @@ def _send_line_confirmation(tenant: Tenant, action: PendingAction) -> str | None
                 },
                 {
                     "type": "text",
-                    "text": f"Your agent wants to:\n{action.display_summary}",
+                    "text": f"Your agent wants to:\n{summary}",
                     "wrap": True,
                     "margin": "md",
                 },
@@ -226,7 +238,7 @@ def _send_line_confirmation(tenant: Tenant, action: PendingAction) -> str | None
                 "messages": [
                     {
                         "type": "flex",
-                        "altText": f"Action confirmation: {action.display_summary[:40]}",
+                        "altText": f"Action confirmation: {summary[:40]}",
                         "contents": flex_content,
                     }
                 ],
@@ -256,6 +268,10 @@ def _edit_line_message(tenant: Tenant, action: PendingAction) -> None:
     if not channel_token or not line_user_id:
         return
 
+    from apps.pii.redactor import rehydrate_for_tenant
+
+    summary = rehydrate_for_tenant(tenant, action.display_summary)
+
     if action.status == ActionStatus.APPROVED:
         icon, label = "✅", "Approved"
     elif action.status == ActionStatus.DENIED:
@@ -263,7 +279,7 @@ def _edit_line_message(tenant: Tenant, action: PendingAction) -> None:
     else:
         icon, label = "⏰", "Expired"
 
-    text = f"{icon} {label}: {action.display_summary}"
+    text = f"{icon} {label}: {summary}"
 
     try:
         httpx.post(

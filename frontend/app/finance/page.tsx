@@ -32,6 +32,7 @@ import {
   useArchiveFinanceAccountMutation,
   useArchivedFinanceAccountsQuery,
   useFinanceDashboardQuery,
+  useTenantQuery,
   useUnarchiveFinanceAccountMutation,
 } from "@/lib/queries";
 import type { FinanceAccount } from "@/lib/types";
@@ -74,6 +75,25 @@ export default function FinancePage() {
   const archiveMutation = useArchiveFinanceAccountMutation();
   const unarchiveMutation = useUnarchiveFinanceAccountMutation();
   const archivedQuery = useArchivedFinanceAccountsQuery(showArchived);
+  const { data: tenant } = useTenantQuery();
+
+  // Gravity is paused platform-wide for privacy — show a notice instead of the
+  // dashboard if someone reaches /finance directly (the nav tab is hidden).
+  if (tenant && tenant.gravity_available === false) {
+    return (
+      <div>
+        <PageHeader />
+        <div className="glass-card rounded-xl p-10 text-center animate-reveal">
+          <p className="font-headline text-xl font-bold text-ink">Gravity is paused</p>
+          <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-ink-muted">
+            We&rsquo;ve temporarily paused Gravity while we strengthen privacy for
+            your financial data. Your records are safe and untouched — it&rsquo;ll
+            return once we can guarantee that protection.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (isLoading) {
     return (

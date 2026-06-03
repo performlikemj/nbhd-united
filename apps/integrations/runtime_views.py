@@ -2509,8 +2509,8 @@ class RuntimeReconcileScanView(APIView):
     """GET /api/v1/integrations/runtime/<tenant_id>/reconcile/scan/
 
     Given a one-sentence ``claim`` describing what the user just reported,
-    return the active goals, open tasks, finance accounts, and fuel rows
-    that are plausibly affected. Each candidate is annotated with which
+    return the active goals, open tasks, project docs, finance accounts,
+    and fuel rows that are plausibly affected. Each candidate is annotated with which
     typed write tool the agent should call to apply the update.
 
     This is the function half of the AGENTS.md conversational reconcile
@@ -2617,8 +2617,37 @@ class RuntimeReconcileScanView(APIView):
                 }
             )
 
+        # ── Project documents ────────────────────────────────────────
+        # Long-lived project threads (journal_document kind='project'). The
+        # agent already has nbhd_document_append (which accepts kind='project'),
+        # but reconcile never surfaced these — so a conversational project-
+        # status update never reached the canonical project doc, leaving it
+        # stale for the proactive crons that read it. Always scanned (core
+        # threads, like goals/tasks); project docs are few per tenant.
+        project_docs = Document.objects.filter(tenant=tenant, kind="project")[:50]
+        for doc in project_docs:
+            score, matched = _reconcile_match_score(tokens, f"{doc.title}\n{doc.markdown}")
+            if score == 0:
+                continue
+            candidates.append(
+                {
+                    "kind": "project",
+                    "id": doc.slug,
+                    "title": doc.title,
+                    "pillar": doc.pillar or None,
+                    "score": score,
+                    "matched_tokens": matched,
+                    "current_state": {
+                        "slug": doc.slug,
+                        "updated_at": doc.updated_at.isoformat(),
+                        "excerpt": (doc.markdown or "")[-280:],
+                    },
+                    "update_tools": ["nbhd_document_append"],
+                }
+            )
+
         # ── Finance accounts ─────────────────────────────────────────
-        if finance_triggered and getattr(tenant, "finance_enabled", False):
+        if finance_triggered and getattr(tenant, "finance_active", False):
             from apps.finance.models import FinanceAccount
 
             active_accounts = list(FinanceAccount.objects.filter(tenant=tenant, is_active=True))

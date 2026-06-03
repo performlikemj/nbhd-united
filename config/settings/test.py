@@ -13,3 +13,8 @@ MIGRATION_MODULES = {
     "lessons": "apps.lessons.test_migrations",
     "journal": "apps.journal.test_migrations",
 }
+
+# Keep Gravity ON for the existing finance test suite (production pauses it via
+# the False default in base.py). Kill-switch behavior is covered by tests that
+# use ``@override_settings(GRAVITY_ENABLED=False)``.
+GRAVITY_ENABLED = True

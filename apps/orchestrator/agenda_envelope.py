@@ -57,7 +57,7 @@ from apps.tenants.models import Tenant
 _FEATURE_INTROS: tuple[tuple[str, str, str], ...] = (
     # (welcomes_sent key, feature_enabled attr, label rendered to the agent)
     ("fuel", "fuel_enabled", "Fuel — fitness assistant"),
-    ("finance", "finance_enabled", "Gravity — finance assistant"),
+    ("finance", "finance_active", "Gravity — finance assistant"),
 )
 
 # Engagement kind used when reading AgendaEngagement rows for feature
