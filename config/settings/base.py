@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "apps.actions",
     "apps.finance",
     "apps.fuel",
+    "apps.core",
     "apps.byo_models",
     "apps.insights",
     "apps.common",

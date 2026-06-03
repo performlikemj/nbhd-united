@@ -575,6 +575,12 @@ class Tenant(models.Model):
         help_text="Enable workout tracking and fitness logging",
     )
 
+    # Core module (mindfulness — AI-composed guided meditations)
+    core_enabled = models.BooleanField(
+        default=False,
+        help_text="Enable the Core mindfulness pillar (on-demand guided meditations)",
+    )
+
     # Welcome-cron delivery telemetry. Keys are feature names ("fuel",
     # "finance"), values are ISO-8601 timestamps of successful welcome
     # delivery. The welcome prompt instructs the agent to call
