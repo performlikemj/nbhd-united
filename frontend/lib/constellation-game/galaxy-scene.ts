@@ -41,39 +41,81 @@ function clusterColor(cid: number | null): number {
   return Phaser.Display.Color.HSVToRGB(h / 360, 0.5, 1).color;
 }
 
-function fallbackPoint(star: GalaxyStar, stars: GalaxyStar[], world: { w: number; h: number }) {
-  const clusters = [...new Set(stars.map((s) => s.cluster_id))];
-  const ci = Math.max(0, clusters.indexOf(star.cluster_id));
-  const ca = (ci / Math.max(1, clusters.length)) * Math.PI * 2;
-  const cx = world.w / 2 + Math.cos(ca) * world.w * 0.3;
-  const cy = world.h / 2 + Math.sin(ca) * world.h * 0.3;
-  const seed = ((star.id * 2654435761) % 1000) / 1000;
-  const a = seed * Math.PI * 2;
-  const r = 130 + seed * 200;
-  return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r };
+function hashSeed(n: number): number {
+  return ((Math.abs(n) * 2654435761) % 1000) / 1000;
 }
 
-function layoutStars(stars: GalaxyStar[], world: { w: number; h: number }) {
-  const pad = 340;
-  const hasXY = (s: GalaxyStar) => s.x !== null && s.y !== null && isFinite(s.x) && isFinite(s.y);
-  const withXY = stars.filter(hasXY);
+/**
+ * Cluster-galaxy layout: each constellation is a tight group, and the groups are
+ * spread far apart across a large world so flying between them is an actual
+ * journey (not all crammed on one screen). Intra-cluster UMAP micro-structure is
+ * preserved; lone (uncluster) stars drift in the deep space between groups.
+ */
+function layoutStars(stars: GalaxyStar[]): {
+  pos: Record<number, { x: number; y: number }>;
+  world: { w: number; h: number };
+} {
+  const CELL = 1700; // distance between cluster centres — the void you cross
+  const LOCAL_R = 300; // how tight a constellation sits around its centre
   const pos: Record<number, { x: number; y: number }> = {};
-  if (withXY.length >= 2) {
-    const xs = withXY.map((s) => s.x as number);
-    const ys = withXY.map((s) => s.y as number);
-    const minX = Math.min(...xs), maxX = Math.max(...xs);
-    const minY = Math.min(...ys), maxY = Math.max(...ys);
-    const sx = (world.w - 2 * pad) / ((maxX - minX) || 1);
-    const sy = (world.h - 2 * pad) / ((maxY - minY) || 1);
-    for (const s of stars) {
-      pos[s.id] = hasXY(s)
-        ? { x: pad + ((s.x as number) - minX) * sx, y: pad + ((s.y as number) - minY) * sy }
-        : fallbackPoint(s, stars, world);
+  const hasXY = (s: GalaxyStar) =>
+    s.x !== null && s.y !== null && isFinite(s.x as number) && isFinite(s.y as number);
+
+  const byCluster = new Map<number, GalaxyStar[]>();
+  const lone: GalaxyStar[] = [];
+  for (const s of stars) {
+    if (s.cluster_id === null || s.cluster_id === undefined) {
+      lone.push(s);
+    } else {
+      const arr = byCluster.get(s.cluster_id) ?? [];
+      arr.push(s);
+      byCluster.set(s.cluster_id, arr);
     }
-  } else {
-    for (const s of stars) pos[s.id] = fallbackPoint(s, stars, world);
   }
-  return pos;
+
+  const clusterIds = [...byCluster.keys()];
+  const gridN = clusterIds.length || Math.max(1, Math.ceil(lone.length / 8));
+  const cols = Math.max(1, Math.ceil(Math.sqrt(gridN)));
+  const rows = Math.max(1, Math.ceil(gridN / cols));
+  const world = { w: cols * CELL, h: rows * CELL };
+
+  clusterIds.forEach((cid, k) => {
+    const members = byCluster.get(cid) as GalaxyStar[];
+    const col = k % cols;
+    const row = Math.floor(k / cols);
+    const cx = (col + 0.5) * CELL + (hashSeed(cid + 1) - 0.5) * CELL * 0.3;
+    const cy = (row + 0.5) * CELL + (hashSeed(cid + 7) - 0.5) * CELL * 0.3;
+
+    const withXY = members.filter(hasXY);
+    if (withXY.length >= 2) {
+      const xs = withXY.map((s) => s.x as number);
+      const ys = withXY.map((s) => s.y as number);
+      const mx = (Math.min(...xs) + Math.max(...xs)) / 2;
+      const my = (Math.min(...ys) + Math.max(...ys)) / 2;
+      const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) || 1;
+      const scale = (LOCAL_R * 2) / span;
+      for (const s of members) {
+        if (hasXY(s)) {
+          pos[s.id] = { x: cx + ((s.x as number) - mx) * scale, y: cy + ((s.y as number) - my) * scale };
+        } else {
+          const a = hashSeed(s.id) * Math.PI * 2;
+          pos[s.id] = { x: cx + Math.cos(a) * LOCAL_R * 0.6, y: cy + Math.sin(a) * LOCAL_R * 0.6 };
+        }
+      }
+    } else {
+      members.forEach((s, i) => {
+        const a = (i / Math.max(1, members.length)) * Math.PI * 2 + hashSeed(cid) * Math.PI * 2;
+        const r = members.length === 1 ? 0 : LOCAL_R * (0.45 + 0.4 * hashSeed(s.id));
+        pos[s.id] = { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r };
+      });
+    }
+  });
+
+  for (const s of lone) {
+    pos[s.id] = { x: hashSeed(s.id * 3 + 1) * world.w, y: hashSeed(s.id * 5 + 2) * world.h };
+  }
+
+  return { pos, world };
 }
 
 const truncate = (str: string, n: number) => (str && str.length > n ? str.slice(0, n - 1) + "…" : str || "");
@@ -110,6 +152,7 @@ export class GalaxyScene extends Phaser.Scene {
   private encounters: Encounter[] = [];
   private encounterActive: Encounter | null = null;
   private encPrevZoom = 1;
+  private world = { w: 3600, h: 2400 };
 
   private ship!: any;
   private flame!: Phaser.GameObjects.Particles.ParticleEmitter;
@@ -131,18 +174,18 @@ export class GalaxyScene extends Phaser.Scene {
   }
 
   create() {
-    const W = CONFIG.WORLD.w, H = CONFIG.WORLD.h;
     this.makeTextures();
-    this.physics.world.setBounds(0, 0, W, H);
-    this.cameras.main.setBounds(0, 0, W, H);
+    const { pos, world } = layoutStars(this.galaxy.stars);
+    this.world = world;
+    this.physics.world.setBounds(0, 0, world.w, world.h);
+    this.cameras.main.setBounds(0, 0, world.w, world.h);
     this.cameras.main.setBackgroundColor("#0b0f13");
 
     this.buildStarfield();
-    const pos = layoutStars(this.galaxy.stars, CONFIG.WORLD);
     this.buildEdges(pos);
     this.buildStars(pos);
     this.buildConstellationLabels();
-    this.buildShip(W / 2, H / 2);
+    this.buildShip(world.w / 2, world.h / 2);
     this.buildHUD();
     this.buildInput();
 
@@ -204,26 +247,52 @@ export class GalaxyScene extends Phaser.Scene {
   }
 
   private buildStarfield() {
+    const W = this.world.w;
+    const H = this.world.h;
+    const density = Math.min(6, (W * H) / (3600 * 2400)); // keep the void starry as the world grows
     const layers = [
-      { n: 240, alpha: 0.5, sf: 0.35, r: 1.2 },
-      { n: 140, alpha: 0.8, sf: 0.6, r: 1.6 },
+      { n: Math.round(240 * density), alpha: 0.5, sf: 0.35, r: 1.2 },
+      { n: Math.round(140 * density), alpha: 0.8, sf: 0.6, r: 1.6 },
     ];
     for (const L of layers) {
       const g = this.add.graphics().setScrollFactor(L.sf).setDepth(0);
       for (let i = 0; i < L.n; i++) {
         g.fillStyle(0xcfe0ff, L.alpha * (0.4 + Math.random() * 0.6));
-        g.fillCircle(Math.random() * CONFIG.WORLD.w * 1.4, Math.random() * CONFIG.WORLD.h * 1.4, L.r * (0.6 + Math.random()));
+        g.fillCircle(Math.random() * W * 1.4, Math.random() * H * 1.4, L.r * (0.6 + Math.random()));
       }
     }
   }
 
   private buildEdges(pos: Record<number, { x: number; y: number }>) {
-    const g = this.add.graphics().setDepth(2);
+    // Declutter: cross-cluster links span the whole view and read as a spiderweb,
+    // so draw only links WITHIN a constellation, capped to each star's few
+    // strongest, and faint. (Cross-cluster relations still exist in the data and
+    // still feed the encounter's reframe relevance — they're just not drawn.)
+    const clusterById: Record<number, number | null> = {};
+    for (const s of this.galaxy.stars) clusterById[s.id] = s.cluster_id;
+    const K = 3;
+    const perNode: Record<number, { other: number; sim: number }[]> = {};
     for (const e of this.galaxy.edges) {
-      const a = pos[e.source], b = pos[e.target];
-      if (!a || !b) continue;
-      g.lineStyle(1, EDGE, 0.1 + (e.similarity || 0.4) * 0.28);
-      g.lineBetween(a.x, a.y, b.x, b.y);
+      const cs = clusterById[e.source];
+      if (cs === null || cs === undefined || cs !== clusterById[e.target]) continue;
+      (perNode[e.source] ??= []).push({ other: e.target, sim: e.similarity ?? 0.4 });
+      (perNode[e.target] ??= []).push({ other: e.source, sim: e.similarity ?? 0.4 });
+    }
+    const g = this.add.graphics().setDepth(2);
+    const drawn = new Set<string>();
+    for (const idStr of Object.keys(perNode)) {
+      const id = Number(idStr);
+      const top = perNode[id].sort((a, b) => b.sim - a.sim).slice(0, K);
+      for (const { other, sim } of top) {
+        const key = id < other ? `${id}:${other}` : `${other}:${id}`;
+        if (drawn.has(key)) continue;
+        drawn.add(key);
+        const a = pos[id];
+        const b = pos[other];
+        if (!a || !b) continue;
+        g.lineStyle(1, EDGE, 0.08 + sim * 0.14);
+        g.lineBetween(a.x, a.y, b.x, b.y);
+      }
     }
   }
 
