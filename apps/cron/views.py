@@ -143,6 +143,9 @@ TASK_MAP = {
     "schedule_fuel_welcome": "apps.fuel.tasks.schedule_fuel_welcome_task",
     # Gravity (finance) welcome cron — delayed after finance toggle
     "schedule_finance_welcome": "apps.finance.tasks.schedule_finance_welcome_task",
+    # Core (mindfulness) welcome cron + on-demand meditation render
+    "schedule_core_welcome": "apps.core.tasks.schedule_core_welcome_task",
+    "render_meditation": "apps.core.tasks.render_meditation_task",
     # Fuel session-scheduling cutover — derived from Workout.scheduled_at
     "regenerate_fuel_crons": "apps.orchestrator.tasks.regenerate_fuel_crons_task",
     "reconcile_fuel_crons": "apps.orchestrator.tasks.reconcile_fuel_crons_task",

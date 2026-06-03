@@ -107,6 +107,7 @@ class TenantSerializer(serializers.ModelSerializer):
             "finance_enabled",
             "gravity_available",
             "fuel_enabled",
+            "core_enabled",
             "byo_models_enabled",
         )
         read_only_fields = fields

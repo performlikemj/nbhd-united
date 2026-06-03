@@ -30,7 +30,7 @@ from apps.tenants.models import Tenant
 logger = logging.getLogger(__name__)
 
 
-_VALID_FEATURES = {"fuel", "finance"}
+_VALID_FEATURES = {"fuel", "finance", "core"}
 
 
 def _internal_auth_or_401(request, tenant_id: UUID) -> Response | None:
