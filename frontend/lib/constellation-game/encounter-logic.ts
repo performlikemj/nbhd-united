@@ -34,9 +34,17 @@ export interface GalaxyEdge {
   connection_type: string;
 }
 
+export interface GalaxyCluster {
+  id: number;
+  label: string;
+  count: number;
+  tags: string[];
+}
+
 export interface GalaxyData {
   stars: GalaxyStar[];
   edges: GalaxyEdge[];
+  clusters?: GalaxyCluster[];
 }
 
 export type GapType = "stale_cluster" | "stuck_proto" | "drifted_star";

@@ -208,7 +208,9 @@ class LessonViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="galaxy")
     def galaxy(self, request):
-        """Full galaxy state for the Godot client — stars with game state."""
+        """Full galaxy state for the game client — stars with game state, plus
+        connection edges (stored LessonConnections + computed embedding affinity)
+        and cluster groupings, so the client can draw constellations and links."""
         lessons = list(self.get_queryset().filter(status="approved").prefetch_related("connections_out"))
         lesson_ids = [lesson.id for lesson in lessons]
 
@@ -216,11 +218,60 @@ class LessonViewSet(viewsets.ModelViewSet):
             from_lesson_id__in=lesson_ids,
             to_lesson_id__in=lesson_ids,
         )
+        edge_data = list(GalaxyEdgeSerializer(edges, many=True).data)
+
+        # Affinity edges (embedding cosine similarity) so related stars are linked
+        # even without stored connections — mirrors the web constellation view.
+        affinity_edges = []
+        lessons_with_embeddings = [l for l in lessons if l.embedding is not None]
+        if 2 <= len(lessons_with_embeddings) <= 150:
+            import numpy as np
+
+            embs = np.array([l.embedding for l in lessons_with_embeddings], dtype=np.float64)
+            norms = np.linalg.norm(embs, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            normalized = embs / norms
+            sim_matrix = normalized @ normalized.T
+
+            stored = set()
+            for edge in edges:
+                stored.add((edge.from_lesson_id, edge.to_lesson_id))
+                stored.add((edge.to_lesson_id, edge.from_lesson_id))
+
+            min_sim = 0.1 if len(lessons_with_embeddings) <= 5 else 0.3
+            for i in range(len(lessons_with_embeddings)):
+                for j in range(i + 1, len(lessons_with_embeddings)):
+                    sim = float(sim_matrix[i, j])
+                    lid_i = lessons_with_embeddings[i].id
+                    lid_j = lessons_with_embeddings[j].id
+                    if sim >= min_sim and (lid_i, lid_j) not in stored:
+                        affinity_edges.append(
+                            {
+                                "source": lid_i,
+                                "target": lid_j,
+                                "similarity": round(sim, 4),
+                                "connection_type": "affinity",
+                            }
+                        )
+
+        # Cluster groupings (the "constellations").
+        grouped: dict[tuple[int, str], list[Lesson]] = {}
+        for lesson in lessons:
+            if lesson.cluster_id is not None:
+                grouped.setdefault((lesson.cluster_id, lesson.cluster_label or ""), []).append(lesson)
+        clusters = []
+        for (cluster_id, cluster_label), cluster_lessons in grouped.items():
+            all_tags = [tag for lesson in cluster_lessons for tag in lesson.tags]
+            common_tags = [tag for tag, _count in Counter(all_tags).most_common(3)]
+            clusters.append(
+                {"id": cluster_id, "label": cluster_label, "count": len(cluster_lessons), "tags": common_tags}
+            )
 
         return Response(
             {
                 "stars": GalaxyStarSerializer(lessons, many=True).data,
-                "edges": GalaxyEdgeSerializer(edges, many=True).data,
+                "edges": edge_data + affinity_edges,
+                "clusters": clusters,
             }
         )
 

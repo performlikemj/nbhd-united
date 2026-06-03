@@ -141,6 +141,7 @@ export class GalaxyScene extends Phaser.Scene {
     const pos = layoutStars(this.galaxy.stars, CONFIG.WORLD);
     this.buildEdges(pos);
     this.buildStars(pos);
+    this.buildConstellationLabels();
     this.buildShip(W / 2, H / 2);
     this.buildHUD();
     this.buildInput();
@@ -231,19 +232,22 @@ export class GalaxyScene extends Phaser.Scene {
       const p = pos[data.id];
       if (!p) continue;
       const cfg = STAGE[data.star_stage] || STAGE_FALLBACK;
+      // Tint by CLUSTER (the constellation) so groups read as colour families;
+      // stage drives size + glow intensity (development within a constellation).
+      const tint = clusterColor(data.cluster_id);
       const glow = this.add
         .image(p.x, p.y, "glow")
-        .setTint(cfg.color)
+        .setTint(tint)
         .setBlendMode(Phaser.BlendModes.ADD)
         .setScale((cfg.size * 2.9 * cfg.glow) / 62)
         .setDepth(3);
-      const core = this.add.image(p.x, p.y, "core").setTint(cfg.color).setScale(cfg.size / 8).setDepth(4);
+      const core = this.add.image(p.x, p.y, "core").setTint(tint).setScale(cfg.size / 8).setDepth(4);
       const label = this.add
         .text(p.x, p.y + cfg.size + 12, truncate(data.text, 26), { fontSize: "12px", color: "#cdd9f5", align: "center" })
         .setOrigin(0.5, 0)
         .setAlpha(0.55)
         .setDepth(4);
-      label.setTint(clusterColor(data.cluster_id));
+      label.setTint(tint);
       if (cfg.pulse) {
         this.tweens.add({
           targets: glow,
@@ -264,6 +268,29 @@ export class GalaxyScene extends Phaser.Scene {
     const g = this.add.graphics().setDepth(3);
     g.lineStyle(1.5, 0x8be0ff, 0.5);
     g.strokeCircle(entry.x, entry.y, entry.r + 10);
+  }
+
+  // Faint constellation names floating behind each cluster's stars.
+  private buildConstellationLabels() {
+    const groups: Record<number, { x: number; y: number; n: number; label: string }> = {};
+    for (const s of this.stars) {
+      const cid = s.data.cluster_id;
+      if (cid === null || cid === undefined || !s.data.cluster_label) continue;
+      const g = groups[cid] ?? { x: 0, y: 0, n: 0, label: s.data.cluster_label };
+      g.x += s.x;
+      g.y += s.y;
+      g.n += 1;
+      groups[cid] = g;
+    }
+    for (const key of Object.keys(groups)) {
+      const g = groups[Number(key)];
+      const hex = "#" + clusterColor(Number(key)).toString(16).padStart(6, "0");
+      this.add
+        .text(g.x / g.n, g.y / g.n, g.label.toUpperCase(), { fontFamily: "serif", fontSize: "26px", color: hex })
+        .setOrigin(0.5)
+        .setAlpha(0.14)
+        .setDepth(1);
+    }
   }
 
   private buildShip(x: number, y: number) {
