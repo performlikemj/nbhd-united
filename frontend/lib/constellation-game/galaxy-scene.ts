@@ -153,6 +153,13 @@ export class GalaxyScene extends Phaser.Scene {
   private encounterActive: Encounter | null = null;
   private encPrevZoom = 1;
   private world = { w: 3600, h: 2400 };
+  private miniContainer?: Phaser.GameObjects.Container;
+  private miniMarker?: Phaser.GameObjects.Graphics;
+  private miniView?: Phaser.GameObjects.Graphics;
+  private miniScale = 0;
+  private miniPad = 8;
+  private miniW = 0;
+  private miniH = 0;
 
   private ship!: any;
   private flame!: Phaser.GameObjects.Particles.ParticleEmitter;
@@ -188,6 +195,7 @@ export class GalaxyScene extends Phaser.Scene {
     this.buildShip(world.w / 2, world.h / 2);
     this.buildHUD();
     this.buildInput();
+    this.buildMinimap();
 
     this.ring = this.add.graphics().setDepth(6);
     this.prompt = this.add
@@ -677,6 +685,69 @@ export class GalaxyScene extends Phaser.Scene {
     cam.startFollow(this.ship, true, 0.08, 0.08);
   }
 
+  // Fixed bottom-right minimap: the whole world outline + cluster-coloured star
+  // dots, with a live marker for the ship and a box for the current view, so you
+  // can see how big the map is and never lose yourself.
+  private buildMinimap() {
+    const MAX = 170;
+    const pad = this.miniPad;
+    const scale = Math.min(MAX / this.world.w, MAX / this.world.h);
+    this.miniScale = scale;
+    this.miniW = this.world.w * scale;
+    this.miniH = this.world.h * scale;
+
+    const cont = this.add.container(0, 0).setScrollFactor(0).setDepth(19);
+    cont.add(
+      this.add
+        .rectangle(0, 0, this.miniW + pad * 2, this.miniH + pad * 2, 0x0b0f13, 0.66)
+        .setOrigin(0)
+        .setStrokeStyle(1, 0x4a5570, 0.5),
+    );
+
+    const dots = this.add.graphics();
+    for (const s of this.stars) {
+      dots.fillStyle(clusterColor(s.data.cluster_id), 0.85);
+      dots.fillCircle(pad + s.x * scale, pad + s.y * scale, 1.4);
+    }
+    cont.add(dots);
+
+    this.miniView = this.add.graphics();
+    cont.add(this.miniView);
+    this.miniMarker = this.add.graphics();
+    cont.add(this.miniMarker);
+
+    this.miniContainer = cont;
+    this.positionMinimap();
+    this.scale.on("resize", this.positionMinimap, this);
+  }
+
+  private positionMinimap() {
+    if (!this.miniContainer) return;
+    const m = 16;
+    this.miniContainer.setPosition(
+      this.scale.width - (this.miniW + this.miniPad * 2) - m,
+      this.scale.height - (this.miniH + this.miniPad * 2) - m,
+    );
+  }
+
+  private updateMinimap() {
+    if (!this.miniMarker || !this.miniView) return;
+    const pad = this.miniPad;
+    const s = this.miniScale;
+    const mx = pad + this.ship.x * s;
+    const my = pad + this.ship.y * s;
+    this.miniMarker.clear();
+    this.miniMarker.fillStyle(0xffffff, 1);
+    this.miniMarker.fillCircle(mx, my, 2.6);
+    this.miniMarker.lineStyle(1, 0x9bd9ff, 0.95);
+    this.miniMarker.strokeCircle(mx, my, 4.6);
+
+    const v = this.cameras.main.worldView;
+    this.miniView.clear();
+    this.miniView.lineStyle(1, 0xffffff, 0.22);
+    this.miniView.strokeRect(pad + v.x * s, pad + v.y * s, v.width * s, v.height * s);
+  }
+
   update(time: number, delta: number) {
     const dt = delta / 1000;
     const ship = this.ship;
@@ -754,6 +825,7 @@ export class GalaxyScene extends Phaser.Scene {
       this.prompt.setVisible(false);
       if (this.landBtn) this.landBtn.classList.remove("show");
     }
+    this.updateMinimap();
     if (Phaser.Input.Keyboard.JustDown(this.keys.ESC)) this.closePanel();
   }
 }
