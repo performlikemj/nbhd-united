@@ -650,11 +650,12 @@ def drain_pending_messages_for_tenant_task(
 
     delivered = 0
     failed = 0
+    gateway_responded = False
     try:
         if channel == PendingMessage.Channel.LINE:
-            _drain_line_batch(tenant, batch, chat_timeout)
+            gateway_responded = _drain_line_batch(tenant, batch, chat_timeout)
         elif channel == PendingMessage.Channel.TELEGRAM:
-            _drain_telegram_batch(tenant, batch, chat_timeout)
+            gateway_responded = _drain_telegram_batch(tenant, batch, chat_timeout)
         else:
             raise ValueError(f"Unknown channel: {channel!r}")
 
@@ -697,6 +698,37 @@ def drain_pending_messages_for_tenant_task(
                 ]
             )
         failed = batch_size
+
+    # Reconcile a stale hibernation flag. A healthy (non-credit-limit)
+    # gateway response is proof the container is awake, so a lingering
+    # ``hibernated_at`` is stale and must be cleared — otherwise
+    # ``apps.router.container_updates.update_container`` keeps short-
+    # circuiting (its ``if tenant.hibernated_at: return False`` guard) and
+    # every self-update attempt reports "the update failed", and idle
+    # accounting keeps treating a live tenant as asleep. This is the warm-
+    # path analogue of ``wake_hibernated_tenant``'s clear: the *webhook*
+    # path clears the flag on wake, but the Telegram *poller* path has no
+    # wake step (poller → enqueue → this drain, no ``handle_hibernated_message``),
+    # so an out-of-band revision activate (e.g. a manual ``az containerapp``
+    # image swap) leaves the flag set indefinitely while the tenant chats
+    # normally. Done OUTSIDE the delivery try/except so a flag-clear hiccup
+    # can't flip a successful delivery to "failed"; ``gateway_responded`` is
+    # False for the credit-limit early-return, which intentionally
+    # hibernates — so we never undo a just-applied budget hibernation.
+    if delivered and gateway_responded and tenant.hibernated_at is not None:
+        try:
+            Tenant.objects.filter(id=tenant.id).update(hibernated_at=None)
+            tenant.hibernated_at = None
+            logger.info(
+                "drain_pending: cleared stale hibernated_at for tenant %s (live gateway response on %s)",
+                tenant_id[:8],
+                channel,
+            )
+        except Exception:
+            logger.exception(
+                "drain_pending: failed to clear stale hibernated_at for tenant %s",
+                tenant_id[:8],
+            )
 
     # On success: if more pending rows remain for this key, schedule the
     # next drain immediately so back-to-back messages keep flowing.
@@ -954,7 +986,7 @@ def _build_batch_chat_content(batch: list[PendingMessage], fallback_user_id: str
     return content, user_param, user_tz
 
 
-def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float) -> None:
+def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float) -> bool:
     """Forward a deliverable LINE batch to the container as one OC turn.
 
     ``len(batch) == 1`` preserves the historical per-row shape verbatim
@@ -967,9 +999,16 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
     The batch claim guarantees all rows share ``channel_user_id`` and
     none are voice rows once ``len(batch) > 1`` — voice always stays a
     singleton (see ``_claim_pending_batch_for_key``).
+
+    Returns ``True`` when the gateway returned a healthy (non-credit-limit)
+    response — proof the container is awake. Returns ``False`` for the
+    empty-batch and OpenRouter credit-limit early-returns (the latter
+    *intentionally* hibernates the tenant, so the caller must NOT treat it
+    as a liveness signal). See the stale-hibernation reconcile in
+    ``drain_pending_messages_for_tenant_task``.
     """
     if not batch:
-        return
+        return False
 
     from apps.router.line_webhook import relay_ai_response_to_line
 
@@ -1006,7 +1045,7 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
     resp = httpx.post(url, json=chat_payload, headers=headers, timeout=timeout)
     if _looks_like_openrouter_credit_limit(resp):
         _handle_openrouter_credit_limit(tenant, channel="line", channel_user_id=line_user_id)
-        return
+        return False
     resp.raise_for_status()
     result = resp.json()
 
@@ -1021,17 +1060,21 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
             )
 
     _record_usage_safe(tenant, result, message_count=len(batch))
+    return True
 
 
-def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float) -> None:
+def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float) -> bool:
     """Forward a deliverable Telegram batch to the container as one OC turn.
 
     Singleton vs coalesced behaviour mirrors ``_drain_line_batch``; see
     that docstring. The batch claim guarantees all rows share
     ``channel_user_id`` (so all rows belong to the same Telegram chat).
+
+    Returns ``True`` on a healthy (non-credit-limit) gateway response — see
+    ``_drain_line_batch`` for the liveness-signal contract.
     """
     if not batch:
-        return
+        return False
 
     chat_id_str = batch[0].channel_user_id
     try:
@@ -1066,7 +1109,7 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
     resp = httpx.post(url, json=chat_payload, headers=headers, timeout=timeout)
     if _looks_like_openrouter_credit_limit(resp):
         _handle_openrouter_credit_limit(tenant, channel="telegram", channel_user_id=str(chat_id))
-        return
+        return False
     resp.raise_for_status()
     result = resp.json()
 
@@ -1075,6 +1118,7 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
         relay_ai_response_to_telegram(tenant, chat_id, ai_text)
 
     _record_usage_safe(tenant, result, message_count=len(batch))
+    return True
 
 
 # ---------------------------------------------------------------------------
