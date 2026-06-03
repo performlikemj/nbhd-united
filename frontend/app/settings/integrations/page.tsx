@@ -231,6 +231,12 @@ function GravityCard() {
   const [restarting, setRestarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Gravity is paused platform-wide for privacy — don't offer the toggle at
+  // all while unavailable. (Hooks above run unconditionally; guard goes here.)
+  if (tenant && tenant.gravity_available === false) {
+    return null;
+  }
+
   const handleToggle = async () => {
     setError(null);
     try {

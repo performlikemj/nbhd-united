@@ -2,6 +2,7 @@
 
 from zoneinfo import available_timezones
 
+from django.conf import settings
 from django.contrib.auth import authenticate
 from django.utils import timezone
 from rest_framework import serializers
@@ -67,6 +68,7 @@ class TenantSerializer(serializers.ModelSerializer):
     has_active_subscription = serializers.SerializerMethodField()
     trial_days_remaining = serializers.SerializerMethodField()
     platform_budget_exceeded = serializers.SerializerMethodField()
+    gravity_available = serializers.SerializerMethodField()
 
     class Meta:
         model = Tenant
@@ -103,10 +105,18 @@ class TenantSerializer(serializers.ModelSerializer):
             "task_model_preferences",
             "platform_budget_exceeded",
             "finance_enabled",
+            "gravity_available",
             "fuel_enabled",
             "byo_models_enabled",
         )
         read_only_fields = fields
+
+    def get_gravity_available(self, obj):
+        """Platform-level availability of the Gravity (finance) module. When
+        False (the production default — see GRAVITY_ENABLED in settings),
+        Gravity is paused for privacy and the frontend hides the tab + the
+        enable toggle regardless of the tenant's stored ``finance_enabled``."""
+        return bool(getattr(settings, "GRAVITY_ENABLED", False))
 
     def get_has_active_subscription(self, obj):
         has_real_subscription = bool(obj.stripe_subscription_id) and obj.status != Tenant.Status.DELETED

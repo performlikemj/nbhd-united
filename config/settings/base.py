@@ -365,6 +365,18 @@ OPENROUTER_PER_TENANT_KEYS_ENABLED = env.bool(
     "OPENROUTER_PER_TENANT_KEYS_ENABLED",
     default=False,
 )
+# GRAVITY_ENABLED: product-level kill switch for the Gravity (finance) module.
+# Fail-safe OFF by default: while False, finance is paused platform-wide
+# regardless of any tenant's stored ``finance_enabled`` flag — no finance plugin
+# is loaded into containers, no finance state is injected into USER.md, the
+# weekly check-in / synthesis don't run, and the UI doesn't offer it. This is a
+# deliberate privacy pause: financial figures currently egress to the LLM
+# provider raw (the redactor masks identities, not amounts) with no retention
+# guarantee configured. Re-enable (set the env var True) only once on-device /
+# zero-retention inference or pre-egress amount-masking is in place.
+# dev + test settings override this to True so the existing suite + local dev
+# exercise the feature; production inherits the False default.
+GRAVITY_ENABLED = env.bool("GRAVITY_ENABLED", default=False)
 AZURE_KV_SECRET_SOUL_MD = env(
     "AZURE_KV_SECRET_SOUL_MD",
     default="nbhd-soul-md",

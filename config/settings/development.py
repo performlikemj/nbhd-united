@@ -13,6 +13,10 @@ CORS_ALLOW_ALL_ORIGINS = True
 # Use console email backend
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
+# Gravity (finance) is paused platform-wide in production (see GRAVITY_ENABLED
+# in base.py) but stays ON in dev so the feature can be exercised locally.
+GRAVITY_ENABLED = True
+
 # Debug toolbar (install separately if needed)
 # INSTALLED_APPS += ["debug_toolbar"]
 # MIDDLEWARE.insert(0, "debug_toolbar.middleware.DebugToolbarMiddleware")

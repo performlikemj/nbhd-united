@@ -669,6 +669,20 @@ class Tenant(models.Model):
         return self.status == self.Status.ACTIVE
 
     @property
+    def finance_active(self) -> bool:
+        """Effective Gravity state: the per-tenant flag AND the platform gate.
+
+        When ``settings.GRAVITY_ENABLED`` is False (the production default),
+        Gravity is paused platform-wide for privacy regardless of the stored
+        ``finance_enabled`` flag. All finance egress + surfacing gates read this
+        property, not ``finance_enabled`` directly, so flipping the env var off
+        is an authoritative kill switch. See ``GRAVITY_ENABLED`` in settings.
+        """
+        from django.conf import settings
+
+        return bool(self.finance_enabled) and bool(getattr(settings, "GRAVITY_ENABLED", False))
+
+    @property
     def has_entitlement(self) -> bool:
         """True if tenant has a paid subscription or an unexpired trial."""
         from django.utils import timezone

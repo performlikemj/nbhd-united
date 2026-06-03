@@ -2618,7 +2618,7 @@ class RuntimeReconcileScanView(APIView):
             )
 
         # ── Finance accounts ─────────────────────────────────────────
-        if finance_triggered and getattr(tenant, "finance_enabled", False):
+        if finance_triggered and getattr(tenant, "finance_active", False):
             from apps.finance.models import FinanceAccount
 
             active_accounts = list(FinanceAccount.objects.filter(tenant=tenant, is_active=True))
