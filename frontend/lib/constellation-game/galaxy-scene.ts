@@ -160,6 +160,8 @@ export class GalaxyScene extends Phaser.Scene {
   private miniPad = 8;
   private miniW = 0;
   private miniH = 0;
+  private miniMaxCur = 0;
+  private miniResizeBound = false;
 
   private ship!: any;
   private flame!: Phaser.GameObjects.Particles.ParticleEmitter;
@@ -687,9 +689,22 @@ export class GalaxyScene extends Phaser.Scene {
 
   // Fixed bottom-right minimap: the whole world outline + cluster-coloured star
   // dots, with a live marker for the ship and a box for the current view, so you
-  // can see how big the map is and never lose yourself.
+  // can see how big the map is and never lose yourself. Sized off the viewport's
+  // short edge (clamped) so it stays a glanceable corner inset on phones instead
+  // of eating the bottom-right quadrant.
+  private miniTargetMax(): number {
+    const vmin = Math.min(this.scale.width, this.scale.height);
+    return Phaser.Math.Clamp(Math.round(vmin * 0.22), 84, 168);
+  }
+
   private buildMinimap() {
-    const MAX = 170;
+    if (this.miniContainer) {
+      this.miniContainer.destroy();
+      this.miniContainer = undefined;
+    }
+    const MAX = this.miniTargetMax();
+    this.miniMaxCur = MAX;
+    this.miniPad = MAX < 120 ? 6 : 8;
     const pad = this.miniPad;
     const scale = Math.min(MAX / this.world.w, MAX / this.world.h);
     this.miniScale = scale;
@@ -705,9 +720,10 @@ export class GalaxyScene extends Phaser.Scene {
     );
 
     const dots = this.add.graphics();
+    const dotR = MAX < 120 ? 1.1 : 1.4;
     for (const s of this.stars) {
       dots.fillStyle(clusterColor(s.data.cluster_id), 0.85);
-      dots.fillCircle(pad + s.x * scale, pad + s.y * scale, 1.4);
+      dots.fillCircle(pad + s.x * scale, pad + s.y * scale, dotR);
     }
     cont.add(dots);
 
@@ -718,7 +734,20 @@ export class GalaxyScene extends Phaser.Scene {
 
     this.miniContainer = cont;
     this.positionMinimap();
-    this.scale.on("resize", this.positionMinimap, this);
+    if (!this.miniResizeBound) {
+      this.scale.on("resize", this.onMinimapResize, this);
+      this.miniResizeBound = true;
+    }
+  }
+
+  // Re-fit the map when the viewport changes enough to matter (e.g. a portrait↔
+  // landscape rotation); otherwise just re-pin it to the corner.
+  private onMinimapResize() {
+    if (Math.abs(this.miniTargetMax() - this.miniMaxCur) >= 4) {
+      this.buildMinimap();
+    } else {
+      this.positionMinimap();
+    }
   }
 
   private positionMinimap() {
