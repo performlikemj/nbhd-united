@@ -138,7 +138,7 @@ def render_observation_mode_rules(tenant: Tenant) -> str:
 @register_section(
     key="insights_observation_mode",
     heading="## Assistant — observation memory (Gravity)",
-    enabled=lambda t: getattr(t, "finance_enabled", False),
+    enabled=lambda t: getattr(t, "finance_active", False),
     refresh_on=(AssistantInsight, PillarSnapshot),
     order=15,
 )

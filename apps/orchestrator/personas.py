@@ -488,7 +488,7 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     # silently truncated the tail (Privacy Placeholders, Recent journal,
     # Fuel/Gravity state). USER.md now carries only the dynamic counts
     # block; the full gate + register-selection rules live here.
-    if tenant is not None and getattr(tenant, "finance_enabled", False):
+    if tenant is not None and getattr(tenant, "finance_active", False):
         from apps.insights.envelope import render_observation_mode_rules
 
         result["NBHD_AGENTS_MD"] = (

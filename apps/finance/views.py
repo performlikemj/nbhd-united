@@ -3,6 +3,7 @@
 import logging
 from decimal import Decimal
 
+from django.conf import settings
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -239,6 +240,20 @@ class FinanceSettingsView(APIView):
             return Response(
                 {"error": "finance_enabled is required"},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Privacy pause: while Gravity is disabled platform-wide
+        # (settings.GRAVITY_ENABLED off), refuse to enable it. Disabling is
+        # always allowed. See GRAVITY_ENABLED in settings.
+        if bool(finance_enabled) and not getattr(settings, "GRAVITY_ENABLED", False):
+            return Response(
+                {
+                    "error": "gravity_paused",
+                    "detail": (
+                        "Gravity is paused while we strengthen financial-data privacy, and can't be enabled right now."
+                    ),
+                },
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         was_enabled = tenant.finance_enabled

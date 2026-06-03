@@ -57,7 +57,7 @@ class ThreadSpec:
 # constant to this public-facing helper.
 _FEATURE_INTROS: tuple[tuple[str, str, str], ...] = (
     ("fuel", "fuel_enabled", "Fuel — fitness assistant"),
-    ("finance", "finance_enabled", "Gravity — finance assistant"),
+    ("finance", "finance_active", "Gravity — finance assistant"),
 )
 
 

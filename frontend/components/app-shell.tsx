@@ -31,13 +31,17 @@ interface NavItem {
   icon: React.ComponentType<{ className?: string }>;
 }
 
-function useNavItems(tenant?: { finance_enabled?: boolean; fuel_enabled?: boolean } | null): NavItem[] {
+function useNavItems(
+  tenant?: { finance_enabled?: boolean; gravity_available?: boolean; fuel_enabled?: boolean } | null,
+): NavItem[] {
   const items: NavItem[] = [
     { href: "/journal", label: "Journal", icon: IconJournal },
     { href: "/constellation", label: "Constellation", icon: IconConstellation },
     { href: "/horizons", label: "Horizons", icon: IconHorizons },
   ];
-  if (tenant?.finance_enabled) {
+  // Gravity is paused platform-wide for privacy unless gravity_available is
+  // true; hide the tab even for tenants who previously enabled it.
+  if (tenant?.finance_enabled && tenant?.gravity_available) {
     items.push({ href: "/finance", label: "Gravity", icon: IconGravity });
   }
   if (tenant?.fuel_enabled) {

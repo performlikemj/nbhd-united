@@ -850,7 +850,7 @@ def backfill_welcomes(request):
             from apps.fuel.views import _schedule_fuel_welcome
 
             _tally(_schedule_fuel_welcome, tenant, per_feature["fuel"], "fuel")
-        if tenant.finance_enabled:
+        if tenant.finance_active:
             from apps.finance.views import _schedule_finance_welcome
 
             _tally(_schedule_finance_welcome, tenant, per_feature["finance"], "finance")

@@ -25,7 +25,10 @@ from apps.tenants.models import Tenant
 @register_section(
     key="finance",
     heading="## Gravity — finance state",
-    enabled=lambda t: getattr(t, "finance_enabled", False),
+    # finance_active folds in the GRAVITY_ENABLED platform pause, so the finance
+    # state stops being written into USER.md (the highest-volume egress) the
+    # moment Gravity is paused — not just when the per-tenant flag is off.
+    enabled=lambda t: getattr(t, "finance_active", False),
     refresh_on=(FinanceAccount, FinanceTransaction, PayoffPlan),
     order=50,
 )
