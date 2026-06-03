@@ -32,3 +32,27 @@ class QuietCronSignalRunner(DiscoverRunner):
         from apps.cron.signals import disconnect_cronjob_reconcile_signals
 
         disconnect_cronjob_reconcile_signals()
+
+    def teardown_databases(self, old_config, **kwargs):
+        # Even with the cron signals disconnected, a stray connection can still
+        # linger at teardown (a background thread, a signal a test reconnects in
+        # its own setUp, etc.). Postgres refuses ``DROP DATABASE`` while other
+        # sessions are connected — the intermittent ``ObjectInUse`` CI failure.
+        # Terminate every other backend on the test DB first so the drop always
+        # succeeds. Best-effort: never let teardown hardening mask a real result.
+        from django.db import connections
+
+        for alias in connections:
+            conn = connections[alias]
+            if conn.vendor != "postgresql":
+                continue
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                        "WHERE datname = current_database() AND pid <> pg_backend_pid()"
+                    )
+            except Exception:
+                pass
+
+        super().teardown_databases(old_config, **kwargs)

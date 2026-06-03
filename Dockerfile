@@ -26,10 +26,14 @@ COPY . .
 # `ignore_patterns` skips the duplicate `pytorch_model.bin` — transformers
 # loads the safetensors variant and the .bin would just double the layer size.
 ENV PII_MODEL_PATH=/app/pii-model
-RUN python -c "\
-from huggingface_hub import snapshot_download; \
-snapshot_download('lakshyakh93/deberta_finetuned_pii', local_dir='/app/pii-model', \
-ignore_patterns=['pytorch_model.bin', 'optimizer.pt', '*.msgpack', '*.h5'])"
+# Retry with backoff — HuggingFace returns transient 429s that would otherwise
+# kill the whole image build (and the deploy with it).
+RUN for i in 1 2 3 4 5; do \
+      python -c "from huggingface_hub import snapshot_download; snapshot_download('lakshyakh93/deberta_finetuned_pii', local_dir='/app/pii-model', ignore_patterns=['pytorch_model.bin', 'optimizer.pt', '*.msgpack', '*.h5'])" && exit 0; \
+      echo "HF model download attempt $i failed; retrying in $((i*20))s..."; \
+      sleep $((i*20)); \
+    done; \
+    echo "HF model download failed after 5 attempts" >&2; exit 1
 
 RUN SECRET_KEY=build-placeholder python manage.py collectstatic --noinput
 
