@@ -256,6 +256,19 @@ LINE_BOT_ID = env("LINE_BOT_ID", default="")  # e.g. "@nbhd-united"
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 BRAVE_API_KEY = env("BRAVE_API_KEY", default="")
+
+# Gemini TTS — Core pillar meditation render (server-side, key stays here).
+# Secret lives in Key Vault; set GEMINI_API_KEY on the Container App. Never echo it.
+GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
+GEMINI_TTS_MODEL = env("GEMINI_TTS_MODEL", default="gemini-2.5-flash-preview-tts")
+# Bounded-parallel TTS calls per render — modest to respect preview rate limits.
+CORE_RENDER_CONCURRENCY = env.int("CORE_RENDER_CONCURRENCY", default=4)
+# Render-wide soft deadline (seconds): no NEW TTS call starts past this, keeping
+# the synchronous QStash-triggered render under the gunicorn ~300s budget.
+CORE_RENDER_DEADLINE_SECONDS = env.int("CORE_RENDER_DEADLINE_SECONDS", default=210)
+# A RENDERING session older than this (minutes) is treated as a dead claim and
+# may be re-taken — recovers a render whose worker was killed mid-flight.
+CORE_RENDER_STALE_MINUTES = env.int("CORE_RENDER_STALE_MINUTES", default=15)
 OPENCLAW_GOOGLE_PLUGIN_ID = env("OPENCLAW_GOOGLE_PLUGIN_ID", default="")
 OPENCLAW_GOOGLE_PLUGIN_PATH = env(
     "OPENCLAW_GOOGLE_PLUGIN_PATH",

@@ -113,8 +113,9 @@ class RuntimeCoreProfileView(APIView):
 class RuntimeMeditationCreateView(APIView):
     """POST: the assistant submits an authored render manifest.
 
-    Validates minimally (Phase 1 swaps in the full pydantic/serializer validator),
-    persists a pending MeditationSession, and enqueues the async render task.
+    Fully validates the manifest against the fixed phase arc + timing bounds
+    (rejecting bad input before any TTS spend), persists a pending
+    MeditationSession, and enqueues the async render task.
     """
 
     permission_classes = [AllowAny]
@@ -127,10 +128,18 @@ class RuntimeMeditationCreateView(APIView):
         if isinstance(tenant, Response):
             return tenant
 
+        from apps.core import render as core_render
+
         manifest = request.data.get("manifest")
-        if not isinstance(manifest, dict) or not manifest.get("phases"):
+        if not isinstance(manifest, dict):
             return Response(
-                {"error": "invalid_manifest", "detail": "manifest must be an object with a non-empty 'phases' list"},
+                {"error": "invalid_manifest", "detail": "manifest must be a JSON object"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        manifest_errors = core_render.validate_manifest(manifest)
+        if manifest_errors:
+            return Response(
+                {"error": "invalid_manifest", "detail": manifest_errors},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

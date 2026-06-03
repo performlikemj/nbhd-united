@@ -45,6 +45,34 @@ def _record_send(tenant_id: str) -> None:
     _rate_counts.setdefault(tenant_id, []).append(time.time())
 
 
+def resolve_user_channel(user) -> str | None:
+    """Determine which channel to use for outbound messages to ``user``.
+
+    Respects ``preferred_channel`` when that channel is linked; otherwise falls
+    back to whichever channel is linked. Returns None if neither is linked.
+
+    Module-level so backend proactive senders (e.g. Core notify-on-ready) route
+    identically to ``CronDeliveryView`` without duplicating the logic.
+    """
+    preferred = getattr(user, "preferred_channel", "telegram")
+    line_user_id = getattr(user, "line_user_id", None)
+    telegram_chat_id = getattr(user, "telegram_chat_id", None)
+
+    # Honour preference if that channel is linked.
+    if preferred == "line" and line_user_id:
+        return "line"
+    if preferred == "telegram" and telegram_chat_id:
+        return "telegram"
+
+    # Fallback: whichever is linked.
+    if line_user_id:
+        return "line"
+    if telegram_chat_id:
+        return "telegram"
+
+    return None
+
+
 class SendToUserSerializer(serializers.Serializer):
     message = serializers.CharField(max_length=8192)
     parse_mode = serializers.ChoiceField(
@@ -177,27 +205,10 @@ class CronDeliveryView(APIView):
     def _resolve_channel(self, user) -> str | None:
         """Determine which channel to use for outbound messages.
 
-        Respects the user's preferred_channel when that channel is linked.
-        Falls back to whichever channel is available.
-        Returns None if no channel is linked.
+        Thin wrapper over the module-level ``resolve_user_channel`` (shared with
+        backend proactive senders).
         """
-        preferred = getattr(user, "preferred_channel", "telegram")
-        line_user_id = getattr(user, "line_user_id", None)
-        telegram_chat_id = getattr(user, "telegram_chat_id", None)
-
-        # Honour preference if that channel is linked
-        if preferred == "line" and line_user_id:
-            return "line"
-        if preferred == "telegram" and telegram_chat_id:
-            return "telegram"
-
-        # Fallback: whichever is linked
-        if line_user_id:
-            return "line"
-        if telegram_chat_id:
-            return "telegram"
-
-        return None
+        return resolve_user_channel(user)
 
     def _send_via_telegram(
         self,
