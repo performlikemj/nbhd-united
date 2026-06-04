@@ -224,6 +224,12 @@ export function fetchHorizons(): Promise<import("@/lib/types").HorizonsData> {
   return apiFetch<import("@/lib/types").HorizonsData>("/api/v1/dashboard/horizons/");
 }
 
+// Journal current-status projection — live state derived from typed models
+// + the finance ledger (never a stale baked copy). See status_projection.py.
+export function fetchJournalStatus(): Promise<import("@/lib/types").JournalStatus> {
+  return apiFetch<import("@/lib/types").JournalStatus>("/api/v1/journal/status/");
+}
+
 export function approveExtraction(id: string): Promise<{ id: string; status: string }> {
   return apiFetch<{ id: string; status: string }>(`/api/v1/journal/extractions/${id}/approve/`, { method: "POST" });
 }

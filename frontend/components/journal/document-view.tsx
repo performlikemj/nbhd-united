@@ -10,6 +10,7 @@ import { MarkdownHelpSheet } from "@/components/journal/markdown-help-sheet";
 import { QuickLogInput } from "@/components/journal/quick-log-input";
 import { EmptyState } from "@/components/journal/empty-state";
 import { DocumentHeader } from "@/components/journal/document-header";
+import { CurrentStatusCard } from "@/components/journal/current-status-card";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useDocumentQuery,
@@ -407,6 +408,8 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
 
       {/* Content */}
       <div className="flex-1 overflow-x-hidden overflow-y-auto">
+        {/* Live current-status surface — read-only, beside the editable log. */}
+        {kind === "daily" && !editing ? <CurrentStatusCard /> : null}
         {editing && isMobile !== true ? (
           <div className="p-4 lg:p-8">
             {/* Premium writing surface */}

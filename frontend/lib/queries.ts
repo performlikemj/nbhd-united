@@ -61,6 +61,7 @@ import {
   dismissExtraction,
   refuteInsight,
   fetchHorizons,
+  fetchJournalStatus,
   fetchUsageHistory,
   fetchUsageSummary,
   fetchTransparency,
@@ -225,6 +226,15 @@ export function useHorizonsQuery() {
   return useQuery({
     queryKey: ["horizons"],
     queryFn: fetchHorizons,
+    staleTime: 60_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useJournalStatusQuery() {
+  return useQuery({
+    queryKey: ["journal-status"],
+    queryFn: fetchJournalStatus,
     staleTime: 60_000,
     enabled: isLoggedIn(),
   });
