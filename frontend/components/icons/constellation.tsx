@@ -164,6 +164,16 @@ export function IconFuel({ className = "h-5 w-5" }: { className?: string }) {
   );
 }
 
+export function IconCore({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="5" />
+      <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 export function IconSettings({ className = "h-5 w-5" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">

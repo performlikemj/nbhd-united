@@ -19,6 +19,7 @@ import {
   IconHorizons,
   IconGravity,
   IconFuel,
+  IconCore,
   IconSettings,
   IconLogOut,
 } from "@/components/icons/constellation";
@@ -32,7 +33,12 @@ interface NavItem {
 }
 
 function useNavItems(
-  tenant?: { finance_enabled?: boolean; gravity_available?: boolean; fuel_enabled?: boolean } | null,
+  tenant?: {
+    finance_enabled?: boolean;
+    gravity_available?: boolean;
+    fuel_enabled?: boolean;
+    core_enabled?: boolean;
+  } | null,
 ): NavItem[] {
   const items: NavItem[] = [
     { href: "/journal", label: "Journal", icon: IconJournal },
@@ -46,6 +52,9 @@ function useNavItems(
   }
   if (tenant?.fuel_enabled) {
     items.push({ href: "/fuel", label: "Fuel", icon: IconFuel });
+  }
+  if (tenant?.core_enabled) {
+    items.push({ href: "/core", label: "Core", icon: IconCore });
   }
   items.push({ href: "/settings", label: "Settings", icon: IconSettings });
   return items;

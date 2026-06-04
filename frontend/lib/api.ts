@@ -1347,3 +1347,60 @@ export async function disconnectByoCredential(
     signal,
   });
 }
+
+// -- Core (Mindfulness) --
+
+// Compose-on-demand: the web orb. Creates a pending session and enqueues the
+// LLM-authors-manifest → render task. Coalesces a mashed orb (returns the
+// in-flight session). The caller polls fetchMeditation(id) until ready.
+export function composeMeditation(): Promise<import("@/lib/types").CoreComposeResponse> {
+  return apiFetch<import("@/lib/types").CoreComposeResponse>("/api/v1/core/compose/", {
+    method: "POST",
+  });
+}
+
+export function fetchMeditation(id: string): Promise<import("@/lib/types").MeditationSession> {
+  return apiFetch<import("@/lib/types").MeditationSession>(`/api/v1/core/sessions/${id}/`);
+}
+
+// The library. Defaults to ready sessions; the list endpoint is paginated
+// (DRF PageNumberPagination), so unwrap `.results`.
+export async function fetchMeditations(
+  status?: string,
+): Promise<import("@/lib/types").MeditationSession[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  const data = await apiFetch<
+    | import("@/lib/types").MeditationSession[]
+    | { results?: import("@/lib/types").MeditationSession[] }
+  >(`/api/v1/core/sessions/${query}`);
+  if (Array.isArray(data)) return data;
+  return data.results ?? [];
+}
+
+export function updateCoreSettings(
+  data: { core_enabled: boolean },
+): Promise<import("@/lib/types").CoreSettingsResponse> {
+  return apiFetch<import("@/lib/types").CoreSettingsResponse>("/api/v1/core/settings/", {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function restartCoreAssistant(): Promise<{ restarted: boolean }> {
+  return apiFetch<{ restarted: boolean }>("/api/v1/core/restart/", {
+    method: "POST",
+  });
+}
+
+export function fetchCoreProfile(): Promise<import("@/lib/types").CoreProfile> {
+  return apiFetch<import("@/lib/types").CoreProfile>("/api/v1/core/profile/");
+}
+
+export function updateCoreProfile(
+  data: Partial<import("@/lib/types").CoreProfile>,
+): Promise<import("@/lib/types").CoreProfile> {
+  return apiFetch<import("@/lib/types").CoreProfile>("/api/v1/core/profile/", {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
