@@ -8,6 +8,7 @@ and the real-ffmpeg test renders placeholder tones (no key, no network).
 
 from __future__ import annotations
 
+import json
 import shutil
 from datetime import date, timedelta
 from unittest import TestCase as UnitTestCase
@@ -15,11 +16,12 @@ from unittest import skipUnless
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
+from rest_framework_simplejwt.tokens import RefreshToken
 
-from apps.core import render, services
+from apps.core import compose, render, services
 from apps.core.models import MeditationSession, MeditationStatus
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
@@ -697,3 +699,170 @@ class RealFfmpegRenderTests(UnitTestCase):
         )
         self.assertIsNone(result.ogg_bytes)
         self.assertGreater(len(result.mp3_bytes), 500)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 7. Compose — LLM manifest authoring (OpenRouter mocked, no network)
+# ═════════════════════════════════════════════════════════════════════
+
+
+@override_settings(OPENROUTER_API_KEY="test-or-key")
+class ComposeAuthoringTests(SimpleTestCase):
+    def _resp(self, content):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = {"choices": [{"message": {"content": content}}]}
+        return resp
+
+    def test_authors_and_normalizes_valid_manifest(self):
+        with patch("apps.core.compose.requests.post", return_value=self._resp(json.dumps(_valid_manifest()))):
+            out = compose.author_manifest({"additional_context": "work stress"}, voice="Achernar")
+        self.assertEqual(render.validate_manifest(out), [])
+        self.assertEqual(out["voice"], "Achernar")  # normalized
+        self.assertEqual(out["total_target_seconds"], 600)
+
+    def test_non_json_raises(self):
+        with (
+            patch("apps.core.compose.requests.post", return_value=self._resp("not json {")),
+            self.assertRaises(compose.ComposeError),
+        ):
+            compose.author_manifest({})
+
+    def test_invalid_manifest_raises(self):
+        bad = json.dumps({"phases": [{"name": "arrival", "segments": []}]})
+        with (
+            patch("apps.core.compose.requests.post", return_value=self._resp(bad)),
+            self.assertRaises(compose.ComposeError),
+        ):
+            compose.author_manifest({})
+
+    @override_settings(OPENROUTER_API_KEY="")
+    def test_missing_key_raises(self):
+        with self.assertRaises(compose.ComposeError):
+            compose.author_manifest({})
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 8. Compose — signals, consumer view, task, service orchestration (DB)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class GatherSignalsTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Gather", telegram_chat_id=900500)
+
+    def test_includes_profile_context_and_last_theme(self):
+        from apps.core.models import CoreProfile
+
+        CoreProfile.objects.create(tenant=self.tenant, additional_context="please help me wind down at night")
+        MeditationSession.objects.create(
+            tenant=self.tenant, date=date.today(), status=MeditationStatus.READY, theme="letting go of work"
+        )
+        sig = services.gather_meditation_signals(self.tenant)
+        self.assertEqual(sig["tenant_id"], str(self.tenant.id))
+        self.assertIn("wind down", sig["additional_context"])
+        self.assertIn("letting go", sig["last_meditation_theme"])
+
+
+class CoreComposeViewTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Compose View", telegram_chat_id=900600)
+        self.tenant.core_enabled = True
+        self.tenant.save(update_fields=["core_enabled"])
+        self.client = APIClient()
+        token = RefreshToken.for_user(self.tenant.user).access_token
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+    def test_compose_creates_pending_and_enqueues(self):
+        with patch("apps.cron.publish.publish_task") as mock_pub:
+            resp = self.client.post("/api/v1/core/compose/")
+        self.assertEqual(resp.status_code, 201)
+        sessions = MeditationSession.objects.filter(tenant=self.tenant)
+        self.assertEqual(sessions.count(), 1)
+        self.assertEqual(sessions.first().status, MeditationStatus.PENDING)
+        mock_pub.assert_called_once()
+        self.assertEqual(mock_pub.call_args.args[0], "compose_meditation")
+        self.assertEqual(mock_pub.call_args.args[1], str(sessions.first().id))
+
+    def test_compose_dedups_in_flight(self):
+        MeditationSession.objects.create(tenant=self.tenant, date=date.today(), status=MeditationStatus.RENDERING)
+        with patch("apps.cron.publish.publish_task") as mock_pub:
+            resp = self.client.post("/api/v1/core/compose/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(MeditationSession.objects.filter(tenant=self.tenant).count(), 1)  # no new row
+        mock_pub.assert_not_called()
+
+    def test_compose_requires_core_enabled(self):
+        self.tenant.core_enabled = False
+        self.tenant.save(update_fields=["core_enabled"])
+        resp = self.client.post("/api/v1/core/compose/")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_compose_requires_auth(self):
+        resp = APIClient().post("/api/v1/core/compose/")
+        self.assertEqual(resp.status_code, 401)
+
+
+class ComposeMeditationTaskTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Compose Task", telegram_chat_id=900700)
+
+    def _session(self, status=MeditationStatus.PENDING):
+        return MeditationSession.objects.create(tenant=self.tenant, date=date.today(), status=status)
+
+    def test_pending_dispatches(self):
+        from apps.core import tasks
+
+        session = self._session(MeditationStatus.PENDING)
+        with patch.object(services, "compose_meditation") as mock_compose:
+            tasks.compose_meditation_task(str(session.id))
+        mock_compose.assert_called_once()
+
+    def test_non_pending_skipped(self):
+        from apps.core import tasks
+
+        session = self._session(MeditationStatus.READY)
+        with patch.object(services, "compose_meditation") as mock_compose:
+            tasks.compose_meditation_task(str(session.id))
+        mock_compose.assert_not_called()
+
+    def test_missing_session_clean(self):
+        from apps.core import tasks
+
+        with patch.object(services, "compose_meditation") as mock_compose:
+            tasks.compose_meditation_task(str(uuid4()))
+        mock_compose.assert_not_called()
+
+
+class ComposeMeditationServiceTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Compose Svc", telegram_chat_id=900800)
+
+    def _session(self):
+        return MeditationSession.objects.create(tenant=self.tenant, date=date.today(), status=MeditationStatus.PENDING)
+
+    def test_authors_saves_manifest_then_renders(self):
+        session = self._session()
+        manifest = _valid_manifest()
+        with (
+            patch.object(compose, "author_manifest", return_value=manifest) as mock_author,
+            patch.object(services, "render_meditation") as mock_render,
+        ):
+            services.compose_meditation(session)
+        mock_author.assert_called_once()
+        mock_render.assert_called_once()
+        session.refresh_from_db()
+        self.assertTrue(session.manifest.get("phases"))
+        self.assertEqual(session.title, manifest["title"])
+
+    def test_compose_error_marks_failed_without_rendering(self):
+        session = self._session()
+        with (
+            patch.object(compose, "author_manifest", side_effect=compose.ComposeError("refused")),
+            patch.object(services, "render_meditation") as mock_render,
+        ):
+            services.compose_meditation(session)
+        mock_render.assert_not_called()
+        session.refresh_from_db()
+        self.assertEqual(session.status, MeditationStatus.FAILED)
+        self.assertIn("compose_error", session.error)

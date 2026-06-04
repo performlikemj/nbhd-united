@@ -17,8 +17,8 @@ from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core import render
-from apps.core.models import MeditationSession, MeditationStatus
+from apps.core import compose, render
+from apps.core.models import CoreProfile, MeditationSession, MeditationStatus
 from apps.orchestrator.azure_client import upload_workspace_file_binary
 from apps.tenants.models import Tenant
 
@@ -32,15 +32,60 @@ _READY_JOB_NAME = "_core:ready"
 
 
 def gather_meditation_signals(tenant: Tenant) -> dict:
-    """Raw signals the assistant draws on to compose today's meditation.
+    """Raw, consented signals the LLM draws on to compose today's meditation.
 
-    A later phase enriches this with insights ``yesterdays_signals``, journal
-    goals / open tasks / recent daily-note themes, and fuel/finance baselines.
-    Returns raw evidence only — the LLM (not a backend formula) decides tone and
-    content. Consumed by the OpenClaw ``nbhd-core-tools`` plugin (separate repo),
-    so it stays a thin stub until that plugin defines the exact contract.
+    Phase 1 = in-app, user-consented signals only: the user's own
+    ``CoreProfile.additional_context`` (which they typed for exactly this) and the
+    last meditation's theme (to vary from). Richer journal/insights/fuel/finance
+    signals are a deliberate follow-up — they'd add a new journal→OpenRouter egress
+    that needs a PII-egress sign-off first. Returns RAW evidence; the LLM
+    (``apps.core.compose``), not a backend formula, makes the judgment.
     """
-    return {"tenant_id": str(tenant.id)}
+    signals: dict = {"tenant_id": str(tenant.id)}
+    try:
+        profile = CoreProfile.objects.filter(tenant=tenant).first()
+        if profile and profile.additional_context.strip():
+            signals["additional_context"] = profile.additional_context.strip()[:800]
+    except Exception:
+        logger.debug("gather_meditation_signals: profile read failed", exc_info=True)
+    try:
+        last = (
+            MeditationSession.objects.filter(tenant=tenant, status=MeditationStatus.READY)
+            .order_by("-date", "-created_at")
+            .first()
+        )
+        if last and (last.theme or "").strip():
+            signals["last_meditation_theme"] = last.theme.strip()[:200]
+    except Exception:
+        logger.debug("gather_meditation_signals: last-meditation read failed", exc_info=True)
+    return signals
+
+
+def compose_meditation(session: MeditationSession) -> None:
+    """Author a pending session's manifest via the LLM, then render it.
+
+    The web orb's compose flow: gather signals → LLM authors the manifest
+    (judgment) → persist it → ``render_meditation`` (deterministic execution).
+    Authoring failure is terminal for this session (a retry won't help a refusal /
+    invalid manifest); the manifest save uses the reconnect-safe path because the
+    LLM call is itself a multi-second no-DB gap.
+    """
+    sid = str(session.id)
+    try:
+        signals = gather_meditation_signals(session.tenant)
+        manifest = compose.author_manifest(signals, voice=session.voice)
+    except compose.ComposeError as exc:
+        logger.warning("compose_meditation: session %s authoring failed: %s", sid[:8], str(exc)[:160])
+        _fail(session, f"compose_error: {exc}")
+        return
+
+    session.manifest = manifest
+    session.title = str(manifest.get("title", ""))[:160]
+    session.theme = str(manifest.get("theme", ""))
+    _save_session(session, ["manifest", "title", "theme", "updated_at"])
+
+    # Render it (claims PENDING→RENDERING, validates, renders, persists, notifies).
+    render_meditation(session)
 
 
 def render_meditation(session: MeditationSession) -> None:
