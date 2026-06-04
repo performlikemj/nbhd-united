@@ -32,6 +32,8 @@ class GroundingReport:
     topic_in_envelope: bool  # topic surfaces in the always-loaded USER.md envelope
     term_in_envelope: dict[str, bool]  # per term: present in the always-loaded envelope
     term_reachable: dict[str, bool]  # per term: in envelope OR any reachable doc's markdown
+    term_in_project: dict[str, bool]  # per term: present in a reachable kind='project' doc (canonical target)
+    grounded_in_project: bool  # every term in a project doc — catches misfiles to daily/other kinds
     reachable_docs: list[dict]  # docs the topic surfaces (kind/slug/updated_at/rank)
     newest_source: datetime | None
     envelope_error: str | None = None
@@ -86,16 +88,25 @@ def probe_grounding(tenant, topic: str, expect_terms: list[str] | None = None) -
 
     reachable_blob = "\n".join((d.markdown or "") for d in docs).lower()
 
+    # Canonical-target check: is the substance in a PROJECT doc specifically?
+    # A status update misfiled to a daily doc is still "reachable" (journal
+    # search finds it) but leaves the canonical project doc stale — this
+    # dimension catches that misfile.
+    project_blob = "\n".join((d.markdown or "") for d in docs if d.kind == "project").lower()
+
     term_in_envelope = {t: (t.lower() in envelope_l) for t in terms}
     term_reachable = {t: (t.lower() in envelope_l or t.lower() in reachable_blob) for t in terms}
+    term_in_project = {t: (t.lower() in project_blob) for t in terms}
 
     return GroundingReport(
         topic=topic,
         expect_terms=terms,
         grounded=(all(term_reachable.values()) if terms else bool(docs)),
+        grounded_in_project=(all(term_in_project.values()) if terms else any(d.kind == "project" for d in docs)),
         topic_in_envelope=(topic.lower() in envelope_l),
         term_in_envelope=term_in_envelope,
         term_reachable=term_reachable,
+        term_in_project=term_in_project,
         reachable_docs=[
             {
                 "kind": d.kind,
