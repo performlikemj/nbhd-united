@@ -194,6 +194,22 @@ class RenderMathTests(UnitTestCase):
     def test_estimate_speech_seconds_floor(self):
         self.assertEqual(render.estimate_speech_seconds("hi"), 1.2)
 
+    def test_is_rate_limit(self):
+        self.assertTrue(render._is_rate_limit("429 RESOURCE_EXHAUSTED ..."))
+        self.assertTrue(render._is_rate_limit("google.genai.errors.ClientError: RESOURCE_EXHAUSTED"))
+        self.assertFalse(render._is_rate_limit("500 Internal Server Error"))
+        self.assertFalse(render._is_rate_limit("output too short"))
+
+    def test_rate_limit_delay_prefers_server_retry_delay(self):
+        # retryDelay honored (+1s slack), capped at the backoff ceiling.
+        self.assertEqual(render._rate_limit_delay("...'retryDelay': '34s'...", 1), 35.0)
+        self.assertEqual(render._rate_limit_delay("'retryDelay': '120s'", 1), render.TTS_RATE_LIMIT_BACKOFF_CAP_S)
+
+    def test_rate_limit_delay_falls_back_to_exponential(self):
+        self.assertEqual(render._rate_limit_delay("429 no delay", 1), 5.0)  # 5 * 2^0
+        self.assertEqual(render._rate_limit_delay("429 no delay", 3), 20.0)  # 5 * 2^2
+        self.assertEqual(render._rate_limit_delay("429 no delay", 9), render.TTS_RATE_LIMIT_BACKOFF_CAP_S)  # capped
+
 
 # ═════════════════════════════════════════════════════════════════════
 # 3. render_meditation orchestration (engine + I/O mocked)
@@ -301,13 +317,51 @@ class RenderMeditationOrchestrationTests(TestCase):
         self.assertEqual(session.status, MeditationStatus.FAILED)
         self.assertIn("render_error", session.error)
 
-    def test_quota_marks_failed_without_reraise(self):
+    def test_mostly_rate_limited_marks_failed_without_reraise(self):
+        # Most segments rate-limited out → fail clearly (don't ship near-silent),
+        # don't upload, don't notify, don't reraise.
         session = self._session()
-        with patch.object(render, "render_manifest_to_audio", side_effect=render.QuotaExceeded("429")):
+        throttled = render.RenderResult(
+            mp3_bytes=b"x",
+            ogg_bytes=None,
+            duration_ms=600_000,
+            guidance_text="",
+            speech_count=6,
+            failed_count=5,
+            quota_failed_count=5,
+        )
+        with (
+            patch.object(render, "render_manifest_to_audio", return_value=throttled),
+            patch.object(services, "upload_workspace_file_binary") as mock_upload,
+            patch.object(services, "notify_meditation_ready") as mock_notify,
+        ):
             services.render_meditation(session)  # must NOT raise
         session.refresh_from_db()
         self.assertEqual(session.status, MeditationStatus.FAILED)
         self.assertIn("tts_quota", session.error)
+        mock_upload.assert_not_called()
+        mock_notify.assert_not_called()
+
+    def test_minority_rate_limited_still_ready(self):
+        # A few throttled segments (placeholders) is acceptable — still ships ready.
+        session = self._session()
+        result = render.RenderResult(
+            mp3_bytes=b"ID3x",
+            ogg_bytes=b"OggSx",
+            duration_ms=600_000,
+            guidance_text="g",
+            speech_count=6,
+            failed_count=1,
+            quota_failed_count=1,
+        )
+        with (
+            patch.object(render, "render_manifest_to_audio", return_value=result),
+            patch.object(services, "upload_workspace_file_binary"),
+            patch.object(services, "notify_meditation_ready"),
+        ):
+            services.render_meditation(session)
+        session.refresh_from_db()
+        self.assertEqual(session.status, MeditationStatus.READY)
 
     def test_failed_session_can_be_reclaimed(self):
         session = self._session(status=MeditationStatus.FAILED)

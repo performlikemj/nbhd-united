@@ -118,14 +118,26 @@ def render_meditation(session: MeditationSession) -> None:
     except render.ManifestError as exc:
         _fail(session, f"manifest: {exc}")
         return
-    except render.QuotaExceeded as exc:
-        logger.warning("render_meditation: session %s aborted on TTS quota", sid[:8])
-        _fail(session, f"tts_quota: {exc}")
-        return
     except Exception as exc:  # noqa: BLE001 — transient: mark failed, then re-raise for QStash retry
         logger.exception("render_meditation: session %s render failed (will retry)", sid[:8])
         _fail(session, f"render_error: {exc}")
         raise
+
+    # If most narration was rate-limited away (low Gemini tier per-minute cap),
+    # don't ship a near-silent file — fail clearly so the cause is actionable.
+    if result.speech_count and result.quota_failed_count > result.speech_count // 2:
+        logger.warning(
+            "render_meditation: session %s mostly rate-limited (%d/%d segments) — failing",
+            sid[:8],
+            result.quota_failed_count,
+            result.speech_count,
+        )
+        _fail(
+            session,
+            f"tts_quota: {result.quota_failed_count}/{result.speech_count} segments rate-limited "
+            "(raise the Gemini tier, lower CORE_RENDER_CONCURRENCY, or use a leaner manifest)",
+        )
+        return
 
     # ---- persist audio to the per-tenant share, then flip to ready ----
     # A failure here (transient Azure SMB throttle/timeout, or the final save)

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import re
 import subprocess
 import tempfile
 import time
@@ -57,11 +58,20 @@ FLEX_CEIL = 60.0  # ...nor balloons past this (slack splits across a phase's fle
 # ~6s backoff ≈ 141s) stays well under the ~300s synchronous-handler budget.
 TTS_TIMEOUT_MS = 45_000
 TTS_ATTEMPTS = 3
+# Rate-limit (429) handling: on a low Gemini tier the per-minute cap throttles
+# bursts. Treat 429 as TRANSIENT — back off (respecting the server's retryDelay
+# when present) and retry, so the render paces itself under the cap instead of
+# aborting. Only after exhausting these does the segment fall back to a silence
+# placeholder (non-fatal); a render where most segments were throttled is failed
+# by the caller rather than shipped near-silent.
+TTS_RATE_LIMIT_RETRIES = 6
+TTS_RATE_LIMIT_BACKOFF_CAP_S = 40.0
 # Render-wide soft deadline: once exceeded, no NEW TTS call starts (the segment
-# degrades to a silence placeholder), so a TTS outage can't push the whole
-# render past the handler budget. In-flight calls still finish within
-# TTS_TIMEOUT_MS. Tunable; the common render finishes in ~1-3 min.
-DEFAULT_RENDER_DEADLINE_S = 210.0
+# degrades to a silence placeholder), so a TTS outage / sustained throttle can't
+# push the whole render past the handler budget. In-flight calls still finish
+# within TTS_TIMEOUT_MS; concat/transcode adds ~10-20s — 240s keeps the worst
+# case (~240 + 45 + ~20) under the ~300s gunicorn budget.
+DEFAULT_RENDER_DEADLINE_S = 240.0
 DEFAULT_MODEL = "gemini-2.5-flash-preview-tts"  # cheapest + accessible on low tiers (~$0.19/render)
 DEFAULT_VOICE = "Achernar"  # calm; Aoede ("breezy") is the other candidate
 
@@ -376,13 +386,37 @@ def _extract_audio(resp) -> bytes | None:
     return getattr(getattr(parts[0], "inline_data", None), "data", None)
 
 
+_RETRY_DELAY_RE = re.compile(r"retryDelay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)\s*s", re.IGNORECASE)
+
+
+def _is_rate_limit(err: str) -> bool:
+    return "RESOURCE_EXHAUSTED" in err or "429" in err
+
+
+def _rate_limit_delay(err: str, attempt: int) -> float:
+    """Seconds to wait before retrying a 429. Prefer the server's ``retryDelay``
+    (e.g. ``'retryDelay': '34s'``); otherwise exponential backoff (5,10,20,40…)
+    capped at ``TTS_RATE_LIMIT_BACKOFF_CAP_S``. ``attempt`` is 1-based."""
+    match = _RETRY_DELAY_RE.search(err)
+    if match:
+        try:
+            return min(TTS_RATE_LIMIT_BACKOFF_CAP_S, max(1.0, float(match.group(1)) + 1.0))
+        except ValueError:
+            pass
+    return min(TTS_RATE_LIMIT_BACKOFF_CAP_S, 5.0 * (2 ** (attempt - 1)))
+
+
 def render_gemini_segment(
     client, text: str, voice: str, model: str, style: str, dst: Path, *, attempts: int = TTS_ATTEMPTS
 ) -> None:
     """Render one narration segment to ``dst`` (24k/mono wav with join fades).
 
-    Retries on blank / short output; backs off on transient errors; raises
-    ``QuotaExceeded`` on 429 (no point retrying within one render).
+    Retries on blank / short output; backs off on transient errors. On 429 it
+    backs off (respecting the server's ``retryDelay``) and retries up to
+    ``TTS_RATE_LIMIT_RETRIES`` times so a low-tier per-minute cap is paced rather
+    than fatal; only after exhausting those does it raise ``QuotaExceeded`` — a
+    PER-SEGMENT signal the caller turns into a non-fatal placeholder (the whole
+    render is failed only if most segments were throttled).
     """
     from google.genai import types
 
@@ -393,7 +427,9 @@ def render_gemini_segment(
     )
     expected = estimate_speech_seconds(text)
     last_err = "unknown"
-    for attempt in range(1, attempts + 1):
+    transient_left = attempts
+    rate_limit_left = TTS_RATE_LIMIT_RETRIES
+    while transient_left > 0:
         try:
             resp = client.models.generate_content(
                 model=model,
@@ -425,12 +461,26 @@ def render_gemini_segment(
             raw.unlink(missing_ok=True)
             return
         except Exception as exc:  # noqa: BLE001 — transient TTS errors: backoff + retry
-            last_err = str(exc)[:160]
-            if "RESOURCE_EXHAUSTED" in last_err or "429" in last_err:
-                raise QuotaExceeded(last_err) from exc
-            if attempt < attempts:
-                time.sleep(min(2**attempt, 10))
-    raise RuntimeError(f"failed after {attempts} attempts: {last_err}")
+            last_err = str(exc)[:200]
+            if _is_rate_limit(last_err):
+                # 429 rate limit — back off (NOT counted against the transient
+                # budget) so a low-tier per-minute cap is paced, not aborted.
+                rate_limit_left -= 1
+                if rate_limit_left <= 0:
+                    raise QuotaExceeded(last_err) from exc
+                delay = _rate_limit_delay(last_err, TTS_RATE_LIMIT_RETRIES - rate_limit_left)
+                logger.info(
+                    "Core render: 429 rate-limited — backing off %.0fs (%d rate-limit retries left)",
+                    delay,
+                    rate_limit_left,
+                )
+                time.sleep(delay)
+                continue
+            transient_left -= 1
+            if transient_left <= 0:
+                break
+            time.sleep(min(2 ** (attempts - transient_left), 10))
+    raise RuntimeError(f"failed after retries: {last_err}")
 
 
 def _concat_and_master(wavs: list[Path], workdir: Path, out_mp3: Path, out_ogg: Path | None) -> None:
@@ -458,7 +508,8 @@ class RenderResult:
     duration_ms: int
     guidance_text: str
     speech_count: int
-    failed_count: int  # segments that fell back to a silence placeholder
+    failed_count: int  # segments that fell back to a silence placeholder (any cause)
+    quota_failed_count: int = 0  # subset of failed_count that exhausted 429 backoff retries
 
 
 def render_manifest_to_audio(
@@ -476,14 +527,17 @@ def render_manifest_to_audio(
 
     Speech segments are independent (silence is inserted by ffmpeg between them),
     so they render concurrently — bounded by ``concurrency`` for preview rate
-    limits. A segment that fails every retry — or that would START a new TTS call
-    after ``deadline_seconds`` has elapsed — falls back to a 1.2s silence
-    placeholder (non-fatal), so neither a flaky line nor a TTS outage can sink or
-    overrun the render. Quota (429) aborts the whole render.
+    limits. A segment that fails every retry — that would START a new TTS call
+    after ``deadline_seconds`` has elapsed, or that exhausts its 429 backoff
+    retries — falls back to a 1.2s silence placeholder (non-fatal), so neither a
+    flaky line, a TTS outage, nor a low-tier rate cap can sink or overrun the
+    render. ``RenderResult.quota_failed_count`` reports how many were rate-limited
+    out so the caller can fail a mostly-throttled render instead of shipping it
+    near-silent.
 
-    Returns mp3 (+ optional ogg) bytes, the measured duration, and the flattened
-    guidance text. Raises ``ManifestError`` for an invalid manifest or a missing
-    key, ``QuotaExceeded`` on 429.
+    Returns mp3 (+ optional ogg) bytes, the measured duration, the flattened
+    guidance text, and failure counts. Raises ``ManifestError`` for an invalid
+    manifest or a missing key.
     """
     errors = validate_manifest(manifest)
     if errors:
@@ -502,6 +556,7 @@ def render_manifest_to_audio(
         speech_paths: dict[int, Path] = {}
         speech_dur: dict[int, float] = {}
         failed = 0
+        quota_failed = 0
         start = time.monotonic()
 
         def _measure(wav: Path, *, fallback: float) -> float:
@@ -513,10 +568,11 @@ def render_manifest_to_audio(
                 logger.warning("Core render: probe failed for %s; using %.1fs estimate", wav.name, fallback)
                 return fallback
 
-        def render_one(index: int) -> tuple[int, Path, float, bool]:
+        def render_one(index: int) -> tuple[int, Path, float, bool, bool]:
             seg = plan[index]
             wav = workdir / f"seg_{index:03d}_{seg.phase}_speech.wav"
             seg_style = "; ".join(part for part in (style, seg.tone) if part)
+            quota = False
             try:
                 # Render-wide deadline: don't START a new TTS call past the budget
                 # (an in-flight call is still bounded by TTS_TIMEOUT_MS).
@@ -527,9 +583,15 @@ def render_manifest_to_audio(
                 else:
                     render_gemini_segment(client, seg.text, voice, model, seg_style, wav)
                 # Measure inside the try so a probe failure degrades, never aborts.
-                return index, wav, _measure(wav, fallback=estimate_speech_seconds(seg.text)), True
+                return index, wav, _measure(wav, fallback=estimate_speech_seconds(seg.text)), True, False
             except QuotaExceeded:
-                raise
+                # Segment exhausted its 429 backoff retries — non-fatal placeholder.
+                # The whole render is failed by the caller only if MOST segments
+                # were throttled (else a few rate-limited lines just go silent).
+                logger.warning(
+                    "Core render: segment %d (%s) rate-limited out -> 1.2s silence placeholder", index, seg.phase
+                )
+                quota = True
             except Exception as exc:  # noqa: BLE001 — non-fatal: placeholder + carry on
                 logger.warning(
                     "Core render: segment %d (%s) failed (%s) -> 1.2s silence placeholder",
@@ -541,22 +603,19 @@ def render_manifest_to_audio(
             # raises, ffmpeg is fundamentally broken — let it propagate so the
             # session is marked FAILED and QStash retries (a transient infra fault).
             _make_silence(1.2, wav)
-            return index, wav, _measure(wav, fallback=1.2), False
+            return index, wav, _measure(wav, fallback=1.2), False, quota
 
         if speech_indexes:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
                 futures = {pool.submit(render_one, i): i for i in speech_indexes}
-                try:
-                    for future in concurrent.futures.as_completed(futures):
-                        index, wav, dur, ok = future.result()
-                        speech_paths[index] = wav
-                        speech_dur[index] = dur
-                        if not ok:
-                            failed += 1
-                except QuotaExceeded:
-                    for future in futures:
-                        future.cancel()
-                    raise
+                for future in concurrent.futures.as_completed(futures):
+                    index, wav, dur, ok, quota = future.result()
+                    speech_paths[index] = wav
+                    speech_dur[index] = dur
+                    if not ok:
+                        failed += 1
+                    if quota:
+                        quota_failed += 1
 
         # ---- flex reconciliation per phase (split slack across flex points) ----
         phase_speech: dict[str, float] = defaultdict(float)
@@ -602,4 +661,5 @@ def render_manifest_to_audio(
         guidance_text=flatten_guidance_text(manifest),
         speech_count=len(speech_indexes),
         failed_count=failed,
+        quota_failed_count=quota_failed,
     )
