@@ -19,6 +19,7 @@ import {
   IconHorizons,
   IconGravity,
   IconFuel,
+  IconCore,
   IconSettings,
   IconLogOut,
 } from "@/components/icons/constellation";
@@ -31,17 +32,29 @@ interface NavItem {
   icon: React.ComponentType<{ className?: string }>;
 }
 
-function useNavItems(tenant?: { finance_enabled?: boolean; fuel_enabled?: boolean } | null): NavItem[] {
+function useNavItems(
+  tenant?: {
+    finance_enabled?: boolean;
+    gravity_available?: boolean;
+    fuel_enabled?: boolean;
+    core_enabled?: boolean;
+  } | null,
+): NavItem[] {
   const items: NavItem[] = [
     { href: "/journal", label: "Journal", icon: IconJournal },
     { href: "/constellation", label: "Constellation", icon: IconConstellation },
     { href: "/horizons", label: "Horizons", icon: IconHorizons },
   ];
-  if (tenant?.finance_enabled) {
+  // Gravity is paused platform-wide for privacy unless gravity_available is
+  // true; hide the tab even for tenants who previously enabled it.
+  if (tenant?.finance_enabled && tenant?.gravity_available) {
     items.push({ href: "/finance", label: "Gravity", icon: IconGravity });
   }
   if (tenant?.fuel_enabled) {
     items.push({ href: "/fuel", label: "Fuel", icon: IconFuel });
+  }
+  if (tenant?.core_enabled) {
+    items.push({ href: "/core", label: "Core", icon: IconCore });
   }
   items.push({ href: "/settings", label: "Settings", icon: IconSettings });
   return items;
@@ -266,9 +279,12 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   };
 
-  // Full-bleed pages — no shell chrome
+  // Full-bleed pages — no shell chrome. The playable galaxy is a fixed-overlay,
+  // full-screen experience with its own Exit affordance; it must own the viewport
+  // on mobile too, or the sticky header + mobile tab bar paint over the canvas and
+  // steal touch at the top/bottom edges (making portrait feel unplayable).
   const fullBleedPages = ["/", "/signup", "/login", "/onboarding"];
-  if (fullBleedPages.includes(pathname)) {
+  if (fullBleedPages.includes(pathname) || pathname === "/constellation/play") {
     return (
       <ErrorBoundary>
         <a href="#main-content" className="skip-link">Skip to main content</a>

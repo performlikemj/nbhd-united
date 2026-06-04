@@ -11,16 +11,18 @@
   },
   "dependencies": {
     "@tailwindcss/typography": "^0.5.19",
-    "@tanstack/react-query": "^5.100.14",
-    "@tiptap/extension-list": "^3.23.5",
-    "@tiptap/extension-placeholder": "^3.23.6",
-    "@tiptap/pm": "^3.23.6",
-    "@tiptap/react": "^3.23.6",
-    "@tiptap/starter-kit": "^3.23.6",
+    "@tanstack/react-query": "^5.101.0",
+    "@tiptap/core": "^3.25.0",
+    "@tiptap/extension-list": "^3.25.0",
+    "@tiptap/extension-placeholder": "^3.25.0",
+    "@tiptap/pm": "^3.25.0",
+    "@tiptap/react": "^3.25.0",
+    "@tiptap/starter-kit": "^3.25.0",
     "clsx": "^2.1.1",
-    "next": "^16.2.6",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
+    "next": "^16.2.7",
+    "phaser": "^4.1.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "react-markdown": "^10.1.0",
     "recharts": "^3.8.0",
     "remark-breaks": "^4.0.0",
@@ -29,14 +31,17 @@
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
-    "@types/react": "^19.2.15",
+    "@types/react": "^19.2.16",
     "@types/react-dom": "^19.2.3",
     "autoprefixer": "^10.5.0",
     "eslint": "^9.39.4",
-    "eslint-config-next": "^16.2.6",
+    "eslint-config-next": "^16.2.7",
     "postcss": "^8.5.15",
     "sharp": "^0.34.5",
     "tailwindcss": "^3.4.14",
     "typescript": "^5.6.3"
+  },
+  "overrides": {
+    "@tiptap/core": "^3.25.0"
   }
 }

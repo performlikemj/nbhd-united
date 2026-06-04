@@ -107,6 +107,9 @@ import {
   deleteWorkout,
   skipWorkout,
   completeWorkout,
+  acquireEditLock,
+  fetchFuelVersion,
+  releaseEditLock,
   swapWorkouts,
   fetchFuelProgress,
   fetchBodyWeight,
@@ -114,6 +117,7 @@ import {
   deleteBodyWeight,
   updateBodyWeight,
   updateFuelSettings,
+  updateCoreSettings,
   fetchFuelProfile,
   updateFuelProfile,
   fetchWorkoutTemplates,
@@ -140,9 +144,11 @@ import {
   connectByoCredential,
   disconnectByoCredential,
   fetchConstellation,
+  fetchGalaxy,
   fetchPendingLessons,
   approveLesson,
   dismissLesson,
+  deleteLesson,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -193,6 +199,15 @@ export function useDashboardQuery() {
     queryKey: ["dashboard"],
     queryFn: fetchDashboard,
     staleTime: 60_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useGalaxyQuery() {
+  return useQuery({
+    queryKey: ["galaxy"],
+    queryFn: fetchGalaxy,
+    staleTime: 5 * 60_000,
     enabled: isLoggedIn(),
   });
 }
@@ -1187,11 +1202,12 @@ export function useCreateWorkoutMutation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: createWorkout,
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
-      void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
-      void qc.invalidateQueries({ queryKey: ["fuel-workout-count"] });
-    },
+    // Fan out to every fuel list — including ["fuel-schedule"]. Hand-rolling
+    // the list here previously omitted the schedule window, so a new workout
+    // showed on the Calendar instantly but lagged on the Schedule tab until
+    // its staleTime expired. Route through the shared helper so create stays
+    // in lockstep with delete/skip/complete (which already do).
+    onSuccess: () => invalidateFuelLists(qc),
   });
 }
 
@@ -1200,12 +1216,10 @@ export function useUpdateWorkoutMutation() {
   return useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<import("@/lib/types").FuelWorkout> }) =>
       updateWorkout(id, data),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
-      void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
-      void qc.invalidateQueries({ queryKey: ["fuel-workout"] });
-      void qc.invalidateQueries({ queryKey: ["fuel-progress"] });
-    },
+    // Was missing ["fuel-schedule"] (+ ["fuel-workout-count"]) on success, so
+    // an edit refreshed the Calendar but left the Schedule card showing
+    // pre-edit values. invalidateFuelLists covers all six keys.
+    onSuccess: () => invalidateFuelLists(qc),
     onError: (err) => {
       if (isNotFound(err)) invalidateFuelLists(qc);
     },
@@ -1297,6 +1311,28 @@ export function useSwapWorkoutsMutation() {
   });
 }
 
+export function useFuelVersionQuery(opts?: { refetchInterval?: number; enabled?: boolean }) {
+  return useQuery({
+    queryKey: ["fuel-version"],
+    queryFn: fetchFuelVersion,
+    staleTime: 0,
+    refetchInterval: opts?.refetchInterval ?? 30_000,
+    enabled: opts?.enabled !== false && isLoggedIn(),
+  });
+}
+
+export function useAcquireEditLockMutation() {
+  return useMutation({
+    mutationFn: (workoutId: string) => acquireEditLock(workoutId),
+  });
+}
+
+export function useReleaseEditLockMutation() {
+  return useMutation({
+    mutationFn: (workoutId: string) => releaseEditLock(workoutId),
+  });
+}
+
 export function useFuelProgressQuery(category: string) {
   return useQuery({
     queryKey: ["fuel-progress", category],
@@ -1370,6 +1406,31 @@ export function useUpdateFuelSettingsMutation() {
   });
 }
 
+// -- Core (Mindfulness) --
+
+export function useUpdateCoreSettingsMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateCoreSettings,
+    onMutate: async (newData) => {
+      await queryClient.cancelQueries({ queryKey: ["tenant"] });
+      const previous = queryClient.getQueryData<Tenant>(["tenant"]);
+      queryClient.setQueryData<Tenant>(["tenant"], (old) =>
+        old ? { ...old, ...newData } : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _newData, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["tenant"], context.previous);
+      }
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["tenant"] });
+    },
+  });
+}
+
 export function useFuelProfileQuery() {
   const { data: tenant } = useTenantQuery();
   return useQuery({
@@ -1424,11 +1485,9 @@ export function useDuplicateWorkoutMutation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: duplicateWorkout,
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
-      void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
-      void qc.invalidateQueries({ queryKey: ["fuel-workout-count"] });
-    },
+    // Same fix as create/update: include ["fuel-schedule"] so a duplicated
+    // session appears on the Schedule tab immediately, not just the Calendar.
+    onSuccess: () => invalidateFuelLists(qc),
   });
 }
 
@@ -1694,6 +1753,17 @@ export function useDismissLessonMutation() {
   return useMutation({
     mutationFn: dismissLesson,
     onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["pending-lessons"] });
+    },
+  });
+}
+
+export function useDeleteLessonMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteLesson,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["constellation"] });
       void qc.invalidateQueries({ queryKey: ["pending-lessons"] });
     },
   });

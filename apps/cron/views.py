@@ -143,6 +143,10 @@ TASK_MAP = {
     "schedule_fuel_welcome": "apps.fuel.tasks.schedule_fuel_welcome_task",
     # Gravity (finance) welcome cron — delayed after finance toggle
     "schedule_finance_welcome": "apps.finance.tasks.schedule_finance_welcome_task",
+    # Core (mindfulness) welcome cron + on-demand meditation render
+    "schedule_core_welcome": "apps.core.tasks.schedule_core_welcome_task",
+    "render_meditation": "apps.core.tasks.render_meditation_task",
+    "compose_meditation": "apps.core.tasks.compose_meditation_task",
     # Fuel session-scheduling cutover — derived from Workout.scheduled_at
     "regenerate_fuel_crons": "apps.orchestrator.tasks.regenerate_fuel_crons_task",
     "reconcile_fuel_crons": "apps.orchestrator.tasks.reconcile_fuel_crons_task",
@@ -850,7 +854,7 @@ def backfill_welcomes(request):
             from apps.fuel.views import _schedule_fuel_welcome
 
             _tally(_schedule_fuel_welcome, tenant, per_feature["fuel"], "fuel")
-        if tenant.finance_enabled:
+        if tenant.finance_active:
             from apps.finance.views import _schedule_finance_welcome
 
             _tally(_schedule_finance_welcome, tenant, per_feature["finance"], "finance")
@@ -1807,50 +1811,3 @@ def atomic_bump_status(request):
         for row in rows
     ]
     return JsonResponse({"tenants": tenants, "count": len(tenants)})
-
-
-@csrf_exempt
-def debug_gateway_tool_proxy(request):
-    """Operator-only proxy to invoke any gateway tool on a chosen tenant.
-
-    POST body: {"tenant_id": "<uuid>", "tool": "<name>", "action": "<add|list|...>", "args": {...}}
-    Returns the raw gateway response (or error). Used for empirical testing
-    of cron.add payload shapes after the 2026-05-28 reminder-tool failure.
-    Auth: X-Deploy-Secret.
-    """
-    if request.method != "POST":
-        return JsonResponse({"error": "POST required"}, status=405)
-
-    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
-    provided = request.headers.get("X-Deploy-Secret", "")
-    if not deploy_secret or not provided or provided != deploy_secret:
-        return JsonResponse({"error": "Unauthorized"}, status=401)
-
-    try:
-        body = json.loads(request.body or b"{}")
-    except json.JSONDecodeError as exc:
-        return JsonResponse({"error": f"invalid JSON body: {exc}"}, status=400)
-
-    tenant_id = body.get("tenant_id")
-    tool = body.get("tool")
-    action = body.get("action")
-    args = body.get("args", {})
-    if not tenant_id or not tool:
-        return JsonResponse({"error": "tenant_id and tool are required"}, status=400)
-
-    try:
-        tenant = Tenant.objects.get(id=tenant_id)
-    except Tenant.DoesNotExist:
-        return JsonResponse({"error": f"tenant {tenant_id} not found"}, status=404)
-
-    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
-
-    full_tool = f"{tool}.{action}" if action else tool
-    try:
-        result = invoke_gateway_tool(tenant, full_tool, args)
-        return JsonResponse({"ok": True, "tool": full_tool, "result": result})
-    except GatewayError as exc:
-        return JsonResponse(
-            {"ok": False, "tool": full_tool, "error": str(exc), "status_code": exc.status_code},
-            status=200,
-        )

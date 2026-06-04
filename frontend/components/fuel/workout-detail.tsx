@@ -5,8 +5,9 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { SkelBar } from "@/components/ui/skeleton";
 import { getErrorMessage, isNotFoundError } from "@/lib/errors";
+import { clearDraft, loadDraft, saveDraft, type AutosaveEntry } from "@/lib/fuel-draft-autosave";
 import { stashOrphan } from "@/lib/orphan-drafts";
-import { useCompleteWorkoutMutation, useCreateWorkoutTemplateMutation, useDeleteWorkoutMutation, useDuplicateWorkoutMutation, useMeQuery, useUpdateWorkoutMutation, useWorkoutQuery } from "@/lib/queries";
+import { useAcquireEditLockMutation, useCompleteWorkoutMutation, useCreateWorkoutTemplateMutation, useDeleteWorkoutMutation, useDuplicateWorkoutMutation, useFuelVersionQuery, useMeQuery, useReleaseEditLockMutation, useUpdateWorkoutMutation, useWorkoutQuery } from "@/lib/queries";
 import type { FuelWorkout, WorkoutCategory } from "@/lib/types";
 import { CATEGORIES, CATEGORY_IDS } from "./category-meta";
 import {
@@ -18,6 +19,20 @@ import {
   useDistanceUnit,
 } from "./use-distance-unit";
 import { displayToKg, kgToDisplay, useWeightUnit } from "./use-weight-unit";
+
+function formatRelativeFromIso(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "recently";
+  const diff = Date.now() - then;
+  const minutes = Math.round(diff / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
 
 function fmtLongDate(iso: string): string {
   const [y, m, d] = iso.split("-").map(Number);
@@ -202,6 +217,58 @@ function NumericInput({
   );
 }
 
+/** Editable subset of a workout — what the drawer's `draft` mirrors and what
+ *  autosave persists. Keep in sync with the init seed + save() payload. */
+type WorkoutDraft = Pick<
+  FuelWorkout,
+  "activity" | "date" | "status" | "category" | "duration_minutes" | "rpe" | "notes" | "detail_json"
+>;
+
+function serverProjection(w: FuelWorkout): WorkoutDraft {
+  return {
+    activity: w.activity,
+    date: w.date,
+    status: w.status,
+    category: w.category,
+    duration_minutes: w.duration_minutes,
+    rpe: w.rpe,
+    notes: w.notes,
+    detail_json: w.detail_json,
+  };
+}
+
+/** Stable stringification of the editable fields for dirty/equality checks.
+ *  detail_json is compared structurally — both sides derive it from the same
+ *  source object, so key order is preserved and JSON.stringify is reliable. */
+function draftSignature(d: Partial<FuelWorkout>): string {
+  return JSON.stringify({
+    activity: d.activity ?? "",
+    date: d.date ?? "",
+    status: d.status ?? "",
+    category: d.category ?? "",
+    duration_minutes: d.duration_minutes ?? null,
+    rpe: d.rpe ?? null,
+    notes: d.notes ?? "",
+    detail_json: d.detail_json ?? {},
+  });
+}
+
+function sameDraft(a: Partial<FuelWorkout>, b: Partial<FuelWorkout>): boolean {
+  return draftSignature(a) === draftSignature(b);
+}
+
+/** Compact "2 hours ago"-style label for the restore prompt. */
+function fmtAgo(ms: number): string {
+  const secs = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (secs < 60) return "just now";
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
 interface WorkoutDetailProps {
   workoutId: string | null;
   onClose: () => void;
@@ -222,8 +289,22 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
   const deleteMutation = useDeleteWorkoutMutation();
   const duplicateMutation = useDuplicateWorkoutMutation();
   const templateMutation = useCreateWorkoutTemplateMutation();
+  const acquireLock = useAcquireEditLockMutation();
+  const releaseLock = useReleaseEditLockMutation();
+  const fuelVersionQuery = useFuelVersionQuery();
+  const currentFuelVersion = fuelVersionQuery.data?.fuel_version ?? null;
 
   const [editing, setEditing] = useState(false);
+  // Snapshot of the tenant fuel-write counter at the moment we entered
+  // edit mode. If a later poll returns a higher value, the assistant
+  // wrote in the background and we render a refresh pill so the user
+  // can pull the latest state before saving over it.
+  const [editBaselineFuelVersion, setEditBaselineFuelVersion] = useState<number | null>(null);
+  const showStaleEditWarning =
+    editing &&
+    editBaselineFuelVersion !== null &&
+    currentFuelVersion !== null &&
+    currentFuelVersion > editBaselineFuelVersion;
   const [draft, setDraft] = useState<Partial<FuelWorkout>>({});
   const [initialized, setInitialized] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -235,9 +316,29 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
   draftRef.current = draft;
   const stashedRef = useRef(false);
 
+  // Autosaved draft from a previous mid-edit exit, offered for restore.
+  const [recoverable, setRecoverable] = useState<AutosaveEntry<WorkoutDraft> | null>(null);
+
+  // Latest-value refs for the pagehide/unmount autosave flush, which runs
+  // outside React's render flow and would otherwise capture stale state.
+  const editingRef = useRef(editing);
+  editingRef.current = editing;
+  const initializedRef = useRef(initialized);
+  initializedRef.current = initialized;
+  const workoutRef = useRef(workout);
+  workoutRef.current = workout;
+  const recoverableRef = useRef(recoverable);
+  recoverableRef.current = recoverable;
+
   const stashCurrentDraft = (source: "phantom_404" | "mutation_404") => {
     if (!tenantId || stashedRef.current) return;
     const d = draftRef.current;
+    // Preserve the original status so recovery doesn't silently downgrade
+    // a future-dated planned edit into a completed log (fixes the
+    // OrphanRecoveryPanel.saveAsNew("done") regression).
+    const rawStatus = (d.status ?? workout?.status) as string | undefined;
+    const status: "done" | "planned" | undefined =
+      rawStatus === "planned" || rawStatus === "done" ? rawStatus : undefined;
     const stashId = stashOrphan(tenantId, {
       originalWorkoutId: workoutId,
       date: d.date ?? workout?.date ?? new Date().toISOString().slice(0, 10),
@@ -248,6 +349,7 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
       notes: d.notes ?? "",
       detail_json: (d.detail_json ?? {}) as Record<string, unknown>,
       source,
+      status,
     });
     if (stashId) stashedRef.current = true;
   };
@@ -270,19 +372,96 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workoutError, qc]);
 
+  // ── Autosave: persist in-progress edits so navigating away mid-workout
+  // (closing the drawer, a back-swipe, a reload) never drops a logged set.
+  // Debounced write while editing + dirty; clears itself when the draft
+  // matches the server (nothing to recover). Skipped while a restore prompt
+  // is pending so we don't clobber the snapshot we're offering back.
+  useEffect(() => {
+    if (!tenantId || !initialized || !workout || !editing || recoverable) return;
+    if (sameDraft(draft, serverProjection(workout))) {
+      clearDraft(tenantId, workoutId);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      saveDraft<WorkoutDraft>(tenantId, workoutId, draft as WorkoutDraft, workout.updated_at ?? null);
+    }, 800);
+    return () => window.clearTimeout(t);
+  }, [draft, editing, initialized, recoverable, tenantId, workoutId, workout]);
+
+  // Flush the latest draft synchronously when the tab is hidden/closed or the
+  // drawer unmounts — the debounce above may not have fired for the last
+  // keystroke, and pagehide is the only reliable signal on mobile Safari.
+  useEffect(() => {
+    if (!tenantId) return;
+    const flush = () => {
+      if (!editingRef.current || !initializedRef.current || recoverableRef.current) return;
+      const w = workoutRef.current;
+      if (!w) return;
+      if (sameDraft(draftRef.current, serverProjection(w))) return;
+      saveDraft<WorkoutDraft>(tenantId, workoutId, draftRef.current as WorkoutDraft, w.updated_at ?? null);
+    };
+    window.addEventListener("pagehide", flush);
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+      flush();
+    };
+  }, [tenantId, workoutId]);
+
+  // Edit-lock: when the user enters edit mode, acquire a lock on the
+  // workout and heartbeat every 30s. Release on exit / unmount / close.
+  // Runtime PATCHes during the lock window return 409 — see
+  // apps/fuel/runtime_views.py:_edit_locked_response.
+  useEffect(() => {
+    if (!workoutId || !editing) return;
+    // Snapshot the current fuel_version so we can detect background
+    // assistant writes that landed after we opened the drawer.
+    setEditBaselineFuelVersion(currentFuelVersion ?? 0);
+    let cancelled = false;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+    const beat = () => {
+      if (cancelled) return;
+      acquireLock.mutate(workoutId);
+    };
+    beat();
+    intervalId = setInterval(beat, 30_000);
+    return () => {
+      cancelled = true;
+      if (intervalId) clearInterval(intervalId);
+      // Best-effort release. If the network is dead the lock self-expires
+      // after FUEL_EDIT_LOCK_TTL_SECONDS on the server, so a missed
+      // release isn't catastrophic.
+      releaseLock.mutate(workoutId);
+      setEditBaselineFuelVersion(null);
+    };
+    // We intentionally exclude the mutation refs from deps — they're
+    // stable React Query objects and including them causes the effect to
+    // tear down + rebuild on every render. currentFuelVersion is
+    // intentionally captured at edit-mode entry only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workoutId, editing]);
+
   if (workout && !initialized) {
     setInitialized(true);
-    setDraft({
-      activity: workout.activity,
-      date: workout.date,
-      status: workout.status,
-      category: workout.category,
-      duration_minutes: workout.duration_minutes,
-      rpe: workout.rpe,
-      notes: workout.notes,
-      detail_json: workout.detail_json,
-    });
+    const seeded = serverProjection(workout);
+    setDraft(seeded);
     setEditing(workout.status === "planned");
+    // Offer to restore an autosaved draft from a previous mid-edit exit, but
+    // only when it actually differs from the current server state — otherwise
+    // there's nothing to recover, so drop the stale snapshot.
+    if (tenantId) {
+      const snap = loadDraft<WorkoutDraft>(tenantId, workoutId);
+      if (snap && !sameDraft(snap.payload, seeded)) {
+        setRecoverable(snap);
+      } else if (snap) {
+        clearDraft(tenantId, workoutId);
+      }
+    }
   }
 
   if (!workout) {
@@ -299,6 +478,9 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
     try {
       await updateMutation.mutateAsync({ id: workout.id, data: draft });
       setEditing(false);
+      // Persisted to the server — drop the local autosave snapshot.
+      if (tenantId) clearDraft(tenantId, workoutId);
+      setRecoverable(null);
     } catch (e) {
       if (isNotFoundError(e)) {
         stashCurrentDraft("mutation_404");
@@ -322,6 +504,8 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
       });
       setDraft((d) => ({ ...d, status: "done" }));
       setEditing(false);
+      if (tenantId) clearDraft(tenantId, workoutId);
+      setRecoverable(null);
     } catch (e) {
       if (isNotFoundError(e)) {
         stashCurrentDraft("mutation_404");
@@ -335,12 +519,25 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
   const handleDelete = () => {
     if (confirm("Delete this workout?")) {
       deleteMutation.mutate(workout.id);
+      if (tenantId) clearDraft(tenantId, workoutId);
       onClose();
     }
   };
 
   const updateDetailJson = (updates: Record<string, unknown>) => {
     setDraft((d) => ({ ...d, detail_json: { ...(d.detail_json || {}), ...updates } }));
+  };
+
+  const restoreDraft = () => {
+    if (!recoverable) return;
+    setDraft(recoverable.payload);
+    setEditing(true);
+    setRecoverable(null);
+  };
+
+  const discardDraft = () => {
+    if (tenantId) clearDraft(tenantId, workoutId);
+    setRecoverable(null);
   };
 
   const detail = (draft.detail_json || {}) as Record<string, unknown>;
@@ -398,7 +595,63 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
           </div>
         </div>
 
+        {showStaleEditWarning && (
+          <div
+            role="status"
+            className="mx-4 sm:mx-6 mt-3 -mb-1 rounded-lg border border-accent/40 bg-accent/10 px-3 py-2 text-[11px] text-ink-muted flex items-center gap-3"
+          >
+            <span className="flex-1 leading-snug">
+              Your assistant updated something else in Fuel while you were editing this. Save anyway, or refresh to pull the latest first.
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                void qc.invalidateQueries({ queryKey: ["fuel-workouts", workoutId] });
+                void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
+                void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
+                void qc.invalidateQueries({ queryKey: ["fuel-schedule"] });
+                setEditBaselineFuelVersion(currentFuelVersion);
+              }}
+              className="rounded-full border border-accent/40 text-accent hover:bg-accent/15 min-h-[28px] px-3 text-[10px] font-bold uppercase tracking-wider transition"
+            >
+              Refresh
+            </button>
+          </div>
+        )}
+
         <div className="p-4 sm:p-6 space-y-5 sm:space-y-6">
+          {/* Unsaved-changes restore prompt — surfaced when an autosaved draft
+              from a previous mid-edit exit differs from the server state. */}
+          {recoverable && (
+            <div
+              role="status"
+              className="rounded-xl border border-accent/40 bg-accent/10 px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-ink">
+                  Unsaved changes from {fmtAgo(recoverable.updatedAt)}
+                </div>
+                <div className="mt-0.5 text-xs text-ink-muted">
+                  You left this workout mid-edit. Restore what you&apos;d typed?
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={restoreDraft}
+                  className="rounded-full bg-accent text-white font-semibold min-h-[44px] px-4 py-2 text-xs hover:brightness-110 active:scale-[0.98] transition"
+                >
+                  Restore
+                </button>
+                <button
+                  onClick={discardDraft}
+                  className="rounded-full border border-border hover:border-border-strong text-ink-muted hover:text-ink min-h-[44px] px-4 py-2 text-xs transition"
+                >
+                  Discard
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Activity name */}
           <div>
             {editing ? (
@@ -521,6 +774,15 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
               <div className="font-medium">Couldn&apos;t save</div>
               <div className="mt-0.5 text-rose-text/80">{saveError}</div>
             </div>
+          )}
+
+          {/* Post-completion edit footnote (phase 7). Surfaced when a
+              done workout has been retouched at least 24h after creation
+              — the user-side PATCH path stamps last_edited_by_user_at. */}
+          {workout.status === "done" && workout.last_edited_by_user_at && (
+            <p className="text-[11px] text-ink-faint italic">
+              Edited {formatRelativeFromIso(workout.last_edited_by_user_at)}
+            </p>
           )}
 
           {/* Action bar */}

@@ -480,6 +480,115 @@ class PendingMessageTelegramTest(TestCase):
 
 @override_settings(
     NBHD_INTERNAL_API_KEY="test-key",
+    TELEGRAM_BOT_TOKEN="test-bot-token",
+)
+class PendingMessageStaleHibernationReconcileTest(TestCase):
+    """A successful (non-credit-limit) gateway response proves the
+    container is awake, so the drain must clear any lingering
+    ``hibernated_at``.
+
+    Regression: the Telegram *poller* path has no wake step (poller →
+    enqueue → drain, no ``handle_hibernated_message``), so an out-of-band
+    revision activate could leave ``hibernated_at`` set indefinitely while
+    the tenant chatted normally. ``update_container`` then short-circuited
+    on its ``if tenant.hibernated_at: return False`` guard and every
+    Telegram self-update reported "the update failed" (canary 148ccf1c,
+    2026-06-03). The drain now reconciles the flag on proven liveness.
+    """
+
+    def _telegram_chat_route(self, chat_text: str = "Hi back"):
+        def _route(url, *args, **kwargs):
+            if "/v1/chat/completions" in url:
+                return _ok_chat_response(chat_text)
+            ok = MagicMock()
+            ok.is_success = True
+            ok.status_code = 200
+            return ok
+
+        return _route
+
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_live_response_clears_stale_hibernated_at(self, mock_post):
+        mock_post.side_effect = self._telegram_chat_route()
+
+        user = _make_user(telegram_chat_id=51515151)
+        tenant = _make_tenant(user)
+        # Stale flag: container is actually serving but the DB still says
+        # hibernated (the bug condition).
+        Tenant.objects.filter(id=tenant.id).update(hibernated_at=timezone.now())
+
+        PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.TELEGRAM,
+            channel_user_id="51515151",
+            payload={
+                "message_text": "hello",
+                "user_param": "51515151",
+                "user_timezone": "UTC",
+            },
+            user_text="hello",
+        )
+
+        result = drain_pending_messages_for_tenant_task(str(tenant.id), "telegram", "51515151")
+
+        self.assertEqual(result["delivered"], 1)
+        tenant.refresh_from_db()
+        self.assertIsNone(
+            tenant.hibernated_at,
+            "a live gateway response must clear the stale hibernation flag",
+        )
+
+    @patch("apps.router.pending_queue._handle_openrouter_credit_limit")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_credit_limit_does_not_clear_hibernated_at(self, mock_post, _mock_credit):
+        # 402 on the chat completion → OpenRouter credit-limit path, which
+        # *intentionally* hibernates for budget. The reconcile must NOT undo
+        # that (gateway_responded is False for this early-return).
+        def _route(url, *args, **kwargs):
+            if "/v1/chat/completions" in url:
+                resp = MagicMock()
+                resp.status_code = 402
+                resp.is_success = False
+                resp.text = "insufficient credit"
+                return resp
+            ok = MagicMock()
+            ok.is_success = True
+            ok.status_code = 200
+            return ok
+
+        mock_post.side_effect = _route
+
+        user = _make_user(telegram_chat_id=52525252)
+        tenant = _make_tenant(user)
+        hib_at = timezone.now()
+        Tenant.objects.filter(id=tenant.id).update(hibernated_at=hib_at)
+
+        PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.TELEGRAM,
+            channel_user_id="52525252",
+            payload={
+                "message_text": "spend money",
+                "user_param": "52525252",
+                "user_timezone": "UTC",
+            },
+            user_text="spend money",
+        )
+
+        drain_pending_messages_for_tenant_task(str(tenant.id), "telegram", "52525252")
+
+        # The credit-limit handler was invoked, and the reconcile left the
+        # hibernation flag in place (did not undo the budget hibernation).
+        _mock_credit.assert_called_once()
+        tenant.refresh_from_db()
+        self.assertIsNotNone(
+            tenant.hibernated_at,
+            "credit-limit early-return must not be treated as a liveness signal",
+        )
+
+
+@override_settings(
+    NBHD_INTERNAL_API_KEY="test-key",
     LINE_CHANNEL_ACCESS_TOKEN="test-token",
 )
 class PendingMessageDrainNoOpTest(TestCase):

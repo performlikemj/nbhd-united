@@ -114,7 +114,7 @@ def generate_weekly_reflection(tenant: Tenant, *, now: datetime | None = None) -
     iso_week_str = f"{iso_year}-W{iso_week:02d}"
     result = WeeklyReflectionResult(tenant_id=str(tenant.id), iso_week=iso_week_str)
 
-    if not getattr(tenant, "finance_enabled", False):
+    if not getattr(tenant, "finance_active", False):
         result.skipped = "finance_disabled"
         return result
 

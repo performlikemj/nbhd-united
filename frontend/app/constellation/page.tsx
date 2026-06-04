@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { useConstellationQuery, usePendingLessonsQuery } from "@/lib/queries";
+import { useConstellationQuery, useDeleteLessonMutation, usePendingLessonsQuery } from "@/lib/queries";
+import { isPlayEnabled } from "@/lib/constellation-game/flag";
 import {
   ConstellationData,
   ConstellationNode,
@@ -25,8 +26,8 @@ const REL_COLORS: Record<GraphRelType, string> = {
 const ALL_KINDS: GraphNodeKind[] = ["Lesson", "Cluster", "Evidence", "Tag"];
 const ALL_RELS: GraphRelType[] = ["IN_CLUSTER", "SIMILAR_TO", "EVIDENCED_BY", "TAGGED_WITH", "REFINES"];
 const CLUSTER_PALETTE = ["#7C6BF0", "#E8B4B8", "#4ECDC4", "#FBBF24", "#60A5FA", "#F472B6", "#34D399", "#FB923C"];
-const VW = 2400;
-const VH = 1600;
+const VW = 2800;
+const VH = 1900;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -106,7 +107,7 @@ function clusterByTags(nodes: ConstellationNode[]): { clusters: ConstellationDat
 // ── Graph layout ─────────────────────────────────────────────────────────────
 
 function layoutGraph(graphNodes: GraphNode[], _graphEdges: GraphEdge[], clusters: ConstellationData["clusters"]): Record<string, { x: number; y: number }> {
-  const cx = VW / 2, cy = VH / 2, ringR = Math.min(VW, VH) * 0.42;
+  const cx = VW / 2, cy = VH / 2, ringR = Math.min(VW, VH) * 0.44;
   const cc: Record<number, { x: number; y: number }> = {};
   clusters.forEach((c, i) => { const a = (i / clusters.length) * Math.PI * 2 - Math.PI / 2 + 0.3; cc[c.id] = { x: cx + Math.cos(a) * ringR, y: cy + Math.sin(a) * ringR }; });
   const pos: Record<string, { x: number; y: number }> = {};
@@ -115,15 +116,20 @@ function layoutGraph(graphNodes: GraphNode[], _graphEdges: GraphEdge[], clusters
   graphNodes.filter((n) => n.kind === "Lesson").forEach((n) => { (byCluster[n.cluster_id ?? -1] ||= []).push(n); });
   Object.entries(byCluster).forEach(([cidStr, list]) => {
     const cid = Number(cidStr), center = cc[cid];
-    if (!center) { list.forEach((n, i) => { const a = (i / list.length) * Math.PI * 2; pos[String(n.id)] = { x: cx + Math.cos(a) * 100, y: cy + Math.sin(a) * 100 }; }); return; }
+    if (!center) { list.forEach((n, i) => { const a = (i / list.length) * Math.PI * 2; pos[String(n.id)] = { x: cx + Math.cos(a) * 160, y: cy + Math.sin(a) * 160 }; }); return; }
     const sorted = [...list].sort((a, b) => (b.weight || 0) - (a.weight || 0));
-    const splitAt = sorted.length > 5 ? Math.ceil(sorted.length / 2) : sorted.length;
+    const count = sorted.length;
+    // Ring radii grow with cluster size so dense clusters fan out instead of overlapping.
+    const innerR = 250 + count * 7, outerR = innerR + 210;
+    const splitAt = count > 6 ? Math.ceil(count / 2) : count;
+    // Big clusters wrap a wider arc (toward a full circle) so nodes don't crowd a narrow fan.
+    const spread = Math.min(Math.PI * 1.9, Math.PI * 1.05 + count * 0.06);
     sorted.forEach((n, i) => {
       const onOuter = i >= splitAt, ringList = onOuter ? sorted.slice(splitAt) : sorted.slice(0, splitAt);
       const ringIdx = onOuter ? i - splitAt : i, ringCount = ringList.length;
-      const toC = Math.atan2(cy - center.y, cx - center.x), spread = Math.PI * 1.35, a0 = toC + Math.PI - spread / 2;
+      const toC = Math.atan2(cy - center.y, cx - center.x), a0 = toC + Math.PI - spread / 2;
       const angle = a0 + (ringCount > 1 ? (ringIdx / (ringCount - 1)) * spread : spread / 2);
-      pos[String(n.id)] = { x: center.x + Math.cos(angle) * (onOuter ? 280 : 180), y: center.y + Math.sin(angle) * (onOuter ? 280 : 180) };
+      pos[String(n.id)] = { x: center.x + Math.cos(angle) * (onOuter ? outerR : innerR), y: center.y + Math.sin(angle) * (onOuter ? outerR : innerR) };
     });
   });
   graphNodes.filter((n) => n.kind === "Evidence").forEach((n) => {
@@ -137,11 +143,11 @@ function layoutGraph(graphNodes: GraphNode[], _graphEdges: GraphEdge[], clusters
   // Repulsion
   const lids = graphNodes.filter((n) => n.kind === "Lesson").map((n) => String(n.id));
   const lc = Object.fromEntries(graphNodes.filter((n) => n.kind === "Lesson").map((n) => [String(n.id), n.cluster_id ?? -1]));
-  for (let it = 0; it < 40; it++) for (let i = 0; i < lids.length; i++) for (let j = i + 1; j < lids.length; j++) {
+  for (let it = 0; it < 70; it++) for (let i = 0; i < lids.length; i++) for (let j = i + 1; j < lids.length; j++) {
     if (lc[lids[i]] !== lc[lids[j]]) continue;
     const pa = pos[lids[i]], pb = pos[lids[j]]; if (!pa || !pb) continue;
     const dx = pa.x - pb.x, dy = pa.y - pb.y, d = Math.sqrt(dx * dx + dy * dy + 0.01);
-    if (d < 130) { const push = (130 - d) * 0.3, nx = dx / d, ny = dy / d; pa.x += nx * push; pa.y += ny * push; pb.x -= nx * push; pb.y -= ny * push; }
+    if (d < 175) { const push = (175 - d) * 0.4, nx = dx / d, ny = dy / d; pa.x += nx * push; pa.y += ny * push; pb.x -= nx * push; pb.y -= ny * push; }
   }
   return pos;
 }
@@ -158,10 +164,11 @@ function GlyphFor({ kind, color, r = 16, selected = false }: { kind: GraphNodeKi
 
 // ── Property Inspector ───────────────────────────────────────────────────────
 
-function Inspector({ node, neighbors, onClose, onJump }: { node: GraphNode; neighbors: Array<{ other: GraphNode; type: GraphRelType; dir: "in" | "out"; similarity?: number }>; onClose: () => void; onJump: (id: string | number) => void }) {
+function Inspector({ node, neighbors, onClose, onJump, onDelete, deleting }: { node: GraphNode; neighbors: Array<{ other: GraphNode; type: GraphRelType; dir: "in" | "out"; similarity?: number }>; onClose: () => void; onJump: (id: string | number) => void; onDelete: (id: number) => void; deleting: boolean }) {
   const color = node.kind === "Cluster" ? node.color || KIND_COLORS[node.kind] : KIND_COLORS[node.kind];
   const cypher = cypherPathFor(node);
   const [copied, setCopied] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const props = useMemo(() => {
     const out: Array<[string, string | number]> = [];
     if (node.kind === "Lesson") { out.push(["id", node.id as number], ["title", nodeLabel(node)]); if (node.cluster_id != null) out.push(["cluster_id", node.cluster_id]); if (node.weight) out.push(["weight", node.weight]); if (node.source_type) out.push(["source_type", node.source_type]); if (node.source_ref) out.push(["source_ref", node.source_ref]); if (node.created_at) out.push(["created_at", node.created_at.slice(0, 10)]); if (node.tags?.length) out.push(["tags", node.tags.join(", ")]); }
@@ -205,6 +212,19 @@ function Inspector({ node, neighbors, onClose, onJump }: { node: GraphNode; neig
             <span className="text-[11px] text-[#CBD5E1] group-hover:text-white truncate min-w-0 flex-1">{nodeLabel(nb.other)}</span>
           </button>); })}</div>
       </div>)}
+      {node.kind === "Lesson" && (<div className="mt-6 pt-5 border-t border-white/[0.06]">
+        {!confirmDelete ? (
+          <button type="button" onClick={() => setConfirmDelete(true)} className="w-full rounded-lg border border-[#F87171]/30 text-[#F87171] hover:bg-[#F87171]/10 px-3 py-2.5 text-[10px] uppercase tracking-[0.22em] font-headline transition">Remove from constellation</button>
+        ) : (
+          <div className="rounded-lg border border-[#F87171]/30 bg-[#F87171]/[0.06] p-3">
+            <p className="text-[12px] text-[#E2E8F0] leading-relaxed mb-3">Delete this lesson permanently? This can&rsquo;t be undone.</p>
+            <div className="flex gap-2">
+              <button type="button" disabled={deleting} onClick={() => onDelete(node.id as number)} className="flex-1 rounded-lg bg-[#F87171] text-[#04070b] px-3 py-2 text-[10px] uppercase tracking-[0.22em] font-headline hover:bg-[#FCA5A5] disabled:opacity-50 transition">{deleting ? "Deleting…" : "Delete"}</button>
+              <button type="button" disabled={deleting} onClick={() => setConfirmDelete(false)} className="flex-1 rounded-lg border border-white/10 text-[#94A3B8] hover:text-white hover:border-white/20 px-3 py-2 text-[10px] uppercase tracking-[0.22em] font-headline transition">Cancel</button>
+            </div>
+          </div>
+        )}
+      </div>)}
     </div>
   );
 }
@@ -216,9 +236,14 @@ const EMPTY_CONSTELLATION: ConstellationData = { nodes: [], edges: [], affinity_
 export default function ConstellationPage() {
   const { data: rawData = EMPTY_CONSTELLATION, isLoading, error: queryError } = useConstellationQuery();
   const { data: pendingLessons = [] } = usePendingLessonsQuery();
+  const deleteLesson = useDeleteLessonMutation();
   const loading = isLoading;
   const error = queryError instanceof Error ? queryError.message : queryError ? "Failed to load constellation." : "";
   const pendingCount = pendingLessons.length;
+
+  // Gated "exploration mode" (Phase-1 beta — hidden unless opted in). See lib/constellation-game/flag.
+  const [playEnabled, setPlayEnabled] = useState(false);
+  useEffect(() => setPlayEnabled(isPlayEnabled()), []);
 
   const effectiveData = useMemo(() => {
     if (rawData.clusters.length > 0 || !(rawData.nodes.length > 0 && rawData.nodes.every((n) => n.cluster_id == null))) return rawData;
@@ -231,7 +256,25 @@ export default function ConstellationPage() {
   const [relFilter, setRelFilter] = useState<Set<GraphRelType>>(new Set(["IN_CLUSTER", "SIMILAR_TO", "REFINES"]));
   const [simThreshold] = useState(0.5);
   const [isolated, setIsolated] = useState<string | null>(null);
-  const [showHint, setShowHint] = useState(true);
+  const [showHint, setShowHint] = useState(false);
+  const dismissHint = useCallback(() => {
+    setShowHint(false);
+    try { window.localStorage.setItem("nbhd_constellation_hint_dismissed", "1"); } catch { /* private mode */ }
+  }, []);
+  // Orientation hint: show once per device (until dismissed), then auto-retire it
+  // so it never sits persistently over the search bar on return visits / mobile.
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem("nbhd_constellation_hint_dismissed") !== "1") setShowHint(true);
+    } catch {
+      setShowHint(true);
+    }
+  }, []);
+  useEffect(() => {
+    if (!showHint) return;
+    const t = setTimeout(dismissHint, 8000);
+    return () => clearTimeout(t);
+  }, [showHint, dismissHint]);
 
   const visibleNodes = useMemo(() => {
     let list = graphData.nodes.filter((n) => kindFilter.has(n.kind));
@@ -411,13 +454,29 @@ export default function ConstellationPage() {
               </button>); })}
             </div>)}
           </div>
+          {/* Mobile Play entry — the toolbar below (with the desktop Play link) is
+              hidden on phones, so surface a tappable Play CTA here on small screens. */}
+          {playEnabled && (
+            <Link
+              href="/constellation/play"
+              title="Fly your galaxy (beta)"
+              className="sm:hidden order-last ml-auto flex items-center gap-1.5 min-h-[44px] px-4 rounded-full border border-accent/40 bg-accent/15 text-accent text-[11px] uppercase tracking-wider font-headline"
+            >
+              <svg width="11" height="11" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M2 1.4l6.2 3.6L2 8.6z" fill="currentColor" /></svg>Play
+            </Link>
+          )}
           <div className="hidden sm:flex items-center gap-1 rounded-full border border-white/10 bg-black/50 backdrop-blur-xl p-1">
             <button type="button" onClick={() => setZoom((z) => Math.max(0.3, z * 0.8))} className="h-7 w-7 rounded-full hover:bg-white/10 text-[#94A3B8] hover:text-white flex items-center justify-center" aria-label="Zoom out">&minus;</button>
             <span className="text-[10px] text-[#64748B] w-10 text-center tabular-nums" style={{ fontFamily: "var(--font-mono, monospace)" }}>{(zoom * 100).toFixed(0)}%</span>
             <button type="button" onClick={() => setZoom((z) => Math.min(3, z * 1.25))} className="h-7 w-7 rounded-full hover:bg-white/10 text-[#94A3B8] hover:text-white flex items-center justify-center" aria-label="Zoom in">+</button>
             <span className="h-4 w-px bg-white/10 mx-0.5" />
             <button type="button" onClick={() => setPositions(baseLayout)} title="Relayout" className="px-2.5 h-7 rounded-full hover:bg-white/10 text-[#94A3B8] hover:text-white text-[10px] uppercase tracking-wider flex items-center gap-1.5 font-headline">
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M8 2v3H5M2 8V5h3" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" /><path d="M8 5a3 3 0 11-5.2-2M2 5a3 3 0 015.2 2" stroke="currentColor" strokeWidth="1" strokeLinecap="round" /></svg>Relayout</button>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.36-2.64L3 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><path d="M3 21v-5h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.36 2.64L21 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><path d="M21 3v5h-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>Relayout</button>
+            {playEnabled && (
+              <Link href="/constellation/play" title="Fly your galaxy (beta)" className="px-2.5 h-7 rounded-full text-accent hover:text-accent-hover hover:bg-accent/15 text-[10px] uppercase tracking-wider flex items-center gap-1.5 font-headline">
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M2 1.4l6.2 3.6L2 8.6z" fill="currentColor" /></svg>Play
+              </Link>
+            )}
             <button type="button" onClick={() => { setPan({ x: 0, y: 0 }); setZoom(0.85); setSelectedId(null); setIsolated(null); }} className="px-2.5 h-7 rounded-full hover:bg-white/10 text-[#94A3B8] hover:text-white text-[10px] uppercase tracking-wider font-headline">Reset view</button>
           </div>
         </div>
@@ -430,9 +489,9 @@ export default function ConstellationPage() {
               <span className="text-[9px] uppercase tracking-[0.22em] font-headline" style={{ color: c }}>Focused</span>
               <span className="text-[11px] text-white font-serif italic">{isoNode.constellation || isoNode.label}</span>
             </button>); })()}
-          {showHint && !isolated && (<div className="flex items-center gap-2 pl-2.5 pr-2 h-7 rounded-full border border-white/10 bg-black/60 backdrop-blur-xl text-[10px] text-[#94A3B8]">
+          {showHint && !isolated && (<div className="hidden sm:flex items-center gap-2 pl-2.5 pr-2 h-7 rounded-full border border-white/10 bg-black/60 backdrop-blur-xl text-[10px] text-[#94A3B8]">
             <span style={{ fontFamily: "var(--font-mono, monospace)" }}>Positions are approximate &middot; drag to rearrange &middot; click a cluster to focus</span>
-            <button type="button" onClick={() => setShowHint(false)} className="ml-1 text-[#64748B] hover:text-white px-1">&times;</button>
+            <button type="button" onClick={dismissHint} className="ml-1 text-[#64748B] hover:text-white px-1">&times;</button>
           </div>)}
         </div>)}
 
@@ -487,7 +546,7 @@ export default function ConstellationPage() {
 
         {/* Inspector */}
         {selected && (<aside data-no-drag className="absolute md:relative right-0 top-0 bottom-0 z-30 w-full sm:w-[380px] md:w-[400px] border-l border-white/[0.08] bg-[#06090e]/95 backdrop-blur-2xl overflow-y-auto animate-slide-in" style={{ boxShadow: "-24px 0 60px rgba(0,0,0,0.5)" }}>
-          <Inspector node={selected} neighbors={neighbors} onClose={() => setSelectedId(null)} onJump={focusNode} />
+          <Inspector key={String(selected.id)} node={selected} neighbors={neighbors} onClose={() => setSelectedId(null)} onJump={focusNode} onDelete={(id) => deleteLesson.mutate(id, { onSuccess: () => setSelectedId(null) })} deleting={deleteLesson.isPending} />
         </aside>)}
 
         {/* Empty state */}

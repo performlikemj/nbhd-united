@@ -18,9 +18,28 @@ import logging
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
-from .models import Workout
+from .models import Workout, WorkoutPlan
 
 logger = logging.getLogger(__name__)
+
+
+def _bump_fuel_version(tenant_id) -> None:
+    """Increment tenant.fuel_version atomically. Best-effort; logged on fail.
+
+    Phase 6 — surfaces an out-of-band write in schedule / calendar
+    responses so the frontend can prompt the user to refresh a stale
+    drawer before they save. Cheap enough to run on every Fuel write.
+    """
+    if tenant_id is None:
+        return
+    try:
+        from django.db.models import F
+
+        from apps.tenants.models import Tenant
+
+        Tenant.objects.filter(id=tenant_id).update(fuel_version=F("fuel_version") + 1)
+    except Exception:
+        logger.warning("Failed to bump tenant.fuel_version for %s", str(tenant_id)[:8], exc_info=True)
 
 
 def _tenant_uses_session_scheduling(workout: Workout) -> bool:
@@ -60,6 +79,26 @@ def workout_deleted_regen_fuel_crons(sender, instance, **kwargs):
     if not _tenant_uses_session_scheduling(instance):
         return
     _enqueue_regen(str(instance.tenant_id))
+
+
+@receiver(post_save, sender=Workout)
+def workout_saved_bump_fuel_version(sender, instance, **kwargs):
+    _bump_fuel_version(instance.tenant_id)
+
+
+@receiver(post_delete, sender=Workout)
+def workout_deleted_bump_fuel_version(sender, instance, **kwargs):
+    _bump_fuel_version(instance.tenant_id)
+
+
+@receiver(post_save, sender=WorkoutPlan)
+def plan_saved_bump_fuel_version(sender, instance, **kwargs):
+    _bump_fuel_version(instance.tenant_id)
+
+
+@receiver(post_delete, sender=WorkoutPlan)
+def plan_deleted_bump_fuel_version(sender, instance, **kwargs):
+    _bump_fuel_version(instance.tenant_id)
 
 
 # USER.md refresh on Fuel state changes is auto-wired by the envelope

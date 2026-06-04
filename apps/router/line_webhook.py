@@ -1502,6 +1502,10 @@ class LineWebhookView(View):
             if not lesson:
                 return
 
+            from apps.pii.redactor import rehydrate_for_tenant
+
+            safe_text = rehydrate_for_tenant(tenant, lesson.text)
+
             if action == "approve":
                 lesson.status = "approved"
                 lesson.approved_at = tz.now()
@@ -1512,12 +1516,12 @@ class LineWebhookView(View):
                 except Exception:
                     logger.exception("Failed to process approved lesson %s", lesson_id)
 
-                _send_line_follow_up(tenant, f"✅ Approved: {lesson.text[:100]}")
+                _send_line_follow_up(tenant, f"✅ Approved: {safe_text[:100]}")
 
             elif action == "dismiss":
                 lesson.status = "dismissed"
                 lesson.save(update_fields=["status"])
-                _send_line_follow_up(tenant, f"❌ Dismissed: {lesson.text[:100]}")
+                _send_line_follow_up(tenant, f"❌ Dismissed: {safe_text[:100]}")
 
         except Exception:
             logger.exception("Error handling lesson postback: %s", data)

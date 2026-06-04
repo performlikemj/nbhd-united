@@ -50,8 +50,59 @@ export interface Tenant {
   deletion_scheduled_at: string | null;
   platform_budget_exceeded: boolean;
   finance_enabled: boolean;
+  // Platform-level availability of Gravity (finance). False when paused for
+  // privacy (GRAVITY_ENABLED off server-side) — hides the tab + enable toggle.
+  gravity_available: boolean;
   fuel_enabled: boolean;
+  core_enabled: boolean;
   byo_models_enabled: boolean;
+}
+
+// Core (mindfulness) pillar — generated guided meditations.
+export type MeditationStatus = "pending" | "rendering" | "ready" | "delivered" | "failed";
+
+export interface MeditationSession {
+  id: string;
+  date: string; // YYYY-MM-DD
+  status: MeditationStatus;
+  title: string;
+  theme: string;
+  voice: string;
+  model: string;
+  guidance_text: string;
+  audio_url: string; // absolute; serve_meditation_audio is unauthenticated
+  ogg_url: string;
+  duration_ms: number | null;
+  ambient_bed: string;
+  user_feedback: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CoreComposeResponse {
+  meditation_id: string;
+  status: MeditationStatus;
+}
+
+export interface CoreSettingsResponse {
+  core_enabled: boolean;
+  core_profile_status: string | null;
+  restart_required: boolean;
+}
+
+export type CoreOnboardingStatus = "pending" | "in_progress" | "completed" | "declined";
+
+export interface CoreProfile {
+  id: string;
+  onboarding_status: CoreOnboardingStatus;
+  preferred_voice: string;
+  preferred_duration_minutes: number;
+  ambient_bed_enabled: boolean;
+  daily_cron_enabled: boolean;
+  preferred_time: string;
+  additional_context: string;
+  created_at: string;
+  updated_at: string;
 }
 
 // Bring-your-own subscription credentials
@@ -691,6 +742,12 @@ export interface FuelWorkout {
   notes: string;
   notes_thread: { at: string; who: string; text: string }[];
   detail_json: Record<string, unknown>;
+  version?: number;
+  edit_lock_until?: string | null;
+  edit_lock_owner?: string;
+  last_edited_by_user_at?: string | null;
+  plan_id?: string | null;
+  plan_name?: string | null;
   created_at: string;
   updated_at: string;
 }

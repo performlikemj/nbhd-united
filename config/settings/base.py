@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "apps.actions",
     "apps.finance",
     "apps.fuel",
+    "apps.core",
     "apps.byo_models",
     "apps.insights",
     "apps.common",
@@ -255,6 +256,24 @@ LINE_BOT_ID = env("LINE_BOT_ID", default="")  # e.g. "@nbhd-united"
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 BRAVE_API_KEY = env("BRAVE_API_KEY", default="")
+
+# Gemini TTS — Core pillar meditation render (server-side, key stays here).
+# Secret lives in Key Vault; set GEMINI_API_KEY on the Container App. Never echo it.
+GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
+GEMINI_TTS_MODEL = env("GEMINI_TTS_MODEL", default="gemini-2.5-flash-preview-tts")
+# Model that AUTHORS the meditation manifest (OpenRouter, JSON mode) — the web
+# orb's compose path. Mirrors the project's other Django-side LLM calls.
+CORE_COMPOSE_MODEL = env("CORE_COMPOSE_MODEL", default="deepseek/deepseek-v4-pro")
+# Bounded-parallel TTS calls per render — kept low to respect low-tier per-minute
+# rate caps (concurrent calls burst past the cap; the 429 backoff handles the rest).
+CORE_RENDER_CONCURRENCY = env.int("CORE_RENDER_CONCURRENCY", default=2)
+# Render-wide soft deadline (seconds): no NEW TTS call starts past this, keeping
+# the synchronous QStash-triggered render under the gunicorn ~300s budget (worst
+# case ~240 + one in-flight 45s call + ~20s concat/transcode < 300).
+CORE_RENDER_DEADLINE_SECONDS = env.int("CORE_RENDER_DEADLINE_SECONDS", default=240)
+# A RENDERING session older than this (minutes) is treated as a dead claim and
+# may be re-taken — recovers a render whose worker was killed mid-flight.
+CORE_RENDER_STALE_MINUTES = env.int("CORE_RENDER_STALE_MINUTES", default=15)
 OPENCLAW_GOOGLE_PLUGIN_ID = env("OPENCLAW_GOOGLE_PLUGIN_ID", default="")
 OPENCLAW_GOOGLE_PLUGIN_PATH = env(
     "OPENCLAW_GOOGLE_PLUGIN_PATH",
@@ -365,6 +384,18 @@ OPENROUTER_PER_TENANT_KEYS_ENABLED = env.bool(
     "OPENROUTER_PER_TENANT_KEYS_ENABLED",
     default=False,
 )
+# GRAVITY_ENABLED: product-level kill switch for the Gravity (finance) module.
+# Fail-safe OFF by default: while False, finance is paused platform-wide
+# regardless of any tenant's stored ``finance_enabled`` flag — no finance plugin
+# is loaded into containers, no finance state is injected into USER.md, the
+# weekly check-in / synthesis don't run, and the UI doesn't offer it. This is a
+# deliberate privacy pause: financial figures currently egress to the LLM
+# provider raw (the redactor masks identities, not amounts) with no retention
+# guarantee configured. Re-enable (set the env var True) only once on-device /
+# zero-retention inference or pre-egress amount-masking is in place.
+# dev + test settings override this to True so the existing suite + local dev
+# exercise the feature; production inherits the False default.
+GRAVITY_ENABLED = env.bool("GRAVITY_ENABLED", default=False)
 AZURE_KV_SECRET_SOUL_MD = env(
     "AZURE_KV_SECRET_SOUL_MD",
     default="nbhd-soul-md",
@@ -435,6 +466,12 @@ COMPOSIO_ALLOW_MULTIPLE_ACCOUNTS = env.bool(
     "COMPOSIO_ALLOW_MULTIPLE_ACCOUNTS",
     default=True,
 )
+
+# Fuel edit-lock TTL — how long a single user-side acquire keeps the runtime
+# from clobbering the workout. Heartbeats every ~half this value renew the
+# lock; release endpoint clears it explicitly. Defaults to 60s and is
+# tunable via env if telemetry shows misfires.
+FUEL_EDIT_LOCK_TTL_SECONDS = env.int("FUEL_EDIT_LOCK_TTL_SECONDS", default=60)
 
 # Custom test runner — disconnects the CronJob → reconciler signal during
 # test runs so the publish_task sync fallback (no QSTASH_TOKEN) doesn't

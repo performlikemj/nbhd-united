@@ -1,0 +1,32 @@
+# Frozen PII-model artifact — built ONCE and cached in our own ACR so the Django
+# image never re-pulls the model from HuggingFace on every deploy (HF returns
+# transient 429s that otherwise kill the build + deploy with it).
+#
+# The Django Dockerfile consumes this via `COPY --from=<registry>/pii-model:<tag>`.
+# CI's "Ensure PII model image" step (.github/workflows/ci-cd.yml) builds + pushes
+# this only when the tag is missing from ACR, so HuggingFace is hit at most once
+# per tag, ever. To bump the model: change the tag in BOTH this repo's ci-cd.yml
+# and the Django Dockerfile COPY line — the next deploy builds the new tag.
+#
+# Model: lakshyakh93/deberta_finetuned_pii (DeBERTa-v3-base + ai4privacy, Apache-2.0).
+# ~554 MB FP32 safetensors. `ignore_patterns` skips the duplicate pytorch_model.bin —
+# transformers loads the safetensors variant and the .bin would just double the size.
+FROM python:3.12-slim AS dl
+
+# Match the huggingface-hub pin in requirements.txt so snapshot_download's API +
+# ignore_patterns semantics are byte-identical to what the runtime expects.
+RUN pip install --no-cache-dir huggingface-hub==1.8.0
+
+# Retry with backoff — HuggingFace returns transient 429s. This is the ONLY place
+# in the pipeline that touches HF, and only on a cache miss (missing ACR tag).
+RUN for i in 1 2 3 4 5; do \
+      python -c "from huggingface_hub import snapshot_download; snapshot_download('lakshyakh93/deberta_finetuned_pii', local_dir='/pii-model', ignore_patterns=['pytorch_model.bin', 'optimizer.pt', '*.msgpack', '*.h5'])" && exit 0; \
+      echo "HF model download attempt $i failed; retrying in $((i*20))s..."; \
+      sleep $((i*20)); \
+    done; \
+    echo "HF model download failed after 5 attempts" >&2; exit 1
+
+# Final image is just the files — no Python, no base OS — so the layer the Django
+# build pulls is the model and nothing else.
+FROM scratch
+COPY --from=dl /pii-model /pii-model

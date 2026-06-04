@@ -574,6 +574,21 @@ class Tenant(models.Model):
         default=False,
         help_text="Enable workout tracking and fitness logging",
     )
+    fuel_version = models.PositiveIntegerField(
+        default=0,
+        help_text=(
+            "Monotonic counter bumped on every Workout / WorkoutPlan write. "
+            "Embedded in schedule / calendar responses so the frontend can "
+            "detect an out-of-band write by the assistant runtime and prompt "
+            "the user to refresh before saving an open drawer."
+        ),
+    )
+
+    # Core module (mindfulness — AI-composed guided meditations)
+    core_enabled = models.BooleanField(
+        default=False,
+        help_text="Enable the Core mindfulness pillar (on-demand guided meditations)",
+    )
 
     # Welcome-cron delivery telemetry. Keys are feature names ("fuel",
     # "finance"), values are ISO-8601 timestamps of successful welcome
@@ -667,6 +682,20 @@ class Tenant(models.Model):
     @property
     def is_active(self) -> bool:
         return self.status == self.Status.ACTIVE
+
+    @property
+    def finance_active(self) -> bool:
+        """Effective Gravity state: the per-tenant flag AND the platform gate.
+
+        When ``settings.GRAVITY_ENABLED`` is False (the production default),
+        Gravity is paused platform-wide for privacy regardless of the stored
+        ``finance_enabled`` flag. All finance egress + surfacing gates read this
+        property, not ``finance_enabled`` directly, so flipping the env var off
+        is an authoritative kill switch. See ``GRAVITY_ENABLED`` in settings.
+        """
+        from django.conf import settings
+
+        return bool(self.finance_enabled) and bool(getattr(settings, "GRAVITY_ENABLED", False))
 
     @property
     def has_entitlement(self) -> bool:

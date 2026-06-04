@@ -13,6 +13,7 @@ import {
 import type { FuelWorkout, WorkoutCategory } from "@/lib/types";
 
 import { CATEGORIES } from "./category-meta";
+import { WorkoutDetailReadOnly } from "./workout-detail-readonly";
 
 interface OrphanRecoveryPanelProps {
   tenantId: string;
@@ -150,7 +151,7 @@ export function OrphanRecoveryPanel({ tenantId, draft, onClose }: OrphanRecovery
             <CaseSaveAsNew
               draft={draft}
               submitting={submitting}
-              onSaveAsNew={() => saveAsNew("done")}
+              onSaveAsNew={() => saveAsNew(draft.status ?? "planned")}
               onDiscard={() => discardAndClose()}
             />
           ) : action.kind === "fill_in" ? (
@@ -159,7 +160,7 @@ export function OrphanRecoveryPanel({ tenantId, draft, onClose }: OrphanRecovery
               sameActivity={action.sameActivity}
               submitting={submitting}
               onApply={() => applyToCandidate(action.candidate, true)}
-              onSaveAsSecond={() => saveAsNew("done")}
+              onSaveAsSecond={() => saveAsNew(draft.status ?? "planned")}
               onDiscard={() => discardAndClose()}
             />
           ) : (
@@ -169,7 +170,7 @@ export function OrphanRecoveryPanel({ tenantId, draft, onClose }: OrphanRecovery
               draft={draft}
               submitting={submitting}
               onSame={() => discardAndClose("Discarded duplicate draft.")}
-              onDifferent={() => saveAsNew("done")}
+              onDifferent={() => saveAsNew(draft.status ?? "planned")}
               onMergeNotes={() => mergeNotesOnly(action.candidate)}
             />
           )}
@@ -180,7 +181,10 @@ export function OrphanRecoveryPanel({ tenantId, draft, onClose }: OrphanRecovery
 }
 
 function DraftSummary({ draft }: { draft: OrphanDraft }) {
-  const detail = draft.detail_json as Record<string, unknown>;
+  const detail = (draft.detail_json ?? {}) as Record<string, unknown>;
+  // Cardio top-line "bits" are useful in the header even though the
+  // read-only preview below shows them as a stat grid — they signal
+  // "this draft had real metrics" without making the user scan.
   const distanceKm = typeof detail?.distance_km === "number" ? detail.distance_km : null;
   const pace = typeof detail?.pace === "string" || typeof detail?.pace === "number" ? String(detail.pace) : null;
   const avgHr = typeof detail?.avg_hr === "number" ? detail.avg_hr : null;
@@ -194,17 +198,20 @@ function DraftSummary({ draft }: { draft: OrphanDraft }) {
   if (draft.rpe != null) bits.push(`RPE ${draft.rpe}`);
 
   return (
-    <div className="rounded-lg border border-border bg-surface-elevated px-4 py-3">
-      <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint">YOUR DRAFT</div>
-      <div className="mt-1 text-base font-semibold italic text-ink truncate">
-        {draft.activity || "Untitled workout"}
+    <div className="space-y-3">
+      <div className="rounded-lg border border-border bg-surface-elevated px-4 py-3">
+        <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-ink-faint">YOUR DRAFT</div>
+        <div className="mt-1 text-base font-semibold italic text-ink truncate">
+          {draft.activity || "Untitled workout"}
+        </div>
+        {bits.length > 0 && (
+          <div className="mt-1 font-mono text-xs text-ink-muted">{bits.join(" · ")}</div>
+        )}
+        {draft.notes && (
+          <div className="mt-2 text-sm text-ink-muted whitespace-pre-line">&ldquo;{draft.notes}&rdquo;</div>
+        )}
       </div>
-      {bits.length > 0 && (
-        <div className="mt-1 font-mono text-xs text-ink-muted">{bits.join(" · ")}</div>
-      )}
-      {draft.notes && (
-        <div className="mt-2 text-sm text-ink-muted whitespace-pre-line">&ldquo;{draft.notes}&rdquo;</div>
-      )}
+      <WorkoutDetailReadOnly detail={draft.detail_json} category={draft.category} />
     </div>
   );
 }

@@ -1513,7 +1513,13 @@ class RuntimeSessionMarkProcessedView(APIView):
 
 
 class RuntimeLessonCreateView(APIView):
-    """Create runtime lesson suggestions for a tenant."""
+    """Create lessons captured by the assistant for a tenant.
+
+    Lessons are auto-approved on creation (status="approved") — they join the
+    constellation immediately and get an embedding + connections, matching the
+    journal-extraction approval path. Users prune unwanted lessons from the
+    constellation UI rather than gating each one through an approval queue.
+    """
 
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -1569,16 +1575,28 @@ class RuntimeLessonCreateView(APIView):
             source_type=source_type,
             source_ref=source_ref,
             tags=tags,
-            status="pending",
+            status="approved",
+            approved_at=tz.now(),
         )
 
-        # Send approval buttons to the user's preferred channel (best-effort)
+        # Generate embedding + connections, then re-cluster once enough lessons
+        # exist — same post-approval pipeline as the journal-extraction path
+        # (apps/router/extraction_callbacks.py). Best-effort: a failure here
+        # must not fail the capture.
         try:
-            from apps.lessons.notifications import send_lesson_approval_buttons
+            from apps.lessons.services import process_approved_lesson
 
-            send_lesson_approval_buttons(tenant, lesson)
+            process_approved_lesson(lesson)
         except Exception:
-            logger.exception("runtime: failed to send lesson notification for tenant %s", str(tenant.id)[:8])
+            logger.exception("runtime: embedding failed for lesson %s", lesson.id)
+
+        try:
+            from apps.lessons.clustering import refresh_constellation
+
+            if Lesson.objects.filter(tenant=tenant, status="approved").count() >= 5:
+                refresh_constellation(tenant)
+        except Exception:
+            logger.exception("runtime: clustering failed for tenant %s", str(tenant.id)[:8])
 
         return Response(
             {
@@ -2491,8 +2509,8 @@ class RuntimeReconcileScanView(APIView):
     """GET /api/v1/integrations/runtime/<tenant_id>/reconcile/scan/
 
     Given a one-sentence ``claim`` describing what the user just reported,
-    return the active goals, open tasks, finance accounts, and fuel rows
-    that are plausibly affected. Each candidate is annotated with which
+    return the active goals, open tasks, project docs, finance accounts,
+    and fuel rows that are plausibly affected. Each candidate is annotated with which
     typed write tool the agent should call to apply the update.
 
     This is the function half of the AGENTS.md conversational reconcile
@@ -2599,8 +2617,37 @@ class RuntimeReconcileScanView(APIView):
                 }
             )
 
+        # ── Project documents ────────────────────────────────────────
+        # Long-lived project threads (journal_document kind='project'). The
+        # agent already has nbhd_document_append (which accepts kind='project'),
+        # but reconcile never surfaced these — so a conversational project-
+        # status update never reached the canonical project doc, leaving it
+        # stale for the proactive crons that read it. Always scanned (core
+        # threads, like goals/tasks); project docs are few per tenant.
+        project_docs = Document.objects.filter(tenant=tenant, kind="project")[:50]
+        for doc in project_docs:
+            score, matched = _reconcile_match_score(tokens, f"{doc.title}\n{doc.markdown}")
+            if score == 0:
+                continue
+            candidates.append(
+                {
+                    "kind": "project",
+                    "id": doc.slug,
+                    "title": doc.title,
+                    "pillar": doc.pillar or None,
+                    "score": score,
+                    "matched_tokens": matched,
+                    "current_state": {
+                        "slug": doc.slug,
+                        "updated_at": doc.updated_at.isoformat(),
+                        "excerpt": (doc.markdown or "")[-280:],
+                    },
+                    "update_tools": ["nbhd_document_append"],
+                }
+            )
+
         # ── Finance accounts ─────────────────────────────────────────
-        if finance_triggered and getattr(tenant, "finance_enabled", False):
+        if finance_triggered and getattr(tenant, "finance_active", False):
             from apps.finance.models import FinanceAccount
 
             active_accounts = list(FinanceAccount.objects.filter(tenant=tenant, is_active=True))

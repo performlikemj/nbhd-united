@@ -1466,7 +1466,9 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
 
     # Gravity Weekly Check-in — Sunday 19:00 user TZ when finance is enabled.
     # Different hour from Weekly Reflection (20:00) so they don't collide.
-    if getattr(tenant, "finance_enabled", False):
+    # ``finance_active`` (not ``finance_enabled``) so the platform-level
+    # GRAVITY_ENABLED pause suppresses this cron everywhere.
+    if getattr(tenant, "finance_active", False):
         jobs.append(
             {
                 "name": "Gravity Weekly Check-in",
@@ -1584,6 +1586,24 @@ def _build_tools_section(tier: str, version: str = OPENCLAW_CURRENT_VERSION) -> 
     tools["loopDetection"] = {
         "enabled": True,
     }
+    # Tool Search — on-demand tool discovery (structured search/describe/call).
+    # Collapses the per-turn tool-schema payload (~79 tools, ~20-30K tokens
+    # re-sent every turn) to a compact search interface WITHOUT removing any
+    # tool: tool policy (deny) is still enforced before discovery, so denied
+    # tools (memory_search — see the SQLite-on-share invariant) stay
+    # unreachable. Structured `mode: "tools"` rather than code mode — code
+    # mode needs the model to emit executable JS, unreliable on
+    # DeepSeek-via-OpenRouter; the 3-tool structured form works with any
+    # tool-caller. Gated to >= 2026.5.28: the key does NOT exist in 5.7's
+    # config schema (verified via `npm pack openclaw@<v>` + `openclaw
+    # doctor`), and the redactor masks the resulting validation error, so
+    # tenants still on the 5.7 image must NOT receive it. The canary's
+    # openclaw_version is bumped to 2026.5.28 in lock-step with its image.
+    # See CONTINUITY_openclaw-528-toolsearch.md.
+    from apps.orchestrator.tool_policy import _parse_version
+
+    if _parse_version(version) >= (2026, 5, 28):
+        tools["toolSearch"] = {"enabled": True, "mode": "tools"}
     return tools
 
 
@@ -1770,8 +1790,11 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             )
         )
 
-    # Finance plugin — conditionally loaded when tenant has finance enabled
-    if getattr(tenant, "finance_enabled", False):
+    # Finance plugin — loaded only when finance is active for this tenant.
+    # ``finance_active`` folds in the platform-level GRAVITY_ENABLED kill
+    # switch, so a paused platform never ships the finance tools to any
+    # container (the primary financial-data egress surface).
+    if getattr(tenant, "finance_active", False):
         _plugin_defs.append(
             (
                 str(getattr(settings, "OPENCLAW_FINANCE_PLUGIN_ID", "nbhd-finance-tools") or "").strip(),
@@ -1792,9 +1815,9 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
 
     # Insights plugin — trajectory tools (history/drill/compare) over pillar
     # snapshots. Phase 1 only emits Gravity snapshots, so we gate on
-    # finance_enabled. Expand to all tenants once Fuel/Core snapshot
-    # pipelines ship.
-    if getattr(tenant, "finance_enabled", False):
+    # finance_active (which folds in the GRAVITY_ENABLED platform pause).
+    # Expand to all tenants once Fuel/Core snapshot pipelines ship.
+    if getattr(tenant, "finance_active", False):
         _plugin_defs.append(
             (
                 str(getattr(settings, "OPENCLAW_INSIGHTS_PLUGIN_ID", "nbhd-insights-tools") or "").strip(),
@@ -2103,6 +2126,24 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     if byo_extras and ANTHROPIC_SONNET_MODEL in byo_extras:
         cli_backends = config["agents"]["defaults"].setdefault("cliBackends", {})
         cli_backends["claude-cli"] = {"command": "/opt/nbhd/claude-with-token.sh"}
+
+    # Prompt caching + tool-output pruning — 5.28+ cost levers (no capability
+    # loss). cacheRetention: the provider reuses the stable prompt prefix
+    # (system prompt + tool defs + bootstrap) across turns instead of
+    # reprocessing it every turn; OpenRouter caches deepseek/* so this applies
+    # to our default model, billing the unchanged prefix at cache-read price.
+    # contextPruning (cache-ttl) trims OLD tool results before each LLM call
+    # (conversation text untouched), shrinking cache-write size. Both gated
+    # >= 2026.5.28: the keys are absent from 5.7's config schema and the
+    # redactor masks the resulting validation error (same reason toolSearch is
+    # gated — see _build_tools_section). Cache hits require a byte-stable
+    # prefix; a churning USER.md (see bootstrap note above) busts the cache.
+    from apps.orchestrator.tool_policy import _parse_version
+
+    if _parse_version(oc_version) >= (2026, 5, 28):
+        _ts_defaults = config["agents"]["defaults"]
+        _ts_defaults["params"] = {"cacheRetention": "long"}
+        _ts_defaults["contextPruning"] = {"mode": "cache-ttl"}
 
     return config
 

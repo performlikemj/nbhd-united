@@ -722,11 +722,20 @@ export function dismissLesson(id: number): Promise<Lesson> {
   });
 }
 
+export function deleteLesson(id: number): Promise<void> {
+  return apiFetch<void>(`/api/v1/lessons/${id}/`, { method: "DELETE" });
+}
+
 export function fetchConstellation(): Promise<ConstellationData> {
   return apiFetch<ConstellationData>("/api/v1/lessons/constellation/").then((data) => ({
     ...data,
     affinity_edges: data.affinity_edges ?? [],
   }));
+}
+
+/** GET /api/v1/lessons/galaxy/ — the game client's star map (auth handled by apiFetch). */
+export function fetchGalaxy(): Promise<import("@/lib/constellation-game/encounter-logic").GalaxyData> {
+  return apiFetch<import("@/lib/constellation-game/encounter-logic").GalaxyData>("/api/v1/lessons/galaxy/");
 }
 
 
@@ -1068,6 +1077,30 @@ export function skipWorkout(id: string, reason?: string): Promise<import("@/lib/
   });
 }
 
+export interface EditLockResponse {
+  workout_id: string;
+  edit_lock_until: string;
+  edit_lock_owner: string;
+  ttl_seconds: number;
+  version: number;
+}
+
+export function fetchFuelVersion(): Promise<{ fuel_version: number }> {
+  return apiFetch<{ fuel_version: number }>("/api/v1/fuel/version/");
+}
+
+export function acquireEditLock(workoutId: string): Promise<EditLockResponse> {
+  return apiFetch<EditLockResponse>(`/api/v1/fuel/workouts/${workoutId}/edit-lock/`, {
+    method: "POST",
+  });
+}
+
+export function releaseEditLock(workoutId: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/fuel/workouts/${workoutId}/edit-lock/`, {
+    method: "DELETE",
+  });
+}
+
 export function completeWorkout(
   id: string,
   data?: { notes?: string; rpe?: number; duration_minutes?: number },
@@ -1336,5 +1369,62 @@ export async function disconnectByoCredential(
   await apiFetch(`/api/v1/tenants/byo-credentials/${id}/`, {
     method: "DELETE",
     signal,
+  });
+}
+
+// -- Core (Mindfulness) --
+
+// Compose-on-demand: the web orb. Creates a pending session and enqueues the
+// LLM-authors-manifest → render task. Coalesces a mashed orb (returns the
+// in-flight session). The caller polls fetchMeditation(id) until ready.
+export function composeMeditation(): Promise<import("@/lib/types").CoreComposeResponse> {
+  return apiFetch<import("@/lib/types").CoreComposeResponse>("/api/v1/core/compose/", {
+    method: "POST",
+  });
+}
+
+export function fetchMeditation(id: string): Promise<import("@/lib/types").MeditationSession> {
+  return apiFetch<import("@/lib/types").MeditationSession>(`/api/v1/core/sessions/${id}/`);
+}
+
+// The library. Defaults to ready sessions; the list endpoint is paginated
+// (DRF PageNumberPagination), so unwrap `.results`.
+export async function fetchMeditations(
+  status?: string,
+): Promise<import("@/lib/types").MeditationSession[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  const data = await apiFetch<
+    | import("@/lib/types").MeditationSession[]
+    | { results?: import("@/lib/types").MeditationSession[] }
+  >(`/api/v1/core/sessions/${query}`);
+  if (Array.isArray(data)) return data;
+  return data.results ?? [];
+}
+
+export function updateCoreSettings(
+  data: { core_enabled: boolean },
+): Promise<import("@/lib/types").CoreSettingsResponse> {
+  return apiFetch<import("@/lib/types").CoreSettingsResponse>("/api/v1/core/settings/", {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function restartCoreAssistant(): Promise<{ restarted: boolean }> {
+  return apiFetch<{ restarted: boolean }>("/api/v1/core/restart/", {
+    method: "POST",
+  });
+}
+
+export function fetchCoreProfile(): Promise<import("@/lib/types").CoreProfile> {
+  return apiFetch<import("@/lib/types").CoreProfile>("/api/v1/core/profile/");
+}
+
+export function updateCoreProfile(
+  data: Partial<import("@/lib/types").CoreProfile>,
+): Promise<import("@/lib/types").CoreProfile> {
+  return apiFetch<import("@/lib/types").CoreProfile>("/api/v1/core/profile/", {
+    method: "PATCH",
+    body: JSON.stringify(data),
   });
 }

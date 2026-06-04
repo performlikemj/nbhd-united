@@ -8,6 +8,7 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -19,17 +20,16 @@ RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 
     torch==2.12.0
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
-
-# Download PII detection model (~554 MB FP32 safetensors) from HuggingFace at build time.
-# Apache-2.0; lakshyakh93/deberta_finetuned_pii (DeBERTa-v3-base + ai4privacy).
-# `ignore_patterns` skips the duplicate `pytorch_model.bin` — transformers
-# loads the safetensors variant and the .bin would just double the layer size.
+# PII detection model (~554 MB, DeBERTa-v3 + ai4privacy, Apache-2.0). Pulled as a
+# frozen layer from our own ACR — NOT from HuggingFace — so deploys never hit HF
+# rate limits (429s used to kill the build). The pii-model:<tag> image is built
+# once by the "Ensure PII model image" step in .github/workflows/ci-cd.yml; bump
+# the tag THERE and HERE together when changing the model. See Dockerfile.pii-model.
+# Placed before `COPY . .` so app-code changes never invalidate this layer.
 ENV PII_MODEL_PATH=/app/pii-model
-RUN python -c "\
-from huggingface_hub import snapshot_download; \
-snapshot_download('lakshyakh93/deberta_finetuned_pii', local_dir='/app/pii-model', \
-ignore_patterns=['pytorch_model.bin', 'optimizer.pt', '*.msgpack', '*.h5'])"
+COPY --from=nbhdunited.azurecr.io/pii-model:deberta-finetuned-pii-v1 /pii-model /app/pii-model
+
+COPY . .
 
 RUN SECRET_KEY=build-placeholder python manage.py collectstatic --noinput
 

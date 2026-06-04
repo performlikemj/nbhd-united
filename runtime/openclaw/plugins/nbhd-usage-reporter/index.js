@@ -209,7 +209,24 @@ async function reportBYOError(payload, api) {
 }
 
 export default function register(api) {
-  if (!api || typeof api.on !== "function") {
+  if (!api) {
+    return;
+  }
+
+  // OpenClaw 2026.5.28 moved plugin hook registration from the legacy
+  // `api.on(event, handler)` to `api.registerHook(event, handler)`. On 5.28
+  // `api.on` still exists (so a `typeof api.on` guard passes and the plugin
+  // logs "registered") but it no longer wires up conversation hooks — so
+  // `llm_output`/`agent_end` silently never fire and usage_records stop
+  // fleet-wide. Prefer registerHook; keep the api.on fallback so this shared
+  // plugin keeps working on 5.7 tenants during the staged rollout.
+  const subscribe =
+    typeof api.registerHook === "function"
+      ? (event, handler) => api.registerHook(event, handler)
+      : typeof api.on === "function"
+        ? (event, handler) => api.on(event, handler)
+        : null;
+  if (!subscribe) {
     return;
   }
 
@@ -222,7 +239,7 @@ export default function register(api) {
   // remember the last one for the agent_end branch.
   let lastAttempted = { provider: "", model: "" };
 
-  api.on("model_call_started", (event) => {
+  subscribe("model_call_started", (event) => {
     if (event && typeof event === "object") {
       lastAttempted = {
         provider: asTrimmedString(event.provider),
@@ -231,7 +248,7 @@ export default function register(api) {
     }
   });
 
-  api.on("llm_output", (event) => {
+  subscribe("llm_output", (event) => {
     const payload = extractUsage(event, api.logger);
     if (!payload) {
       return;
@@ -240,7 +257,7 @@ export default function register(api) {
     void reportUsage(payload, api);
   });
 
-  api.on("agent_end", (event) => {
+  subscribe("agent_end", (event) => {
     if (!event || event.success !== false) return;
     const errorMessage = asTrimmedString(event.error);
     if (!errorMessage) return;
