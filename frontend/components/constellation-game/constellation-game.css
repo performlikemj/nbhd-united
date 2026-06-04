@@ -2,7 +2,17 @@
    the product design system (globals.css). The shadow speaks in --font-display. */
 .cg-root {
   position: fixed;
-  inset: 0;
+  /* Size to the viewport explicitly rather than via inset:0. The app wraps every
+     page in `.content-fade-up`, whose `animation-fill-mode: forwards` leaves a
+     lingering `transform: translateY(0)` — a non-`none` transform makes it the
+     containing block for this fixed element, so `inset:0` would resolve against
+     that 0-height wrapper and collapse the canvas to height 0 (black screen).
+     vh/dvh reference the viewport, so the game fills the screen at any size. */
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
   background: var(--bg, #0b0f13);
   overflow: hidden;
   touch-action: none;
