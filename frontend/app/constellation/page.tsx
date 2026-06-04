@@ -26,8 +26,8 @@ const REL_COLORS: Record<GraphRelType, string> = {
 const ALL_KINDS: GraphNodeKind[] = ["Lesson", "Cluster", "Evidence", "Tag"];
 const ALL_RELS: GraphRelType[] = ["IN_CLUSTER", "SIMILAR_TO", "EVIDENCED_BY", "TAGGED_WITH", "REFINES"];
 const CLUSTER_PALETTE = ["#7C6BF0", "#E8B4B8", "#4ECDC4", "#FBBF24", "#60A5FA", "#F472B6", "#34D399", "#FB923C"];
-const VW = 2400;
-const VH = 1600;
+const VW = 2800;
+const VH = 1900;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -107,7 +107,7 @@ function clusterByTags(nodes: ConstellationNode[]): { clusters: ConstellationDat
 // ── Graph layout ─────────────────────────────────────────────────────────────
 
 function layoutGraph(graphNodes: GraphNode[], _graphEdges: GraphEdge[], clusters: ConstellationData["clusters"]): Record<string, { x: number; y: number }> {
-  const cx = VW / 2, cy = VH / 2, ringR = Math.min(VW, VH) * 0.42;
+  const cx = VW / 2, cy = VH / 2, ringR = Math.min(VW, VH) * 0.44;
   const cc: Record<number, { x: number; y: number }> = {};
   clusters.forEach((c, i) => { const a = (i / clusters.length) * Math.PI * 2 - Math.PI / 2 + 0.3; cc[c.id] = { x: cx + Math.cos(a) * ringR, y: cy + Math.sin(a) * ringR }; });
   const pos: Record<string, { x: number; y: number }> = {};
@@ -116,15 +116,20 @@ function layoutGraph(graphNodes: GraphNode[], _graphEdges: GraphEdge[], clusters
   graphNodes.filter((n) => n.kind === "Lesson").forEach((n) => { (byCluster[n.cluster_id ?? -1] ||= []).push(n); });
   Object.entries(byCluster).forEach(([cidStr, list]) => {
     const cid = Number(cidStr), center = cc[cid];
-    if (!center) { list.forEach((n, i) => { const a = (i / list.length) * Math.PI * 2; pos[String(n.id)] = { x: cx + Math.cos(a) * 100, y: cy + Math.sin(a) * 100 }; }); return; }
+    if (!center) { list.forEach((n, i) => { const a = (i / list.length) * Math.PI * 2; pos[String(n.id)] = { x: cx + Math.cos(a) * 160, y: cy + Math.sin(a) * 160 }; }); return; }
     const sorted = [...list].sort((a, b) => (b.weight || 0) - (a.weight || 0));
-    const splitAt = sorted.length > 5 ? Math.ceil(sorted.length / 2) : sorted.length;
+    const count = sorted.length;
+    // Ring radii grow with cluster size so dense clusters fan out instead of overlapping.
+    const innerR = 250 + count * 7, outerR = innerR + 210;
+    const splitAt = count > 6 ? Math.ceil(count / 2) : count;
+    // Big clusters wrap a wider arc (toward a full circle) so nodes don't crowd a narrow fan.
+    const spread = Math.min(Math.PI * 1.9, Math.PI * 1.05 + count * 0.06);
     sorted.forEach((n, i) => {
       const onOuter = i >= splitAt, ringList = onOuter ? sorted.slice(splitAt) : sorted.slice(0, splitAt);
       const ringIdx = onOuter ? i - splitAt : i, ringCount = ringList.length;
-      const toC = Math.atan2(cy - center.y, cx - center.x), spread = Math.PI * 1.35, a0 = toC + Math.PI - spread / 2;
+      const toC = Math.atan2(cy - center.y, cx - center.x), a0 = toC + Math.PI - spread / 2;
       const angle = a0 + (ringCount > 1 ? (ringIdx / (ringCount - 1)) * spread : spread / 2);
-      pos[String(n.id)] = { x: center.x + Math.cos(angle) * (onOuter ? 280 : 180), y: center.y + Math.sin(angle) * (onOuter ? 280 : 180) };
+      pos[String(n.id)] = { x: center.x + Math.cos(angle) * (onOuter ? outerR : innerR), y: center.y + Math.sin(angle) * (onOuter ? outerR : innerR) };
     });
   });
   graphNodes.filter((n) => n.kind === "Evidence").forEach((n) => {
@@ -138,11 +143,11 @@ function layoutGraph(graphNodes: GraphNode[], _graphEdges: GraphEdge[], clusters
   // Repulsion
   const lids = graphNodes.filter((n) => n.kind === "Lesson").map((n) => String(n.id));
   const lc = Object.fromEntries(graphNodes.filter((n) => n.kind === "Lesson").map((n) => [String(n.id), n.cluster_id ?? -1]));
-  for (let it = 0; it < 40; it++) for (let i = 0; i < lids.length; i++) for (let j = i + 1; j < lids.length; j++) {
+  for (let it = 0; it < 70; it++) for (let i = 0; i < lids.length; i++) for (let j = i + 1; j < lids.length; j++) {
     if (lc[lids[i]] !== lc[lids[j]]) continue;
     const pa = pos[lids[i]], pb = pos[lids[j]]; if (!pa || !pb) continue;
     const dx = pa.x - pb.x, dy = pa.y - pb.y, d = Math.sqrt(dx * dx + dy * dy + 0.01);
-    if (d < 130) { const push = (130 - d) * 0.3, nx = dx / d, ny = dy / d; pa.x += nx * push; pa.y += ny * push; pb.x -= nx * push; pb.y -= ny * push; }
+    if (d < 175) { const push = (175 - d) * 0.4, nx = dx / d, ny = dy / d; pa.x += nx * push; pa.y += ny * push; pb.x -= nx * push; pb.y -= ny * push; }
   }
   return pos;
 }
@@ -466,7 +471,7 @@ export default function ConstellationPage() {
             <button type="button" onClick={() => setZoom((z) => Math.min(3, z * 1.25))} className="h-7 w-7 rounded-full hover:bg-white/10 text-[#94A3B8] hover:text-white flex items-center justify-center" aria-label="Zoom in">+</button>
             <span className="h-4 w-px bg-white/10 mx-0.5" />
             <button type="button" onClick={() => setPositions(baseLayout)} title="Relayout" className="px-2.5 h-7 rounded-full hover:bg-white/10 text-[#94A3B8] hover:text-white text-[10px] uppercase tracking-wider flex items-center gap-1.5 font-headline">
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M8 2v3H5M2 8V5h3" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" /><path d="M8 5a3 3 0 11-5.2-2M2 5a3 3 0 015.2 2" stroke="currentColor" strokeWidth="1" strokeLinecap="round" /></svg>Relayout</button>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.36-2.64L3 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><path d="M3 21v-5h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.36 2.64L21 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><path d="M21 3v5h-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>Relayout</button>
             {playEnabled && (
               <Link href="/constellation/play" title="Fly your galaxy (beta)" className="px-2.5 h-7 rounded-full text-accent hover:text-accent-hover hover:bg-accent/15 text-[10px] uppercase tracking-wider flex items-center gap-1.5 font-headline">
                 <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M2 1.4l6.2 3.6L2 8.6z" fill="currentColor" /></svg>Play
