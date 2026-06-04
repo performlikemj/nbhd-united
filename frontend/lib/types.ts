@@ -871,3 +871,45 @@ export interface PATCreateResponse {
   created_at: string;
   warning: string;
 }
+
+// ── Journal current-status projection (GET /api/v1/journal/status/) ──────
+// Live "as of now" state derived from the canonical typed models + the
+// finance event ledger. Obligations are recurring-payment status folded
+// per calendar month — see apps/journal/status_projection.py.
+export type ObligationStatus = "paid" | "partial" | "unpaid";
+
+export interface JournalObligation {
+  account_id: string;
+  nickname: string;
+  minimum_payment: string;
+  paid_amount: string;
+  due_date: string;
+  period: string;
+  period_status: ObligationStatus;
+  overdue: boolean;
+}
+
+export interface JournalStatusTask {
+  id: string;
+  title: string;
+  status: string;
+  due_date: string | null;
+  pillar: string;
+}
+
+export interface JournalStatusGoal {
+  id: string;
+  title: string;
+  status: string;
+  target_date: string | null;
+  pillar: string;
+}
+
+export interface JournalStatus {
+  as_of: string;
+  typed_lifecycle: boolean;
+  finance_enabled: boolean;
+  open_tasks: JournalStatusTask[];
+  active_goals: JournalStatusGoal[];
+  obligations: JournalObligation[];
+}

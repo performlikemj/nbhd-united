@@ -10,6 +10,7 @@ from .document_views import (
 )
 from .extraction_views import NightlyExtractionView
 from .query_views import JournalQueryView
+from .status_views import JournalStatusView
 from .views import (
     DailyNoteEntryDetailView,
     DailyNoteEntryListView,
@@ -35,6 +36,7 @@ urlpatterns = [
     path("documents/<str:kind>/<path:slug>/", DocumentDetailView.as_view(), name="document-detail"),
     path("today/", TodayView.as_view(), name="today"),
     path("tree/", SidebarTreeView.as_view(), name="sidebar-tree"),
+    path("status/", JournalStatusView.as_view(), name="journal-status"),
     # ── Legacy endpoints (kept for backward compatibility) ───────────────
     path("", JournalEntryListCreateView.as_view(), name="journal-list-create"),
     path("<uuid:entry_id>/", JournalEntryDetailView.as_view(), name="journal-detail"),
