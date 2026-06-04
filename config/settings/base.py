@@ -261,6 +261,9 @@ BRAVE_API_KEY = env("BRAVE_API_KEY", default="")
 # Secret lives in Key Vault; set GEMINI_API_KEY on the Container App. Never echo it.
 GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
 GEMINI_TTS_MODEL = env("GEMINI_TTS_MODEL", default="gemini-2.5-flash-preview-tts")
+# Model that AUTHORS the meditation manifest (OpenRouter, JSON mode) — the web
+# orb's compose path. Mirrors the project's other Django-side LLM calls.
+CORE_COMPOSE_MODEL = env("CORE_COMPOSE_MODEL", default="deepseek/deepseek-v4-pro")
 # Bounded-parallel TTS calls per render — kept low to respect low-tier per-minute
 # rate caps (concurrent calls burst past the cap; the 429 backoff handles the rest).
 CORE_RENDER_CONCURRENCY = env.int("CORE_RENDER_CONCURRENCY", default=2)

@@ -48,3 +48,30 @@ def render_meditation_task(meditation_id: str) -> None:
         return
 
     render_meditation(session)
+
+
+def compose_meditation_task(meditation_id: str) -> None:
+    """Author a pending session's manifest (LLM) then render it (async via QStash).
+
+    The web orb's entry point: the consumer view creates a PENDING session and
+    enqueues this. Only acts on a PENDING row, so a QStash retry after the render
+    has begun is a no-op (render_meditation's own claim guards double-render).
+    """
+    from apps.core.models import MeditationSession, MeditationStatus
+    from apps.core.services import compose_meditation
+
+    try:
+        session = MeditationSession.objects.get(id=meditation_id)
+    except MeditationSession.DoesNotExist:
+        logger.warning("compose_meditation_task: session %s not found", str(meditation_id)[:8])
+        return
+
+    if session.status != MeditationStatus.PENDING:
+        logger.info(
+            "compose_meditation_task: session %s not pending (%s) — skipping",
+            str(meditation_id)[:8],
+            session.status,
+        )
+        return
+
+    compose_meditation(session)

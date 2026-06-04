@@ -1,6 +1,7 @@
 """Consumer-facing Core API views (JWT auth, frontend)."""
 
 import logging
+from datetime import date
 
 from rest_framework import status
 from rest_framework.generics import ListAPIView, RetrieveAPIView
@@ -194,3 +195,49 @@ class MeditationSessionDetailView(RetrieveAPIView):
         if not tenant:
             return MeditationSession.objects.none()
         return MeditationSession.objects.filter(tenant=tenant)
+
+
+class CoreComposeView(APIView):
+    """POST: compose-on-demand (the web orb).
+
+    Creates a pending MeditationSession and enqueues the async compose task (LLM
+    authors a manifest → render). Returns the meditation id for the frontend to
+    poll via ``GET /sessions/<id>/``. Coalesces a mashed orb: if a compose is
+    already in flight, returns that one instead of spending a second render.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        if not getattr(tenant, "core_enabled", False):
+            return Response({"error": "core_not_enabled"}, status=status.HTTP_403_FORBIDDEN)
+
+        in_flight = (
+            MeditationSession.objects.filter(
+                tenant=tenant, status__in=[MeditationStatus.PENDING, MeditationStatus.RENDERING]
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if in_flight:
+            return Response({"meditation_id": str(in_flight.id), "status": in_flight.status})
+
+        session = MeditationSession.objects.create(
+            tenant=tenant,
+            date=date.today(),
+            status=MeditationStatus.PENDING,
+        )
+        try:
+            from apps.cron.publish import publish_task
+
+            publish_task("compose_meditation", str(session.id))
+        except Exception:
+            _logger.warning("Failed to enqueue compose for meditation %s", session.id)
+
+        return Response(
+            {"meditation_id": str(session.id), "status": session.status},
+            status=status.HTTP_201_CREATED,
+        )
