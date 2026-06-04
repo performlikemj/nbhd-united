@@ -1198,11 +1198,12 @@ export function useCreateWorkoutMutation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: createWorkout,
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
-      void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
-      void qc.invalidateQueries({ queryKey: ["fuel-workout-count"] });
-    },
+    // Fan out to every fuel list — including ["fuel-schedule"]. Hand-rolling
+    // the list here previously omitted the schedule window, so a new workout
+    // showed on the Calendar instantly but lagged on the Schedule tab until
+    // its staleTime expired. Route through the shared helper so create stays
+    // in lockstep with delete/skip/complete (which already do).
+    onSuccess: () => invalidateFuelLists(qc),
   });
 }
 
@@ -1211,12 +1212,10 @@ export function useUpdateWorkoutMutation() {
   return useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<import("@/lib/types").FuelWorkout> }) =>
       updateWorkout(id, data),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
-      void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
-      void qc.invalidateQueries({ queryKey: ["fuel-workout"] });
-      void qc.invalidateQueries({ queryKey: ["fuel-progress"] });
-    },
+    // Was missing ["fuel-schedule"] (+ ["fuel-workout-count"]) on success, so
+    // an edit refreshed the Calendar but left the Schedule card showing
+    // pre-edit values. invalidateFuelLists covers all six keys.
+    onSuccess: () => invalidateFuelLists(qc),
     onError: (err) => {
       if (isNotFound(err)) invalidateFuelLists(qc);
     },
@@ -1435,11 +1434,9 @@ export function useDuplicateWorkoutMutation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: duplicateWorkout,
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
-      void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
-      void qc.invalidateQueries({ queryKey: ["fuel-workout-count"] });
-    },
+    // Same fix as create/update: include ["fuel-schedule"] so a duplicated
+    // session appears on the Schedule tab immediately, not just the Calendar.
+    onSuccess: () => invalidateFuelLists(qc),
   });
 }
 

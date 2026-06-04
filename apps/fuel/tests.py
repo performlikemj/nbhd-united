@@ -2616,3 +2616,47 @@ class DryRunCommandTests(TestCase):
         w.refresh_from_db()
         self.assertEqual(w.detail_json, before)  # untouched — read-only
         self.assertNotIn("type", w.detail_json["exercises"][0]["sets"][0])
+
+
+class ScheduleWindowTimezoneTests(TestCase):
+    """The rolling schedule window (?window=Nd) must anchor on the tenant's
+    local 'today', not the server's UTC date — otherwise a workout on the
+    user's current day can fall outside the window near the UTC boundary
+    (e.g. a JST evening, where server-UTC is still 'yesterday')."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="TZ Test", telegram_chat_id=800042)
+        self.user = self.tenant.user
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def test_schedule_window_anchors_on_tenant_today(self):
+        # Tenant-local today = 2026-04-21 → window [2026-04-21, 2026-04-28].
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="In Window",
+            status="planned",
+        )
+        # Past the window's upper bound — must not appear.
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 30),
+            category="cardio",
+            activity="Out Of Window",
+            status="planned",
+        )
+        # Patch the tz resolver so the test is independent of the real clock.
+        # That it is called with the tenant (not date.today()) is the fix.
+        with patch("apps.fuel.views.today_in_tenant_tz", return_value=date(2026, 4, 21)) as mock_today:
+            resp = self.client.get("/api/v1/fuel/workouts/?window=7d")
+
+        self.assertEqual(resp.status_code, 200)
+        mock_today.assert_called_once_with(self.tenant)
+        dates = {w["date"] for w in resp.data}
+        # Present because it's the tenant's today; the pre-fix UTC anchor
+        # (real today is months away) would have excluded it entirely.
+        self.assertIn("2026-04-21", dates)
+        self.assertNotIn("2026-04-30", dates)

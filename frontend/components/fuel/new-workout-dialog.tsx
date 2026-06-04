@@ -1,10 +1,40 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { useCreateWorkoutMutation, useWorkoutTemplatesQuery } from "@/lib/queries";
+import {
+  clearDraft,
+  loadDraft,
+  NEW_WORKOUT_KEY,
+  saveDraft,
+  type AutosaveEntry,
+} from "@/lib/fuel-draft-autosave";
+import { useCreateWorkoutMutation, useMeQuery, useWorkoutTemplatesQuery } from "@/lib/queries";
 import type { WorkoutCategory } from "@/lib/types";
 import { CATEGORIES, CATEGORY_IDS } from "./category-meta";
+
+/** In-progress state of the New Workout wizard — what autosave persists so an
+ *  abandoned new entry survives a navigate-away before it's created. */
+interface NewWorkoutDraft {
+  step: number;
+  cat: WorkoutCategory | null;
+  date: string;
+  status: "done" | "planned";
+  activity: string;
+  detailFromTemplate: Record<string, unknown> | null;
+}
+
+/** Compact "2 hours ago"-style label for the restore prompt. */
+function fmtAgo(ms: number): string {
+  const secs = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (secs < 60) return "just now";
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
 
 interface NewWorkoutDialogProps {
   open: boolean;
@@ -29,11 +59,83 @@ function NewWorkoutDialogInner({ presetDate, onClose, onCreated }: Omit<NewWorko
   );
   const [activity, setActivity] = useState("");
   const [detailFromTemplate, setDetailFromTemplate] = useState<Record<string, unknown> | null>(null);
+  const [recoverable, setRecoverable] = useState<AutosaveEntry<NewWorkoutDraft> | null>(null);
+  const [restoreChecked, setRestoreChecked] = useState(false);
   const createMutation = useCreateWorkoutMutation();
   const { data: templates } = useWorkoutTemplatesQuery(cat ?? undefined);
+  const { data: me } = useMeQuery();
+  const tenantId = me?.tenant?.id ?? null;
 
   const suggestions = cat ? CATEGORIES[cat].suggest : [];
   const catTemplates = (templates || []).filter((t) => t.category === cat);
+
+  // Latest-value refs for the pagehide/unmount autosave flush. Synced via an
+  // effect (not during render) to satisfy react-hooks/refs.
+  const stateRef = useRef<NewWorkoutDraft>({ step, cat, date, status, activity, detailFromTemplate });
+  const recoverableRef = useRef(recoverable);
+  const createdRef = useRef(false);
+  useEffect(() => {
+    stateRef.current = { step, cat, date, status, activity, detailFromTemplate };
+    recoverableRef.current = recoverable;
+  });
+
+  // One-shot restore detection during render (once `me` resolves tenantId) —
+  // mirrors WorkoutDetail's init pattern. Offer to restore an abandoned draft
+  // only on a generic "Log workout" open: a presetDate means the user tapped a
+  // specific day, an intentional fresh start, so don't resurrect over it.
+  if (!restoreChecked && tenantId) {
+    setRestoreChecked(true);
+    if (!presetDate) {
+      const snap = loadDraft<NewWorkoutDraft>(tenantId, NEW_WORKOUT_KEY);
+      if (snap && snap.payload.cat) setRecoverable(snap);
+    }
+  }
+
+  // Debounced autosave once the user has engaged past category selection.
+  useEffect(() => {
+    if (!tenantId || recoverable || createdRef.current || !cat) return;
+    const payload: NewWorkoutDraft = { step, cat, date, status, activity, detailFromTemplate };
+    const t = window.setTimeout(() => saveDraft<NewWorkoutDraft>(tenantId, NEW_WORKOUT_KEY, payload), 800);
+    return () => window.clearTimeout(t);
+  }, [tenantId, recoverable, step, cat, date, status, activity, detailFromTemplate]);
+
+  // Flush on tab-hide / dialog-close so the last edit isn't lost to the debounce.
+  useEffect(() => {
+    if (!tenantId) return;
+    const flush = () => {
+      if (recoverableRef.current || createdRef.current) return;
+      const d = stateRef.current;
+      if (!d.cat) return;
+      saveDraft<NewWorkoutDraft>(tenantId, NEW_WORKOUT_KEY, d);
+    };
+    window.addEventListener("pagehide", flush);
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+      flush();
+    };
+  }, [tenantId]);
+
+  const restore = () => {
+    if (!recoverable) return;
+    const p = recoverable.payload;
+    setStep(p.step);
+    setCat(p.cat);
+    setDate(p.date);
+    setStatus(p.status);
+    setActivity(p.activity);
+    setDetailFromTemplate(p.detailFromTemplate);
+    setRecoverable(null);
+  };
+
+  const discardRecoverable = () => {
+    if (tenantId) clearDraft(tenantId, NEW_WORKOUT_KEY);
+    setRecoverable(null);
+  };
 
   const handleCreate = async () => {
     if (!cat) return;
@@ -53,6 +155,10 @@ function NewWorkoutDialogInner({ presetDate, onClose, onCreated }: Omit<NewWorko
         duration_minutes: 45,
         detail_json: detailJson,
       });
+      // Created on the server — drop the autosave snapshot and guard the
+      // unmount flush from re-writing it.
+      createdRef.current = true;
+      if (tenantId) clearDraft(tenantId, NEW_WORKOUT_KEY);
       onClose();
       onCreated(result.id);
     } catch {
@@ -90,6 +196,39 @@ function NewWorkoutDialogInner({ presetDate, onClose, onCreated }: Omit<NewWorko
             <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12" /></svg>
           </button>
         </div>
+
+        {/* Unsaved new-workout restore prompt */}
+        {recoverable && (
+          <div className="px-4 sm:px-6 pt-4">
+            <div
+              role="status"
+              className="rounded-xl border border-accent/40 bg-accent/10 px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-ink">
+                  Unfinished workout from {fmtAgo(recoverable.updatedAt)}
+                </div>
+                <div className="mt-0.5 text-xs text-ink-muted">
+                  Pick up where you left off?
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={restore}
+                  className="rounded-full bg-accent text-white font-semibold min-h-[44px] px-4 py-2 text-xs hover:brightness-110 active:scale-[0.98] transition"
+                >
+                  Resume
+                </button>
+                <button
+                  onClick={discardRecoverable}
+                  className="rounded-full border border-border hover:border-border-strong text-ink-muted hover:text-ink min-h-[44px] px-4 py-2 text-xs transition"
+                >
+                  Start fresh
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Step 0: Category picker */}
         {step === 0 && (
