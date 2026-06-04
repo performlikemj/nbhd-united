@@ -366,6 +366,33 @@ class RenderMeditationOrchestrationTests(TestCase):
         session.refresh_from_db()
         self.assertEqual(session.status, MeditationStatus.READY)
 
+    def test_save_recovers_from_render_killed_db_connection(self):
+        # The multi-minute render holds an idle DB connection that Postgres kills;
+        # the post-render write must drop it, restore the service-role RLS GUC, and
+        # retry — otherwise the status update is lost and the row wedges at RENDERING.
+        from django.db.utils import OperationalError
+
+        session = self._session()
+        real_save = session.save
+        calls = {"n": 0}
+
+        def flaky_save(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OperationalError("terminating connection due to idle-session timeout")
+            return real_save(*args, **kwargs)
+
+        with (
+            patch.object(session, "save", side_effect=flaky_save),
+            patch("django.db.connection.close") as mock_close,
+            patch("apps.tenants.middleware.set_rls_context") as mock_rls,
+        ):
+            services._save_session(session, ["status", "error", "updated_at"])
+
+        self.assertEqual(calls["n"], 2)  # failed once, retried once
+        mock_close.assert_called_once()  # dead connection dropped
+        mock_rls.assert_called_once()  # service-role RLS GUC restored on the fresh connection
+
 
 # ═════════════════════════════════════════════════════════════════════
 # 4. notify_meditation_ready (all-channels, deterministic, non-fatal)

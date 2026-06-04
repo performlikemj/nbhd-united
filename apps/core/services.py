@@ -154,8 +154,9 @@ def render_meditation(session: MeditationSession) -> None:
         session.voice = voice
         session.status = MeditationStatus.READY
         session.error = ""
-        session.save(
-            update_fields=[
+        _save_session(
+            session,
+            [
                 "audio_url",
                 "ogg_url",
                 "duration_ms",
@@ -165,7 +166,7 @@ def render_meditation(session: MeditationSession) -> None:
                 "status",
                 "error",
                 "updated_at",
-            ]
+            ],
         )
     except Exception as exc:  # noqa: BLE001 — transient persist failure: FAILED, then retry
         logger.exception("render_meditation: session %s persist failed (will retry)", sid[:8])
@@ -189,7 +190,37 @@ def render_meditation(session: MeditationSession) -> None:
 def _fail(session: MeditationSession, message: str) -> None:
     session.status = MeditationStatus.FAILED
     session.error = message[:480]
-    session.save(update_fields=["status", "error", "updated_at"])
+    _save_session(session, ["status", "error", "updated_at"])
+
+
+def _save_session(session: MeditationSession, update_fields: list[str]) -> None:
+    """Persist a post-render status change, recovering from a render-killed DB connection.
+
+    The render does no DB work for minutes, so Postgres/Supabase kills the idle
+    session; the first post-render write then fails with
+    OperationalError/InterfaceError ("terminating connection due to idle-session
+    timeout"). When that happens, drop the dead connection, re-establish the
+    connection-scoped service-role RLS GUC on a fresh one (``trigger_task`` set it
+    on the original connection; it's lost when the connection dies), and retry
+    once. Without this the status update is lost and the row wedges at
+    ``rendering`` forever. The retry only runs on an actual connection failure, so
+    it's a no-op under normal operation (and in transactional tests).
+    """
+    from django.db import connection
+    from django.db.utils import InterfaceError, OperationalError
+
+    from apps.tenants.middleware import set_rls_context
+
+    try:
+        session.save(update_fields=update_fields)
+    except (OperationalError, InterfaceError):
+        logger.warning(
+            "render_meditation: DB connection died during render — reconnecting + retrying save for %s",
+            str(session.id)[:8],
+        )
+        connection.close()
+        set_rls_context(service_role=True)
+        session.save(update_fields=update_fields)
 
 
 # ============================================================================
