@@ -20,6 +20,7 @@ import {
   useUnlinkTelegramMutation,
   useUpdateFinanceSettingsMutation,
   useUpdateFuelSettingsMutation,
+  useUpdateCoreSettingsMutation,
   useFuelProfileQuery,
 } from "@/lib/queries";
 import type { TelegramLinkResponse, LineLinkResponse } from "@/lib/api";
@@ -415,6 +416,93 @@ function FuelCard() {
   );
 }
 
+function CoreCard() {
+  const { data: tenant } = useTenantQuery();
+  const mutation = useUpdateCoreSettingsMutation();
+  const enabled = tenant?.core_enabled ?? false;
+  const [restarting, setRestarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleToggle = async () => {
+    setError(null);
+    try {
+      const result = await mutation.mutateAsync({ core_enabled: !enabled });
+      if (result.restart_required) {
+        // Plugin allow-list flipped — restart so the running session picks up
+        // the change (same path on enable and disable).
+        setRestarting(true);
+        try {
+          const { restartCoreAssistant } = await import("@/lib/api");
+          await restartCoreAssistant();
+        } catch {
+          setError(
+            "Saved, but couldn't restart your assistant. Toggle off and back on to retry.",
+          );
+        } finally {
+          setRestarting(false);
+        }
+      }
+    } catch {
+      setError("Couldn't update Core. Please try again.");
+    }
+  };
+
+  const busy = mutation.isPending || restarting;
+
+  return (
+    <article
+      className={`rounded-panel border p-4 transition-colors ${
+        enabled ? "border-accent/25 bg-accent/5" : "border-border bg-surface-elevated"
+      }`}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="text-base" aria-hidden="true">◎</span>
+            <h3 className="text-base font-medium">Core</h3>
+          </div>
+          <p className="mt-1 text-sm text-ink-muted">
+            On-demand guided meditations — your assistant composes a quiet ten
+            minutes from your week, then voices it aloud.
+          </p>
+          {enabled && !restarting && !error && (
+            <p className="mt-2 text-xs text-ink-muted">
+              Open the Core tab and press the orb whenever you want a sit.
+            </p>
+          )}
+          {restarting && (
+            <p className="mt-2 text-xs text-amber-text" role="status">
+              Configuring your assistant... this takes about a minute.
+            </p>
+          )}
+          {error && (
+            <p className="mt-2 text-xs text-rose-text" role="alert">
+              {error}
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          aria-label={enabled ? "Disable Core" : "Enable Core"}
+          onClick={handleToggle}
+          disabled={busy}
+          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+            enabled ? "bg-accent" : "bg-border"
+          } ${busy ? "opacity-50" : ""}`}
+        >
+          <span
+            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+              enabled ? "translate-x-5" : "translate-x-0"
+            }`}
+          />
+        </button>
+      </div>
+    </article>
+  );
+}
+
 function IntegrationsContent() {
   const searchParams = useSearchParams();
   const { data, isLoading, error } = useIntegrationsQuery();
@@ -479,6 +567,9 @@ function IntegrationsContent() {
       </ErrorBoundary>
       <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load Fuel settings.</p>}>
         <FuelCard />
+      </ErrorBoundary>
+      <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load Core settings.</p>}>
+        <CoreCard />
       </ErrorBoundary>
 
       {connectError && (

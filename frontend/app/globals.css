@@ -483,6 +483,52 @@ body {
   animation: bottomSheetEnter 250ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
 }
 
+/* ── Core: breathing orb (mindfulness) ── */
+@keyframes breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.055); }
+}
+@keyframes breatheGlow {
+  0%, 100% { opacity: 0.45; transform: scale(1); }
+  50% { opacity: 0.85; transform: scale(1.14); }
+}
+@keyframes breatheRing {
+  0% { opacity: 0.55; transform: scale(0.82); }
+  100% { opacity: 0; transform: scale(1.6); }
+}
+.core-breathe { animation: breathe 7s ease-in-out infinite; }
+.core-breathe-glow { animation: breatheGlow 7s ease-in-out infinite; }
+.core-breathe-ring { animation: breatheRing 7s ease-out infinite; }
+
+@keyframes eqbar {
+  0%, 100% { height: 30%; }
+  50% { height: 100%; }
+}
+
+@keyframes coreTextShimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.core-shimmer {
+  background: linear-gradient(90deg, var(--ink-faint), var(--ink) 50%, var(--ink-faint));
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: coreTextShimmer 1.8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .core-shimmer { animation: none; color: var(--ink-muted); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .core-breathe,
+  .core-breathe-glow,
+  .core-breathe-ring {
+    animation: none;
+  }
+}
+
 /* ── Print ── */
 
 @media print {

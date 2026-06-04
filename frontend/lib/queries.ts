@@ -114,6 +114,7 @@ import {
   deleteBodyWeight,
   updateBodyWeight,
   updateFuelSettings,
+  updateCoreSettings,
   fetchFuelProfile,
   updateFuelProfile,
   fetchWorkoutTemplates,
@@ -1376,6 +1377,31 @@ export function useUpdateFuelSettingsMutation() {
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["tenant"] });
       void queryClient.invalidateQueries({ queryKey: ["fuel-profile"] });
+    },
+  });
+}
+
+// -- Core (Mindfulness) --
+
+export function useUpdateCoreSettingsMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateCoreSettings,
+    onMutate: async (newData) => {
+      await queryClient.cancelQueries({ queryKey: ["tenant"] });
+      const previous = queryClient.getQueryData<Tenant>(["tenant"]);
+      queryClient.setQueryData<Tenant>(["tenant"], (old) =>
+        old ? { ...old, ...newData } : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _newData, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["tenant"], context.previous);
+      }
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["tenant"] });
     },
   });
 }
