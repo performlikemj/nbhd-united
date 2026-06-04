@@ -11,7 +11,7 @@ import { PhaseTimeline } from "@/components/core/phase-timeline";
 import { PHASES, computeCoreStats, toMeditation, type Meditation } from "@/lib/core";
 import { composeMeditation, fetchMeditation, fetchMeditations } from "@/lib/api";
 
-type Phase = "invite" | "composing" | "ready" | "failed";
+type Phase = "loading" | "invite" | "composing" | "ready" | "failed";
 const COMPOSE_MSGS = ["Drawing on your week…", "Finding the words…", "Placing the silences…", "Almost there…"];
 const POLL_INTERVAL_MS = 3500;
 // Stop *watching* after this long — the render's own channel ping still lands,
@@ -20,7 +20,10 @@ const POLL_INTERVAL_MS = 3500;
 const POLL_TIMEOUT_MS = 4 * 60_000;
 
 export default function CorePage() {
-  const [phase, setPhase] = useState<Phase>("invite");
+  // Start in "loading" — never paint the compose CTA before we know whether
+  // today already has a sit (else a fast tap fires a real, billable compose
+  // that the incoming data then hides). The orb stays inert until this resolves.
+  const [phase, setPhase] = useState<Phase>("loading");
   const [msgIdx, setMsgIdx] = useState(0);
   const [longRunning, setLongRunning] = useState(false);
   const [showToast, setShowToast] = useState(false);
@@ -45,17 +48,19 @@ export default function CorePage() {
     }
   }, []);
 
-  // On mount: load the library, and if today's sit already rendered, surface it.
+  // On mount: load the library, then resolve the initial phase exactly once —
+  // ready if today already has a sit, otherwise invite. This is the only
+  // transition out of "loading", so the orb can't be acted on before it runs.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const meds = await loadLibrary();
       if (cancelled) return;
       const todays = meds.find((m) => m.dateLabel === "Today");
-      if (todays) {
-        setToday(todays);
-        setPhase("ready");
-      }
+      if (todays) setToday(todays);
+      // Guard against clobbering a user-driven phase (defensive — interactivity
+      // is gated on !loading, so in practice prev is always "loading" here).
+      setPhase((prev) => (prev === "loading" ? (todays ? "ready" : "invite") : prev));
     })();
     return () => {
       cancelled = true;
@@ -151,6 +156,9 @@ export default function CorePage() {
   };
 
   const onOrb = () => {
+    // Inert until the initial load resolves and while a compose is in flight —
+    // so a tap can never fire a stray (billable) compose before we know state.
+    if (phase === "loading" || phase === "composing") return;
     if (phase === "invite" || phase === "failed") void compose();
     else if (phase === "ready" && today) play(today);
   };
@@ -190,11 +198,19 @@ export default function CorePage() {
           }}
         />
         <div className="relative flex flex-col items-center text-center">
-          <BreathingOrb
-            compose={phase === "invite" || phase === "failed"}
-            playing={playing && todayActive}
-            onClick={onOrb}
-          />
+          <div className={phase === "loading" ? "opacity-40 transition-opacity duration-500" : "transition-opacity duration-500"}>
+            <BreathingOrb
+              compose={phase === "invite" || phase === "failed"}
+              playing={playing && todayActive}
+              onClick={onOrb}
+            />
+          </div>
+
+          {phase === "loading" && (
+            <p className="mt-8 text-[10px] uppercase tracking-[0.22em] text-ink-faint" role="status">
+              Preparing your space…
+            </p>
+          )}
 
           {phase === "invite" && (
             <>
@@ -258,17 +274,33 @@ export default function CorePage() {
 
       {/* ── Stats ── */}
       <div className="mb-12">
-        <CoreStats stats={stats} />
+        {phase === "loading" ? (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-hidden>
+            {[0, 1, 2, 3].map((i) => (
+              <div key={i} className="h-[104px] animate-pulse rounded-2xl border border-border bg-surface/60" />
+            ))}
+          </div>
+        ) : (
+          <CoreStats stats={stats} />
+        )}
       </div>
 
       {/* ── Library ── */}
       <div className="mb-4 flex items-baseline justify-between">
         <h3 className="font-display text-xl italic text-ink sm:text-2xl">Your meditations</h3>
         <span className="font-mono text-[11px] text-ink-faint">
-          {libItems.length} {libItems.length === 1 ? "session" : "sessions"}
+          {phase === "loading"
+            ? "—"
+            : `${libItems.length} ${libItems.length === 1 ? "session" : "sessions"}`}
         </span>
       </div>
-      {libItems.length > 0 ? (
+      {phase === "loading" ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2" aria-hidden>
+          {[0, 1].map((i) => (
+            <div key={i} className="h-[88px] animate-pulse rounded-2xl border border-border bg-surface/60" />
+          ))}
+        </div>
+      ) : libItems.length > 0 ? (
         <MeditationLibrary items={libItems} currentId={current?.id} playing={playing} onPlay={play} />
       ) : (
         <p className="rounded-panel border border-dashed border-border bg-surface/40 p-8 text-center text-sm text-ink-muted">
