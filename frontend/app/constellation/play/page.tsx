@@ -181,11 +181,57 @@ class GameBoundary extends Component<{ children: ReactNode }, { failed: boolean 
   }
 }
 
+// ── error surfacing ──────────────────────────────────────────────────────────
+
+/** Surfaces the first uncaught error / promise rejection so a silent failure —
+ *  e.g. the Phaser scene throwing inside its animation loop, which a React error
+ *  boundary can't catch — becomes a visible, reportable message instead of a
+ *  black screen. */
+function useCapturedError(): string | null {
+  const [msg, setMsg] = useState<string | null>(null);
+  useEffect(() => {
+    const onError = (e: ErrorEvent) => setMsg((prev) => prev ?? (e.message || String(e.error) || "Unknown error"));
+    const onReject = (e: PromiseRejectionEvent) =>
+      setMsg((prev) => prev ?? (e.reason?.message || String(e.reason) || "Unhandled rejection"));
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onReject);
+    return () => {
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onReject);
+    };
+  }, []);
+  return msg;
+}
+
+function ErrorBanner({ msg }: { msg: string }) {
+  const [hidden, setHidden] = useState(false);
+  if (hidden) return null;
+  return (
+    <div className="fixed inset-x-0 bottom-0 z-[60] border-t border-rose-border bg-rose-bg/95 px-4 py-3 backdrop-blur-xl">
+      <p className="font-headline text-[11px] uppercase tracking-wider text-rose-text">Galaxy hit an error</p>
+      <p className="mt-1 break-words font-mono text-[11px] leading-snug text-rose-text/90">{msg}</p>
+      <div className="mt-2 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="inline-flex min-h-[40px] items-center rounded-full bg-rose-text/15 px-4 font-headline text-[12px] text-rose-text transition hover:bg-rose-text/25"
+        >
+          Reload
+        </button>
+        <button type="button" onClick={() => setHidden(true)} className="font-headline text-[12px] text-rose-text/70 hover:text-rose-text">
+          Dismiss
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── page ─────────────────────────────────────────────────────────────────────
 
 export default function ConstellationPlayPage() {
   const router = useRouter();
   const [allowed, setAllowed] = useState<boolean | null>(null);
+  const bootError = useCapturedError();
 
   useEffect(() => {
     // Reading a client-only flag (env / localStorage) once after mount, then redirecting if
@@ -201,10 +247,11 @@ export default function ConstellationPlayPage() {
   // gating: render nothing while deciding / redirecting out
   if (allowed === null || !allowed) return null;
 
-  if (isLoading) return <FetchingScreen onRetry={() => void refetch()} />;
-
-  if (error) {
-    return (
+  let content: ReactNode;
+  if (isLoading) {
+    content = <FetchingScreen onRetry={() => void refetch()} />;
+  } else if (error) {
+    content = (
       <Screen>
         <Headline>Couldn&apos;t load your galaxy</Headline>
         <Sub>{isFetching ? "Retrying…" : "The server may be waking up, or your connection dropped."}</Sub>
@@ -216,10 +263,8 @@ export default function ConstellationPlayPage() {
         )}
       </Screen>
     );
-  }
-
-  if (!data || data.stars.length === 0) {
-    return (
+  } else if (!data || data.stars.length === 0) {
+    content = (
       <Screen>
         <Headline>Your galaxy is still forming</Headline>
         <Sub>Approve a few lessons first, then come back and fly.</Sub>
@@ -228,13 +273,22 @@ export default function ConstellationPlayPage() {
         </ActionRow>
       </Screen>
     );
+  } else {
+    content = (
+      <GameBoundary>
+        <ExitLink />
+        <ConstellationGame galaxy={data} />
+        <WarpIn />
+      </GameBoundary>
+    );
   }
 
+  // The banner overlays whatever's showing — so an error thrown inside Phaser's
+  // render loop (uncatchable by <GameBoundary>) still surfaces over the canvas.
   return (
-    <GameBoundary>
-      <ExitLink />
-      <ConstellationGame galaxy={data} />
-      <WarpIn />
-    </GameBoundary>
+    <>
+      {content}
+      {bootError && <ErrorBanner msg={bootError} />}
+    </>
   );
 }
