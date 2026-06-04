@@ -129,7 +129,7 @@ function layoutStars(stars: GalaxyStar[]): {
   const cids = [...byCluster.keys()];
   const cw = new Map<number, { x: number; y: number }>();
   for (const cid of cids) { const c = centroid.get(cid)!; cw.set(cid, toWorld(c.x, c.y)); }
-  const SEP = INTRA * 2.7; // centre-to-centre floor ≈ nebula Ø + breathing room
+  const SEP = INTRA * 3.7; // centre-to-centre floor — generous void for long glides between neighbourhoods
   for (let it = 0; it < 80; it++) {
     for (let i = 0; i < cids.length; i++) for (let j = i + 1; j < cids.length; j++) {
       const a = cw.get(cids[i])!, b = cw.get(cids[j])!;
@@ -345,7 +345,7 @@ export class GalaxyScene extends Phaser.Scene {
     // hairball, and visible enough that the connections actually register.
     const clusterById: Record<number, number | null> = {};
     for (const s of this.galaxy.stars) clusterById[s.id] = s.cluster_id;
-    const K = 4;
+    const K = 3;
     const perNode: Record<number, { other: number; sim: number }[]> = {};
     for (const e of this.galaxy.edges) {
       const sim = e.similarity ?? 0.4;
@@ -366,9 +366,11 @@ export class GalaxyScene extends Phaser.Scene {
         if (!a || !b) continue;
         const cross = clusterById[id] !== clusterById[other];
         if (cross) {
-          g.lineStyle(1.2, SIMILAR, 0.16 + sim * 0.34);
+          // Cross-cluster bridges are the long crisscross lines that read as a
+          // spiderweb — keep them as a faint suggestion, not a structural mesh.
+          g.lineStyle(1, SIMILAR, 0.07 + sim * 0.16);
         } else {
-          g.lineStyle(1, EDGE, 0.1 + sim * 0.22);
+          g.lineStyle(1, EDGE, 0.05 + sim * 0.12);
         }
         g.lineBetween(a.x, a.y, b.x, b.y);
       }
