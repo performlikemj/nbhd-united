@@ -25,8 +25,8 @@ const CONFIG = {
 
 // Star stages re-skinned to the product palette: slate → teal → purple → gold.
 const STAGE: Record<StarStage, { size: number; color: number; glow: number; pulse: boolean }> = {
-  proto: { size: 7, color: 0x5b6b8c, glow: 0.55, pulse: false },
-  ignited: { size: 11, color: 0x4ecdc4, glow: 0.95, pulse: false },
+  proto: { size: 9, color: 0x5b6b8c, glow: 0.78, pulse: false },
+  ignited: { size: 12, color: 0x4ecdc4, glow: 1.0, pulse: false },
   radiant: { size: 16, color: 0x7c6bf0, glow: 1.25, pulse: true },
   supernova: { size: 24, color: 0xf5c878, glow: 1.75, pulse: true },
 };
@@ -166,7 +166,7 @@ function layoutStars(stars: GalaxyStar[]): {
     if (p.x > maxPX) maxPX = p.x;
     if (p.y > maxPY) maxPY = p.y;
   }
-  const MARGIN = INTRA * 1.4;
+  const MARGIN = INTRA * 0.8;
   for (const id in pos) { pos[id].x += MARGIN - minPX; pos[id].y += MARGIN - minPY; }
   const finalW = Math.max(BASE, Math.round(maxPX - minPX + MARGIN * 2));
   const finalH = Math.max(2200, Math.round(maxPY - minPY + MARGIN * 2));
@@ -195,6 +195,9 @@ interface Encounter {
   resolved: boolean;
   cooldownUntil: number;
   nega: any;
+  // Arms only once the ship has been clear of the trigger radius — so spawning
+  // inside a neighbourhood never insta-fires the duel before you've oriented.
+  armed: boolean;
 }
 
 export class GalaxyScene extends Phaser.Scene {
@@ -227,6 +230,10 @@ export class GalaxyScene extends Phaser.Scene {
   private keys!: any;
   private landBtn!: HTMLElement | null;
   private encEl!: HTMLElement | null;
+  // Each cluster as a place: nebula (halo+core), a floating name that acts as a
+  // distant beacon, and an "entered" latch for the one-shot arrival bloom.
+  private neighborhoods: { cid: number; cx: number; cy: number; r: number; n: number; color: number; halo: Phaser.GameObjects.Image; core: Phaser.GameObjects.Image; name: Phaser.GameObjects.Text; entered: boolean }[] = [];
+  private neighborhoodR = 400;
 
   constructor(galaxy: GalaxyData, overlayRoot: HTMLElement) {
     super("galaxy");
@@ -247,11 +254,11 @@ export class GalaxyScene extends Phaser.Scene {
     this.cameras.main.setBackgroundColor("#0b0f13");
 
     this.buildStarfield();
-    this.buildNebulae(pos);
+    this.buildNeighborhoods(pos);
     this.buildEdges(pos);
     this.buildStars(pos);
-    this.buildConstellationLabels();
-    this.buildShip(world.w / 2, world.h / 2);
+    const spawn = this.pickSpawn();
+    this.buildShip(spawn.x, spawn.y);
     this.buildHUD();
     this.buildInput();
     this.buildMinimap();
@@ -398,6 +405,17 @@ export class GalaxyScene extends Phaser.Scene {
           repeat: -1,
           ease: "Sine.inOut",
         });
+      } else {
+        // Gentle twinkle on the quiet stars so the field feels alive as you pass.
+        this.tweens.add({
+          targets: core,
+          alpha: 0.6,
+          duration: 1300 + Math.random() * 1700,
+          delay: Math.random() * 1600,
+          yoyo: true,
+          repeat: -1,
+          ease: "Sine.inOut",
+        });
       }
       const entry: StarEntry = { id: data.id, data, x: p.x, y: p.y, r: cfg.size, glow, core, label, visited: !!data.last_visited_at };
       if (entry.visited) this.markVisited(entry);
@@ -405,29 +423,72 @@ export class GalaxyScene extends Phaser.Scene {
     }
   }
 
-  // Soft coloured "territory" behind each cluster — a nebula sized to the
-  // neighbourhood's footprint. This is what turns a scatter of dim dots into
-  // legible constellations: each group reads as a place, with its own colour,
-  // even zoomed out and even when its stars are tiny protos.
-  private buildNebulae(pos: Record<number, { x: number; y: number }>) {
-    const groups = new Map<number, { x: number; y: number; n: number; pts: { x: number; y: number }[] }>();
+  // Each cluster as a *place*: a soft coloured nebula (halo + core) sized to the
+  // neighbourhood's footprint, plus a floating name. This is what turns a scatter
+  // of dim dots into constellations you visit. The name + nebula brightness are
+  // driven per-frame by the ship's distance (see updateNeighborhoods): a faint
+  // beacon from afar that blooms as you arrive.
+  private buildNeighborhoods(pos: Record<number, { x: number; y: number }>) {
+    const groups = new Map<number, { x: number; y: number; n: number; label: string; pts: { x: number; y: number }[] }>();
     for (const s of this.galaxy.stars) {
       const cid = s.cluster_id;
       const p = pos[s.id];
       if (cid === null || cid === undefined || !p) continue;
-      const g = groups.get(cid) ?? { x: 0, y: 0, n: 0, pts: [] };
+      const g = groups.get(cid) ?? { x: 0, y: 0, n: 0, label: s.cluster_label || "", pts: [] };
       g.x += p.x; g.y += p.y; g.n += 1; g.pts.push(p);
       groups.set(cid, g);
     }
+    let rSum = 0;
     for (const [cid, g] of groups) {
       const cx = g.x / g.n, cy = g.y / g.n;
       let maxD = 0;
       for (const p of g.pts) maxD = Math.max(maxD, Math.hypot(p.x - cx, p.y - cy));
-      const R = Math.max(200, maxD + 110);
-      const tint = clusterColor(cid);
-      // halo (wide, faint) + core (tighter, denser) — additive over the void
-      this.add.image(cx, cy, "glow").setTint(tint).setBlendMode(Phaser.BlendModes.ADD).setDepth(1).setScale((R * 2.0) / 62).setAlpha(0.1);
-      this.add.image(cx, cy, "glow").setTint(tint).setBlendMode(Phaser.BlendModes.ADD).setDepth(1).setScale((R * 1.05) / 62).setAlpha(0.16);
+      const r = Math.max(220, maxD + 120);
+      rSum += r;
+      const color = clusterColor(cid);
+      const halo = this.add.image(cx, cy, "glow").setTint(color).setBlendMode(Phaser.BlendModes.ADD).setDepth(1).setScale((r * 2.1) / 62).setAlpha(0.09);
+      const core = this.add.image(cx, cy, "glow").setTint(color).setBlendMode(Phaser.BlendModes.ADD).setDepth(1).setScale((r * 1.05) / 62).setAlpha(0.14);
+      const hex = "#" + color.toString(16).padStart(6, "0");
+      const name = this.add
+        .text(cx, cy - r - 30, (g.label || "").toUpperCase(), { fontFamily: "serif", fontStyle: "italic", fontSize: "32px", color: hex })
+        .setOrigin(0.5)
+        .setAlpha(0.16)
+        .setDepth(2);
+      this.neighborhoods.push({ cid, cx, cy, r, n: g.n, color, halo, core, name, entered: false });
+    }
+    this.neighborhoodR = this.neighborhoods.length ? rSum / this.neighborhoods.length : 400;
+  }
+
+  // Start the journey *inside* the richest neighbourhood, not the empty centre —
+  // so you open among stars with a nebula around you, not staring into the void.
+  private pickSpawn(): { x: number; y: number } {
+    if (!this.neighborhoods.length) return { x: this.world.w / 2, y: this.world.h / 2 };
+    let best = this.neighborhoods[0];
+    for (const n of this.neighborhoods) if (n.n > best.n) best = n;
+    return { x: best.cx, y: best.cy };
+  }
+
+  // Beacons + arrival: distant neighbourhoods glow faintly and their names sit
+  // dim; as the ship nears, the nebula brightens and the name fades up, and the
+  // first time you cross the threshold its stars twinkle awake (a one-shot bloom).
+  private updateNeighborhoods() {
+    const ship = this.ship;
+    for (const nb of this.neighborhoods) {
+      const d = Phaser.Math.Distance.Between(ship.x, ship.y, nb.cx, nb.cy);
+      const t = Phaser.Math.Clamp((d - nb.r) / (nb.r * 3), 0, 1); // 0 = inside, 1 = far
+      nb.name.setAlpha(0.62 - 0.46 * t);
+      const near = Phaser.Math.Clamp(1 - d / (nb.r * 1.7), 0, 1);
+      nb.core.setAlpha(0.14 + near * 0.16);
+      nb.halo.setAlpha(0.09 + near * 0.11);
+      if (d < nb.r * 1.05 && !nb.entered) {
+        nb.entered = true;
+        // Arrival bloom: a one-shot swell of the nebula as you cross in. (We pulse
+        // scale, not alpha — alpha is owned by the per-frame proximity code above.)
+        this.tweens.add({ targets: nb.halo, scale: nb.halo.scale * 1.16, duration: 520, yoyo: true, ease: "Sine.inOut" });
+        this.tweens.add({ targets: nb.core, scale: nb.core.scale * 1.16, duration: 520, yoyo: true, ease: "Sine.inOut" });
+      } else if (d > nb.r * 1.5 && nb.entered) {
+        nb.entered = false;
+      }
     }
   }
 
@@ -437,41 +498,15 @@ export class GalaxyScene extends Phaser.Scene {
     g.strokeCircle(entry.x, entry.y, entry.r + 10);
   }
 
-  // Faint constellation names floating behind each cluster's stars.
-  private buildConstellationLabels() {
-    const groups: Record<number, { x: number; y: number; n: number; label: string; pts: { x: number; y: number }[] }> = {};
-    for (const s of this.stars) {
-      const cid = s.data.cluster_id;
-      if (cid === null || cid === undefined || !s.data.cluster_label) continue;
-      const g = groups[cid] ?? { x: 0, y: 0, n: 0, label: s.data.cluster_label, pts: [] };
-      g.x += s.x;
-      g.y += s.y;
-      g.n += 1;
-      g.pts.push({ x: s.x, y: s.y });
-      groups[cid] = g;
-    }
-    for (const key of Object.keys(groups)) {
-      const g = groups[Number(key)];
-      const cx = g.x / g.n, cy = g.y / g.n;
-      let maxD = 0;
-      for (const p of g.pts) maxD = Math.max(maxD, Math.hypot(p.x - cx, p.y - cy));
-      const hex = "#" + clusterColor(Number(key)).toString(16).padStart(6, "0");
-      // The neighbourhood's name floats just above its stars — bright enough to
-      // read at the framed-out zoom (the old 0.14 was effectively invisible).
-      this.add
-        .text(cx, cy - maxD - 48, g.label.toUpperCase(), { fontFamily: "serif", fontStyle: "italic", fontSize: "34px", color: hex })
-        .setOrigin(0.5)
-        .setAlpha(0.5)
-        .setDepth(2);
-    }
-  }
-
   private buildShip(x: number, y: number) {
     this.ship = this.physics.add.image(x, y, "ship").setDepth(8);
     this.ship.body.setDamping(false);
     this.ship.body.setDrag(CONFIG.SHIP.drag, CONFIG.SHIP.drag);
     this.ship.body.setMaxVelocity(CONFIG.SHIP.maxVel);
     this.ship.body.setAllowGravity(false);
+    // You cannot fly off into the abyss and lose yourself — the edge of the mind
+    // is a hard wall (with the camera bounded to the same world).
+    this.ship.body.setCollideWorldBounds(true);
     this.flame = this.add
       .particles(0, 0, "core", {
         lifespan: 320,
@@ -483,11 +518,12 @@ export class GalaxyScene extends Phaser.Scene {
         emitting: false,
       })
       .setDepth(7);
-    this.cameras.main.startFollow(this.ship, true, 0.08, 0.08);
-    // Open framed on the whole galaxy so the neighbourhoods read as a map, not a
-    // void to hunt through. Clamped so a small galaxy isn't over-zoomed.
-    const fit = Math.min(this.scale.width / this.world.w, this.scale.height / this.world.h);
-    this.cameras.main.setZoom(Phaser.Math.Clamp(fit * 1.15, 0.3, 1));
+    this.cameras.main.startFollow(this.ship, true, 0.09, 0.09);
+    // Explorer's view: frame roughly ONE neighbourhood around the ship so you fly
+    // among the stars (the whole-map overview lives in the fixed minimap). Derived
+    // from the neighbourhood size so the framing is consistent at any galaxy scale.
+    const vmin = Math.min(this.scale.width, this.scale.height);
+    this.cameras.main.setZoom(Phaser.Math.Clamp(vmin / (this.neighborhoodR * 2.7), 0.8, 1.7));
   }
 
   private buildHUD() {
@@ -621,7 +657,7 @@ export class GalaxyScene extends Phaser.Scene {
       const cid = gap.clusterId;
       if (cid === null || cid === undefined || !centroids[cid]) continue;
       const c = centroids[cid];
-      this.encounters.push({ gap, cx: c.x / c.n, cy: c.y / c.n, resolved: false, cooldownUntil: 0, nega: null });
+      this.encounters.push({ gap, cx: c.x / c.n, cy: c.y / c.n, resolved: false, cooldownUntil: 0, nega: null, armed: false });
     }
   }
 
@@ -888,7 +924,12 @@ export class GalaxyScene extends Phaser.Scene {
     if (this.encounterActive === null && this.encounters.length) {
       for (const enc of this.encounters) {
         if (enc.resolved || time <= enc.cooldownUntil) continue;
-        if (Phaser.Math.Distance.Between(ship.x, ship.y, enc.cx, enc.cy) < CONFIG.TRIGGER_RADIUS) {
+        const d = Phaser.Math.Distance.Between(ship.x, ship.y, enc.cx, enc.cy);
+        if (!enc.armed) {
+          if (d > CONFIG.TRIGGER_RADIUS * 1.4) enc.armed = true; // left its orbit → now it can surprise you
+          continue;
+        }
+        if (d < CONFIG.TRIGGER_RADIUS) {
           this.startEncounter(enc);
           this.ring.clear();
           this.prompt.setVisible(false);
@@ -933,6 +974,8 @@ export class GalaxyScene extends Phaser.Scene {
     } else {
       ship.body.setAcceleration(0, 0);
     }
+
+    this.updateNeighborhoods();
 
     let best: StarEntry | null = null, bestD = CONFIG.DOCK_RADIUS;
     for (const s of this.stars) {
