@@ -4,9 +4,20 @@ import type { QueryClient, QueryKey } from "@tanstack/react-query";
 
 // Bump when the persisted shape changes (e.g., FuelWorkout adds a field).
 // Old blobs become unreadable; the app re-fetches once.
-const STORAGE_KEY = "nbhd_qc_v2";
+// v3: each entry is now { d: data, u: dataUpdatedAt } instead of bare data,
+// so rehydration restores the TRUE fetch time (see seedQueryClient).
+const STORAGE_KEY = "nbhd_qc_v3";
 
 const FLUSH_DEBOUNCE_MS = 500;
+
+// One persisted query entry: the cached data plus the epoch-ms timestamp of
+// when it was last fetched. Persisting `u` is what lets staleTime math
+// survive a reload — without it, setQueryData stamps dataUpdatedAt=now and
+// day-old data is treated as fresh.
+interface PersistedEntry {
+  d: unknown;
+  u: number;
+}
 
 // Persist any query whose queryKey starts with one of these prefixes.
 // e.g., ["fuel-workout"] matches ["fuel-workout", "<uuid>"].
@@ -72,10 +83,18 @@ function writeStorage(data: PersistedShape): void {
 export function seedQueryClient(qc: QueryClient): void {
   const data = readStorage();
   if (!data) return;
-  for (const [keyStr, value] of Object.entries(data)) {
+  for (const [keyStr, raw] of Object.entries(data)) {
     try {
       const key = JSON.parse(keyStr) as QueryKey;
-      qc.setQueryData(key, value);
+      const entry = raw as Partial<PersistedEntry> | undefined;
+      if (!entry || typeof entry !== "object" || !("d" in entry)) continue;
+      // Restore the original fetch time so staleTime treats the data at its
+      // true age: recent data paints instantly and skips a refetch, while
+      // genuinely stale data (e.g. a day-old schedule) is marked stale and
+      // re-validates on mount instead of masquerading as fresh.
+      qc.setQueryData(key, entry.d, {
+        updatedAt: typeof entry.u === "number" ? entry.u : 0,
+      });
     } catch {
       // Bad entry; skip.
     }
@@ -94,7 +113,8 @@ export function installPersistence(qc: QueryClient): () => void {
       const value = entry.state.data;
       if (value === undefined) continue;
       if (!matchesAnyPrefix(entry.queryKey)) continue;
-      out[JSON.stringify(entry.queryKey)] = value;
+      const persisted: PersistedEntry = { d: value, u: entry.state.dataUpdatedAt };
+      out[JSON.stringify(entry.queryKey)] = persisted;
     }
     writeStorage(out);
   };

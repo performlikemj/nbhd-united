@@ -12,6 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.common.cache import tenant_cache
+from apps.common.llm_contracts import today_in_tenant_tz
 
 
 def _safe_int(value, default):
@@ -279,7 +280,12 @@ class WorkoutListView(APIView):
             magnitude = _safe_int(window[:-1], 0)
             days = magnitude * (7 if unit == "w" else 1)
             if days > 0:
-                today = date_cls.today()
+                # Anchor the rolling window on the tenant's local "today", not
+                # the server's UTC date — otherwise a late-evening workout in a
+                # tz ahead of UTC (e.g. JST) can fall outside [today, today+N]
+                # and vanish from the Schedule while still showing on the
+                # Calendar's fixed month grid.
+                today = today_in_tenant_tz(tenant)
                 date_from = today.isoformat()
                 date_to = (today + timedelta(days=days)).isoformat()
         if date_from:
