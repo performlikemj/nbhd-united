@@ -134,7 +134,7 @@ distro==1.9.0
     #   openai
 dj-stripe==2.10.3
     # via -r requirements.in
-django==6.0.5
+django==6.0.6
     # via
     #   -r requirements.in
     #   dj-stripe
