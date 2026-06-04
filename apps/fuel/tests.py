@@ -13,7 +13,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.tenants.services import create_tenant
 
-from .models import BodyWeightLog, FuelProfile, Workout, WorkoutPlan
+from .models import BodyWeightLog, FuelProfile, PlanSlot, Workout, WorkoutPlan
 from .services import est_1rm
 
 # ═════════════════════════════════════════════════════════════════════
@@ -109,6 +109,235 @@ class WorkoutModelTests(TestCase):
         workouts = list(Workout.objects.filter(tenant=self.tenant))
         self.assertEqual(workouts[0].date, date(2026, 4, 21))
         self.assertEqual(workouts[1].date, date(2026, 4, 19))
+
+
+class PlanSlotModelTests(TestCase):
+    """Phase 1 — stable plan-slot identity for the plan reconciler.
+
+    The slot owns the `(plan, week_index, weekday)` intent so a plan-regen
+    can mutate slots in place without tombstoning workout uuids.
+    """
+
+    def setUp(self):
+        from django.utils import timezone
+
+        self.tenant = create_tenant(display_name="Slot Test", telegram_chat_id=800050)
+        self.plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Reconciler Smoke",
+            start_date=date(2026, 6, 1),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {"category": "strength", "activity": "Push"}},
+        )
+        self._tz_now = timezone.now
+
+    def test_slot_create_and_natural_key(self):
+        slot = PlanSlot.objects.create(
+            tenant=self.tenant,
+            plan=self.plan,
+            week_index=0,
+            weekday=0,
+        )
+        self.assertEqual(slot.plan_id, self.plan.id)
+        self.assertEqual(slot.week_index, 0)
+        self.assertEqual(slot.weekday, 0)
+        self.assertIsNone(slot.archived_at)
+
+    def test_active_uniqueness_enforced(self):
+        from django.db import IntegrityError, transaction
+
+        PlanSlot.objects.create(
+            tenant=self.tenant,
+            plan=self.plan,
+            week_index=1,
+            weekday=2,
+        )
+        # Active duplicate must fail.
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            PlanSlot.objects.create(
+                tenant=self.tenant,
+                plan=self.plan,
+                week_index=1,
+                weekday=2,
+            )
+
+    def test_archived_slot_allows_recreation_at_same_key(self):
+        # When the assistant removes a slot from schedule_json but a workout
+        # row still references it, we soft-archive. A future regen that
+        # re-adds that (week, weekday) must be allowed to create a fresh slot.
+        original = PlanSlot.objects.create(
+            tenant=self.tenant,
+            plan=self.plan,
+            week_index=2,
+            weekday=4,
+        )
+        original.archived_at = self._tz_now()
+        original.save(update_fields=["archived_at"])
+        # Same natural key should succeed because the original is archived.
+        replacement = PlanSlot.objects.create(
+            tenant=self.tenant,
+            plan=self.plan,
+            week_index=2,
+            weekday=4,
+        )
+        self.assertNotEqual(original.id, replacement.id)
+        self.assertIsNone(replacement.archived_at)
+
+    def test_workout_slot_set_null_on_slot_delete(self):
+        slot = PlanSlot.objects.create(
+            tenant=self.tenant,
+            plan=self.plan,
+            week_index=0,
+            weekday=3,
+        )
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            plan=self.plan,
+            slot=slot,
+            date=date(2026, 6, 4),
+            status="planned",
+            category="strength",
+            activity="Push",
+        )
+        slot.delete()
+        w.refresh_from_db()
+        self.assertIsNone(w.slot)
+        # Workout itself must survive — losing the slot must not tombstone the row.
+        self.assertEqual(w.status, "planned")
+
+    def test_workout_new_fields_default_to_unlocked_unedited(self):
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 6, 5),
+            category="strength",
+            activity="Push",
+        )
+        self.assertEqual(w.version, 0)
+        self.assertIsNone(w.edit_lock_until)
+        self.assertEqual(w.edit_lock_owner, "")
+        self.assertIsNone(w.last_edited_by_user_at)
+
+
+class BackfillPlanSlotsTests(TestCase):
+    """Phase 2 — the backfill helper materializes slots and back-links workouts.
+
+    Uses the live ORM rather than re-running the migration so we can assert
+    against actual fixture data (the migration ran against an empty DB).
+    """
+
+    def setUp(self):
+        from apps.fuel.services import backfill_plan_slots as _bf
+
+        self._bf = _bf
+        self.tenant = create_tenant(display_name="Backfill Test", telegram_chat_id=800060)
+        # 2026-06-01 is a Monday — keeps the (weekday=0) math obvious.
+        self.plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Backfill Smoke",
+            start_date=date(2026, 6, 1),
+            weeks=2,
+            days_per_week=2,
+            schedule_json={
+                "0": {"category": "strength", "activity": "Push Day"},
+                "3": {"category": "strength", "activity": "Pull Day"},
+            },
+        )
+
+    def _run(self):
+        return self._bf(WorkoutPlan, PlanSlot, Workout)
+
+    def test_backfill_creates_slots_per_week_x_weekday(self):
+        stats = self._run()
+        # 2 weeks × 2 weekdays = 4 slots.
+        self.assertEqual(stats["slots_created"], 4)
+        self.assertEqual(stats["plans_skipped"], 0)
+        self.assertEqual(PlanSlot.objects.filter(plan=self.plan).count(), 4)
+        self.assertEqual(
+            set(PlanSlot.objects.values_list("week_index", "weekday")),
+            {(0, 0), (0, 3), (1, 0), (1, 3)},
+        )
+
+    def test_backfill_is_idempotent(self):
+        self._run()
+        stats2 = self._run()
+        self.assertEqual(stats2["slots_created"], 0)
+        self.assertEqual(PlanSlot.objects.filter(plan=self.plan).count(), 4)
+
+    def test_backfill_links_planned_workouts_matching_template(self):
+        w_match = Workout.objects.create(
+            tenant=self.tenant,
+            plan=self.plan,
+            date=date(2026, 6, 1),
+            status="planned",
+            category="strength",
+            activity="Push Day",
+        )
+        # User-renamed workout — should stay slot=NULL.
+        w_user_renamed = Workout.objects.create(
+            tenant=self.tenant,
+            plan=self.plan,
+            date=date(2026, 6, 4),
+            status="planned",
+            category="strength",
+            activity="Custom Pull Variation",
+        )
+        # Out-of-range workout (5 weeks past start, weeks=2) — should stay slot=NULL.
+        w_out_of_range = Workout.objects.create(
+            tenant=self.tenant,
+            plan=self.plan,
+            date=date(2026, 7, 6),
+            status="planned",
+            category="strength",
+            activity="Push Day",
+        )
+
+        stats = self._run()
+        self.assertEqual(stats["workouts_linked"], 1)
+        self.assertEqual(stats["workouts_skipped"], 2)
+
+        w_match.refresh_from_db()
+        w_user_renamed.refresh_from_db()
+        w_out_of_range.refresh_from_db()
+        self.assertIsNotNone(w_match.slot)
+        self.assertEqual(w_match.slot.week_index, 0)
+        self.assertEqual(w_match.slot.weekday, 0)
+        self.assertIsNone(w_user_renamed.slot)
+        self.assertIsNone(w_out_of_range.slot)
+
+    def test_backfill_skips_plan_with_empty_schedule(self):
+        empty_plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Empty",
+            start_date=date(2026, 6, 1),
+            weeks=4,
+            days_per_week=1,
+            schedule_json={},
+        )
+        stats = self._run()
+        self.assertEqual(stats["plans_skipped"], 1)
+        self.assertEqual(PlanSlot.objects.filter(plan=empty_plan).count(), 0)
+
+    def test_backfill_doesnt_relink_an_existing_slot(self):
+        # Pre-link to a slot that's NOT the one the template would pick.
+        existing_slot = PlanSlot.objects.create(
+            tenant=self.tenant,
+            plan=self.plan,
+            week_index=1,
+            weekday=3,
+        )
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            plan=self.plan,
+            slot=existing_slot,
+            date=date(2026, 6, 1),
+            status="planned",
+            category="strength",
+            activity="Push Day",
+        )
+        self._run()
+        w.refresh_from_db()
+        self.assertEqual(w.slot_id, existing_slot.id)
 
 
 class BodyWeightLogModelTests(TestCase):

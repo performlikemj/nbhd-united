@@ -2,7 +2,103 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from .set_contract import METRIC_HOLD_TIME, set_metric
+
+
+def backfill_plan_slots(WorkoutPlanModel, PlanSlotModel, WorkoutModel) -> dict[str, int]:
+    """Materialize PlanSlot rows for every plan and back-link planned workouts.
+
+    Idempotent — re-running is a no-op for slots that already exist and for
+    workouts already linked. Accepts the model classes as arguments so the
+    same body works under both the live ORM (test code) and the migration
+    framework's historical models (RunPython callback).
+
+    Returns counts for migrate-log telemetry.
+    """
+    plan_skipped = 0
+    slots_created = 0
+    workouts_linked = 0
+    workouts_skipped = 0
+
+    for plan in WorkoutPlanModel.objects.iterator():
+        schedule = plan.schedule_json or {}
+        if not isinstance(schedule, dict) or not schedule:
+            plan_skipped += 1
+            continue
+
+        template_by_weekday: dict[int, str] = {}
+        valid_weekdays: list[int] = []
+        for day_str, workout_def in schedule.items():
+            try:
+                day_int = int(day_str)
+            except (TypeError, ValueError):
+                continue
+            if day_int < 0 or day_int > 6:
+                continue
+            if not isinstance(workout_def, dict):
+                continue
+            valid_weekdays.append(day_int)
+            activity = workout_def.get("activity")
+            if isinstance(activity, str):
+                template_by_weekday[day_int] = activity.strip()
+
+        weeks = max(1, min(52, int(plan.weeks or 1)))
+        slot_lookup: dict[tuple[int, int], object] = {}
+        for week_idx in range(weeks):
+            for weekday in valid_weekdays:
+                existing = PlanSlotModel.objects.filter(
+                    plan=plan,
+                    week_index=week_idx,
+                    weekday=weekday,
+                    archived_at__isnull=True,
+                ).first()
+                if existing is not None:
+                    slot_lookup[(week_idx, weekday)] = existing
+                    continue
+                slot = PlanSlotModel.objects.create(
+                    tenant_id=plan.tenant_id,
+                    plan=plan,
+                    week_index=week_idx,
+                    weekday=weekday,
+                )
+                slot_lookup[(week_idx, weekday)] = slot
+                slots_created += 1
+
+        start_date = plan.start_date
+        if start_date is None:
+            continue
+        plan_monday = start_date - timedelta(days=start_date.weekday())
+
+        for w in WorkoutModel.objects.filter(plan=plan, slot__isnull=True).iterator():
+            if w.date is None:
+                workouts_skipped += 1
+                continue
+            elapsed_days = (w.date - plan_monday).days
+            week_idx = elapsed_days // 7
+            weekday = w.date.weekday()
+            if week_idx < 0 or week_idx >= weeks:
+                workouts_skipped += 1
+                continue
+            slot = slot_lookup.get((week_idx, weekday))
+            if slot is None:
+                workouts_skipped += 1
+                continue
+            template_activity = template_by_weekday.get(weekday)
+            if template_activity is None or w.activity.strip() != template_activity:
+                workouts_skipped += 1
+                continue
+            w.slot = slot
+            w.save(update_fields=["slot"])
+            workouts_linked += 1
+
+    return {
+        "plans_skipped": plan_skipped,
+        "slots_created": slots_created,
+        "workouts_linked": workouts_linked,
+        "workouts_skipped": workouts_skipped,
+    }
 
 
 def _safe_num(val, default=0) -> float:
