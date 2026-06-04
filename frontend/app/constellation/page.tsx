@@ -251,7 +251,25 @@ export default function ConstellationPage() {
   const [relFilter, setRelFilter] = useState<Set<GraphRelType>>(new Set(["IN_CLUSTER", "SIMILAR_TO", "REFINES"]));
   const [simThreshold] = useState(0.5);
   const [isolated, setIsolated] = useState<string | null>(null);
-  const [showHint, setShowHint] = useState(true);
+  const [showHint, setShowHint] = useState(false);
+  const dismissHint = useCallback(() => {
+    setShowHint(false);
+    try { window.localStorage.setItem("nbhd_constellation_hint_dismissed", "1"); } catch { /* private mode */ }
+  }, []);
+  // Orientation hint: show once per device (until dismissed), then auto-retire it
+  // so it never sits persistently over the search bar on return visits / mobile.
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem("nbhd_constellation_hint_dismissed") !== "1") setShowHint(true);
+    } catch {
+      setShowHint(true);
+    }
+  }, []);
+  useEffect(() => {
+    if (!showHint) return;
+    const t = setTimeout(dismissHint, 8000);
+    return () => clearTimeout(t);
+  }, [showHint, dismissHint]);
 
   const visibleNodes = useMemo(() => {
     let list = graphData.nodes.filter((n) => kindFilter.has(n.kind));
@@ -431,6 +449,17 @@ export default function ConstellationPage() {
               </button>); })}
             </div>)}
           </div>
+          {/* Mobile Play entry — the toolbar below (with the desktop Play link) is
+              hidden on phones, so surface a tappable Play CTA here on small screens. */}
+          {playEnabled && (
+            <Link
+              href="/constellation/play"
+              title="Fly your galaxy (beta)"
+              className="sm:hidden order-last ml-auto flex items-center gap-1.5 min-h-[44px] px-4 rounded-full border border-accent/40 bg-accent/15 text-accent text-[11px] uppercase tracking-wider font-headline"
+            >
+              <svg width="11" height="11" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M2 1.4l6.2 3.6L2 8.6z" fill="currentColor" /></svg>Play
+            </Link>
+          )}
           <div className="hidden sm:flex items-center gap-1 rounded-full border border-white/10 bg-black/50 backdrop-blur-xl p-1">
             <button type="button" onClick={() => setZoom((z) => Math.max(0.3, z * 0.8))} className="h-7 w-7 rounded-full hover:bg-white/10 text-[#94A3B8] hover:text-white flex items-center justify-center" aria-label="Zoom out">&minus;</button>
             <span className="text-[10px] text-[#64748B] w-10 text-center tabular-nums" style={{ fontFamily: "var(--font-mono, monospace)" }}>{(zoom * 100).toFixed(0)}%</span>
@@ -455,9 +484,9 @@ export default function ConstellationPage() {
               <span className="text-[9px] uppercase tracking-[0.22em] font-headline" style={{ color: c }}>Focused</span>
               <span className="text-[11px] text-white font-serif italic">{isoNode.constellation || isoNode.label}</span>
             </button>); })()}
-          {showHint && !isolated && (<div className="flex items-center gap-2 pl-2.5 pr-2 h-7 rounded-full border border-white/10 bg-black/60 backdrop-blur-xl text-[10px] text-[#94A3B8]">
+          {showHint && !isolated && (<div className="hidden sm:flex items-center gap-2 pl-2.5 pr-2 h-7 rounded-full border border-white/10 bg-black/60 backdrop-blur-xl text-[10px] text-[#94A3B8]">
             <span style={{ fontFamily: "var(--font-mono, monospace)" }}>Positions are approximate &middot; drag to rearrange &middot; click a cluster to focus</span>
-            <button type="button" onClick={() => setShowHint(false)} className="ml-1 text-[#64748B] hover:text-white px-1">&times;</button>
+            <button type="button" onClick={dismissHint} className="ml-1 text-[#64748B] hover:text-white px-1">&times;</button>
           </div>)}
         </div>)}
 
