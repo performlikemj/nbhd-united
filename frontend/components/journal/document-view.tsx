@@ -14,6 +14,7 @@ import { CurrentStatusCard } from "@/components/journal/current-status-card";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useDocumentQuery,
+  useJournalStatusQuery,
   useUpdateDocumentMutation,
   useAppendDocumentMutation,
 } from "@/lib/queries";
@@ -207,8 +208,15 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
   }, [saveStatus]);
 
   const { data: doc, isLoading, error } = useDocumentQuery(kind, slug);
+  const { data: journalStatus } = useJournalStatusQuery();
   const updateMutation = useUpdateDocumentMutation();
   const appendMutation = useAppendDocumentMutation();
+
+  // tasks/goal docs are rendered from typed rows when the lifecycle flag is on,
+  // so markdown writes are discarded (backend now 409s them). Make them
+  // read-only here and route status changes through the typed Current-status
+  // controls / the assistant instead of the markdown editor.
+  const typedManaged = (kind === "tasks" || kind === "goal") && !!journalStatus?.typed_lifecycle;
 
   // Prefetch previous day
   useEffect(() => {
@@ -221,6 +229,7 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
   }, [slug, kind, queryClient]);
 
   const handleEdit = () => {
+    if (typedManaged) return; // managed via typed records, not markdown
     const initial = doc?.markdown || "";
     setDraft(initial);
     lastSavedRef.current = initial;
@@ -404,6 +413,7 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
         isMobile={isMobile}
         showSavedIndicator={savedIndicator}
         onToggleSidebar={onToggleSidebar}
+        readOnly={typedManaged}
       />
 
       {/* Content */}
@@ -431,15 +441,17 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
               "bg-white/[0.01] transition-all duration-300",
               isMobile === true
                 ? "p-4"
-                : "group cursor-text rounded-2xl border border-white/[0.03] bg-white/[0.015] p-5 lg:p-8 m-4 lg:m-6 shadow-[inset_0_1px_2px_rgba(0,0,0,0.2)] hover:border-white/[0.06] hover:shadow-[inset_0_1px_3px_rgba(0,0,0,0.3)]",
+                : typedManaged
+                  ? "rounded-2xl border border-white/[0.03] bg-white/[0.015] p-5 lg:p-8 m-4 lg:m-6 shadow-[inset_0_1px_2px_rgba(0,0,0,0.2)]"
+                  : "group cursor-text rounded-2xl border border-white/[0.03] bg-white/[0.015] p-5 lg:p-8 m-4 lg:m-6 shadow-[inset_0_1px_2px_rgba(0,0,0,0.2)] hover:border-white/[0.06] hover:shadow-[inset_0_1px_3px_rgba(0,0,0,0.3)]",
             )}
-            onClick={isMobile === true ? undefined : (e) => {
+            onClick={isMobile === true || typedManaged ? undefined : (e) => {
               const target = e.target as Element | null;
               if (target?.closest("input[type='checkbox']")) return;
               handleEdit();
             }}
           >
-            {isMobile !== true && (
+            {isMobile !== true && !typedManaged && (
               <div className="pointer-events-none mb-4 flex items-center gap-2 text-[11px] uppercase tracking-[0.12em] text-ink-faint/50 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                 <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -448,7 +460,10 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
               </div>
             )}
             {doc?.markdown ? (
-              <MarkdownRenderer content={doc.markdown} onCheckboxToggle={handleCheckboxToggle} />
+              <MarkdownRenderer
+                content={doc.markdown}
+                onCheckboxToggle={typedManaged ? undefined : handleCheckboxToggle}
+              />
             ) : (
               <EmptyState
                 title="This page is blank."
@@ -477,7 +492,7 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
             ) : (
               <div className="flex-1" />
             )}
-            <PencilButton onClick={handleEdit} />
+            {!typedManaged && <PencilButton onClick={handleEdit} />}
           </div>
           {appendMutation.isError && (
             <p className="mt-1 text-xs text-rose-text">Failed to add entry.</p>

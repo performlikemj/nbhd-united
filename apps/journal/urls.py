@@ -9,6 +9,14 @@ from .document_views import (
     TodayView,
 )
 from .extraction_views import NightlyExtractionView
+from .lifecycle_views import (
+    GoalAbandonView,
+    GoalAchieveView,
+    GoalDetailView,
+    TaskCompleteView,
+    TaskDetailView,
+    TaskReopenView,
+)
 from .query_views import JournalQueryView
 from .status_views import JournalStatusView
 from .views import (
@@ -37,6 +45,13 @@ urlpatterns = [
     path("today/", TodayView.as_view(), name="today"),
     path("tree/", SidebarTreeView.as_view(), name="sidebar-tree"),
     path("status/", JournalStatusView.as_view(), name="journal-status"),
+    # ── Typed lifecycle writes (session-auth; companion to runtime CRUD) ──
+    path("tasks/<uuid:task_id>/", TaskDetailView.as_view(), name="task-detail"),
+    path("tasks/<uuid:task_id>/complete/", TaskCompleteView.as_view(), name="task-complete"),
+    path("tasks/<uuid:task_id>/reopen/", TaskReopenView.as_view(), name="task-reopen"),
+    path("goals/<uuid:goal_id>/", GoalDetailView.as_view(), name="goal-detail"),
+    path("goals/<uuid:goal_id>/achieve/", GoalAchieveView.as_view(), name="goal-achieve"),
+    path("goals/<uuid:goal_id>/abandon/", GoalAbandonView.as_view(), name="goal-abandon"),
     # ── Legacy endpoints (kept for backward compatibility) ───────────────
     path("", JournalEntryListCreateView.as_view(), name="journal-list-create"),
     path("<uuid:entry_id>/", JournalEntryDetailView.as_view(), name="journal-detail"),

@@ -230,6 +230,16 @@ export function fetchJournalStatus(): Promise<import("@/lib/types").JournalStatu
   return apiFetch<import("@/lib/types").JournalStatus>("/api/v1/journal/status/");
 }
 
+// Typed-task writes — update the row, not synthesized markdown (which GET
+// re-derives and the backend now rejects via 409). See lifecycle_views.py.
+export function completeTask(taskId: string): Promise<unknown> {
+  return apiFetch<unknown>(`/api/v1/journal/tasks/${taskId}/complete/`, { method: "POST" });
+}
+
+export function reopenTask(taskId: string): Promise<unknown> {
+  return apiFetch<unknown>(`/api/v1/journal/tasks/${taskId}/reopen/`, { method: "POST" });
+}
+
 export function approveExtraction(id: string): Promise<{ id: string; status: string }> {
   return apiFetch<{ id: string; status: string }>(`/api/v1/journal/extractions/${id}/approve/`, { method: "POST" });
 }

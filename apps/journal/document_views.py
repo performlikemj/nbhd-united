@@ -324,11 +324,33 @@ class DocumentDetailView(APIView):
 
     def patch(self, request, kind: str, slug: str):
         tenant = _get_tenant(request.user)
-        doc = _get_or_create_document(tenant, kind, slug)
 
         markdown = request.data.get("markdown")
         title = request.data.get("title")
 
+        # Typed-lifecycle guard: when the flag is on, tasks/goal docs are
+        # rendered from typed rows on GET (DocumentDetailView.get), so a
+        # markdown write here would be silently discarded on the next read.
+        # Reject it instead of losing the user's edit — point them at the
+        # typed write endpoints (apps/journal/lifecycle_views.py).
+        if (
+            markdown is not None
+            and kind in {"tasks", "goal"}
+            and getattr(tenant, "experimental_typed_journal_lifecycle", False)
+        ):
+            return Response(
+                {
+                    "error": "typed_lifecycle_readonly",
+                    "detail": (
+                        "Tasks and goals are managed as typed records. Update them via "
+                        "/api/v1/journal/tasks/<id>/ or /api/v1/journal/goals/<id>/, "
+                        "not by editing this document."
+                    ),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        doc = _get_or_create_document(tenant, kind, slug)
         if markdown is not None:
             doc.markdown = markdown
         if title is not None:
