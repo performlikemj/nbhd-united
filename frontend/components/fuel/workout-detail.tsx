@@ -7,7 +7,7 @@ import { SkelBar } from "@/components/ui/skeleton";
 import { getErrorMessage, isNotFoundError } from "@/lib/errors";
 import { clearDraft, loadDraft, saveDraft, type AutosaveEntry } from "@/lib/fuel-draft-autosave";
 import { stashOrphan } from "@/lib/orphan-drafts";
-import { useCompleteWorkoutMutation, useCreateWorkoutTemplateMutation, useDeleteWorkoutMutation, useDuplicateWorkoutMutation, useMeQuery, useUpdateWorkoutMutation, useWorkoutQuery } from "@/lib/queries";
+import { useAcquireEditLockMutation, useCompleteWorkoutMutation, useCreateWorkoutTemplateMutation, useDeleteWorkoutMutation, useDuplicateWorkoutMutation, useFuelVersionQuery, useMeQuery, useReleaseEditLockMutation, useUpdateWorkoutMutation, useWorkoutQuery } from "@/lib/queries";
 import type { FuelWorkout, WorkoutCategory } from "@/lib/types";
 import { CATEGORIES, CATEGORY_IDS } from "./category-meta";
 import {
@@ -19,6 +19,20 @@ import {
   useDistanceUnit,
 } from "./use-distance-unit";
 import { displayToKg, kgToDisplay, useWeightUnit } from "./use-weight-unit";
+
+function formatRelativeFromIso(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "recently";
+  const diff = Date.now() - then;
+  const minutes = Math.round(diff / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
 
 function fmtLongDate(iso: string): string {
   const [y, m, d] = iso.split("-").map(Number);
@@ -275,8 +289,22 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
   const deleteMutation = useDeleteWorkoutMutation();
   const duplicateMutation = useDuplicateWorkoutMutation();
   const templateMutation = useCreateWorkoutTemplateMutation();
+  const acquireLock = useAcquireEditLockMutation();
+  const releaseLock = useReleaseEditLockMutation();
+  const fuelVersionQuery = useFuelVersionQuery();
+  const currentFuelVersion = fuelVersionQuery.data?.fuel_version ?? null;
 
   const [editing, setEditing] = useState(false);
+  // Snapshot of the tenant fuel-write counter at the moment we entered
+  // edit mode. If a later poll returns a higher value, the assistant
+  // wrote in the background and we render a refresh pill so the user
+  // can pull the latest state before saving over it.
+  const [editBaselineFuelVersion, setEditBaselineFuelVersion] = useState<number | null>(null);
+  const showStaleEditWarning =
+    editing &&
+    editBaselineFuelVersion !== null &&
+    currentFuelVersion !== null &&
+    currentFuelVersion > editBaselineFuelVersion;
   const [draft, setDraft] = useState<Partial<FuelWorkout>>({});
   const [initialized, setInitialized] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -305,6 +333,12 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
   const stashCurrentDraft = (source: "phantom_404" | "mutation_404") => {
     if (!tenantId || stashedRef.current) return;
     const d = draftRef.current;
+    // Preserve the original status so recovery doesn't silently downgrade
+    // a future-dated planned edit into a completed log (fixes the
+    // OrphanRecoveryPanel.saveAsNew("done") regression).
+    const rawStatus = (d.status ?? workout?.status) as string | undefined;
+    const status: "done" | "planned" | undefined =
+      rawStatus === "planned" || rawStatus === "done" ? rawStatus : undefined;
     const stashId = stashOrphan(tenantId, {
       originalWorkoutId: workoutId,
       date: d.date ?? workout?.date ?? new Date().toISOString().slice(0, 10),
@@ -315,6 +349,7 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
       notes: d.notes ?? "",
       detail_json: (d.detail_json ?? {}) as Record<string, unknown>,
       source,
+      status,
     });
     if (stashId) stashedRef.current = true;
   };
@@ -377,6 +412,39 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
       flush();
     };
   }, [tenantId, workoutId]);
+
+  // Edit-lock: when the user enters edit mode, acquire a lock on the
+  // workout and heartbeat every 30s. Release on exit / unmount / close.
+  // Runtime PATCHes during the lock window return 409 — see
+  // apps/fuel/runtime_views.py:_edit_locked_response.
+  useEffect(() => {
+    if (!workoutId || !editing) return;
+    // Snapshot the current fuel_version so we can detect background
+    // assistant writes that landed after we opened the drawer.
+    setEditBaselineFuelVersion(currentFuelVersion ?? 0);
+    let cancelled = false;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+    const beat = () => {
+      if (cancelled) return;
+      acquireLock.mutate(workoutId);
+    };
+    beat();
+    intervalId = setInterval(beat, 30_000);
+    return () => {
+      cancelled = true;
+      if (intervalId) clearInterval(intervalId);
+      // Best-effort release. If the network is dead the lock self-expires
+      // after FUEL_EDIT_LOCK_TTL_SECONDS on the server, so a missed
+      // release isn't catastrophic.
+      releaseLock.mutate(workoutId);
+      setEditBaselineFuelVersion(null);
+    };
+    // We intentionally exclude the mutation refs from deps — they're
+    // stable React Query objects and including them causes the effect to
+    // tear down + rebuild on every render. currentFuelVersion is
+    // intentionally captured at edit-mode entry only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workoutId, editing]);
 
   if (workout && !initialized) {
     setInitialized(true);
@@ -526,6 +594,30 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
             </button>
           </div>
         </div>
+
+        {showStaleEditWarning && (
+          <div
+            role="status"
+            className="mx-4 sm:mx-6 mt-3 -mb-1 rounded-lg border border-accent/40 bg-accent/10 px-3 py-2 text-[11px] text-ink-muted flex items-center gap-3"
+          >
+            <span className="flex-1 leading-snug">
+              Your assistant updated something else in Fuel while you were editing this. Save anyway, or refresh to pull the latest first.
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                void qc.invalidateQueries({ queryKey: ["fuel-workouts", workoutId] });
+                void qc.invalidateQueries({ queryKey: ["fuel-workouts"] });
+                void qc.invalidateQueries({ queryKey: ["fuel-calendar"] });
+                void qc.invalidateQueries({ queryKey: ["fuel-schedule"] });
+                setEditBaselineFuelVersion(currentFuelVersion);
+              }}
+              className="rounded-full border border-accent/40 text-accent hover:bg-accent/15 min-h-[28px] px-3 text-[10px] font-bold uppercase tracking-wider transition"
+            >
+              Refresh
+            </button>
+          </div>
+        )}
 
         <div className="p-4 sm:p-6 space-y-5 sm:space-y-6">
           {/* Unsaved-changes restore prompt — surfaced when an autosaved draft
@@ -682,6 +774,15 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
               <div className="font-medium">Couldn&apos;t save</div>
               <div className="mt-0.5 text-rose-text/80">{saveError}</div>
             </div>
+          )}
+
+          {/* Post-completion edit footnote (phase 7). Surfaced when a
+              done workout has been retouched at least 24h after creation
+              — the user-side PATCH path stamps last_edited_by_user_at. */}
+          {workout.status === "done" && workout.last_edited_by_user_at && (
+            <p className="text-[11px] text-ink-faint italic">
+              Edited {formatRelativeFromIso(workout.last_edited_by_user_at)}
+            </p>
           )}
 
           {/* Action bar */}
