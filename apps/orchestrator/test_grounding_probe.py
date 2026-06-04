@@ -49,3 +49,21 @@ class GroundingProbeTests(TestCase):
         self._doc("project", "zeta", "Zeta initiative — planning notes.")
         found = probe_grounding(self.tenant, "Zeta", [])
         self.assertTrue(found.grounded)
+
+    def test_misfiled_to_daily_is_reachable_but_not_project_grounded(self):
+        # The exact misfile bug: a status update appended to a daily doc (wrong
+        # kind) instead of the canonical project doc. Reachable via search, but
+        # the project doc stays stale → grounded True, grounded_in_project False.
+        self._doc("project", "acme", "Acme project: kicked off the build in April.")
+        self._doc("daily", "acme", "Acme — shipped to prod today.")
+        report = probe_grounding(self.tenant, "Acme", ["shipped to prod"])
+        self.assertTrue(report.grounded)  # journal search finds it in the daily doc
+        self.assertFalse(report.grounded_in_project)  # but NOT in the project doc — misfile caught
+        self.assertFalse(report.term_in_project["shipped to prod"])
+
+    def test_project_doc_substance_is_project_grounded(self):
+        self._doc("project", "acme", "Acme project. Update: shipped to prod today.")
+        report = probe_grounding(self.tenant, "Acme", ["shipped to prod"])
+        self.assertTrue(report.grounded)
+        self.assertTrue(report.grounded_in_project)
+        self.assertTrue(report.term_in_project["shipped to prod"])

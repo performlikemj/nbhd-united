@@ -6,8 +6,9 @@ topic and checks whether known-recent ground truth is reachable.
     python manage.py grounding_probe --tenant 148ccf1c --topic "Security Champions" \\
         --expect "budget meeting" --expect offsec --expect "vendor"
 
-Exit code 0 when every ``--expect`` term is reachable (GREEN), 1 when any is
-missing (RED) — so it doubles as a pass/fail check in scripts/CI. Read-only.
+Exit code 0 when every ``--expect`` term is in the canonical PROJECT doc
+(GREEN); 1 when reachable but misfiled to another doc kind (AMBER) or absent
+(RED) — so it doubles as a pass/fail check in scripts/CI. Read-only.
 """
 
 from __future__ import annotations
@@ -71,18 +72,26 @@ class Command(BaseCommand):
         if report.expect_terms:
             w("  ground-truth terms:")
             for t in report.expect_terms:
-                if report.term_in_envelope[t]:
-                    where, mark = "in envelope (always loaded)", "✓"
+                if report.term_in_project[t]:
+                    where, mark = "in PROJECT doc (canonical)", "✓"
+                elif report.term_in_envelope[t]:
+                    where, mark = "in envelope only — NOT in project doc", "~"
                 elif report.term_reachable[t]:
-                    where, mark = "reachable via doc search/get", "✓"
+                    where, mark = "reachable elsewhere — NOT in project doc (misfiled?)", "~"
                 else:
                     where, mark = "ABSENT from all cron-visible sources", "✗"
                 w(f"    {mark} {t!r}: {where}")
 
-        verdict = "GREEN — grounded" if report.grounded else "RED — NOT grounded (stale or missing)"
+        if report.grounded_in_project:
+            verdict = "GREEN — grounded in the canonical project doc"
+        elif report.grounded:
+            verdict = "AMBER — substance reachable but NOT in the project doc (likely misfiled to a daily/other kind)"
+        else:
+            verdict = "RED — NOT grounded (stale or missing)"
         w("")
         w(f"  VERDICT: {verdict}")
         w("")
 
-        if not report.grounded:
+        ok = report.grounded_in_project if report.expect_terms else report.grounded
+        if not ok:
             raise SystemExit(1)
