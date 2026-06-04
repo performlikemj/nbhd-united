@@ -33,7 +33,8 @@ const STAGE: Record<StarStage, { size: number; color: number; glow: number; puls
 const STAGE_FALLBACK = STAGE.proto;
 const SHADOW = 0xff5d7e;
 const BEAM = 0x9bd9ff;
-const EDGE = 0x6f7fb8;
+const EDGE = 0x6f7fb8; // within-cluster link (cool, dim)
+const SIMILAR = 0x8b7cf0; // cross-cluster SIMILAR_TO bridge (the semantic web — matches the graph's purple)
 
 function clusterColor(cid: number | null): number {
   if (cid === null || cid === undefined) return 0x9fb0c8;
@@ -41,81 +42,101 @@ function clusterColor(cid: number | null): number {
   return Phaser.Display.Color.HSVToRGB(h / 360, 0.5, 1).color;
 }
 
-function hashSeed(n: number): number {
-  return ((Math.abs(n) * 2654435761) % 1000) / 1000;
-}
-
 /**
- * Cluster-galaxy layout: each constellation is a tight group, and the groups are
- * spread far apart across a large world so flying between them is an actual
- * journey (not all crammed on one screen). Intra-cluster UMAP micro-structure is
- * preserved; lone (uncluster) stars drift in the deep space between groups.
+ * Semantic galaxy layout. The backend already computes a 2D PCA projection of the
+ * lesson embeddings (normalised ~[-1,1], with inter-cluster spacing) — the SAME
+ * structure the constellation graph draws. We map those coordinates into world
+ * space so the galaxy is meaningful: similar lessons sit together, each
+ * constellation lands where its embedding centroid is, and lone stars drift to
+ * their own real spot — instead of a mechanical grid + a hashed lattice (which
+ * scattered unclustered stars onto diagonal rows because the old `hashSeed`,
+ * `id × 761 mod 1000`, is an arithmetic progression for sequential ids).
  */
 function layoutStars(stars: GalaxyStar[]): {
   pos: Record<number, { x: number; y: number }>;
   world: { w: number; h: number };
 } {
-  const CELL = 1700; // distance between cluster centres — the void you cross
-  const LOCAL_R = 300; // how tight a constellation sits around its centre
   const pos: Record<number, { x: number; y: number }> = {};
   const hasXY = (s: GalaxyStar) =>
     s.x !== null && s.y !== null && isFinite(s.x as number) && isFinite(s.y as number);
+  const valid = stars.filter(hasXY);
 
-  const byCluster = new Map<number, GalaxyStar[]>();
-  const lone: GalaxyStar[] = [];
-  for (const s of stars) {
-    if (s.cluster_id === null || s.cluster_id === undefined) {
-      lone.push(s);
-    } else {
-      const arr = byCluster.get(s.cluster_id) ?? [];
-      arr.push(s);
-      byCluster.set(s.cluster_id, arr);
-    }
+  // World scaled to the star count so there's room to fly between groups.
+  const BASE = Math.max(3200, Math.round(Math.sqrt(stars.length) * 560));
+
+  // Degenerate fallback (no coordinates at all): a calm ring, never a lattice.
+  if (valid.length < 2) {
+    const world = { w: BASE, h: Math.max(2200, Math.round(BASE * 0.66)) };
+    const R = Math.min(world.w, world.h) * 0.32;
+    stars.forEach((s, i) => {
+      const a = (i / Math.max(1, stars.length)) * Math.PI * 2;
+      pos[s.id] = { x: world.w / 2 + Math.cos(a) * R, y: world.h / 2 + Math.sin(a) * R };
+    });
+    return { pos, world };
   }
 
-  const clusterIds = [...byCluster.keys()];
-  const gridN = clusterIds.length || Math.max(1, Math.ceil(lone.length / 8));
-  const cols = Math.max(1, Math.ceil(Math.sqrt(gridN)));
-  const rows = Math.max(1, Math.ceil(gridN / cols));
-  const world = { w: cols * CELL, h: rows * CELL };
-
-  clusterIds.forEach((cid, k) => {
-    const members = byCluster.get(cid) as GalaxyStar[];
-    const col = k % cols;
-    const row = Math.floor(k / cols);
-    const cx = (col + 0.5) * CELL + (hashSeed(cid + 1) - 0.5) * CELL * 0.3;
-    const cy = (row + 0.5) * CELL + (hashSeed(cid + 7) - 0.5) * CELL * 0.3;
-
-    const withXY = members.filter(hasXY);
-    if (withXY.length >= 2) {
-      const xs = withXY.map((s) => s.x as number);
-      const ys = withXY.map((s) => s.y as number);
-      const mx = (Math.min(...xs) + Math.max(...xs)) / 2;
-      const my = (Math.min(...ys) + Math.max(...ys)) / 2;
-      const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) || 1;
-      const scale = (LOCAL_R * 2) / span;
-      for (const s of members) {
-        if (hasXY(s)) {
-          pos[s.id] = { x: cx + ((s.x as number) - mx) * scale, y: cy + ((s.y as number) - my) * scale };
-        } else {
-          const a = hashSeed(s.id) * Math.PI * 2;
-          pos[s.id] = { x: cx + Math.cos(a) * LOCAL_R * 0.6, y: cy + Math.sin(a) * LOCAL_R * 0.6 };
-        }
-      }
-    } else {
-      members.forEach((s, i) => {
-        const a = (i / Math.max(1, members.length)) * Math.PI * 2 + hashSeed(cid) * Math.PI * 2;
-        const r = members.length === 1 ? 0 : LOCAL_R * (0.45 + 0.4 * hashSeed(s.id));
-        pos[s.id] = { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r };
-      });
-    }
+  // PCA bounds → world mapping (preserve the data's aspect ratio, with margin).
+  const xs = valid.map((s) => s.x as number);
+  const ys = valid.map((s) => s.y as number);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const spanX = maxX - minX || 1;
+  const spanY = maxY - minY || 1;
+  const worldW = BASE;
+  const worldH = Math.max(2200, Math.round(BASE * Math.min(1.5, Math.max(0.6, spanY / spanX))));
+  const PAD = 0.1;
+  const toWorld = (x: number, y: number) => ({
+    x: (((x - minX) / spanX) * (1 - 2 * PAD) + PAD) * worldW,
+    y: (((y - minY) / spanY) * (1 - 2 * PAD) + PAD) * worldH,
   });
 
-  for (const s of lone) {
-    pos[s.id] = { x: hashSeed(s.id * 3 + 1) * world.w, y: hashSeed(s.id * 5 + 2) * world.h };
+  // Cluster PCA centroids + a per-cluster scale so every constellation reads at a
+  // consistent on-screen size regardless of how tight/loose it is in PCA space.
+  const byCluster = new Map<number, GalaxyStar[]>();
+  for (const s of valid) {
+    if (s.cluster_id === null || s.cluster_id === undefined) continue;
+    const arr = byCluster.get(s.cluster_id) ?? [];
+    arr.push(s);
+    byCluster.set(s.cluster_id, arr);
+  }
+  const INTRA = Math.max(280, Math.round(Math.min(worldW, worldH) * 0.085));
+  const centroid = new Map<number, { x: number; y: number }>();
+  const localScale = new Map<number, number>();
+  for (const [cid, arr] of byCluster) {
+    let mx = 0;
+    let my = 0;
+    for (const s of arr) {
+      mx += s.x as number;
+      my += s.y as number;
+    }
+    const c = { x: mx / arr.length, y: my / arr.length };
+    centroid.set(cid, c);
+    let maxD = 0;
+    for (const s of arr) maxD = Math.max(maxD, Math.hypot((s.x as number) - c.x, (s.y as number) - c.y));
+    localScale.set(cid, maxD > 1e-6 ? INTRA / maxD : 0);
   }
 
-  return { pos, world };
+  for (const s of stars) {
+    if (!hasXY(s)) {
+      // No coordinates — tuck near the middle deterministically (rare).
+      pos[s.id] = { x: worldW * 0.5 + (((s.id * 37) % 11) - 5) * 34, y: worldH * 0.5 + (((s.id * 53) % 11) - 5) * 34 };
+      continue;
+    }
+    const cid = s.cluster_id;
+    if (cid !== null && cid !== undefined && centroid.has(cid)) {
+      const c = centroid.get(cid) as { x: number; y: number };
+      const cw = toWorld(c.x, c.y);
+      const k = localScale.get(cid) as number;
+      pos[s.id] = { x: cw.x + ((s.x as number) - c.x) * k, y: cw.y + ((s.y as number) - c.y) * k };
+    } else {
+      // Lone star at its own embedding position — its place in the galaxy is real.
+      pos[s.id] = toWorld(s.x as number, s.y as number);
+    }
+  }
+
+  return { pos, world: { w: worldW, h: worldH } };
 }
 
 const truncate = (str: string, n: number) => (str && str.length > n ? str.slice(0, n - 1) + "…" : str || "");
@@ -274,19 +295,19 @@ export class GalaxyScene extends Phaser.Scene {
   }
 
   private buildEdges(pos: Record<number, { x: number; y: number }>) {
-    // Declutter: cross-cluster links span the whole view and read as a spiderweb,
-    // so draw only links WITHIN a constellation, capped to each star's few
-    // strongest, and faint. (Cross-cluster relations still exist in the data and
-    // still feed the encounter's reframe relevance — they're just not drawn.)
+    // Draw the SIMILAR_TO web — INCLUDING cross-cluster links. Those bridges are
+    // exactly what makes the galaxy read as semantic (the way the constellation
+    // graph does), so they're drawn brighter in the graph's purple; within-cluster
+    // links stay cooler and dimmer. Capped per node to a few strongest to avoid a
+    // hairball, and visible enough that the connections actually register.
     const clusterById: Record<number, number | null> = {};
     for (const s of this.galaxy.stars) clusterById[s.id] = s.cluster_id;
-    const K = 3;
+    const K = 4;
     const perNode: Record<number, { other: number; sim: number }[]> = {};
     for (const e of this.galaxy.edges) {
-      const cs = clusterById[e.source];
-      if (cs === null || cs === undefined || cs !== clusterById[e.target]) continue;
-      (perNode[e.source] ??= []).push({ other: e.target, sim: e.similarity ?? 0.4 });
-      (perNode[e.target] ??= []).push({ other: e.source, sim: e.similarity ?? 0.4 });
+      const sim = e.similarity ?? 0.4;
+      (perNode[e.source] ??= []).push({ other: e.target, sim });
+      (perNode[e.target] ??= []).push({ other: e.source, sim });
     }
     const g = this.add.graphics().setDepth(2);
     const drawn = new Set<string>();
@@ -300,7 +321,12 @@ export class GalaxyScene extends Phaser.Scene {
         const a = pos[id];
         const b = pos[other];
         if (!a || !b) continue;
-        g.lineStyle(1, EDGE, 0.08 + sim * 0.14);
+        const cross = clusterById[id] !== clusterById[other];
+        if (cross) {
+          g.lineStyle(1.2, SIMILAR, 0.16 + sim * 0.34);
+        } else {
+          g.lineStyle(1, EDGE, 0.1 + sim * 0.22);
+        }
         g.lineBetween(a.x, a.y, b.x, b.y);
       }
     }
