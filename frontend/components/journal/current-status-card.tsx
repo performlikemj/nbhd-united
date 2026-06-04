@@ -2,7 +2,7 @@
 
 import clsx from "clsx";
 
-import { useJournalStatusQuery } from "@/lib/queries";
+import { useCompleteTaskMutation, useJournalStatusQuery } from "@/lib/queries";
 import type { JournalObligation, ObligationStatus } from "@/lib/types";
 
 function money(value: string): string {
@@ -42,6 +42,7 @@ function statusPillClass(ob: JournalObligation): string {
  */
 export function CurrentStatusCard() {
   const { data, isLoading } = useJournalStatusQuery();
+  const completeTaskMutation = useCompleteTaskMutation();
   if (isLoading || !data) return null;
 
   const { obligations, open_tasks: openTasks, active_goals: activeGoals } = data;
@@ -78,8 +79,15 @@ export function CurrentStatusCard() {
           <div className="mb-1 text-[11px] uppercase tracking-[0.12em] text-ink-faint/50">Open tasks</div>
           <ul className="space-y-1 text-sm text-ink-muted">
             {openTasks.map((t) => (
-              <li key={t.id} className="flex items-center justify-between gap-3">
-                <span className="min-w-0 truncate">{t.title}</span>
+              <li key={t.id} className="flex items-center gap-2">
+                <button
+                  type="button"
+                  aria-label={`Mark "${t.title}" done`}
+                  disabled={completeTaskMutation.isPending}
+                  onClick={() => completeTaskMutation.mutate(t.id)}
+                  className="grid h-4 w-4 shrink-0 place-items-center rounded border border-white/20 transition hover:border-signal-text/70 disabled:opacity-40"
+                />
+                <span className="min-w-0 flex-1 truncate">{t.title}</span>
                 {t.due_date && <span className="shrink-0 text-xs text-ink-faint">{shortDate(t.due_date)}</span>}
               </li>
             ))}

@@ -60,6 +60,8 @@ import {
   confirmInsight,
   dismissExtraction,
   refuteInsight,
+  completeTask,
+  reopenTask,
   fetchHorizons,
   fetchJournalStatus,
   fetchUsageHistory,
@@ -237,6 +239,26 @@ export function useJournalStatusQuery() {
     queryFn: fetchJournalStatus,
     staleTime: 60_000,
     enabled: isLoggedIn(),
+  });
+}
+
+export function useCompleteTaskMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (taskId: string) => completeTask(taskId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["journal-status"] });
+    },
+  });
+}
+
+export function useReopenTaskMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (taskId: string) => reopenTask(taskId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["journal-status"] });
+    },
   });
 }
 

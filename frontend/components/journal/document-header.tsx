@@ -46,6 +46,9 @@ interface DocumentHeaderProps {
   isMobile: boolean | null;
   showSavedIndicator?: boolean;
   onToggleSidebar?: () => void;
+  /** Typed-lifecycle docs (tasks/goal) are managed via typed records; hide the
+   *  markdown Edit affordance so users aren't offered a write the backend 409s. */
+  readOnly?: boolean;
 }
 
 export function DocumentHeader({
@@ -61,6 +64,7 @@ export function DocumentHeader({
   isMobile,
   showSavedIndicator,
   onToggleSidebar,
+  readOnly,
 }: DocumentHeaderProps) {
   const { data: doc } = useDocumentQuery(kind, slug);
   const handleDateNav = (days: number) => {
@@ -198,7 +202,7 @@ export function DocumentHeader({
                 Cancel
               </button>
             </>
-          ) : (
+          ) : readOnly ? null : (
             <button
               type="button"
               onClick={onEdit}
