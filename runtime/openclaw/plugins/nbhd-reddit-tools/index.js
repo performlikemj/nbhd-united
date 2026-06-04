@@ -1,7 +1,7 @@
 import { wrapTool } from "../../tool-logger.js";
 const wrap = (def) => wrapTool(def, { plugin: "nbhd-reddit-tools" });
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 20000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 60000;
 
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};

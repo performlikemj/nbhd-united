@@ -14,7 +14,7 @@ const wrap = (def) => wrapTool(def, { plugin: "nbhd-insights-tools" });
  * snapshot pipelines ship.
  */
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 20000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 60000;
 const ALLOWED_PILLARS = ["gravity"];
 const ALLOWED_GRANULARITIES = ["daily", "weekly", "monthly"];
 

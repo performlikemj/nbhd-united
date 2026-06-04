@@ -11,7 +11,7 @@ const wrap = (def) => wrapTool(def, { plugin: "nbhd-journal-tools" });
  * - Journal context: combined endpoint for session init
  */
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 20000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 60000;
 
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
