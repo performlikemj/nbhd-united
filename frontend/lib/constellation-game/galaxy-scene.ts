@@ -36,10 +36,13 @@ const BEAM = 0x9bd9ff;
 const EDGE = 0x6f7fb8; // within-cluster link (cool, dim)
 const SIMILAR = 0x8b7cf0; // cross-cluster SIMILAR_TO bridge (the semantic web — matches the graph's purple)
 
+// Curated, high-separation palette — the SAME hues the 2D constellation graph
+// uses, so a cluster reads as the same colour family in both views. HSV hue
+// stepping produced muddy, near-identical neighbours; a fixed palette doesn't.
+const CLUSTER_PALETTE = [0x7c6bf0, 0xe8b4b8, 0x4ecdc4, 0xfbbf24, 0x60a5fa, 0xf472b6, 0x34d399, 0xfb923c];
 function clusterColor(cid: number | null): number {
   if (cid === null || cid === undefined) return 0x9fb0c8;
-  const h = (cid * 73) % 360;
-  return Phaser.Display.Color.HSVToRGB(h / 360, 0.5, 1).color;
+  return CLUSTER_PALETTE[Math.abs(cid) % CLUSTER_PALETTE.length];
 }
 
 /**
@@ -101,7 +104,7 @@ function layoutStars(stars: GalaxyStar[]): {
     arr.push(s);
     byCluster.set(s.cluster_id, arr);
   }
-  const INTRA = Math.max(280, Math.round(Math.min(worldW, worldH) * 0.085));
+  const INTRA = Math.max(340, Math.round(Math.min(worldW, worldH) * 0.1));
   const centroid = new Map<number, { x: number; y: number }>();
   const localScale = new Map<number, number>();
   for (const [cid, arr] of byCluster) {
@@ -118,6 +121,23 @@ function layoutStars(stars: GalaxyStar[]): {
     localScale.set(cid, maxD > 1e-6 ? INTRA / maxD : 0);
   }
 
+  // Deliberately separate cluster centroids so each neighbourhood owns a region
+  // of space with void around it. PCA centroids alone often sit cramped near the
+  // middle, which blurs the constellations into one cloud. Seed from the PCA
+  // centroid (keeps "similar clusters near each other"), then relax pairwise to a
+  // minimum gap, so even a tightly-embedded galaxy reads as distinct neighbourhoods.
+  const cids = [...byCluster.keys()];
+  const cw = new Map<number, { x: number; y: number }>();
+  for (const cid of cids) { const c = centroid.get(cid)!; cw.set(cid, toWorld(c.x, c.y)); }
+  const SEP = INTRA * 2.7; // centre-to-centre floor ≈ nebula Ø + breathing room
+  for (let it = 0; it < 80; it++) {
+    for (let i = 0; i < cids.length; i++) for (let j = i + 1; j < cids.length; j++) {
+      const a = cw.get(cids[i])!, b = cw.get(cids[j])!;
+      const dx = a.x - b.x, dy = a.y - b.y, d = Math.hypot(dx, dy) || 0.01;
+      if (d < SEP) { const push = (SEP - d) * 0.5, nx = dx / d, ny = dy / d; a.x += nx * push; a.y += ny * push; b.x -= nx * push; b.y -= ny * push; }
+    }
+  }
+
   for (const s of stars) {
     if (!hasXY(s)) {
       // No coordinates — tuck near the middle deterministically (rare).
@@ -125,18 +145,33 @@ function layoutStars(stars: GalaxyStar[]): {
       continue;
     }
     const cid = s.cluster_id;
-    if (cid !== null && cid !== undefined && centroid.has(cid)) {
+    if (cid !== null && cid !== undefined && cw.has(cid)) {
       const c = centroid.get(cid) as { x: number; y: number };
-      const cw = toWorld(c.x, c.y);
+      const center = cw.get(cid) as { x: number; y: number };
       const k = localScale.get(cid) as number;
-      pos[s.id] = { x: cw.x + ((s.x as number) - c.x) * k, y: cw.y + ((s.y as number) - c.y) * k };
+      pos[s.id] = { x: center.x + ((s.x as number) - c.x) * k, y: center.y + ((s.y as number) - c.y) * k };
     } else {
       // Lone star at its own embedding position — its place in the galaxy is real.
       pos[s.id] = toWorld(s.x as number, s.y as number);
     }
   }
 
-  return { pos, world: { w: worldW, h: worldH } };
+  // Re-fit the world to the separated layout (+ margin) so nothing clips the
+  // bounds and the minimap frames the whole galaxy.
+  let minPX = Infinity, minPY = Infinity, maxPX = -Infinity, maxPY = -Infinity;
+  for (const id in pos) {
+    const p = pos[id];
+    if (p.x < minPX) minPX = p.x;
+    if (p.y < minPY) minPY = p.y;
+    if (p.x > maxPX) maxPX = p.x;
+    if (p.y > maxPY) maxPY = p.y;
+  }
+  const MARGIN = INTRA * 1.4;
+  for (const id in pos) { pos[id].x += MARGIN - minPX; pos[id].y += MARGIN - minPY; }
+  const finalW = Math.max(BASE, Math.round(maxPX - minPX + MARGIN * 2));
+  const finalH = Math.max(2200, Math.round(maxPY - minPY + MARGIN * 2));
+
+  return { pos, world: { w: finalW, h: finalH } };
 }
 
 const truncate = (str: string, n: number) => (str && str.length > n ? str.slice(0, n - 1) + "…" : str || "");
@@ -212,6 +247,7 @@ export class GalaxyScene extends Phaser.Scene {
     this.cameras.main.setBackgroundColor("#0b0f13");
 
     this.buildStarfield();
+    this.buildNebulae(pos);
     this.buildEdges(pos);
     this.buildStars(pos);
     this.buildConstellationLabels();
@@ -369,6 +405,32 @@ export class GalaxyScene extends Phaser.Scene {
     }
   }
 
+  // Soft coloured "territory" behind each cluster — a nebula sized to the
+  // neighbourhood's footprint. This is what turns a scatter of dim dots into
+  // legible constellations: each group reads as a place, with its own colour,
+  // even zoomed out and even when its stars are tiny protos.
+  private buildNebulae(pos: Record<number, { x: number; y: number }>) {
+    const groups = new Map<number, { x: number; y: number; n: number; pts: { x: number; y: number }[] }>();
+    for (const s of this.galaxy.stars) {
+      const cid = s.cluster_id;
+      const p = pos[s.id];
+      if (cid === null || cid === undefined || !p) continue;
+      const g = groups.get(cid) ?? { x: 0, y: 0, n: 0, pts: [] };
+      g.x += p.x; g.y += p.y; g.n += 1; g.pts.push(p);
+      groups.set(cid, g);
+    }
+    for (const [cid, g] of groups) {
+      const cx = g.x / g.n, cy = g.y / g.n;
+      let maxD = 0;
+      for (const p of g.pts) maxD = Math.max(maxD, Math.hypot(p.x - cx, p.y - cy));
+      const R = Math.max(200, maxD + 110);
+      const tint = clusterColor(cid);
+      // halo (wide, faint) + core (tighter, denser) — additive over the void
+      this.add.image(cx, cy, "glow").setTint(tint).setBlendMode(Phaser.BlendModes.ADD).setDepth(1).setScale((R * 2.0) / 62).setAlpha(0.1);
+      this.add.image(cx, cy, "glow").setTint(tint).setBlendMode(Phaser.BlendModes.ADD).setDepth(1).setScale((R * 1.05) / 62).setAlpha(0.16);
+    }
+  }
+
   private markVisited(entry: StarEntry) {
     const g = this.add.graphics().setDepth(3);
     g.lineStyle(1.5, 0x8be0ff, 0.5);
@@ -377,24 +439,30 @@ export class GalaxyScene extends Phaser.Scene {
 
   // Faint constellation names floating behind each cluster's stars.
   private buildConstellationLabels() {
-    const groups: Record<number, { x: number; y: number; n: number; label: string }> = {};
+    const groups: Record<number, { x: number; y: number; n: number; label: string; pts: { x: number; y: number }[] }> = {};
     for (const s of this.stars) {
       const cid = s.data.cluster_id;
       if (cid === null || cid === undefined || !s.data.cluster_label) continue;
-      const g = groups[cid] ?? { x: 0, y: 0, n: 0, label: s.data.cluster_label };
+      const g = groups[cid] ?? { x: 0, y: 0, n: 0, label: s.data.cluster_label, pts: [] };
       g.x += s.x;
       g.y += s.y;
       g.n += 1;
+      g.pts.push({ x: s.x, y: s.y });
       groups[cid] = g;
     }
     for (const key of Object.keys(groups)) {
       const g = groups[Number(key)];
+      const cx = g.x / g.n, cy = g.y / g.n;
+      let maxD = 0;
+      for (const p of g.pts) maxD = Math.max(maxD, Math.hypot(p.x - cx, p.y - cy));
       const hex = "#" + clusterColor(Number(key)).toString(16).padStart(6, "0");
+      // The neighbourhood's name floats just above its stars — bright enough to
+      // read at the framed-out zoom (the old 0.14 was effectively invisible).
       this.add
-        .text(g.x / g.n, g.y / g.n, g.label.toUpperCase(), { fontFamily: "serif", fontSize: "26px", color: hex })
+        .text(cx, cy - maxD - 48, g.label.toUpperCase(), { fontFamily: "serif", fontStyle: "italic", fontSize: "34px", color: hex })
         .setOrigin(0.5)
-        .setAlpha(0.14)
-        .setDepth(1);
+        .setAlpha(0.5)
+        .setDepth(2);
     }
   }
 
@@ -416,7 +484,10 @@ export class GalaxyScene extends Phaser.Scene {
       })
       .setDepth(7);
     this.cameras.main.startFollow(this.ship, true, 0.08, 0.08);
-    this.cameras.main.setZoom(1);
+    // Open framed on the whole galaxy so the neighbourhoods read as a map, not a
+    // void to hunt through. Clamped so a small galaxy isn't over-zoomed.
+    const fit = Math.min(this.scale.width / this.world.w, this.scale.height / this.world.h);
+    this.cameras.main.setZoom(Phaser.Math.Clamp(fit * 1.15, 0.3, 1));
   }
 
   private buildHUD() {
