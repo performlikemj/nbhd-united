@@ -24,10 +24,45 @@ from rest_framework.views import APIView
 from .document_views import _get_tenant
 
 
+def _parse_iso_date(raw, field_name):
+    """Parse a YYYY-MM-DD query param, or return None. Raise ValueError if malformed."""
+    if not raw:
+        return None
+    from datetime import date
+
+    try:
+        return date.fromisoformat(str(raw))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be an ISO date (YYYY-MM-DD)") from exc
+
+
+def _parse_uuid(raw, field_name):
+    """Return ``raw`` if it is a valid UUID string, else None. Raise ValueError if malformed."""
+    if not raw:
+        return None
+    import uuid
+
+    try:
+        uuid.UUID(str(raw))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError(f"{field_name} must be a valid UUID") from exc
+    return raw
+
+
 class TaskDetailView(APIView):
-    """PATCH /api/v1/journal/tasks/<uuid>/ — update title/description/status/etc."""
+    """GET/PATCH /api/v1/journal/tasks/<uuid>/ — read or update a task."""
 
     permission_classes = [IsAuthenticated]
+
+    def get(self, request, task_id):
+        from .lifecycle_serializers import TaskSerializer
+        from .models import Task
+
+        tenant = _get_tenant(request.user)
+        task = Task.objects.filter(tenant=tenant, id=task_id).first()
+        if task is None:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(TaskSerializer(task).data)
 
     def patch(self, request, task_id):
         from .lifecycle_serializers import TaskSerializer
@@ -83,9 +118,19 @@ class TaskReopenView(APIView):
 
 
 class GoalDetailView(APIView):
-    """PATCH /api/v1/journal/goals/<uuid>/ — update title/description/status/etc."""
+    """GET/PATCH /api/v1/journal/goals/<uuid>/ — read or update a goal."""
 
     permission_classes = [IsAuthenticated]
+
+    def get(self, request, goal_id):
+        from .lifecycle_serializers import GoalSerializer
+        from .models import Goal
+
+        tenant = _get_tenant(request.user)
+        goal = Goal.objects.filter(tenant=tenant, id=goal_id).first()
+        if goal is None:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(GoalSerializer(goal).data)
 
     def patch(self, request, goal_id):
         from .lifecycle_serializers import GoalSerializer
@@ -136,3 +181,84 @@ class GoalAbandonView(APIView):
 
         goal.abandon()
         return Response(GoalSerializer(goal).data)
+
+
+class TaskListCreateView(APIView):
+    """GET /api/v1/journal/tasks/ — list the tenant's tasks (filters: status,
+    pillar, parent_goal_id, due_before, due_after). POST — create a task.
+
+    The detail/transition endpoints (PATCH, complete, reopen) already exist
+    above; this adds the collection read + create the connected iOS client and
+    web UI need to enumerate and add tasks without going through the agent.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .lifecycle_serializers import TaskSerializer
+        from .models import Task
+
+        tenant = _get_tenant(request.user)
+        qs = Task.objects.filter(tenant=tenant)
+        params = request.query_params
+        for field in ("status", "pillar"):
+            value = params.get(field)
+            if value:
+                qs = qs.filter(**{field: value})
+        try:
+            parent_goal_id = _parse_uuid(params.get("parent_goal_id"), "parent_goal_id")
+            due_before = _parse_iso_date(params.get("due_before"), "due_before")
+            due_after = _parse_iso_date(params.get("due_after"), "due_after")
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if parent_goal_id:
+            qs = qs.filter(parent_goal_id=parent_goal_id)
+        if due_before:
+            qs = qs.filter(due_date__lte=due_before)
+        if due_after:
+            qs = qs.filter(due_date__gte=due_after)
+        return Response(TaskSerializer(qs.order_by("-updated_at"), many=True).data)
+
+    def post(self, request):
+        from .lifecycle_serializers import TaskSerializer
+
+        tenant = _get_tenant(request.user)
+        serializer = TaskSerializer(data=request.data, context={"tenant": tenant})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class GoalListCreateView(APIView):
+    """GET /api/v1/journal/goals/ — list the tenant's goals (filters: status,
+    pillar, parent_goal_id). POST — create a goal."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .lifecycle_serializers import GoalSerializer
+        from .models import Goal
+
+        tenant = _get_tenant(request.user)
+        qs = Goal.objects.filter(tenant=tenant)
+        params = request.query_params
+        for field in ("status", "pillar"):
+            value = params.get(field)
+            if value:
+                qs = qs.filter(**{field: value})
+        try:
+            parent_goal_id = _parse_uuid(params.get("parent_goal_id"), "parent_goal_id")
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if parent_goal_id:
+            qs = qs.filter(parent_goal_id=parent_goal_id)
+        return Response(GoalSerializer(qs.order_by("-updated_at"), many=True).data)
+
+    def post(self, request):
+        from .lifecycle_serializers import GoalSerializer
+
+        tenant = _get_tenant(request.user)
+        serializer = GoalSerializer(data=request.data, context={"tenant": tenant})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)

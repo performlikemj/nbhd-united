@@ -13,8 +13,10 @@ from .lifecycle_views import (
     GoalAbandonView,
     GoalAchieveView,
     GoalDetailView,
+    GoalListCreateView,
     TaskCompleteView,
     TaskDetailView,
+    TaskListCreateView,
     TaskReopenView,
 )
 from .query_views import JournalQueryView
@@ -45,10 +47,12 @@ urlpatterns = [
     path("today/", TodayView.as_view(), name="today"),
     path("tree/", SidebarTreeView.as_view(), name="sidebar-tree"),
     path("status/", JournalStatusView.as_view(), name="journal-status"),
-    # ── Typed lifecycle writes (session-auth; companion to runtime CRUD) ──
+    # ── Typed lifecycle reads/writes (session-auth; companion to runtime CRUD) ──
+    path("tasks/", TaskListCreateView.as_view(), name="task-list-create"),
     path("tasks/<uuid:task_id>/", TaskDetailView.as_view(), name="task-detail"),
     path("tasks/<uuid:task_id>/complete/", TaskCompleteView.as_view(), name="task-complete"),
     path("tasks/<uuid:task_id>/reopen/", TaskReopenView.as_view(), name="task-reopen"),
+    path("goals/", GoalListCreateView.as_view(), name="goal-list-create"),
     path("goals/<uuid:goal_id>/", GoalDetailView.as_view(), name="goal-detail"),
     path("goals/<uuid:goal_id>/achieve/", GoalAchieveView.as_view(), name="goal-achieve"),
     path("goals/<uuid:goal_id>/abandon/", GoalAbandonView.as_view(), name="goal-abandon"),
