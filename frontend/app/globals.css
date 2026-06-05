@@ -509,13 +509,19 @@ body {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+/* Each composing line softly fades up as it mounts (the element is keyed by
+   message index), then a slow shimmer drifts across — calm, not flashing. */
+@keyframes coreComposeFadeIn {
+  0% { opacity: 0; transform: translateY(3px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
 .core-shimmer {
   background: linear-gradient(90deg, var(--ink-faint), var(--ink) 50%, var(--ink-faint));
   background-size: 200% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: coreTextShimmer 1.8s linear infinite;
+  animation: coreComposeFadeIn 1s ease-out, coreTextShimmer 5s linear infinite;
 }
 @media (prefers-reduced-motion: reduce) {
   .core-shimmer { animation: none; color: var(--ink-muted); }
