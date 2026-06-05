@@ -53,7 +53,8 @@ SAMPLE_FMT = "s16"
 WORDS_PER_SEC = 2.5  # ~150 wpm — an unhurried meditation cadence
 JOIN_FADE = 0.012  # 12ms fades at joins to kill concat clicks
 FLEX_FLOOR = 1.0  # a flex silence never collapses below this
-FLEX_CEIL = 60.0  # ...nor balloons past this (slack splits across a phase's flex points)
+FLEX_CEIL = 150.0  # ...nor balloons past this. Generous: a meditation often wants a
+# minutes-long hold, and the composer decides where those belong — silence is free.
 # Per-call ceiling kept small so a single stalled segment (45s x 3 attempts +
 # ~6s backoff ≈ 141s) stays well under the ~300s synchronous-handler budget.
 TTS_TIMEOUT_MS = 45_000
@@ -85,8 +86,14 @@ REQUIRED_PHASES = [
     "closing",
 ]
 SILENCE_MIN = 3.0
-SILENCE_MAX = 30.0
+SILENCE_MAX = 150.0  # was 30 — a guided sit often holds in silence for a minute or more;
+# the composer chooses these durations holistically (silence is free to render).
 MAX_SPEECH_CHARS = 600  # one narration line longer than this is almost certainly a mistake
+# Bound the *count* of spoken segments (not their placement). Floor keeps a sit from
+# being near-empty; ceiling caps TTS calls so a render stays under the low-tier Gemini
+# per-minute cap + the render deadline. Where the words fall is the composer's call.
+MIN_SPEECH_SEGMENTS = 4
+MAX_SPEECH_SEGMENTS = 12
 
 
 class ManifestError(ValueError):
@@ -111,18 +118,24 @@ def estimate_speech_seconds(text: str) -> float:
 def validate_manifest(manifest: object) -> list[str]:
     """Return a list of human-readable validation errors (empty == valid).
 
-    Enforced before any TTS spend (CONTINUITY_core.md "Validation"):
+    The composer owns the *rhythm* — where words land, where silence falls, and how
+    long each silence holds — so validation only guards what the renderer needs and
+    what protects the spend, NOT the artistic shape:
 
     * all 6 phases present, in order;
-    * every explicit ``silence.seconds`` in ``[3, 30]`` (or the literal
-      ``"flex"``);
-    * every phase EXCEPT ``closing`` has at least one ``flex`` silence (the slack
-      absorber that lets the phase hit its time budget);
-    * every phase has at least one non-empty ``speech`` segment, none longer than
-      ``MAX_SPEECH_CHARS``;
+    * every explicit ``silence.seconds`` in ``[3, 150]`` (or the literal ``"flex"``);
+      long holds are fine — a phase may be mostly, or entirely, silence;
     * ``closing`` ENDS on a (non-empty) speech segment — so it lands rather than
       trailing off into silence;
-    * each phase declares a positive ``target_seconds``.
+    * any ``speech`` segment present is non-empty and within ``MAX_SPEECH_CHARS``;
+    * the *count* of spoken segments across the whole sit is in
+      ``[MIN_SPEECH_SEGMENTS, MAX_SPEECH_SEGMENTS]`` — a floor so it isn't near-empty,
+      a ceiling so TTS calls stay under the rate cap;
+    * each phase declares a positive ``target_seconds`` (the budget a ``flex`` silence
+      fills, when one is used).
+
+    Deliberately NOT enforced anymore: one-speech-per-phase, and a flex-per-phase. A
+    phase can be pure silence; a phase can pin its own length with explicit silences.
     """
     if not isinstance(manifest, dict):
         return ["manifest must be a JSON object"]
@@ -136,6 +149,7 @@ def validate_manifest(manifest: object) -> list[str]:
         return [f"phases must be exactly, in order: {REQUIRED_PHASES}; got {names}"]
 
     errors: list[str] = []
+    speech_count = 0
     for phase in phases:
         name = phase.get("name")
         segments = phase.get("segments")
@@ -143,8 +157,6 @@ def validate_manifest(manifest: object) -> list[str]:
             errors.append(f"phase '{name}' has no segments")
             continue
 
-        has_speech = False
-        flex_count = 0
         for seg in segments:
             if not isinstance(seg, dict):
                 errors.append(f"phase '{name}' has a non-object segment")
@@ -157,11 +169,10 @@ def validate_manifest(manifest: object) -> list[str]:
                 elif len(text) > MAX_SPEECH_CHARS:
                     errors.append(f"phase '{name}' speech segment too long ({len(text)} > {MAX_SPEECH_CHARS} chars)")
                 else:
-                    has_speech = True
+                    speech_count += 1
             elif seg_type == "silence":
                 seconds = seg.get("seconds")
                 if seconds == "flex":
-                    flex_count += 1
                     continue
                 try:
                     value = float(seconds)
@@ -173,17 +184,19 @@ def validate_manifest(manifest: object) -> list[str]:
             else:
                 errors.append(f"phase '{name}' has an unknown segment type: {seg_type!r}")
 
-        if not has_speech:
-            errors.append(f"phase '{name}' has no valid speech segment")
-        if name != "closing" and flex_count == 0:
-            errors.append(f'phase \'{name}\' needs at least one flex silence ("seconds": "flex")')
-
         try:
             target = float(phase.get("target_seconds"))
             if target <= 0:
                 errors.append(f"phase '{name}' target_seconds must be positive")
         except (TypeError, ValueError):
             errors.append(f"phase '{name}' has a missing/invalid target_seconds")
+
+    if speech_count < MIN_SPEECH_SEGMENTS:
+        errors.append(f"too few spoken segments ({speech_count} < {MIN_SPEECH_SEGMENTS})")
+    elif speech_count > MAX_SPEECH_SEGMENTS:
+        errors.append(
+            f"too many spoken segments ({speech_count} > {MAX_SPEECH_SEGMENTS}) — would risk the TTS rate cap"
+        )
 
     closing_segments = phases[-1].get("segments") or []
     last = closing_segments[-1] if closing_segments else None
