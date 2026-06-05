@@ -754,6 +754,40 @@ export function fetchGalaxy(): Promise<import("@/lib/constellation-game/encounte
   return apiFetch<import("@/lib/constellation-game/encounter-logic").GalaxyData>("/api/v1/lessons/galaxy/");
 }
 
+// ── Galaxy co-pilot ───────────────────────────────────────────────────────
+// The in-game line shown when the player lands on (or lingers near) a star.
+// The backend computes the spatial evidence; the LLM only phrases it. Always
+// resolves to a line — `source: "fallback"` is the deterministic one served
+// when the model is off/unreachable. `point` is the star the co-pilot gestures
+// at (Phase 3 waypoint); null when there's nothing worth pointing to.
+export interface CopilotPoint {
+  star_id: number;
+  label: string;
+  reason: string;
+}
+
+export interface CopilotReflection {
+  line: string;
+  point: CopilotPoint | null;
+  source: "llm" | "fallback";
+}
+
+export interface ReflectInput {
+  star_id: number;
+  recent_star_ids?: number[];
+  nearby_star_ids?: number[];
+  ship?: { x: number; y: number };
+  mode?: "land" | "ambient";
+}
+
+/** POST /api/v1/lessons/galaxy/reflect/ — the co-pilot's grounded line for a star. */
+export function reflectGalaxy(input: ReflectInput): Promise<CopilotReflection> {
+  return apiFetch<CopilotReflection>("/api/v1/lessons/galaxy/reflect/", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 
 // ── Journal v2 Documents ──────────────────────────────────────────────
 

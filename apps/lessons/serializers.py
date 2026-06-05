@@ -134,6 +134,34 @@ class GalaxyEdgeSerializer(serializers.ModelSerializer):
         fields = ["source", "target", "similarity", "connection_type"]
 
 
+class ShipPositionSerializer(serializers.Serializer):
+    """The ship's world-space position — used only for cache-cell rounding."""
+
+    x = serializers.FloatField(required=False)
+    y = serializers.FloatField(required=False)
+
+
+class GalaxyReflectSerializer(serializers.Serializer):
+    """Input for the co-pilot reflect call (POST galaxy/reflect/).
+
+    ``star_id`` is the star just landed on (``land``) or lingered near
+    (``ambient``). ``recent_star_ids`` is the recent flight path, newest first.
+    ``ship`` is world-space and informational only — proximity is computed in
+    idea-space server-side. ``nearby_star_ids`` lets the client pass on-screen
+    proximity hints it already knows (it owns world coords).
+    """
+
+    star_id = serializers.IntegerField(required=True)
+    recent_star_ids = serializers.ListField(
+        child=serializers.IntegerField(), required=False, default=list, max_length=20
+    )
+    nearby_star_ids = serializers.ListField(
+        child=serializers.IntegerField(), required=False, default=list, max_length=20
+    )
+    ship = ShipPositionSerializer(required=False)
+    mode = serializers.ChoiceField(choices=["land", "ambient"], default="land")
+
+
 class TutoringStartSerializer(serializers.Serializer):
     """Input for starting a tutoring session — nothing needed, star is in the URL."""
 
