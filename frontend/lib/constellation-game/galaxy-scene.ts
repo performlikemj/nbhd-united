@@ -45,6 +45,17 @@ function clusterColor(cid: number | null): number {
   return CLUSTER_PALETTE[Math.abs(cid) % CLUSTER_PALETTE.length];
 }
 
+// Lift a colour toward white by `amt` (0..1) — for the luminous inner wisps of a
+// nebula, where the cloud glows hottest.
+function lighten(color: number, amt: number): number {
+  const c = Phaser.Display.Color.IntegerToColor(color);
+  return Phaser.Display.Color.GetColor(
+    Math.round(c.red + (255 - c.red) * amt),
+    Math.round(c.green + (255 - c.green) * amt),
+    Math.round(c.blue + (255 - c.blue) * amt),
+  );
+}
+
 /**
  * Semantic galaxy layout. The backend already computes a 2D PCA projection of the
  * lesson embeddings (normalised ~[-1,1], with inter-cluster spacing) — the SAME
@@ -230,9 +241,10 @@ export class GalaxyScene extends Phaser.Scene {
   private keys!: any;
   private landBtn!: HTMLElement | null;
   private encEl!: HTMLElement | null;
-  // Each cluster as a place: nebula (halo+core), a floating name that acts as a
-  // distant beacon, and an "entered" latch for the one-shot arrival bloom.
-  private neighborhoods: { cid: number; cx: number; cy: number; r: number; n: number; color: number; halo: Phaser.GameObjects.Image; core: Phaser.GameObjects.Image; name: Phaser.GameObjects.Text; entered: boolean }[] = [];
+  // Each cluster as a place: a wispy nebula cloud (many soft puffs), a floating
+  // name beacon, and its member stars — so proximity can brighten the whole
+  // neighbourhood (cloud + its stars) as the ship nears.
+  private neighborhoods: { cid: number; cx: number; cy: number; r: number; n: number; color: number; cloud: Phaser.GameObjects.Image[]; name: Phaser.GameObjects.Text; stars: StarEntry[] }[] = [];
   private neighborhoodR = 400;
 
   constructor(galaxy: GalaxyData, overlayRoot: HTMLElement) {
@@ -257,6 +269,7 @@ export class GalaxyScene extends Phaser.Scene {
     this.buildNeighborhoods(pos);
     this.buildEdges(pos);
     this.buildStars(pos);
+    this.attachStarsToNeighborhoods();
     const spawn = this.pickSpawn();
     this.buildShip(spawn.x, spawn.y);
     this.buildHUD();
@@ -290,6 +303,16 @@ export class GalaxyScene extends Phaser.Scene {
     }
     gg.generateTexture("glow", 128, 128);
     gg.destroy();
+
+    // Very soft, wide-falloff blob for nebula wisps — softer than "glow" so many
+    // overlapping copies read as an organic cloud rather than stacked discs.
+    const pf = this.make.graphics({ x: 0, y: 0 }, false);
+    for (let i = 40; i > 0; i--) {
+      pf.fillStyle(0xffffff, 0.018);
+      pf.fillCircle(80, 80, i * 2);
+    }
+    pf.generateTexture("puff", 160, 160);
+    pf.destroy();
 
     const cg = this.make.graphics({ x: 0, y: 0 }, false);
     cg.fillStyle(0xffffff, 1);
@@ -448,17 +471,47 @@ export class GalaxyScene extends Phaser.Scene {
       const r = Math.max(220, maxD + 120);
       rSum += r;
       const color = clusterColor(cid);
-      const halo = this.add.image(cx, cy, "glow").setTint(color).setBlendMode(Phaser.BlendModes.ADD).setDepth(1).setScale((r * 2.1) / 62).setAlpha(0.09);
-      const core = this.add.image(cx, cy, "glow").setTint(color).setBlendMode(Phaser.BlendModes.ADD).setDepth(1).setScale((r * 1.05) / 62).setAlpha(0.14);
+      const cloud = this.buildNebulaCloud(cx, cy, r, color);
       const hex = "#" + color.toString(16).padStart(6, "0");
       const name = this.add
         .text(cx, cy - r - 30, (g.label || "").toUpperCase(), { fontFamily: "serif", fontStyle: "italic", fontSize: "32px", color: hex })
         .setOrigin(0.5)
         .setAlpha(0.16)
         .setDepth(2);
-      this.neighborhoods.push({ cid, cx, cy, r, n: g.n, color, halo, core, name, entered: false });
+      this.neighborhoods.push({ cid, cx, cy, r, n: g.n, color, cloud, name, stars: [] });
     }
     this.neighborhoodR = this.neighborhoods.length ? rSum / this.neighborhoods.length : 400;
+  }
+
+  // An irregular, wispy nebula built from a scatter of soft additive "puffs" — a
+  // glowing cloud (think Crab Nebula), not a flat disc. A wide faint halo carries
+  // it as a beacon across the void; a hot lightened heart; then scattered wisps,
+  // some lifted toward white, a few breathing slowly. Returns the puffs so the
+  // whole cloud can brighten on approach (each stores its base alpha in 'a0').
+  private buildNebulaCloud(cx: number, cy: number, r: number, color: number): Phaser.GameObjects.Image[] {
+    const cloud: Phaser.GameObjects.Image[] = [];
+    const puff = (x: number, y: number, scale: number, alpha: number, tint: number) => {
+      const img = this.add.image(x, y, "puff").setTint(tint).setBlendMode(Phaser.BlendModes.ADD).setDepth(1).setScale(scale).setAlpha(alpha);
+      img.setData("a0", alpha);
+      cloud.push(img);
+      return img;
+    };
+    puff(cx, cy, (r * 2.6) / 80, 0.05, color); // wide beacon halo
+    puff(cx, cy, (r * 0.9) / 80, 0.1, lighten(color, 0.45)); // glowing heart
+    const PUFFS = 9;
+    for (let i = 0; i < PUFFS; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const rad = Math.pow(Math.random(), 0.65) * r * 0.85; // bias toward the centre
+      const px = cx + Math.cos(ang) * rad, py = cy + Math.sin(ang) * rad;
+      const scale = (r * (0.5 + Math.random() * 0.7)) / 80;
+      const bright = Math.random() < 0.33;
+      const img = puff(px, py, scale, bright ? 0.085 : 0.05, bright ? lighten(color, 0.35) : color);
+      if (i % 4 === 0) {
+        // a few wisps breathe (scale only — alpha is owned by the proximity code)
+        this.tweens.add({ targets: img, scale: img.scale * 1.18, duration: 4200 + Math.random() * 2600, yoyo: true, repeat: -1, ease: "Sine.inOut", delay: Math.random() * 2000 });
+      }
+    }
+    return cloud;
   }
 
   // Start the journey *inside* the richest neighbourhood, not the empty centre —
@@ -470,26 +523,33 @@ export class GalaxyScene extends Phaser.Scene {
     return { x: best.cx, y: best.cy };
   }
 
-  // Beacons + arrival: distant neighbourhoods glow faintly and their names sit
-  // dim; as the ship nears, the nebula brightens and the name fades up, and the
-  // first time you cross the threshold its stars twinkle awake (a one-shot bloom).
+  // Link each star to its neighbourhood so a cluster's stars brighten together.
+  private attachStarsToNeighborhoods() {
+    const byCid = new Map<number, { stars: StarEntry[] }>();
+    for (const nb of this.neighborhoods) byCid.set(nb.cid, nb);
+    for (const s of this.stars) {
+      const cid = s.data.cluster_id;
+      if (cid === null || cid === undefined) continue;
+      byCid.get(cid)?.stars.push(s);
+    }
+  }
+
+  // Proximity drives the whole sense of place: distant neighbourhoods sit dim
+  // (faint beacon), and as the ship nears, the nebula cloud glows up AND the
+  // cluster's own stars swell and shine — so arriving somewhere feels like the
+  // place lighting up around you. (We touch glow.alpha + core.scale, which no
+  // tween owns; the twinkle/pulse tweens animate the other properties.)
   private updateNeighborhoods() {
     const ship = this.ship;
     for (const nb of this.neighborhoods) {
       const d = Phaser.Math.Distance.Between(ship.x, ship.y, nb.cx, nb.cy);
-      const t = Phaser.Math.Clamp((d - nb.r) / (nb.r * 3), 0, 1); // 0 = inside, 1 = far
+      const t = Phaser.Math.Clamp((d - nb.r) / (nb.r * 3), 0, 1); // 0 inside … 1 far
       nb.name.setAlpha(0.62 - 0.46 * t);
-      const near = Phaser.Math.Clamp(1 - d / (nb.r * 1.7), 0, 1);
-      nb.core.setAlpha(0.14 + near * 0.16);
-      nb.halo.setAlpha(0.09 + near * 0.11);
-      if (d < nb.r * 1.05 && !nb.entered) {
-        nb.entered = true;
-        // Arrival bloom: a one-shot swell of the nebula as you cross in. (We pulse
-        // scale, not alpha — alpha is owned by the per-frame proximity code above.)
-        this.tweens.add({ targets: nb.halo, scale: nb.halo.scale * 1.16, duration: 520, yoyo: true, ease: "Sine.inOut" });
-        this.tweens.add({ targets: nb.core, scale: nb.core.scale * 1.16, duration: 520, yoyo: true, ease: "Sine.inOut" });
-      } else if (d > nb.r * 1.5 && nb.entered) {
-        nb.entered = false;
+      const near = Phaser.Math.Clamp(1 - d / (nb.r * 1.8), 0, 1); // 0 far … 1 right on top
+      for (const img of nb.cloud) img.setAlpha((img.getData("a0") as number) * (1 + near * 1.1));
+      for (const s of nb.stars) {
+        s.glow.setAlpha(0.78 + near * 0.22);
+        s.core.setScale((s.r / 8) * (1 + near * 0.55));
       }
     }
   }
