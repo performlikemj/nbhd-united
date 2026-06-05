@@ -33,6 +33,7 @@ from django.utils import timezone
 
 from apps.router.models import PendingMessage
 from apps.router.pending_queue import (
+    _WAKE_DEFER_SECONDS,
     drain_pending_messages_for_tenant_task,
     enqueue_message_for_tenant,
 )
@@ -585,6 +586,74 @@ class PendingMessageStaleHibernationReconcileTest(TestCase):
             tenant.hibernated_at,
             "credit-limit early-return must not be treated as a liveness signal",
         )
+
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant")
+    @patch("apps.billing.services.check_budget", return_value="")
+    @patch("apps.router.pending_queue._looks_like_openrouter_credit_limit", return_value=False)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_hibernated_container_404_wakes_and_defers(
+        self, mock_post, _mock_credit_check, _mock_budget, mock_wake, mock_publish
+    ):
+        """The poller path has no wake step, so a message landing on the
+        drain while the container is genuinely hibernated (deactivated
+        revision → 404) must WAKE the container and defer the drain — not
+        burn the attempt cap and drop the message (canary 148ccf1c,
+        2026-06-05).
+        """
+
+        def _route(url, *args, **kwargs):
+            if "/v1/chat/completions" in url:
+                resp = MagicMock()
+                resp.status_code = 404
+                resp.is_success = False
+                resp.text = "Not Found"
+                resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+                    "404 Not Found", request=MagicMock(), response=resp
+                )
+                return resp
+            ok = MagicMock()
+            ok.is_success = True
+            ok.status_code = 200
+            return ok
+
+        mock_post.side_effect = _route
+
+        user = _make_user(telegram_chat_id=53535353)
+        tenant = _make_tenant(user)
+        Tenant.objects.filter(id=tenant.id).update(hibernated_at=timezone.now())
+
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.TELEGRAM,
+            channel_user_id="53535353",
+            payload={
+                "message_text": "wake up",
+                "user_param": "53535353",
+                "user_timezone": "UTC",
+            },
+            user_text="wake up",
+        )
+
+        result = drain_pending_messages_for_tenant_task(str(tenant.id), "telegram", "53535353")
+
+        # Woke the container instead of dropping the message.
+        self.assertTrue(result.get("woke"))
+        mock_wake.assert_called_once()
+
+        # Message preserved: still PENDING, attempt counter NOT burned,
+        # lease released so the deferred re-drain can re-claim it.
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_status, PendingMessage.Status.PENDING)
+        self.assertEqual(msg.delivery_attempts, 0)
+        self.assertIsNone(msg.delivery_in_flight_until)
+
+        # Drain rescheduled after the boot delay (not immediately).
+        drain_calls = [
+            c for c in mock_publish.call_args_list if c.args and c.args[0] == "drain_pending_messages_for_tenant"
+        ]
+        self.assertTrue(drain_calls, "expected a deferred drain reschedule")
+        self.assertEqual(drain_calls[-1].kwargs.get("delay_seconds"), _WAKE_DEFER_SECONDS)
 
 
 @override_settings(
