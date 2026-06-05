@@ -1174,18 +1174,36 @@ export class GalaxyScene extends Phaser.Scene {
       this.steerToward(Phaser.Math.Angle.Between(this.touch.anchorX, this.touch.anchorY, this.touch.curX, this.touch.curY), dt);
       thrusting = true;
     } else if (this.autopilot) {
+      // Tap/click-to-travel with proper "arrive" steering. The old version thrust
+      // whenever dist > 50 regardless of heading, so a fast ship that couldn't
+      // turn tightly enough overshot and ORBITED the target forever ("the ship
+      // shot around by itself"). Now: ease the speed down near the target so the
+      // turn radius shrinks, and only thrust when actually pointed at it — so the
+      // ship converges and settles instead of looping.
       const t = this.autopilot;
       const ang = Phaser.Math.Angle.Between(ship.x, ship.y, t.x, t.y);
       const dist = Phaser.Math.Distance.Between(ship.x, ship.y, t.x, t.y);
-      this.steerToward(ang, dt);
-      thrusting = dist > 50;
-      if (t.star && dist < t.star.r + 34) {
+      const arriveR = t.star ? t.star.r + 34 : 44;
+      if (dist <= arriveR) {
         const arrived = t.star;
         this.autopilot = null;
-        ship.body.velocity.scale(0.25);
-        this.openPanel(arrived);
-      } else if (dist < 34) {
-        this.autopilot = null;
+        if (arrived) {
+          ship.body.velocity.scale(0.2);
+          this.openPanel(arrived);
+        } else {
+          ship.body.setVelocity(0, 0);
+        }
+      } else {
+        this.steerToward(ang, dt);
+        const aim = Math.abs(Phaser.Math.Angle.Wrap(ang - ship.rotation)); // 0 = dead-on
+        // Distance-proportional speed cap (floor 60) — brake toward it so the ship
+        // can curve onto the target and reach the arrival radius.
+        const cap = Phaser.Math.Clamp((dist / 260) * CONFIG.SHIP.maxVel, 60, CONFIG.SHIP.maxVel);
+        const speed = ship.body.velocity.length();
+        if (speed > cap) ship.body.velocity.scale(cap / speed);
+        // Only thrust when roughly pointed at the target (~40°) and under the cap,
+        // so we never accelerate sideways into a loop we can't turn out of.
+        thrusting = aim < 0.7 && speed < cap;
       }
     }
 
