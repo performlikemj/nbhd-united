@@ -13,6 +13,9 @@ import { composeMeditation, fetchMeditation, fetchMeditations } from "@/lib/api"
 
 type Phase = "loading" | "invite" | "composing" | "ready" | "failed";
 const COMPOSE_MSGS = ["Drawing on your week…", "Finding the words…", "Placing the silences…", "Almost there…"];
+// Unhurried cadence for a meditation surface — each line lingers, then softly
+// cross-fades. (Was 700ms, which flashed.)
+const COMPOSE_MSG_INTERVAL_MS = 3800;
 const POLL_INTERVAL_MS = 3500;
 // Stop *watching* after this long — the render's own channel ping still lands,
 // so a slow render (rate-limited TTS) becomes "I'll message you" rather than a
@@ -78,7 +81,7 @@ export default function CorePage() {
   // cycle the composing messages
   useEffect(() => {
     if (phase !== "composing") return;
-    const t = setInterval(() => setMsgIdx((i) => (i + 1) % COMPOSE_MSGS.length), 700);
+    const t = setInterval(() => setMsgIdx((i) => (i + 1) % COMPOSE_MSGS.length), COMPOSE_MSG_INTERVAL_MS);
     return () => clearInterval(t);
   }, [phase]);
 
@@ -229,7 +232,10 @@ export default function CorePage() {
           {phase === "composing" && (
             <>
               <p className="mt-8 text-[10px] uppercase tracking-[0.22em] text-signal">Composing</p>
-              <h2 className="core-shimmer mt-2 font-display text-2xl italic sm:text-3xl">
+              <h2
+                key={longRunning ? "long" : msgIdx}
+                className="core-shimmer mt-2 font-display text-2xl italic sm:text-3xl"
+              >
                 {longRunning ? "Still composing…" : COMPOSE_MSGS[msgIdx]}
               </h2>
               <p className="mt-5 font-mono text-[11px] text-ink-faint">
