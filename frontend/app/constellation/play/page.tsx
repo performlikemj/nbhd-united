@@ -17,9 +17,10 @@ const ConstellationGame = dynamic(
   { ssr: false, loading: () => <ChartingScreen /> },
 );
 
-// How long a "still loading" state waits before it stops looking healthy and
-// offers a way out. Long enough to clear a cold-started backend on the fast path.
-const SLOW_MS = 12_000;
+// How long a "still loading" state waits before it surfaces a way out. The
+// animated loader keeps the screen alive throughout, so we can afford to wait
+// out a cold-started backend before showing anything that reads as a problem.
+const SLOW_MS = 20_000;
 
 // ── shared full-bleed status UI ──────────────────────────────────────────────
 
@@ -110,16 +111,62 @@ function WarpIn() {
 
 // ── loading states ───────────────────────────────────────────────────────────
 
+const GALAXY_LOADER_CSS = `
+.gl { position: relative; width: 132px; height: 132px; }
+.gl-core { position:absolute; top:50%; left:50%; width:16px; height:16px; margin:-8px; border-radius:50%;
+  background: radial-gradient(circle, #d8c9ff 0%, #7c6bf0 48%, rgba(124,107,240,0) 74%); }
+.gl-ring { position:absolute; inset:6px; border-radius:50%; border:1px dashed rgba(124,107,240,0.30); }
+.gl-arm { position:absolute; inset:0; }
+.gl-ship { position:absolute; top:2px; left:50%; transform: translate(-50%,-50%);
+  filter: drop-shadow(0 0 7px rgba(124,107,240,0.85)); }
+.gl-star { position:absolute; width:2px; height:2px; border-radius:50%; background:#cdd9f5; opacity:.4; }
+.gl-s1 { top:4%; left:80%; } .gl-s2 { top:86%; left:16%; } .gl-s3 { top:22%; left:6%; } .gl-s4 { top:72%; left:92%; }
+@media (prefers-reduced-motion: no-preference) {
+  .gl-arm { animation: gl-spin 3s linear infinite; }
+  .gl-ring { animation: gl-spin 16s linear infinite reverse; }
+  .gl-core { animation: gl-pulse 2.2s ease-in-out infinite; }
+  .gl-star { animation: gl-tw 2.4s ease-in-out infinite; }
+  .gl-s2 { animation-delay: .6s; } .gl-s3 { animation-delay: 1.1s; } .gl-s4 { animation-delay: 1.7s; }
+}
+@keyframes gl-spin { to { transform: rotate(360deg); } }
+@keyframes gl-pulse { 0%,100% { opacity:.65; transform: scale(1); } 50% { opacity:1; transform: scale(1.25); } }
+@keyframes gl-tw { 0%,100% { opacity:.2; } 50% { opacity:.75; } }
+`;
+
+/** On-brand loader: the player's ship flying its orbit around a glowing core, in
+ *  a faint starfield. Keeps the screen alive while a cold backend wakes, so a long
+ *  wait reads as motion, not a stall. Respects prefers-reduced-motion. */
+function GalaxyLoader() {
+  return (
+    <div className="gl" aria-hidden>
+      <div className="gl-core" />
+      <div className="gl-ring" />
+      <div className="gl-arm">
+        <svg className="gl-ship" width="26" height="18" viewBox="0 0 34 24">
+          <path d="M31 12 5 3 5 21Z" fill="#a5b4ff" />
+          <path d="M31 12 9 7 9 17Z" fill="#7c6bf0" />
+        </svg>
+      </div>
+      <span className="gl-star gl-s1" />
+      <span className="gl-star gl-s2" />
+      <span className="gl-star gl-s3" />
+      <span className="gl-star gl-s4" />
+      <style>{GALAXY_LOADER_CSS}</style>
+    </div>
+  );
+}
+
 /** The lazy Phaser chunk is loading. After SLOW_MS, offer a reload — a stalled
  *  or stale (404) chunk can't recover on its own. */
 function ChartingScreen() {
   const stuck = useElapsed(SLOW_MS);
   return (
     <Screen>
+      <GalaxyLoader />
       <Headline>Charting the galaxy…</Headline>
       {stuck && (
         <>
-          <Sub>This is taking longer than usual. A tab left open across an update can get stuck here — a reload usually fixes it.</Sub>
+          <Sub>Taking longer than usual. If this tab was left open across an update, a reload usually sorts it out.</Sub>
           <ActionRow>
             <RetryButton onClick={() => window.location.reload()}>Reload</RetryButton>
             <BackLink />
@@ -136,10 +183,11 @@ function FetchingScreen({ onRetry }: { onRetry: () => void }) {
   const stuck = useElapsed(SLOW_MS);
   return (
     <Screen>
+      <GalaxyLoader />
       <Headline>Charting the galaxy…</Headline>
       {stuck && (
         <>
-          <Sub>Still charting — the server may be waking up, or your connection dropped. Give it another try.</Sub>
+          <Sub>Still charting — the first visit can take a moment while everything warms up. Hang tight, or give it a nudge.</Sub>
           <ActionRow>
             <RetryButton onClick={onRetry}>Try again</RetryButton>
             <BackLink />
