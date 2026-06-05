@@ -139,7 +139,10 @@ class FinanceTransactionListView(APIView):
         try:
             account = resolve_account(
                 tenant,
-                account_id=body.get("account_id"),
+                # ``account`` is the DRF FinanceTransactionSerializer FK field name and what
+                # the OpenClaw + iOS finance tools already send; ``account_id`` is the explicit
+                # alias. Accept either so clients don't need to special-case this endpoint.
+                account_id=body.get("account_id") or body.get("account"),
                 account_nickname=body.get("account_nickname"),
             )
         except AccountNotFound as exc:

@@ -1103,6 +1103,23 @@ class ConsumerFinanceViewTests(TestCase):
         self.assertEqual(body["new_balance"], "750.00")
         self.assertEqual(body["account_id"], str(account.id))
 
+    def test_record_payment_by_account_field_alias(self):
+        # The DRF FK field name `account` (what the OpenClaw + iOS tools send)
+        # is accepted as an alias for `account_id`.
+        account = FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Loan",
+            current_balance=Decimal("1000"),
+        )
+        response = self.client.post(
+            "/api/v1/finance/transactions/",
+            data={"account": str(account.id), "amount": 250},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["new_balance"], "750.00")
+
     def test_record_charge_increases_balance(self):
         FinanceAccount.objects.create(
             tenant=self.tenant,
