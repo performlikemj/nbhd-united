@@ -6,6 +6,8 @@
  */
 import Phaser from "phaser";
 
+import { type CopilotPoint, reflectGalaxy } from "@/lib/api";
+
 import {
   buildTaunt,
   chooseReframes,
@@ -235,6 +237,23 @@ export class GalaxyScene extends Phaser.Scene {
   private neighborhoods: { cid: number; cx: number; cy: number; r: number; n: number; color: number; halo: Phaser.GameObjects.Image; core: Phaser.GameObjects.Image; name: Phaser.GameObjects.Text; entered: boolean }[] = [];
   private neighborhoodR = 400;
 
+  // ── Co-pilot: the spatially-aware assistant line (Phases 1–3) ──
+  private recentStarIds: number[] = []; // flight path, newest first, capped
+  private reflectToken = 0; // race guard: drop a resolved line if you've moved on
+  private openStarId: number | null = null; // which star the panel is showing
+  private copilotPoint: CopilotPoint | null = null; // where the co-pilot is gesturing
+  private pointBtn!: HTMLElement | null;
+  private toastEl!: HTMLElement | null;
+  private toastTimer = 0;
+  // Phase 3 — waypoint from ship → a star the co-pilot named
+  private waypointStar: StarEntry | null = null;
+  private waypointGfx?: Phaser.GameObjects.Graphics;
+  private waypointPulse?: Phaser.GameObjects.Image;
+  // Phase 2 — ambient dwell detection
+  private dwellSince = 0;
+  private lastAmbientAt = 0;
+  private ambientInFlight = false;
+
   constructor(galaxy: GalaxyData, overlayRoot: HTMLElement) {
     super("galaxy");
     this.galaxy = galaxy;
@@ -264,6 +283,7 @@ export class GalaxyScene extends Phaser.Scene {
     this.buildMinimap();
 
     this.ring = this.add.graphics().setDepth(6);
+    this.waypointGfx = this.add.graphics().setDepth(5);
     this.prompt = this.add
       .text(0, 0, "[E] Land", {
         fontSize: "13px",
@@ -280,6 +300,17 @@ export class GalaxyScene extends Phaser.Scene {
     this.wirePanel();
     this.buildTouch();
     this.buildEncounters(pos);
+
+    // Lifecycle cleanup: Phaser doesn't auto-kill our repeating waypoint tween or
+    // the DOM toast timer on teardown — clear both so nothing fires/loops on a
+    // destroyed scene after the React host unmounts the game.
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.teardownCopilot, this);
+    this.events.once(Phaser.Scenes.Events.DESTROY, this.teardownCopilot, this);
+  }
+
+  private teardownCopilot() {
+    if (this.toastTimer) { window.clearTimeout(this.toastTimer); this.toastTimer = 0; }
+    this.clearWaypoint();
   }
 
   private makeTextures() {
@@ -555,6 +586,17 @@ export class GalaxyScene extends Phaser.Scene {
     if (c1) (c1 as HTMLButtonElement).onclick = close;
     if (c2) (c2 as HTMLButtonElement).onclick = close;
     if (panel) panel.addEventListener("click", (ev) => { if (ev.target === panel) close(); });
+
+    // Co-pilot affordances: the ambient toast + the "show me where" waypoint button.
+    this.toastEl = this.q("#cg-copilot-toast");
+    this.pointBtn = this.q("#cg-p-point");
+    if (this.pointBtn) {
+      (this.pointBtn as HTMLButtonElement).onclick = () => {
+        const pt = this.copilotPoint;
+        this.closePanel();
+        if (pt) this.setWaypoint(pt.star_id);
+      };
+    }
   }
 
   private buildTouch() {
@@ -629,12 +671,188 @@ export class GalaxyScene extends Phaser.Scene {
     }
     const note = this.q("#cg-p-note");
     if (note) { if (d.galaxy_note) { note.style.display = "block"; note.textContent = "📌 " + d.galaxy_note; } else note.style.display = "none"; }
-    set("#cg-p-copilot", `You flew all the way out here for this one — "${truncate(d.text, 80)}". Before anything else: how would you put it in your own words right now?`);
+    // Optimistic line: a grounded static line shows instantly (and stays as the
+    // graceful fallback if the request fails); the co-pilot's real, spatially-
+    // aware line swaps in when it resolves.
+    set("#cg-p-copilot", `You flew out here for this one — "${truncate(d.text, 80)}". How would you put it in your own words, right now?`);
+    this.hidePointAffordance();
+    if (this.toastEl) this.toastEl.classList.remove("show");
     if (this.q("#cg-panel")) this.q("#cg-panel")!.classList.add("open");
     this.paused = true;
+    this.openStarId = entry.id;
     this.ship.body.setVelocity(0, 0);
     this.ship.body.setAcceleration(0, 0);
     if (!entry.visited) { entry.visited = true; this.markVisited(entry); }
+    // Reached the star the co-pilot pointed at → retire the waypoint.
+    if (this.waypointStar && this.waypointStar.id === entry.id) this.clearWaypoint();
+    // Track the flight path (newest first, deduped, capped) so the co-pilot knows
+    // where you came from.
+    this.recentStarIds = [entry.id, ...this.recentStarIds.filter((id) => id !== entry.id)].slice(0, 8);
+    this.requestCopilotLine(entry);
+  }
+
+  // ── Co-pilot line: ask the backend for a spatially-aware line for this star.
+  // The backend computes the evidence; the panel only renders the phrasing. A
+  // race token guards against the user landing elsewhere before this resolves.
+  private async requestCopilotLine(entry: StarEntry) {
+    const token = ++this.reflectToken;
+    const lineEl = this.q("#cg-p-copilot");
+    if (lineEl) lineEl.classList.add("cg-line-loading");
+    try {
+      const res = await reflectGalaxy({
+        star_id: entry.id,
+        recent_star_ids: this.recentStarIds.filter((id) => id !== entry.id).slice(0, 8),
+        ship: { x: Math.round(this.ship.x), y: Math.round(this.ship.y) },
+        mode: "land",
+      });
+      // Stale — the user has landed elsewhere or closed the panel. Drop it.
+      if (token !== this.reflectToken || this.openStarId !== entry.id) return;
+      if (lineEl && res.line) lineEl.textContent = res.line;
+      this.copilotPoint = res.point;
+      this.showPointAffordance(res.point);
+    } catch {
+      // Network/permission failure — keep the optimistic static line already shown.
+    } finally {
+      if (token === this.reflectToken && lineEl) lineEl.classList.remove("cg-line-loading");
+    }
+  }
+
+  private showPointAffordance(point: CopilotPoint | null) {
+    const btn = this.pointBtn as HTMLButtonElement | null;
+    if (!btn) return;
+    // Only offer to fly somewhere real that isn't the star you're already on.
+    if (point && point.star_id !== this.openStarId && this.stars.some((s) => s.id === point.star_id)) {
+      btn.textContent = "Show me where →";
+      btn.style.display = "inline-flex";
+    } else {
+      btn.style.display = "none";
+    }
+  }
+
+  private hidePointAffordance() {
+    const btn = this.pointBtn as HTMLButtonElement | null;
+    if (btn) btn.style.display = "none";
+  }
+
+  // ── Phase 3: waypoint. A dashed heading drawn from the ship toward a star the
+  // co-pilot named (its EXACT world coords — no vision, just a lookup), plus a
+  // pulsing ring on the target. Cleared on arrival or when superseded.
+  private setWaypoint(starId: number) {
+    const star = this.stars.find((s) => s.id === starId) || null;
+    this.clearWaypoint();
+    if (!star) return;
+    this.waypointStar = star;
+    const pulse = this.add
+      .image(star.x, star.y, "glow")
+      .setTint(BEAM)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setScale(0.6)
+      .setAlpha(0.6)
+      .setDepth(5);
+    this.tweens.add({ targets: pulse, scale: 1.7, alpha: 0, duration: 1100, repeat: -1, ease: "Sine.Out" });
+    this.waypointPulse = pulse;
+  }
+
+  private clearWaypoint() {
+    this.waypointStar = null;
+    if (this.waypointGfx) this.waypointGfx.clear();
+    if (this.waypointPulse) {
+      this.tweens.killTweensOf(this.waypointPulse);
+      this.waypointPulse.destroy();
+      this.waypointPulse = undefined;
+    }
+  }
+
+  private updateWaypoint() {
+    const g = this.waypointGfx;
+    if (!g) return;
+    g.clear();
+    const wp = this.waypointStar;
+    if (!wp) return;
+    const d = Phaser.Math.Distance.Between(this.ship.x, this.ship.y, wp.x, wp.y);
+    if (d < CONFIG.DOCK_RADIUS) { this.clearWaypoint(); return; }
+    const ang = Phaser.Math.Angle.Between(this.ship.x, this.ship.y, wp.x, wp.y);
+    const start = 26; // clear the ship sprite
+    const len = Math.min(d - wp.r - 8, 230);
+    if (len <= start) return;
+    g.lineStyle(2, BEAM, 0.55);
+    const dash = 13, gap = 9;
+    for (let t = start; t < len; t += dash + gap) {
+      const e = Math.min(t + dash, len);
+      g.lineBetween(
+        this.ship.x + Math.cos(ang) * t,
+        this.ship.y + Math.sin(ang) * t,
+        this.ship.x + Math.cos(ang) * e,
+        this.ship.y + Math.sin(ang) * e,
+      );
+    }
+    const ex = this.ship.x + Math.cos(ang) * len;
+    const ey = this.ship.y + Math.sin(ang) * len;
+    g.fillStyle(BEAM, 0.85);
+    g.fillTriangle(
+      ex + Math.cos(ang) * 9, ey + Math.sin(ang) * 9,
+      ex + Math.cos(ang + 2.4) * 8, ey + Math.sin(ang + 2.4) * 8,
+      ex + Math.cos(ang - 2.4) * 8, ey + Math.sin(ang - 2.4) * 8,
+    );
+  }
+
+  // ── Phase 2: ambient awareness. When you drift to a near-stop inside a
+  // neighbourhood for a few seconds, the co-pilot drops one throttled toast that
+  // speaks to where you're lingering. Reuses the same reflect endpoint (ambient
+  // mode) and is heavily rate-limited so it never nags.
+  private ambientTick(time: number) {
+    if (this.paused || this.encounterActive || this.ambientInFlight) { return; }
+    const v = this.ship.body?.velocity;
+    const speed = v ? Math.hypot(v.x, v.y) : 0;
+    if (speed >= 45) { this.dwellSince = 0; return; }
+    if (this.dwellSince === 0) { this.dwellSince = time; return; }
+    if (time - this.dwellSince < 4200) return; // must linger ~4s
+    if (this.lastAmbientAt && time - this.lastAmbientAt < 75000) return; // ~once / 75s
+    const near = this.nearestStar(360);
+    const inHood = this.neighborhoods.some(
+      (n) => Phaser.Math.Distance.Between(this.ship.x, this.ship.y, n.cx, n.cy) < n.r * 1.1,
+    );
+    if (!near || !inHood) { this.dwellSince = time; return; }
+    this.lastAmbientAt = time;
+    this.dwellSince = 0;
+    void this.fireAmbient(near);
+  }
+
+  private nearestStar(maxD: number): StarEntry | null {
+    let best: StarEntry | null = null;
+    let bd = maxD;
+    for (const s of this.stars) {
+      const d = Phaser.Math.Distance.Between(this.ship.x, this.ship.y, s.x, s.y);
+      if (d < bd) { bd = d; best = s; }
+    }
+    return best;
+  }
+
+  private async fireAmbient(near: StarEntry) {
+    this.ambientInFlight = true;
+    try {
+      const res = await reflectGalaxy({
+        star_id: near.id,
+        recent_star_ids: this.recentStarIds.slice(0, 8),
+        ship: { x: Math.round(this.ship.x), y: Math.round(this.ship.y) },
+        mode: "ambient",
+      });
+      if (this.paused || this.encounterActive) return; // never pop a toast over a panel/duel
+      this.showToast(res.line);
+    } catch {
+      // Ambient is best-effort — stay silent on failure.
+    } finally {
+      this.ambientInFlight = false;
+    }
+  }
+
+  private showToast(text: string) {
+    const el = this.toastEl;
+    if (!el || !text) return;
+    el.textContent = text;
+    el.classList.add("show");
+    if (this.toastTimer) window.clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => el.classList.remove("show"), 7000);
   }
 
   closePanel() {
@@ -669,6 +887,7 @@ export class GalaxyScene extends Phaser.Scene {
     this.ship.body.setVelocity(0, 0);
     this.ship.body.setAcceleration(0, 0);
     this.autopilot = null;
+    this.clearWaypoint();
 
     // stand the shadow off to one side so the two ships frame side-by-side
     const sx = this.ship.x, sy = this.ship.y;
@@ -997,6 +1216,8 @@ export class GalaxyScene extends Phaser.Scene {
       if (this.landBtn) this.landBtn.classList.remove("show");
     }
     this.updateMinimap();
+    this.updateWaypoint();
+    this.ambientTick(time);
     if (Phaser.Input.Keyboard.JustDown(this.keys.ESC)) this.closePanel();
   }
 }

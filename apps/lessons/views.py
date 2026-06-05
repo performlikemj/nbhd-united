@@ -14,6 +14,7 @@ from .serializers import (
     ConstellationEdgeSerializer,
     ConstellationNodeSerializer,
     GalaxyEdgeSerializer,
+    GalaxyReflectSerializer,
     GalaxyStarSerializer,
     LessonApprovalSerializer,
     LessonCreateSerializer,
@@ -338,6 +339,84 @@ class LessonViewSet(viewsets.ModelViewSet):
         )
 
         return Response(TutoringInsightSerializer(sessions, many=True).data)
+
+    # ── Co-pilot (Galaxy Reflect) ───────────────────────────────
+
+    @action(detail=False, methods=["post"], url_path="galaxy/reflect")
+    def galaxy_reflect(self, request):
+        """A spatially-aware co-pilot line for the star just landed on.
+
+        Backend computes the spatial *evidence* (idea-space neighbours, cluster
+        state, recent path, where to point next); the LLM only *phrases* it into
+        one warm line. Lesson text is redacted before egress and the line is
+        rehydrated on the way back, so a ``[PERSON_N]`` token can never reach the
+        panel. The line is cached, rate-limited, and always falls back to a
+        deterministic warm line — the panel is never empty, even when the LLM is
+        unavailable. See ``apps/lessons/copilot.py``.
+        """
+        if not hasattr(request.user, "tenant"):
+            return Response({"error": "tenant_required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.core.cache import cache
+
+        from . import copilot
+
+        tenant = request.user.tenant
+        serializer = GalaxyReflectSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        star_id = data["star_id"]
+        recent_ids = data.get("recent_star_ids", [])
+        ship = data.get("ship")
+        mode = data.get("mode", "land")
+
+        cache_key = copilot.reflect_cache_key(tenant.id, mode, star_id, ship)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            # Rehydrate the cached (redacted) line against the LIVE tenant map so a
+            # later entity-map change can't serve a stale name.
+            return Response(copilot.finalize_egress(tenant, cached))
+
+        target = Lesson.objects.filter(id=star_id, tenant=tenant, status="approved").first()
+        if target is None:
+            return Response({"detail": "Star not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        stars = list(
+            Lesson.objects.filter(tenant=tenant, status="approved").only(
+                "id",
+                "text",
+                "cluster_id",
+                "cluster_label",
+                "star_stage",
+                "position_x",
+                "position_y",
+                "last_visited_at",
+                "last_tutored_at",
+                "galaxy_note",
+            )
+        )
+        star_ids = {s.id for s in stars}
+        edges_by_star = copilot.load_edges_for(target.id, star_ids)
+
+        allow_llm = copilot.allow_llm_for(tenant.id)
+        result = copilot.reflect(
+            tenant=tenant,
+            target=target,
+            stars=stars,
+            edges_by_star=edges_by_star,
+            recent_ids=recent_ids,
+            mode=mode,
+            allow_llm=allow_llm,
+        )
+
+        # Only cache real (LLM) lines — a fallback line should be retried next
+        # land in case the model is reachable then. The cached copy keeps the
+        # REDACTED line + ``_mints``; rehydration happens per-response below.
+        if result.get("source") == "llm":
+            cache.set(cache_key, result, timeout=copilot.REFLECT_TTL)
+
+        return Response(copilot.finalize_egress(tenant, result))
 
     # ── Star Landing ────────────────────────────────────────────
 

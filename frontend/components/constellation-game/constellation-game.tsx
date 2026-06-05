@@ -43,6 +43,9 @@ export function ConstellationGame({ galaxy }: { galaxy: GalaxyData }) {
       </div>
       <button id="cg-land-btn" className="cg-land-btn" type="button">🛸 Land here</button>
 
+      {/* ambient co-pilot toast — a throttled nudge when you linger somewhere */}
+      <div id="cg-copilot-toast" className="cg-copilot-toast" role="status" aria-live="polite" />
+
       {/* landing panel */}
       <div id="cg-panel" className="cg-overlay" role="dialog" aria-modal="true">
         <div className="cg-card">
@@ -57,9 +60,11 @@ export function ConstellationGame({ galaxy }: { galaxy: GalaxyData }) {
           <div className="cg-copilot">
             <div className="cg-who"><span className="cg-dot" /> Your co-pilot</div>
             <div className="cg-line" id="cg-p-copilot">—</div>
-            <div className="cg-stub">In the full version your assistant picks the conversation up from here. This is flight + stars for now.</div>
           </div>
           <div className="cg-actions">
+            <button id="cg-p-point" className="cg-point" type="button" style={{ display: "none" }}>
+              Show me where →
+            </button>
             <button id="cg-p-close" type="button">Back to flight</button>
             <button id="cg-p-close2" className="cg-primary" type="button">Got it</button>
           </div>

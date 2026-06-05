@@ -364,6 +364,14 @@ AZURE_KV_SECRET_OPENROUTER_API_KEY = env(
     default="openrouter-api-key",
 )
 
+# Galaxy co-pilot — the in-game line shown when a player lands on a star.
+# Small/fast model (latency-sensitive, ~1 short sentence) called server-side
+# via the shared OpenRouter key, attributed is_system. COPILOT_LLM_ENABLED is a
+# kill-switch: off → the endpoint serves only the deterministic warm fallback,
+# no LLM spend, no deploy. See apps/lessons/copilot.py.
+COPILOT_MODEL = env("COPILOT_MODEL", default="anthropic/claude-haiku-4.5")
+COPILOT_LLM_ENABLED = env.bool("COPILOT_LLM_ENABLED", default=True)
+
 # Per-tenant OpenRouter sub-keys (PR #1.6).
 #
 # OPENROUTER_API_BASE: API root for /v1/keys (POST/DELETE), /v1/key (GET).

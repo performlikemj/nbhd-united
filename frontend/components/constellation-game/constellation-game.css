@@ -92,12 +92,45 @@
 .cg-copilot .cg-who { display: flex; align-items: center; gap: 8px; font-size: var(--cg-fs-label); color: #9fb0d6; margin-bottom: 8px; font-family: var(--font-headline); }
 .cg-copilot .cg-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--signal, #4ecdc4); box-shadow: 0 0 10px var(--signal, #4ecdc4); }
 .cg-copilot .cg-line { font-size: var(--cg-fs-body); line-height: 1.5; color: #eef2fb; }
-.cg-copilot .cg-stub { margin-top: 10px; font-size: var(--cg-fs-micro); color: var(--ink-faint, #7c89ab); font-style: italic; }
 .cg-actions { margin-top: var(--cg-sp-5); display: flex; justify-content: flex-end; gap: var(--cg-sp-2); flex-wrap: wrap; }
 .cg-card button { font-family: var(--font-headline); font-size: var(--cg-fs-label); cursor: pointer; border-radius: 10px;
   padding: 10px 16px; min-height: 44px; border: 1px solid var(--border-strong, rgba(226, 232, 240, 0.25));
   background: rgba(120, 140, 210, 0.1); color: var(--ink, #dbe3f7); }
 .cg-card button.cg-primary { background: var(--accent, #7c6bf0); border-color: var(--accent, #7c6bf0); color: #fff; }
+
+/* co-pilot: "show me where" waypoint button, the thinking shimmer on the
+   optimistic line, and the ambient nudge toast. */
+.cg-card button.cg-point {
+  margin-right: auto; /* sit at the left, away from the close/confirm actions */
+  background: rgba(155, 217, 255, 0.12); border-color: rgba(155, 217, 255, 0.4); color: #cfeaff;
+}
+.cg-card button.cg-point:active { transform: scale(0.97); }
+.cg-copilot .cg-line.cg-line-loading { color: #c2cbe0; animation: cg-line-pulse 1.4s ease-in-out infinite; }
+@keyframes cg-line-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.9; } }
+
+.cg-copilot-toast {
+  position: absolute; left: 50%; top: calc(var(--cg-safe-t) + 64px);
+  transform: translateX(-50%) translateY(-8px); z-index: 8;
+  max-width: min(90vw, 460px); padding: 11px 16px; border-radius: 14px;
+  background: rgba(14, 18, 32, 0.82); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(124, 107, 240, 0.32); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  color: #e7ecfb; font-family: var(--font-body); font-size: var(--cg-fs-body); line-height: 1.45; text-align: center;
+  opacity: 0; pointer-events: none; transition: opacity 0.4s ease, transform 0.4s ease;
+}
+.cg-copilot-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.cg-copilot-toast::before {
+  content: "✦ your co-pilot"; display: block; font-family: var(--font-headline);
+  font-size: var(--cg-fs-micro); letter-spacing: 0.4px; color: #9fb0d6; margin-bottom: 4px;
+}
+/* Narrow phones: the help pill can wrap to two lines — drop the toast lower so
+   it never collides with it. */
+@media (max-width: 480px) {
+  .cg-copilot-toast { top: calc(var(--cg-safe-t) + 92px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cg-copilot .cg-line.cg-line-loading { animation: none; opacity: 0.7; }
+  .cg-copilot-toast, .cg-copilot-toast.show { transition: opacity 0.2s ease; transform: translateX(-50%); }
+}
 .cg-card button:hover { filter: brightness(1.12); }
 
 /* nega-self encounter — bottom sheet so the stand-off stays visible above it */
