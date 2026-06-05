@@ -116,19 +116,51 @@ class ManifestValidationTests(UnitTestCase):
 
     def test_silence_out_of_range_rejected(self):
         m = _valid_manifest()
-        m["phases"][0]["segments"][1]["seconds"] = 90  # > 30
+        m["phases"][0]["segments"][1]["seconds"] = 200  # > SILENCE_MAX (150)
         errors = render.validate_manifest(m)
         self.assertTrue(any("out of" in e for e in errors))
 
-    def test_non_closing_phase_without_flex_rejected(self):
+    def test_long_explicit_silence_allowed(self):
+        # A minutes-long hold is valid now (holistic pacing).
         m = _valid_manifest()
-        # arrival keeps a speech + a fixed silence but loses its flex.
-        m["phases"][0]["segments"] = [
-            {"type": "speech", "text": "Welcome.", "tone": "warm"},
-            {"type": "silence", "seconds": 8},
+        m["phases"][3]["segments"] = [
+            {"type": "speech", "text": "Set it down.", "tone": "gentle"},
+            {"type": "silence", "seconds": 120},
         ]
+        self.assertEqual(render.validate_manifest(m), [])
+
+    def test_phase_without_flex_is_allowed(self):
+        # A phase can pin its own length with explicit silences — no flex required.
+        m = _valid_manifest()
+        m["phases"][0]["segments"] = [
+            {"type": "speech", "text": "Welcome. Let yourself arrive.", "tone": "warm"},
+            {"type": "silence", "seconds": 50},
+        ]
+        self.assertEqual(render.validate_manifest(m), [])
+
+    def test_silent_non_closing_phase_is_allowed(self):
+        # A phase can be pure held space — as long as the sit has enough spoken
+        # anchors overall and closing still lands on speech.
+        m = _valid_manifest()
+        m["phases"][2]["segments"] = [{"type": "silence", "seconds": 90}]  # body_scan: no words
+        self.assertEqual(render.validate_manifest(m), [])
+
+    def test_too_few_speech_segments_rejected(self):
+        m = _valid_manifest()
+        # Strip speech from 3 phases → only 3 spoken segments remain (< MIN 4).
+        for i in (0, 1, 2):
+            m["phases"][i]["segments"] = [{"type": "silence", "seconds": 40}]
         errors = render.validate_manifest(m)
-        self.assertTrue(any("flex" in e for e in errors))
+        self.assertTrue(any("too few spoken" in e for e in errors))
+
+    def test_too_many_speech_segments_rejected(self):
+        m = _valid_manifest()
+        # Pile 12 extra spoken cues into core_practice → well over MAX (12).
+        m["phases"][3]["segments"] = [
+            {"type": "speech", "text": f"Breathe, line {i}.", "tone": "soft"} for i in range(12)
+        ] + [{"type": "silence", "seconds": "flex"}]
+        errors = render.validate_manifest(m)
+        self.assertTrue(any("too many spoken" in e for e in errors))
 
     def test_closing_not_ending_on_speech_rejected(self):
         m = _valid_manifest()

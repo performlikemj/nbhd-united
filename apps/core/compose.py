@@ -25,11 +25,12 @@ logger = logging.getLogger(__name__)
 
 # Reuse the project's proven Django-side LLM (OpenRouter, JSON mode). Swappable.
 DEFAULT_COMPOSE_MODEL = "deepseek/deepseek-v4-pro"
-_MAX_OUTPUT_TOKENS = 1400
+_MAX_OUTPUT_TOKENS = 2000  # holistic manifests carry more segments (explicit silences)
 _LLM_TIMEOUT_S = 60
 
-# Per-phase time budgets (seconds) — the fixed ~10-min arc. The LLM fills text,
-# never these. A leaner sit is fine; silence absorbs the slack via flex.
+# Rough per-phase time budgets (seconds) for the ~10-min arc — guidance the model
+# paces toward and a fallback when it omits one. The model now OWNS the allocation
+# (holistic pacing); these are no longer force-applied.
 _PHASE_TARGETS = {
     "arrival": 60,
     "breath_anchor": 75,
@@ -47,7 +48,11 @@ class ComposeError(RuntimeError):
 _SYSTEM_PROMPT = (
     "You are a meditation guide composing a personalized ~10-minute guided meditation for ONE person, "
     "drawn from what their assistant has learned about their week. You output ONLY a JSON render manifest "
-    "that a deterministic backend voices with TTS and stitches with programmatic silence.\n\n"
+    "that a deterministic backend voices with TTS and stitches together with programmatic silence.\n\n"
+    "Compose it HOLISTICALLY. In a real guided meditation words are sparse and silence does the work: you "
+    "speak to guide attention, then leave long, unhurried space for the person to actually practice. YOU "
+    "decide where words are needed, where silence is needed, and how long each silence holds. Never force "
+    "words in where stillness would serve better.\n\n"
     "Output a JSON object with EXACTLY these keys:\n"
     "  schema_version: 1\n"
     "  title: a short, evocative title (<= 60 chars)\n"
@@ -58,16 +63,23 @@ _SYSTEM_PROMPT = (
     "  ambient: null\n"
     "  phases: an array of EXACTLY these 6 phases, IN THIS ORDER:\n"
     "    arrival, breath_anchor, body_scan, core_practice, integration, closing\n\n"
-    "Each phase is an object: { name, intent (short), target_seconds (use the given budget), segments[] }.\n"
+    "Each phase is an object: { name, intent (short), target_seconds, segments[] }, where target_seconds is "
+    "your rough time budget for that phase (the six should sum to ~600). Put segments in the order they play. "
     "A segment is either:\n"
-    '  { "type": "speech", "text": "...", "tone": "..." }   — 1 to 3 short sentences, warm and unhurried\n'
-    '  { "type": "silence", "seconds": <int 3..30> }         — a fixed pause\n'
-    '  { "type": "silence", "seconds": "flex" }              — a pause that auto-expands to fill the phase\n\n'
+    '  { "type": "speech", "text": "...", "tone": "..." }   — a short spoken guidance, 1-3 sentences\n'
+    '  { "type": "silence", "seconds": <integer 3-150> }    — a held pause of exactly that length\n'
+    '  { "type": "silence", "seconds": "flex" }             — OPTIONAL: a pause the backend expands to fill the phase budget\n\n'
+    "PACING — this is the craft:\n"
+    "- Speak briefly, then hold. The natural rhythm is a short guidance followed by a long silence.\n"
+    "- Use GENEROUS silences. 60, 90, even 120 seconds of stillness is normal and welcome — most of all in "
+    "body_scan and core_practice, where the person is doing the inner work. arrival and breath_anchor may be "
+    "a little more spoken; the deep middle should be mostly silent.\n"
+    "- A phase can be almost all silence with a single spoken cue — or, occasionally, need no new words at all.\n"
+    "- Across the WHOLE sit keep it to roughly 6-10 spoken moments (never more than 12). Sparse on purpose.\n"
+    '- Set real silence lengths yourself; reach for a single "flex" in a phase only when you want the backend '
+    "to fill that phase's remaining time for you.\n\n"
     "HARD RULES (the manifest is rejected otherwise):\n"
-    "- Keep it LEAN: exactly ONE speech segment per phase (six narration lines total). Silence carries the rest.\n"
-    '- Every phase EXCEPT closing must contain at least one {"seconds":"flex"} silence.\n'
-    "- The closing phase must END on a speech segment (so it lands, not trails into silence).\n"
-    "- Fixed silences must be between 3 and 30 seconds.\n"
+    "- The closing phase must END on a speech segment, so the sit lands rather than trailing into silence.\n"
     "- Speech text is short (1-3 sentences), calm, second-person, present-tense. Never read instructions aloud.\n"
     '- Always address them as "you". NEVER use a name or any [BRACKETED_TOKEN] — those are voiced literally by TTS.\n'
     "- core_practice is the personalized heart: gently name what the signals suggest they're carrying, and "
@@ -98,26 +110,37 @@ def _format_signals(signals: dict) -> str:
             "breathing, and setting down whatever today held)"
         )
     lines.append(
-        "\nCompose today's manifest now. Fill each phase's target_seconds from this budget: "
-        + ", ".join(f"{k}={v}" for k, v in _PHASE_TARGETS.items())
+        "\nCompose today's sit now — holistically. Let silence carry most of the ten minutes; speak only "
+        "where it guides. Rough per-phase budget to pace toward (yours to adjust): "
+        + ", ".join(f"{k}~{v}s" for k, v in _PHASE_TARGETS.items())
         + "."
     )
     return "\n".join(lines)
 
 
 def _normalize(manifest: dict, voice: str) -> dict:
-    """Backstop the scaffold fields the LLM must not drift on, before validation."""
+    """Backstop the scaffold fields the model must not drift on, before validation.
+
+    The per-phase time budgets are now the model's to allocate (holistic pacing) —
+    we only fill a sane default when it omits one, so the renderer always has a
+    positive ``target_seconds`` for any flex silence to resolve against.
+    """
     if not isinstance(manifest, dict):
         raise ComposeError("LLM did not return a JSON object")
     manifest.setdefault("schema_version", 1)
     manifest["voice"] = voice or manifest.get("voice") or render.DEFAULT_VOICE
     manifest.setdefault("global_tone", "soft, slow, warm; unhurried with generous space")
-    manifest["total_target_seconds"] = 600
+    manifest.setdefault("total_target_seconds", 600)
     manifest.setdefault("ambient", None)
-    # Force the canonical per-phase target budgets (the LLM only fills text/tone).
     for phase in manifest.get("phases") or []:
-        if isinstance(phase, dict) and phase.get("name") in _PHASE_TARGETS:
-            phase["target_seconds"] = _PHASE_TARGETS[phase["name"]]
+        if not isinstance(phase, dict):
+            continue
+        try:
+            if float(phase.get("target_seconds")) > 0:
+                continue  # keep the model's allocation
+        except (TypeError, ValueError):
+            pass
+        phase["target_seconds"] = _PHASE_TARGETS.get(phase.get("name"), 60)
     return manifest
 
 
