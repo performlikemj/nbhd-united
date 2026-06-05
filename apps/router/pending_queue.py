@@ -79,6 +79,13 @@ _IN_FLIGHT_LEASE_FACTOR = 1.5
 # OC cold-start 504s without waiting the full minute for the reaper.
 _DRAIN_PUBLISH_RETRIES = 3
 
+# Seconds to wait after waking a hibernated container before re-attempting
+# delivery. Idle hibernation deactivates the revision, so the OpenClaw
+# container app returns 404 from its ingress until a fresh replica boots —
+# matches the 60s the wake path itself uses for cron resumption
+# (apps/orchestrator/hibernation.py).
+_WAKE_DEFER_SECONDS = 60
+
 # Reaper sweep. Pending rows older than this with no live in-flight lease
 # are presumed stuck (publish_task raised + got swallowed, or QStash
 # delivered the drain task into the Django 5xx → DLQ pit, or a worker
@@ -673,7 +680,57 @@ def drain_pending_messages_for_tenant_task(
             )
         delivered = batch_size
 
-    except Exception:
+    except Exception as exc:
+        # Hibernated container on the poller path. The Telegram poller
+        # (apps/router/poller.py) enqueues straight to PendingMessage with
+        # no hibernation check — unlike the webhook handlers (views.py /
+        # line_webhook.py) which route a hibernated tenant's message through
+        # ``handle_hibernated_message`` → ``wake_hibernated_tenant``. Idle
+        # hibernation deactivates the revision, so this POST 404s; without
+        # the branch below the batch would burn all _MAX_DELIVERY_ATTEMPTS
+        # in ~2 min and be DROPPED, and nothing would ever wake the
+        # container — the user's "wake me" message is silently lost
+        # (canary 148ccf1c, 2026-06-05). Wake the container and defer the
+        # drain instead. Release the lease but DON'T advance the attempt
+        # counter — the message did nothing wrong, the container was asleep;
+        # genuine post-wake failures still hit the cap on the deferred
+        # re-drain. Gated on a 404 (the deactivated-revision signature) so a
+        # transient 5xx from a live-but-stale-flagged container still flows
+        # through the normal retry path (and the reconcile below).
+        if tenant.hibernated_at is not None and _is_container_down_error(exc):
+            from apps.billing.services import check_budget
+
+            # Mirror the webhook's "budget check before wake": never re-wake
+            # a tenant hibernated for being over budget — that would un-gate
+            # spend. Over-budget messages fall through to the normal
+            # attempt-cap path (drop + apologize).
+            if not check_budget(tenant):
+                from apps.orchestrator.hibernation import wake_hibernated_tenant
+
+                for row in batch:
+                    row.delivery_in_flight_until = None
+                    row.save(update_fields=["delivery_in_flight_until"])
+                logger.info(
+                    "drain_pending: tenant %s hibernated (container 404) — waking and deferring drain %ds",
+                    tenant_id[:8],
+                    _WAKE_DEFER_SECONDS,
+                )
+                wake_hibernated_tenant(tenant)
+                _notify_waking(tenant, channel, channel_user_id or "")
+                _reschedule_drain(
+                    tenant,
+                    channel,
+                    channel_user_id or "",
+                    delay_seconds=_WAKE_DEFER_SECONDS,
+                )
+                return {
+                    "delivered": 0,
+                    "failed": 0,
+                    "dropped": 0,
+                    "skipped_in_flight": 0,
+                    "woke": True,
+                }
+
         # Batch-level failure: every row in the batch shared the failed
         # POST, so every row's attempt counter advances by one. A row
         # hitting the cap will be dropped+apologized on the next drain
@@ -762,12 +819,19 @@ def drain_pending_messages_for_tenant_task(
     }
 
 
-def _reschedule_drain(tenant: Tenant, channel: str, channel_user_id: str) -> None:
+def _reschedule_drain(
+    tenant: Tenant,
+    channel: str,
+    channel_user_id: str,
+    *,
+    delay_seconds: int = 0,
+) -> None:
     """Schedule another drain pass for the same key.
 
-    Called when (a) we just delivered a row and more remain, or (b) we
+    Called when (a) we just delivered a row and more remain, (b) we
     just dropped a maxed-out row at the head of the queue and want to
-    immediately try the next one.
+    immediately try the next one, or (c) we just woke a hibernated
+    container and want to retry once it has booted (``delay_seconds``).
     """
     try:
         from apps.cron.publish import publish_task
@@ -777,6 +841,7 @@ def _reschedule_drain(tenant: Tenant, channel: str, channel_user_id: str) -> Non
             str(tenant.id),
             channel,
             channel_user_id or "",
+            delay_seconds=delay_seconds or None,
             retries=_DRAIN_PUBLISH_RETRIES,
         )
     except Exception:
@@ -785,6 +850,51 @@ def _reschedule_drain(tenant: Tenant, channel: str, channel_user_id: str) -> Non
             str(tenant.id)[:8],
             channel,
             (channel_user_id or "")[:24],
+        )
+
+
+def _is_container_down_error(exc: Exception) -> bool:
+    """True if ``exc`` from a drain POST means the OpenClaw container isn't
+    serving. A hibernated tenant's revision is deactivated, so the Container
+    Apps ingress returns 404; a connection-level failure means no replica is
+    accepting traffic yet. Both are "wake the container" signals rather than
+    "the request is broken" signals.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code == 404
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+
+
+def _notify_waking(tenant: Tenant, channel: str, channel_user_id: str) -> None:
+    """Best-effort "waking up, hold on" ack while a hibernated container
+    boots — parity with the webhook path's ACK_FRESH response. Without it
+    the user faces ~60s of silence after their wake message and assumes it
+    failed. Telegram only: LINE hibernated messages are acked by
+    line_webhook's own ``handle_hibernated_message`` and only reach the
+    drain in the rare enqueue-then-hibernate race.
+    """
+    if channel != PendingMessage.Channel.TELEGRAM or not channel_user_id:
+        return
+    try:
+        chat_id = int(channel_user_id)
+    except (TypeError, ValueError):
+        return
+    base = _telegram_api_base()
+    if not base:
+        return
+    from apps.router.error_messages import error_msg
+
+    lang = getattr(tenant.user, "language", None) or "en"
+    try:
+        httpx.post(
+            f"{base}/sendMessage",
+            json={"chat_id": chat_id, "text": error_msg(lang, "hibernation_waking")},
+            timeout=10,
+        )
+    except Exception:
+        logger.exception(
+            "drain_pending: failed to send waking-up ack to Telegram for tenant %s",
+            str(tenant.id)[:8],
         )
 
 
