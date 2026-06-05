@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import zoneinfo
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest import TestCase
+from unittest.mock import patch
 
-from apps.common.tenant_tz import safe_zoneinfo, tenant_tz, tenant_tz_name
+from apps.common.tenant_tz import safe_zoneinfo, tenant_today, tenant_tz, tenant_tz_name
 
 
 def _fake_tenant(tz: str | None) -> SimpleNamespace:
@@ -57,3 +59,24 @@ class SafeZoneinfoTests(TestCase):
 
     def test_none_falls_back(self):
         self.assertEqual(str(safe_zoneinfo(None)), "UTC")
+
+
+class TenantTodayTests(TestCase):
+    def test_east_of_utc_is_next_day(self):
+        # 2026-06-05 22:00 UTC is already 07:00 the NEXT day in Tokyo.
+        fixed = datetime(2026, 6, 5, 22, 0, tzinfo=UTC)
+        with patch("django.utils.timezone.now", return_value=fixed):
+            self.assertEqual(str(tenant_today(_fake_tenant("Asia/Tokyo"))), "2026-06-06")
+            # Same instant — a UTC tenant is still on the prior day.
+            self.assertEqual(str(tenant_today(_fake_tenant("UTC"))), "2026-06-05")
+
+    def test_west_of_utc_is_prior_day(self):
+        # 2026-06-05 02:00 UTC is still 19:00 the PRIOR day in Los Angeles.
+        fixed = datetime(2026, 6, 5, 2, 0, tzinfo=UTC)
+        with patch("django.utils.timezone.now", return_value=fixed):
+            self.assertEqual(str(tenant_today(_fake_tenant("America/Los_Angeles"))), "2026-06-04")
+
+    def test_unset_tz_falls_back_to_utc_date(self):
+        fixed = datetime(2026, 6, 5, 23, 30, tzinfo=UTC)
+        with patch("django.utils.timezone.now", return_value=fixed):
+            self.assertEqual(str(tenant_today(_fake_tenant(None))), "2026-06-05")

@@ -22,10 +22,24 @@ Range math lives in ``apps.common.windows``; point math lives in
 
 from __future__ import annotations
 
+import datetime
 import zoneinfo
 from typing import Any
 
 _UTC = zoneinfo.ZoneInfo("UTC")
+
+
+def tenant_today(tenant: Any) -> datetime.date:
+    """The current calendar date in the tenant's LOCAL timezone (UTC fallback).
+
+    The "daily" boundary for per-tenant features — one meditation a day, the
+    "today's sit" check, the weekly window — must be the user's local midnight,
+    not the server's UTC midnight. Driven by ``tenant.user.timezone``; falls back
+    to UTC when unset/invalid. (``tenant_tz`` is defined below; resolved at call time.)
+    """
+    from django.utils import timezone
+
+    return timezone.now().astimezone(tenant_tz(tenant)).date()
 
 
 def tenant_tz_name(tenant: Any) -> str:

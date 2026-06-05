@@ -9,7 +9,6 @@ pending MeditationSession, and enqueues the async render.
 from __future__ import annotations
 
 import logging
-from datetime import date as date_cls
 from uuid import UUID
 
 from rest_framework import status
@@ -143,9 +142,11 @@ class RuntimeMeditationCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        from apps.common.tenant_tz import tenant_today
+
         session = MeditationSession.objects.create(
             tenant=tenant,
-            date=date_cls.today(),
+            date=tenant_today(tenant),  # the user's LOCAL day, not server UTC
             status=MeditationStatus.PENDING,
             title=str(manifest.get("title", ""))[:160],
             theme=str(manifest.get("theme", "")),

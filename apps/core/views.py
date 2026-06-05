@@ -1,7 +1,6 @@
 """Consumer-facing Core API views (JWT auth, frontend)."""
 
 import logging
-from datetime import date
 
 from rest_framework import status
 from rest_framework.generics import ListAPIView, RetrieveAPIView
@@ -225,9 +224,11 @@ class CoreComposeView(APIView):
         if in_flight:
             return Response({"meditation_id": str(in_flight.id), "status": in_flight.status})
 
+        from apps.common.tenant_tz import tenant_today
+
         session = MeditationSession.objects.create(
             tenant=tenant,
-            date=date.today(),
+            date=tenant_today(tenant),  # the user's LOCAL day, not server UTC
             status=MeditationStatus.PENDING,
         )
         try:
