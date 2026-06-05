@@ -1065,6 +1065,156 @@ class ConsumerFinanceViewTests(TestCase):
         response = self.client.get("/api/v1/finance/dashboard/")
         self.assertEqual(len(response.json()["accounts"]), 0)
 
+    # ── Transaction POST (money movement, JWT path) ─────────────────
+
+    def test_record_payment_by_nickname_updates_balance(self):
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Chase Card",
+            current_balance=Decimal("4200"),
+        )
+        response = self.client.post(
+            "/api/v1/finance/transactions/",
+            data={"account_nickname": "Chase Card", "amount": 500},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertEqual(body["new_balance"], "3700.00")
+        self.assertEqual(body["transaction_type"], "payment")
+        self.assertFalse(body["duplicate"])
+        self.assertEqual(FinanceTransaction.objects.filter(tenant=self.tenant).count(), 1)
+
+    def test_record_payment_by_account_id(self):
+        account = FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Loan",
+            current_balance=Decimal("1000"),
+        )
+        response = self.client.post(
+            "/api/v1/finance/transactions/",
+            data={"account_id": str(account.id), "amount": 250},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertEqual(body["new_balance"], "750.00")
+        self.assertEqual(body["account_id"], str(account.id))
+
+    def test_record_charge_increases_balance(self):
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("1000"),
+        )
+        response = self.client.post(
+            "/api/v1/finance/transactions/",
+            data={"account_nickname": "CC", "amount": 200, "transaction_type": "charge"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["new_balance"], "1200.00")
+
+    def test_transaction_requires_amount(self):
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("1000"),
+        )
+        response = self.client.post(
+            "/api/v1/finance/transactions/",
+            data={"account_nickname": "CC"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_transaction_unknown_account_returns_404(self):
+        response = self.client.post(
+            "/api/v1/finance/transactions/",
+            data={"account_nickname": "Nonexistent", "amount": 100},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_transaction_invalid_date_returns_400(self):
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("1000"),
+        )
+        response = self.client.post(
+            "/api/v1/finance/transactions/",
+            data={"account_nickname": "CC", "amount": 100, "date": "not-a-date"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_duplicate_transaction_returns_existing_row(self):
+        """A re-recorded (account, type, amount, date) returns the first row
+        with duplicate=True + HTTP 200, no second debit — proving the JWT path
+        shares the runtime dedup guard."""
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Loan A",
+            current_balance=Decimal("1000"),
+        )
+        payload = {
+            "account_nickname": "Loan A",
+            "amount": 50,
+            "date": "2026-05-06",
+            "description": "Confirmation #1",
+        }
+        first = self.client.post("/api/v1/finance/transactions/", data=payload, format="json")
+        self.assertEqual(first.status_code, 201)
+        self.assertFalse(first.json()["duplicate"])
+
+        second = self.client.post(
+            "/api/v1/finance/transactions/",
+            data={**payload, "description": "dup retry"},
+            format="json",
+        )
+        self.assertEqual(second.status_code, 200)
+        self.assertTrue(second.json()["duplicate"])
+        self.assertEqual(second.json()["transaction_id"], first.json()["transaction_id"])
+        self.assertEqual(FinanceTransaction.objects.filter(tenant=self.tenant).count(), 1)
+        self.assertEqual(
+            FinanceAccount.objects.get(nickname="Loan A").current_balance,
+            Decimal("950"),
+        )
+
+    def test_transaction_requires_auth(self):
+        unauthed = APIClient()
+        response = unauthed.post(
+            "/api/v1/finance/transactions/",
+            data={"account_nickname": "X", "amount": 1},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_cannot_post_to_other_tenants_account(self):
+        other_account = FinanceAccount.objects.create(
+            tenant=self.other_tenant,
+            account_type="credit_card",
+            nickname="Theirs",
+            current_balance=Decimal("500"),
+        )
+        response = self.client.post(
+            "/api/v1/finance/transactions/",
+            data={"account_id": str(other_account.id), "amount": 100},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            FinanceAccount.objects.get(id=other_account.id).current_balance,
+            Decimal("500"),
+        )
+
     def test_accounts_list(self):
         FinanceAccount.objects.create(
             tenant=self.tenant,

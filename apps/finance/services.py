@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
 from dateutil.relativedelta import relativedelta
+from django.db import transaction as db_transaction
+
+from .models import FinanceAccount, FinanceTransaction
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -244,3 +251,132 @@ def payoff_result_to_dict(result: PayoffResult) -> dict:
             for entry in result.schedule
         ],
     }
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Transaction recording (shared by the runtime + consumer write paths)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class AccountNotFound(Exception):
+    """No active account matched the supplied id or nickname."""
+
+
+def resolve_account(tenant, *, account_id=None, account_nickname=None) -> FinanceAccount:
+    """Resolve an active ``FinanceAccount`` for ``tenant``.
+
+    Prefers an explicit ``account_id``; otherwise falls back to a fuzzy
+    nickname match (case-insensitive exact, then ``icontains``). Raises
+    ``AccountNotFound`` when nothing matches.
+    """
+    if account_id:
+        try:
+            uuid.UUID(str(account_id))
+        except (ValueError, TypeError, AttributeError):
+            raise AccountNotFound(f"No account found with id '{account_id}'") from None
+        account = FinanceAccount.objects.filter(id=account_id, tenant=tenant, is_active=True).first()
+        if account is None:
+            raise AccountNotFound(f"No account found with id '{account_id}'")
+        return account
+
+    nickname = (account_nickname or "").strip()
+    if nickname:
+        account = FinanceAccount.objects.filter(tenant=tenant, is_active=True, nickname__iexact=nickname).first()
+        if account is None:
+            account = FinanceAccount.objects.filter(tenant=tenant, is_active=True, nickname__icontains=nickname).first()
+        if account is not None:
+            return account
+
+    raise AccountNotFound(f"No account found matching '{account_nickname or account_id or ''}'")
+
+
+def record_transaction(
+    *,
+    tenant,
+    account: FinanceAccount,
+    amount: Decimal,
+    transaction_type: str = "payment",
+    txn_date: date | None = None,
+    description: str = "",
+) -> tuple[dict, bool]:
+    """Record a transaction against ``account`` and mutate its balance.
+
+    Returns ``(payload, created)``; ``created`` is ``False`` on a dedup hit.
+
+    Dedup guard: a pre-existing row with the same
+    ``(tenant, account, transaction_type, amount, date)`` is treated as a
+    re-record — an agent (or client) retry after a silent timeout — so the
+    existing row is returned WITHOUT debiting the balance a second time. This
+    is the forward fix for the 2026-05 incident where agent retries triple-
+    recorded the same loan payment. ``select_for_update`` serialises concurrent
+    writes per account, so the dedup check and balance mutation are atomic.
+    """
+    if transaction_type not in FinanceTransaction.TransactionType.values:
+        transaction_type = "payment"
+    txn_date = txn_date or date.today()
+    description = (description or "")[:256]
+
+    with db_transaction.atomic():
+        locked = FinanceAccount.objects.select_for_update().get(pk=account.pk)
+        existing = (
+            FinanceTransaction.objects.filter(
+                tenant=tenant,
+                account=locked,
+                transaction_type=transaction_type,
+                amount=amount,
+                date=txn_date,
+            )
+            .order_by("created_at")
+            .first()
+        )
+        if existing is not None:
+            logger.info(
+                "finance.dedup_hit tenant=%s account=%s amount=%s date=%s type=%s existing_id=%s",
+                str(tenant.id)[:8],
+                locked.nickname,
+                amount,
+                txn_date,
+                transaction_type,
+                existing.id,
+            )
+            return (
+                {
+                    "transaction_id": str(existing.id),
+                    "account_id": str(locked.id),
+                    "account_nickname": locked.nickname,
+                    "new_balance": str(locked.current_balance.quantize(Decimal("0.01"))),
+                    "transaction_type": existing.transaction_type,
+                    "amount": str(existing.amount),
+                    "duplicate": True,
+                    "existing_description": existing.description,
+                    "existing_recorded_at": existing.created_at.isoformat(),
+                },
+                False,
+            )
+
+        txn_row = FinanceTransaction.objects.create(
+            tenant=tenant,
+            account=locked,
+            transaction_type=transaction_type,
+            amount=amount,
+            description=description,
+            date=txn_date,
+        )
+        if transaction_type in ("payment", "refund"):
+            locked.current_balance = max(Decimal("0"), locked.current_balance - amount)
+        elif transaction_type in ("charge", "interest"):
+            locked.current_balance += amount
+        locked.save(update_fields=["current_balance", "updated_at"])
+
+    return (
+        {
+            "transaction_id": str(txn_row.id),
+            "account_id": str(locked.id),
+            "account_nickname": locked.nickname,
+            "new_balance": str(locked.current_balance.quantize(Decimal("0.01"))),
+            "transaction_type": transaction_type,
+            "amount": str(amount),
+            "duplicate": False,
+        },
+        True,
+    )

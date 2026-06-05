@@ -1,7 +1,8 @@
 """Consumer-facing finance API views (JWT auth, frontend)."""
 
 import logging
-from decimal import Decimal
+from datetime import date
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from rest_framework import status
@@ -19,6 +20,7 @@ from .serializers import (
     FinanceTransactionSerializer,
     PayoffPlanSerializer,
 )
+from .services import AccountNotFound, record_transaction, resolve_account
 
 
 class FinanceAccountListView(APIView):
@@ -87,7 +89,16 @@ class FinanceAccountDetailView(APIView):
 
 
 class FinanceTransactionListView(APIView):
-    """GET: list recent transactions."""
+    """GET: list recent transactions. POST: record a transaction.
+
+    The POST path drives money movement for JWT clients (the web console and
+    the iOS app). It resolves the account (explicit ``account_id`` preferred,
+    fuzzy ``account_nickname`` fallback) then delegates to the shared
+    ``record_transaction`` service — the SAME dedup guard + balance side-effect
+    the OpenClaw runtime endpoint uses, so the consumer and agent paths can't
+    drift. A re-recorded ``(account, type, amount, date)`` returns the existing
+    row with ``duplicate=True`` and HTTP 200 instead of double-debiting.
+    """
 
     permission_classes = [IsAuthenticated]
 
@@ -98,6 +109,54 @@ class FinanceTransactionListView(APIView):
         transactions = FinanceTransaction.objects.filter(tenant=tenant).select_related("account")[:50]
         serializer = FinanceTransactionSerializer(transactions, many=True)
         return Response(serializer.data)
+
+    def post(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+
+        body = request.data
+        raw_amount = body.get("amount")
+        if raw_amount is None:
+            return Response({"error": "amount is required"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            amount = Decimal(str(raw_amount))
+        except (InvalidOperation, ValueError):
+            return Response({"error": "amount must be a valid number"}, status=status.HTTP_400_BAD_REQUEST)
+
+        txn_date = body.get("date")
+        if txn_date:
+            try:
+                txn_date = date.fromisoformat(txn_date)
+            except (TypeError, ValueError):
+                return Response(
+                    {"error": "date must be an ISO date (YYYY-MM-DD)"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            txn_date = None
+
+        try:
+            account = resolve_account(
+                tenant,
+                account_id=body.get("account_id"),
+                account_nickname=body.get("account_nickname"),
+            )
+        except AccountNotFound as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
+        payload, created = record_transaction(
+            tenant=tenant,
+            account=account,
+            amount=amount,
+            transaction_type=body.get("transaction_type", "payment"),
+            txn_date=txn_date,
+            description=body.get("description") or "",
+        )
+        return Response(
+            payload,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
 
 class PayoffPlanListView(APIView):
