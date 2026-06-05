@@ -7,7 +7,6 @@ refresh whenever a session is created or flips to ready.
 
 from __future__ import annotations
 
-from datetime import date as _date
 from datetime import timedelta as _timedelta
 
 from apps.core.models import MeditationSession, MeditationStatus
@@ -23,7 +22,9 @@ from apps.tenants.models import Tenant
     order=41,
 )
 def render_core(tenant: Tenant, *, max_chars: int = 600) -> str:
-    today = _date.today()
+    from apps.common.tenant_tz import tenant_today
+
+    today = tenant_today(tenant)  # tenant-local, to match the locally-stamped session dates
     ready = MeditationSession.objects.filter(tenant=tenant, status=MeditationStatus.READY)
 
     sections: list[str] = []
