@@ -145,6 +145,20 @@ function pruneExpired() {
   }
 }
 
+// Assemble the system-context injection for a firing cron from its cached
+// entry: the lightweight grounding rule (every non-system cron) followed by
+// any typed-pattern injection. Returns undefined when there's nothing to add
+// (e.g. a system cron that already bakes the full preamble into its message).
+// Exported for unit tests.
+export function buildGroundingInjection(entry) {
+  if (!entry) return undefined;
+  const parts = [];
+  if (entry.grounding_rule) parts.push(entry.grounding_rule);
+  if (entry.prompt_injection) parts.push(entry.prompt_injection);
+  if (!parts.length) return undefined;
+  return `\n\n${parts.join("\n\n")}\n`;
+}
+
 async function fetchPatternContext(runtime, cronName, logger) {
   const result = await djangoRequest(runtime, {
     path: tenantPath(
@@ -162,6 +176,26 @@ async function fetchPatternContext(runtime, cronName, logger) {
       logger.warn(
         `nbhd-cron-enforcement: pattern_context fetch failed cron=${cronName} ` +
         `status=${result.status || "?"} error=${(result.error && result.error.message) || ""}`,
+      );
+    }
+    return null;
+  }
+  return result.payload;
+}
+
+async function fetchGrounding(runtime, cronName, logger) {
+  const result = await djangoRequest(runtime, {
+    path: tenantPath(
+      runtime,
+      `/crons/${encodeURIComponent(cronName)}/grounding/`,
+    ),
+    method: "GET",
+  });
+  if (!result.ok) {
+    if (logger && typeof logger.warn === "function") {
+      logger.warn(
+        `nbhd-cron-enforcement: grounding fetch failed cron=${cronName} ` +
+        `status=${result.status || "?"}`,
       );
     }
     return null;
@@ -228,14 +262,22 @@ export default function register(api) {
     if (!cronName) return;
 
     try {
+      // Typed-pattern context (null for non-typed crons) + the universal
+      // grounding directive (present for every non-system cron). Cache an
+      // entry when EITHER is present so freeform/legacy crons still get
+      // grounded, not just typed patterns.
       const ctx = await fetchPatternContext(runtime, cronName, api.logger);
-      if (ctx) {
+      const grounding = await fetchGrounding(runtime, cronName, api.logger);
+      const groundingRule =
+        grounding && grounding.inject ? asTrimmedString(grounding.rule) : "";
+      if (ctx || groundingRule) {
         runContextCache.set(sessionKey, {
           fetchedAtMs: Date.now(),
-          pattern: asTrimmedString(ctx.pattern),
-          typed_payload: asObject(ctx.typed_payload),
-          name: asTrimmedString(ctx.name) || cronName,
-          prompt_injection: asTrimmedString(ctx.prompt_injection),
+          pattern: ctx ? asTrimmedString(ctx.pattern) : "",
+          typed_payload: ctx ? asObject(ctx.typed_payload) : {},
+          name: (ctx && asTrimmedString(ctx.name)) || cronName,
+          prompt_injection: ctx ? asTrimmedString(ctx.prompt_injection) : "",
+          grounding_rule: groundingRule,
           cronName,
           ttlMs: runtime.cacheTtlMs,
         });
@@ -252,11 +294,11 @@ export default function register(api) {
   api.on("before_prompt_build", (_event, ctx) => {
     const sessionKey = cacheKey(ctx && ctx.sessionKey, ctx && ctx.runId);
     if (!sessionKey) return undefined;
-    const entry = runContextCache.get(sessionKey);
-    if (!entry || !entry.prompt_injection) return undefined;
+    const injection = buildGroundingInjection(runContextCache.get(sessionKey));
+    if (!injection) return undefined;
     // appendSystemContext keeps us out of the way of nbhd-routing-context
     // which uses prependSystemContext.
-    return { appendSystemContext: `\n\n${entry.prompt_injection}\n` };
+    return { appendSystemContext: injection };
   });
 
   // ── message_sending ───────────────────────────────────────────────────
@@ -264,7 +306,7 @@ export default function register(api) {
     const sessionKey = cacheKey(ctx && ctx.sessionKey, ctx && ctx.runId);
     if (!sessionKey) return undefined;
     const entry = runContextCache.get(sessionKey);
-    if (!entry) return undefined; // not a typed-cron run
+    if (!entry || !entry.pattern) return undefined; // outbound validation is typed-cron only
 
     const content = asTrimmedString(event && event.content);
     if (!content) return undefined;

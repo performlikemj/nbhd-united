@@ -16,6 +16,7 @@ from .runtime_views import (
     RuntimeCronCreateDomainSummaryView,
     RuntimeCronCreatePureReminderView,
     RuntimeCronCreateQuoteUserIntentView,
+    RuntimeCronGroundingView,
     RuntimeCronPatternContextView,
     RuntimeCronPhase2SummaryView,
     RuntimeCronValidateOutboundView,
@@ -305,6 +306,14 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/crons/<str:cron_name>/validate_outbound/",
         RuntimeCronValidateOutboundView.as_view(),
         name="runtime-cron-validate-outbound",
+    ),
+    # Fire-time grounding directive — tells the enforcement plugin whether to
+    # inject the lightweight grounding rule into a firing cron. All custom
+    # crons: yes; system crons that bake the full preamble: no.
+    path(
+        "runtime/<uuid:tenant_id>/crons/<str:cron_name>/grounding/",
+        RuntimeCronGroundingView.as_view(),
+        name="runtime-cron-grounding",
     ),
     # Reddit runtime endpoints
     path(
