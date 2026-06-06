@@ -261,6 +261,10 @@ export class GalaxyScene extends Phaser.Scene {
   private waypointStar: StarEntry | null = null;
   private waypointGfx?: Phaser.GameObjects.Graphics;
   private waypointPulse?: Phaser.GameObjects.Image;
+  private waypointEdge?: Phaser.GameObjects.Graphics; // screen-space off-screen indicator
+  private waypointEdgeText?: Phaser.GameObjects.Text;
+  private flightZoom = 1; // the normal follow-the-ship zoom (restored after a reveal)
+  private revealTimer?: Phaser.Time.TimerEvent; // the "zoom back" timer from a reveal
   // Phase 2 — ambient dwell detection
   private dwellSince = 0;
   private lastAmbientAt = 0;
@@ -270,6 +274,14 @@ export class GalaxyScene extends Phaser.Scene {
   private noteSaveBtn!: HTMLElement | null;
   private notesToken = 0; // race guard for the async notes load
   private savingNote = false; // concurrency guard against double-save
+  // Survey / map mode — park the ship, roam the galaxy, pick a course
+  private mapMode = false;
+  private mapBtn!: HTMLElement | null;
+  private mapGfx?: Phaser.GameObjects.Graphics;
+  private mapSelected: StarEntry | null = null;
+  private mapMinZoom = 0.1;
+  private mapDrag = { active: false, moved: 0, lastX: 0, lastY: 0 };
+  private mapPinch = { active: false, dist: 0 };
 
   constructor(galaxy: GalaxyData, overlayRoot: HTMLElement) {
     super("galaxy");
@@ -302,6 +314,16 @@ export class GalaxyScene extends Phaser.Scene {
 
     this.ring = this.add.graphics().setDepth(6);
     this.waypointGfx = this.add.graphics().setDepth(5);
+    // Off-screen waypoint indicator lives in screen space (scrollFactor 0): an edge
+    // arrow + label that always tells you which way (and how far) the target is.
+    this.waypointEdge = this.add.graphics().setScrollFactor(0).setDepth(9);
+    this.waypointEdgeText = this.add
+      .text(0, 0, "", { fontSize: "12px", color: "#cfeaff", fontStyle: "bold", backgroundColor: "rgba(11,15,19,0.72)", padding: { x: 6, y: 3 } })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(9)
+      .setVisible(false);
+    this.mapGfx = this.add.graphics().setDepth(6); // survey-mode overlays (ship ring + selection)
     this.prompt = this.add
       .text(0, 0, "[E] Land", {
         fontSize: "13px",
@@ -332,6 +354,11 @@ export class GalaxyScene extends Phaser.Scene {
     // If we tore down while the note textarea was focused (keyboard disabled),
     // restore it so a remount never starts with flight controls dead.
     this.setGameKeyboard(true);
+    // Reset shared DOM (the React host reuses #cg-help etc. when the game is
+    // rebuilt on a galaxy change) so a teardown mid-map-mode doesn't leave the
+    // help bar hidden / the map button stuck on "Exit".
+    this.mapMode = false;
+    this.setMapUI(false);
   }
 
   private makeTextures() {
@@ -624,7 +651,8 @@ export class GalaxyScene extends Phaser.Scene {
     // among the stars (the whole-map overview lives in the fixed minimap). Derived
     // from the neighbourhood size so the framing is consistent at any galaxy scale.
     const vmin = Math.min(this.scale.width, this.scale.height);
-    this.cameras.main.setZoom(Phaser.Math.Clamp(vmin / (this.neighborhoodR * 2.7), 0.8, 1.7));
+    this.flightZoom = Phaser.Math.Clamp(vmin / (this.neighborhoodR * 2.7), 0.8, 1.7);
+    this.cameras.main.setZoom(this.flightZoom);
   }
 
   private buildHUD() {
@@ -643,7 +671,8 @@ export class GalaxyScene extends Phaser.Scene {
 
   private buildInput() {
     this.cursors = this.input.keyboard!.createCursorKeys();
-    this.keys = this.input.keyboard!.addKeys("W,A,S,D,E,ESC");
+    this.keys = this.input.keyboard!.addKeys("W,A,S,D,E,ESC,M");
+    this.input.addPointer(1); // a 2nd touch pointer so map mode can pinch-zoom
   }
 
   private wirePanel() {
@@ -696,9 +725,23 @@ export class GalaxyScene extends Phaser.Scene {
 
   private buildTouch() {
     this.landBtn = this.q("#cg-land-btn");
-    if (this.landBtn) (this.landBtn as HTMLButtonElement).onclick = () => { if (this.candidate && !this.paused) this.openPanel(this.candidate); };
+    if (this.landBtn) (this.landBtn as HTMLButtonElement).onclick = () => { if (this.candidate && !this.paused && !this.mapMode) this.openPanel(this.candidate); };
+
+    // Survey/map-mode controls.
+    this.mapBtn = this.q("#cg-map-btn");
+    if (this.mapBtn) (this.mapBtn as HTMLButtonElement).onclick = () => { if (this.mapMode) this.exitMapMode(null); else this.enterMapMode(); };
+    const fly = this.q("#cg-map-fly");
+    if (fly) (fly as HTMLButtonElement).onclick = () => this.exitMapMode(this.mapSelected);
+    const cancel = this.q("#cg-map-cancel");
+    if (cancel) (cancel as HTMLButtonElement).onclick = () => this.deselectMapStar();
+    this.input.on("wheel", (_p: unknown, _o: unknown, _dx: number, dy: number) => {
+      if (!this.mapMode) return;
+      const cam = this.cameras.main;
+      cam.setZoom(Phaser.Math.Clamp(cam.zoom * (dy > 0 ? 0.9 : 1.1), this.mapMinZoom, this.flightZoom));
+    });
 
     this.input.on("pointerdown", (p: Phaser.Input.Pointer) => {
+      if (this.mapMode) { this.mapPointerDown(p); return; }
       if (this.paused) return;
       this.touch.active = true;
       this.touch.anchorX = p.x; this.touch.anchorY = p.y;
@@ -708,16 +751,154 @@ export class GalaxyScene extends Phaser.Scene {
       this.autopilot = null;
     });
     this.input.on("pointermove", (p: Phaser.Input.Pointer) => {
+      if (this.mapMode) { this.mapPointerMove(p); return; }
       if (!this.touch.active) return;
       this.touch.curX = p.x; this.touch.curY = p.y;
       this.touch.moved = Math.max(this.touch.moved, Phaser.Math.Distance.Between(this.touch.anchorX, this.touch.anchorY, p.x, p.y));
     });
     this.input.on("pointerup", (p: Phaser.Input.Pointer) => {
+      if (this.mapMode) { this.mapPointerUp(p); return; }
       const tap = this.touch.active && this.touch.moved < 12 && this.time.now - this.touch.downTime < 320;
       this.touch.active = false;
       if (this.paused || !tap) return;
       this.handleTap(p);
     });
+  }
+
+  // ── Survey / map mode ──
+  // Park the ship and roam: drag to pan, scroll/pinch to zoom, tap a star to set a
+  // course. Picking a destination flies you there (the arrive-steering autopilot);
+  // exiting returns you to the ship. Decouples "decide where to go" from flying.
+  private enterMapMode() {
+    if (this.mapMode || this.paused || this.encounterActive) return;
+    this.mapMode = true;
+    this.autopilot = null;
+    this.deselectMapStar();
+    this.ship.body.setVelocity(0, 0);
+    this.ship.body.setAcceleration(0, 0);
+    const cam = this.cameras.main;
+    cam.stopFollow();
+    const fit = Math.min(cam.width / this.world.w, cam.height / this.world.h);
+    this.mapMinZoom = Math.max(fit * 0.9, 0.05);
+    const survey = Phaser.Math.Clamp(this.flightZoom * 0.42, this.mapMinZoom, this.flightZoom);
+    const ms = this.reducedMotion() ? 0 : 450;
+    cam.pan(this.ship.x, this.ship.y, ms, "Sine.easeInOut");
+    cam.zoomTo(survey, ms, "Sine.easeInOut");
+    this.setMapUI(true);
+  }
+
+  private exitMapMode(travelTo: StarEntry | null) {
+    if (!this.mapMode) return;
+    this.mapMode = false;
+    this.deselectMapStar();
+    if (this.mapGfx) this.mapGfx.clear();
+    this.setMapUI(false);
+    const cam = this.cameras.main;
+    cam.startFollow(this.ship, true, 0.08, 0.08);
+    cam.zoomTo(this.flightZoom, this.reducedMotion() ? 0 : 450, "Sine.easeInOut");
+    if (travelTo) this.autopilot = { x: travelTo.x, y: travelTo.y, star: travelTo };
+  }
+
+  private setMapUI(on: boolean) {
+    const btn = this.mapBtn as HTMLButtonElement | null;
+    if (btn) { btn.textContent = on ? "✕ Exit map" : "🗺 Map"; btn.classList.toggle("active", on); }
+    const hint = this.q("#cg-map-hint");
+    if (hint) hint.classList.toggle("show", on);
+    const help = this.q("#cg-help");
+    if (help) help.style.visibility = on ? "hidden" : "visible";
+    if (!on) { const c = this.q("#cg-map-confirm"); if (c) c.classList.remove("show"); }
+    if (on && this.landBtn) this.landBtn.classList.remove("show");
+  }
+
+  private mapPointerDown(p: Phaser.Input.Pointer) {
+    if (this.mapDrag.active) return; // a 2nd finger going down — pinch handles it
+    this.mapDrag.active = true;
+    this.mapDrag.moved = 0;
+    this.mapDrag.lastX = p.x;
+    this.mapDrag.lastY = p.y;
+  }
+
+  private mapPointerMove(p: Phaser.Input.Pointer) {
+    const cam = this.cameras.main;
+    const p1 = this.input.pointer1;
+    const p2 = this.input.pointer2;
+    if (p1?.isDown && p2?.isDown) {
+      // Pinch-zoom around the centre.
+      const dist = Phaser.Math.Distance.Between(p1.x, p1.y, p2.x, p2.y);
+      if (this.mapPinch.active && this.mapPinch.dist > 0) {
+        cam.setZoom(Phaser.Math.Clamp(cam.zoom * (dist / this.mapPinch.dist), this.mapMinZoom, this.flightZoom));
+      }
+      this.mapPinch.active = true;
+      this.mapPinch.dist = dist;
+      this.mapDrag.moved += 99; // a pinch is never a tap
+      return;
+    }
+    if (this.mapPinch.active) {
+      // Just lifted one of two fingers — re-anchor the drag to the survivor so the
+      // next pan frame doesn't jump by the stale delta.
+      this.mapPinch.active = false;
+      this.mapPinch.dist = 0;
+      this.mapDrag.lastX = p.x;
+      this.mapDrag.lastY = p.y;
+      return;
+    }
+    if (!this.mapDrag.active) return;
+    const dx = p.x - this.mapDrag.lastX, dy = p.y - this.mapDrag.lastY;
+    this.mapDrag.moved += Math.abs(dx) + Math.abs(dy);
+    cam.scrollX -= dx / cam.zoom; // camera is world-bounded, so this clamps itself
+    cam.scrollY -= dy / cam.zoom;
+    this.mapDrag.lastX = p.x;
+    this.mapDrag.lastY = p.y;
+  }
+
+  private mapPointerUp(p: Phaser.Input.Pointer) {
+    const tap = this.mapDrag.active && this.mapDrag.moved < 14;
+    this.mapDrag.active = false;
+    this.mapPinch.active = false;
+    this.mapPinch.dist = 0;
+    if (!tap) return;
+    let near: StarEntry | null = null;
+    let best = 46 / this.cameras.main.zoom; // ~46px on screen → world units
+    for (const s of this.stars) {
+      const d = Phaser.Math.Distance.Between(p.worldX, p.worldY, s.x, s.y);
+      if (d < best) { best = d; near = s; }
+    }
+    if (near) this.selectMapStar(near);
+    else this.deselectMapStar();
+  }
+
+  private selectMapStar(star: StarEntry) {
+    this.mapSelected = star;
+    const name = this.q("#cg-map-confirm-name");
+    if (name) name.textContent = truncate(star.data.text, 44);
+    const c = this.q("#cg-map-confirm");
+    if (c) c.classList.add("show");
+  }
+
+  private deselectMapStar() {
+    this.mapSelected = null;
+    const c = this.q("#cg-map-confirm");
+    if (c) c.classList.remove("show");
+  }
+
+  private updateMapMode() {
+    // Suppress the in-flight waypoint overlay while surveying (the minimap marker,
+    // drawn by updateMinimap below, still shows the target on the map).
+    if (this.waypointGfx) this.waypointGfx.clear();
+    if (this.waypointEdge) this.waypointEdge.clear();
+    if (this.waypointEdgeText) this.waypointEdgeText.setVisible(false);
+    const g = this.mapGfx;
+    if (g) {
+      g.clear();
+      // "Your ship" ring so the parked ship is findable when zoomed right out.
+      g.lineStyle(2, 0x9bd9ff, 0.75);
+      g.strokeCircle(this.ship.x, this.ship.y, 28);
+      if (this.mapSelected) {
+        g.lineStyle(3, 0x7c6bf0, 0.95);
+        g.strokeCircle(this.mapSelected.x, this.mapSelected.y, this.mapSelected.r + 16);
+      }
+    }
+    this.updateMinimap();
   }
 
   private steerToward(target: number, dt: number) {
@@ -939,11 +1120,42 @@ export class GalaxyScene extends Phaser.Scene {
       .setDepth(5);
     this.tweens.add({ targets: pulse, scale: 1.7, alpha: 0, duration: 1100, repeat: -1, ease: "Sine.Out" });
     this.waypointPulse = pulse;
+    // Briefly reveal where it is — ease the zoom out so the target comes into view
+    // around the (still-followed) ship, then ease back. Honors "show me".
+    this.revealWaypoint();
+  }
+
+  private reducedMotion(): boolean {
+    try {
+      return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    } catch {
+      return false;
+    }
+  }
+
+  private revealWaypoint() {
+    const wp = this.waypointStar;
+    if (!wp || this.reducedMotion()) return; // reduced-motion: the edge arrow + minimap carry it
+    const cam = this.cameras.main;
+    const d = Phaser.Math.Distance.Between(this.ship.x, this.ship.y, wp.x, wp.y);
+    const need = Math.min(cam.width, cam.height) / (d * 2 + 240);
+    const target = Phaser.Math.Clamp(need, 0.3, this.flightZoom);
+    if (target >= this.flightZoom - 0.01) return; // already on-screen — nothing to reveal
+    cam.zoomTo(target, 700, "Sine.easeInOut");
+    this.revealTimer?.remove();
+    this.revealTimer = this.time.delayedCall(1800, () => {
+      // Don't fight a survey-mode zoom if the player entered the map meanwhile.
+      if (this.waypointStar && !this.mapMode) cam.zoomTo(this.flightZoom, 600, "Sine.easeInOut");
+    });
   }
 
   private clearWaypoint() {
     this.waypointStar = null;
+    this.revealTimer?.remove();
+    this.revealTimer = undefined;
     if (this.waypointGfx) this.waypointGfx.clear();
+    if (this.waypointEdge) this.waypointEdge.clear();
+    if (this.waypointEdgeText) this.waypointEdgeText.setVisible(false);
     if (this.waypointPulse) {
       this.tweens.killTweensOf(this.waypointPulse);
       this.waypointPulse.destroy();
@@ -953,35 +1165,72 @@ export class GalaxyScene extends Phaser.Scene {
 
   private updateWaypoint() {
     const g = this.waypointGfx;
+    const edge = this.waypointEdge;
+    const edgeText = this.waypointEdgeText;
     if (!g) return;
     g.clear();
+    if (edge) edge.clear();
     const wp = this.waypointStar;
-    if (!wp) return;
+    if (!wp) {
+      if (edgeText) edgeText.setVisible(false);
+      return;
+    }
+    const cam = this.cameras.main;
     const d = Phaser.Math.Distance.Between(this.ship.x, this.ship.y, wp.x, wp.y);
     if (d < CONFIG.DOCK_RADIUS) { this.clearWaypoint(); return; }
+
+    const view = cam.worldView;
+    const onScreen = view.contains(wp.x, wp.y);
     const ang = Phaser.Math.Angle.Between(this.ship.x, this.ship.y, wp.x, wp.y);
-    const start = 26; // clear the ship sprite
-    const len = Math.min(d - wp.r - 8, 230);
-    if (len <= start) return;
-    g.lineStyle(2, BEAM, 0.55);
+
+    // World-space dashed heading from the ship. On-screen it reaches the target;
+    // off-screen it's a short stub and the screen-edge arrow carries the rest.
+    const start = 26;
+    const reach = onScreen ? d - wp.r - 10 : 230;
+    const len = Math.max(start, Math.min(reach, 230));
+    g.lineStyle(2, BEAM, 0.7);
     const dash = 13, gap = 9;
     for (let t = start; t < len; t += dash + gap) {
       const e = Math.min(t + dash, len);
       g.lineBetween(
-        this.ship.x + Math.cos(ang) * t,
-        this.ship.y + Math.sin(ang) * t,
-        this.ship.x + Math.cos(ang) * e,
-        this.ship.y + Math.sin(ang) * e,
+        this.ship.x + Math.cos(ang) * t, this.ship.y + Math.sin(ang) * t,
+        this.ship.x + Math.cos(ang) * e, this.ship.y + Math.sin(ang) * e,
       );
     }
-    const ex = this.ship.x + Math.cos(ang) * len;
-    const ey = this.ship.y + Math.sin(ang) * len;
-    g.fillStyle(BEAM, 0.85);
-    g.fillTriangle(
-      ex + Math.cos(ang) * 9, ey + Math.sin(ang) * 9,
-      ex + Math.cos(ang + 2.4) * 8, ey + Math.sin(ang + 2.4) * 8,
-      ex + Math.cos(ang - 2.4) * 8, ey + Math.sin(ang - 2.4) * 8,
-    );
+
+    if (onScreen) {
+      // Mark the destination with a solid ring (the fading pulse alone is too subtle).
+      g.lineStyle(2.5, BEAM, 0.9);
+      g.strokeCircle(wp.x, wp.y, wp.r + 16);
+      if (edgeText) edgeText.setVisible(false);
+    } else if (edge && edgeText) {
+      // Off-screen: an arrow pinned to the screen edge, pointing the way, labelled.
+      const sx = ((wp.x - view.x) / view.width) * cam.width;
+      const sy = ((wp.y - view.y) / view.height) * cam.height;
+      const cx = cam.width / 2, cy = cam.height / 2;
+      const m = 56;
+      const dx = sx - cx, dy = sy - cy;
+      let t = Infinity;
+      if (dx > 0) t = Math.min(t, (cam.width - m - cx) / dx);
+      else if (dx < 0) t = Math.min(t, (m - cx) / dx);
+      if (dy > 0) t = Math.min(t, (cam.height - m - cy) / dy);
+      else if (dy < 0) t = Math.min(t, (m - cy) / dy);
+      if (!isFinite(t) || t < 0) t = 0;
+      const ix = cx + dx * t, iy = cy + dy * t;
+      const ea = Math.atan2(dy, dx);
+      edge.fillStyle(BEAM, 0.95);
+      edge.fillTriangle(
+        ix + Math.cos(ea) * 13, iy + Math.sin(ea) * 13,
+        ix + Math.cos(ea + 2.5) * 11, iy + Math.sin(ea + 2.5) * 11,
+        ix + Math.cos(ea - 2.5) * 11, iy + Math.sin(ea - 2.5) * 11,
+      );
+      edge.lineStyle(2, BEAM, 0.5);
+      edge.strokeCircle(ix, iy, 17);
+      // Label sits inside the arrow (offset enough to clear it in the corners).
+      const lx = Phaser.Math.Clamp(ix - Math.cos(ea) * 48, m, cam.width - m);
+      const ly = Phaser.Math.Clamp(iy - Math.sin(ea) * 48, m, cam.height - m);
+      edgeText.setText(truncate(wp.data.text, 18)).setPosition(lx, ly).setVisible(true);
+    }
   }
 
   // ── Phase 2: ambient awareness. When you drift to a near-stop inside a
@@ -1315,6 +1564,19 @@ export class GalaxyScene extends Phaser.Scene {
     const mx = pad + this.ship.x * s;
     const my = pad + this.ship.y * s;
     this.miniMarker.clear();
+    // Waypoint target (drawn first, under the ship marker): a line from the ship +
+    // a beam-coloured dot, so you can navigate to it by the map even when it's
+    // off-screen in the main view.
+    if (this.waypointStar) {
+      const wx = pad + this.waypointStar.x * s;
+      const wy = pad + this.waypointStar.y * s;
+      this.miniMarker.lineStyle(1, BEAM, 0.45);
+      this.miniMarker.lineBetween(mx, my, wx, wy);
+      this.miniMarker.fillStyle(BEAM, 1);
+      this.miniMarker.fillCircle(wx, wy, 2.2);
+      this.miniMarker.lineStyle(1.4, BEAM, 0.95);
+      this.miniMarker.strokeCircle(wx, wy, 4.6);
+    }
     this.miniMarker.fillStyle(0xffffff, 1);
     this.miniMarker.fillCircle(mx, my, 2.6);
     this.miniMarker.lineStyle(1, 0x9bd9ff, 0.95);
@@ -1327,6 +1589,11 @@ export class GalaxyScene extends Phaser.Scene {
   }
 
   update(time: number, delta: number) {
+    if (this.mapMode) {
+      if (Phaser.Input.Keyboard.JustDown(this.keys.M) || Phaser.Input.Keyboard.JustDown(this.keys.ESC)) this.exitMapMode(null);
+      else this.updateMapMode();
+      return;
+    }
     const dt = delta / 1000;
     const ship = this.ship;
     if (this.paused) {
@@ -1431,6 +1698,7 @@ export class GalaxyScene extends Phaser.Scene {
     this.updateMinimap();
     this.updateWaypoint();
     this.ambientTick(time);
+    if (Phaser.Input.Keyboard.JustDown(this.keys.M)) this.enterMapMode();
     if (Phaser.Input.Keyboard.JustDown(this.keys.ESC)) this.closePanel();
   }
 }
