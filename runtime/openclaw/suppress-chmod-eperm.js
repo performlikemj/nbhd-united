@@ -11,7 +11,7 @@
 // (0o755) already permits node-user access; the chmod is just paranoid and
 // doesn't matter for security in this environment.
 //
-// Two suppression layers, because the failure mode shape varies by version:
+// Three suppression layers, because the failure mode shape varies by version:
 //
 //   1. fs.chmodSync / fs.promises.chmod monkey-patch (LAYER 1 below) —
 //      handles 2026.5.7+ where ensureTaskRegistryPermissions calls
@@ -20,37 +20,56 @@
 //      task creation working. Must install BEFORE OpenClaw imports, hence
 //      at top of file.
 //
-//   2. registerUnhandledRejectionHandler (LAYER 2 below) — legacy handler
+//   2. FileHandle.prototype.chmod (fchmod) monkey-patch (LAYER 2 below) —
+//      handles 2026.5.28+ where appendRegularFile() opens a file and then
+//      calls `await handle.chmod(mode)` BEFORE the appendFile write
+//      (dist/regular-file-BD2zl6_l.js:184). Because the throw skips the
+//      subsequent appendFile, every cron run-log diary line is silently
+//      dropped on root-owned mounts — file gets created (open touches it)
+//      but stays 0 bytes. The fchmod path uses FileHandle.prototype.chmod,
+//      which Layer 1's fs.chmod patch does NOT cover.
+//
+//   3. registerUnhandledRejectionHandler (LAYER 3 below) — legacy handler
 //      from the 2026.4.5 era when chmod was thrown asynchronously via
 //      Promise rejection. Kept as a safety net for any future code path
 //      that uses an async chmod variant.
 //
-// The signal that this file ISN'T working (next-time-debugging shortcut):
+// The signals that this file ISN'T working (next-time-debugging shortcut):
+//   Layer 1 hard failure:
 //   - "[tasks/registry] Failed to restore task registry" appears on every
 //     container boot (look in the OpenClaw container logs).
 //   - Zero `nbhd_send_to_user` log lines from the container — crons never fire.
 //   - Container wakes briefly (4-min cycles) but does no user-facing work.
-// If you see this combo, suppression isn't catching the latest OpenClaw call site.
+//   Layer 2 soft failure (silent observability gap):
+//   - All files under `cron/runs/<jobId>.jsonl` on the file share are size=0.
+//     File mtimes update on each cron fire, content stays empty.
+//   - `jobs-state.json` per-job `state` still updates (lastRunAtMs etc.) —
+//     only the per-fire run-log history is lost.
+// If you see either combo, suppression isn't catching the latest OpenClaw call site.
 //
 // When upgrading OpenClaw:
 //   - Pull the npm tarball: `npm pack openclaw@<version>` then
-//     `grep -nE "chmodSync|fs.chmod" dist/task-registry-*.js`
-//   - Verify the new task-registry source still calls fs.chmodSync (not some
-//     other syscall like fchmod / lchmod that we'd need to patch separately).
-//   - If the call site moved, extend Layer 1 to cover the new variant.
+//     `grep -nE "chmodSync|fs.chmod|handle.chmod|chmodPromise" dist/*.js`
+//   - Verify both the task-registry source still calls fs.chmodSync (Layer 1)
+//     AND that regular-file's appendRegularFile still uses handle.chmod (Layer 2).
+//   - If a NEW syscall variant appears (fchmod / lchmod / etc.), extend the
+//     appropriate layer to cover it.
 //
 // References:
-//   - 2026.5.7: dist/task-registry-DxA2A4eM.js:1140-1148 (sync chmodSync)
-//   - 2026.4.5: same function, async path (promise rejection)
+//   - 2026.5.7:  dist/task-registry-DxA2A4eM.js:1140-1148 (sync chmodSync)
+//   - 2026.5.28: dist/regular-file-BD2zl6_l.js:184 (FileHandle.chmod)
+//   - 2026.4.5:  same task-registry function, async path (promise rejection)
 //   - Memory: project_openclaw_chmod_eperm_saga.md
 
 // ────────────────────────────────────────────────────────────────────────
 // LAYER 1 — sync chmod monkey-patch (covers 2026.5.7+ task registry init)
 // ────────────────────────────────────────────────────────────────────────
 //
-// Patches BOTH fs.chmodSync (currently the failing call) and
-// fs.promises.chmod (defensive — likely next call site if OpenClaw refactors
-// async). Skipped: fs.chmod (callback form, not in use), fs.fchmodSync /
+// Patches BOTH fs.chmodSync (the 2026.5.7+ task-registry failing call) and
+// fs.promises.chmod (the path-based async variant). The FileHandle.chmod
+// variant (which 2026.5.28's appendRegularFile uses) is patched separately
+// in Layer 2 below — Node's FileHandle doesn't surface on the fs object.
+// Skipped: fs.chmod (callback form, not in use), fs.fchmodSync /
 // fs.lchmodSync (file-descriptor / symlink variants, edge cases).
 //
 // Idempotent — `--require` runs this for every node command, including the
@@ -108,7 +127,55 @@ if (fs.promises && fs.promises.chmod && !fs.promises.chmod.__nbhdPatched) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// LAYER 2 — legacy unhandledRejection handler via OpenClaw plugin SDK
+// LAYER 2 — FileHandle.prototype.chmod (fchmod) monkey-patch
+// ────────────────────────────────────────────────────────────────────────
+//
+// Covers 2026.5.28+ where appendRegularFile opens a file and then calls
+// `await handle.chmod(mode)` on the FileHandle before the appendFile
+// write. The throw on EPERM jumps to the `finally { await handle.close(); }`
+// — the file is created by O_CREAT but nothing is written. Observable on
+// canary as `cron/runs/<jobId>.jsonl` files with mtime updates but 0 bytes.
+//
+// Node doesn't export FileHandle directly. We wrap fs.promises.open and
+// patch the prototype on the FIRST handle returned; the wrapper is then
+// a thin pass-through (prototype is now patched, all future handles get
+// the suppressed chmod for free).
+//
+// We don't patch `handle.fchmod` separately because Node's FileHandle
+// only exposes `chmod` (which internally is fchmod via the file descriptor).
+
+if (fs.promises && fs.promises.open && !fs.promises.open.__nbhdPatched) {
+  const origPromisesOpen = fs.promises.open;
+  fs.promises.open = async function nbhdPatchedPromisesOpen(...args) {
+    const handle = await origPromisesOpen.apply(fs.promises, args);
+    if (handle && typeof handle.chmod === 'function') {
+      const proto = Object.getPrototypeOf(handle);
+      if (proto && typeof proto.chmod === 'function' && !proto.chmod.__nbhdPatched) {
+        const origHandleChmod = proto.chmod;
+        proto.chmod = async function nbhdPatchedHandleChmod(mode) {
+          try {
+            return await origHandleChmod.call(this, mode);
+          } catch (err) {
+            if (isSuppressibleChmodErr(err)) {
+              // FileHandle doesn't expose its path post-open; use the
+              // open-time path from the first arg if reachable. Fall back
+              // to a generic label so the log entry still uniques.
+              logChmodSuppression(String(args[0] || '<file-handle>'), err.code, 'file-handle');
+              return;
+            }
+            throw err;
+          }
+        };
+        proto.chmod.__nbhdPatched = true;
+      }
+    }
+    return handle;
+  };
+  fs.promises.open.__nbhdPatched = true;
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// LAYER 3 — legacy unhandledRejection handler via OpenClaw plugin SDK
 // ────────────────────────────────────────────────────────────────────────
 //
 // Installed below for safety-net coverage. Layer 1 above handles the
