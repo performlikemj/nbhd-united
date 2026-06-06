@@ -35,13 +35,26 @@ export function ConstellationGame({ galaxy }: { galaxy: GalaxyData }) {
       <div id="cg-help" className="cg-help">
         {/* CSS swaps these by pointer type — coarse/touch devices can't press keys. */}
         <span className="cg-help-keys">
-          <b>WASD / arrows</b> fly &nbsp;·&nbsp; <b>E</b> land on a star &nbsp;·&nbsp; <b>Esc</b> back
+          <b>WASD / arrows</b> fly &nbsp;·&nbsp; <b>E</b> land &nbsp;·&nbsp; <b>M</b> map &nbsp;·&nbsp; <b>Esc</b> back
         </span>
         <span className="cg-help-touch">
-          <b>Drag</b> to fly &nbsp;·&nbsp; <b>tap</b> a star to travel &nbsp;·&nbsp; <b>Land</b> when close
+          <b>Drag</b> to fly &nbsp;·&nbsp; <b>tap</b> a star to travel &nbsp;·&nbsp; <b>Map</b> to survey
         </span>
       </div>
       <button id="cg-land-btn" className="cg-land-btn" type="button">🛸 Land here</button>
+
+      {/* survey / map mode: toggle, hint, and the "fly here" confirm */}
+      <button id="cg-map-btn" className="cg-map-btn" type="button">🗺 Map</button>
+      <div id="cg-map-hint" className="cg-map-hint" role="status">
+        Drag to look around &nbsp;·&nbsp; scroll / pinch to zoom &nbsp;·&nbsp; tap a star to set a course
+      </div>
+      <div id="cg-map-confirm" className="cg-map-confirm">
+        <span id="cg-map-confirm-name" className="cg-map-confirm-name">—</span>
+        <div className="cg-map-confirm-actions">
+          <button id="cg-map-cancel" type="button">Cancel</button>
+          <button id="cg-map-fly" className="cg-primary" type="button">Fly here →</button>
+        </div>
+      </div>
 
       {/* ambient co-pilot toast — a throttled nudge when you linger somewhere */}
       <div id="cg-copilot-toast" className="cg-copilot-toast" role="status" aria-live="polite" />
