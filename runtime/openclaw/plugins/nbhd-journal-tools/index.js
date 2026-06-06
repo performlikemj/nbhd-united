@@ -1600,6 +1600,34 @@ export default function register(api) {
   );
 
   api.registerTool(wrap({
+      name: "nbhd_current_status",
+      description:
+        "Authoritative as-of-now snapshot of the user's current state: open " +
+        "tasks, active goals, and finance payment obligations (per-cycle " +
+        "paid/partial/unpaid). Derived live from the typed task/goal store and " +
+        "the finance ledger — NOT from the daily note, USER.md, or memory. Call " +
+        "this FIRST in any scheduled/proactive turn and ground the message on " +
+        "it: never raise, nudge, or re-ask about a task or obligation that is " +
+        "not reported here as open/active/unpaid. Items absent here are " +
+        "done/closed — do not resurface them. When finance is paused the " +
+        "snapshot omits obligations entirely.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {},
+      },
+      async execute() {
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/current-status/"),
+          method: "GET",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
       name: "nbhd_task_get",
       description: "Fetch a single task by ID with full details.",
       parameters: {

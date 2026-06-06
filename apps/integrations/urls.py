@@ -19,6 +19,7 @@ from .runtime_views import (
     RuntimeCronPatternContextView,
     RuntimeCronPhase2SummaryView,
     RuntimeCronValidateOutboundView,
+    RuntimeCurrentStatusView,
     RuntimeDailyNoteAppendView,
     RuntimeDailyNotesView,
     RuntimeDocumentAppendView,
@@ -103,6 +104,14 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/tasks/<uuid:task_id>/defer/",
         RuntimeTaskDeferView.as_view(),
         name="runtime-task-defer",
+    ),
+    # Current-status projection — authoritative as-of-now snapshot (open tasks,
+    # active goals, finance obligations) for cron/proactive grounding. See
+    # docs/grounding/cron-stale-status-grounding.md.
+    path(
+        "runtime/<uuid:tenant_id>/current-status/",
+        RuntimeCurrentStatusView.as_view(),
+        name="runtime-current-status",
     ),
     path("authorize/<str:provider>/", OAuthAuthorizeView.as_view(), name="oauth-authorize"),
     path("callback/<str:provider>/", OAuthCallbackView.as_view(), name="oauth-callback"),

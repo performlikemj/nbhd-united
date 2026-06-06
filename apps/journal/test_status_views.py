@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -176,6 +176,33 @@ class JournalStatusBuildTests(TestCase):
         self.tenant.save(update_fields=["finance_enabled"])
         result = build_journal_status(self.tenant, today=date(2026, 6, 4))
         self.assertEqual(result["obligations"], [])
+
+    @override_settings(GRAVITY_ENABLED=False)
+    def test_paused_finance_yields_no_obligations(self):
+        """Gravity paused platform-wide (GRAVITY_ENABLED off) → the ledger is
+        unwritable, so its paid/unpaid projection is unreliable: obligations
+        are omitted even with an active debt and an unpaid cycle. This keeps a
+        cron from nagging 'loan unpaid' while finance is paused."""
+        self._account()
+        result = build_journal_status(self.tenant, today=date(2026, 6, 4))
+        self.assertEqual(result["obligations"], [])
+        self.assertFalse(result["finance_enabled"])
+
+    @override_settings(GRAVITY_ENABLED=False)
+    def test_paused_finance_does_not_suppress_finance_linked_task(self):
+        """With finance paused there is no obligation to represent a
+        finance-linked task, so the task itself stays visible rather than
+        being silently dropped."""
+        self._account()
+        Task.objects.create(
+            tenant=self.tenant,
+            title="Pay the loan",
+            status=Task.Status.OPEN,
+            related_ref={"object_type": "FinanceAccount", "object_id": "x"},
+        )
+        result = build_journal_status(self.tenant, today=date(2026, 6, 4))
+        titles = [t["title"] for t in result["open_tasks"]]
+        self.assertIn("Pay the loan", titles)
 
     def test_typed_flag_off_yields_no_tasks_or_goals(self):
         Task.objects.create(tenant=self.tenant, title="t", status=Task.Status.OPEN)

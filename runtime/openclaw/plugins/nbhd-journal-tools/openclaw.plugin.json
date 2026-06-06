@@ -42,6 +42,7 @@
       "nbhd_task_defer",
       "nbhd_task_list",
       "nbhd_task_get",
+      "nbhd_current_status",
       "nbhd_reconcile_scan"
     ]
   },

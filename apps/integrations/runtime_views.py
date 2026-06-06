@@ -621,6 +621,38 @@ class RuntimeGoalAbandonView(APIView):
         )
 
 
+class RuntimeCurrentStatusView(APIView):
+    """GET the Journal current-status projection for cron/proactive grounding.
+
+    Returns the same as-of-now snapshot the web journal page uses
+    (``apps.journal.status_projection.build_journal_status``): open tasks,
+    active goals, and recurring finance obligations folded from the ledger.
+    Exposed to the runtime so scheduled/proactive turns emit from live state
+    instead of carried-forward daily-note narration — the fix for the
+    stale-nag class in ``docs/grounding/cron-stale-status-grounding.md``.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        from apps.journal.status_projection import build_journal_status
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        data = build_journal_status(tenant, _tenant_today(tenant))
+        return Response(
+            {"tenant_id": str(tenant.id), **data},
+            status=status.HTTP_200_OK,
+        )
+
+
 class RuntimeTaskListCreateView(APIView):
     """List or create tasks for a tenant runtime."""
 
