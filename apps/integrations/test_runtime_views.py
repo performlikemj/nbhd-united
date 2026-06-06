@@ -20,6 +20,65 @@ from .services import (
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
+class RuntimeCurrentStatusViewTest(TestCase):
+    """The current-status projection exposed to the runtime/crons."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Status", telegram_chat_id=818181)
+        self.tenant.experimental_typed_journal_lifecycle = True
+        self.tenant.finance_enabled = True
+        self.tenant.save(update_fields=["experimental_typed_journal_lifecycle", "finance_enabled"])
+
+    def _headers(self, tenant_id: str | None = None, key: str = "shared-key") -> dict[str, str]:
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": key,
+            "HTTP_X_NBHD_TENANT_ID": tenant_id or str(self.tenant.id),
+        }
+
+    def _url(self, tenant_id: str | None = None) -> str:
+        return f"/api/v1/integrations/runtime/{tenant_id or self.tenant.id}/current-status/"
+
+    def test_requires_internal_auth(self):
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"], "internal_auth_failed")
+
+    def test_returns_projection_with_obligation(self):
+        from decimal import Decimal
+
+        from apps.finance.models import FinanceAccount
+
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type=FinanceAccount.AccountType.STUDENT_LOAN,
+            nickname="Loan AC",
+            current_balance=Decimal("1000"),
+            minimum_payment=Decimal("25"),
+            due_day=5,
+        )
+
+        response = self.client.get(self._url(), **self._headers())
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["tenant_id"], str(self.tenant.id))
+        self.assertEqual(
+            set(body),
+            {
+                "tenant_id",
+                "as_of",
+                "typed_lifecycle",
+                "finance_enabled",
+                "open_tasks",
+                "active_goals",
+                "obligations",
+            },
+        )
+        self.assertEqual(len(body["obligations"]), 1)
+        self.assertEqual(body["obligations"][0]["nickname"], "Loan AC")
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="shared-key")
 class RuntimeIntegrationViewsTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Runtime", telegram_chat_id=717171)
