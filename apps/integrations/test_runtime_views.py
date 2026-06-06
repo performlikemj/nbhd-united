@@ -67,6 +67,12 @@ class RuntimeCronGroundingViewTest(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.json()["inject"])
 
+    def test_internal_sync_cron_is_skipped(self):
+        # _sync:/_fuel: are platform-internal, not custom user crons.
+        resp = self.client.get(self._url("_sync:test"), **self._headers())
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()["inject"])
+
     def test_cron_with_baked_preamble_is_skipped(self):
         from apps.orchestrator.config_generator import CRON_PREAMBLE_MARKER
 

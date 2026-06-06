@@ -3576,6 +3576,7 @@ class RuntimeCronGroundingView(APIView):
     def get(self, request, tenant_id, cron_name: str):
         from apps.cron.models import CronJob
         from apps.orchestrator.config_generator import CRON_GROUNDING_RULE, CRON_PREAMBLE_MARKER
+        from apps.orchestrator.services import _SYSTEM_GENERATED_PREFIXES
 
         auth_failure = _internal_auth_or_401(request, tenant_id)
         if auth_failure is not None:
@@ -3585,6 +3586,10 @@ class RuntimeCronGroundingView(APIView):
             return tenant_failure
 
         name = (cron_name or "").strip()
+        # Platform-internal sync/fuel crons (_sync:/_fuel:) are not custom user
+        # crons — skip (fuel also bakes the preamble; sync is ephemeral).
+        if name.startswith(_SYSTEM_GENERATED_PREFIXES):
+            return Response({"inject": False, "rule": ""}, status=status.HTTP_200_OK)
         row = CronJob.objects.filter(tenant=tenant, name=name).only("data").first()
         if row is not None and isinstance(row.data, dict):
             payload = row.data.get("payload")
