@@ -788,6 +788,31 @@ export function reflectGalaxy(input: ReflectInput): Promise<CopilotReflection> {
   });
 }
 
+// ── Star notes ────────────────────────────────────────────────────────────
+// Free-text notes the user attaches to a star while exploring — a little extra
+// context they add in their own words. Persisted as StarJournalEntry rows that
+// also feed future co-pilot/tutoring context. Backed by the existing
+// lessons/<id>/journal/ (list) + journal/create/ endpoints.
+export interface StarNote {
+  id: string;
+  star: number;
+  text: string;
+  entry_type: string;
+  tags: string[];
+  created_at: string;
+}
+
+export function fetchStarNotes(starId: number): Promise<StarNote[]> {
+  return apiFetch<StarNote[]>(`/api/v1/lessons/${starId}/journal/`);
+}
+
+export function createStarNote(starId: number, text: string): Promise<StarNote> {
+  return apiFetch<StarNote>(`/api/v1/lessons/${starId}/journal/create/`, {
+    method: "POST",
+    body: JSON.stringify({ text, entry_type: "revisit" }),
+  });
+}
+
 
 // ── Journal v2 Documents ──────────────────────────────────────────────
 

@@ -61,6 +61,16 @@ class ConstellationGameTests(TestCase):
         self.assertEqual(body["stars"][0]["y"], -0.3)
         self.assertEqual(body["stars"][0]["journal_count"], 0)
 
+    def test_galaxy_returns_provenance(self):
+        # context + source_ref are surfaced so the landing panel can ground a star
+        # ("where this came from") for the notes feature.
+        self._create_star(self.tenant, context="from a hard week at work", source_ref="2026-05-20")
+        resp = self.client.get("/api/v1/lessons/galaxy/")
+        self.assertEqual(resp.status_code, 200)
+        star = resp.json()["stars"][0]
+        self.assertEqual(star["context"], "from a hard week at work")
+        self.assertEqual(star["source_ref"], "2026-05-20")
+
     def test_galaxy_returns_journal_count(self):
         star = self._create_star(self.tenant)
         StarJournalEntry.objects.create(tenant=self.tenant, star=star, text="Entry 1", entry_type="free")

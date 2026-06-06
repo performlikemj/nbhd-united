@@ -92,6 +92,39 @@
 .cg-copilot .cg-who { display: flex; align-items: center; gap: 8px; font-size: var(--cg-fs-label); color: #9fb0d6; margin-bottom: 8px; font-family: var(--font-headline); }
 .cg-copilot .cg-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--signal, #4ecdc4); box-shadow: 0 0 10px var(--signal, #4ecdc4); }
 .cg-copilot .cg-line { font-size: var(--cg-fs-body); line-height: 1.5; color: #eef2fb; }
+
+/* provenance — where this lesson came from (origin note + source date) */
+.cg-provenance {
+  margin: 2px 0 var(--cg-sp-3); font-size: var(--cg-fs-label); font-style: italic;
+  line-height: 1.45; color: var(--ink-faint, #8a97b8);
+}
+.cg-provenance::before { content: "↳ "; font-style: normal; color: #6f7fb8; }
+
+/* your notes — free-text context the user adds to a star */
+.cg-notes { margin-top: var(--cg-sp-4); padding-top: var(--cg-sp-3); border-top: 1px solid var(--border, rgba(226, 232, 240, 0.12)); }
+.cg-notes-head { font-family: var(--font-headline); font-size: var(--cg-fs-label); color: #9fb0d6; margin-bottom: var(--cg-sp-2); }
+.cg-notes-list { display: flex; flex-direction: column; gap: var(--cg-sp-2); margin-bottom: var(--cg-sp-2); }
+.cg-note-item {
+  padding: var(--cg-sp-2) var(--cg-sp-3); border-radius: 11px;
+  background: rgba(120, 140, 210, 0.08); border: 1px solid var(--border, rgba(226, 232, 240, 0.1));
+}
+.cg-note-text { font-size: var(--cg-fs-body); line-height: 1.45; color: #dbe3f7; white-space: pre-wrap; word-break: break-word; }
+.cg-note-when { margin-top: 4px; font-size: var(--cg-fs-micro); color: var(--ink-faint, #7c89ab); }
+.cg-note-input {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 44px;
+  padding: 10px 12px; border-radius: 11px; font-family: var(--font-body); font-size: var(--cg-fs-body);
+  line-height: 1.45; color: var(--ink, #e2e8f0); background: rgba(8, 11, 20, 0.5);
+  border: 1px solid var(--border-strong, rgba(226, 232, 240, 0.22));
+}
+.cg-note-input::placeholder { color: var(--ink-faint, #6f7c9c); }
+.cg-note-input:focus { outline: none; border-color: rgba(124, 107, 240, 0.6); box-shadow: 0 0 0 3px rgba(124, 107, 240, 0.18); }
+.cg-note-actions { margin-top: var(--cg-sp-2); display: flex; justify-content: flex-end; }
+.cg-note-save {
+  font-family: var(--font-headline); font-size: var(--cg-fs-label); cursor: pointer; border-radius: 10px;
+  padding: 11px 18px; min-height: 44px; border: 1px solid rgba(124, 107, 240, 0.5);
+  background: rgba(124, 107, 240, 0.16); color: #cfc7ff;
+}
+.cg-note-save:disabled { opacity: 0.6; cursor: default; }
 .cg-actions { margin-top: var(--cg-sp-5); display: flex; justify-content: flex-end; gap: var(--cg-sp-2); flex-wrap: wrap; }
 .cg-card button { font-family: var(--font-headline); font-size: var(--cg-fs-label); cursor: pointer; border-radius: 10px;
   padding: 10px 16px; min-height: 44px; border: 1px solid var(--border-strong, rgba(226, 232, 240, 0.25));

@@ -107,6 +107,12 @@ class GalaxyStarSerializer(serializers.ModelSerializer):
             "last_visited_at",
             "galaxy_note",
             "source_type",
+            # Provenance — surfaced so the landing panel can ground a star ("where
+            # this came from") without a per-star detail fetch. `context` is the
+            # extraction/assistant-written origin note; `source_ref` is usually the
+            # originating daily-note date.
+            "context",
+            "source_ref",
             "created_at",
         ]
 
