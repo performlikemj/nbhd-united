@@ -125,6 +125,26 @@ A new domain plugs in without touching the cron/grounding layer:
   saved* instead of *money owed*) needs no change to the grounding rule, the
   cron prompts, or `build_journal_status`.
 
+## Coverage across ALL crons (not just system crons)
+
+System crons bake the full preamble at seed time. Custom crons take other paths
+(typed patterns built by handlers; freeform/agent crons authored in the
+container) and never hit `_prepare_cron_prompt`. To ground them too, the
+`nbhd-cron-enforcement` plugin — which fires on **every** cron — now fetches a
+fire-time directive from Django
+(`GET /runtime/<tenant>/crons/<name>/grounding/`) and injects a **lightweight
+grounding rule** (`CRON_GROUNDING_RULE`) via `before_prompt_build`:
+
+- Django decides per cron by inspecting the stored message: one that already
+  contains the preamble marker (system seed jobs) → `inject=false` (no
+  double-injection); every other cron — typed, user/freeform, legacy,
+  agent-created, or unknown (no row) → `inject=true` + the rule.
+- The rule is deliberately light and **verbatim-safe**: a `pure_reminder`
+  ("send this exact text, call no other tools, stop") makes no status claims,
+  so the rule is a no-op for it — it won't break verbatim patterns.
+- Takes effect once the new OpenClaw image ships to the container; the Django
+  endpoint + policy ship on the next Django deploy.
+
 ## Out of scope / follow-ups
 
 - Duplicate journal writes (the 02:00 background summary wrote ~10× on 06-05)

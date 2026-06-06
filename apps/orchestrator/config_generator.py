@@ -90,6 +90,30 @@ _CRON_CONTEXT_PREAMBLE = (
 )
 
 
+# Marker substring from ``_CRON_CONTEXT_PREAMBLE``'s first line. Used to detect
+# crons whose message already bakes the full preamble (system seed jobs) so the
+# fire-time grounding injection skips them — no double-injection.
+CRON_PREAMBLE_MARKER = "do this BEFORE following the instructions below"
+
+
+# Lightweight grounding rule injected at FIRE TIME into non-system crons (typed
+# patterns, user/freeform, legacy, agent-created) by the nbhd-cron-enforcement
+# plugin, so EVERY cron — not just the system seed jobs that bake the full
+# preamble above — grounds status claims on live state. Kept short and
+# verbatim-safe: a pure reminder ("send this exact text, call no other tools,
+# stop") is unaffected because it makes no status claims. See
+# docs/grounding/cron-stale-status-grounding.md.
+CRON_GROUNDING_RULE = (
+    "GROUNDING (scheduled run): any claim about the STATUS of a task, payment, "
+    "errand, goal, or obligation — open, done, paid, due, pending, overdue — "
+    "MUST come from a tool result in THIS turn. Call `nbhd_current_status` for "
+    "the live snapshot before stating any such status. Never assert status from "
+    "memory, the daily note, USER.md, or a past message, and never re-raise "
+    "something already done/closed. If your only job this run is to send a "
+    "fixed reminder, just send it — don't fabricate status."
+)
+
+
 # Marker used by `_wrap_message_with_phase2` and `update_system_cron_prompts` to
 # detect that a job's message already contains the Phase 2 sync block. The
 # wrapper text below MUST contain this exact substring.

@@ -20,6 +20,74 @@ from .services import (
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
+class RuntimeCronGroundingViewTest(TestCase):
+    """Fire-time grounding directive: every custom cron grounds; a cron whose
+    message already bakes the full preamble (system seed jobs) is skipped."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Grounding", telegram_chat_id=838383)
+
+    def _headers(self, tenant_id: str | None = None, key: str = "shared-key") -> dict[str, str]:
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": key,
+            "HTTP_X_NBHD_TENANT_ID": tenant_id or str(self.tenant.id),
+        }
+
+    def _url(self, name: str) -> str:
+        return f"/api/v1/integrations/runtime/{self.tenant.id}/crons/{name}/grounding/"
+
+    def _cron(self, name: str, message: str):
+        from apps.cron.models import CronJob
+
+        return CronJob.objects.create(
+            tenant=self.tenant,
+            name=name,
+            data={"payload": {"message": message}},
+        )
+
+    def test_requires_internal_auth(self):
+        resp = self.client.get(self._url("anything"))
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.json()["error"], "internal_auth_failed")
+
+    def test_freeform_cron_with_no_row_is_grounded(self):
+        """The freeform case: no CronJob row at all -> must still ground."""
+        from apps.orchestrator.config_generator import CRON_GROUNDING_RULE
+
+        resp = self.client.get(self._url("water-the-plants"), **self._headers())
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["inject"])
+        self.assertEqual(body["rule"], CRON_GROUNDING_RULE)
+        self.assertIn("nbhd_current_status", body["rule"])
+
+    def test_typed_cron_without_baked_preamble_is_grounded(self):
+        self._cron("daily-finance-summary", "You are firing a scheduled domain summary. ...")
+        resp = self.client.get(self._url("daily-finance-summary"), **self._headers())
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["inject"])
+
+    def test_internal_sync_cron_is_skipped(self):
+        # _sync:/_fuel: are platform-internal, not custom user crons.
+        resp = self.client.get(self._url("_sync:test"), **self._headers())
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()["inject"])
+
+    def test_cron_with_baked_preamble_is_skipped(self):
+        from apps.orchestrator.config_generator import CRON_PREAMBLE_MARKER
+
+        self._cron(
+            "sys-baked",
+            f"Current date and time: ...\n\n**MANDATORY - {CRON_PREAMBLE_MARKER}:**\n1. ...",
+        )
+        resp = self.client.get(self._url("sys-baked"), **self._headers())
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertFalse(body["inject"])
+        self.assertEqual(body["rule"], "")
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="shared-key")
 class RuntimeCurrentStatusViewTest(TestCase):
     """The current-status projection exposed to the runtime/crons."""
 

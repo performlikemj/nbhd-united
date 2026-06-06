@@ -3558,6 +3558,48 @@ class RuntimeCronPatternContextView(APIView):
         return Response(ctx, status=status.HTTP_200_OK)
 
 
+class RuntimeCronGroundingView(APIView):
+    """GET /runtime/<tenant_id>/crons/<cron_name>/grounding/
+
+    Tells the nbhd-cron-enforcement plugin whether to inject the lightweight
+    grounding rule into THIS firing cron, plus the rule text. Crons whose
+    message already bakes the full grounding preamble (system seed jobs) are
+    skipped (``inject=False``) to avoid double-injection; every other cron —
+    typed patterns, user/freeform, legacy, agent-created, or unknown — gets
+    ``inject=True`` so ALL custom crons ground on live state, not narration.
+    See docs/grounding/cron-stale-status-grounding.md.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id, cron_name: str):
+        from apps.cron.models import CronJob
+        from apps.orchestrator.config_generator import CRON_GROUNDING_RULE, CRON_PREAMBLE_MARKER
+        from apps.orchestrator.services import _SYSTEM_GENERATED_PREFIXES
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        name = (cron_name or "").strip()
+        # Platform-internal sync/fuel crons (_sync:/_fuel:) are not custom user
+        # crons — skip (fuel also bakes the preamble; sync is ephemeral).
+        if name.startswith(_SYSTEM_GENERATED_PREFIXES):
+            return Response({"inject": False, "rule": ""}, status=status.HTTP_200_OK)
+        row = CronJob.objects.filter(tenant=tenant, name=name).only("data").first()
+        if row is not None and isinstance(row.data, dict):
+            payload = row.data.get("payload")
+            message = payload.get("message") if isinstance(payload, dict) else ""
+            if isinstance(message, str) and CRON_PREAMBLE_MARKER in message:
+                # Full preamble already baked into the message at seed time.
+                return Response({"inject": False, "rule": ""}, status=status.HTTP_200_OK)
+        return Response({"inject": True, "rule": CRON_GROUNDING_RULE}, status=status.HTTP_200_OK)
+
+
 class RuntimeCronValidateOutboundView(APIView):
     """POST /runtime/<tenant_id>/crons/<cron_name>/validate_outbound/
 
