@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { BreathingOrb } from "@/components/core/breathing-orb";
 import { CoreAudioPlayer } from "@/components/core/audio-player";
@@ -8,8 +8,10 @@ import { CoreStats } from "@/components/core/core-stats";
 import { CoreToast } from "@/components/core/core-toast";
 import { MeditationLibrary } from "@/components/core/meditation-library";
 import { PhaseTimeline } from "@/components/core/phase-timeline";
-import { PHASES, computeCoreStats, toMeditation, type Meditation } from "@/lib/core";
+import { PHASES, computeCoreStats, dayKeyInTz, toMeditation, type Meditation } from "@/lib/core";
 import { composeMeditation, fetchMeditation, fetchMeditations } from "@/lib/api";
+import { useMeQuery } from "@/lib/queries";
+import type { MeditationSession } from "@/lib/types";
 
 type Phase = "loading" | "invite" | "composing" | "ready" | "failed";
 const COMPOSE_MSGS = ["Drawing on your week…", "Finding the words…", "Placing the silences…", "Almost there…"];
@@ -32,43 +34,56 @@ export default function CorePage() {
   const [showToast, setShowToast] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [today, setToday] = useState<Meditation | null>(null);
-  const [library, setLibrary] = useState<Meditation[]>([]);
+  const [sessions, setSessions] = useState<MeditationSession[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [current, setCurrent] = useState<Meditation | null>(null);
   const [playing, setPlaying] = useState(false);
+
+  // The streak/labels must read "today" in the tenant's tz (the zone the backend
+  // stamped the session dates in), not the viewing device's clock. `me` is
+  // cached app-wide (app shell), so this is resolved on first render; the Intl
+  // fallback only bites before the cache warms (i.e. the old browser-tz behavior).
+  const { data: me } = useMeQuery();
+  const tz = me?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+  // Sessions are stored raw and projected through the tz here, so a late-arriving
+  // tz (or a midnight rollover) re-labels everything reactively.
+  const library = useMemo(() => sessions.map((s) => toMeditation(s, tz)), [sessions, tz]);
+  const todayKey = dayKeyInTz(new Date(), tz);
+  const today = useMemo(() => library.find((m) => m.date === todayKey) ?? null, [library, todayKey]);
+  const hasToday = today !== null;
 
   // Guards an in-flight poll loop so it can be cancelled on unmount / re-compose.
   const pollRef = useRef<{ active: boolean }>({ active: false });
 
-  const loadLibrary = useCallback(async (): Promise<Meditation[]> => {
+  const loadLibrary = useCallback(async (): Promise<void> => {
     try {
-      const sessions = await fetchMeditations();
-      const meds = sessions.map(toMeditation);
-      setLibrary(meds);
-      return meds;
+      setSessions(await fetchMeditations());
     } catch {
-      return [];
+      // keep whatever we have; the channel ping still lands for a slow render
     }
   }, []);
 
-  // On mount: load the library, then resolve the initial phase exactly once —
-  // ready if today already has a sit, otherwise invite. This is the only
-  // transition out of "loading", so the orb can't be acted on before it runs.
+  // On mount: load the library exactly once.
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const meds = await loadLibrary();
-      if (cancelled) return;
-      const todays = meds.find((m) => m.dateLabel === "Today");
-      if (todays) setToday(todays);
-      // Guard against clobbering a user-driven phase (defensive — interactivity
-      // is gated on !loading, so in practice prev is always "loading" here).
-      setPhase((prev) => (prev === "loading" ? (todays ? "ready" : "invite") : prev));
+      await loadLibrary();
+      if (!cancelled) setLoaded(true);
     })();
     return () => {
       cancelled = true;
     };
   }, [loadLibrary]);
+
+  // Resolve the initial phase once the library has loaded — ready if today
+  // already has a sit, otherwise invite. Gated on `prev === "loading"` so it
+  // fires exactly once and never clobbers a user-driven phase; depending on
+  // `hasToday` lets it settle correctly even if tz resolves after the fetch.
+  useEffect(() => {
+    if (!loaded) return;
+    setPhase((prev) => (prev === "loading" ? (hasToday ? "ready" : "invite") : prev));
+  }, [loaded, hasToday]);
 
   // Cancel any poll loop when the page unmounts.
   useEffect(() => {
@@ -101,8 +116,9 @@ export default function CorePage() {
         if (session) {
           if (session.status === "ready" || session.status === "delivered") {
             pollRef.current.active = false;
-            const med = toMeditation(session);
-            setToday(med);
+            // Optimistically fold the fresh sit in (today/library derive from it)
+            // so the UI flips instantly; the refetch below then reconciles.
+            setSessions((prev) => [session, ...prev.filter((s) => s.id !== session.id)]);
             setPhase("ready");
             setShowToast(true); // stands in for the channel ping
             void loadLibrary();
@@ -166,10 +182,10 @@ export default function CorePage() {
     else if (phase === "ready" && today) play(today);
   };
 
-  // The library already includes today's ready sit after loadLibrary; dedupe in
-  // case the refetch hasn't landed yet so it never shows twice.
-  const libItems = today && !library.some((m) => m.id === today.id) ? [today, ...library] : library;
-  const stats = computeCoreStats(libItems);
+  // `today` is derived from the same sessions as `library`, so it's always
+  // already present — no prepend/dedupe needed.
+  const libItems = library;
+  const stats = computeCoreStats(libItems, tz);
   const todayActive = current?.id === today?.id;
 
   return (

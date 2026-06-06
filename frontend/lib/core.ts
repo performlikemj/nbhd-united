@@ -41,33 +41,50 @@ export const PHASES: MeditationPhase[] = [
   { name: "closing", label: "Closing", weight: 45 },
 ];
 
-const DAY_MS = 86_400_000;
+// ── Day math (timezone-aware) ────────────────────────────────────────────────
+// The backend stamps `MeditationSession.date` in the TENANT's local timezone
+// (`tenant_today()`), so every "what day is it" question here — the streak
+// anchor, the week window, the Today/Yesterday labels — must also resolve in the
+// tenant's tz, NOT the viewing device's clock. We work in "YYYY-MM-DD" day-keys:
+// session dates already arrive as keys, lexical compare is chronological, and
+// stepping by whole calendar days sidesteps the 24h/DST assumption the old
+// `getTime() - DAY_MS` math made.
 
-/** Parse a "YYYY-MM-DD" string as a *local* midnight (avoids UTC day-shift in JST). */
-function parseLocalDate(s: string): Date {
-  const [y, m, d] = s.split("-").map(Number);
-  return new Date(y, (m || 1) - 1, d || 1);
+/** The calendar day of `date` as seen in IANA zone `tz`, as "YYYY-MM-DD". */
+export function dayKeyInTz(date: Date, tz: string): string {
+  // en-CA renders ISO-style YYYY-MM-DD.
+  return new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: tz,
+  }).format(date);
 }
 
-function startOfDay(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+/** Shift a "YYYY-MM-DD" key by whole calendar days (anchored at UTC noon so a
+ *  DST transition can't bump the result across a day boundary). */
+function shiftDayKey(key: string, deltaDays: number): string {
+  const [y, m, d] = key.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, (m || 1) - 1, d || 1, 12));
+  dt.setUTCDate(dt.getUTCDate() + deltaDays);
+  return dt.toISOString().slice(0, 10);
 }
 
-function relativeDateLabel(dateStr: string): string {
-  const date = startOfDay(parseLocalDate(dateStr));
-  const today = startOfDay(new Date());
-  const diffDays = Math.round((today.getTime() - date.getTime()) / DAY_MS);
-  if (diffDays === 0) return "Today";
-  if (diffDays === 1) return "Yesterday";
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+function relativeDateLabel(dateKey: string, tz: string): string {
+  const today = dayKeyInTz(new Date(), tz);
+  if (dateKey === today) return "Today";
+  if (dateKey === shiftDayKey(today, -1)) return "Yesterday";
+  // Format the month/day straight from the key parts — no tz reinterpretation.
+  const [y, m, d] = dateKey.split("-").map(Number);
+  return new Date(y, (m || 1) - 1, d || 1).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-/** API session row → the UI's Meditation shape. */
-export function toMeditation(s: MeditationSession): Meditation {
+/** API session row → the UI's Meditation shape. `tz` is the tenant's IANA zone. */
+export function toMeditation(s: MeditationSession, tz: string): Meditation {
   return {
     id: s.id,
     date: s.date,
-    dateLabel: relativeDateLabel(s.date),
+    dateLabel: relativeDateLabel(s.date, tz),
     title: s.title || "Your meditation",
     theme: s.theme || "",
     durationMin: s.duration_ms ? Math.max(1, Math.round(s.duration_ms / 60_000)) : 10,
@@ -78,28 +95,28 @@ export function toMeditation(s: MeditationSession): Meditation {
 /**
  * Derive the four stat cards from the ready library (no backend formula — the
  * raw sessions are the evidence; this is plain aggregation for display).
- * `meds` is expected newest-first (the API orders by -date, -created_at).
+ * `meds` is expected newest-first (the API orders by -date, -created_at). `tz`
+ * is the tenant's IANA zone, so "today" matches the day the dates were stamped.
  */
-export function computeCoreStats(meds: Meditation[]): CoreStats {
-  const today = startOfDay(new Date()).getTime();
-  const weekFloor = today - 6 * DAY_MS; // last 7 calendar days, inclusive
+export function computeCoreStats(meds: Meditation[], tz: string): CoreStats {
+  const today = dayKeyInTz(new Date(), tz); // tenant-local day, not the device's
+  const weekFloor = shiftDayKey(today, -6); // last 7 calendar days, inclusive
   let sessionsThisWeek = 0;
   let totalMinutes = 0;
-  const days = new Set<number>();
+  const days = new Set<string>();
   for (const m of meds) {
     totalMinutes += m.durationMin;
-    const day = startOfDay(parseLocalDate(m.date)).getTime();
-    if (day >= weekFloor) sessionsThisWeek += 1;
-    days.add(day);
+    if (m.date >= weekFloor && m.date <= today) sessionsThisWeek += 1; // YYYY-MM-DD compares chronologically
+    days.add(m.date);
   }
   // Streak: consecutive days with ≥1 sit, anchored at today (or yesterday if
   // nothing yet today, so an evening sit doesn't read as a broken streak).
   let streakDays = 0;
   let cursor = today;
-  if (!days.has(cursor)) cursor -= DAY_MS;
+  if (!days.has(cursor)) cursor = shiftDayKey(cursor, -1);
   while (days.has(cursor)) {
     streakDays += 1;
-    cursor -= DAY_MS;
+    cursor = shiftDayKey(cursor, -1);
   }
   return {
     sessionsThisWeek,
