@@ -184,8 +184,21 @@
   background: rgba(155, 217, 255, 0.12); border-color: rgba(155, 217, 255, 0.4); color: #cfeaff;
 }
 .cg-card button.cg-point:active { transform: scale(0.97); }
-.cg-copilot .cg-line.cg-line-loading { color: #c2cbe0; animation: cg-line-pulse 1.4s ease-in-out infinite; }
-@keyframes cg-line-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.9; } }
+
+/* co-pilot loading: three constellation dots twinkle in sequence while the line
+   is fetched, then the real line fades in — so you never read text that mutates. */
+.cg-loading { display: none; align-items: center; gap: 10px; min-height: 1.6em; }
+.cg-loading-stars { display: inline-flex; gap: 7px; }
+.cg-loading-stars i {
+  font-style: normal; font-size: 12px; line-height: 1; color: var(--signal, #4ecdc4);
+  opacity: 0.25; animation: cg-twinkle 1.15s ease-in-out infinite;
+}
+.cg-loading-stars i:nth-child(2) { animation-delay: 0.18s; }
+.cg-loading-stars i:nth-child(3) { animation-delay: 0.36s; }
+.cg-loading-label { font-size: var(--cg-fs-label); font-style: italic; color: var(--ink-faint, #8a97b8); }
+@keyframes cg-twinkle { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; text-shadow: 0 0 8px currentColor; } }
+.cg-copilot .cg-line.cg-line-in { animation: cg-line-in 0.42s ease both; }
+@keyframes cg-line-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 
 .cg-copilot-toast {
   position: absolute; left: 50%; top: calc(var(--cg-safe-t) + 64px);
@@ -207,7 +220,8 @@
   .cg-copilot-toast { top: calc(var(--cg-safe-t) + 92px); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .cg-copilot .cg-line.cg-line-loading { animation: none; opacity: 0.7; }
+  .cg-loading-stars i { animation: none; opacity: 0.7; }
+  .cg-copilot .cg-line.cg-line-in { animation: none; }
   .cg-copilot-toast, .cg-copilot-toast.show { transition: opacity 0.2s ease; transform: translateX(-50%); }
 }
 .cg-card button:hover { filter: brightness(1.12); }

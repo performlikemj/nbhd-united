@@ -75,7 +75,13 @@ export function ConstellationGame({ galaxy }: { galaxy: GalaxyData }) {
           <div className="cg-note" id="cg-p-note" style={{ display: "none" }} />
           <div className="cg-copilot">
             <div className="cg-who"><span className="cg-dot" /> Your co-pilot</div>
-            <div className="cg-line" id="cg-p-copilot">—</div>
+            {/* loading: the co-pilot "reads" your path — constellation dots twinkle,
+                then the real line fades in (no optimistic text that mutates as you read) */}
+            <div className="cg-loading" id="cg-p-copilot-loading" aria-hidden="true">
+              <span className="cg-loading-stars"><i>✦</i><i>✦</i><i>✦</i></span>
+              <span className="cg-loading-label">charting…</span>
+            </div>
+            <div className="cg-line" id="cg-p-copilot" aria-live="polite" />
           </div>
           {/* your notes — free-text context you add to this star (saved as you go) */}
           <div className="cg-notes">

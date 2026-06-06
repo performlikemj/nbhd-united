@@ -960,7 +960,9 @@ export class GalaxyScene extends Phaser.Scene {
     // Optimistic line: a grounded static line shows instantly (and stays as the
     // graceful fallback if the request fails); the co-pilot's real, spatially-
     // aware line swaps in when it resolves.
-    set("#cg-p-copilot", `You flew out here for this one — "${truncate(d.text, 80)}". How would you put it in your own words, right now?`);
+    // Show the co-pilot "reading" state (twinkling dots); requestCopilotLine swaps
+    // in the real line on resolve. No optimistic sentence that mutates as you read.
+    this.setCopilotLoading(true);
     this.hidePointAffordance();
     if (this.toastEl) this.toastEl.classList.remove("show");
     if (this.q("#cg-panel")) this.q("#cg-panel")!.classList.add("open");
@@ -980,10 +982,27 @@ export class GalaxyScene extends Phaser.Scene {
   // ── Co-pilot line: ask the backend for a spatially-aware line for this star.
   // The backend computes the evidence; the panel only renders the phrasing. A
   // race token guards against the user landing elsewhere before this resolves.
+  // Toggle the "reading" loader (twinkling dots) vs the actual line element.
+  private setCopilotLoading(on: boolean) {
+    const loading = this.q("#cg-p-copilot-loading");
+    const line = this.q("#cg-p-copilot");
+    if (loading) loading.style.display = on ? "flex" : "none";
+    if (line) line.style.display = on ? "none" : "block";
+  }
+
+  // Reveal a line in the co-pilot slot with a soft fade-in (restarts the anim).
+  private revealCopilotLine(text: string) {
+    this.setCopilotLoading(false);
+    const line = this.q("#cg-p-copilot");
+    if (!line) return;
+    line.textContent = text;
+    line.classList.remove("cg-line-in");
+    void line.offsetWidth; // force reflow so the animation replays each land
+    line.classList.add("cg-line-in");
+  }
+
   private async requestCopilotLine(entry: StarEntry) {
     const token = ++this.reflectToken;
-    const lineEl = this.q("#cg-p-copilot");
-    if (lineEl) lineEl.classList.add("cg-line-loading");
     try {
       const res = await reflectGalaxy({
         star_id: entry.id,
@@ -991,15 +1010,21 @@ export class GalaxyScene extends Phaser.Scene {
         ship: { x: Math.round(this.ship.x), y: Math.round(this.ship.y) },
         mode: "land",
       });
-      // Stale — the user has landed elsewhere or closed the panel. Drop it.
+      // Stale — the user has landed elsewhere or closed the panel. Drop it (a newer
+      // requestCopilotLine owns the loader now).
       if (token !== this.reflectToken || this.openStarId !== entry.id) return;
-      if (lineEl && res.line) lineEl.textContent = res.line;
+      if (res.line) this.revealCopilotLine(res.line);
+      else this.setCopilotLoading(false);
       this.copilotPoint = res.point;
       this.showPointAffordance(res.point);
     } catch {
-      // Network/permission failure — keep the optimistic static line already shown.
-    } finally {
-      if (token === this.reflectToken && lineEl) lineEl.classList.remove("cg-line-loading");
+      // Couldn't reach the server — never leave a spinner stuck; show a graceful,
+      // grounded line so the panel is never empty. (The server returns its own
+      // deterministic line on LLM trouble, so this only fires on a real outage.)
+      if (token !== this.reflectToken || this.openStarId !== entry.id) return;
+      this.revealCopilotLine(
+        `"${truncate(entry.data.text, 80)}" — sit with this one a moment. What does it mean to you now?`,
+      );
     }
   }
 
