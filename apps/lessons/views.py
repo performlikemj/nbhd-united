@@ -544,8 +544,13 @@ class LessonViewSet(viewsets.ModelViewSet):
             entry_type=serializer.validated_data.get("entry_type", "free"),
             tags=serializer.validated_data.get("tags", []),
         )
+        # A note is deliberate engagement — grow the star (monotonic). Return the
+        # resulting stage so the game can promote the star's visual in place.
+        from .growth import apply_star_growth
+
+        new_stage = apply_star_growth(star)
         return Response(
-            StarJournalEntrySerializer(entry).data,
+            {**StarJournalEntrySerializer(entry).data, "star_stage": new_stage},
             status=status.HTTP_201_CREATED,
         )
 
@@ -602,11 +607,19 @@ class LessonViewSet(viewsets.ModelViewSet):
             defaults={"similarity": 1.0, "connection_type": connection_type},
         )
 
+        # A connection is deliberate engagement on both ends — grow both stars.
+        from .growth import apply_star_growth
+
+        source_stage = apply_star_growth(star)
+        target_stage = apply_star_growth(target)
+
         return Response(
             {
                 "source": star.id,
                 "target": target.id,
                 "connection_type": connection_type,
+                "source_star_stage": source_stage,
+                "target_star_stage": target_stage,
             }
         )
 

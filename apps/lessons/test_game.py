@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from django.test import TestCase
 from rest_framework.test import APIClient
@@ -447,7 +447,12 @@ class ConstellationGameTests(TestCase):
 
 
 class TutoringStageComputationTests(TestCase):
-    """Unit tests for star stage computation logic."""
+    """Star stage computation — the SHARED growth curve (apps/lessons/growth.py).
+
+    These assert the curve from persisted counts (no '+1'); the tutoring endpoint
+    increments the session count before computing, so e.g. one completed session
+    means tutoring_sessions_count == 1.
+    """
 
     def setUp(self):
         self.tenant = create_tenant(display_name="Stage Tenant", telegram_chat_id=100012)
@@ -462,46 +467,27 @@ class TutoringStageComputationTests(TestCase):
             tutoring_sessions_count=0,
         )
 
-    def test_proto_to_ignited_first_session(self):
-        from .tutoring import _compute_star_stage
+    def test_one_session_ignites(self):
+        from .growth import compute_star_stage
 
-        state = MagicMock()
-        state.star = self.star
-        state.connection_count = 0
+        self.star.tutoring_sessions_count = 1
+        self.assertEqual(compute_star_stage(self.star), "ignited")
 
-        self.assertEqual(_compute_star_stage(state), "ignited")
+    def test_three_sessions_radiant(self):
+        from .growth import compute_star_stage
 
-    def test_ignited_to_radiant_after_three_sessions(self):
-        from .tutoring import _compute_star_stage
+        self.star.tutoring_sessions_count = 3
+        self.assertEqual(compute_star_stage(self.star), "radiant")
 
-        self.star.tutoring_sessions_count = 2  # +1 for this session = 3
-        self.star.save()
+    def test_eight_sessions_supernova(self):
+        from .growth import compute_star_stage
 
-        state = MagicMock()
-        state.star = self.star
-
-        self.assertEqual(_compute_star_stage(state), "radiant")
-
-    def test_radiant_to_supernova_after_eight_sessions(self):
-        from .tutoring import _compute_star_stage
-
-        self.star.tutoring_sessions_count = 7  # +1 = 8
-        self.star.save()
-
-        state = MagicMock()
-        state.star = self.star
-
-        self.assertEqual(_compute_star_stage(state), "supernova")
+        self.star.tutoring_sessions_count = 8
+        self.assertEqual(compute_star_stage(self.star), "supernova")
 
     def test_supernova_from_journal_entries(self):
-        from .tutoring import _compute_star_stage
+        from .growth import compute_star_stage
 
-        self.star.tutoring_sessions_count = 0
-        self.star.save()
         for i in range(8):
             StarJournalEntry.objects.create(tenant=self.tenant, star=self.star, text=f"Entry {i}")
-
-        state = MagicMock()
-        state.star = self.star
-
-        self.assertEqual(_compute_star_stage(state), "supernova")
+        self.assertEqual(compute_star_stage(self.star), "supernova")

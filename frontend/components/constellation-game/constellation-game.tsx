@@ -103,8 +103,41 @@ export function ConstellationGame({ galaxy }: { galaxy: GalaxyData }) {
             <button id="cg-p-point" className="cg-point" type="button" style={{ display: "none" }}>
               Show me where →
             </button>
+            <button id="cg-p-deepen" className="cg-deepen" type="button">✦ Go deeper</button>
             <button id="cg-p-close" type="button">Back to flight</button>
             <button id="cg-p-close2" className="cg-primary" type="button">Got it</button>
+          </div>
+        </div>
+      </div>
+
+      {/* tutoring — the 5-phase "go deeper" conversation that grows a star */}
+      <div id="cg-tutor" className="cg-tutor-overlay" role="dialog" aria-modal="true" aria-labelledby="cg-tutor-star">
+        <div className="cg-tutor-card">
+          <div className="cg-tutor-head">
+            <div className="cg-tutor-titles">
+              <div className="cg-who"><span className="cg-dot" /> Exploring with your co-pilot</div>
+              <div className="cg-tutor-star" id="cg-tutor-star">—</div>
+            </div>
+            <div className="cg-tutor-progress">
+              <div className="cg-tutor-pips" id="cg-tutor-pips" aria-hidden="true" />
+              <span className="cg-tutor-phase" id="cg-tutor-phase">—</span>
+            </div>
+          </div>
+          <div className="cg-tutor-thread" id="cg-tutor-thread" aria-live="polite" />
+          <div className="cg-tutor-compose">
+            <textarea
+              id="cg-tutor-input"
+              className="cg-tutor-input"
+              rows={2}
+              maxLength={5000}
+              aria-label="Your reply to the co-pilot"
+              placeholder="Reply in your own words…"
+            />
+            <button id="cg-tutor-send" className="cg-primary cg-tutor-send" type="button">Send</button>
+          </div>
+          <div className="cg-tutor-actions">
+            <button id="cg-tutor-skip" type="button">Skip phase</button>
+            <button id="cg-tutor-end" type="button">End session</button>
           </div>
         </div>
       </div>

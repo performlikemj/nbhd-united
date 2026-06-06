@@ -800,6 +800,7 @@ export interface StarNote {
   entry_type: string;
   tags: string[];
   created_at: string;
+  star_stage?: string; // present on the create response — the star may have grown
 }
 
 export function fetchStarNotes(starId: number): Promise<StarNote[]> {
@@ -810,6 +811,52 @@ export function createStarNote(starId: number, text: string): Promise<StarNote> 
   return apiFetch<StarNote>(`/api/v1/lessons/${starId}/journal/create/`, {
     method: "POST",
     body: JSON.stringify({ text, entry_type: "revisit" }),
+  });
+}
+
+// ── Tutoring (the 5-phase "go deeper" loop) ───────────────────────────────
+// The user's assistant walks one star through restate → deepen → stress-test →
+// connect → apply. Backed by lessons/<id>/tutor/{start,message,end}/. Completing
+// it grows the star (returns new_star_stage). LLM spend is system-attributed.
+export interface TutorTurn {
+  session_id: string;
+  message: string;
+  current_phase: string;
+  phase_index: number;
+  total_phases: number;
+  phase_complete?: boolean;
+  mastery_achieved?: boolean;
+  session_close?: TutorEnd;
+}
+
+export interface TutorEnd {
+  session_id: string;
+  tutoring_session_id?: string;
+  phases_completed: string[];
+  mastery_achieved: boolean;
+  new_star_stage?: string;
+}
+
+export function tutorStart(starId: number): Promise<TutorTurn> {
+  return apiFetch<TutorTurn>(`/api/v1/lessons/${starId}/tutor/start/`, { method: "POST" });
+}
+
+export function tutorMessage(
+  starId: number,
+  sessionId: string,
+  message: string,
+  action: "continue" | "skip" | "end" = "continue",
+): Promise<TutorTurn> {
+  return apiFetch<TutorTurn>(`/api/v1/lessons/${starId}/tutor/message/`, {
+    method: "POST",
+    body: JSON.stringify({ session_id: sessionId, message, action }),
+  });
+}
+
+export function tutorEnd(starId: number, sessionId: string): Promise<TutorEnd> {
+  return apiFetch<TutorEnd>(`/api/v1/lessons/${starId}/tutor/end/`, {
+    method: "POST",
+    body: JSON.stringify({ session_id: sessionId }),
   });
 }
 

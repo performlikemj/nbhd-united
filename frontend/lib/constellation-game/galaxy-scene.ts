@@ -6,7 +6,16 @@
  */
 import Phaser from "phaser";
 
-import { type CopilotPoint, createStarNote, fetchStarNotes, reflectGalaxy, type StarNote } from "@/lib/api";
+import {
+  type CopilotPoint,
+  createStarNote,
+  fetchStarNotes,
+  reflectGalaxy,
+  type StarNote,
+  tutorEnd,
+  tutorMessage,
+  tutorStart,
+} from "@/lib/api";
 
 import {
   buildTaunt,
@@ -282,6 +291,12 @@ export class GalaxyScene extends Phaser.Scene {
   private mapMinZoom = 0.1;
   private mapDrag = { active: false, moved: 0, lastX: 0, lastY: 0 };
   private mapPinch = { active: false, dist: 0 };
+  // Tutoring ("go deeper") — the 5-phase conversation that grows a star
+  private tutorStarEntry: StarEntry | null = null;
+  private tutorSessionId: string | null = null;
+  private tutorBusy = false;
+  private tutorInput!: HTMLElement | null;
+  private destroyed = false; // set on teardown — guards async resolves touching the scene
 
   constructor(galaxy: GalaxyData, overlayRoot: HTMLElement) {
     super("galaxy");
@@ -349,6 +364,7 @@ export class GalaxyScene extends Phaser.Scene {
   }
 
   private teardownCopilot() {
+    this.destroyed = true;
     if (this.toastTimer) { window.clearTimeout(this.toastTimer); this.toastTimer = 0; }
     this.clearWaypoint();
     // If we tore down while the note textarea was focused (keyboard disabled),
@@ -359,6 +375,11 @@ export class GalaxyScene extends Phaser.Scene {
     // help bar hidden / the map button stuck on "Exit".
     this.mapMode = false;
     this.setMapUI(false);
+    // Close the tutoring overlay if the game is rebuilt mid-session (shared DOM).
+    this.tutorStarEntry = null;
+    this.tutorSessionId = null;
+    const tutor = this.q("#cg-tutor");
+    if (tutor) tutor.classList.remove("open");
   }
 
   private makeTextures() {
@@ -712,6 +733,32 @@ export class GalaxyScene extends Phaser.Scene {
       this.noteInput.addEventListener("keydown", (e) => {
         const ke = e as KeyboardEvent;
         if ((ke.metaKey || ke.ctrlKey) && ke.key === "Enter") { e.preventDefault(); void this.saveStarNote(); }
+      });
+    }
+
+    // Tutoring ("go deeper") — launch + conversation controls.
+    const deepen = this.q("#cg-p-deepen");
+    if (deepen) {
+      (deepen as HTMLButtonElement).onclick = () => {
+        const entry = this.stars.find((s) => s.id === this.openStarId);
+        if (entry) void this.openTutor(entry);
+      };
+    }
+    this.tutorInput = this.q("#cg-tutor-input");
+    const tSend = this.q("#cg-tutor-send");
+    if (tSend) (tSend as HTMLButtonElement).onclick = () => void this.tutorSend();
+    const tSkip = this.q("#cg-tutor-skip");
+    if (tSkip) (tSkip as HTMLButtonElement).onclick = () => void this.tutorSkipPhase();
+    const tEnd = this.q("#cg-tutor-end");
+    if (tEnd) (tEnd as HTMLButtonElement).onclick = () => void this.closeTutor(true);
+    if (this.tutorInput) {
+      this.tutorInput.addEventListener("focus", () => this.setGameKeyboard(false));
+      this.tutorInput.addEventListener("blur", () => this.setGameKeyboard(true));
+      this.tutorInput.addEventListener("keydown", (e) => e.stopPropagation());
+      this.tutorInput.addEventListener("keyup", (e) => e.stopPropagation());
+      this.tutorInput.addEventListener("keydown", (e) => {
+        const ke = e as KeyboardEvent;
+        if ((ke.metaKey || ke.ctrlKey) && ke.key === "Enter") { e.preventDefault(); void this.tutorSend(); }
       });
     }
   }
@@ -1121,11 +1168,256 @@ export class GalaxyScene extends Phaser.Scene {
         this.renderNote(note, true);
         if (btn) { btn.disabled = false; btn.textContent = "Saved ✓"; }
       }
+      // The note may have grown the star — promote its visual (any star, even if
+      // the panel moved on).
+      if (note.star_stage) {
+        const entry = this.stars.find((s) => s.id === starId);
+        if (entry) this.applyStarStage(entry, note.star_stage);
+      }
     } catch {
       if (btn && this.openStarId === starId) { btn.disabled = false; btn.textContent = "Couldn't save — try again"; }
     } finally {
       this.savingNote = false;
     }
+  }
+
+  // ── Tutoring: the 5-phase "go deeper" conversation that grows a star ──
+  private async openTutor(entry: StarEntry) {
+    if (this.tutorBusy || this.tutorStarEntry) return; // already opening / in a session
+    const panel = this.q("#cg-panel");
+    if (panel) panel.classList.remove("open"); // swap the landing panel for the conversation
+    this.tutorStarEntry = entry;
+    this.tutorSessionId = null;
+    this.tutorBusy = true;
+    this.paused = true;
+    const starEl = this.q("#cg-tutor-star");
+    if (starEl) starEl.textContent = truncate(entry.data.text, 80);
+    const thread = this.q("#cg-tutor-thread");
+    if (thread) thread.innerHTML = "";
+    this.resetTutorControls();
+    this.setTutorPhase("", 0, 5);
+    const overlay = this.q("#cg-tutor");
+    if (overlay) overlay.classList.add("open");
+    (this.tutorInput as HTMLTextAreaElement | null)?.focus(); // ready to type (also suspends flight keys)
+    this.tutorThinking(true);
+    try {
+      const res = await tutorStart(entry.id);
+      if (this.tutorStarEntry !== entry) return; // closed / switched
+      this.tutorSessionId = res.session_id;
+      this.tutorThinking(false);
+      this.renderTutorMessage("copilot", res.message);
+      this.setTutorPhase(res.current_phase, res.phase_index, res.total_phases);
+    } catch {
+      this.tutorThinking(false);
+      this.renderTutorMessage("copilot", "I couldn't start just now — let's try again in a moment.");
+    } finally {
+      this.tutorBusy = false;
+    }
+  }
+
+  private async tutorSend() {
+    if (this.tutorBusy || !this.tutorSessionId || !this.tutorStarEntry) return;
+    const input = this.tutorInput as HTMLTextAreaElement | null;
+    if (!input) return;
+    const text = input.value.trim();
+    if (!text) return;
+    const entry = this.tutorStarEntry;
+    input.value = "";
+    this.renderTutorMessage("you", text);
+    await this.tutorTurn(entry, text, "continue");
+  }
+
+  private async tutorSkipPhase() {
+    if (this.tutorBusy || !this.tutorSessionId || !this.tutorStarEntry) return;
+    const entry = this.tutorStarEntry;
+    this.renderTutorMessage("you", "(let's move on)");
+    await this.tutorTurn(entry, "skip", "skip");
+  }
+
+  private async tutorTurn(entry: StarEntry, message: string, action: "continue" | "skip") {
+    if (!this.tutorSessionId) return;
+    const sid = this.tutorSessionId;
+    this.tutorBusy = true;
+    this.tutorThinking(true);
+    try {
+      const res = await tutorMessage(entry.id, sid, message, action);
+      if (this.tutorStarEntry !== entry) return;
+      this.tutorThinking(false);
+      if (res.message) this.renderTutorMessage("copilot", res.message);
+      this.setTutorPhase(res.current_phase, res.phase_index, res.total_phases);
+      if (res.mastery_achieved || res.session_close) {
+        const grew = res.session_close?.new_star_stage;
+        this.tutorSessionId = null; // auto-ended server-side
+        this.renderTutorClosing(grew);
+        if (grew) this.applyStarStage(entry, grew);
+      }
+    } catch (err) {
+      if (this.tutorStarEntry !== entry) return;
+      this.tutorThinking(false);
+      if ((err as { status?: number })?.status === 404) {
+        // The cached session expired (long idle). Don't strand the user in a dead
+        // conversation — close it out cleanly.
+        this.tutorSessionId = null;
+        this.renderTutorMessage("copilot", "This session timed out — come back any time to go deeper again.");
+        this.lockTutorComposer();
+      } else {
+        this.renderTutorMessage("copilot", "Something hiccuped there — say that again?");
+      }
+    } finally {
+      this.tutorBusy = false;
+    }
+  }
+
+  private async closeTutor(endSession: boolean) {
+    const entry = this.tutorStarEntry;
+    const sid = this.tutorSessionId;
+    const overlay = this.q("#cg-tutor");
+    if (overlay) overlay.classList.remove("open");
+    this.setGameKeyboard(true);
+    this.tutorStarEntry = null;
+    this.tutorSessionId = null;
+    this.openStarId = null;
+    this.paused = false; // back to flight
+    if (endSession && sid && entry) {
+      try {
+        const res = await tutorEnd(entry.id, sid);
+        // Only touch the star if the scene is still alive and the star still exists.
+        if (!this.destroyed && res?.new_star_stage && this.stars.includes(entry)) {
+          this.applyStarStage(entry, res.new_star_stage);
+        }
+      } catch {
+        // best-effort — the session expires on its own
+      }
+    }
+  }
+
+  private lockTutorComposer() {
+    const send = this.q("#cg-tutor-send") as HTMLButtonElement | null;
+    if (send) send.disabled = true;
+    const skip = this.q("#cg-tutor-skip") as HTMLButtonElement | null;
+    if (skip) skip.disabled = true;
+    const end = this.q("#cg-tutor-end");
+    if (end) end.textContent = "Done";
+  }
+
+  private resetTutorControls() {
+    const send = this.q("#cg-tutor-send") as HTMLButtonElement | null;
+    if (send) send.disabled = false;
+    const skip = this.q("#cg-tutor-skip") as HTMLButtonElement | null;
+    if (skip) skip.disabled = false;
+    const end = this.q("#cg-tutor-end");
+    if (end) end.textContent = "End session";
+  }
+
+  private renderTutorMessage(role: "copilot" | "you", text: string) {
+    const thread = this.q("#cg-tutor-thread");
+    if (!thread) return;
+    const msg = document.createElement("div");
+    msg.className = `cg-msg cg-msg-${role}`;
+    msg.textContent = text;
+    thread.appendChild(msg);
+    this.scrollThreadToEnd();
+  }
+
+  private tutorThinking(on: boolean) {
+    const thread = this.q("#cg-tutor-thread");
+    if (!thread) return;
+    const existing = thread.querySelector(".cg-msg-thinking");
+    if (on) {
+      if (existing) return;
+      const msg = document.createElement("div");
+      msg.className = "cg-msg cg-msg-copilot cg-msg-thinking";
+      msg.innerHTML = '<span class="cg-loading-stars"><i>✦</i><i>✦</i><i>✦</i></span>';
+      thread.appendChild(msg);
+      this.scrollThreadToEnd();
+    } else if (existing) {
+      existing.remove();
+    }
+  }
+
+  private renderTutorClosing(grewStage?: string) {
+    const thread = this.q("#cg-tutor-thread");
+    if (thread) {
+      const msg = document.createElement("div");
+      msg.className = "cg-tutor-closing";
+      msg.textContent = grewStage
+        ? `Session complete — this star grew to ${grewStage}. ✦`
+        : "Session complete. ✦";
+      thread.appendChild(msg);
+      this.scrollThreadToEnd();
+    }
+    this.lockTutorComposer();
+  }
+
+  // Scroll the thread on the next frame — on-screen keyboards (mobile) resize the
+  // viewport a tick late, so an immediate scrollTop can land short.
+  private scrollThreadToEnd() {
+    const thread = this.q("#cg-tutor-thread");
+    if (thread) requestAnimationFrame(() => { thread.scrollTop = thread.scrollHeight; });
+  }
+
+  private setTutorPhase(phase: string, index: number, total: number) {
+    const label = this.q("#cg-tutor-phase");
+    if (label) label.textContent = phase ? `${phase.replace(/_/g, " ")} · ${Math.min(index + 1, total)}/${total}` : "";
+    const pips = this.q("#cg-tutor-pips");
+    if (pips) {
+      pips.innerHTML = "";
+      for (let i = 0; i < total; i++) {
+        const pip = document.createElement("i");
+        pip.className = "cg-pip" + (i <= index ? " on" : "");
+        pips.appendChild(pip);
+      }
+    }
+  }
+
+  // ── Visible growth: promote a star's look when it grows a stage ──
+  private applyStarStage(entry: StarEntry, stage: string) {
+    const rank: Record<string, number> = { proto: 0, ignited: 1, radiant: 2, supernova: 3 };
+    if (!(stage in rank) || rank[stage] <= rank[entry.data.star_stage]) return; // promote only
+    entry.data.star_stage = stage as StarStage;
+    this.promoteStar(entry);
+  }
+
+  private promoteStar(entry: StarEntry) {
+    if (this.destroyed || !this.sys?.isActive()) return; // a late async resolve after teardown
+    const cfg = STAGE[entry.data.star_stage] || STAGE_FALLBACK;
+    const tint = clusterColor(entry.data.cluster_id);
+    entry.r = cfg.size;
+    entry.glow.setTint(tint);
+    entry.core.setTint(tint);
+    entry.label.setTint(tint);
+    this.tweens.killTweensOf(entry.glow);
+    this.tweens.killTweensOf(entry.core);
+    const glowScale = (cfg.size * 2.9 * cfg.glow) / 62;
+    this.tweens.add({ targets: entry.core, scale: cfg.size / 8, duration: 650, ease: "Back.Out" });
+    this.tweens.add({
+      targets: entry.glow,
+      scale: glowScale,
+      duration: 650,
+      ease: "Back.Out",
+      onComplete: () => {
+        // radiant+ stars pulse; (re)start it around the new size.
+        if (cfg.pulse) {
+          this.tweens.add({
+            targets: entry.glow,
+            scale: glowScale * 1.18,
+            duration: 900 + Math.random() * 400,
+            yoyo: true,
+            repeat: -1,
+            ease: "Sine.inOut",
+          });
+        }
+      },
+    });
+    // One-shot bloom so the growth reads as a moment.
+    const flash = this.add
+      .image(entry.x, entry.y, "glow")
+      .setTint(0xffffff)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setScale(glowScale * 0.6)
+      .setAlpha(0.85)
+      .setDepth(5);
+    this.tweens.add({ targets: flash, scale: glowScale * 1.9, alpha: 0, duration: 700, ease: "Sine.Out", onComplete: () => flash.destroy() });
   }
 
   // ── Phase 3: waypoint. A dashed heading drawn from the ship toward a star the
