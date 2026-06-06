@@ -6,7 +6,7 @@
  */
 import Phaser from "phaser";
 
-import { type CopilotPoint, reflectGalaxy } from "@/lib/api";
+import { type CopilotPoint, createStarNote, fetchStarNotes, reflectGalaxy, type StarNote } from "@/lib/api";
 
 import {
   buildTaunt,
@@ -265,6 +265,11 @@ export class GalaxyScene extends Phaser.Scene {
   private dwellSince = 0;
   private lastAmbientAt = 0;
   private ambientInFlight = false;
+  // Star notes — free-text context the user attaches to a star
+  private noteInput!: HTMLElement | null;
+  private noteSaveBtn!: HTMLElement | null;
+  private notesToken = 0; // race guard for the async notes load
+  private savingNote = false; // concurrency guard against double-save
 
   constructor(galaxy: GalaxyData, overlayRoot: HTMLElement) {
     super("galaxy");
@@ -324,6 +329,9 @@ export class GalaxyScene extends Phaser.Scene {
   private teardownCopilot() {
     if (this.toastTimer) { window.clearTimeout(this.toastTimer); this.toastTimer = 0; }
     this.clearWaypoint();
+    // If we tore down while the note textarea was focused (keyboard disabled),
+    // restore it so a remount never starts with flight controls dead.
+    this.setGameKeyboard(true);
   }
 
   private makeTextures() {
@@ -657,6 +665,33 @@ export class GalaxyScene extends Phaser.Scene {
         if (pt) this.setWaypoint(pt.star_id);
       };
     }
+
+    // Star notes composer.
+    this.noteInput = this.q("#cg-p-note-input");
+    this.noteSaveBtn = this.q("#cg-p-note-save");
+    if (this.noteSaveBtn) (this.noteSaveBtn as HTMLButtonElement).onclick = () => void this.saveStarNote();
+    if (this.noteInput) {
+      // The game binds W/A/S/D/E/Esc as flight keys. While typing a note those
+      // must reach the textarea, not steer the ship — so suspend the game's
+      // keyboard on focus (the game is paused anyway) and stop key events from
+      // bubbling to Phaser's window listener. Re-enabled on blur / panel close.
+      this.noteInput.addEventListener("focus", () => this.setGameKeyboard(false));
+      this.noteInput.addEventListener("blur", () => this.setGameKeyboard(true));
+      this.noteInput.addEventListener("keydown", (e) => e.stopPropagation());
+      this.noteInput.addEventListener("keyup", (e) => e.stopPropagation());
+      // Cmd/Ctrl+Enter saves without reaching for the mouse.
+      this.noteInput.addEventListener("keydown", (e) => {
+        const ke = e as KeyboardEvent;
+        if ((ke.metaKey || ke.ctrlKey) && ke.key === "Enter") { e.preventDefault(); void this.saveStarNote(); }
+      });
+    }
+  }
+
+  private setGameKeyboard(enabled: boolean) {
+    // Suspend Phaser key PROCESSING while a note is being typed. The textarea's
+    // own keydown/keyup handlers stopPropagation (Phaser listens in the bubble
+    // phase on window), so the flight keys reach the textarea, not the ship.
+    if (this.input.keyboard) this.input.keyboard.enabled = enabled;
   }
 
   private buildTouch() {
@@ -731,6 +766,16 @@ export class GalaxyScene extends Phaser.Scene {
     }
     const note = this.q("#cg-p-note");
     if (note) { if (d.galaxy_note) { note.style.display = "block"; note.textContent = "📌 " + d.galaxy_note; } else note.style.display = "none"; }
+    // Provenance: where this lesson came from — the grounding for adding your own notes.
+    const ctxEl = this.q("#cg-p-context");
+    if (ctxEl) {
+      const prov = this.provenanceLine(d);
+      if (prov) { ctxEl.textContent = prov; ctxEl.style.display = "block"; }
+      else ctxEl.style.display = "none";
+    }
+    // Notes: reset the composer and load any existing notes for this star.
+    this.resetNoteComposer();
+    this.loadStarNotes(entry.id, d.journal_count || 0);
     // Optimistic line: a grounded static line shows instantly (and stays as the
     // graceful fallback if the request fails); the co-pilot's real, spatially-
     // aware line swaps in when it resolves.
@@ -792,6 +837,89 @@ export class GalaxyScene extends Phaser.Scene {
   private hidePointAffordance() {
     const btn = this.pointBtn as HTMLButtonElement | null;
     if (btn) btn.style.display = "none";
+  }
+
+  // ── Star notes: free-text context the user adds to a star ──
+  // "Where this came from" — the lesson's own origin (context + source ref), so a
+  // note has something to anchor to even when the originating moment is gone.
+  private provenanceLine(d: GalaxyStar): string {
+    const bits: string[] = [];
+    if (d.context) bits.push(d.context.trim());
+    if (d.source_ref) bits.push(d.source_ref.trim());
+    return bits.filter(Boolean).join("  ·  ");
+  }
+
+  private resetNoteComposer() {
+    const input = this.noteInput as HTMLTextAreaElement | null;
+    if (input) input.value = "";
+    const btn = this.noteSaveBtn as HTMLButtonElement | null;
+    if (btn) { btn.disabled = false; btn.textContent = "Save note"; }
+  }
+
+  private async loadStarNotes(starId: number, count: number) {
+    const listEl = this.q("#cg-p-notes-list");
+    if (listEl) listEl.innerHTML = "";
+    const token = ++this.notesToken;
+    if (count <= 0) return; // nothing stored yet — composer only, no request
+    try {
+      const notes = await fetchStarNotes(starId);
+      if (token !== this.notesToken || this.openStarId !== starId) return; // landed elsewhere
+      for (const n of notes) this.renderNote(n, false);
+    } catch {
+      // Best-effort — the composer still works if the list can't load.
+    }
+  }
+
+  private renderNote(note: StarNote, prepend: boolean) {
+    const listEl = this.q("#cg-p-notes-list");
+    if (!listEl) return;
+    const item = document.createElement("div");
+    item.className = "cg-note-item";
+    const body = document.createElement("div");
+    body.className = "cg-note-text";
+    body.textContent = note.text;
+    const when = document.createElement("div");
+    when.className = "cg-note-when";
+    when.textContent = this.formatNoteDate(note.created_at);
+    item.appendChild(body);
+    item.appendChild(when);
+    if (prepend) listEl.prepend(item);
+    else listEl.appendChild(item);
+  }
+
+  private formatNoteDate(iso: string): string {
+    const t = Date.parse(iso);
+    if (Number.isNaN(t)) return "";
+    try {
+      return new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    } catch {
+      return "";
+    }
+  }
+
+  private async saveStarNote() {
+    if (this.savingNote) return; // guard against double-save (fast clicks / ⌘↵)
+    const input = this.noteInput as HTMLTextAreaElement | null;
+    const btn = this.noteSaveBtn as HTMLButtonElement | null;
+    if (!input || this.openStarId === null) return;
+    const text = input.value.trim();
+    if (!text) return;
+    const starId = this.openStarId;
+    this.savingNote = true;
+    if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+    try {
+      const note = await createStarNote(starId, text);
+      // Only touch the panel if it's still showing the same star.
+      if (this.openStarId === starId) {
+        input.value = "";
+        this.renderNote(note, true);
+        if (btn) { btn.disabled = false; btn.textContent = "Saved ✓"; }
+      }
+    } catch {
+      if (btn && this.openStarId === starId) { btn.disabled = false; btn.textContent = "Couldn't save — try again"; }
+    } finally {
+      this.savingNote = false;
+    }
   }
 
   // ── Phase 3: waypoint. A dashed heading drawn from the ship toward a star the
@@ -918,6 +1046,13 @@ export class GalaxyScene extends Phaser.Scene {
   closePanel() {
     const p = this.q("#cg-panel");
     if (p) p.classList.remove("open");
+    // Blur the note textarea FIRST — closing via the backdrop / "Got it" leaves it
+    // focused, so its own blur handler never fires. Then re-arm flight keys (the
+    // setGameKeyboard call is idempotent if the blur already re-enabled them).
+    const input = this.noteInput as HTMLTextAreaElement | null;
+    if (input && document.activeElement === input) input.blur();
+    this.setGameKeyboard(true);
+    this.openStarId = null;
     this.paused = false;
   }
 

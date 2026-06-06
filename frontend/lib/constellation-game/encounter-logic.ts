@@ -24,6 +24,8 @@ export interface GalaxyStar {
   last_visited_at: string | null;
   galaxy_note: string;
   source_type: string;
+  context?: string;
+  source_ref?: string;
   created_at: string;
 }
 

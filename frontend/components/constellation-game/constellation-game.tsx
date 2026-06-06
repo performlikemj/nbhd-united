@@ -54,12 +54,31 @@ export function ConstellationGame({ galaxy }: { galaxy: GalaxyData }) {
             <span className="cg-cluster" id="cg-p-cluster">—</span>
           </div>
           <h1 id="cg-p-text">—</h1>
+          {/* provenance — where this lesson came from (its origin note + source), so
+              adding your own notes has something to anchor to */}
+          <div className="cg-provenance" id="cg-p-context" style={{ display: "none" }} />
           <div className="cg-meta" id="cg-p-meta" />
           <div className="cg-tags" id="cg-p-tags" />
           <div className="cg-note" id="cg-p-note" style={{ display: "none" }} />
           <div className="cg-copilot">
             <div className="cg-who"><span className="cg-dot" /> Your co-pilot</div>
             <div className="cg-line" id="cg-p-copilot">—</div>
+          </div>
+          {/* your notes — free-text context you add to this star (saved as you go) */}
+          <div className="cg-notes">
+            <div className="cg-notes-head" id="cg-p-notes-head">Your notes</div>
+            <div id="cg-p-notes-list" className="cg-notes-list" />
+            <textarea
+              id="cg-p-note-input"
+              className="cg-note-input"
+              rows={2}
+              maxLength={2000}
+              aria-label="Add a note to this star"
+              placeholder="Add a note or some context for this star — in your own words…"
+            />
+            <div className="cg-note-actions">
+              <button id="cg-p-note-save" className="cg-note-save" type="button">Save note</button>
+            </div>
           </div>
           <div className="cg-actions">
             <button id="cg-p-point" className="cg-point" type="button" style={{ display: "none" }}>
