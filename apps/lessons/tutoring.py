@@ -422,7 +422,16 @@ def end_tutoring(session_id: str, tenant_id: str | None = None) -> dict[str, Any
         _delete_state(session_id)
         return {"error": "star_not_found"}
 
-    new_stage = _compute_star_stage_from_star(star)
+    # Count this session, then grow the star through the SHARED growth engine
+    # (apps/lessons/growth.py) — one curve for tutoring + notes + connections, and
+    # monotonic (a star never shrinks).
+    from .growth import apply_star_growth
+
+    star.tutoring_sessions_count += 1
+    star.last_tutored_at = timezone.now()
+    star.last_visited_at = timezone.now()
+    star.save(update_fields=["tutoring_sessions_count", "last_tutored_at", "last_visited_at"])
+    new_stage = apply_star_growth(star)
 
     tutoring = TutoringSession.objects.create(
         star=star,
@@ -435,19 +444,6 @@ def end_tutoring(session_id: str, tenant_id: str | None = None) -> dict[str, Any
         player_found_edge_cases=state["player_found_edge_cases"],
         connections_made=state["connections_made"],
         topic_shifted=state["topic_shifted"],
-    )
-
-    star.star_stage = new_stage
-    star.tutoring_sessions_count += 1
-    star.last_tutored_at = timezone.now()
-    star.last_visited_at = timezone.now()
-    star.save(
-        update_fields=[
-            "star_stage",
-            "tutoring_sessions_count",
-            "last_tutored_at",
-            "last_visited_at",
-        ]
     )
 
     _delete_state(session_id)
@@ -589,31 +585,9 @@ def _capture_connections(
             state["connections_made"].append({"to_star_id": None, "player_text": text})
 
 
-def _compute_star_stage_from_star(star: Lesson) -> str:
-    """Compute the new star stage based on engagement depth.
-
-    Proto → Ignited:   first tutoring session
-    Ignited → Radiant: 3+ sessions, journal entries, or connections
-    Radiant → Supernova: many sessions, entries, or deep connections
-    """
-    sessions = star.tutoring_sessions_count + 1  # including this one
-    journal_count = star.journal_entries.count()
-    connection_count = star.connections_out.count()
-
-    if sessions >= 8 or journal_count >= 8 or connection_count >= 12:
-        return "supernova"
-    if sessions >= 3 or journal_count >= 2 or connection_count >= 5:
-        return "radiant"
-    return "ignited"
-
-
-def _compute_star_stage(state: Any) -> str:
-    """Backwards-compatible stage computation.
-
-    ``test_game.py`` calls this with a ``MagicMock`` carrying ``.star``. Keep the
-    name and the ``state.star`` access path so existing unit tests pass.
-    """
-    return _compute_star_stage_from_star(state.star)
+# Star-stage computation now lives in apps/lessons/growth.py (compute_star_stage /
+# apply_star_growth) — one shared, monotonic curve for tutoring, notes, and
+# connections. end_tutoring above calls apply_star_growth.
 
 
 def _close_session(state: dict[str, Any]) -> dict[str, Any]:
