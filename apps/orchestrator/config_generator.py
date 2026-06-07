@@ -1084,14 +1084,14 @@ def effective_primary_model(tenant: Tenant) -> str:
 
 WHISPER_DEFAULT_MODEL = {"provider": "openai", "model": "gpt-4o-mini-transcribe"}
 
-# Heartbeat model — runs on the small/fast worker model (Gemma) like the
-# other routine crons, pinned regardless of the tenant's `preferred_model`.
-# The pin still guarantees platform-initiated turns never burn a BYO
-# Anthropic tenant's CLI subscription (Gemma is non-BYO). Moved off DeepSeek
-# V4 Pro in 2026-06: the heartbeat's "is anything genuinely new" check was
-# overshooting the cron turn timeout on the slow reasoning model. See
-# `_HEARTBEAT_CHECKIN_PROMPT` for the cross-referencing it does.
-HEARTBEAT_MODEL = GEMMA_MODEL
+# Heartbeat model — the heartbeat is the one routine cron that's pure judgment
+# ("is anything genuinely new?" — it cross-references the daily note + heartbeat
+# log to decide whether to speak), so it runs on MiniMax (a mid model) rather
+# than the tiny Gemma worker the mechanical crons use, or the slow DeepSeek
+# reasoning leader that overshot the cron timeout. Pinned regardless of the
+# tenant's `preferred_model`, and NON-BYO so platform-initiated turns never burn
+# a tenant's Anthropic subscription. See `_HEARTBEAT_CHECKIN_PROMPT`.
+HEARTBEAT_MODEL = MINIMAX_MODEL
 
 
 def _heartbeat_cron_expr(start_hour: int, window_hours: int) -> str:
