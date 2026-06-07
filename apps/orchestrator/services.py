@@ -1240,7 +1240,7 @@ def refresh_system_cron_rows_from_seed(tenant: Tenant | str) -> dict:
     from .cron_drift import strip_date_line
 
     seed_jobs = build_cron_seed_jobs(tenant)
-    summary = {"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 0}
+    summary = {"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 0, "reaped": 0}
 
     for job in seed_jobs:
         name = job.get("name", "")
@@ -1293,13 +1293,30 @@ def refresh_system_cron_rows_from_seed(tenant: Tenant | str) -> dict:
         row.save(update_fields=["data", "updated_at"])
         summary["updated"] += 1
 
+    # Reap managed system crons that have fallen out of the seed — e.g.
+    # "Heartbeat Check-in" once the tenant moves to the built-in heartbeat, or
+    # "Gravity Weekly Check-in" while Gravity is paused. Without this they
+    # linger as orphaned rows that keep firing on a stale model. The CronJob
+    # post_delete signal pushes the removal to the container. Platform-managed
+    # ``_sync:``/``_fuel:`` crons have their own lifecycle — leave them.
+    seed_names = {job.get("name", "") for job in seed_jobs}
+    for orphan in list(
+        CronJob.objects.filter(tenant=tenant, source=CronJobSource.SYSTEM, managed=True).exclude(name__in=seed_names)
+    ):
+        if orphan.name.startswith(_SYSTEM_GENERATED_PREFIXES):
+            continue
+        orphan.delete()
+        summary["reaped"] += 1
+
     logger.info(
-        "refresh_system_cron_rows_from_seed: tenant %s — created=%d updated=%d preserved_custom=%d unchanged=%d",
+        "refresh_system_cron_rows_from_seed: tenant %s — created=%d updated=%d "
+        "preserved_custom=%d unchanged=%d reaped=%d",
         str(tenant.id)[:8],
         summary["created"],
         summary["updated"],
         summary["preserved_custom"],
         summary["unchanged"],
+        summary["reaped"],
     )
     return summary
 
