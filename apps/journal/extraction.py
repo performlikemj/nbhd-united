@@ -17,7 +17,9 @@ import requests
 from django.conf import settings
 from django.utils import timezone
 
+from apps.billing.constants import DEEPSEEK_MODEL
 from apps.billing.services import record_usage
+from apps.common.openrouter import chat_completion
 from apps.journal.models import DailyNote, Document, PendingExtraction
 from apps.lessons.models import Lesson
 from apps.lessons.services import generate_embedding
@@ -31,6 +33,10 @@ logger = logging.getLogger(__name__)
 # against an open-task list) is materially harder than emitting net-new
 # items. One call per tenant per day; cost absorbed on the platform key.
 EXTRACTION_MODEL = "anthropic/claude-sonnet-4-6"
+# Fallback to DeepSeek V4 Pro if Sonnet is unreachable on OpenRouter. Reconciliation
+# quality dips on the cheaper model, but a degraded extraction beats dropping the
+# nightly run entirely.
+EXTRACTION_MODELS = [EXTRACTION_MODEL, DEEPSEEK_MODEL]
 MIN_NOTE_LENGTH = 100  # chars — below this we skip or fall back
 DEDUP_SIMILARITY_THRESHOLD = 0.65  # cosine similarity for semantic dedup
 TELEGRAM_API_BASE = "https://api.telegram.org/bot"
@@ -115,10 +121,6 @@ def _call_extraction_llm(
     When ``reconciliation_context`` is provided, the LLM also reconciles the
     journal against the supplied open items and returns task/goal deltas.
     """
-    api_key = getattr(settings, "OPENROUTER_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY not configured")
-
     if reconciliation_context is not None:
         system = EXTRACTION_RECONCILE_SYSTEM
         user_message = (
@@ -128,22 +130,16 @@ def _call_extraction_llm(
         system = EXTRACTION_SYSTEM
         user_message = f"Extract from this daily note:\n\n{content[:6000]}"
 
-    resp = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
-            "model": EXTRACTION_MODEL,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_message},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.1,
-        },
+    data, _model_used = chat_completion(
+        EXTRACTION_MODELS,
+        [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_message},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.1,
         timeout=60,
     )
-    resp.raise_for_status()
-    data = resp.json()
     raw = (data["choices"][0]["message"]["content"] or "").strip()
     usage = data.get("usage", {})
     # Strip markdown code fences if present (Claude via OpenRouter may wrap JSON)

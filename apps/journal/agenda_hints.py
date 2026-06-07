@@ -31,9 +31,8 @@ import json
 import logging
 import re
 
-import requests
-from django.conf import settings
-
+from apps.billing.constants import GEMMA_MODEL, MINIMAX_MODEL
+from apps.common.openrouter import chat_completion
 from apps.tenants.agenda_models import AgendaEngagement
 from apps.tenants.agenda_service import mark_organic, record_signal
 from apps.tenants.models import Tenant
@@ -42,6 +41,9 @@ logger = logging.getLogger(__name__)
 
 
 HINT_MODEL = "openai/gpt-4o-mini"
+# Lightweight classification — fall back to the cheap chat models if gpt-4o-mini
+# is unreachable on OpenRouter rather than dropping agenda hints for the run.
+HINT_MODELS = [HINT_MODEL, GEMMA_MODEL, MINIMAX_MODEL]
 HINT_TIMEOUT = 30
 HINT_MAX_CONTENT_CHARS = 6000
 
@@ -153,10 +155,6 @@ def run_agenda_hint_pass(tenant: Tenant, journal_content: str) -> dict[str, int]
 def _classify(content: str, threads) -> list[dict]:
     """Single LLM call. Raises on transport / parse failure — caller
     catches and logs."""
-    api_key = getattr(settings, "OPENROUTER_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY not configured")
-
     threads_block = "\n".join(
         f"- kind={t.kind}, item_id={t.item_id}, label={t.label!r}" + (f", context={t.context!r}" if t.context else "")
         for t in threads
@@ -169,25 +167,16 @@ def _classify(content: str, threads) -> list[dict]:
         f"{content[:HINT_MAX_CONTENT_CHARS]}"
     )
 
-    resp = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": HINT_MODEL,
-            "messages": [
-                {"role": "system", "content": _HINT_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.1,
-        },
+    data, _model_used = chat_completion(
+        HINT_MODELS,
+        [
+            {"role": "system", "content": _HINT_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.1,
         timeout=HINT_TIMEOUT,
     )
-    resp.raise_for_status()
-    data = resp.json()
     raw = (data["choices"][0]["message"]["content"] or "").strip()
     # Strip markdown fences if the provider wrapped JSON
     if raw.startswith("```"):

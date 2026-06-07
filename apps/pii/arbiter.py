@@ -29,10 +29,10 @@ import json
 import logging
 from typing import Any
 
-import requests
-from django.conf import settings
 from django.utils import timezone
 
+from apps.billing.constants import DEEPSEEK_MODEL
+from apps.common.openrouter import chat_completion
 from apps.pii.entity_registry import canonical_key, coerce
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,10 @@ logger = logging.getLogger(__name__)
 # same answer. Routed via OpenRouter to share the platform's API key
 # rather than threading per-tenant BYO creds into a system task.
 ARBITER_MODEL = "anthropic/claude-haiku-4-5"
+# Fallback to DeepSeek if Haiku is unreachable. The arbiter already defers (no
+# denylist writes) on any failure, so the fallback only widens the chance of
+# getting a usable judgment this tick rather than waiting for the next.
+ARBITER_MODELS = [ARBITER_MODEL, DEEPSEEK_MODEL]
 ARBITER_OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 ARBITER_TIMEOUT_SECONDS = 30
 
@@ -139,8 +143,7 @@ def _call_arbiter_llm(items: list[dict[str, Any]]) -> tuple[dict[str, bool], dic
     cron tick. We never default-deny: a malformed response shouldn't
     add false positives to the denylist.
     """
-    api_key = getattr(settings, "OPENROUTER_API_KEY", "")
-    if not api_key or not items:
+    if not items:
         return {}, {}
 
     # Send integer ids the LLM echoes back, NOT the canonical key string.
@@ -153,22 +156,16 @@ def _call_arbiter_llm(items: list[dict[str, Any]]) -> tuple[dict[str, bool], dic
     user_message = "Decide is_pii for each entry:\n\n" + "\n".join(payload_lines)
 
     try:
-        resp = requests.post(
-            ARBITER_OPENROUTER_URL,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": ARBITER_MODEL,
-                "messages": [
-                    {"role": "system", "content": ARBITER_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message},
-                ],
-                "response_format": {"type": "json_object"},
-                "temperature": 0,
-            },
+        data, _model_used = chat_completion(
+            ARBITER_MODELS,
+            [
+                {"role": "system", "content": ARBITER_SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0,
             timeout=ARBITER_TIMEOUT_SECONDS,
         )
-        resp.raise_for_status()
-        data = resp.json()
     except Exception:
         logger.exception("pii_arbiter LLM call failed; deferring")
         return {}, {}

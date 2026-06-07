@@ -178,10 +178,11 @@ class ArbiterTaskTests(TestCase):
         # many times we'd have billed.
         self._usage_patcher = patch("apps.billing.services.record_usage", return_value=None)
         self.record_usage_mock = self._usage_patcher.start()
-        # OPENROUTER_API_KEY isn't set in tests by default — the arbiter
-        # short-circuits to {} without it. Patch it so _call_arbiter_llm
-        # reaches the requests.post call (which we also patch).
-        self._settings_patcher = patch("apps.pii.arbiter.settings")
+        # OPENROUTER_API_KEY isn't set in tests by default — the shared
+        # chat_completion wrapper raises without it. Patch the key on the
+        # wrapper's settings so _call_arbiter_llm reaches the requests.post
+        # call (which we also patch).
+        self._settings_patcher = patch("apps.common.openrouter.settings")
         settings_mock = self._settings_patcher.start()
         settings_mock.OPENROUTER_API_KEY = "test-key"
 
@@ -200,7 +201,7 @@ class ArbiterTaskTests(TestCase):
         )
 
         with patch(
-            "apps.pii.arbiter.requests.post",
+            "apps.common.openrouter.requests.post",
             side_effect=_fake_post_by_name({"Sarah Chen": True, "goal": False, "calendar": False}),
         ) as post_mock:
             result = pii_arbiter_task()
@@ -231,7 +232,7 @@ class ArbiterTaskTests(TestCase):
         )
 
         with patch(
-            "apps.pii.arbiter.requests.post",
+            "apps.common.openrouter.requests.post",
             side_effect=_fake_post_by_name({"The Angel’s Share": False}),
         ):
             result = pii_arbiter_task()
@@ -255,7 +256,7 @@ class ArbiterTaskTests(TestCase):
         fake = _FakeLLMResponse(
             raw_content=_json.dumps({"decisions": [{"id": 0, "is_pii": 1}, {"id": 1, "is_pii": 0}]})
         )
-        with patch("apps.pii.arbiter.requests.post", return_value=fake):
+        with patch("apps.common.openrouter.requests.post", return_value=fake):
             result = pii_arbiter_task()
 
         self.assertEqual(result["entries_denied"], 1)
@@ -275,7 +276,7 @@ class ArbiterTaskTests(TestCase):
         fake = _FakeLLMResponse(raw_content=_json.dumps({"decisions": [{"id": 999, "is_pii": True}]}))
         with (
             self.assertLogs("apps.pii.arbiter", level="WARNING") as captured,
-            patch("apps.pii.arbiter.requests.post", return_value=fake),
+            patch("apps.common.openrouter.requests.post", return_value=fake),
         ):
             result = pii_arbiter_task()
 
@@ -289,7 +290,7 @@ class ArbiterTaskTests(TestCase):
         )
 
         with patch(
-            "apps.pii.arbiter.requests.post",
+            "apps.common.openrouter.requests.post",
             side_effect=_fake_post_by_name({"Sarah Chen": True}),
         ) as post_mock:
             first = pii_arbiter_task()
@@ -311,7 +312,7 @@ class ArbiterTaskTests(TestCase):
         )
 
         fake = _FakeLLMResponse(raw_content="not json at all")
-        with patch("apps.pii.arbiter.requests.post", return_value=fake):
+        with patch("apps.common.openrouter.requests.post", return_value=fake):
             result = pii_arbiter_task()
 
         self.assertEqual(result["entries_judged"], 0)
@@ -326,7 +327,7 @@ class ArbiterTaskTests(TestCase):
         )
 
         fake = _FakeLLMResponse(decisions=[], status=500)
-        with patch("apps.pii.arbiter.requests.post", return_value=fake):
+        with patch("apps.common.openrouter.requests.post", return_value=fake):
             result = pii_arbiter_task()
 
         self.assertEqual(result["entries_judged"], 0)
@@ -345,7 +346,7 @@ class ArbiterTaskTests(TestCase):
         )
 
         with patch(
-            "apps.pii.arbiter.requests.post",
+            "apps.common.openrouter.requests.post",
             side_effect=_fake_post_by_name({"Sautai": False}),
         ) as post_mock:
             result = pii_arbiter_task()
@@ -366,7 +367,7 @@ class ArbiterTaskTests(TestCase):
         # Both calls return only "Person1" as a decision so we can verify
         # multi-batch flow without depending on which item lands where.
         with patch(
-            "apps.pii.arbiter.requests.post",
+            "apps.common.openrouter.requests.post",
             side_effect=_fake_post_by_name({"Person1": True}),
         ) as post_mock:
             pii_arbiter_task()

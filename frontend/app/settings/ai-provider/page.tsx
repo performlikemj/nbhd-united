@@ -61,12 +61,25 @@ export default function AIProviderPage() {
   const anthropicCred = useMemo(() => findCred(byoCreds, "anthropic"), [byoCreds]);
   const openaiCred = useMemo(() => findCred(byoCreds, "openai"), [byoCreds]);
 
-  const activeModel = tenant?.preferred_model || DEFAULT_MODEL;
+  const offer = tenant?.free_model_offer;
+  const offerActive = Boolean(offer?.active);
+
+  // The model actually in effect — the rolling free-offer default included.
+  // Prefer the server-computed `effective_model` so the Active badge lands on
+  // the real model when the user hasn't explicitly picked one.
+  const activeModel = tenant?.effective_model || tenant?.preferred_model || DEFAULT_MODEL;
   // The model the running container is actually serving (stamped after a
-  // successful gateway.reload by apply_single_tenant_config_task). When it
-  // diverges from `activeModel`, a picker change is in flight — render the
-  // "Switching…" badge instead of "Active" so the UI stops lying.
+  // successful apply by apply_single_tenant_config_task). When it diverges from
+  // `activeModel`, a picker change is in flight — render the "Switching…" badge
+  // instead of "Active" so the UI stops lying. Falls back to activeModel for
+  // rolling-default tenants (preferred_model "", so applied_model is "" too).
   const appliedModel = tenant?.applied_model || activeModel;
+
+  // Limited-time promo cards only render while the server reports the offer live.
+  const visibleModels = useMemo(
+    () => MODELS.filter((m) => !m.limitedTimeOffer || offerActive),
+    [offerActive],
+  );
 
   const fallbackModelName = useMemo(() => {
     const m = ACTIVE_MODELS.find((x) => x.model_id === DEFAULT_MODEL);
@@ -122,8 +135,20 @@ export default function AIProviderPage() {
 
       <SectionCard title="AI Provider" subtitle="Choose your default model">
         <div className="space-y-4">
+          {offerActive && offer ? (
+            <div className="rounded-panel border-2 border-accent bg-accent/5 p-4">
+              <p className="text-sm font-medium text-ink">
+                ✨ Limited-time: {offer.display_name} is free right now
+              </p>
+              <p className="mt-1 text-xs text-ink-muted">
+                It&apos;s set as your default while the offer lasts. If it becomes unavailable, your
+                assistant switches back to {offer.fallback_display_name} automatically — nothing for
+                you to do. You can pick any model below at any time.
+              </p>
+            </div>
+          ) : null}
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {MODELS.map((model) => {
+            {visibleModels.map((model) => {
               const available = isModelAvailable(model, anthropicCred);
               const isSelected = activeModel === model.model_id;
               const isApplied = appliedModel === model.model_id;
@@ -180,6 +205,10 @@ export default function AIProviderPage() {
                       <span className="rounded-full bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent">
                         Active
                       </span>
+                    ) : model.free ? (
+                      <span className="rounded-full bg-accent/10 border border-accent px-2 py-0.5 text-xs font-medium text-accent">
+                        Free
+                      </span>
                     ) : null}
                   </div>
                   <div className="mt-2">
@@ -188,6 +217,8 @@ export default function AIProviderPage() {
                   <p className="mt-2 text-xs text-ink-muted">{model.tagline}</p>
                   {model.requires === "byo-anthropic" && !available ? (
                     <p className="mt-1 text-xs text-accent">Connect Anthropic to enable →</p>
+                  ) : model.free ? (
+                    <p className="mt-1 font-mono text-xs text-accent">Free — no token cost</p>
                   ) : (
                     <p className="mt-1 font-mono text-xs text-ink-muted">
                       {model.input_rate === 0 && model.output_rate === 0
@@ -232,7 +263,9 @@ export default function AIProviderPage() {
                   className="rounded-panel border border-border bg-surface px-3 py-1.5 text-sm text-ink focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent min-h-[36px]"
                 >
                   <option value="">Use default ({defaultName})</option>
-                  {ACTIVE_MODELS.filter((m) => isModelAvailable(m, anthropicCred)).map((m) => (
+                  {ACTIVE_MODELS.filter(
+                    (m) => isModelAvailable(m, anthropicCred) && (!m.limitedTimeOffer || offerActive),
+                  ).map((m) => (
                     <option key={m.model_id} value={m.model_id}>
                       {m.name}
                     </option>

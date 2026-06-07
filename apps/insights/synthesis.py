@@ -29,11 +29,11 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
-import requests
-from django.conf import settings
 from django.utils import timezone
 
+from apps.billing.constants import MINIMAX_MODEL
 from apps.billing.services import record_usage
+from apps.common.openrouter import chat_completion
 from apps.insights.markers import extract_and_record_insights
 from apps.insights.models import AssistantInsight, PillarSnapshot, UserVoicePref
 from apps.insights.pillars import Pillar
@@ -46,6 +46,11 @@ logger = logging.getLogger(__name__)
 # DeepSeek V4 Pro replaced Kimi K2.6 here — same workload (long-context
 # reasoning over a week of data), materially cheaper output rate.
 SYNTHESIS_MODEL = "openrouter/deepseek/deepseek-v4-pro"
+
+# Fallback chain if DeepSeek is unreachable on OpenRouter — MiniMax is the
+# cheapest capable alternative. A degraded reflection beats a silently skipped
+# weekly observation.
+SYNTHESIS_MODELS = [SYNTHESIS_MODEL, MINIMAX_MODEL]
 
 # Hard ceilings so a single tenant can't unexpectedly balloon platform spend.
 _MAX_INPUT_CONTEXT_CHARS = 12000
@@ -309,28 +314,22 @@ def _format_context_for_prompt(context: dict[str, Any]) -> str:
 
 
 def _call_synthesis_llm(context: dict[str, Any]) -> tuple[str, dict]:
-    """Call OpenRouter for the synthesis. Returns (text, usage_dict)."""
-    api_key = getattr(settings, "OPENROUTER_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY not configured")
+    """Call OpenRouter for the synthesis. Returns (text, usage_dict).
 
+    Tries DeepSeek first, then MiniMax (see SYNTHESIS_MODELS) so a single-model
+    OpenRouter outage doesn't silently drop the weekly reflection.
+    """
     user_message = _format_context_for_prompt(context)
-    resp = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
-            "model": SYNTHESIS_MODEL,
-            "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            "max_tokens": _MAX_OUTPUT_TOKENS,
-            "temperature": 0.4,
-        },
+    data, _model_used = chat_completion(
+        SYNTHESIS_MODELS,
+        [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
+        max_tokens=_MAX_OUTPUT_TOKENS,
+        temperature=0.4,
         timeout=45,
     )
-    resp.raise_for_status()
-    data = resp.json()
     text = (data["choices"][0]["message"]["content"] or "").strip()
     usage = data.get("usage", {}) or {}
     return text, usage

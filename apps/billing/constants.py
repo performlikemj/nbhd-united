@@ -26,6 +26,19 @@ GEMMA_MODEL = "openrouter/google/gemma-4-31b-it"
 GEMMA_DISPLAY = "Gemma 4 31B"
 GEMMA_RATE = {"input": 0.12, "output": 0.37}
 
+# ── Limited-time free offer ────────────────────────────────────────────────
+# NVIDIA Nemotron 3 Ultra, served as a $0 "free variant" on OpenRouter
+# (1M context, frontier-reasoning). Promoted to the default chat model ONLY
+# while OpenRouter keeps it free AND reachable — see apps/billing/model_offers.py
+# and the `model_health_check` cron. Both prompt + completion rates are 0, so it
+# never adds to a tenant's monthly cost budget. The `:free` suffix is part of
+# the OpenRouter slug; the `openrouter/` prefix is OpenClaw's routing convention
+# (stripped before the bare slug hits the OpenRouter HTTP API — see
+# apps/common/openrouter.py:normalize_model_id).
+NEMOTRON_FREE_MODEL = "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+NEMOTRON_FREE_DISPLAY = "Nemotron 3 Ultra (Free)"
+NEMOTRON_FREE_RATE = {"input": 0.0, "output": 0.0}
+
 # BYO subscription models — tenant pays the provider directly via their
 # Pro/Max/Plus account. Not in MODEL_RATES because NBHD doesn't bill
 # tokens for these.
@@ -79,6 +92,14 @@ MODEL_RATES: dict[str, dict[str, float]] = {
         **GEMMA_RATE,
         "display_name": GEMMA_DISPLAY,
     },
+    NEMOTRON_FREE_MODEL: {
+        **NEMOTRON_FREE_RATE,
+        "display_name": NEMOTRON_FREE_DISPLAY,
+    },
+    NEMOTRON_FREE_MODEL.removeprefix("openrouter/"): {
+        **NEMOTRON_FREE_RATE,
+        "display_name": NEMOTRON_FREE_DISPLAY,
+    },
 }
 
 DEFAULT_RATE = {"input": 0.3, "output": 1.2, "display_name": "Unknown Model"}
@@ -123,6 +144,12 @@ def display_name_for_model(model_used: str) -> str:
 REASONING_MODELS: set[str] = {
     DEEPSEEK_MODEL,
     DEEPSEEK_MODEL.removeprefix("openrouter/"),
+    # Nemotron 3 Ultra (free): 550B frontier-reasoning model with a longer
+    # time-to-first-token, and free-tier rate limiting can stretch it further.
+    # Give it the reasoning timeout + "still thinking" notice so buffered
+    # delivery doesn't bail and trigger a fallback to a paid model mid-turn.
+    NEMOTRON_FREE_MODEL,
+    NEMOTRON_FREE_MODEL.removeprefix("openrouter/"),
 }
 
 # ── BYO slow models ──────────────────────────────────────────────────────
