@@ -111,6 +111,7 @@ class PendingMessage(models.Model):
     class Channel(models.TextChoices):
         TELEGRAM = "telegram"
         LINE = "line"
+        IOS = "ios"
 
     class Status(models.TextChoices):
         PENDING = "pending"
@@ -482,3 +483,129 @@ class LineQuotaState(models.Model):
             f"LineQuotaState({self.line_quota_used}/{self.line_quota_limit}"
             f"{', exhausted' if self.is_exhausted else ''})"
         )
+
+
+class ChatThread(models.Model):
+    """A conversation thread the user owns, independent of channel.
+
+    Threads decouple "a conversation" from "a channel/device". The shared
+    ``is_main`` thread is the default conversation that every channel
+    (Telegram, LINE, iOS) resumes — so a conversation continues seamlessly
+    across devices. Rich clients (iOS/web) may create additional named
+    threads for topic separation.
+
+    The OpenClaw ``user`` param for a thread is ``thread:<id>`` (see
+    ``apps/router/chat_views.py``), so each thread hashes to its own
+    OpenClaw session/sessionKey while ``USER.md``/memory stays shared
+    tenant-wide (assembled channel-blind in
+    ``apps/orchestrator/workspace_envelope.py``). That is what lets a new
+    surface "know who you are" without copying any state — identity is the
+    tenant's, the thread is just the transcript.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        "tenants.Tenant",
+        on_delete=models.CASCADE,
+        related_name="chat_threads",
+    )
+    user = models.ForeignKey(
+        "tenants.User",
+        on_delete=models.CASCADE,
+        related_name="chat_threads",
+    )
+    title = models.CharField(max_length=120, blank=True, default="")
+    is_main = models.BooleanField(
+        default=False,
+        help_text="The shared default thread resumed by every channel. One per tenant.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_active_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "chat_threads"
+        ordering = ["-last_active_at", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant"],
+                condition=models.Q(is_main=True),
+                name="uniq_main_thread_per_tenant",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        label = "main" if self.is_main else (self.title or str(self.id))
+        return f"ChatThread({label}, tenant={self.tenant_id})"
+
+
+class AppChatMessage(models.Model):
+    """A single rich-client (iOS/web) chat turn: the user's message and the
+    assistant's reply, persisted so the client can POLL for the reply.
+
+    Telegram/LINE relay replies via their push APIs; rich clients have no
+    push transport, so the drain (``_drain_ios_batch`` in
+    ``apps/router/pending_queue.py``) writes the assistant reply here keyed
+    by the client-supplied ``client_msg_id`` and the client polls
+    ``GET /api/v1/chat/messages/<client_msg_id>/`` until ``status`` flips to
+    ``ready`` (or ``error``).
+
+    ``client_msg_id`` is the idempotency key: a retried POST with the same
+    id returns the existing turn instead of enqueuing a duplicate.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending"
+        READY = "ready"
+        ERROR = "error"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        "tenants.Tenant",
+        on_delete=models.CASCADE,
+        related_name="app_chat_messages",
+    )
+    user = models.ForeignKey(
+        "tenants.User",
+        on_delete=models.CASCADE,
+        related_name="app_chat_messages",
+    )
+    thread = models.ForeignKey(
+        ChatThread,
+        on_delete=models.CASCADE,
+        related_name="messages",
+    )
+    client_msg_id = models.CharField(
+        max_length=64,
+        help_text="Client-supplied stable id. Idempotency key + poll key.",
+    )
+    user_text = models.TextField()
+    reply_text = models.TextField(blank=True, default="")
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+    error = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Machine-readable error reason when status=error (e.g. 'budget_exhausted').",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    replied_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "app_chat_messages"
+        ordering = ["created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "client_msg_id"],
+                name="uniq_app_chat_client_msg",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["thread", "created_at"], name="appchat_thread_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"AppChatMessage({self.status}, thread={self.thread_id})"
