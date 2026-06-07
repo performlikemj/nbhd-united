@@ -104,6 +104,10 @@ SYSTEM_CRONS = [
     # seconds rather than waiting for the next daily poll.
     # See apps/router/line_quota.py and apps/router/line_quota_handlers.py.
     ("poll-line-quota", "15 3 * * *", "/api/cron/trigger/poll_line_quota/"),
+    # Every 30 min — probe the limited-time free-model offer (OpenRouter pricing
+    # + a 1-token reachability ping) and flip it on transitions. See
+    # apps/billing/model_health.py.
+    ("model-health-check", "*/30 * * * *", "/api/cron/trigger/model_health_check/"),
 ]
 
 

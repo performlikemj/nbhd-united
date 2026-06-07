@@ -18,6 +18,21 @@ export interface TenantUser {
   telegram_username: string;
 }
 
+export interface FreeModelOffer {
+  active: boolean;
+  model_id: string;
+  display_name: string;
+  fallback_model_id: string;
+  fallback_display_name: string;
+  activated_at: string | null;
+  last_transition_reason: string;
+  health: {
+    is_reachable: boolean | null;
+    is_free: boolean | null;
+    last_checked_at: string | null;
+  };
+}
+
 export interface Tenant {
   id: string;
   user: TenantUser;
@@ -38,6 +53,11 @@ export interface Tenant {
   preferred_model: string;
   applied_model: string;
   applied_model_at: string | null;
+  // The model actually in effect right now (rolling free-offer default
+  // included). Use this — not a static DEFAULT_MODEL — for the Active badge
+  // when the user hasn't explicitly picked a model.
+  effective_model: string;
+  free_model_offer: FreeModelOffer;
   task_model_preferences: Record<string, string>;
   last_message_at: string | null;
   provisioned_at: string | null;

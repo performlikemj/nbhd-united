@@ -1003,6 +1003,81 @@ def _byo_model_extras(tenant: Tenant) -> dict[str, dict[str, Any]]:
     return extras
 
 
+def resolve_tenant_models(tenant: Tenant) -> tuple[dict[str, str], dict[str, Any], list[str]]:
+    """Single source of truth for a tenant's primary model + allowlist + fallbacks.
+
+    Returns ``(models_config, model_entries, fallbacks_list)`` where
+    ``models_config["primary"]`` is what ``openclaw.json`` serves as
+    ``agents.defaults.model.primary``. Both ``generate_openclaw_config`` (the
+    write path) and the settings API (the read path, via
+    ``effective_primary_model``) call this so the UI never disagrees with the
+    container about which model is live.
+
+    Resolution order:
+      1. Tier primary (e.g. DeepSeek V4 Pro).
+      2. Limited-time free offer overrides the rolling default when active, and
+         joins the allowlist.
+      3. BYO subscription extras extend the allowlist.
+      4. An explicit ``preferred_model`` (if in the allowlist) wins.
+    Fallbacks are the rest of the allowlist, with the offer's configured paid
+    fallback led to the front; a BYO primary gets an empty fallback list so a
+    billing failure surfaces instead of silently dropping to a metered model.
+    """
+    # Late import: model_offers reads the DB; config_generator is imported during
+    # Django setup before the app registry is fully populated.
+    from apps.billing.model_offers import (
+        offer_fallback_model_id,
+        offer_model_entry,
+        offer_model_id,
+        resolve_default_primary_model,
+    )
+
+    tier = tenant.model_tier or "starter"
+    models_config = TIER_MODELS.get(tier, TIER_MODELS["starter"])
+    model_entries = TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["starter"])
+
+    free_offer_entry = offer_model_entry()
+    if free_offer_entry:
+        # Offer model leads the allowlist so it heads the model list; the tier's
+        # regular models follow as selectable + fallback options.
+        model_entries = {**free_offer_entry, **model_entries}
+
+    # Rolling default primary follows the offer while it's active; otherwise it
+    # stays the tier primary. An explicit preferred_model still wins below.
+    models_config = {**models_config, "primary": resolve_default_primary_model(models_config["primary"])}
+
+    byo_extras = _byo_model_extras(tenant)
+    if byo_extras:
+        model_entries = {**model_entries, **byo_extras}
+
+    if tenant.preferred_model and tenant.preferred_model in model_entries:
+        models_config = {**models_config, "primary": tenant.preferred_model}
+
+    primary_model = models_config["primary"]
+    primary_is_byo = bool(byo_extras) and primary_model in byo_extras
+    if primary_is_byo:
+        fallbacks_list: list[str] = []
+    else:
+        fallbacks_list = [m for m in model_entries if m != primary_model]
+        # When the free-offer model is primary, lead the fallback chain with the
+        # configured paid fallback (DeepSeek) so a per-turn outage recovers onto
+        # the strongest alternative first — not whatever happens to be next in
+        # allowlist order. OpenClaw's runWithModelFallback walks this list.
+        if free_offer_entry and primary_model == offer_model_id():
+            preferred_fb = offer_fallback_model_id()
+            if preferred_fb in fallbacks_list:
+                fallbacks_list = [preferred_fb] + [m for m in fallbacks_list if m != preferred_fb]
+
+    return models_config, model_entries, fallbacks_list
+
+
+def effective_primary_model(tenant: Tenant) -> str:
+    """The primary model this tenant is currently effectively on — identical to
+    what ``generate_openclaw_config`` writes. Used by the settings API so the UI
+    shows the true active model (the rolling free-offer default included)."""
+    return resolve_tenant_models(tenant)[0]["primary"]
+
+
 WHISPER_DEFAULT_MODEL = {"provider": "openai", "model": "gpt-4o-mini-transcribe"}
 
 # Heartbeat model — pinned to DeepSeek V4 Pro so heartbeat judgment runs
@@ -1737,36 +1812,15 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     chat_id = tenant.user.telegram_chat_id  # may be None before Telegram linking
     tier = tenant.model_tier or "starter"
     oc_version = getattr(tenant, "openclaw_version", OPENCLAW_CURRENT_VERSION) or OPENCLAW_CURRENT_VERSION
-    models_config = TIER_MODELS.get(tier, TIER_MODELS["starter"])
-    model_entries = TIER_MODEL_CONFIGS.get(tier, TIER_MODEL_CONFIGS["starter"])
-
-    # BYO subscription extras (e.g. anthropic/claude-sonnet-4-6) — extend
-    # the tier's allowed-model dict so the user's preferred_model can
-    # land on a BYO model below.
+    # Resolve primary model + allowlist + fallback order. Single source of truth
+    # shared with the settings API (see resolve_tenant_models / effective_primary_model)
+    # so the dashboard never disagrees with the container about the live model.
+    # Covers the limited-time free offer, BYO extras, preferred_model override,
+    # and the BYO empty-fallback guard.
+    models_config, model_entries, fallbacks_list = resolve_tenant_models(tenant)
+    # byo_extras is recomputed here because it's also consumed further down for
+    # BYO-specific plugin/feature gating, independent of model resolution.
     byo_extras = _byo_model_extras(tenant)
-    if byo_extras:
-        model_entries = {**model_entries, **byo_extras}
-
-    # Allow user to override primary model within their tier (or BYO extras).
-    if tenant.preferred_model and tenant.preferred_model in model_entries:
-        models_config = {**models_config, "primary": tenant.preferred_model}
-
-    # Silent-fallback guard for BYO models. When the resolved primary is a
-    # BYO model (e.g. anthropic/claude-sonnet-4-6 routed through the user's
-    # own Claude subscription), a billing failure on that account must NOT
-    # fall through to MiniMax — the user has paid Anthropic specifically to
-    # use Claude, and they expect to either get Claude or a clear error
-    # they can act on. With `fallbacks: []` OpenClaw 2026.4.25's
-    # `runWithModelFallback` raises the original billing error directly
-    # (see `throwFallbackFailureSummary`: when there's only one candidate
-    # the lastError is rethrown as-is), which the assistant then surfaces
-    # to the user via the channel router.
-    primary_model = models_config["primary"]
-    primary_is_byo = bool(byo_extras) and primary_model in byo_extras
-    if primary_is_byo:
-        fallbacks_list: list[str] = []
-    else:
-        fallbacks_list = [m for m in model_entries if m != primary_model]
 
     # Collect all configured plugins
     _plugin_defs = [

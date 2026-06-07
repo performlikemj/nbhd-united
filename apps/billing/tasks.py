@@ -17,3 +17,11 @@ def reconcile_openrouter_spend_task():
     from apps.billing.management.commands.reconcile_openrouter_spend import reconcile_all
 
     return reconcile_all()
+
+
+def model_health_check_task():
+    """Probe the free-model offer (pricing + reachability) and flip it on a
+    transition. See ``apps.billing.model_health.model_health_check``."""
+    from apps.billing.model_health import model_health_check
+
+    return model_health_check()

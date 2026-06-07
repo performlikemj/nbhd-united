@@ -357,9 +357,15 @@ class ConstantsTest(TestCase):
             self.assertIn("input", rate)
             self.assertIn("output", rate)
             self.assertIn("display_name", rate)
-            self.assertGreater(rate["input"], 0)
-            self.assertGreater(rate["output"], 0)
+            # Free promo models (e.g. Nemotron 3 Ultra) legitimately price at 0;
+            # metered models must be positive.
+            self.assertGreaterEqual(rate["input"], 0)
+            self.assertGreaterEqual(rate["output"], 0)
 
     def test_output_more_expensive_than_input(self):
         for key, rate in MODEL_RATES.items():
+            # The output>input invariant only applies to metered models — free
+            # models price both at 0.
+            if rate["input"] == 0 and rate["output"] == 0:
+                continue
             self.assertGreater(rate["output"], rate["input"])

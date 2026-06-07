@@ -124,6 +124,9 @@ TASK_MAP = {
     "remove_zombie_heartbeats": "apps.orchestrator.tasks.remove_zombie_heartbeats_task",
     # Daily infra cost refresh from Azure billing
     "refresh_infra_costs": "apps.billing.tasks.refresh_infra_costs_task",
+    # Free-model offer health — pricing + reachability probe; flips the promo
+    # on transitions (bumps configs + notifies users).
+    "model_health_check": "apps.billing.tasks.model_health_check_task",
     # Fleet USER.md refresh — bounds staleness of the `_Current local time: ..._`
     # line in workspace/USER.md so cron-fired turns see fresh time even when
     # no signal-driven refresh has fired for hours.

@@ -69,6 +69,8 @@ class TenantSerializer(serializers.ModelSerializer):
     trial_days_remaining = serializers.SerializerMethodField()
     platform_budget_exceeded = serializers.SerializerMethodField()
     gravity_available = serializers.SerializerMethodField()
+    effective_model = serializers.SerializerMethodField()
+    free_model_offer = serializers.SerializerMethodField()
 
     class Meta:
         model = Tenant
@@ -102,6 +104,8 @@ class TenantSerializer(serializers.ModelSerializer):
             "preferred_model",
             "applied_model",
             "applied_model_at",
+            "effective_model",
+            "free_model_offer",
             "task_model_preferences",
             "platform_budget_exceeded",
             "finance_enabled",
@@ -118,6 +122,27 @@ class TenantSerializer(serializers.ModelSerializer):
         Gravity is paused for privacy and the frontend hides the tab + the
         enable toggle regardless of the tenant's stored ``finance_enabled``."""
         return bool(getattr(settings, "GRAVITY_ENABLED", False))
+
+    def get_effective_model(self, obj):
+        """The model the tenant is actually on right now — the rolling free-offer
+        default included. The UI uses this (not a static DEFAULT_MODEL) to render
+        the Active badge when the user hasn't explicitly picked a model."""
+        from apps.orchestrator.config_generator import effective_primary_model
+
+        try:
+            return effective_primary_model(obj)
+        except Exception:  # noqa: BLE001 — never break the settings payload over this
+            return obj.preferred_model or ""
+
+    def get_free_model_offer(self, obj):
+        """State of the limited-time free-model promotion + its health, so the
+        settings page can show the banner and switch-back status."""
+        from apps.billing.model_offers import offer_state
+
+        try:
+            return offer_state()
+        except Exception:  # noqa: BLE001
+            return {"active": False}
 
     def get_has_active_subscription(self, obj):
         has_real_subscription = bool(obj.stripe_subscription_id) and obj.status != Tenant.Status.DELETED

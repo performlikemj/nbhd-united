@@ -775,11 +775,14 @@ class PreferredModelView(APIView):
 
 
 def _get_allowed_models(tenant: Tenant) -> dict:
-    """Return the set of model IDs allowed for this tenant's tier, plus
-    any BYO subscription extras the tenant has connected."""
+    """Return the set of model IDs allowed for this tenant's tier, plus the
+    limited-time free offer (while live) and any BYO subscription extras the
+    tenant has connected. Drives picker + per-task validation, so it must match
+    the allowlist config_generator.resolve_tenant_models builds."""
+    from apps.billing.model_offers import offer_model_entry
     from apps.orchestrator.config_generator import _byo_model_extras
 
-    base = TIER_MODEL_CONFIGS.get(tenant.model_tier, {})
+    base = {**offer_model_entry(), **TIER_MODEL_CONFIGS.get(tenant.model_tier, {})}
     extras = _byo_model_extras(tenant)
     if extras:
         return {**base, **extras}
