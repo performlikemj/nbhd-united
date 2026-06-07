@@ -452,13 +452,13 @@ class ConfigGeneratorTest(TestCase):
         # User override beats the DeepSeek default.
         self.assertEqual(morning["model"], MINIMAX_MODEL)
 
-    def test_task_model_defaults_stamp_deepseek_on_reasoning_crons(self):
-        """When the tenant has no `task_model_preferences` override, the
-        reasoning-shaped crons get DeepSeek V4 Pro via TIER_TASK_DEFAULTS;
-        cheap one-shot crons (Personal Question, Background Tasks) keep
-        inheriting the chat primary (no model stamp).
+    def test_task_model_defaults_stamp_fast_worker_on_routine_crons(self):
+        """When the tenant has no `task_model_preferences` override, routine
+        crons get the small/fast worker model (Gemma) via TIER_TASK_DEFAULTS,
+        not the slow reasoning leader. Personal Question + Background Tasks are
+        now stamped too (they previously inherited the reasoning chat primary).
         """
-        from apps.billing.constants import DEEPSEEK_MODEL
+        from apps.billing.constants import GEMMA_MODEL
 
         self.tenant.model_tier = "starter"
         self.tenant.task_model_preferences = {}
@@ -471,10 +471,10 @@ class ConfigGeneratorTest(TestCase):
             "Weekly Reflection",
             "Week Ahead Review",
             "Project Check-in",
+            "Personal Question",
+            "Background Tasks",
         ):
-            self.assertEqual(by_name[name].get("model"), DEEPSEEK_MODEL, name)
-        for name in ("Personal Question", "Background Tasks"):
-            self.assertNotIn("model", by_name[name], name)
+            self.assertEqual(by_name[name].get("model"), GEMMA_MODEL, name)
 
     def test_task_model_preferences_outside_allowlist_are_dropped(self):
         """Stale preferences pointing at models not in the tenant's tier
@@ -488,7 +488,7 @@ class ConfigGeneratorTest(TestCase):
         active BYO credential, the prefs were dropped, the cron
         fell back to the tier default, and Morning Briefing fired.
         """
-        from apps.billing.constants import DEEPSEEK_MODEL
+        from apps.billing.constants import GEMMA_MODEL
 
         self.tenant.model_tier = "starter"
         self.tenant.task_model_preferences = {
@@ -498,8 +498,8 @@ class ConfigGeneratorTest(TestCase):
         jobs = build_cron_seed_jobs(self.tenant)
         morning = next(j for j in jobs if j["name"] == "Morning Briefing")
         # Stale pref dropped; cron falls through to TIER_TASK_DEFAULTS
-        # (DeepSeek for Morning Briefing) — not silently un-stamped.
-        self.assertEqual(morning.get("model"), DEEPSEEK_MODEL)
+        # (Gemma for Morning Briefing) — not silently un-stamped.
+        self.assertEqual(morning.get("model"), GEMMA_MODEL)
 
     # ── Morning briefing prompt shape ──────────────────────────────
 

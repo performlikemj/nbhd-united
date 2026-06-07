@@ -941,26 +941,30 @@ TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
 }
 
 # Per-task model defaults — stamp these onto specific cron jobs when the
-# tenant hasn't set a `task_model_preferences` override. Crons not in this
-# map inherit the tier primary (or the user's `preferred_model` override).
+# tenant hasn't set a `task_model_preferences` override.
 #
-# The split is workload-driven, not tier-driven. DeepSeek V4 Pro for
-# reasoning-shaped jobs (long context in, long output out, judgment about
-# what's worth surfacing). Crons absent from this map (Personal Question,
-# Background Tasks) inherit the chat primary so short one-shot prompts
-# stay on the cheap-input model. Heartbeat is reasoning-shaped too but
-# pinned separately via HEARTBEAT_MODEL so user `preferred_model` can't
-# redirect a platform-initiated turn onto a BYO subscription.
+# Routine crons run on the small/fast WORKER model (Gemma): they gather
+# data and write the journal/message, and a cheap fast model keeps them
+# well inside the per-turn timeout. DeepSeek V4 Pro — the reasoning
+# "leader" — was stamped here originally for its judgment, but on the cron
+# path it overshot the 60s turn ceiling and timed out (2026-06 incident);
+# the leader now stays reserved for the interactive chat session while the
+# small workers handle scheduled legwork. Every value MUST be a NON-BYO
+# model so platform-initiated turns never burn a tenant's Anthropic
+# subscription. Heavier briefings on Gemma are verified on the canary —
+# bump a specific cron back up if it reads thin.
 #
 # Keys mirror the values of `_TASK_SLUG_MAP` defined later in this file.
 TIER_TASK_DEFAULTS: dict[str, dict[str, str]] = {
     "starter": {
-        "morning_briefing": DEEPSEEK_MODEL,
-        "evening_checkin": DEEPSEEK_MODEL,
-        "weekly_reflection": DEEPSEEK_MODEL,
-        "week_review": DEEPSEEK_MODEL,
-        "project_checkin": DEEPSEEK_MODEL,
-        "gravity_weekly_checkin": DEEPSEEK_MODEL,
+        "morning_briefing": GEMMA_MODEL,
+        "evening_checkin": GEMMA_MODEL,
+        "weekly_reflection": GEMMA_MODEL,
+        "week_review": GEMMA_MODEL,
+        "project_checkin": GEMMA_MODEL,
+        "gravity_weekly_checkin": GEMMA_MODEL,
+        "personal_question": GEMMA_MODEL,
+        "background_tasks": GEMMA_MODEL,
     },
 }
 
@@ -1005,14 +1009,14 @@ def _byo_model_extras(tenant: Tenant) -> dict[str, dict[str, Any]]:
 
 WHISPER_DEFAULT_MODEL = {"provider": "openai", "model": "gpt-4o-mini-transcribe"}
 
-# Heartbeat model — pinned to DeepSeek V4 Pro so heartbeat judgment runs
-# on a reasoning model regardless of the tenant's `preferred_model`. The
-# pin also guarantees platform-initiated turns never burn a BYO Anthropic
-# tenant's CLI subscription — repointing the constant preserves that
-# invariant (still a non-BYO model). See `_HEARTBEAT_CHECKIN_PROMPT` for
-# the judgment that lives in this turn — cross-referencing the morning
-# briefing + heartbeat-log to decide whether anything is genuinely new.
-HEARTBEAT_MODEL = DEEPSEEK_MODEL
+# Heartbeat model — runs on the small/fast worker model (Gemma) like the
+# other routine crons, pinned regardless of the tenant's `preferred_model`.
+# The pin still guarantees platform-initiated turns never burn a BYO
+# Anthropic tenant's CLI subscription (Gemma is non-BYO). Moved off DeepSeek
+# V4 Pro in 2026-06: the heartbeat's "is anything genuinely new" check was
+# overshooting the cron turn timeout on the slow reasoning model. See
+# `_HEARTBEAT_CHECKIN_PROMPT` for the cross-referencing it does.
+HEARTBEAT_MODEL = GEMMA_MODEL
 
 
 def _heartbeat_cron_expr(start_hour: int, window_hours: int) -> str:
