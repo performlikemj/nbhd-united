@@ -663,6 +663,8 @@ def drain_pending_messages_for_tenant_task(
             gateway_responded = _drain_line_batch(tenant, batch, chat_timeout)
         elif channel == PendingMessage.Channel.TELEGRAM:
             gateway_responded = _drain_telegram_batch(tenant, batch, chat_timeout)
+        elif channel == PendingMessage.Channel.IOS:
+            gateway_responded = _drain_ios_batch(tenant, batch, chat_timeout)
         else:
             raise ValueError(f"Unknown channel: {channel!r}")
 
@@ -1229,6 +1231,132 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
 
     _record_usage_safe(tenant, result, message_count=len(batch))
     return True
+
+
+# ---------------------------------------------------------------------------
+# iOS / rich-client (app) drain — persists the reply for the client to poll
+# instead of relaying to a push channel API. Routes through the tenant
+# runtime like Telegram/LINE (same USER.md/memory); the ``user`` param is
+# ``thread:<id>`` so each ChatThread is its own OpenClaw session.
+# ---------------------------------------------------------------------------
+
+
+def _drain_ios_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float) -> bool:
+    """Forward a deliverable iOS/app batch to the container as one OC turn,
+    then PERSIST the reply to ``AppChatMessage`` for the client to poll.
+
+    Mirrors ``_drain_telegram_batch`` on the wire, but instead of relaying
+    to a channel push API it stores the reply keyed by the client-supplied
+    ``client_msg_id`` (carried on each row's payload). Returns ``True`` on a
+    healthy gateway response (liveness signal — see ``_drain_line_batch``).
+    On an OpenRouter credit-limit the turn(s) are marked errored so polling
+    clients aren't stuck pending.
+    """
+    if not batch:
+        return False
+
+    thread_id = batch[0].channel_user_id
+    content, user_param, user_tz = _build_batch_chat_content(batch, thread_id)
+
+    url = f"https://{tenant.container_fqdn}/v1/chat/completions"
+    from apps.cron.gateway_client import get_gateway_token_for_tenant
+
+    gateway_token = get_gateway_token_for_tenant(tenant)
+
+    chat_payload = {
+        # See ``_drain_line_batch`` for why this stays the ``openclaw``
+        # sentinel rather than a resolved tenant primary.
+        "model": "openclaw",
+        "messages": [{"role": "user", "content": content}],
+        "user": user_param,
+    }
+    headers = {
+        "Authorization": f"Bearer {gateway_token}",
+        "X-User-Timezone": user_tz,
+        "X-Channel": "ios",
+    }
+
+    resp = httpx.post(url, json=chat_payload, headers=headers, timeout=timeout)
+    if _looks_like_openrouter_credit_limit(resp):
+        _handle_openrouter_credit_limit(tenant, channel="ios", channel_user_id=thread_id)
+        _store_ios_turn_error(tenant, batch, "budget_exhausted")
+        return False
+    resp.raise_for_status()
+    result = resp.json()
+
+    ai_text = _extract_ai_response(result)
+    _store_ios_turn_reply(tenant, batch, ai_text)
+    _record_usage_safe(tenant, result, message_count=len(batch))
+    return True
+
+
+def _ios_client_msg_ids(batch: list[PendingMessage]) -> list[str]:
+    ids = [(row.payload or {}).get("client_msg_id") for row in batch]
+    return [cid for cid in ids if cid]
+
+
+def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: str | None) -> None:
+    """Persist the assistant reply onto the AppChatMessage rows for this
+    batch so the polling client can read it. Empty / gateway-error replies
+    flip the turn to ``error`` so the client doesn't poll forever."""
+    from apps.router.models import AppChatMessage
+
+    client_ids = _ios_client_msg_ids(batch)
+    if not client_ids:
+        return
+    now = timezone.now()
+    if ai_text:
+        text = _clean_assistant_text_for_app(tenant, ai_text)
+        AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=client_ids).update(
+            reply_text=text,
+            status=AppChatMessage.Status.READY,
+            replied_at=now,
+        )
+    else:
+        AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=client_ids).update(
+            status=AppChatMessage.Status.ERROR,
+            error="empty_response",
+            replied_at=now,
+        )
+
+
+def _store_ios_turn_error(tenant: Tenant, batch: list[PendingMessage], reason: str) -> None:
+    from apps.router.models import AppChatMessage
+
+    client_ids = _ios_client_msg_ids(batch)
+    if not client_ids:
+        return
+    AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=client_ids).update(
+        status=AppChatMessage.Status.ERROR,
+        error=reason,
+        replied_at=timezone.now(),
+    )
+
+
+def _clean_assistant_text_for_app(tenant: Tenant, ai_text: str) -> str:
+    """Rehydrate PII, record + strip ``[[insight:]]`` markers, and strip
+    ``[[chart:]]`` / ``MEDIA:`` markers (the app can't render workspace
+    file paths) so the stored reply is clean display text. Mirrors the
+    relevant parts of ``relay_ai_response_to_telegram``."""
+    entity_map = getattr(tenant, "pii_entity_map", None)
+    if entity_map:
+        try:
+            from apps.pii.redactor import rehydrate_text
+
+            ai_text = rehydrate_text(ai_text, entity_map)
+        except Exception:
+            logger.exception("drain_pending: PII rehydrate failed (ios)")
+
+    try:
+        from apps.insights.markers import extract_and_record_insights
+
+        ai_text = extract_and_record_insights(ai_text, tenant=tenant)
+    except Exception:
+        logger.exception("insight marker extraction failed (ios drain)")
+
+    ai_text = re.sub(r"\[\[chart:\w+(?:\|.+?)?\]\]", "", ai_text)
+    ai_text = re.sub(r"MEDIA:\S+", "", ai_text)
+    return ai_text.strip()
 
 
 # ---------------------------------------------------------------------------
