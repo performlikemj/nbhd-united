@@ -7,7 +7,6 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
-from django.db import transaction as db_transaction
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -17,8 +16,16 @@ from apps.integrations.internal_auth import InternalAuthError, validate_internal
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
-from .models import FinanceAccount, FinanceTransaction, PayoffPlan
-from .services import DebtInput, calculate_payoff, compare_strategies, payoff_result_to_dict
+from .models import FinanceAccount, PayoffPlan
+from .services import (
+    AccountNotFound,
+    DebtInput,
+    calculate_payoff,
+    compare_strategies,
+    payoff_result_to_dict,
+    record_transaction,
+    resolve_account,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -166,32 +173,15 @@ class RuntimeFinanceTransactionsView(APIView):
             return tenant
 
         body = request.data
-        nickname = (body.get("account_nickname") or "").strip()
-
-        # Fuzzy match account by nickname
-        account = None
-        if nickname:
-            account = FinanceAccount.objects.filter(tenant=tenant, is_active=True, nickname__iexact=nickname).first()
-            if not account:
-                # Try contains match
-                account = FinanceAccount.objects.filter(
-                    tenant=tenant, is_active=True, nickname__icontains=nickname
-                ).first()
-
-        if not account:
-            return Response(
-                {"error": f"No account found matching '{nickname}'"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+        try:
+            account = resolve_account(tenant, account_nickname=body.get("account_nickname"))
+        except AccountNotFound as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
 
         try:
             amount = _parse_decimal(body.get("amount"), "amount")
         except ValueError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        txn_type = body.get("transaction_type", "payment")
-        if txn_type not in FinanceTransaction.TransactionType.values:
-            txn_type = "payment"
 
         txn_date = body.get("date")
         if txn_date:
@@ -202,78 +192,17 @@ class RuntimeFinanceTransactionsView(APIView):
         else:
             txn_date = date.today()
 
-        description = (body.get("description") or "")[:256]
-
-        # Dedup guard: same (tenant, account, type, amount, date) on the books
-        # is treated as the agent re-recording a payment after a silent timeout
-        # or hallucinated retry. We return the existing row instead of inserting
-        # a second one — without this, repeated agent retries (see 2026-05-07
-        # → 2026-05-15 platform_issue_logs) silently double- and triple-debit
-        # account balances. select_for_update on the account row serialises
-        # concurrent writes per account.
-        with db_transaction.atomic():
-            locked_account = FinanceAccount.objects.select_for_update().get(pk=account.pk)
-            existing = (
-                FinanceTransaction.objects.filter(
-                    tenant=tenant,
-                    account=locked_account,
-                    transaction_type=txn_type,
-                    amount=amount,
-                    date=txn_date,
-                )
-                .order_by("created_at")
-                .first()
-            )
-
-            if existing is not None:
-                logger.info(
-                    "finance.dedup_hit tenant=%s account=%s amount=%s date=%s type=%s existing_id=%s",
-                    str(tenant.id)[:8],
-                    locked_account.nickname,
-                    amount,
-                    txn_date,
-                    txn_type,
-                    existing.id,
-                )
-                return Response(
-                    {
-                        "transaction_id": str(existing.id),
-                        "account_nickname": locked_account.nickname,
-                        "new_balance": str(locked_account.current_balance.quantize(Decimal("0.01"))),
-                        "transaction_type": existing.transaction_type,
-                        "amount": str(existing.amount),
-                        "duplicate": True,
-                        "existing_description": existing.description,
-                        "existing_recorded_at": existing.created_at.isoformat(),
-                    },
-                    status=status.HTTP_200_OK,
-                )
-
-            txn_row = FinanceTransaction.objects.create(
-                tenant=tenant,
-                account=locked_account,
-                transaction_type=txn_type,
-                amount=amount,
-                description=description,
-                date=txn_date,
-            )
-
-            if txn_type in ("payment", "refund"):
-                locked_account.current_balance = max(Decimal("0"), locked_account.current_balance - amount)
-            elif txn_type in ("charge", "interest"):
-                locked_account.current_balance += amount
-            locked_account.save(update_fields=["current_balance", "updated_at"])
-
+        payload, created = record_transaction(
+            tenant=tenant,
+            account=account,
+            amount=amount,
+            transaction_type=body.get("transaction_type", "payment"),
+            txn_date=txn_date,
+            description=body.get("description") or "",
+        )
         return Response(
-            {
-                "transaction_id": str(txn_row.id),
-                "account_nickname": locked_account.nickname,
-                "new_balance": str(locked_account.current_balance.quantize(Decimal("0.01"))),
-                "transaction_type": txn_type,
-                "amount": str(amount),
-                "duplicate": False,
-            },
-            status=status.HTTP_201_CREATED,
+            payload,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
 
 
