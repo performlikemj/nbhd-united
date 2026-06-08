@@ -22,7 +22,8 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.core import compose, render, services
-from apps.core.models import MeditationSession, MeditationStatus
+from apps.core.models import CoreProfile, MeditationSession, MeditationStatus
+from apps.lessons.models import Lesson, StarJournalEntry, TutoringSession
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
@@ -971,3 +972,84 @@ class ComposeMeditationServiceTests(TestCase):
         session.refresh_from_db()
         self.assertEqual(session.status, MeditationStatus.FAILED)
         self.assertIn("compose_error", session.error)
+
+
+class MeditationSignalGatheringTests(TestCase):
+    """gather_meditation_signals pulls constellation + journal context (ZDR-gated)."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Signals", telegram_chat_id=900300)
+        Lesson.objects.filter(tenant=self.tenant).delete()
+
+    def _star(self, **kwargs) -> Lesson:
+        defaults = dict(
+            tenant=self.tenant,
+            text="Rest is productive",
+            context="",
+            source_type="reflection",
+            source_ref="",
+            tags=["recovery"],
+            status="approved",
+        )
+        defaults.update(kwargs)
+        return Lesson.objects.create(**defaults)
+
+    def test_profile_context_and_last_theme(self):
+        CoreProfile.objects.create(tenant=self.tenant, additional_context="going through a big move")
+        MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=timezone.now().date(),
+            status=MeditationStatus.READY,
+            theme="letting go of control",
+        )
+        signals = services.gather_meditation_signals(self.tenant)
+        self.assertEqual(signals["additional_context"], "going through a big move")
+        self.assertEqual(signals["last_meditation_theme"], "letting go of control")
+
+    def test_gathers_active_constellation_star(self):
+        star = self._star(galaxy_note="protect the off-days", star_stage="radiant")
+        StarJournalEntry.objects.create(
+            tenant=self.tenant, star=star, text="Took a full rest day, felt sharper.", entry_type="revisit"
+        )
+        TutoringSession.objects.create(star=star, phases_completed=["restate"], mastery_achieved=True)
+        signals = services.gather_meditation_signals(self.tenant)
+        stars = signals.get("constellation_stars")
+        self.assertTrue(stars)
+        self.assertEqual(stars[0]["id"], star.id)
+        self.assertEqual(stars[0]["galaxy_note"], "protect the off-days")
+
+    def test_gathers_recent_daily_note_snippets(self):
+        from apps.journal.models import Document
+
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug=str(timezone.now().date()),
+            title="Today",
+            markdown="# Daily\nFelt scattered this morning but found focus after a walk.",
+        )
+        snippets = services.gather_meditation_signals(self.tenant).get("recent_notes")
+        self.assertTrue(snippets)
+        self.assertIn("found focus after a walk", snippets[0])
+        self.assertNotIn("# Daily", snippets[0])  # heading stripped
+
+    def test_format_signals_renders_constellation(self):
+        signals = {
+            "constellation_stars": [
+                {
+                    "text": "Name the fear",
+                    "stage": "ignited",
+                    "galaxy_note": "say it out loud",
+                    "journal_entries": [{"text": "it shrank once I named it"}],
+                    "tutoring_insights": [{"mastery_achieved": True}],
+                }
+            ],
+        }
+        rendered = compose._format_signals(signals)
+        self.assertIn("Name the fear", rendered)
+        self.assertIn("say it out loud", rendered)
+        self.assertIn("settling into", rendered)  # mastery → gentle engagement phrase
+
+    def test_format_signals_universal_fallback_when_empty(self):
+        rendered = compose._format_signals({"tenant_id": "x"})
+        self.assertIn("little specific signal this week", rendered)

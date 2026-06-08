@@ -507,7 +507,9 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_journal_context",
       description:
-        "Load recent daily notes and long-term memory in one call. Use at the start of every session to get caught up.",
+        "Load recent daily notes, long-term memory, backbone goals/tasks, and recent constellation " +
+        "activity (stars the user has been working through — their pinned notes, reflections, and " +
+        "tutoring signals) in one call. Use at the start of every session to get caught up.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -773,6 +775,61 @@ export default function register(api) {
         const payload = await callRuntime(api, {
           path: tenantPath(api, "/lessons/pending/"),
           method: "GET",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  // ── Constellation: enriched notes (pinned notes, reflections, tutoring) ─
+  api.registerTool(wrap({
+      name: "nbhd_constellation_notes",
+      description:
+        "Read the enriched context behind the user's constellation stars (lessons): their pinned " +
+        "galaxy notes, the reflections they journaled on a star, and the honest signals the assistant " +
+        "captured while tutoring them on it (did they restate it accurately, find edge cases, make " +
+        "connections, reach mastery). Use this to teach to how THIS person actually thinks — their " +
+        "strengths and blind spots on topics they've worked through. With no arguments it returns the " +
+        "stars they've been most active on lately; pass `q` to search by topic, or `star_id` to drill " +
+        "into one star.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          q: {
+            type: "string",
+            description: "Optional topic/idea to search stars by (semantic + text).",
+          },
+          star_id: {
+            type: "number",
+            description: "Optional id of a single star to fetch full context for.",
+          },
+          limit: {
+            type: "number",
+            description: "Max stars to return (default 5, max 25).",
+          },
+          days: {
+            type: "number",
+            description: "Lookback window for 'recently active' stars (default 30, max 365).",
+          },
+        },
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const query = {
+          limit: parseInteger(input.limit, { defaultValue: 5, min: 1, max: 25 }),
+          days: parseInteger(input.days, { defaultValue: 30, min: 1, max: 365 }),
+        };
+        const q = asTrimmedString(input.q);
+        if (q) query.q = q;
+        if (input.star_id !== undefined && input.star_id !== null && input.star_id !== "") {
+          query.star_id = parseInteger(input.star_id, { defaultValue: 0, min: 0, max: 2147483647 });
+        }
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/constellation/notes/"),
+          method: "GET",
+          query,
         });
         return renderPayload(payload);
       },
