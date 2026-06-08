@@ -434,6 +434,52 @@ def serve_chart_image(request, tenant_id, filename):
 # ── Meditation audio serving (Core pillar) ───────────────────────────────
 
 
+def _audio_range_response(data: bytes, content_type: str, range_header: str) -> HttpResponse:
+    """Build a Range-aware response for an in-memory audio file.
+
+    iOS ``AVPlayer`` (and Safari/WebKit, which share the same AVFoundation media
+    stack) needs HTTP Range support to establish a *finite* duration for a
+    progressively-served mp3. Without it the item duration stays ``indefinite``,
+    ``AVPlayerItemDidPlayToEndTime`` never fires, and the playhead runs past the
+    real end of the audio — the "meditation never stops / loops forever" bug.
+    Advertising ``Accept-Ranges`` and answering a ``Range:`` request with a 206
+    lets the player read the header, scrub, and stop cleanly at the true end.
+
+    Only a single ``bytes=start-end`` (or suffix ``bytes=-N``) range is honored —
+    the form every AVPlayer/browser audio probe uses; anything malformed falls
+    through to a full 200 (still with ``Accept-Ranges``).
+    """
+    size = len(data)
+    spec = (range_header or "").strip()
+    if spec.startswith("bytes="):
+        first = spec[len("bytes=") :].split(",", 1)[0].strip()
+        start_s, _, end_s = first.partition("-")
+        try:
+            if start_s == "":  # suffix range: last N bytes
+                start = max(0, size - int(end_s))
+                end = size - 1
+            else:
+                start = int(start_s)
+                end = int(end_s) if end_s else size - 1
+            end = min(end, size - 1)
+        except (ValueError, TypeError):
+            start, end = 0, size - 1  # malformed — serve the whole file below
+        else:
+            if start > end or start >= size:
+                resp = HttpResponse(status=416, content_type=content_type)
+                resp["Content-Range"] = f"bytes */{size}"
+                resp["Accept-Ranges"] = "bytes"
+                return resp
+            chunk = data[start : end + 1]
+            resp = HttpResponse(chunk, status=206, content_type=content_type)
+            resp["Content-Range"] = f"bytes {start}-{end}/{size}"
+            resp["Accept-Ranges"] = "bytes"
+            return resp
+    resp = HttpResponse(data, content_type=content_type)
+    resp["Accept-Ranges"] = "bytes"
+    return resp
+
+
 @csrf_exempt
 def serve_meditation_audio(request, tenant_id, filename):
     """Serve a rendered meditation (mp3/ogg) from a tenant's Azure File Share.
@@ -483,10 +529,11 @@ def serve_meditation_audio(request, tenant_id, filename):
         )
         data = file_client.download_file().readall()
 
-        # Full-body 200 only — we don't honor Range requests, so we must not
-        # advertise Accept-Ranges (audio elements fall back to full GETs fine for
-        # these short files; range support is a future enhancement if needed).
-        response = HttpResponse(data, content_type=content_type)
+        # Range-aware: advertise Accept-Ranges and answer Range probes with a 206
+        # so iOS AVPlayer / Safari can discover the true duration and stop at the
+        # end of the file. A full-body 200 leaves AVPlayer's duration indefinite —
+        # the playhead then overruns the real end and the sit appears to loop.
+        response = _audio_range_response(data, content_type, request.headers.get("Range", ""))
         response["Cache-Control"] = "public, max-age=3600"
         return response
 

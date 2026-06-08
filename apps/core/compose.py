@@ -89,7 +89,21 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _format_signals(signals: dict) -> str:
+def _target_seconds_from_signals(signals: dict) -> float:
+    """The sit's target length (s) from ``preferred_duration_minutes``.
+
+    Clamped to the band the renderer supports (matches ``CoreProfile``'s 3–30 min);
+    defaults to the canonical ~10-minute sit when the signal is absent/invalid.
+    """
+    minutes = signals.get("preferred_duration_minutes")
+    try:
+        seconds = float(int(minutes) * 60) if minutes else render.DEFAULT_TOTAL_TARGET_SECONDS
+    except (TypeError, ValueError):
+        seconds = render.DEFAULT_TOTAL_TARGET_SECONDS
+    return min(render.HARD_MAX_TOTAL_SECONDS, max(180.0, seconds))
+
+
+def _format_signals(signals: dict, target_seconds: float = render.DEFAULT_TOTAL_TARGET_SECONDS) -> str:
     """Render the gathered signals as a compact prompt context (no raw PII dumps)."""
     lines: list[str] = ["Here is what you've gathered about this person's recent days:"]
     themes = signals.get("recent_themes") or []
@@ -109,28 +123,36 @@ def _format_signals(signals: dict) -> str:
             "- (little specific signal this week — compose a gentle, universal sit about arriving, "
             "breathing, and setting down whatever today held)"
         )
+    minutes = max(1, round(target_seconds / 60))
+    scale = target_seconds / render.DEFAULT_TOTAL_TARGET_SECONDS
+    scaled = ", ".join(f"{k}~{max(1, round(v * scale))}s" for k, v in _PHASE_TARGETS.items())
     lines.append(
-        "\nCompose today's sit now — holistically. Let silence carry most of the ten minutes; speak only "
-        "where it guides. Rough per-phase budget to pace toward (yours to adjust): "
-        + ", ".join(f"{k}~{v}s" for k, v in _PHASE_TARGETS.items())
+        f"\nCompose today's sit now — holistically. Aim for about {minutes} minutes "
+        f"(~{round(target_seconds)}s total); let silence carry most of it; speak only where it guides. "
+        f"Rough per-phase budget to pace toward (yours to adjust, but the six should sum to ~{round(target_seconds)}s): "
+        + scaled
         + "."
     )
     return "\n".join(lines)
 
 
-def _normalize(manifest: dict, voice: str) -> dict:
+def _normalize(manifest: dict, voice: str, target_seconds: float = render.DEFAULT_TOTAL_TARGET_SECONDS) -> dict:
     """Backstop the scaffold fields the model must not drift on, before validation.
 
-    The per-phase time budgets are now the model's to allocate (holistic pacing) —
-    we only fill a sane default when it omits one, so the renderer always has a
-    positive ``target_seconds`` for any flex silence to resolve against.
+    The per-phase time budgets are the model's to allocate (holistic pacing) — we
+    only fill a sane default when it omits one, so the renderer always has a
+    positive ``target_seconds`` for any flex silence to resolve against. We DO own
+    the overall budget: ``total_target_seconds`` is pinned to the user's chosen
+    length (it's the contract the render-time ceiling validates against), and any
+    omitted per-phase target defaults are scaled to it.
     """
     if not isinstance(manifest, dict):
         raise ComposeError("LLM did not return a JSON object")
+    scale = target_seconds / render.DEFAULT_TOTAL_TARGET_SECONDS
     manifest.setdefault("schema_version", 1)
     manifest["voice"] = voice or manifest.get("voice") or render.DEFAULT_VOICE
     manifest.setdefault("global_tone", "soft, slow, warm; unhurried with generous space")
-    manifest.setdefault("total_target_seconds", 600)
+    manifest["total_target_seconds"] = int(round(target_seconds))
     manifest.setdefault("ambient", None)
     for phase in manifest.get("phases") or []:
         if not isinstance(phase, dict):
@@ -140,7 +162,7 @@ def _normalize(manifest: dict, voice: str) -> dict:
                 continue  # keep the model's allocation
         except (TypeError, ValueError):
             pass
-        phase["target_seconds"] = _PHASE_TARGETS.get(phase.get("name"), 60)
+        phase["target_seconds"] = max(1, round(_PHASE_TARGETS.get(phase.get("name"), 60) * scale))
     return manifest
 
 
@@ -154,6 +176,7 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "") -> dict:
     if not api_key:
         raise ComposeError("OPENROUTER_API_KEY not configured")
     model = model or getattr(settings, "CORE_COMPOSE_MODEL", "") or DEFAULT_COMPOSE_MODEL
+    target_seconds = _target_seconds_from_signals(signals)
 
     try:
         resp = requests.post(
@@ -163,7 +186,7 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "") -> dict:
                 "model": model,
                 "messages": [
                     {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": _format_signals(signals)},
+                    {"role": "user", "content": _format_signals(signals, target_seconds)},
                 ],
                 "max_tokens": _MAX_OUTPUT_TOKENS,
                 "temperature": 0.7,
@@ -181,7 +204,7 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "") -> dict:
     except json.JSONDecodeError as exc:
         raise ComposeError(f"LLM returned non-JSON: {content[:160]}") from exc
 
-    manifest = _normalize(manifest, voice)
+    manifest = _normalize(manifest, voice, target_seconds)
     errors = render.validate_manifest(manifest)
     if errors:
         raise ComposeError("authored manifest invalid: " + "; ".join(errors[:4]))
