@@ -827,7 +827,9 @@ class ComposeTargetLengthTests(UnitTestCase):
         self.assertEqual(compose._target_seconds_from_signals({"preferred_duration_minutes": 5}), 300.0)
 
     def test_target_seconds_clamped_to_band(self):
-        self.assertEqual(compose._target_seconds_from_signals({"preferred_duration_minutes": 99}), render.HARD_MAX_TOTAL_SECONDS)
+        self.assertEqual(
+            compose._target_seconds_from_signals({"preferred_duration_minutes": 99}), render.HARD_MAX_TOTAL_SECONDS
+        )
         self.assertEqual(compose._target_seconds_from_signals({"preferred_duration_minutes": 1}), 180.0)
 
     def test_normalize_pins_total_target_to_request(self):
