@@ -94,6 +94,15 @@ MAX_SPEECH_CHARS = 600  # one narration line longer than this is almost certainl
 # per-minute cap + the render deadline. Where the words fall is the composer's call.
 MIN_SPEECH_SEGMENTS = 4
 MAX_SPEECH_SEGMENTS = 12
+# Total-length ceiling. The composer owns pacing, but a sit must not balloon far
+# past its target — uncapped explicit silences (each ≤150s, unbounded in count)
+# could otherwise render a 25-minute "10-minute" sit, which both wastes spend and
+# strands the player. Reject when the ESTIMATED render length exceeds the target
+# by more than this factor, or the absolute hard cap (which matches the 30-minute
+# ceiling on ``CoreProfile.preferred_duration_minutes``).
+DEFAULT_TOTAL_TARGET_SECONDS = 600.0
+DURATION_TARGET_TOLERANCE = 1.3
+HARD_MAX_TOTAL_SECONDS = 1800.0
 
 
 class ManifestError(ValueError):
@@ -203,6 +212,22 @@ def validate_manifest(manifest: object) -> list[str]:
     if not (isinstance(last, dict) and last.get("type") == "speech" and (last.get("text") or "").strip()):
         errors.append("closing phase must END on a (non-empty) speech segment")
 
+    # Total-length ceiling — guard the spend and the player against a runaway sit
+    # (uncapped explicit silences). Best-effort: only meaningful once the structure
+    # is valid enough to estimate; a failure here is covered by the errors above.
+    try:
+        estimated = estimate_total_seconds(manifest)
+    except Exception:  # noqa: BLE001 — estimation is advisory, never the gate by itself
+        estimated = 0.0
+    if estimated > 0:
+        target = _manifest_target_seconds(manifest)
+        ceiling = min(HARD_MAX_TOTAL_SECONDS, target * DURATION_TARGET_TOLERANCE)
+        if estimated > ceiling:
+            errors.append(
+                f"estimated length {estimated:.0f}s exceeds the ceiling {ceiling:.0f}s "
+                f"(target {target:.0f}s) — trim silences or phase targets"
+            )
+
     return errors
 
 
@@ -255,6 +280,49 @@ def reconcile_phase_flex(target_seconds: float, speech_total: float, fixed_silen
         return 0.0
     remaining = target_seconds - speech_total - fixed_silence
     return min(FLEX_CEIL, max(FLEX_FLOOR, remaining / flex_count))
+
+
+def _manifest_target_seconds(manifest: dict) -> float:
+    """The sit's target length (s), clamped to a sane band for the ceiling check."""
+    try:
+        target = float(manifest.get("total_target_seconds"))
+    except (TypeError, ValueError):
+        target = DEFAULT_TOTAL_TARGET_SECONDS
+    if target <= 0:
+        target = DEFAULT_TOTAL_TARGET_SECONDS
+    return min(HARD_MAX_TOTAL_SECONDS, max(60.0, target))
+
+
+def estimate_total_seconds(manifest: dict) -> float:
+    """Estimate the rendered length (s) from a manifest, before any TTS spend.
+
+    Mirrors the render math: speech via ``estimate_speech_seconds``, explicit
+    silences at face value, and each flex resolved against its phase budget
+    (``reconcile_phase_flex``). Used by ``validate_manifest`` to reject a sit that
+    would render far past its target. An estimate, not the exact render — TTS
+    length varies — so the ceiling carries a tolerance.
+    """
+    plan = plan_segments(manifest)
+    phase_speech: dict[str, float] = defaultdict(float)
+    phase_fixed: dict[str, float] = defaultdict(float)
+    phase_flex: dict[str, int] = defaultdict(int)
+    for seg in plan:
+        if seg.kind == "speech":
+            phase_speech[seg.phase] += estimate_speech_seconds(seg.text)
+        elif seg.kind == "silence":
+            phase_fixed[seg.phase] += seg.seconds
+        elif seg.kind == "flex":
+            phase_flex[seg.phase] += 1
+    total = 0.0
+    for phase in manifest["phases"]:
+        name = phase["name"]
+        try:
+            target = float(phase.get("target_seconds") or 0.0)
+        except (TypeError, ValueError):
+            target = 0.0
+        flex_secs = reconcile_phase_flex(target, phase_speech[name], phase_fixed[name], phase_flex[name])
+        total += phase_speech[name] + phase_fixed[name] + phase_flex[name] * flex_secs
+    return total
 
 
 def flatten_guidance_text(manifest: dict) -> str:

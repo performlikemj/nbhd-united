@@ -186,6 +186,32 @@ class ManifestValidationTests(UnitTestCase):
         errors = render.validate_manifest(m)
         self.assertTrue(any("target_seconds" in e for e in errors))
 
+    def test_overlong_manifest_rejected(self):
+        # Uncapped explicit silences that push the estimate far past the target are
+        # rejected (the runaway-length guard) — otherwise the sit renders ~25 min
+        # for a 10-min target and strands the player. Each silence is individually
+        # legal (≤150s) and the speech count stays in band; only the TOTAL is over.
+        m = _valid_manifest()
+        for phase in m["phases"][:-1]:
+            phase["segments"] = [
+                {"type": "speech", "text": "Rest here.", "tone": "soft"},
+                {"type": "silence", "seconds": 150},
+                {"type": "silence", "seconds": 150},
+                {"type": "silence", "seconds": 150},
+            ]
+        errors = render.validate_manifest(m)
+        self.assertTrue(any("exceeds the ceiling" in e for e in errors), errors)
+
+    def test_target_length_sit_within_ceiling_allowed(self):
+        # A sit a little over target (≤1.3x) is fine — TTS length varies; we only
+        # reject genuine runaways.
+        m = _valid_manifest()
+        m["phases"][3]["segments"] = [
+            {"type": "speech", "text": "Set it down.", "tone": "gentle"},
+            {"type": "silence", "seconds": 150},
+        ]
+        self.assertEqual(render.validate_manifest(m), [])
+
 
 # ═════════════════════════════════════════════════════════════════════
 # 2. Pure: planning + timing math
@@ -206,6 +232,23 @@ class RenderMathTests(UnitTestCase):
 
     def test_reconcile_zero_flex_returns_zero(self):
         self.assertEqual(render.reconcile_phase_flex(60, 10, 8, 0), 0.0)
+
+    def test_estimate_total_seconds_in_band_for_flex_sit(self):
+        # _valid_manifest fills each phase's flex toward its target (~600 total,
+        # minus closing which is speech-only) — the estimate should land in band.
+        est = render.estimate_total_seconds(_valid_manifest())
+        self.assertGreater(est, 400)
+        self.assertLess(est, 700)
+
+    def test_estimate_total_seconds_counts_explicit_silence(self):
+        # Two 150s holds in one phase dominate the estimate.
+        m = _valid_manifest()
+        m["phases"][3]["segments"] = [
+            {"type": "speech", "text": "Rest.", "tone": "soft"},
+            {"type": "silence", "seconds": 150},
+            {"type": "silence", "seconds": 150},
+        ]
+        self.assertGreater(render.estimate_total_seconds(m), 300)
 
     def test_plan_segments_order_and_kinds(self):
         plan = render.plan_segments(_valid_manifest())
@@ -774,6 +817,27 @@ class ComposeAuthoringTests(SimpleTestCase):
             compose.author_manifest({})
 
 
+class ComposeTargetLengthTests(UnitTestCase):
+    """The preferred-duration wiring (compose targets the user's chosen length)."""
+
+    def test_target_seconds_default(self):
+        self.assertEqual(compose._target_seconds_from_signals({}), 600.0)
+
+    def test_target_seconds_from_minutes(self):
+        self.assertEqual(compose._target_seconds_from_signals({"preferred_duration_minutes": 5}), 300.0)
+
+    def test_target_seconds_clamped_to_band(self):
+        self.assertEqual(compose._target_seconds_from_signals({"preferred_duration_minutes": 99}), render.HARD_MAX_TOTAL_SECONDS)
+        self.assertEqual(compose._target_seconds_from_signals({"preferred_duration_minutes": 1}), 180.0)
+
+    def test_normalize_pins_total_target_to_request(self):
+        m = compose._normalize({"phases": []}, "Achernar", 300.0)
+        self.assertEqual(m["total_target_seconds"], 300)
+
+    def test_format_signals_states_target_minutes(self):
+        self.assertIn("5 minutes", compose._format_signals({}, 300.0))
+
+
 # ═════════════════════════════════════════════════════════════════════
 # 8. Compose — signals, consumer view, task, service orchestration (DB)
 # ═════════════════════════════════════════════════════════════════════
@@ -794,6 +858,13 @@ class GatherSignalsTests(TestCase):
         self.assertEqual(sig["tenant_id"], str(self.tenant.id))
         self.assertIn("wind down", sig["additional_context"])
         self.assertIn("letting go", sig["last_meditation_theme"])
+
+    def test_includes_preferred_duration(self):
+        from apps.core.models import CoreProfile
+
+        CoreProfile.objects.create(tenant=self.tenant, preferred_duration_minutes=15)
+        sig = services.gather_meditation_signals(self.tenant)
+        self.assertEqual(sig["preferred_duration_minutes"], 15)
 
 
 class CoreComposeViewTests(TestCase):

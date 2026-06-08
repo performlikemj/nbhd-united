@@ -44,8 +44,12 @@ def gather_meditation_signals(tenant: Tenant) -> dict:
     signals: dict = {"tenant_id": str(tenant.id)}
     try:
         profile = CoreProfile.objects.filter(tenant=tenant).first()
-        if profile and profile.additional_context.strip():
-            signals["additional_context"] = profile.additional_context.strip()[:800]
+        if profile:
+            if profile.additional_context.strip():
+                signals["additional_context"] = profile.additional_context.strip()[:800]
+            # The user's chosen length drives the compose target + the render-time
+            # duration ceiling, so a sit lands near what they asked for.
+            signals["preferred_duration_minutes"] = profile.preferred_duration_minutes
     except Exception:
         logger.debug("gather_meditation_signals: profile read failed", exc_info=True)
     try:
@@ -236,6 +240,21 @@ def render_meditation(session: MeditationSession) -> None:
         result.speech_count,
         result.failed_count,
     )
+
+    # Observability: the manifest is rejected pre-render when its ESTIMATE blows
+    # past the target, but TTS length varies — flag a ready sit that still ran
+    # long against its target so a drift in the composer is visible in logs.
+    try:
+        target_s = float(session.manifest.get("total_target_seconds") or 0) if isinstance(session.manifest, dict) else 0
+    except (TypeError, ValueError):
+        target_s = 0
+    if target_s and result.duration_ms > target_s * 1000 * render.DURATION_TARGET_TOLERANCE:
+        logger.warning(
+            "render_meditation: session %s ran long (%.0fs vs target %.0fs)",
+            sid[:8],
+            result.duration_ms / 1000.0,
+            target_s,
+        )
 
     # ---- notify the linked channel (non-fatal: audio is already stored) ----
     try:
