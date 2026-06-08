@@ -62,6 +62,20 @@ class WorkoutPlan(models.Model):
         help_text="Weekly template: keys are weekday indices (0=Mon..6=Sun), values are workout definitions",
     )
     notes = models.TextField(blank=True, default="", help_text="Programming notes, progression strategy")
+    objective = models.CharField(
+        max_length=200,
+        blank=True,
+        default="",
+        help_text="Structured one-line objective for the plan, e.g. 'Run a sub-25 5K' or 'Build pull strength'. "
+        "The plan's through-line, kept out of free-form notes.",
+    )
+    week_overrides = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Per-week progression/deload: keys are 0-indexed week offsets, values are partial "
+        "schedule_json overrides merged over the base template for that week (a day mapped to null = rest). "
+        "Empty means every week uses the base template unchanged.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

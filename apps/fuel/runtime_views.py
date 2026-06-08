@@ -834,6 +834,8 @@ def _serialize_plan(plan, include_workouts=False):
         "weeks": plan.weeks,
         "days_per_week": plan.days_per_week,
         "schedule_json": plan.schedule_json,
+        "objective": plan.objective,
+        "week_overrides": plan.week_overrides,
         "notes": plan.notes,
         "workout_count": total,
         "completed_count": done,
@@ -848,17 +850,151 @@ def _serialize_plan(plan, include_workouts=False):
                 "category": w.category,
                 "activity": w.activity,
                 "duration_minutes": w.duration_minutes,
+                "rpe": w.rpe,
             }
             for w in workouts
         ]
     return data
 
 
-def _expand_plan_workouts(plan, tenant, schedule_json, start_date, weeks):
+def _validate_normalize_schedule(schedule_json):
+    """Validate weekday keys + normalize/validate each day's prescription.
+
+    Returns ``(normalized_schedule, error_response)``. On any problem
+    ``normalized_schedule`` is None and ``error_response`` is a 400 — carrying
+    the ``LLMValidationError`` envelope when a strength/calisthenics
+    ``detail_json`` is the culprit, so the agent self-corrects in-loop (the same
+    chokepoint the log-workout path uses). Atomic by design: the caller persists
+    nothing unless the whole schedule validates.
+    """
+    from .set_contract import normalize_detail, validate_detail
+
+    normalized: dict = {}
+    for day_str, workout_def in schedule_json.items():
+        try:
+            day_int = int(day_str)
+        except (TypeError, ValueError):
+            return None, Response(
+                {"error": "invalid_schedule", "detail": f"weekday key '{day_str}' must be an integer 0-6"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if day_int < 0 or day_int > 6:
+            return None, Response(
+                {"error": "invalid_schedule", "detail": f"weekday key '{day_str}' out of range (0=Mon..6=Sun)"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not isinstance(workout_def, dict):
+            return None, Response(
+                {"error": "invalid_schedule", "detail": f"day {day_str} value must be a workout object"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        category = workout_def.get("category", "other")
+        if category not in WorkoutCategory.values:
+            category = "other"
+        activity = str(workout_def.get("activity") or WorkoutCategory(category).label).strip()
+
+        detail = workout_def.get("detail_json", {}) or {}
+        detail, category = normalize_detail(detail, category, activity=activity)[:2]
+        detail, verr = validate_detail(detail, category)
+        if verr is not None:
+            payload = dict(verr.as_tool_result())
+            payload["weekday"] = day_int
+            return None, Response(payload, status=status.HTTP_400_BAD_REQUEST)
+
+        target_rpe = workout_def.get("target_rpe", workout_def.get("rpe"))
+        if target_rpe is not None:
+            try:
+                target_rpe = max(1, min(10, int(target_rpe)))
+            except (TypeError, ValueError):
+                target_rpe = None
+
+        duration = workout_def.get("duration_minutes")
+        if duration is not None:
+            try:
+                duration = int(duration)
+            except (TypeError, ValueError):
+                duration = None
+
+        norm: dict = {"category": category, "activity": activity, "detail_json": detail}
+        if duration is not None:
+            norm["duration_minutes"] = duration
+        if target_rpe is not None:
+            norm["target_rpe"] = target_rpe
+        normalized[str(day_int)] = norm
+
+    return normalized, None
+
+
+def _validate_normalize_week_overrides(week_overrides):
+    """Validate the per-week progression/deload map.
+
+    Keys are 0-indexed week offsets; values are partial schedule overrides merged
+    over the base template for that week. A day mapped to ``null`` means "rest
+    this week" (drop the base day). Returns ``(normalized, error_response)``;
+    on error ``normalized`` is None.
+    """
+    if not week_overrides:
+        return {}, None
+    if not isinstance(week_overrides, dict):
+        return None, Response(
+            {"error": "invalid_week_overrides", "detail": "must be an object keyed by week offset"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    normalized: dict = {}
+    for wk_str, override in week_overrides.items():
+        try:
+            wk = int(wk_str)
+        except (TypeError, ValueError):
+            return None, Response(
+                {"error": "invalid_week_overrides", "detail": f"week key '{wk_str}' must be an integer >= 0"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if wk < 0:
+            return None, Response(
+                {"error": "invalid_week_overrides", "detail": f"week key '{wk_str}' must be >= 0"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not isinstance(override, dict):
+            return None, Response(
+                {"error": "invalid_week_overrides", "detail": f"week {wk} value must be an object"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        day_defs: dict = {}
+        rest_days: dict = {}
+        for day_str, val in override.items():
+            try:
+                day_int = int(day_str)
+            except (TypeError, ValueError):
+                return None, Response(
+                    {"error": "invalid_week_overrides", "detail": f"weekday key '{day_str}' must be an integer 0-6"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if val is None:
+                rest_days[str(day_int)] = None
+            else:
+                day_defs[str(day_int)] = val
+
+        norm_days, err = _validate_normalize_schedule(day_defs) if day_defs else ({}, None)
+        if err is not None:
+            return None, err
+        normalized[str(wk)] = {**norm_days, **rest_days}
+
+    return normalized, None
+
+
+def _expand_plan_workouts(plan, tenant, schedule_json, start_date, weeks, week_overrides=None):
     """Create planned Workout rows + matching PlanSlot rows from a schedule.
 
     Each workout gets its ``slot`` FK set so the reconciler (Phase 5) can
     later mutate slots in place without tombstoning workout uuids.
+
+    ``week_overrides`` (0-indexed week offset -> partial schedule) applies
+    per-week progression/deload: each override is merged over the base template
+    for that week, with a day mapped to ``None`` dropped (rest). Inputs are
+    assumed already normalized by ``_validate_normalize_*``.
 
     Switched from ``bulk_create`` to per-row create so each row can carry
     the slot FK we create alongside it. Typical plan size is bounded
@@ -869,13 +1005,26 @@ def _expand_plan_workouts(plan, tenant, schedule_json, start_date, weeks):
 
     from .models import PlanSlot
 
+    week_overrides = week_overrides or {}
     plan_monday = start_date - timedelta(days=start_date.weekday())
     elapsed_weeks = max(0, (start_date - plan.start_date).days // 7)
     workouts_created = 0
 
     for week_offset in range(weeks):
         week_idx = elapsed_weeks + week_offset
-        for day_str, workout_def in schedule_json.items():
+
+        override = week_overrides.get(str(week_offset))
+        if isinstance(override, dict):
+            effective = dict(schedule_json)
+            for day_key, day_val in override.items():
+                if day_val is None:
+                    effective.pop(str(day_key), None)
+                else:
+                    effective[str(day_key)] = day_val
+        else:
+            effective = schedule_json
+
+        for day_str, workout_def in effective.items():
             try:
                 day_int = int(day_str)
             except (TypeError, ValueError):
@@ -916,6 +1065,7 @@ def _expand_plan_workouts(plan, tenant, schedule_json, start_date, weeks):
                 category=category,
                 activity=str(workout_def.get("activity", WorkoutCategory(category).label)).strip(),
                 duration_minutes=workout_def.get("duration_minutes"),
+                rpe=workout_def.get("target_rpe"),
                 detail_json=workout_def.get("detail_json", {}),
             )
             workouts_created += 1
@@ -1040,20 +1190,42 @@ class RuntimeWorkoutPlanListCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Default start_date to next Monday
+        # Validate + normalize every prescription BEFORE persisting anything, so a
+        # malformed strength set is rejected with a self-correcting envelope rather
+        # than silently stored (same chokepoint as log_workout). Atomic: nothing is
+        # created unless the whole schedule (and any week overrides) validates.
+        normalized_schedule, sched_err = _validate_normalize_schedule(schedule_json)
+        if sched_err is not None:
+            return sched_err
+
+        normalized_overrides, ov_err = _validate_normalize_week_overrides(data.get("week_overrides"))
+        if ov_err is not None:
+            return ov_err
+
+        # Resolve start_date in the TENANT's timezone — handles ISO + relative
+        # phrases ("next monday", "today") — defaulting to the next Monday in
+        # tenant-local time. Never bare ``date.today()``: that is computed in UTC
+        # and drifts a day in the evening for tenants offset from UTC, which then
+        # propagates into every materialized workout date.
         from datetime import timedelta
 
-        start_date_str = data.get("start_date")
-        if start_date_str:
-            try:
-                plan_start = date.fromisoformat(str(start_date_str))
-            except (ValueError, TypeError):
-                plan_start = date.today() + timedelta(days=(7 - date.today().weekday()) % 7 or 7)
-        else:
-            # Next Monday
-            today = date.today()
+        plan_start = resolve_relative_date(tenant, data.get("start_date")) if data.get("start_date") else None
+        if plan_start is None:
+            today = today_in_tenant_tz(tenant)
             days_ahead = (7 - today.weekday()) % 7 or 7
             plan_start = today + timedelta(days=days_ahead)
+
+        # Idempotency: a retried / double-fired create with the same name +
+        # start_date returns the existing active plan instead of duplicating it
+        # (and its whole calendar of planned workouts). Mirrors the task/goal
+        # runtime dedup contract (return 200, not a second 201).
+        existing = WorkoutPlan.objects.filter(
+            tenant=tenant, name=name, start_date=plan_start, status=PlanStatus.ACTIVE
+        ).first()
+        if existing is not None:
+            result = _serialize_plan(existing)
+            result["deduped"] = True
+            return Response(result, status=status.HTTP_200_OK)
 
         try:
             plan = WorkoutPlan.objects.create(
@@ -1062,7 +1234,9 @@ class RuntimeWorkoutPlanListCreateView(APIView):
                 start_date=plan_start,
                 weeks=weeks,
                 days_per_week=days_per_week,
-                schedule_json=schedule_json,
+                schedule_json=normalized_schedule,
+                week_overrides=normalized_overrides,
+                objective=str(data.get("objective", "")).strip()[:200],
                 notes=str(data.get("notes", "")).strip(),
             )
         except Exception as exc:
@@ -1072,7 +1246,9 @@ class RuntimeWorkoutPlanListCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        workouts_created = _expand_plan_workouts(plan, tenant, schedule_json, plan_start, weeks)
+        workouts_created = _expand_plan_workouts(
+            plan, tenant, normalized_schedule, plan_start, weeks, week_overrides=normalized_overrides
+        )
 
         # Create background fuel cron (best-effort)
         _manage_fuel_cron(tenant, plan, action="create")
