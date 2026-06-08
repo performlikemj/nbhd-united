@@ -678,7 +678,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_create_plan",
       description:
-        "Create a structured workout plan. Design the full program based on the user's profile, journal context, sleep trends, lessons, and goals — not just fitness data. Each entry in schedule_json maps a weekday (0=Monday through 6=Sunday) to a workout definition. The backend auto-generates all individual planned workouts on the calendar. Check nbhd_fuel_summary for existing active plans before creating a new one.",
+        "Create a structured, multi-week workout plan. USE THIS whenever the user asks to make / build / design / lay out / fill out / map out / write up a plan, program, routine, or schedule — including phrasings like 'fill out my workout plan for the rest of the month'. NEVER present a dated plan as a chat message: you provide the WEEKLY CADENCE and the backend assigns the actual calendar dates in the user's timezone, so you never compute weekdays or dates yourself (doing that in prose is the #1 source of wrong-date plans). Design the program from the user's profile, journal context, sleep trends, lessons, and goals. schedule_json maps a weekday (0=Monday..6=Sunday) to a workout definition; the backend materializes every planned workout on the calendar. Set target_rpe per day for prescribed intensity, objective for the plan's through-line, and week_overrides for progression/deload. Check nbhd_fuel_summary for an existing active plan first.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -719,11 +719,28 @@ export default function register(api) {
                 detail_json: {
                   type: "object",
                   description:
-                    'Category-specific prescription. Populate every training day, not just strength. Strength/calisthenics: {"exercises": [{"name": "...", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 80}, ...]}]}. Cardio: {"distance_km": 5, "pace": "5:30"} (or duration-only if pace is left to feel). HIIT: {"rounds": 8, "work_s": 30, "rest_s": 30}. Mobility: {"blocks": ["hip openers", "thoracic rotation"]}. Leaving this empty means the user opens the workout in the UI and sees no plan for the day.',
+                    'Category-specific prescription. Populate every training day, not just strength. Strength/calisthenics: {"exercises": [{"name": "...", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 80}, ...]}]} (set type is one of weighted_reps | bodyweight_reps | hold_time; the backend validates strength/calisthenics and rejects malformed sets so you can self-correct). Cardio: {"distance_km": 5, "pace": "5:30"} (or duration-only if pace is left to feel). HIIT: {"rounds": 8, "work_s": 30, "rest_s": 30}. Mobility: {"blocks": ["hip openers", "thoracic rotation"]}. Leaving this empty means the user opens the workout in the UI and sees no plan for the day.',
+                },
+                target_rpe: {
+                  type: "integer",
+                  minimum: 1,
+                  maximum: 10,
+                  description:
+                    "Prescribed intensity for this session as a target RPE (1=very easy, 10=max effort). Optional.",
                 },
               },
               required: ["activity", "category"],
             },
+          },
+          objective: {
+            type: "string",
+            description:
+              "One-line through-line for the plan, e.g. 'Run a sub-25 5K' or 'Build pull strength'. The plan's structured objective, kept out of free-form notes.",
+          },
+          week_overrides: {
+            type: "object",
+            description:
+              'Optional per-week progression/deload. Keys are 0-indexed week offsets ("0"=first week). Each value is a partial schedule_json merged over the base template for that week; map a weekday to null to make it a rest day that week. Example: {"3": {"0": {"category":"strength","activity":"Deload","target_rpe":5}, "2": null}} deloads Monday and rests Wednesday in week 4.',
           },
           notes: {
             type: "string",
@@ -744,6 +761,8 @@ export default function register(api) {
           };
           if (input.start_date) body.start_date = asTrimmedString(input.start_date);
           if (input.notes) body.notes = asTrimmedString(input.notes);
+          if (input.objective) body.objective = asTrimmedString(input.objective);
+          if (input.week_overrides) body.week_overrides = asObject(input.week_overrides);
 
           const payload = await callRuntime(api, {
             path: fuelPath(api, "/plans/"),

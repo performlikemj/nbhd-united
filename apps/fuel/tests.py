@@ -3530,3 +3530,181 @@ class ScheduleWindowTimezoneTests(TestCase):
         # (real today is months away) would have excluded it entirely.
         self.assertIn("2026-04-21", dates)
         self.assertNotIn("2026-04-30", dates)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+class RuntimeWorkoutPlanCreateTests(TestCase):
+    """Structured plan creation: tenant-tz dates, validation, intensity,
+    idempotency, per-week progression. The agent passes a weekday cadence;
+    the backend deterministically materializes the calendar."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Plan Create", telegram_chat_id=800300)
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+        # The fuel cron lifecycle hits the OpenClaw gateway — stub it out so
+        # plan-create tests don't reach the network.
+        cron_patch = patch("apps.fuel.runtime_views._manage_fuel_cron", return_value=None)
+        cron_patch.start()
+        self.addCleanup(cron_patch.stop)
+
+    def _url(self):
+        return f"/api/v1/fuel/runtime/{self.tenant.id}/plans/"
+
+    def _post(self, body):
+        return self.client.post(self._url(), data=body, format="json", **self.headers)
+
+    def test_explicit_start_date_materializes_correct_weekday_dates(self):
+        # Start Monday 2026-06-15; Mon/Wed/Fri cadence over 2 weeks.
+        resp = self._post(
+            {
+                "name": "Strength Builder",
+                "weeks": 2,
+                "days_per_week": 3,
+                "start_date": "2026-06-15",
+                "schedule_json": {
+                    "0": {"category": "strength", "activity": "Upper Pull"},
+                    "2": {
+                        "category": "cardio",
+                        "activity": "Tempo Run",
+                        "detail_json": {"distance_km": 5, "pace": "5:30"},
+                    },
+                    "4": {"category": "strength", "activity": "Lower Power"},
+                },
+            }
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        plan = WorkoutPlan.objects.get(id=resp.data["id"])
+        workouts = list(Workout.objects.filter(plan=plan).order_by("date"))
+        self.assertEqual(len(workouts), 6)
+        self.assertEqual([str(w.date) for w in workouts[:3]], ["2026-06-15", "2026-06-17", "2026-06-19"])
+        # Weekday labels match the real calendar (the bug the user reported).
+        self.assertEqual([w.date.weekday() for w in workouts[:3]], [0, 2, 4])
+
+    @patch("apps.fuel.runtime_views.today_in_tenant_tz")
+    def test_default_start_date_uses_tenant_tz_next_monday(self, mock_today):
+        # Tenant-local today is Monday 2026-06-08 -> next Monday is 06-15.
+        # The pre-fix bare date.today() would drift a day in the evening.
+        mock_today.return_value = date(2026, 6, 8)
+        resp = self._post(
+            {
+                "name": "Default Start",
+                "weeks": 1,
+                "days_per_week": 1,
+                "schedule_json": {"0": {"category": "strength", "activity": "Full Body"}},
+            }
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(resp.data["start_date"], "2026-06-15")
+        mock_today.assert_called_with(self.tenant)
+
+    def test_target_rpe_persists_as_workout_rpe(self):
+        resp = self._post(
+            {
+                "name": "Intensity Plan",
+                "weeks": 1,
+                "days_per_week": 1,
+                "start_date": "2026-06-15",
+                "schedule_json": {"0": {"category": "strength", "activity": "Squats", "target_rpe": 8}},
+            }
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        w = Workout.objects.get(plan_id=resp.data["id"])
+        self.assertEqual(w.rpe, 8)
+
+    def test_malformed_strength_detail_rejected_before_persist(self):
+        resp = self._post(
+            {
+                "name": "Bad Detail",
+                "weeks": 1,
+                "days_per_week": 1,
+                "start_date": "2026-06-15",
+                "schedule_json": {
+                    "0": {
+                        "category": "strength",
+                        "activity": "Bench",
+                        "detail_json": {
+                            "exercises": [{"name": "Bench", "sets": [{"type": "weighted_reps", "reps": "lots"}]}]
+                        },
+                    }
+                },
+            }
+        )
+        self.assertEqual(resp.status_code, 400, resp.data)
+        self.assertEqual(WorkoutPlan.objects.filter(tenant=self.tenant, name="Bad Detail").count(), 0)
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 0)
+
+    def test_invalid_weekday_key_rejected(self):
+        resp = self._post(
+            {
+                "name": "Bad Day",
+                "weeks": 1,
+                "days_per_week": 1,
+                "start_date": "2026-06-15",
+                "schedule_json": {"9": {"category": "strength", "activity": "X"}},
+            }
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(WorkoutPlan.objects.filter(tenant=self.tenant, name="Bad Day").count(), 0)
+
+    def test_idempotent_double_create_returns_200_no_duplicate(self):
+        body = {
+            "name": "Dedup Plan",
+            "weeks": 1,
+            "days_per_week": 1,
+            "start_date": "2026-06-15",
+            "schedule_json": {"0": {"category": "strength", "activity": "Squats"}},
+        }
+        r1 = self._post(body)
+        self.assertEqual(r1.status_code, 201, r1.data)
+        r2 = self._post(body)
+        self.assertEqual(r2.status_code, 200, r2.data)
+        self.assertTrue(r2.data.get("deduped"))
+        self.assertEqual(WorkoutPlan.objects.filter(tenant=self.tenant, name="Dedup Plan").count(), 1)
+        self.assertEqual(Workout.objects.filter(plan_id=r1.data["id"]).count(), 1)
+
+    def test_week_overrides_progression_and_rest(self):
+        resp = self._post(
+            {
+                "name": "Periodized",
+                "weeks": 2,
+                "days_per_week": 2,
+                "start_date": "2026-06-15",
+                "schedule_json": {
+                    "0": {"category": "strength", "activity": "Heavy Squats", "target_rpe": 9},
+                    "2": {"category": "strength", "activity": "Heavy Bench", "target_rpe": 9},
+                },
+                "week_overrides": {
+                    "1": {
+                        "0": {"category": "strength", "activity": "Deload Squats", "target_rpe": 5},
+                        "2": None,
+                    }
+                },
+            }
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        plan = WorkoutPlan.objects.get(id=resp.data["id"])
+        dates = [str(w.date) for w in Workout.objects.filter(plan=plan).order_by("date")]
+        # Week 1: Mon 06-15 + Wed 06-17. Week 2: only Mon 06-22 (Wed rested out).
+        self.assertEqual(dates, ["2026-06-15", "2026-06-17", "2026-06-22"])
+        deload = Workout.objects.get(plan=plan, date=date(2026, 6, 22))
+        self.assertEqual(deload.activity, "Deload Squats")
+        self.assertEqual(deload.rpe, 5)
+
+    def test_objective_persisted_and_serialized(self):
+        resp = self._post(
+            {
+                "name": "Goal Plan",
+                "weeks": 1,
+                "days_per_week": 1,
+                "start_date": "2026-06-15",
+                "objective": "Build pull strength",
+                "schedule_json": {"0": {"category": "strength", "activity": "Pull-ups"}},
+            }
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(resp.data["objective"], "Build pull strength")
+        self.assertEqual(WorkoutPlan.objects.get(id=resp.data["id"]).objective, "Build pull strength")
