@@ -198,6 +198,30 @@ def _handle_openrouter_credit_limit(
     from apps.router.error_messages import error_msg
     from apps.router.views import _hibernate_for_quota
 
+    # Credit-aware: a tenant holding prepaid credit must NOT be hibernated when
+    # their per-tenant OR key 402s at the included cap. Raise the key ceiling to
+    # include their credit and let them keep going — the soft gate (check_budget)
+    # + record_usage debit enforce the precise balance, and reconcile trues up.
+    try:
+        tenant.refresh_from_db(fields=["purchased_credit", "monthly_cost_budget", "model_tier", "openrouter_key_hash"])
+    except Exception:
+        logger.exception("OR credit-limit: failed to refresh tenant=%s for credit check", str(tenant.id)[:8])
+    if getattr(tenant, "purchased_credit", Decimal("0")) > 0:
+        try:
+            from apps.billing.credits import sync_or_key_limit
+
+            sync_or_key_limit(tenant)
+            logger.info(
+                "OR credit-limit: tenant=%s holds prepaid credit — raised key ceiling, NOT hibernating",
+                str(tenant.id)[:8],
+            )
+            return
+        except Exception:
+            logger.exception(
+                "OR credit-limit: credit re-raise failed for tenant=%s; falling through to hibernate",
+                str(tenant.id)[:8],
+            )
+
     try:
         cap = Decimal(str(tenant.effective_cost_budget))
         Tenant.objects.filter(id=tenant.id).update(estimated_cost_this_month=cap)

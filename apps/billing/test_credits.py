@@ -325,3 +325,84 @@ class BalanceEndpointTest(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["purchased_credit"], "7.0000")
         self.assertTrue(resp.data["packs"])
+
+
+# ── Review must-fixes ──────────────────────────────────────────────────────
+
+
+@override_settings(OPENROUTER_PER_TENANT_KEYS_ENABLED=True)
+class OrKeySyncOnTest(TestCase):
+    """HIGH: granting credit must raise the per-tenant OR sub-key ceiling so the
+    credit is actually spendable past the included cap."""
+
+    @patch("apps.billing.openrouter_admin.update_sub_key")
+    def test_grant_raises_or_key_limit(self, mock_update):
+        t = _tenant("ok1", budget="5")
+        Tenant.objects.filter(id=t.id).update(openrouter_key_hash="kh_1")
+        t.refresh_from_db()
+        credits.grant_credit(tenant=t, credit_dollars=Decimal("10"), stripe_event_id="evt_ok1")
+        mock_update.assert_called_once()
+        # ceiling = effective_cap(5) + balance(10)
+        self.assertEqual(mock_update.call_args.kwargs["limit_dollars"], 15.0)
+
+
+class OrKeySyncOffTest(TestCase):
+    @patch("apps.billing.openrouter_admin.update_sub_key")
+    def test_no_or_call_when_flag_off(self, mock_update):
+        t = _tenant("ok2", budget="5")
+        Tenant.objects.filter(id=t.id).update(openrouter_key_hash="kh_2")
+        t.refresh_from_db()
+        credits.grant_credit(tenant=t, credit_dollars=Decimal("10"), stripe_event_id="evt_ok2")
+        mock_update.assert_not_called()
+
+
+@override_settings(OPENROUTER_PER_TENANT_KEYS_ENABLED=True)
+class BreakerCreditAwareTest(TestCase):
+    """HIGH: a credit-holding tenant must NOT be hibernated by the 402 breaker."""
+
+    @patch("apps.router.views._hibernate_for_quota")
+    @patch("apps.billing.credits.sync_or_key_limit")
+    def test_credit_holder_not_hibernated(self, mock_sync, mock_hib):
+        from apps.router.pending_queue import _handle_openrouter_credit_limit
+
+        t = _tenant("brk1", credit="10", budget="5")
+        Tenant.objects.filter(id=t.id).update(openrouter_key_hash="kh_b1")
+        t.refresh_from_db()
+        _handle_openrouter_credit_limit(t, channel="telegram", channel_user_id="123")
+        mock_sync.assert_called_once()
+        mock_hib.assert_not_called()
+
+
+class RefundIncrementalTest(TestCase):
+    """MEDIUM: partial-then-full refunds must not over-claw (amount_refunded is cumulative)."""
+
+    def test_partial_then_full_no_overclaw(self):
+        t = _tenant("ri1", credit="0")
+        credits.grant_credit(
+            tenant=t, credit_dollars=Decimal("5"), stripe_event_id="evt_gri", stripe_payment_intent_id="pi_ri"
+        )
+        self.assertEqual(_bal(t), Decimal("5.0000"))
+        credits.handle_credit_refund("evt_r1", {"payment_intent": "pi_ri", "amount": 600, "amount_refunded": 300})
+        self.assertEqual(_bal(t), Decimal("2.5000"))  # clawed 2.5
+        credits.handle_credit_refund("evt_r2", {"payment_intent": "pi_ri", "amount": 600, "amount_refunded": 600})
+        self.assertEqual(_bal(t), Decimal("0.0000"))  # clawed +2.5 (total 5, NOT 7.5)
+
+
+class ChokepointExemptTest(TestCase):
+    def test_exempt_not_debited_via_chokepoint(self):
+        # reconcile calls debit_overage_credit directly — exemption must hold there too.
+        t = _tenant("ex1", credit="10", exempt=True)
+        drawn = credits.debit_overage_credit(t.id, Decimal("4"), Decimal("6"), Decimal("5"))
+        self.assertEqual(drawn, Decimal("0"))
+        self.assertEqual(_bal(t), Decimal("10.0000"))
+
+
+class SubscriptionHandlerModeGuardTest(TestCase):
+    def test_payment_mode_ignored_by_subscription_handler(self):
+        from apps.billing.services import handle_checkout_completed
+
+        t = _tenant("hc1")
+        handle_checkout_completed({"id": "cs_x", "mode": "payment", "metadata": {"kind": "credit_topup"}})
+        t.refresh_from_db()
+        self.assertEqual(t.status, Tenant.Status.ACTIVE)  # not flipped to provisioning
+        self.assertEqual(t.stripe_subscription_id, "")  # no subscription wiring

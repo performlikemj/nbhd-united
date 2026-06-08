@@ -271,11 +271,11 @@ def check_budget(tenant: Tenant) -> str:
     )
     if tenant.is_budget_exempt:
         return ""
-    # Over the included monthly allowance only blocks when there's also no
-    # prepaid credit left. is_over_budget stays PURE (included-cap only) so the
-    # threshold emails + OpenRouter 402 breaker keep their meaning; credit is a
-    # separate clause here (see Tenant.has_spendable_budget).
-    if tenant.is_over_budget and tenant.purchased_credit <= 0:
+    # Single source of truth for "may spend": within the included allowance OR
+    # holding prepaid credit. is_over_budget stays PURE (included-cap only) so
+    # the threshold emails + OpenRouter 402 breaker keep their meaning — credit
+    # is folded in only here, via has_spendable_budget.
+    if not tenant.has_spendable_budget:
         return "personal"
 
     # Global platform budget
@@ -294,8 +294,15 @@ def check_budget(tenant: Tenant) -> str:
 
 
 def handle_checkout_completed(session_data: dict) -> None:
-    """Handle Stripe checkout.session.completed webhook."""
+    """Handle Stripe checkout.session.completed webhook (subscription mode)."""
     from apps.cron.publish import publish_task
+
+    # Defensive: a payment-mode session is a one-time credit top-up (routed to
+    # handle_credit_topup_completed in views), never a subscription. Guard here
+    # too so a mis-route can't flip the tenant's tier / reprovision.
+    if (session_data.get("mode") or "") == "payment":
+        logger.info("handle_checkout_completed: ignoring payment-mode session %s", session_data.get("id"))
+        return
 
     metadata = session_data.get("metadata") or {}
     tier = _normalize_tier(metadata.get("tier", Tenant.ModelTier.STARTER))

@@ -153,6 +153,35 @@ def create_sub_key(label: str, limit_dollars: float, limit_reset: str = "monthly
     return api_key, key_hash
 
 
+def update_sub_key(key_hash: str, *, limit_dollars: float) -> None:
+    """Raise/lower an existing sub-key's spend limit (PATCH /keys/{hash}).
+
+    Used so prepaid credit is actually spendable: a per-tenant sub-key is created
+    capped at the included allowance, so without raising it OpenRouter 402s past
+    that cap and the bought credit can never be drawn. Mirrors create_sub_key's
+    error handling; raises ``OpenRouterAdminError`` on non-2xx / transport
+    failure (Stripe-webhook callers treat it as best-effort).
+    """
+    key_hash = (key_hash or "").strip()
+    if not key_hash:
+        raise OpenRouterAdminError("update_sub_key called with empty hash")
+    url = f"{_api_base()}/keys/{key_hash}"
+    try:
+        resp = httpx.patch(
+            url, json={"limit": float(limit_dollars)}, headers=_management_headers(), timeout=_HTTP_TIMEOUT
+        )
+    except httpx.HTTPError as exc:
+        raise OpenRouterAdminError(f"update_sub_key network failure: {exc}") from exc
+
+    if resp.status_code >= 400:
+        raise OpenRouterAdminError(
+            f"update_sub_key HTTP {resp.status_code}: {resp.text[:200]}",
+            status=resp.status_code,
+            response=resp,
+        )
+    logger.info("openrouter_admin: updated sub-key hash=%s limit=%s", key_hash, limit_dollars)
+
+
 def delete_sub_key(key_hash: str) -> None:
     """Delete an OpenRouter sub-key by hash. Idempotent: a 404 is treated
     as success (the key is already gone, which is what we wanted).
