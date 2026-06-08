@@ -933,3 +933,27 @@ export interface JournalStatus {
   active_goals: JournalStatusGoal[];
   obligations: JournalObligation[];
 }
+
+// ── Prepaid credit ─────────────────────────────────────────────────────────
+export interface CreditPack {
+  id: string;
+  label: string;
+  price_display: string; // what the user pays, e.g. "$6.00"
+  credit_display: string; // usable credit granted, e.g. "$5"
+}
+
+export interface CreditLedgerEntry {
+  kind: "grant" | "debit" | "reversal" | "adjustment";
+  amount: string; // signed USD
+  description: string;
+  created_at: string;
+}
+
+export interface CreditsResponse {
+  purchased_credit: string; // remaining prepaid balance (USD)
+  included_budget: string; // monthly included allowance cap (USD)
+  included_used: string; // included allowance spent this month (USD)
+  included_remaining: string | null; // null = unlimited
+  packs: CreditPack[];
+  recent_entries: CreditLedgerEntry[];
+}

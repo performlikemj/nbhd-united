@@ -3,6 +3,8 @@
 Rates are per 1M tokens in USD. Update when providers change pricing.
 """
 
+from decimal import Decimal
+
 # ── Canonical model IDs ────────────────────────────────────────────────────
 # Change these once here; every other module imports from this file.
 MINIMAX_MODEL = "openrouter/minimax/minimax-m2.7"
@@ -177,4 +179,24 @@ TIER_TOKEN_BUDGETS: dict[str, int] = {
 # estimated_cost_this_month against this cap.
 TIER_COST_BUDGETS: dict[str, float] = {
     "starter": 5.00,  # ~16M tokens of MiniMax
+}
+
+# ── Prepaid credit top-ups ─────────────────────────────────────────────────
+# Tenants can buy prepaid credit (USD) that EXTENDS their monthly included
+# allowance (TIER_COST_BUDGETS) once it's spent. Purchased credit persists
+# across months (does not reset, does not expire). See apps/billing/credits.py
+# and CONTINUITY_credits.md.
+#
+# Packs are SERVER-DEFINED and the ONLY thing the client may pick (by id). The
+# checkout endpoint and the webhook both re-derive the granted amount from this
+# table — never from client input or session metadata. ``price_cents`` is what
+# Stripe charges; ``credit_dollars`` is the usable credit granted. The price is
+# set above the credit value so the spread covers Stripe fees (2.9% + $0.30)
+# and a small platform margin — TUNE THESE for the margin you want; the only
+# hard invariant (enforced by a test) is price_cents >= credit_dollars * 100.
+
+CREDIT_PACKS: dict[str, dict] = {
+    "credit_5": {"price_cents": 600, "credit_dollars": Decimal("5.00"), "label": "$5 of credit"},
+    "credit_10": {"price_cents": 1100, "credit_dollars": Decimal("10.00"), "label": "$10 of credit"},
+    "credit_25": {"price_cents": 2700, "credit_dollars": Decimal("25.00"), "label": "$25 of credit"},
 }

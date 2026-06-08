@@ -80,6 +80,8 @@ import {
   runAutomationNow,
   requestStripeCheckout,
   requestStripePortal,
+  fetchCredits,
+  requestCreditCheckout,
   toggleCronJob,
   unlinkTelegram,
   updateAutomation,
@@ -412,6 +414,21 @@ export function useOnboardMutation() {
 export function useCheckoutMutation() {
   return useMutation({
     mutationFn: requestStripeCheckout,
+  });
+}
+
+export function useCreditsQuery() {
+  return useQuery({
+    queryKey: ["credits"],
+    queryFn: fetchCredits,
+    staleTime: 30_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useCreditCheckoutMutation() {
+  return useMutation({
+    mutationFn: (packId: string) => requestCreditCheckout(packId),
   });
 }
 

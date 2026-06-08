@@ -229,6 +229,16 @@ def record_usage(
             estimated_cost_this_month=F("estimated_cost_this_month") + cost,
         )
 
+        # Draw any spend beyond the included monthly allowance from prepaid
+        # credit. Real platform cost only — BYO user calls already set cost==0
+        # (no-op), system rows never reach this block, and the helper skips
+        # budget-exempt tenants and those with no credit. Local import keeps the
+        # billing.services <-> billing.credits boundary one-directional.
+        if cost > 0 and not is_byo_user_call:
+            from apps.billing.credits import debit_overage_for_turn
+
+            debit_overage_for_turn(tenant.id, cost)
+
     # Update global budget — also a no-op for BYO since cost == 0.
     today = date.today()
     first_of_month = today.replace(day=1)
@@ -251,11 +261,21 @@ def check_budget(tenant: Tenant) -> str:
     """
     # Personal budget
     tenant.refresh_from_db(
-        fields=["estimated_cost_this_month", "monthly_cost_budget", "model_tier", "is_budget_exempt"]
+        fields=[
+            "estimated_cost_this_month",
+            "monthly_cost_budget",
+            "model_tier",
+            "is_budget_exempt",
+            "purchased_credit",
+        ]
     )
     if tenant.is_budget_exempt:
         return ""
-    if tenant.is_over_budget:
+    # Over the included monthly allowance only blocks when there's also no
+    # prepaid credit left. is_over_budget stays PURE (included-cap only) so the
+    # threshold emails + OpenRouter 402 breaker keep their meaning; credit is a
+    # separate clause here (see Tenant.has_spendable_budget).
+    if tenant.is_over_budget and tenant.purchased_credit <= 0:
         return "personal"
 
     # Global platform budget

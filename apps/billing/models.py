@@ -241,3 +241,76 @@ class FreeModelOffer(models.Model):
         """Return the singleton row, creating it with defaults if absent."""
         obj, _ = cls.objects.get_or_create(pk=1)
         return obj
+
+
+class CreditLedger(models.Model):
+    """Append-only audit + idempotency log for prepaid credit movements.
+
+    Every change to ``Tenant.purchased_credit`` writes a row here:
+      - ``grant``    — a paid Stripe top-up (+amount). Idempotent per Stripe
+                       event via a partial unique constraint.
+      - ``debit``    — usage drawn from purchased credit (-amount). Written by
+                       record_usage / reconcile only when a real draw happened.
+      - ``reversal`` — a refund/chargeback clawback (-amount). Idempotent per
+                       Stripe refund/dispute event.
+      - ``adjustment`` — manual ops correction (signed).
+
+    Money-in events (grant/reversal) carry the Stripe ``event['id']`` and rely
+    on the DB unique constraint as the real idempotency lock (Stripe redelivers
+    and may deliver concurrently). Per-turn ``debit`` rows carry no Stripe event
+    id (``stripe_event_id=""``) — the partial uniques exclude them. The running
+    ``Tenant.purchased_credit`` is the hot-read cache; ``SUM(amount)`` here is
+    the reconstructable truth (a reconcile drift-check compares them).
+    """
+
+    class Kind(models.TextChoices):
+        GRANT = "grant", "Grant"
+        DEBIT = "debit", "Debit"
+        REVERSAL = "reversal", "Reversal"
+        ADJUSTMENT = "adjustment", "Adjustment"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    # CASCADE matches UsageRecord/DonationLedger; account deletion is a user-
+    # initiated hard delete (apps/tenants/views.py:_do_hard_delete), and Stripe
+    # remains the system of record for money. The unique constraints below only
+    # need to hold while the tenant is live.
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="credit_ledger")
+    kind = models.CharField(max_length=20, choices=Kind.choices)
+    # Signed USD: positive for grant, negative for debit/reversal.
+    amount = models.DecimalField(max_digits=10, decimal_places=4)
+    # Empty for non-Stripe rows (debit/adjustment). For grant/reversal it's the
+    # Stripe event['id'] and the idempotency key.
+    stripe_event_id = models.CharField(max_length=255, blank=True, default="")
+    stripe_session_id = models.CharField(max_length=255, blank=True, default="")
+    # Used to match refund/dispute events (which carry a PaymentIntent, not the
+    # session) back to the original grant.
+    stripe_payment_intent_id = models.CharField(max_length=255, blank=True, default="")
+    pack_id = models.CharField(max_length=64, blank=True, default="")
+    # What Stripe actually charged (margin audit); null for non-purchase rows.
+    amount_paid_cents = models.IntegerField(null=True, blank=True)
+    description = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "credit_ledger"
+        indexes = [
+            models.Index(fields=["tenant", "created_at"]),
+            models.Index(fields=["stripe_payment_intent_id"]),
+        ]
+        constraints = [
+            # One grant per Stripe event; one reversal per Stripe event. Partial
+            # so the many debit rows (stripe_event_id="") don't collide.
+            models.UniqueConstraint(
+                fields=["stripe_event_id"],
+                condition=models.Q(kind="grant") & ~models.Q(stripe_event_id=""),
+                name="uniq_credit_grant_per_event",
+            ),
+            models.UniqueConstraint(
+                fields=["stripe_event_id"],
+                condition=models.Q(kind="reversal") & ~models.Q(stripe_event_id=""),
+                name="uniq_credit_reversal_per_event",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.kind} {self.amount} ({self.tenant_id})"
