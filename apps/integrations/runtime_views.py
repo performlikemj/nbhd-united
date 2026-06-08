@@ -492,6 +492,9 @@ class RuntimeGoalListCreateView(APIView):
         )
 
     def post(self, request, tenant_id):
+        from django.utils import timezone
+
+        from apps.journal.dedup import find_duplicate_goal
         from apps.journal.lifecycle_serializers import GoalSerializer
 
         auth_failure = _internal_auth_or_401(request, tenant_id)
@@ -504,6 +507,22 @@ class RuntimeGoalListCreateView(APIView):
 
         serializer = GoalSerializer(data=request.data, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
+
+        # Idempotency backstop — see RuntimeTaskListCreateView.post. Prevents a
+        # cron maintenance turn from minting a second copy of a goal it already
+        # has (active, or recently achieved/abandoned).
+        proposed_title = (serializer.validated_data.get("title") or "").strip()
+        existing = find_duplicate_goal(tenant, proposed_title, now=timezone.now())
+        if existing is not None:
+            return Response(
+                {
+                    "tenant_id": str(tenant.id),
+                    "goal": GoalSerializer(existing).data,
+                    "deduped": True,
+                },
+                status=status.HTTP_200_OK,
+            )
+
         goal = serializer.save()
         return Response(
             {"tenant_id": str(tenant.id), "goal": GoalSerializer(goal).data},
@@ -703,6 +722,9 @@ class RuntimeTaskListCreateView(APIView):
         )
 
     def post(self, request, tenant_id):
+        from django.utils import timezone
+
+        from apps.journal.dedup import find_duplicate_task
         from apps.journal.lifecycle_serializers import TaskSerializer
 
         auth_failure = _internal_auth_or_401(request, tenant_id)
@@ -715,6 +737,26 @@ class RuntimeTaskListCreateView(APIView):
 
         serializer = TaskSerializer(data=request.data, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
+
+        # Idempotency backstop (agent path only — the UI uses a different,
+        # authenticated endpoint). A maintenance/cron turn re-derives tasks
+        # from journal prose using only the *open* task list for dedup, so a
+        # task the user completed earlier the same day is invisible to it and
+        # gets recreated as a fresh open duplicate. If the proposed title
+        # matches an existing task — open, or recently closed — return that
+        # row instead of inserting a duplicate. See apps/journal/dedup.py.
+        proposed_title = (serializer.validated_data.get("title") or "").strip()
+        existing = find_duplicate_task(tenant, proposed_title, now=timezone.now())
+        if existing is not None:
+            return Response(
+                {
+                    "tenant_id": str(tenant.id),
+                    "task": TaskSerializer(existing).data,
+                    "deduped": True,
+                },
+                status=status.HTTP_200_OK,
+            )
+
         task = serializer.save()
         return Response(
             {"tenant_id": str(tenant.id), "task": TaskSerializer(task).data},

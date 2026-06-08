@@ -172,6 +172,30 @@ def apply_subtask_create(
     if not title:
         return None
 
+    # Resurrection guard. This is reached from the nightly extraction's
+    # `subtasks_added` deltas — the same untrusted-reasoning surface behind the
+    # task-resurrection loop. Block a subtask that duplicates an existing
+    # top-level task (the resurrection shape: a completed item re-derived from
+    # prose) or a sibling already under this parent. Identical subtask titles
+    # under *different* parents are legitimate, so those are not deduped.
+    # See apps/journal/dedup.py.
+    from datetime import timedelta
+
+    from django.db.models import Q
+    from django.utils import timezone
+
+    from .dedup import DEFAULT_CLOSED_WINDOW_DAYS, titles_match
+
+    cutoff = timezone.now() - timedelta(days=DEFAULT_CLOSED_WINDOW_DAYS)
+    open_states = (Task.Status.OPEN, Task.Status.IN_PROGRESS)
+    scope = (
+        Task.objects.filter(tenant=tenant)
+        .filter(Q(parent_task__isnull=True) | Q(parent_task=parent))
+        .filter(Q(status__in=open_states) | Q(updated_at__gte=cutoff))
+    )
+    if any(titles_match(title, existing.title) for existing in scope):
+        return None
+
     subtask = Task.objects.create(
         tenant=tenant,
         title=title[:256],

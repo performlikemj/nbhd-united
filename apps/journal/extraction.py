@@ -20,6 +20,7 @@ from django.utils import timezone
 from apps.billing.constants import DEEPSEEK_MODEL
 from apps.billing.services import record_usage
 from apps.common.openrouter import chat_completion
+from apps.journal.dedup import find_duplicate_goal, find_duplicate_task
 from apps.journal.models import DailyNote, Document, PendingExtraction
 from apps.lessons.models import Lesson
 from apps.lessons.services import generate_embedding
@@ -667,6 +668,8 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
             continue
         if _is_duplicate(tenant, PendingExtraction.Kind.GOAL, text):
             continue
+        if find_duplicate_goal(tenant, text, now=now) is not None:
+            continue  # already a typed goal (active or recently closed) — don't resurrect
         pending = PendingExtraction.objects.create(
             tenant=tenant,
             kind=PendingExtraction.Kind.GOAL,
@@ -688,6 +691,8 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
             continue
         if _is_duplicate(tenant, PendingExtraction.Kind.TASK, text):
             continue
+        if find_duplicate_task(tenant, text, now=now) is not None:
+            continue  # already a typed task (open or recently closed) — don't resurrect
         pending = PendingExtraction.objects.create(
             tenant=tenant,
             kind=PendingExtraction.Kind.TASK,

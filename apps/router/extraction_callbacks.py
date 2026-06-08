@@ -100,6 +100,10 @@ def _approve_goal(pending: PendingExtraction) -> tuple[str, None]:
 
     Returns (user_message, None). The created row id (if any) is stored on
     the pending extraction so undo can find it later.
+
+    NOTE: un-deduped insert primitive — see _approve_task. Human-tap approval
+    is exempt; agent/cron callers must dedupe upstream (find_duplicate_goal in
+    apps/journal/extraction.py).
     """
     if getattr(pending.tenant, "experimental_typed_journal_lifecycle", False):
         from apps.journal.models import Goal
@@ -135,6 +139,13 @@ def _approve_task(pending: PendingExtraction) -> tuple[str, None]:
 
     Returns (user_message, None). The created row id (if any) is stored on
     the pending extraction so undo can find it later.
+
+    NOTE: this is an un-deduped insert primitive. The human-tap approval
+    callers (Telegram / LINE / web) are intentionally exempt — approving is
+    explicit user intent. Any *agent- or cron-reachable* caller MUST dedupe
+    upstream before creating the PendingExtraction (see the find_duplicate_task
+    guard in apps/journal/extraction.py) or it reintroduces the task-
+    resurrection loop.
     """
     if getattr(pending.tenant, "experimental_typed_journal_lifecycle", False):
         from apps.journal.models import Task
