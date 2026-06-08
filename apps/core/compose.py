@@ -103,6 +103,40 @@ def _target_seconds_from_signals(signals: dict) -> float:
     return min(render.HARD_MAX_TOTAL_SECONDS, max(180.0, seconds))
 
 
+def _constellation_line(star: dict) -> str:
+    """One gentle, meditation-tone line for an actively-worked constellation star.
+
+    Selection + phrasing only (no scoring). The raw note/reflection text is passed
+    through for the guide to weave — never to read back verbatim; the system prompt
+    forbids voicing names or listing the person's data aloud.
+    """
+    text = " ".join(str(star.get("text", "")).split())[:160]
+    insights = star.get("tutoring_insights") or []
+    latest = insights[0] if insights else {}
+    stage = star.get("stage", "")
+
+    if latest.get("mastery_achieved"):
+        engagement = "something they've been settling into"
+    elif latest.get("restated_accurately") is False:
+        engagement = "something still taking shape for them"
+    elif latest.get("found_edge_cases"):
+        engagement = "a place they've been probing the edges"
+    elif stage in ("radiant", "supernova"):
+        engagement = "a steady, well-worn insight of theirs"
+    else:
+        engagement = "something they've been revisiting"
+
+    parts = [f'- "{text}" — {engagement}.']
+    note = " ".join(str(star.get("galaxy_note", "")).split())
+    if note:
+        parts.append(f' They pinned a note on it: "{note[:200]}".')
+    entries = star.get("journal_entries") or []
+    reflection = " ".join(str(entries[0].get("text", "")).split()) if entries else ""
+    if reflection:
+        parts.append(f' Recent reflection: "{reflection[:200]}".')
+    return "".join(parts)
+
+
 def _format_signals(signals: dict, target_seconds: float = render.DEFAULT_TOTAL_TARGET_SECONDS) -> str:
     """Render the gathered signals as a compact prompt context (no raw PII dumps)."""
     lines: list[str] = ["Here is what you've gathered about this person's recent days:"]
@@ -114,6 +148,13 @@ def _format_signals(signals: dict, target_seconds: float = render.DEFAULT_TOTAL_
     if notes:
         lines.append("Recent daily-note snippets:")
         lines.extend(f"- {n}" for n in notes[:6])
+    stars = signals.get("constellation_stars") or []
+    if stars:
+        lines.append(
+            "Stars they've been working through in their constellation (durable lessons they're "
+            "actively revisiting) — let these gently shape the heart of the sit:"
+        )
+        lines.extend(_constellation_line(s) for s in stars[:4])
     if signals.get("last_meditation_theme"):
         lines.append(f"Their last meditation's theme (vary from it): {signals['last_meditation_theme']}")
     if signals.get("additional_context"):

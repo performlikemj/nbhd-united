@@ -34,12 +34,20 @@ _READY_JOB_NAME = "_core:ready"
 def gather_meditation_signals(tenant: Tenant) -> dict:
     """Raw, consented signals the LLM draws on to compose today's meditation.
 
-    Phase 1 = in-app, user-consented signals only: the user's own
-    ``CoreProfile.additional_context`` (which they typed for exactly this) and the
-    last meditation's theme (to vary from). Richer journal/insights/fuel/finance
-    signals are a deliberate follow-up — they'd add a new journal→OpenRouter egress
-    that needs a PII-egress sign-off first. Returns RAW evidence; the LLM
-    (``apps.core.compose``), not a backend formula, makes the judgment.
+    Returns RAW evidence; the LLM (``apps.core.compose``), not a backend formula,
+    makes the judgment. All sources are in-app, consented, and best-effort:
+
+    * ``CoreProfile.additional_context`` — free-text the user typed for this.
+    * the last meditation's theme — so today's sit varies from it.
+    * recent constellation activity — the stars (durable lessons) they've been
+      actively working through, with their pinned notes, star reflections, and
+      the honest tutoring signals. Shaped by
+      ``apps.lessons.agent_context.build_constellation_context``.
+    * recent daily-note snippets — what their week actually held.
+
+    The journal/constellation sources egress to OpenRouter, which is configured for
+    zero-data-retention — the basis for lifting the earlier PII-egress deferral on
+    these signals.
     """
     signals: dict = {"tenant_id": str(tenant.id)}
     try:
@@ -62,7 +70,47 @@ def gather_meditation_signals(tenant: Tenant) -> dict:
             signals["last_meditation_theme"] = last.theme.strip()[:200]
     except Exception:
         logger.debug("gather_meditation_signals: last-meditation read failed", exc_info=True)
+    try:
+        # Local import — keeps the lessons embedding/search stack out of module load.
+        from apps.lessons.agent_context import build_constellation_context
+
+        constellation = build_constellation_context(tenant, days=30, limit=4)
+        stars = constellation.get("active_stars") if constellation else None
+        if stars:
+            signals["constellation_stars"] = stars
+    except Exception:
+        logger.debug("gather_meditation_signals: constellation read failed", exc_info=True)
+    try:
+        snippets = _recent_note_snippets(tenant)
+        if snippets:
+            signals["recent_notes"] = snippets
+    except Exception:
+        logger.debug("gather_meditation_signals: daily-note read failed", exc_info=True)
     return signals
+
+
+def _recent_note_snippets(tenant: Tenant, *, days: int = 7, limit: int = 3, cap: int = 220) -> list[str]:
+    """Short, cleaned excerpts from the user's most recent daily notes.
+
+    Strips markdown headings and log scaffolding so the guide sees the reflective
+    prose, not the note's structure. Best-effort; the caller swallows failures.
+    """
+    from apps.journal.models import Document
+
+    cutoff = (timezone.now() - timedelta(days=days)).date()
+    docs = Document.objects.filter(tenant=tenant, kind="daily", slug__gte=str(cutoff)).order_by("-slug")[:limit]
+    out: list[str] = []
+    for doc in docs:
+        body_lines = [
+            ln.strip() for ln in (doc.markdown or "").splitlines() if ln.strip() and not ln.lstrip().startswith("#")
+        ]
+        body = " ".join(body_lines).strip()
+        if len(body) < 12:
+            continue
+        if len(body) > cap:
+            body = body[: cap - 1].rstrip() + "…"
+        out.append(f"{doc.slug}: {body}")
+    return out
 
 
 def compose_meditation(session: MeditationSession) -> None:

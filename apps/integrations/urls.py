@@ -13,6 +13,7 @@ from .runtime_views import (
     RuntimeBYOErrorReportView,
     RuntimeCalendarEventsView,
     RuntimeCalendarFreeBusyView,
+    RuntimeConstellationNotesView,
     RuntimeCronCreateDomainSummaryView,
     RuntimeCronCreatePureReminderView,
     RuntimeCronCreateQuoteUserIntentView,
@@ -194,6 +195,12 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/lessons/pending/",
         RuntimeLessonPendingView.as_view(),
         name="runtime-lessons-pending",
+    ),
+    # Constellation enriched notes — galaxy notes, star reflections, tutoring signals
+    path(
+        "runtime/<uuid:tenant_id>/constellation/notes/",
+        RuntimeConstellationNotesView.as_view(),
+        name="runtime-constellation-notes",
     ),
     # Journal search
     path(

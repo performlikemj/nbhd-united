@@ -9,7 +9,7 @@ from django.test import TestCase
 from django.test.utils import override_settings
 
 from apps.journal.models import JournalEntry, WeeklyReview
-from apps.lessons.models import Lesson
+from apps.lessons.models import Lesson, StarJournalEntry, TutoringSession
 from apps.tenants.services import create_tenant
 
 from .services import (
@@ -904,3 +904,140 @@ class RuntimeJournalContextBackboneDualReadTest(TestCase):
         backbone = self._backbone()
         self.assertNotIn("goal", backbone)
         self.assertNotIn("tasks", backbone)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="shared-key")
+class RuntimeJournalContextConstellationTest(TestCase):
+    """journal-context surfaces active constellation stars for session init."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Galaxy ctx", telegram_chat_id=646464)
+        Lesson.objects.filter(tenant=self.tenant).delete()
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": "shared-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def _get(self) -> dict:
+        resp = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/journal-context/",
+            **self._headers(),
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        return resp.json()
+
+    def test_constellation_key_omitted_when_no_activity(self):
+        Lesson.objects.create(
+            tenant=self.tenant,
+            text="Untouched",
+            context="",
+            source_type="reflection",
+            source_ref="",
+            tags=[],
+            status="approved",
+        )
+        self.assertNotIn("constellation", self._get())
+
+    def test_active_star_appears_in_constellation(self):
+        star = Lesson.objects.create(
+            tenant=self.tenant,
+            text="Rest is productive",
+            context="",
+            source_type="reflection",
+            source_ref="",
+            tags=["recovery"],
+            status="approved",
+            galaxy_note="protect the off-days",
+            star_stage="ignited",
+        )
+        StarJournalEntry.objects.create(
+            tenant=self.tenant, star=star, text="Took a full rest day, felt sharper.", entry_type="revisit"
+        )
+        body = self._get()
+        self.assertIn("constellation", body)
+        stars = body["constellation"]["active_stars"]
+        self.assertEqual(len(stars), 1)
+        self.assertEqual(stars[0]["id"], star.id)
+        self.assertEqual(stars[0]["galaxy_note"], "protect the off-days")
+        self.assertEqual(stars[0]["journal_entries"][0]["entry_type"], "revisit")
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="shared-key")
+class RuntimeConstellationNotesViewTest(TestCase):
+    """The nbhd_constellation_notes pull surface."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Notes", telegram_chat_id=656565)
+        Lesson.objects.filter(tenant=self.tenant).delete()
+
+    def _headers(self, key="shared-key") -> dict[str, str]:
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": key,
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def _star(self, **kwargs) -> Lesson:
+        defaults = dict(
+            tenant=self.tenant,
+            text="Default star",
+            context="",
+            source_type="reflection",
+            source_ref="",
+            tags=[],
+            status="approved",
+        )
+        defaults.update(kwargs)
+        return Lesson.objects.create(**defaults)
+
+    def _url(self, qs: str = "") -> str:
+        return f"/api/v1/integrations/runtime/{self.tenant.id}/constellation/notes/{qs}"
+
+    def test_requires_internal_auth(self):
+        self.assertEqual(self.client.get(self._url()).status_code, 401)
+
+    def test_default_mode_returns_recent_active_stars(self):
+        star = self._star(text="Name the fear", galaxy_note="say it out loud")
+        TutoringSession.objects.create(
+            star=star,
+            phases_completed=["restate", "deepen", "stress_test"],
+            player_found_edge_cases=True,
+            mastery_achieved=True,
+        )
+        resp = self.client.get(self._url(), **self._headers())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(body["mode"], "recent")
+        self.assertEqual(body["count"], 1)
+        node = body["stars"][0]
+        self.assertEqual(node["id"], star.id)
+        self.assertEqual(node["galaxy_note"], "say it out loud")
+        self.assertTrue(node["tutoring_insights"][0]["found_edge_cases"])
+        self.assertTrue(node["tutoring_insights"][0]["mastery_achieved"])
+
+    def test_star_id_mode_returns_single_star(self):
+        star = self._star(text="One star", galaxy_note="pinned")
+        self._star(text="Another", galaxy_note="also pinned")
+        resp = self.client.get(self._url(f"?star_id={star.id}"), **self._headers())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(body["mode"], "star")
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["stars"][0]["id"], star.id)
+
+    def test_bad_star_id_is_rejected(self):
+        resp = self.client.get(self._url("?star_id=not-an-int"), **self._headers())
+        self.assertEqual(resp.status_code, 400)
+
+    @patch("apps.lessons.services.search_lessons")
+    def test_query_mode_uses_search(self, mock_search):
+        star = self._star(text="Searchable lesson", galaxy_note="found me")
+        mock_search.return_value = [star]
+        resp = self.client.get(self._url("?q=focus"), **self._headers())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(body["mode"], "search")
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["stars"][0]["id"], star.id)
+        mock_search.assert_called_once()

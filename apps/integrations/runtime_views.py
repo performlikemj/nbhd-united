@@ -1441,17 +1441,27 @@ class RuntimeJournalContextView(APIView):
             for doc in recent_docs
         ]
 
-        return Response(
-            {
-                "tenant_id": str(tenant.id),
-                "recent_notes": notes_data,
-                "long_term_memory": memory_doc.markdown if memory_doc else "",
-                "recent_notes_count": len(notes_data),
-                "days_back": days,
-                "backbone": backbone_data,
-            },
-            status=status.HTTP_200_OK,
-        )
+        # Constellation activity: pinned notes, star-scoped reflections, and the
+        # honest signals tutoring captured — so the agent starts a session aware
+        # of what the user has been working through in their galaxy, the same way
+        # it starts aware of goals/tasks. Empty dict (key omitted) when quiet.
+        # Local import — see feedback_local_reimport_pattern memory.
+        from apps.lessons.agent_context import build_constellation_context
+
+        constellation_data = build_constellation_context(tenant, days=days)
+
+        response_data = {
+            "tenant_id": str(tenant.id),
+            "recent_notes": notes_data,
+            "long_term_memory": memory_doc.markdown if memory_doc else "",
+            "recent_notes_count": len(notes_data),
+            "days_back": days,
+            "backbone": backbone_data,
+        }
+        if constellation_data:
+            response_data["constellation"] = constellation_data
+
+        return Response(response_data, status=status.HTTP_200_OK)
 
 
 def _serialize_session_for_runtime(session: Session) -> dict:
@@ -1767,6 +1777,62 @@ class RuntimeLessonPendingView(APIView):
             },
             status=200,
         )
+
+
+class RuntimeConstellationNotesView(APIView):
+    """Enriched constellation context for the assistant (pull tool).
+
+    Backs ``nbhd_constellation_notes``. Surfaces what the constellation game
+    captured but no pillar tool previously exposed: pinned ``galaxy_note``s,
+    star-scoped journal reflections, and the honest signals from tutoring
+    sessions (restate accuracy, edge-case finding, connections, mastery, topic
+    drift). Three modes, in precedence order:
+
+      * ``?star_id=<id>`` — full context for one approved star
+      * ``?q=<text>``     — semantic/text search over stars, each enriched
+      * (no params)       — recently active stars
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        try:
+            limit = _parse_positive_int(request.query_params.get("limit"), default=5, max_value=25)
+            days = _parse_positive_int(request.query_params.get("days"), default=30, max_value=365)
+        except ValueError as exc:
+            return Response({"error": "invalid_request", "detail": str(exc)}, status=400)
+
+        star_id_raw = request.query_params.get("star_id")
+        star_id = None
+        if star_id_raw not in (None, ""):
+            try:
+                star_id = int(star_id_raw)
+            except (TypeError, ValueError):
+                return Response(
+                    {"error": "invalid_request", "detail": "star_id must be an integer"},
+                    status=400,
+                )
+
+        query = str(request.query_params.get("q", "")).strip() or None
+
+        from apps.lessons.agent_context import constellation_notes_payload
+
+        try:
+            payload = constellation_notes_payload(tenant, q=query, star_id=star_id, limit=limit, days=days)
+        except Exception as exc:
+            return Response({"error": "constellation_failed", "detail": str(exc)}, status=500)
+
+        payload["tenant_id"] = str(tenant.id)
+        return Response(payload, status=200)
 
 
 # ---------------------------------------------------------------------------
