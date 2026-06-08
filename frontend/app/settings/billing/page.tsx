@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 
+import { CreditsCard } from "@/components/billing/credits-card";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
@@ -195,6 +196,8 @@ export default function SettingsBillingPage() {
           </div>
         )}
       </SectionCard>
+
+      {hasTenant && <CreditsCard />}
     </div>
   );
 }

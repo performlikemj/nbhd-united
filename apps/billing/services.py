@@ -229,6 +229,16 @@ def record_usage(
             estimated_cost_this_month=F("estimated_cost_this_month") + cost,
         )
 
+        # Draw any spend beyond the included monthly allowance from prepaid
+        # credit. Real platform cost only — BYO user calls already set cost==0
+        # (no-op), system rows never reach this block, and the helper skips
+        # budget-exempt tenants and those with no credit. Local import keeps the
+        # billing.services <-> billing.credits boundary one-directional.
+        if cost > 0 and not is_byo_user_call:
+            from apps.billing.credits import debit_overage_for_turn
+
+            debit_overage_for_turn(tenant.id, cost)
+
     # Update global budget — also a no-op for BYO since cost == 0.
     today = date.today()
     first_of_month = today.replace(day=1)
@@ -251,11 +261,21 @@ def check_budget(tenant: Tenant) -> str:
     """
     # Personal budget
     tenant.refresh_from_db(
-        fields=["estimated_cost_this_month", "monthly_cost_budget", "model_tier", "is_budget_exempt"]
+        fields=[
+            "estimated_cost_this_month",
+            "monthly_cost_budget",
+            "model_tier",
+            "is_budget_exempt",
+            "purchased_credit",
+        ]
     )
     if tenant.is_budget_exempt:
         return ""
-    if tenant.is_over_budget:
+    # Single source of truth for "may spend": within the included allowance OR
+    # holding prepaid credit. is_over_budget stays PURE (included-cap only) so
+    # the threshold emails + OpenRouter 402 breaker keep their meaning — credit
+    # is folded in only here, via has_spendable_budget.
+    if not tenant.has_spendable_budget:
         return "personal"
 
     # Global platform budget
@@ -274,8 +294,15 @@ def check_budget(tenant: Tenant) -> str:
 
 
 def handle_checkout_completed(session_data: dict) -> None:
-    """Handle Stripe checkout.session.completed webhook."""
+    """Handle Stripe checkout.session.completed webhook (subscription mode)."""
     from apps.cron.publish import publish_task
+
+    # Defensive: a payment-mode session is a one-time credit top-up (routed to
+    # handle_credit_topup_completed in views), never a subscription. Guard here
+    # too so a mis-route can't flip the tenant's tier / reprovision.
+    if (session_data.get("mode") or "") == "payment":
+        logger.info("handle_checkout_completed: ignoring payment-mode session %s", session_data.get("id"))
+        return
 
     metadata = session_data.get("metadata") or {}
     tier = _normalize_tier(metadata.get("tier", Tenant.ModelTier.STARTER))

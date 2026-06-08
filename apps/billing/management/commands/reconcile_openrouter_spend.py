@@ -72,6 +72,19 @@ def _reconcile_tenant(tenant: Tenant) -> tuple[bool, Decimal, Decimal]:
     # update would otherwise be lost).
     delta = provider_truth - before
     Tenant.objects.filter(id=tenant.id).update(estimated_cost_this_month=F("estimated_cost_this_month") + delta)
+
+    # True prepaid-credit consumption to provider truth too: record_usage's
+    # per-turn estimate can under-draw, so draw the reconciled overage delta
+    # from credit here. Idempotent across passes — a later pass has
+    # provider_truth <= before and returns at the early guard above, so the
+    # overage delta (and thus the draw) is 0.
+    from apps.billing.credits import debit_overage_credit
+
+    drawn = debit_overage_credit(
+        tenant.id, before, provider_truth, tenant.effective_cost_budget, description="reconcile"
+    )
+    if drawn:
+        logger.info("reconcile_or: tenant=%s drew $%.4f from prepaid credit", str(tenant.id)[:8], float(drawn))
     logger.info(
         "reconcile_or: tenant=%s trued up +$%.4f (estimate=%s → provider=%s)",
         str(tenant.id)[:8],

@@ -251,6 +251,17 @@ class Tenant(models.Model):
         default=False,
         help_text="Exempt from personal and global budget enforcement. Usage still tracked.",
     )
+    purchased_credit = models.DecimalField(
+        max_digits=10,
+        decimal_places=4,
+        default=0,
+        help_text=(
+            "Prepaid credit balance in USD. EXTENDS the monthly included allowance once it's "
+            "spent; persists across months and does not expire. Granted by Stripe top-ups and "
+            "drawn down for usage beyond the included cap. Source of truth for grants/refunds is "
+            "apps.billing.models.CreditLedger; this is the denormalized hot-read balance."
+        ),
+    )
 
     # Quota-email idempotency markers (PR #1.8). Each is set when the
     # corresponding email goes out, and cleared by the monthly counter
@@ -746,6 +757,18 @@ class Tenant(models.Model):
         if budget == 0:
             return False
         return self.estimated_cost_this_month >= budget
+
+    @property
+    def has_spendable_budget(self) -> bool:
+        """Single source of truth for "is this tenant allowed to spend right now".
+
+        Allowed when budget-exempt, OR still within the monthly included
+        allowance, OR holding prepaid credit. Purchased credit is kept SEPARATE
+        from ``is_over_budget``/``effective_cost_budget`` on purpose: those drive
+        the included-allowance threshold emails and the OpenRouter 402 breaker,
+        which must keep their "included cap" meaning. See check_budget.
+        """
+        return self.is_budget_exempt or not self.is_over_budget or self.purchased_credit > 0
 
     def bump_pending_config(self):
         """Signal that agent config needs refreshing."""

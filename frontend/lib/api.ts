@@ -27,6 +27,7 @@ import {
   WeeklyReview,
   Lesson,
   ConstellationData,
+  CreditsResponse,
 } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -501,6 +502,17 @@ export function requestStripePortal(): Promise<{ url: string }> {
 export function requestStripeCheckout(): Promise<{ url: string }> {
   return apiFetch<{ url: string }>("/api/v1/billing/checkout/", {
     method: "POST",
+  });
+}
+
+export function fetchCredits(): Promise<CreditsResponse> {
+  return apiFetch<CreditsResponse>("/api/v1/billing/credits/");
+}
+
+export function requestCreditCheckout(packId: string): Promise<{ url: string }> {
+  return apiFetch<{ url: string }>("/api/v1/billing/credits/checkout/", {
+    method: "POST",
+    body: JSON.stringify({ pack_id: packId }),
   });
 }
 

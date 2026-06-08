@@ -75,6 +75,9 @@ def reset_monthly_counters() -> int:
     elevated cost are harmless (next-month's reconcile cron just resends
     on the next 90% crossing).
     """
+    # NOTE: do NOT reset ``purchased_credit`` here — prepaid credit persists
+    # across months by design (the included allowance resets; bought credit
+    # doesn't). See apps/billing/credits.py + test_credits.MonthlyResetTest.
     count = Tenant.objects.filter(messages_this_month__gt=0).update(
         messages_this_month=0,
         tokens_this_month=0,

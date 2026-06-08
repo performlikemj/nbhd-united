@@ -14,6 +14,8 @@ from rest_framework.views import APIView
 
 from apps.tenants.models import Tenant
 
+from .constants import CREDIT_PACKS
+from .credits import credits_state, handle_credit_refund, handle_credit_topup_completed
 from .services import (
     handle_checkout_completed,
     handle_invoice_payment_failed,
@@ -97,12 +99,33 @@ def stripe_webhook(request):
     set_rls_context(service_role=True)
 
     event_type = event["type"]
+    # Real Stripe events always carry an id (the credit idempotency key). Read
+    # defensively so a malformed/synthetic event can't 500 the endpoint — a
+    # missing id only neutralises the credit-grant path (grant_credit refuses an
+    # empty event id), which non-credit events don't use.
+    try:
+        event_id = event["id"]
+    except (KeyError, TypeError):
+        event_id = ""
     data = _stripe_object_to_plain_dict(event["data"]["object"])
     logger.info("Stripe webhook: %s", event_type)
 
     match event_type:
-        case "checkout.session.completed":
-            handle_checkout_completed(data)
+        case "checkout.session.completed" | "checkout.session.async_payment_succeeded":
+            # Branch one-time credit top-ups off the subscription flow FIRST: a
+            # mis-route into handle_checkout_completed would flip the tenant's
+            # tier + reprovision. Credit grant is idempotent on event_id.
+            meta = data.get("metadata") or {}
+            if data.get("mode") == "payment" and meta.get("kind") == "credit_topup":
+                handle_credit_topup_completed(event_id, data)
+            elif event_type == "checkout.session.completed":
+                handle_checkout_completed(data)
+            else:
+                logger.info("async_payment_succeeded for non-credit session %s", data.get("id"))
+        case "charge.refunded":
+            handle_credit_refund(event_id, data)
+        case "charge.dispute.created":
+            logger.warning("Stripe dispute opened (charge=%s) — manual review", data.get("id"))
         case "customer.subscription.deleted":
             handle_subscription_deleted(data)
         case "customer.subscription.updated":
@@ -212,3 +235,94 @@ class StripeCheckoutView(APIView):
             api_key=api_key,
         )
         return Response({"url": session.url})
+
+
+class CreditCheckoutView(APIView):
+    """Start a one-time prepaid-credit top-up Checkout Session (mode=payment).
+
+    The client may only pick a server-defined pack by id; the amount + granted
+    credit are looked up from CREDIT_PACKS here AND re-derived in the webhook —
+    never trusted from the client. Credit is granted only by the webhook, never
+    on the success_url redirect.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        api_key = _require_stripe_api_key()
+        if not api_key:
+            return Response(
+                {"detail": "Stripe is not configured."},
+                status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        # NOTE: gate on CREDIT_PACKS, NOT _billing_is_enabled() — the latter keys
+        # off the subscription price; top-ups are purchasable independently.
+        if not CREDIT_PACKS:
+            return Response(
+                {"detail": "Credit top-ups are not available."},
+                status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=http_status.HTTP_404_NOT_FOUND)
+
+        pack_id = (request.data.get("pack_id") or "").strip()
+        pack = CREDIT_PACKS.get(pack_id)
+        if not pack:
+            return Response({"detail": "Unknown credit pack."}, status=http_status.HTTP_400_BAD_REQUEST)
+
+        # Stamp metadata on BOTH the session and the PaymentIntent: refund/dispute
+        # events carry the PaymentIntent (not the session), so the webhook needs
+        # it there to match the clawback back to the grant.
+        meta = {
+            "kind": "credit_topup",
+            "pack_id": pack_id,
+            "tenant_id": str(tenant.id),
+            "user_id": str(request.user.id),
+        }
+        customer = tenant.stripe_customer_id or None
+        try:
+            session = stripe.checkout.Session.create(
+                mode="payment",
+                customer=customer,
+                customer_email=None if customer else request.user.email,
+                client_reference_id=str(tenant.id),
+                line_items=[
+                    {
+                        "price_data": {
+                            "currency": "usd",
+                            "unit_amount": pack["price_cents"],
+                            "product_data": {"name": pack["label"]},
+                        },
+                        "quantity": 1,
+                    }
+                ],
+                metadata=meta,
+                payment_intent_data={"metadata": meta},
+                success_url=f"{settings.FRONTEND_URL}/settings/billing?topup=success",
+                cancel_url=f"{settings.FRONTEND_URL}/settings/billing?topup=cancelled",
+                api_key=api_key,
+            )
+        except stripe.error.StripeError as exc:
+            logger.error("Stripe credit checkout error for tenant %s: %s", tenant.id, exc)
+            return Response(
+                {"detail": "Unable to start checkout right now. Please try again later."},
+                status=http_status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response({"url": session.url})
+
+
+class CreditBalanceView(APIView):
+    """Read the tenant's prepaid-credit balance, included-allowance usage,
+    available packs, and recent ledger entries (for the Credits UI)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=http_status.HTTP_404_NOT_FOUND)
+        return Response(credits_state(tenant))
