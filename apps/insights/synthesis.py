@@ -31,7 +31,7 @@ from typing import Any
 
 from django.utils import timezone
 
-from apps.billing.constants import MINIMAX_MODEL
+from apps.billing.constants import DEEPSEEK_FLASH_MODEL
 from apps.billing.services import record_usage
 from apps.common.openrouter import chat_completion
 from apps.insights.markers import extract_and_record_insights
@@ -47,10 +47,10 @@ logger = logging.getLogger(__name__)
 # reasoning over a week of data), materially cheaper output rate.
 SYNTHESIS_MODEL = "openrouter/deepseek/deepseek-v4-pro"
 
-# Fallback chain if DeepSeek is unreachable on OpenRouter — MiniMax is the
-# cheapest capable alternative. A degraded reflection beats a silently skipped
-# weekly observation.
-SYNTHESIS_MODELS = [SYNTHESIS_MODEL, MINIMAX_MODEL]
+# Fallback chain if DeepSeek V4 Pro is unreachable on OpenRouter — DeepSeek V4
+# Flash is the cheapest capable alternative. A degraded reflection beats a
+# silently skipped weekly observation.
+SYNTHESIS_MODELS = [SYNTHESIS_MODEL, DEEPSEEK_FLASH_MODEL]
 
 # Hard ceilings so a single tenant can't unexpectedly balloon platform spend.
 _MAX_INPUT_CONTEXT_CHARS = 12000
@@ -316,8 +316,9 @@ def _format_context_for_prompt(context: dict[str, Any]) -> str:
 def _call_synthesis_llm(context: dict[str, Any]) -> tuple[str, dict]:
     """Call OpenRouter for the synthesis. Returns (text, usage_dict).
 
-    Tries DeepSeek first, then MiniMax (see SYNTHESIS_MODELS) so a single-model
-    OpenRouter outage doesn't silently drop the weekly reflection.
+    Tries DeepSeek V4 Pro first, then DeepSeek V4 Flash (see SYNTHESIS_MODELS)
+    so a single-model OpenRouter outage doesn't silently drop the weekly
+    reflection.
     """
     user_message = _format_context_for_prompt(context)
     data, _model_used = chat_completion(

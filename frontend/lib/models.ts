@@ -31,7 +31,7 @@ export const MODELS: ModelUI[] = [
     free: true,
     limitedTimeOffer: true,
   },
-  { model_id: "openrouter/minimax/minimax-m2.7", name: "MiniMax M2.7", tagline: "Fast and efficient", intelligence: 6, input_rate: 0.28, output_rate: 1.20 },
+  { model_id: "openrouter/deepseek/deepseek-v4-flash", name: "DeepSeek V4 Flash", tagline: "Fast and efficient", intelligence: 7, input_rate: 0.065, output_rate: 0.26 },
   { model_id: "openrouter/deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro", tagline: "Reasoning + 1M context", intelligence: 8, input_rate: 0.435, output_rate: 0.87 },
   { model_id: "openrouter/google/gemma-4-31b-it", name: "Gemma 4 31B", tagline: "Lightweight and affordable", intelligence: 6, input_rate: 0.12, output_rate: 0.37 },
   {

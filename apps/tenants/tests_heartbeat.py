@@ -79,7 +79,7 @@ class HeartbeatCronBuildTest(TestCase):
         result = _build_heartbeat_cron(self.tenant)
         self.assertEqual(result["schedule"]["tz"], "Asia/Tokyo")
 
-    def test_model_is_always_openrouter_minimax(self):
+    def test_model_is_always_pinned_heartbeat_model(self):
         result = _build_heartbeat_cron(self.tenant)
         self.assertEqual(result["model"], HEARTBEAT_MODEL)
 

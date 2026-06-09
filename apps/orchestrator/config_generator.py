@@ -14,9 +14,9 @@ from django.conf import settings
 
 from apps.billing.constants import (
     ANTHROPIC_SONNET_MODEL,
+    DEEPSEEK_FLASH_MODEL,
     DEEPSEEK_MODEL,
     GEMMA_MODEL,
-    MINIMAX_MODEL,
 )
 from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION, generate_tool_config
 from apps.tenants.models import Tenant
@@ -927,17 +927,17 @@ _BACKGROUND_TASKS_PROMPT = (
 )
 
 # Model mapping by tier — DeepSeek V4 Pro is the chat primary as of
-# 2026-05-23. MiniMax stays in the allowlist (`TIER_MODEL_CONFIGS`) as
-# a selectable lower-latency alternative; users who pick it via the
-# settings UI keep DeepSeek on the reasoning-shaped crons through
-# `TIER_TASK_DEFAULTS` below.
+# 2026-05-23. DeepSeek V4 Flash sits in the allowlist (`TIER_MODEL_CONFIGS`)
+# as the selectable lower-latency alternative (it replaced MiniMax M2.7 in
+# that slot on 2026-06-09); users who pick it via the settings UI keep
+# DeepSeek on the reasoning-shaped crons through `TIER_TASK_DEFAULTS` below.
 TIER_MODELS: dict[str, dict[str, str]] = {
     "starter": {"primary": DEEPSEEK_MODEL},
 }
 
 TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     "starter": {
-        MINIMAX_MODEL: {"alias": "minimax"},
+        DEEPSEEK_FLASH_MODEL: {"alias": "deepseek-flash"},
         DEEPSEEK_MODEL: {"alias": "deepseek"},
         GEMMA_MODEL: {"alias": "gemma"},
     },
@@ -946,28 +946,29 @@ TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
 # Per-task model defaults — stamp these onto specific cron jobs when the
 # tenant hasn't set a `task_model_preferences` override.
 #
-# Routine crons run on the small/fast WORKER model (Gemma): they gather
-# data and write the journal/message, and a cheap fast model keeps them
-# well inside the per-turn timeout. DeepSeek V4 Pro — the reasoning
-# "leader" — was stamped here originally for its judgment, but on the cron
-# path it overshot the 60s turn ceiling and timed out (2026-06 incident);
-# the leader now stays reserved for the interactive chat session while the
-# small workers handle scheduled legwork. Every value MUST be a NON-BYO
-# model so platform-initiated turns never burn a tenant's Anthropic
-# subscription. Heavier briefings on Gemma are verified on the canary —
-# bump a specific cron back up if it reads thin.
+# Routine crons run on the small/fast WORKER model (DeepSeek V4 Flash): they
+# gather data and write the journal/message, and a cheap fast model keeps them
+# well inside the per-turn timeout. DeepSeek V4 Pro — the reasoning "leader" —
+# was stamped here originally for its judgment, but on the cron path it
+# overshot the 60s turn ceiling and timed out (2026-06 incident); the leader
+# now stays reserved for the interactive chat session while the small worker
+# (Flash) handles scheduled legwork. Flash replaced Gemma as the worker default
+# on 2026-06-09 — cheaper ($0.065/$0.26 vs $0.12/$0.37 per 1M) and more capable,
+# same fast / non-reasoning profile, so it keeps the default per-turn timeout.
+# Every value MUST be a NON-BYO model so platform-initiated turns never burn a
+# tenant's Anthropic subscription.
 #
 # Keys mirror the values of `_TASK_SLUG_MAP` defined later in this file.
 TIER_TASK_DEFAULTS: dict[str, dict[str, str]] = {
     "starter": {
-        "morning_briefing": GEMMA_MODEL,
-        "evening_checkin": GEMMA_MODEL,
-        "weekly_reflection": GEMMA_MODEL,
-        "week_review": GEMMA_MODEL,
-        "project_checkin": GEMMA_MODEL,
-        "gravity_weekly_checkin": GEMMA_MODEL,
-        "personal_question": GEMMA_MODEL,
-        "background_tasks": GEMMA_MODEL,
+        "morning_briefing": DEEPSEEK_FLASH_MODEL,
+        "evening_checkin": DEEPSEEK_FLASH_MODEL,
+        "weekly_reflection": DEEPSEEK_FLASH_MODEL,
+        "week_review": DEEPSEEK_FLASH_MODEL,
+        "project_checkin": DEEPSEEK_FLASH_MODEL,
+        "gravity_weekly_checkin": DEEPSEEK_FLASH_MODEL,
+        "personal_question": DEEPSEEK_FLASH_MODEL,
+        "background_tasks": DEEPSEEK_FLASH_MODEL,
     },
 }
 
@@ -1089,12 +1090,14 @@ WHISPER_DEFAULT_MODEL = {"provider": "openai", "model": "gpt-4o-mini-transcribe"
 
 # Heartbeat model — the heartbeat is the one routine cron that's pure judgment
 # ("is anything genuinely new?" — it cross-references the daily note + heartbeat
-# log to decide whether to speak), so it runs on MiniMax (a mid model) rather
-# than the tiny Gemma worker the mechanical crons use, or the slow DeepSeek
+# log to decide whether to speak), so it runs on DeepSeek V4 Flash (a mid model)
+# rather than the tiny Gemma worker the mechanical crons use, or the slow DeepSeek
 # reasoning leader that overshot the cron timeout. Pinned regardless of the
 # tenant's `preferred_model`, and NON-BYO so platform-initiated turns never burn
-# a tenant's Anthropic subscription. See `_HEARTBEAT_CHECKIN_PROMPT`.
-HEARTBEAT_MODEL = MINIMAX_MODEL
+# a tenant's Anthropic subscription. MUST stay in every tier's allowlist
+# (`TIER_MODEL_CONFIGS`) or OpenClaw preflight rejects the pinned cron model —
+# Flash is in the starter allowlist above. See `_HEARTBEAT_CHECKIN_PROMPT`.
+HEARTBEAT_MODEL = DEEPSEEK_FLASH_MODEL
 
 
 def _heartbeat_cron_expr(start_hour: int, window_hours: int) -> str:
@@ -2083,7 +2086,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
 
     # Note: OPENROUTER_API_KEY is injected as a container env var via Key Vault
     # reference (see azure_client.py). OpenClaw reads it automatically for
-    # models routed through OpenRouter (e.g. MINIMAX_MODEL).
+    # models routed through OpenRouter (e.g. DEEPSEEK_MODEL).
 
     if _active_plugins:
         image_gen_id = str(getattr(settings, "OPENCLAW_IMAGE_GEN_PLUGIN_ID", "") or "").strip()
@@ -2192,7 +2195,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     # OpenClaw 2026.5.2 retired the 60s default idle-token watchdog config
     # that lived under agents.defaults.llm. Boot fails with "Unrecognized
     # key: llm" if we keep emitting it. The replacement is per-provider
-    # timeoutSeconds. Slower OpenRouter models (e.g. minimax-m2.7) on heavy
+    # timeoutSeconds. Slower OpenRouter models (e.g. deepseek-v4-pro) on heavy
     # prompts routinely need more than 60s between tokens, so set 300s.
     if _parse_version(oc_version) >= (2026, 5, 0):
         models_section = config.setdefault("models", {})

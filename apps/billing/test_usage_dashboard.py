@@ -9,7 +9,7 @@ from rest_framework.test import APIClient
 
 from apps.tenants.services import create_tenant
 
-from .constants import MINIMAX_DISPLAY, MODEL_RATES
+from .constants import DEEPSEEK_FLASH_DISPLAY, MODEL_RATES
 from .models import UsageRecord
 from .usage_services import get_daily_usage, get_month_boundaries, get_transparency_data, get_usage_summary
 
@@ -195,7 +195,7 @@ class TransparencyServiceTest(TestCase):
         # Default tenant is starter tier — rate card filtered to tier models
         data = get_transparency_data(self.tenant)
         names = [r["display_name"] for r in data["model_rates"]]
-        self.assertIn(MINIMAX_DISPLAY, names)
+        self.assertIn(DEEPSEEK_FLASH_DISPLAY, names)
 
     def test_transparency_no_usage(self):
         tenant2 = create_tenant(display_name="NoUse", telegram_chat_id=999666)

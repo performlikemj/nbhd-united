@@ -18,7 +18,7 @@ from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
 OLD_MODEL = "openrouter/google/gemma-4-31b-it"
-NEW_MODEL = "openrouter/minimax/minimax-m2.7"
+NEW_MODEL = "openrouter/deepseek/deepseek-v4-flash"
 
 
 class ApplySingleTenantConfigAppliedModelTests(TestCase):

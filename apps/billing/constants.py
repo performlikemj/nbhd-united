@@ -7,6 +7,12 @@ from decimal import Decimal
 
 # ── Canonical model IDs ────────────────────────────────────────────────────
 # Change these once here; every other module imports from this file.
+
+# MiniMax M2.7 is no longer offered as a user-selectable model (replaced by
+# DeepSeek V4 Flash on 2026-06-09 — cheaper, and consolidates the "fast"
+# slot onto the DeepSeek family alongside V4 Pro). The constant + rate stay
+# so historical UsageEvent rows continue to render correctly in billing; no
+# code path adds MiniMax to a tier's allowlist anymore.
 MINIMAX_MODEL = "openrouter/minimax/minimax-m2.7"
 MINIMAX_DISPLAY = "MiniMax M2.7"
 MINIMAX_RATE = {"input": 0.28, "output": 1.20}
@@ -23,6 +29,15 @@ KIMI_RATE = {"input": 0.73, "output": 3.49}
 DEEPSEEK_MODEL = "openrouter/deepseek/deepseek-v4-pro"
 DEEPSEEK_DISPLAY = "DeepSeek V4 Pro"
 DEEPSEEK_RATE = {"input": 0.435, "output": 0.87}
+
+# DeepSeek V4 Flash — the cheap/fast member of the DeepSeek family. Replaced
+# MiniMax M2.7 as the low-latency "fast" slot on 2026-06-09. Also the pinned
+# HEARTBEAT_MODEL (see config_generator): cheaper than V4 Pro, faster than the
+# reasoning leader, more capable than the Gemma worker. Not a reasoning model,
+# so it keeps the default chat timeout.
+DEEPSEEK_FLASH_MODEL = "openrouter/deepseek/deepseek-v4-flash"
+DEEPSEEK_FLASH_DISPLAY = "DeepSeek V4 Flash"
+DEEPSEEK_FLASH_RATE = {"input": 0.065, "output": 0.26}
 
 GEMMA_MODEL = "openrouter/google/gemma-4-31b-it"
 GEMMA_DISPLAY = "Gemma 4 31B"
@@ -85,6 +100,14 @@ MODEL_RATES: dict[str, dict[str, float]] = {
     DEEPSEEK_MODEL.removeprefix("openrouter/"): {
         **DEEPSEEK_RATE,
         "display_name": DEEPSEEK_DISPLAY,
+    },
+    DEEPSEEK_FLASH_MODEL: {
+        **DEEPSEEK_FLASH_RATE,
+        "display_name": DEEPSEEK_FLASH_DISPLAY,
+    },
+    DEEPSEEK_FLASH_MODEL.removeprefix("openrouter/"): {
+        **DEEPSEEK_FLASH_RATE,
+        "display_name": DEEPSEEK_FLASH_DISPLAY,
     },
     GEMMA_MODEL: {
         **GEMMA_RATE,
@@ -178,7 +201,7 @@ TIER_TOKEN_BUDGETS: dict[str, int] = {
 # Monthly cost budget in USD.  Enforcement compares
 # estimated_cost_this_month against this cap.
 TIER_COST_BUDGETS: dict[str, float] = {
-    "starter": 5.00,  # ~16M tokens of MiniMax
+    "starter": 5.00,  # ~$5 of metered usage (DeepSeek V4 Flash @ $0.065/$0.26 per 1M)
 }
 
 # ── Prepaid credit top-ups ─────────────────────────────────────────────────
