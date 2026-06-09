@@ -22,11 +22,19 @@ query will use). The reliable fix is to stop reaping pooled backends and let the
 pooler own their lifecycle:
 
   * ``idle_session_timeout = 0``   — disable the reaper (the pooler manages this).
-  * ``idle_in_transaction_session_timeout = '30s'`` — ADD the guard that actually
+  * ``idle_in_transaction_session_timeout = '60s'`` — ADD the guard that actually
     matters: reap sessions that abandon an *open transaction* (holding locks),
     which the role previously lacked. Net robustness gain; neither setting touches
     tenant isolation (that's RLS policies + grant revocation + app-level query
     filtering, not session reaping).
+
+A fleet-wide audit of every ``transaction.atomic()`` block found exactly one path
+that held a transaction open across long external work — the idle-hibernation
+sweep (``apps/orchestrator/tasks.py``), which kept a ``SELECT ... FOR UPDATE``
+across per-tenant Azure/gateway calls. It's refactored in the same change to
+claim-and-release (lock only the short row snapshot; external work runs
+lock-free), so the 60s in-transaction guard can't reap a legitimate sweep and the
+sweep no longer pins a pooled backend for its whole duration.
 
 Already applied to prod manually via the Supabase connection; this migration
 codifies it so the role config can't silently drift again. Guarded so it's a
@@ -42,7 +50,7 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_user') THEN
     BEGIN
       EXECUTE 'ALTER ROLE app_user SET idle_session_timeout = 0';
-      EXECUTE 'ALTER ROLE app_user SET idle_in_transaction_session_timeout = ''30s''';
+      EXECUTE 'ALTER ROLE app_user SET idle_in_transaction_session_timeout = ''60s''';
     EXCEPTION WHEN insufficient_privilege THEN
       RAISE NOTICE 'tenants.0087: insufficient privilege to ALTER ROLE app_user; '
                    'apply manually (already done in prod).';
