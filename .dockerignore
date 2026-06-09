@@ -1,0 +1,57 @@
+# Docker build context excludes for the Django image (see Dockerfile).
+# Keep this lean: COPY . . pulls in the entire context, so anything here
+# stays OUT of the image (smaller layers, faster context upload, no secrets).
+
+# --- Secrets (never bake into an image layer) ---
+.env
+.env.*
+*.pem
+*.key
+
+# --- Version control / CI / editor / agent config ---
+.git
+.gitignore
+.gitattributes
+.github
+.claude
+.vscode
+.idea
+.DS_Store
+
+# --- Frontend: deploys separately to Azure Static Web Apps; Django never imports it ---
+frontend
+
+# --- ML model + training artifacts ---
+# The PII model is downloaded fresh at build time (Dockerfile line ~29).
+# These local dirs (pii-model-output is ~7.8 GB) must never enter the context.
+pii-model
+pii-model-output
+pii-model-test
+pii-model-multilingual
+
+# --- Python / virtualenv / caches ---
+.venv
+venv
+env
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.ruff_cache
+.mypy_cache
+*.egg-info
+
+# --- Node (in case any lands at root locally) ---
+node_modules
+**/node_modules
+out
+.next
+
+# --- Local DBs / collected static (regenerated in-image) / local docs ---
+*.sqlite3
+db.sqlite3
+staticfiles
+COST_ANALYSIS_*.md
+CONTINUITY_*.md
