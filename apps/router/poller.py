@@ -211,35 +211,38 @@ class TelegramPoller:
         return [c for c in chunks if c]  # Drop empty chunks
 
     def _send_markdown(self, chat_id: int, text: str) -> None:
-        """Send a message with Markdown formatting, falling back to plain text.
+        """Render the assistant's markdown to Telegram HTML and send it.
 
-        Handles long messages by splitting into chunks. Tries Markdown
-        parse_mode first; if Telegram rejects it, retries as plain text.
+        The agent emits CommonMark/GFM; rendering to Telegram's HTML subset
+        (``apps.router.telegram_format``) gives bold headings, aligned
+        monospace tables and real anchors with no visible markdown. Long
+        messages are split on block boundaries by the renderer. On the rare
+        HTML rejection, that chunk degrades to tag-free text (no markdown).
         """
         assert self._http is not None
-        chunks = self._split_message(text)
+        from apps.router.telegram_format import render_telegram_html, strip_telegram_html
 
-        for i, chunk in enumerate(chunks):
+        for i, chunk in enumerate(render_telegram_html(text)):
             if i > 0:
                 time.sleep(0.3)  # Brief delay between chunks
 
             try:
                 resp = self._http.post(
                     f"{self._api_base}/sendMessage",
-                    json={"chat_id": chat_id, "text": chunk, "parse_mode": "Markdown"},
+                    json={"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"},
                     timeout=10,
                 )
                 if resp.is_success:
                     continue
-                # If Telegram rejected the markdown (400), fall back to plain text
+                # If Telegram rejected the HTML (400), fall back to plain text
                 if resp.status_code == 400:
-                    logger.debug("Markdown rejected for chunk %d, falling back to plain text", i)
-                    self._send_message(chat_id, chunk)
+                    logger.debug("HTML rejected for chunk %d, falling back to plain text", i)
+                    self._send_message(chat_id, strip_telegram_html(chunk))
                     continue
-                logger.warning("sendMessage(Markdown) failed (%s): %s", resp.status_code, resp.text[:200])
+                logger.warning("sendMessage(HTML) failed (%s): %s", resp.status_code, resp.text[:200])
             except Exception:
                 # Network error — try plain text
-                self._send_message(chat_id, chunk)
+                self._send_message(chat_id, strip_telegram_html(chunk))
 
     def _send_photo(self, chat_id: int, photo_path: str, tenant: Tenant, caption: str = "") -> bool:
         """Send a photo to Telegram from the tenant's workspace file share.
@@ -290,8 +293,11 @@ class TelegramPoller:
             files = {"photo": (f"image.{ext}", data, mime)}
             form_data = {"chat_id": str(chat_id)}
             if caption:
-                form_data["caption"] = caption[:1024]  # Telegram caption limit
-                form_data["parse_mode"] = "Markdown"
+                # Captions are short; send as clean markdown-free text rather
+                # than risk a parse-mode rejection on a 1-line caption.
+                from apps.router.telegram_format import markdown_to_plaintext
+
+                form_data["caption"] = markdown_to_plaintext(caption, max_len=1024)
 
             resp = self._http.post(
                 f"{self._api_base}/sendPhoto",
@@ -409,16 +415,18 @@ class TelegramPoller:
         # Send remaining text
         if clean_text:
             if reply_markup:
-                # Send last chunk with buttons attached
-                chunks = self._split_message(clean_text)
+                # Render to Telegram HTML; the last chunk carries the buttons.
+                from apps.router.telegram_format import render_telegram_html
+
+                chunks = render_telegram_html(clean_text) or [clean_text]
                 for i, chunk in enumerate(chunks):
                     if i > 0:
                         time.sleep(0.3)
                     if i == len(chunks) - 1:
                         # Last chunk gets the buttons
-                        self._send_message(chat_id, chunk, parse_mode="Markdown", reply_markup=reply_markup)
+                        self._send_message(chat_id, chunk, parse_mode="HTML", reply_markup=reply_markup)
                     else:
-                        self._send_markdown(chat_id, chunk)
+                        self._send_message(chat_id, chunk, parse_mode="HTML")
             else:
                 self._send_markdown(chat_id, clean_text)
 

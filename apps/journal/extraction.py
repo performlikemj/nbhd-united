@@ -251,15 +251,26 @@ def _send_telegram_with_buttons(
     buttons: list[list[dict]],
 ) -> int | None:
     """Send a Telegram message with inline keyboard. Returns message_id."""
+    from apps.router.telegram_format import markdown_to_plaintext, render_telegram_html
+
     url = f"{TELEGRAM_API_BASE}{bot_token}/sendMessage"
+    # Render to Telegram HTML so summary markdown (**bold**, bullets, tables)
+    # never reaches the user as raw syntax. Summaries are short — one chunk.
+    rendered = render_telegram_html(text)
+    body = rendered[0] if rendered else text
     payload = {
         "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown",
+        "text": body,
+        "parse_mode": "HTML",
         "reply_markup": {"inline_keyboard": buttons},
     }
     try:
         resp = requests.post(url, json=payload, timeout=TELEGRAM_TIMEOUT)
+        if resp.status_code == 400:
+            # HTML rejected — retry as clean markdown-free text.
+            payload["text"] = markdown_to_plaintext(text)
+            payload.pop("parse_mode", None)
+            resp = requests.post(url, json=payload, timeout=TELEGRAM_TIMEOUT)
         resp.raise_for_status()
         return resp.json()["result"]["message_id"]
     except Exception:
@@ -384,6 +395,10 @@ def _deliver_summary_line(
     kind_emoji = {"lesson": "💡", "goal": "🎯", "task": "✅"}
     bubbles = []
 
+    # LINE Flex text renders no markdown — strip inline markers so extracted
+    # item text never shows raw **bold**/[links] on the card.
+    from apps.router.line_flex import _strip_md_inline
+
     # LINE carousel max is 10 bubbles total — prioritise extractions, fill
     # remainder with reconciliation actions
     remaining = 10
@@ -394,6 +409,8 @@ def _deliver_summary_line(
     for p in items_to_send:
         emoji = kind_emoji.get(p.kind, "•")
         ptext = rehydrate_text(p.text, entity_map) if entity_map else p.text
+        # LINE Flex renders no markdown — strip inline markers from item text.
+        ptext = _strip_md_inline(ptext)
         undo_action = f"undo_{p.kind}"
         label = re.sub(r"^[^\w]*", "", "Remove").strip()[:20]
         bubbles.append(
@@ -442,7 +459,7 @@ def _deliver_summary_line(
         )
 
     for a in actions_to_send:
-        line = _format_task_action_line(a, entity_map)
+        line = _strip_md_inline(_format_task_action_line(a, entity_map))
         bubbles.append(
             {
                 "type": "bubble",
