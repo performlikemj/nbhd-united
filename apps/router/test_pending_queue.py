@@ -478,6 +478,33 @@ class PendingMessageTelegramTest(TestCase):
         self.assertTrue(any("/v1/chat/completions" in u for u in urls))
         self.assertTrue(any("api.telegram.org" in u for u in urls))
 
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_telegram_reply_sent_as_rendered_html(self, mock_post):
+        """The wire payload must be Telegram HTML — no raw markdown leaks."""
+        from apps.router.pending_queue import _send_telegram_markdown
+
+        ok = MagicMock()
+        ok.is_success = True
+        ok.status_code = 200
+        mock_post.return_value = ok
+
+        _send_telegram_markdown(
+            99,
+            "## Study Kit\n\n---\n\n**Bold** and a [link](https://x.com)\n\n| A | B |\n|---|---|\n| 1 | 2 |",
+        )
+
+        send_calls = [c for c in mock_post.call_args_list if "sendMessage" in c.args[0]]
+        self.assertTrue(send_calls)
+        payload = send_calls[0].kwargs["json"]
+        self.assertEqual(payload["parse_mode"], "HTML")
+        body = payload["text"]
+        # Rendered, not raw.
+        self.assertIn("<b>Study Kit</b>", body)
+        self.assertIn('<a href="https://x.com">link</a>', body)
+        self.assertIn("<pre>", body)  # table → monospace grid
+        for raw in ("##", "---", "**", "|---|"):
+            self.assertNotIn(raw, body)
+
 
 @override_settings(
     NBHD_INTERNAL_API_KEY="test-key",

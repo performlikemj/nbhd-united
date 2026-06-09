@@ -230,20 +230,37 @@ class CronDeliveryView(APIView):
         api_base = f"https://api.telegram.org/bot{bot_token}"
         sent_count = 0
 
-        try:
-            chunks = _split_message(message_text)
+        from apps.router.telegram_format import (
+            markdown_to_plaintext,
+            render_telegram_html,
+            strip_telegram_html,
+        )
 
+        # Render the assistant's markdown into Telegram HTML (bold headings,
+        # aligned tables, anchors — no visible markdown). ``parse_mode="plain"``
+        # opts out and sends markdown-stripped text.
+        if parse_mode == "plain":
+            chunks = _split_message(markdown_to_plaintext(message_text))
+            html_mode = False
+        else:
+            chunks = render_telegram_html(message_text) or _split_message(message_text)
+            html_mode = True
+
+        try:
             with httpx.Client(timeout=10) as http:
                 for chunk in chunks:
                     payload: dict = {"chat_id": chat_id, "text": chunk}
-                    if parse_mode and parse_mode != "plain":
-                        payload["parse_mode"] = parse_mode
+                    if html_mode:
+                        payload["parse_mode"] = "HTML"
 
                     resp = http.post(f"{api_base}/sendMessage", json=payload)
 
-                    if resp.status_code == 400 and parse_mode == "Markdown":
-                        payload.pop("parse_mode", None)
-                        resp = http.post(f"{api_base}/sendMessage", json=payload)
+                    if resp.status_code == 400 and html_mode:
+                        # HTML rejected — retry as tag-free text (no markdown).
+                        resp = http.post(
+                            f"{api_base}/sendMessage",
+                            json={"chat_id": chat_id, "text": strip_telegram_html(chunk)},
+                        )
 
                     if not resp.is_success:
                         logger.warning(

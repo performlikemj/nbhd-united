@@ -42,7 +42,11 @@ def _send_telegram_lesson(tenant: Tenant, lesson: Lesson) -> bool:
 
     lesson_text = rehydrate_for_tenant(tenant, lesson.text)
 
+    from apps.router.telegram_format import render_telegram_html
+
     text = f'\U0001f4a1 *Something worth remembering:*\n\n"{lesson_text}"'
+    rendered = render_telegram_html(text)
+    body = rendered[0] if rendered else text
     keyboard = {
         "inline_keyboard": [
             [
@@ -57,8 +61,8 @@ def _send_telegram_lesson(tenant: Tenant, lesson: Lesson) -> bool:
             f"{TELEGRAM_API_BASE}{bot_token}/sendMessage",
             json={
                 "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "Markdown",
+                "text": body,
+                "parse_mode": "HTML",
                 "reply_markup": keyboard,
             },
             timeout=10,
@@ -99,8 +103,11 @@ def _send_line_lesson(tenant: Tenant, lesson: Lesson) -> bool:
         return False
 
     from apps.pii.redactor import rehydrate_for_tenant
+    from apps.router.line_flex import _strip_md_inline
 
-    lesson_text = rehydrate_for_tenant(tenant, lesson.text)
+    # LINE Flex renders no markdown — strip inline markers so the lesson
+    # (AI-authored, may contain **bold**/[links]) shows clean, not raw syntax.
+    lesson_text = _strip_md_inline(rehydrate_for_tenant(tenant, lesson.text))
 
     flex_content = {
         "type": "bubble",

@@ -1551,14 +1551,26 @@ def _split_telegram_message(text: str, max_len: int = _TG_MAX_LEN) -> list[str]:
 
 
 def _send_telegram_markdown(chat_id: int, text: str) -> bool:
-    """Send a (potentially long) message to Telegram with Markdown,
-    falling back to plain text per chunk on parse-mode rejection."""
+    """Render the assistant's markdown to Telegram HTML and deliver it.
+
+    The agent emits CommonMark/GFM; Telegram's legacy ``Markdown`` parse-mode
+    leaks ``##`` headings, ``---`` rules, ``**bold**`` and tables literally, so
+    we render to Telegram's HTML subset (``apps.router.telegram_format``) —
+    bold headings, aligned monospace tables, real anchors, no visible markdown.
+    Each block-bounded chunk is sent with ``parse_mode="HTML"``; on the rare
+    rejection we degrade that chunk to tag-free text (still markdown-free).
+    """
     base = _telegram_api_base()
     if not base:
         logger.warning("drain_pending: cannot send telegram message — no bot token")
         return False
 
-    chunks = _split_telegram_message(text)
+    from apps.router.telegram_format import render_telegram_html, strip_telegram_html
+
+    chunks = render_telegram_html(text)
+    if not chunks:
+        return True
+
     overall = True
     for i, chunk in enumerate(chunks):
         if i > 0:
@@ -1566,16 +1578,16 @@ def _send_telegram_markdown(chat_id: int, text: str) -> bool:
         try:
             resp = httpx.post(
                 f"{base}/sendMessage",
-                json={"chat_id": chat_id, "text": chunk, "parse_mode": "Markdown"},
+                json={"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"},
                 timeout=10,
             )
             if resp.is_success:
                 continue
             if resp.status_code == 400:
-                # Markdown parse error — retry as plain text.
+                # HTML rejected — retry as tag-free plain text (no markdown).
                 plain = httpx.post(
                     f"{base}/sendMessage",
-                    json={"chat_id": chat_id, "text": chunk},
+                    json={"chat_id": chat_id, "text": strip_telegram_html(chunk)},
                     timeout=10,
                 )
                 overall = overall and plain.is_success
