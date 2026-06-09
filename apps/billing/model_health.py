@@ -28,9 +28,9 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.billing.constants import (
+    DEEPSEEK_FLASH_MODEL,
     DEEPSEEK_MODEL,
     GEMMA_MODEL,
-    MINIMAX_MODEL,
     NEMOTRON_FREE_DISPLAY,
     NEMOTRON_FREE_MODEL,
     display_name_for_model,
@@ -50,7 +50,7 @@ PING_TIMEOUT_SECONDS = 20
 # Models whose pricing we refresh each tick. The offer model also gets an active
 # reachability ping; the rest self-report reachability through real traffic via
 # the control-plane fallback wrapper.
-MONITORED_MODELS = [NEMOTRON_FREE_MODEL, DEEPSEEK_MODEL, MINIMAX_MODEL, GEMMA_MODEL]
+MONITORED_MODELS = [NEMOTRON_FREE_MODEL, DEEPSEEK_MODEL, DEEPSEEK_FLASH_MODEL, GEMMA_MODEL]
 
 # How many tenants we'll proactively notify on a single transition before we
 # stop (and log) — a backstop so a future large fleet can't blast thousands of

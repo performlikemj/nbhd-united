@@ -10,8 +10,8 @@ from django.test.utils import override_settings
 from apps.billing.constants import (
     ANTHROPIC_OPUS_MODEL,
     ANTHROPIC_SONNET_MODEL,
+    DEEPSEEK_FLASH_MODEL,
     DEEPSEEK_MODEL,
-    MINIMAX_MODEL,
 )
 from apps.tenants.services import create_tenant
 
@@ -66,9 +66,9 @@ class RuntimePreferredModelViewTest(TestCase):
         self.assertEqual(body["model_tier"], "starter")
         self.assertEqual(body["preferred_model"], "")
         model_ids = {m["model_id"] for m in body["allowed_models"]}
-        self.assertEqual(model_ids, {MINIMAX_MODEL, DEEPSEEK_MODEL, "openrouter/google/gemma-4-31b-it"})
+        self.assertEqual(model_ids, {DEEPSEEK_FLASH_MODEL, DEEPSEEK_MODEL, "openrouter/google/gemma-4-31b-it"})
         aliases = {m["alias"] for m in body["allowed_models"]}
-        self.assertEqual(aliases, {"minimax", "deepseek", "gemma"})
+        self.assertEqual(aliases, {"deepseek-flash", "deepseek", "gemma"})
 
     # ── POST allowed switch ────────────────────────────────────────────
 

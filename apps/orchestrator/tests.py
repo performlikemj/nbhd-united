@@ -75,7 +75,7 @@ class ConfigGeneratorTest(TestCase):
         config = generate_openclaw_config(self.tenant)
         models = config["agents"]["defaults"]["models"]
         aliases = sorted(v.get("alias") for v in models.values())
-        self.assertEqual(aliases, ["deepseek", "gemma", "minimax"])
+        self.assertEqual(aliases, ["deepseek", "deepseek-flash", "gemma"])
 
     def test_audio_model_defaults_to_whisper(self):
         self.tenant.model_tier = "starter"
@@ -438,27 +438,28 @@ class ConfigGeneratorTest(TestCase):
     # ── Task model preferences ──────────────────────────────────────
 
     def test_task_model_preferences_override_cron_jobs(self):
-        # Use a model from the tier's allowlist (starter ⇒ minimax). Without
-        # the allowlist guard added 2026-05-14, ``build_cron_seed_jobs``
+        # Use a model from the tier's allowlist (starter ⇒ deepseek-flash).
+        # Without the allowlist guard added 2026-05-14, ``build_cron_seed_jobs``
         # would stamp anything the user requested, including models the
         # OpenClaw runtime rejects at preflight.
-        from apps.billing.constants import MINIMAX_MODEL
+        from apps.billing.constants import DEEPSEEK_FLASH_MODEL
 
         self.tenant.model_tier = "starter"
-        self.tenant.task_model_preferences = {"morning_briefing": MINIMAX_MODEL}
+        self.tenant.task_model_preferences = {"morning_briefing": DEEPSEEK_FLASH_MODEL}
         self.tenant.save()
         jobs = build_cron_seed_jobs(self.tenant)
         morning = next(j for j in jobs if j["name"] == "Morning Briefing")
         # User override beats the DeepSeek default.
-        self.assertEqual(morning["model"], MINIMAX_MODEL)
+        self.assertEqual(morning["model"], DEEPSEEK_FLASH_MODEL)
 
     def test_task_model_defaults_stamp_fast_worker_on_routine_crons(self):
         """When the tenant has no `task_model_preferences` override, routine
-        crons get the small/fast worker model (Gemma) via TIER_TASK_DEFAULTS,
-        not the slow reasoning leader. Personal Question + Background Tasks are
-        now stamped too (they previously inherited the reasoning chat primary).
+        crons get the small/fast worker model (DeepSeek V4 Flash) via
+        TIER_TASK_DEFAULTS, not the slow reasoning leader. Personal Question +
+        Background Tasks are now stamped too (they previously inherited the
+        reasoning chat primary).
         """
-        from apps.billing.constants import GEMMA_MODEL
+        from apps.billing.constants import DEEPSEEK_FLASH_MODEL
 
         self.tenant.model_tier = "starter"
         self.tenant.task_model_preferences = {}
@@ -474,7 +475,7 @@ class ConfigGeneratorTest(TestCase):
             "Personal Question",
             "Background Tasks",
         ):
-            self.assertEqual(by_name[name].get("model"), GEMMA_MODEL, name)
+            self.assertEqual(by_name[name].get("model"), DEEPSEEK_FLASH_MODEL, name)
 
     def test_task_model_preferences_outside_allowlist_are_dropped(self):
         """Stale preferences pointing at models not in the tenant's tier
@@ -488,7 +489,7 @@ class ConfigGeneratorTest(TestCase):
         active BYO credential, the prefs were dropped, the cron
         fell back to the tier default, and Morning Briefing fired.
         """
-        from apps.billing.constants import GEMMA_MODEL
+        from apps.billing.constants import DEEPSEEK_FLASH_MODEL
 
         self.tenant.model_tier = "starter"
         self.tenant.task_model_preferences = {
@@ -498,8 +499,8 @@ class ConfigGeneratorTest(TestCase):
         jobs = build_cron_seed_jobs(self.tenant)
         morning = next(j for j in jobs if j["name"] == "Morning Briefing")
         # Stale pref dropped; cron falls through to TIER_TASK_DEFAULTS
-        # (Gemma for Morning Briefing) — not silently un-stamped.
-        self.assertEqual(morning.get("model"), GEMMA_MODEL)
+        # (DeepSeek V4 Flash for Morning Briefing) — not silently un-stamped.
+        self.assertEqual(morning.get("model"), DEEPSEEK_FLASH_MODEL)
 
     # ── Morning briefing prompt shape ──────────────────────────────
 

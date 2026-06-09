@@ -31,7 +31,7 @@ import json
 import logging
 import re
 
-from apps.billing.constants import GEMMA_MODEL, MINIMAX_MODEL
+from apps.billing.constants import DEEPSEEK_FLASH_MODEL, GEMMA_MODEL
 from apps.common.openrouter import chat_completion
 from apps.tenants.agenda_models import AgendaEngagement
 from apps.tenants.agenda_service import mark_organic, record_signal
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 HINT_MODEL = "openai/gpt-4o-mini"
 # Lightweight classification — fall back to the cheap chat models if gpt-4o-mini
 # is unreachable on OpenRouter rather than dropping agenda hints for the run.
-HINT_MODELS = [HINT_MODEL, GEMMA_MODEL, MINIMAX_MODEL]
+HINT_MODELS = [HINT_MODEL, GEMMA_MODEL, DEEPSEEK_FLASH_MODEL]
 HINT_TIMEOUT = 30
 HINT_MAX_CONTENT_CHARS = 6000
 

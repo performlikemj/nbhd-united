@@ -94,7 +94,7 @@ class PreferredModelImmediateApplyTests(TestCase):
     def test_preferred_model_patch_enqueues_apply(self, mock_publish):
         response = self.client.patch(
             "/api/v1/tenants/settings/preferred-model/",
-            {"preferred_model": "openrouter/minimax/minimax-m2.7"},
+            {"preferred_model": "openrouter/deepseek/deepseek-v4-flash"},
             format="json",
         )
         self.assertEqual(response.status_code, 200)
@@ -111,7 +111,7 @@ class PreferredModelImmediateApplyTests(TestCase):
 
         response = self.client.patch(
             "/api/v1/tenants/settings/preferred-model/",
-            {"preferred_model": "openrouter/minimax/minimax-m2.7"},
+            {"preferred_model": "openrouter/deepseek/deepseek-v4-flash"},
             format="json",
         )
         self.assertEqual(response.status_code, 200)
@@ -126,7 +126,7 @@ class PreferredModelImmediateApplyTests(TestCase):
 
         response = self.client.patch(
             "/api/v1/tenants/settings/preferred-model/",
-            {"preferred_model": "openrouter/minimax/minimax-m2.7"},
+            {"preferred_model": "openrouter/deepseek/deepseek-v4-flash"},
             format="json",
         )
         self.assertEqual(response.status_code, 200)
@@ -136,7 +136,7 @@ class PreferredModelImmediateApplyTests(TestCase):
     def test_task_model_preferences_patch_enqueues_apply(self, mock_publish):
         response = self.client.patch(
             "/api/v1/tenants/settings/task-model-preferences/",
-            {"task_model_preferences": {"morning_briefing": "openrouter/minimax/minimax-m2.7"}},
+            {"task_model_preferences": {"morning_briefing": "openrouter/deepseek/deepseek-v4-flash"}},
             format="json",
         )
         self.assertEqual(response.status_code, 200)
@@ -151,10 +151,10 @@ class PreferredModelImmediateApplyTests(TestCase):
         """Publish failure is non-fatal — falls back to hourly cron."""
         response = self.client.patch(
             "/api/v1/tenants/settings/preferred-model/",
-            {"preferred_model": "openrouter/minimax/minimax-m2.7"},
+            {"preferred_model": "openrouter/deepseek/deepseek-v4-flash"},
             format="json",
         )
         self.assertEqual(response.status_code, 200)
         mock_publish.assert_called_once()
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.preferred_model, "openrouter/minimax/minimax-m2.7")
+        self.assertEqual(self.tenant.preferred_model, "openrouter/deepseek/deepseek-v4-flash")

@@ -286,7 +286,7 @@ class UpdateSystemCronPromptsNonMessageDriftTests(TestCase):
         crons that should fall through to `agents.defaults.model.primary`.
 
         Heartbeat is the only exception — it explicitly pins a cheap
-        model (MINIMAX_MODEL) regardless of the tenant's tier or BYO
+        model (DEEPSEEK_FLASH_MODEL) regardless of the tenant's tier or BYO
         state, and that model is always in the allowlist for every
         tier. If Heartbeat's pinned model ever drifts off the allowlist,
         we'd have the same class of preflight rejection.

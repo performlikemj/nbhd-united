@@ -2,7 +2,7 @@
 
 from django.test import TestCase
 
-from apps.billing.constants import DEEPSEEK_MODEL, MINIMAX_MODEL, NEMOTRON_FREE_MODEL
+from apps.billing.constants import DEEPSEEK_FLASH_MODEL, DEEPSEEK_MODEL, NEMOTRON_FREE_MODEL
 from apps.billing.models import FreeModelOffer
 from apps.orchestrator.config_generator import effective_primary_model, resolve_tenant_models
 from apps.tenants.models import Tenant, User
@@ -42,10 +42,10 @@ class ResolveTenantModelsTest(TestCase):
 
     def test_explicit_preferred_model_wins_over_offer(self):
         _activate()
-        tenant = _tenant(preferred=MINIMAX_MODEL)
+        tenant = _tenant(preferred=DEEPSEEK_FLASH_MODEL)
         models_config, _entries, fallbacks = resolve_tenant_models(tenant)
-        self.assertEqual(models_config["primary"], MINIMAX_MODEL)
+        self.assertEqual(models_config["primary"], DEEPSEEK_FLASH_MODEL)
         # NEMOTRON still selectable in the allowlist, so it appears as a fallback,
         # but DeepSeek is not force-led since the primary isn't the offer model.
         self.assertIn(NEMOTRON_FREE_MODEL, fallbacks)
-        self.assertEqual(effective_primary_model(tenant), MINIMAX_MODEL)
+        self.assertEqual(effective_primary_model(tenant), DEEPSEEK_FLASH_MODEL)
