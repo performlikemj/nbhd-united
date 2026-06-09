@@ -6,7 +6,7 @@ transformers>=5.9.0
 datasets>=5.0.0
 accelerate>=1.13.0
 seqeval>=1.2.2
-optimum[onnxruntime]>=2.1.0
+optimum[onnxruntime]>=2.2.0
 onnxruntime>=1.26.0
 numpy<3
 sentencepiece>=0.2
