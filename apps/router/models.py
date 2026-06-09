@@ -609,3 +609,86 @@ class AppChatMessage(models.Model):
 
     def __str__(self) -> str:
         return f"AppChatMessage({self.status}, thread={self.thread_id})"
+
+
+class ConversationTurn(models.Model):
+    """One captured chat turn (user message + assistant reply) for a Telegram
+    or LINE conversation, persisted control-plane-side so ISOLATED cron
+    sessions and proactive comms can see what was actually discussed today and
+    on recent days.
+
+    Why this exists: Telegram/LINE conversations are relayed to the per-tenant
+    OpenClaw container and never otherwise persisted in Postgres —
+    ``PendingMessage`` is an ephemeral queue row that's gone after delivery.
+    Cron sessions (Evening Check-in, Heartbeat, Morning Briefing, …) run in a
+    SEPARATE OpenClaw session that cannot read the main chat transcript, and the
+    only "today" surfaces they CAN read (daily-note ``Document`` rows,
+    ``nbhd_journal_context``) are empty unless the agent voluntarily journaled —
+    which it often doesn't. The result was crons reporting "quiet day on the
+    chat front" on days with substantive conversations (e.g. a job interview).
+
+    This table is the deterministic record the USER.md "Conversation so far"
+    digest renders from (see ``apps.router.conversation_capture``). USER.md is
+    auto-loaded by OpenClaw on EVERY agent turn — cron, chat, or proactive — so
+    a section sourced from this table reaches even the isolated cheap-model
+    crons that never call a context tool.
+
+    iOS / web app chat is NOT stored here — it is already durably persisted in
+    :class:`AppChatMessage`; the digest reads that table for the iOS slice to
+    avoid double-storage.
+
+    Rows are pruned probabilistically on insert (35-day window) so the table is
+    self-bounding without a janitor cron — same pattern as
+    :class:`ProcessedInboundEvent` / :class:`LineOutboundMessage`. Storage is
+    raw (real content) by design decision — consistent with the at-rest posture
+    of ``AppChatMessage`` / journal ``Document`` and bounded shorter than either.
+    """
+
+    class Channel(models.TextChoices):
+        TELEGRAM = "telegram"
+        LINE = "line"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        "tenants.Tenant",
+        on_delete=models.CASCADE,
+        related_name="conversation_turns",
+    )
+    channel = models.CharField(max_length=16, choices=Channel.choices)
+    channel_user_id = models.CharField(
+        max_length=128,
+        help_text="Per-channel user identifier (telegram chat_id stringified, line_user_id for LINE).",
+    )
+    local_date = models.DateField(
+        db_index=True,
+        help_text=(
+            "Tenant-LOCAL calendar date of the turn (via apps.common.tenant_tz.tenant_today). "
+            "The digest groups by this so 'today' matches the user's day, not the server's UTC day."
+        ),
+    )
+    user_text = models.TextField(
+        blank=True,
+        default="",
+        help_text="The user's message(s) for this turn, joined for a coalesced batch. Raw/real content.",
+    )
+    reply_text = models.TextField(
+        blank=True,
+        default="",
+        help_text="The assistant's reply, PII-rehydrated and marker-stripped. May be empty on a failed turn.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "conversation_turns"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "local_date"], name="conv_turn_tenant_date_idx"),
+            models.Index(
+                fields=["tenant", "channel", "channel_user_id", "-created_at"],
+                name="conv_turn_thread_idx",
+            ),
+            models.Index(fields=["created_at"], name="conv_turn_created_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"ConversationTurn({self.channel}, {self.local_date}, tenant={self.tenant_id})"
