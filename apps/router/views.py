@@ -337,6 +337,9 @@ def telegram_webhook(request):
         )
 
         msg = update.get("message") or update.get("edited_message") or {}
+        # Capture the user's original text BEFORE the in-place decoration below
+        # so the conversation digest stores real content, not agent markers.
+        raw_user_text = msg.get("text") or msg.get("caption") or ""
         if "text" in msg:
             # Mark this as a conversational turn (not a scheduled cron run)
             # so the agent skips the heavy AGENTS.md "Session Start"
@@ -366,6 +369,22 @@ def telegram_webhook(request):
 
     if result:
         _record_usage_from_openclaw_result(tenant, result)
+        # Capture the turn for the USER.md "Conversation so far" digest so
+        # isolated crons see it. Webhook mode is latent in prod (single-revision
+        # poller) but covered per the all-channels rule. Fail-open.
+        try:
+            from apps.router.conversation_capture import clean_reply_for_capture, record_conversation_turn
+            from apps.router.pending_queue import _extract_ai_response
+
+            record_conversation_turn(
+                tenant=tenant,
+                channel="telegram",
+                channel_user_id=str(chat_id),
+                user_text=raw_user_text,
+                reply_text=clean_reply_for_capture(tenant, _extract_ai_response(result)),
+            )
+        except Exception:
+            logger.exception("telegram_webhook: conversation capture failed (non-fatal)")
         return JsonResponse(result)
     # Forwarding timed out — the agent likely received the message and will
     # reply asynchronously via the bot token.  Silently ack to Telegram

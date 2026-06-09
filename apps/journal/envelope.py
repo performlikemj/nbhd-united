@@ -252,6 +252,31 @@ def render_open_tasks_summary(tenant: Tenant) -> str:
 
 
 @register_section(
+    key="conversation_digest",
+    heading="## Conversation so far",
+    enabled=lambda t: True,
+    # NOT refresh_on=(ConversationTurn,): the registry's universal receiver
+    # pushes with debounce 0, which would storm the file share on the
+    # highest-frequency event in the system. ConversationTurn capture triggers
+    # its own DEBOUNCED push instead (apps.router.conversation_capture).
+    refresh_on=(),
+    order=65,  # just above Recent journal (70)
+)
+def render_conversation_digest(tenant: Tenant) -> str:
+    """Deterministic 'what the user actually discussed today + recent days'.
+
+    Sourced from captured chat turns so ISOLATED cron sessions (Evening
+    Check-in, Heartbeat, …) and any proactive turn see the conversation even
+    when the agent never journaled it — the blind spot that produced
+    "quiet day on the chat front" on days with substantive chats. Local import
+    avoids an apps.journal → apps.router cycle at app boot.
+    """
+    from apps.router.conversation_capture import build_conversation_digest
+
+    return build_conversation_digest(tenant)
+
+
+@register_section(
     key="recent_journal",
     heading="## Recent journal",
     enabled=lambda t: True,

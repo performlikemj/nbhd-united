@@ -1195,8 +1195,40 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
                 str(tenant.id)[:8],
             )
 
+    _capture_conversation_turn(tenant, "line", line_user_id, batch, ai_text)
     _record_usage_safe(tenant, result, message_count=len(batch))
     return True
+
+
+def _capture_conversation_turn(
+    tenant: Tenant,
+    channel: str,
+    channel_user_id: str,
+    batch: list[PendingMessage],
+    ai_text: str | None,
+) -> None:
+    """Persist this drain's conversation turn for the USER.md "Conversation so
+    far" digest. Fail-open — capture must never affect message delivery.
+
+    iOS is intentionally NOT captured here: it's already durable in
+    ``AppChatMessage`` and the digest reads that table directly (no double-store).
+    """
+    try:
+        from apps.router.conversation_capture import (
+            clean_reply_for_capture,
+            join_user_texts,
+            record_conversation_turn,
+        )
+
+        record_conversation_turn(
+            tenant=tenant,
+            channel=channel,
+            channel_user_id=channel_user_id or "",
+            user_text=join_user_texts(batch),
+            reply_text=clean_reply_for_capture(tenant, ai_text),
+        )
+    except Exception:
+        logger.exception("drain_pending: conversation capture failed (non-fatal)")
 
 
 def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float) -> bool:
@@ -1253,6 +1285,7 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
     if ai_text:
         relay_ai_response_to_telegram(tenant, chat_id, ai_text)
 
+    _capture_conversation_turn(tenant, "telegram", chat_id_str, batch, ai_text)
     _record_usage_safe(tenant, result, message_count=len(batch))
     return True
 
