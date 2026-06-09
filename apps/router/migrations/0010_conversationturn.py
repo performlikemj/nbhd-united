@@ -7,29 +7,67 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('router', '0009_alter_pendingmessage_channel_chatthread_and_more'),
-        ('tenants', '0086_migrate_minimax_preferred_model'),
+        ("router", "0009_alter_pendingmessage_channel_chatthread_and_more"),
+        ("tenants", "0086_migrate_minimax_preferred_model"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='ConversationTurn',
+            name="ConversationTurn",
             fields=[
-                ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
-                ('channel', models.CharField(choices=[('telegram', 'Telegram'), ('line', 'Line')], max_length=16)),
-                ('channel_user_id', models.CharField(help_text='Per-channel user identifier (telegram chat_id stringified, line_user_id for LINE).', max_length=128)),
-                ('local_date', models.DateField(db_index=True, help_text="Tenant-LOCAL calendar date of the turn (via apps.common.tenant_tz.tenant_today). The digest groups by this so 'today' matches the user's day, not the server's UTC day.")),
-                ('user_text', models.TextField(blank=True, default='', help_text="The user's message(s) for this turn, joined for a coalesced batch. Raw/real content.")),
-                ('reply_text', models.TextField(blank=True, default='', help_text="The assistant's reply, PII-rehydrated and marker-stripped. May be empty on a failed turn.")),
-                ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
-                ('tenant', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='conversation_turns', to='tenants.tenant')),
+                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                ("channel", models.CharField(choices=[("telegram", "Telegram"), ("line", "Line")], max_length=16)),
+                (
+                    "channel_user_id",
+                    models.CharField(
+                        help_text="Per-channel user identifier (telegram chat_id stringified, line_user_id for LINE).",
+                        max_length=128,
+                    ),
+                ),
+                (
+                    "local_date",
+                    models.DateField(
+                        db_index=True,
+                        help_text="Tenant-LOCAL calendar date of the turn (via apps.common.tenant_tz.tenant_today). The digest groups by this so 'today' matches the user's day, not the server's UTC day.",
+                    ),
+                ),
+                (
+                    "user_text",
+                    models.TextField(
+                        blank=True,
+                        default="",
+                        help_text="The user's message(s) for this turn, joined for a coalesced batch. Raw/real content.",
+                    ),
+                ),
+                (
+                    "reply_text",
+                    models.TextField(
+                        blank=True,
+                        default="",
+                        help_text="The assistant's reply, PII-rehydrated and marker-stripped. May be empty on a failed turn.",
+                    ),
+                ),
+                ("created_at", models.DateTimeField(auto_now_add=True, db_index=True)),
+                (
+                    "tenant",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="conversation_turns",
+                        to="tenants.tenant",
+                    ),
+                ),
             ],
             options={
-                'db_table': 'conversation_turns',
-                'ordering': ['-created_at'],
-                'indexes': [models.Index(fields=['tenant', 'local_date'], name='conv_turn_tenant_date_idx'), models.Index(fields=['tenant', 'channel', 'channel_user_id', '-created_at'], name='conv_turn_thread_idx'), models.Index(fields=['created_at'], name='conv_turn_created_idx')],
+                "db_table": "conversation_turns",
+                "ordering": ["-created_at"],
+                "indexes": [
+                    models.Index(fields=["tenant", "local_date"], name="conv_turn_tenant_date_idx"),
+                    models.Index(
+                        fields=["tenant", "channel", "channel_user_id", "-created_at"], name="conv_turn_thread_idx"
+                    ),
+                    models.Index(fields=["created_at"], name="conv_turn_created_idx"),
+                ],
             },
         ),
     ]
