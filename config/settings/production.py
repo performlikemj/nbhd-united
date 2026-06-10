@@ -29,6 +29,22 @@ DEBUG = False
 # setting is the canonical Django-on-Supabase pattern.
 DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"] = True
 
+# Persistent client connections to the Supavisor pooler.
+#
+# With Django's default CONN_MAX_AGE=0, every request opened a fresh
+# psycopg connection to the cross-region pooler: TCP + TLS + SCRAM is
+# 5-6 round trips ≈ 600-900ms — measured 2026-06-10 as the bulk of a
+# fixed ~1.4s server-side TTFB floor on even 401/404 responses.
+#
+# Safe with transaction-mode pooling: a persistent CLIENT socket does
+# not pin a BACKEND connection (backends are leased per transaction).
+# This is the opposite of the 2026-05-15 EMAXCONNSESSION incident,
+# which was session-mode pinning. Upper bound on client sockets is
+# gunicorn workers × threads + poller, well under Supavisor's client
+# limit. Health checks recycle sockets the pooler silently dropped.
+DATABASES["default"]["CONN_MAX_AGE"] = env.int("DB_CONN_MAX_AGE", default=600)
+DATABASES["default"]["CONN_HEALTH_CHECKS"] = True
+
 # Security
 SECURE_SSL_REDIRECT = True
 SECURE_HSTS_SECONDS = 31536000

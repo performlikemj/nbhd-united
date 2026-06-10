@@ -22,24 +22,53 @@ def set_rls_context(*, tenant_id=None, user_id=None, service_role=False):
 
     Variables are session-scoped (persist for the connection lifetime).
     Cleared by reset_rls_context() in middleware process_response.
-    Django's default CONN_MAX_AGE=0 also closes connections after each
-    request as a safety net.
+
+    All variables are applied in a single round trip; with the database
+    cross-region, each separate statement used to cost ~100-150ms of
+    per-request latency.
     """
+    selects = []
+    params = []
+    if tenant_id:
+        selects.append("set_config('app.tenant_id', %s, false)")
+        params.append(str(tenant_id))
+    if user_id:
+        selects.append("set_config('app.user_id', %s, false)")
+        params.append(str(user_id))
+    if service_role:
+        selects.append("set_config('app.service_role', 'true', false)")
+    if not selects:
+        return
     with connection.cursor() as cursor:
-        if tenant_id:
-            cursor.execute("SELECT set_config('app.tenant_id', %s, false)", [str(tenant_id)])
-        if user_id:
-            cursor.execute("SELECT set_config('app.user_id', %s, false)", [str(user_id)])
-        if service_role:
-            cursor.execute("SELECT set_config('app.service_role', 'true', false)")
+        cursor.execute("SELECT " + ", ".join(selects), params)
+    _tenant_context.rls_dirty = True
 
 
-def reset_rls_context():
-    """Clear all RLS session variables (defense-in-depth)."""
+def reset_rls_context(force=False):
+    """Clear all RLS session variables (defense-in-depth).
+
+    Skipped when this thread never set RLS context (404s, unauthenticated
+    401s, anonymous endpoints) — the unconditional version lazily OPENED a
+    database connection on every response, charging even view-less requests
+    the full cross-region handshake plus three serial queries. Pass
+    ``force=True`` to clear regardless (e.g. before reusing a long-lived
+    worker connection outside the request cycle).
+    """
+    if not force and not getattr(_tenant_context, "rls_dirty", False):
+        return
+    if connection.connection is None:
+        # No open connection — the session vars died with it.
+        _tenant_context.rls_dirty = False
+        return
     with connection.cursor() as cursor:
-        cursor.execute("SELECT set_config('app.tenant_id', '', false)")
-        cursor.execute("SELECT set_config('app.user_id', '', false)")
-        cursor.execute("SELECT set_config('app.service_role', '', false)")
+        cursor.execute(
+            "SELECT set_config('app.tenant_id', '', false),"
+            " set_config('app.user_id', '', false),"
+            " set_config('app.service_role', '', false)"
+        )
+    # Only mark clean on success — if the reset failed, the still-dirty flag
+    # makes the next request on this thread retry the clear.
+    _tenant_context.rls_dirty = False
 
 
 class TenantContextMiddleware(MiddlewareMixin):
