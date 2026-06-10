@@ -160,6 +160,17 @@ QSTASH_CURRENT_SIGNING_KEY = env("QSTASH_CURRENT_SIGNING_KEY", default="")
 QSTASH_NEXT_SIGNING_KEY = env("QSTASH_NEXT_SIGNING_KEY", default="")
 QSTASH_TOKEN = env("QSTASH_TOKEN", default="")
 
+# Core AI on-device model (iOS 27 bring-your-own model) delivery.
+# Django serves only the small JWT-gated manifest (GET /api/v1/coreai/model/manifest/);
+# the big model files are hosted off-Django (Azure Blob / CDN) under COREAI_MODEL_BASE_URL.
+# The manifest JSON is produced by `manage.py generate_coreai_manifest`. Leave the base URL
+# empty to disable on-device-model delivery (the endpoint 404s and the app falls back).
+COREAI_MODEL_BASE_URL = env("COREAI_MODEL_BASE_URL", default="")
+COREAI_MODEL_MANIFEST_PATH = env(
+    "COREAI_MODEL_MANIFEST_PATH",
+    default=str(BASE_DIR / "apps" / "router" / "coreai_manifest.json"),
+)
+
 # Deploy hook auth used by CI to trigger protected endpoints
 DEPLOY_SECRET = env("DEPLOY_SECRET", default="")
 
