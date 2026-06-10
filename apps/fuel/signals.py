@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
-from .models import Workout, WorkoutPlan, WorkoutSource
+from .models import Workout, WorkoutPlan
 
 logger = logging.getLogger(__name__)
 
@@ -131,14 +131,18 @@ _TOMBSTONE_CAP = 200
 
 @receiver(post_delete, sender=Workout)
 def workout_deleted_record_healthkit_tombstone(sender, instance, **kwargs):
-    """Remember deleted HealthKit imports so a sync anchor reset (app
+    """Remember deleted HK-anchored rows so a sync anchor reset (app
     reinstall, 30-day re-backfill) cannot resurrect them — the same
     failure class as the task-resurrection incident (PR #847).
+
+    Gated on external_id alone, NOT source: a matched planned session
+    keeps its user/assistant source but carries the HK sample UUID, and
+    deleting it must also block re-import.
 
     Only records when a FuelProfile already exists (never creates one —
     cascade tenant deletes pass through here too).
     """
-    if instance.source != WorkoutSource.HEALTHKIT or not instance.external_id:
+    if not instance.external_id:
         return
     try:
         from .models import FuelProfile

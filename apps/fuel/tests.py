@@ -4122,3 +4122,110 @@ class HealthKitRuntimeSummaryTests(TestCase):
         self.assertEqual(recent["avg_hr"], 152)
         self.assertEqual(recent["distance_km"], 5.21)
         self.assertEqual(resp.data["latest_resting_hr"], {"date": "2026-06-10", "bpm": 52})
+
+
+class HealthKitSyncHardeningTests(TestCase):
+    """Regressions from the adversarial review: malformed input must yield
+    per-item errors (HTTP 200), never a request-wide 500 — a 5xx wedges the
+    iOS anchor-retry loop permanently."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="HK Hardening", telegram_chat_id=800045)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+        self.user = self.tenant.user
+        self.user.timezone = "Asia/Tokyo"
+        self.user.save(update_fields=["timezone"])
+        FuelProfile.objects.create(tenant=self.tenant)
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def _post(self, payload):
+        return self.client.post("/api/v1/fuel/healthkit/sync/", payload, format="json")
+
+    @staticmethod
+    def _item(**overrides):
+        item = {
+            "external_id": "hk-hard-1",
+            "activity": "Run",
+            "category": "cardio",
+            "raw_type": "running",
+            "started_at": "2026-06-09T22:30:00Z",
+            "duration_minutes": 42,
+        }
+        item.update(overrides)
+        return item
+
+    def test_invalid_calendar_date_is_per_item_error(self):
+        # parse_datetime RAISES ValueError on well-formed-but-invalid dates
+        bad = self._item(started_at="2026-02-30T10:00:00Z")
+        good = self._item(external_id="hk-hard-good")
+        resp = self._post({"workouts": [bad, good]})
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data["results"][0]["status"], "error")
+        self.assertEqual(resp.data["results"][1]["status"], "created")
+
+    def test_invalid_ended_at_calendar_date_is_per_item_error(self):
+        resp = self._post({"workouts": [self._item(ended_at="2026-02-30T10:00:00Z")]})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["results"][0]["status"], "error")
+
+    def test_nonfinite_numerics_are_per_item_errors(self):
+        for bad in (
+            self._item(duration_minutes="inf"),
+            self._item(duration_minutes="nan"),
+            self._item(duration_minutes="1e400"),
+            self._item(duration_minutes=10**400),
+            self._item(metrics={"calories": "1e400"}),
+        ):
+            resp = self._post({"workouts": [bad]})
+            self.assertEqual(resp.status_code, 200, resp.data)
+            status_ = resp.data["results"][0]["status"]
+            # metric keys are dropped when invalid; only duration is fatal
+            self.assertIn(status_, ("error", "created", "duplicate"))
+        resp = self._post({"daily_metrics": [{"date": "2026-06-10", "resting_hr": "inf"}]})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["daily_results"][0]["status"], "error")
+
+    def test_extreme_dates_are_per_item_errors(self):
+        for started in ("0001-01-01T00:00:00+14:00", "9999-12-31T23:00:00Z", "2031-01-01T10:00:00Z"):
+            resp = self._post({"workouts": [self._item(started_at=started)]})
+            self.assertEqual(resp.status_code, 200, resp.data)
+            self.assertEqual(resp.data["results"][0]["status"], "error")
+
+    def test_daily_date_out_of_sane_window_is_error(self):
+        resp = self._post(
+            {
+                "daily_metrics": [
+                    {"date": "2026-02-30", "resting_hr": 60},
+                    {"date": "0008-06-10", "resting_hr": 60},
+                    {"date": "2569-06-10", "resting_hr": 60},
+                ]
+            }
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual([r["status"] for r in resp.data["daily_results"]], ["error", "error", "error"])
+
+    def test_deleted_matched_planned_workout_is_tombstoned(self):
+        # Plan a session, sync the matching HK sample, delete the workout,
+        # re-sync the same sample after an "anchor reset" — must not return.
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 6, 10),
+            status="planned",
+            category="cardio",
+            activity="Morning run",
+            duration_minutes=45,
+            source="assistant",
+        )
+        resp = self._post({"workouts": [self._item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "matched_planned")
+        workout_id = resp.data["results"][0]["workout_id"]
+        resp = self.client.delete(f"/api/v1/fuel/workouts/{workout_id}/")
+        self.assertIn(resp.status_code, (200, 204))
+        profile = FuelProfile.objects.get(tenant=self.tenant)
+        self.assertIn("hk-hard-1", profile.healthkit_tombstones)
+        resp = self._post({"workouts": [self._item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "duplicate")
+        self.assertFalse(Workout.objects.filter(tenant=self.tenant, external_id="hk-hard-1").exists())

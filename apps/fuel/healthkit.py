@@ -32,6 +32,7 @@ Invariants this module owns:
 from __future__ import annotations
 
 import logging
+import math
 import threading
 from datetime import UTC, timedelta
 from decimal import Decimal
@@ -102,12 +103,17 @@ _MIN_DURATION_RATIO = 0.5
 
 
 def _safe_float(value) -> float | None:
+    # OverflowError: float(10**400). Non-finite must be rejected here so
+    # _safe_int's round() can never see inf/nan ("inf"/"1e400" arrive as
+    # JSON strings and pass DRF's STRICT_JSON, which only rejects bare
+    # NaN/Infinity literals).
     try:
         if value is None:
             return None
-        return float(value)
-    except (TypeError, ValueError):
+        f = float(value)
+    except (TypeError, ValueError, OverflowError):
         return None
+    return f if math.isfinite(f) else None
 
 
 def _safe_int(value) -> int | None:
@@ -117,6 +123,23 @@ def _safe_int(value) -> int | None:
 
 def _aware(dt):
     return dj_timezone.make_aware(dt, UTC) if dj_timezone.is_naive(dt) else dt
+
+
+def _safe_parse_datetime(value: str):
+    # parse_datetime returns None for malformed input but RAISES ValueError
+    # for well-formed-but-invalid values ("2026-02-30T10:00:00Z") — which
+    # would 500 the whole request and wedge the client's anchor-retry loop.
+    try:
+        return parse_datetime(value)
+    except ValueError:
+        return None
+
+
+def _safe_parse_date(value: str):
+    try:
+        return parse_date(value)
+    except ValueError:
+        return None
 
 
 def _clean_workout(item) -> tuple[dict | None, str | None]:
@@ -133,20 +156,28 @@ def _clean_workout(item) -> tuple[dict | None, str | None]:
     if not external_id or len(external_id) > 64:
         return None, "external_id is required (max 64 chars)"
 
-    started_at = parse_datetime(str(item.get("started_at") or "").strip())
+    started_at = _safe_parse_datetime(str(item.get("started_at") or "").strip())
     if started_at is None:
         return None, "started_at must be an ISO-8601 datetime"
     started_at = _aware(started_at)
+    # Plausibility window — also prevents OverflowError at the astimezone
+    # sites (year 1 with +14:00 offset / year 9999 east of UTC) and keeps
+    # far-future rows out of the planned-matching date queries.
+    now = dj_timezone.now()
+    if not (now - timedelta(days=1825) <= started_at <= now + timedelta(days=2)):
+        return None, "started_at out of range"
 
     ended_at = None
     ended_raw = str(item.get("ended_at") or "").strip()
     if ended_raw:
-        ended_at = parse_datetime(ended_raw)
+        ended_at = _safe_parse_datetime(ended_raw)
         if ended_at is None:
             return None, "ended_at must be an ISO-8601 datetime"
         ended_at = _aware(ended_at)
         if ended_at < started_at:
             return None, "ended_at precedes started_at"
+        if ended_at > now + timedelta(days=3):
+            return None, "ended_at out of range"
 
     duration = _safe_int(item.get("duration_minutes"))
     if duration is None:
@@ -293,13 +324,6 @@ def _complete_planned(locked: Workout, clean: dict) -> dict:
         ]
     )
 
-    try:
-        from .services import detect_prs
-
-        detect_prs(locked.tenant, locked)
-    except Exception:
-        logger.warning("detect_prs failed for HK-completed workout %s", locked.id, exc_info=True)
-
     return {
         "external_id": clean["external_id"],
         "status": "matched_planned",
@@ -310,6 +334,7 @@ def _complete_planned(locked: Workout, clean: dict) -> dict:
 def _ingest_workout(tenant, clean: dict, tz, consumed: set) -> dict:
     eid = clean["external_id"]
     candidate = _find_candidate(tenant, clean, tz, consumed)
+    matched: Workout | None = None
     try:
         with transaction.atomic():
             if candidate is not None:
@@ -319,21 +344,23 @@ def _ingest_workout(tenant, clean: dict, tz, consumed: set) -> dict:
                     .first()
                 )
                 if locked is not None:
-                    return _complete_planned(locked, clean)
+                    result = _complete_planned(locked, clean)
+                    matched = locked
                 # Lost the race (assistant or another device flipped it
                 # first) — fall through to a standalone create.
-            workout = Workout.objects.create(
-                tenant=tenant,
-                date=clean["started_at"].astimezone(tz).date(),
-                status=WorkoutStatus.DONE,
-                source=WorkoutSource.HEALTHKIT,
-                external_id=eid,
-                category=clean["category"],
-                activity=clean["activity"],
-                duration_minutes=clean["duration_minutes"],
-                detail_json=_hk_detail(clean, matched=False),
-            )
-            return {"external_id": eid, "status": "created", "workout_id": str(workout.id)}
+            if matched is None:
+                workout = Workout.objects.create(
+                    tenant=tenant,
+                    date=clean["started_at"].astimezone(tz).date(),
+                    status=WorkoutStatus.DONE,
+                    source=WorkoutSource.HEALTHKIT,
+                    external_id=eid,
+                    category=clean["category"],
+                    activity=clean["activity"],
+                    duration_minutes=clean["duration_minutes"],
+                    detail_json=_hk_detail(clean, matched=False),
+                )
+                result = {"external_id": eid, "status": "created", "workout_id": str(workout.id)}
     except IntegrityError:
         # The per-item savepoint already rolled back. Classify instead of
         # blanket-reporting duplicate — an FK violation must not masquerade
@@ -343,19 +370,37 @@ def _ingest_workout(tenant, clean: dict, tz, consumed: set) -> dict:
         logger.warning("HealthKit ingest IntegrityError (non-duplicate) for tenant %s", tenant.id, exc_info=True)
         return {"external_id": eid, "status": "error", "error": "integrity_error"}
 
+    # detect_prs runs OUTSIDE the atomic block: a swallowed DB error inside
+    # it would mark the transaction needs_rollback and silently undo the
+    # flip while the response still reported matched_planned.
+    if matched is not None:
+        try:
+            from .services import detect_prs
 
-def _ingest_daily(tenant, item) -> dict:
+            detect_prs(tenant, matched)
+        except Exception:
+            logger.warning("detect_prs failed for HK-completed workout %s", matched.id, exc_info=True)
+    return result
+
+
+def _ingest_daily(tenant, item, tz) -> dict:
     """Upsert one day's metrics. ``update_or_create`` defaults only touch
     the provided keys, so user-entered sleep quality/notes survive."""
     if not isinstance(item, dict):
         return {"date": None, "status": "error", "error": "item must be an object"}
-    day = parse_date(str(item.get("date") or "").strip())
+    day = _safe_parse_date(str(item.get("date") or "").strip())
     if day is None:
         return {
             "date": item.get("date") if isinstance(item.get("date"), str) else None,
             "status": "error",
             "error": "date must be YYYY-MM-DD",
         }
+    # Sanity window keyed to the tenant-local day — turns a client
+    # calendar/clock bug (Buddhist-calendar year 2569, year 0008) into a
+    # visible per-item error instead of silent rows on garbage dates.
+    today_local = dj_timezone.now().astimezone(tz).date()
+    if not (today_local - timedelta(days=400) <= day <= today_local + timedelta(days=2)):
+        return {"date": day.isoformat(), "status": "error", "error": "date out of range"}
 
     updates: list[tuple] = []
     if item.get("resting_hr") is not None:
@@ -419,6 +464,9 @@ def ingest_healthkit_payload(tenant, payload: dict) -> dict:
 
     # Deletions first: per-instance deletes so post_delete receivers fire
     # (tombstone capture + fuel_version). Bounded by MAX_DELETED.
+    # source=HEALTHKIT is deliberate asymmetry vs the tombstone receiver:
+    # deleting the HK sample must not delete a matched planned session the
+    # user/assistant authored — the row survives, only standalone imports go.
     deleted_count = 0
     deleted_ids = [str(x).strip()[:64] for x in (payload.get("deleted_external_ids") or []) if str(x).strip()]
     if deleted_ids:
@@ -468,7 +516,7 @@ def ingest_healthkit_payload(tenant, payload: dict) -> dict:
         if res["status"] in ("created", "matched_planned", "duplicate"):
             existing.add(eid)
 
-    daily_results = [_ingest_daily(tenant, item) for item in (payload.get("daily_metrics") or [])]
+    daily_results = [_ingest_daily(tenant, item, tz) for item in (payload.get("daily_metrics") or [])]
     daily_upserted = sum(1 for r in daily_results if r["status"] == "upserted")
 
     return {
