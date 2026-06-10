@@ -19,7 +19,11 @@ echo "Starting gunicorn..."
 # - gthread (not sync) so the PII model (~600 MB resident) is loaded once
 #   per process and shared across threads, capping per-container PII memory
 #   at 2 × 600 MB = 1.2 GB instead of 4 × 600 MB = 2.4 GB > cgroup limit.
-# - 2 workers × 4 threads = 8 concurrent requests (up from 4 sync workers).
+# - 2 workers × 8 threads = 16 concurrent requests. Threads are cheap under
+#   gthread (the PII model is per-PROCESS; thread count doesn't change the
+#   1.2 GB memory math). Raised from 4 threads because chat drains hold a
+#   slot for their full 120-240s tenant-container proxy call — a few
+#   concurrent turns plus a cron sweep could starve dashboard traffic.
 # - max-requests recycles each worker after ~1000 requests (±100 jitter so
 #   they don't all recycle simultaneously) — bounds the long-tail memory
 #   growth that drove the May 24 SIGKILL incident.
@@ -27,7 +31,7 @@ gunicorn config.wsgi:application \
   --bind 0.0.0.0:8000 \
   --worker-class gthread \
   --workers 2 \
-  --threads 4 \
+  --threads 8 \
   --timeout 300 \
   --max-requests 1000 \
   --max-requests-jitter 100 \
