@@ -15,11 +15,13 @@ export function MessagingScene() {
   const { data: me } = useMeQuery();
   const generateTelegram = useGenerateTelegramLinkMutation();
   const generateLine = useGenerateLineLinkMutation();
-  const { data: telegramStatus } = useTelegramStatusQuery(true);
-  const { data: lineStatus } = useLineStatusQuery(true);
 
   const [telegramLink, setTelegramLink] = useState<TelegramLinkResponse | null>(null);
   const [lineLink, setLineLink] = useState<LineLinkResponse | null>(null);
+  // Fast 3s status polling only while the matching pairing QR/deep-link is on
+  // screen (the actual pairing moment); otherwise the slower default cadence.
+  const { data: telegramStatus } = useTelegramStatusQuery(true, !!telegramLink);
+  const { data: lineStatus } = useLineStatusQuery(true, !!lineLink);
   const [telegramSecondsRaw, setTelegramSeconds] = useState(0);
   const [lineSecondsRaw, setLineSeconds] = useState(0);
   // Reset to 0 when link is cleared

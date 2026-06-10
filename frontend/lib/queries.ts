@@ -468,13 +468,22 @@ export function useStripePortalMutation() {
 }
 
 // Telegram
-export function useTelegramStatusQuery(enabled = true) {
+//
+// `pairingActive` = the caller is showing a live pairing QR/deep-link and
+// needs the snappy 3s cadence to flip to "Connected" the moment the bot
+// confirms. Everywhere else 15s is plenty — and once linked there is nothing
+// to poll for at all, so the interval shuts off entirely.
+export function useTelegramStatusQuery(enabled = true, pairingActive = false) {
   return useQuery({
     queryKey: ["telegram-status"],
     queryFn: fetchTelegramStatus,
     enabled: isLoggedIn() && enabled,
     refetchInterval: enabled
-      ? (query) => (query.state.status === "error" ? false : 3000)
+      ? (query) => {
+          if (query.state.status === "error") return false;
+          if (query.state.data?.linked === true) return false;
+          return pairingActive ? 3000 : 15_000;
+        }
       : false,
   });
 }
@@ -509,14 +518,18 @@ export function useUnlinkTelegramMutation() {
   });
 }
 
-// LINE
-export function useLineStatusQuery(enabled = true) {
+// LINE — same polling contract as useTelegramStatusQuery above.
+export function useLineStatusQuery(enabled = true, pairingActive = false) {
   return useQuery({
     queryKey: ["line-status"],
     queryFn: fetchLineStatus,
     enabled: isLoggedIn() && enabled,
     refetchInterval: enabled
-      ? (query) => (query.state.status === "error" ? false : 3000)
+      ? (query) => {
+          if (query.state.status === "error") return false;
+          if (query.state.data?.linked === true) return false;
+          return pairingActive ? 3000 : 15_000;
+        }
       : false,
   });
 }
@@ -608,12 +621,12 @@ export function useRefreshConfigStatusQuery() {
     queryKey: ["refresh-config-status"],
     queryFn: fetchRefreshConfigStatus,
     enabled: isLoggedIn(),
-    // Poll every 15s when an update is pending so the UI reflects when it's applied.
-    // Fall back to every 60s otherwise (catches cron-triggered pending bumps).
+    // Poll every 15s only while an update is pending so the UI reflects when
+    // it's applied. Idle (nothing pending) needs no interval — refetch on
+    // window focus covers cron-triggered pending bumps cheaply.
     refetchInterval: (query) => {
       const data = query.state.data;
-      if (!data) return 15_000;
-      return data.has_pending_update ? 15_000 : 60_000;
+      return data?.has_pending_update ? 15_000 : false;
     },
   });
 }
@@ -1047,16 +1060,15 @@ export function useBulkUpdateForegroundMutation() {
 }
 
 // Pending one-off reminders (separate from recurring crons — different
-// lifecycle, gateway-only source of truth, auto-deleting). Polled so
-// reminders that fire while the dashboard is open vanish without a
-// manual refresh. 60s is enough resolution for "this just fired" UX
-// while halving the refetch cost vs. the original 30s.
+// lifecycle, gateway-only source of truth, auto-deleting). NOT polled:
+// this is gateway-backed, so a background interval can cold-start a
+// hibernated tenant container every 60s for no user benefit. Refetch on
+// window focus + mutation invalidation (cancel) keeps the list honest.
 export function usePendingRemindersQuery() {
   return useQuery<PendingRemindersResponse>({
     queryKey: ["pending-reminders"],
     queryFn: fetchPendingReminders,
     staleTime: 30_000,
-    refetchInterval: 60_000,
     refetchOnWindowFocus: true,
     enabled: isLoggedIn(),
   });
