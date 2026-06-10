@@ -3,7 +3,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { useCallback } from "react";
+import { memo, useMemo } from "react";
 import type { Components } from "react-markdown";
 
 interface MarkdownRendererProps {
@@ -11,10 +11,20 @@ interface MarkdownRendererProps {
   onCheckboxToggle?: (lineIndex: number, checked: boolean) => void;
 }
 
-export function MarkdownRenderer({ content, onCheckboxToggle }: MarkdownRendererProps) {
-  const components: Components = {
-    input: useCallback(
-      (props: React.InputHTMLAttributes<HTMLInputElement>) => {
+// Hoisted: a fresh plugins array per render defeats react-markdown's internal
+// memoization (it re-runs the full remark pipeline when the reference changes).
+const REMARK_PLUGINS = [remarkGfm, remarkBreaks];
+
+// memo'd so parents that re-render on every keystroke (e.g. DocumentView while
+// the editor is open) don't re-run the markdown pipeline when `content` and
+// `onCheckboxToggle` are unchanged.
+export const MarkdownRenderer = memo(function MarkdownRenderer({
+  content,
+  onCheckboxToggle,
+}: MarkdownRendererProps) {
+  const components = useMemo<Components>(
+    () => ({
+      input: (props: React.InputHTMLAttributes<HTMLInputElement>) => {
         if (props.type !== "checkbox") return <input {...props} />;
 
         const handleChange = () => {
@@ -46,15 +56,15 @@ export function MarkdownRenderer({ content, onCheckboxToggle }: MarkdownRenderer
           />
         );
       },
-      [content, onCheckboxToggle],
-    ),
-  };
+    }),
+    [content, onCheckboxToggle],
+  );
 
   return (
     <div className="prose prose-sm max-w-none break-words text-ink-muted prose-headings:text-ink prose-h1:text-xl prose-h2:text-lg prose-h3:text-base prose-strong:text-ink prose-a:text-accent prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1 prose-p:my-2 prose-hr:my-4 [&_*]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:overflow-x-auto">
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={components}>
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components}>
         {content}
       </ReactMarkdown>
     </div>
   );
-}
+});

@@ -371,9 +371,15 @@ body {
      `position:fixed` descendants, collapsing full-screen fixed overlays to this
      wrapper's 0 height (black game canvas, loading text pinned to top, skip-link
      `top:-100%` resolving to 0 so it's always visible). Without `forwards` the
-     element reverts to its base style (no transform) after the 400ms fade — same
+     element reverts to its base style (no transform) after the fade — same
      end state visually (translateY(0) ≡ none), but the containing block is gone. */
-  animation: contentFadeUp 400ms cubic-bezier(0.4, 0, 0.2, 1);
+  animation: contentFadeUp 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .content-fade-up {
+    animation: none;
+  }
 }
 
 /* ── Stardust animation ── */

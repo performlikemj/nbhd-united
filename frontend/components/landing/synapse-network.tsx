@@ -5,7 +5,20 @@
  * Nodes are connected by soft branching lines with gentle pulse animations.
  * Renders at low opacity to reinforce the neural/constellation metaphor.
  */
-export function SynapseNetwork({ className = "" }: { className?: string }) {
+export function SynapseNetwork({
+  className = "",
+  animated = true,
+}: {
+  className?: string;
+  /** When false, nodes render static — no continuously-animating layer. */
+  animated?: boolean;
+}) {
+  // Marketing surfaces keep the twinkle but respect prefers-reduced-motion;
+  // the authenticated app shell passes animated={false} so this full-viewport
+  // layer never forces continuous repaints behind real content.
+  const twinkle = animated ? "animate-twinkle motion-reduce:animate-none" : undefined;
+  const twinkleSlow = animated ? "animate-twinkle-slow motion-reduce:animate-none" : undefined;
+  const twinkleFast = animated ? "animate-twinkle-fast motion-reduce:animate-none" : undefined;
   return (
     <svg
       className={`pointer-events-none absolute inset-0 h-full w-full ${className}`}
@@ -93,67 +106,67 @@ export function SynapseNetwork({ className = "" }: { className?: string }) {
       {/* ── Nodes ── */}
       <g>
         {/* Cluster A nodes */}
-        <circle cx="120" cy="180" r="8" fill="url(#syn-glow-purple)" className="animate-twinkle" />
+        <circle cx="120" cy="180" r="8" fill="url(#syn-glow-purple)" className={twinkle} />
         <circle cx="120" cy="180" r="2" fill="#7C6BF0" opacity="0.7" />
-        <circle cx="310" cy="200" r="10" fill="url(#syn-glow-teal)" className="animate-twinkle-slow" />
+        <circle cx="310" cy="200" r="10" fill="url(#syn-glow-teal)" className={twinkleSlow} />
         <circle cx="310" cy="200" r="2.5" fill="#4ECDC4" opacity="0.6" />
-        <circle cx="420" cy="160" r="6" fill="url(#syn-glow-white)" className="animate-twinkle" />
+        <circle cx="420" cy="160" r="6" fill="url(#syn-glow-white)" className={twinkle} />
         <circle cx="420" cy="160" r="1.5" fill="white" opacity="0.5" />
-        <circle cx="260" cy="340" r="8" fill="url(#syn-glow-pink)" className="animate-twinkle-slow" />
+        <circle cx="260" cy="340" r="8" fill="url(#syn-glow-pink)" className={twinkleSlow} />
         <circle cx="260" cy="340" r="2" fill="#E8B4B8" opacity="0.6" />
-        <circle cx="160" cy="320" r="6" fill="url(#syn-glow-purple)" className="animate-twinkle-fast" />
+        <circle cx="160" cy="320" r="6" fill="url(#syn-glow-purple)" className={twinkleFast} />
         <circle cx="160" cy="320" r="1.5" fill="#7C6BF0" opacity="0.5" />
 
         {/* Cluster B nodes */}
-        <circle cx="620" cy="80" r="10" fill="url(#syn-glow-purple)" className="animate-twinkle-slow" />
+        <circle cx="620" cy="80" r="10" fill="url(#syn-glow-purple)" className={twinkleSlow} />
         <circle cx="620" cy="80" r="2.5" fill="#7C6BF0" opacity="0.7" />
-        <circle cx="760" cy="100" r="6" fill="url(#syn-glow-teal)" className="animate-twinkle" />
+        <circle cx="760" cy="100" r="6" fill="url(#syn-glow-teal)" className={twinkle} />
         <circle cx="760" cy="100" r="1.5" fill="#4ECDC4" opacity="0.5" />
-        <circle cx="720" cy="200" r="8" fill="url(#syn-glow-white)" className="animate-twinkle-fast" />
+        <circle cx="720" cy="200" r="8" fill="url(#syn-glow-white)" className={twinkleFast} />
         <circle cx="720" cy="200" r="2" fill="white" opacity="0.5" />
-        <circle cx="740" cy="340" r="7" fill="url(#syn-glow-pink)" className="animate-twinkle" />
+        <circle cx="740" cy="340" r="7" fill="url(#syn-glow-pink)" className={twinkle} />
         <circle cx="740" cy="340" r="1.5" fill="#E8B4B8" opacity="0.5" />
 
         {/* Cluster C nodes */}
-        <circle cx="1080" cy="120" r="8" fill="url(#syn-glow-teal)" className="animate-twinkle" />
+        <circle cx="1080" cy="120" r="8" fill="url(#syn-glow-teal)" className={twinkle} />
         <circle cx="1080" cy="120" r="2" fill="#4ECDC4" opacity="0.6" />
-        <circle cx="1220" cy="140" r="10" fill="url(#syn-glow-pink)" className="animate-twinkle-slow" />
+        <circle cx="1220" cy="140" r="10" fill="url(#syn-glow-pink)" className={twinkleSlow} />
         <circle cx="1220" cy="140" r="2.5" fill="#E8B4B8" opacity="0.7" />
-        <circle cx="1200" cy="260" r="8" fill="url(#syn-glow-purple)" className="animate-twinkle-fast" />
+        <circle cx="1200" cy="260" r="8" fill="url(#syn-glow-purple)" className={twinkleFast} />
         <circle cx="1200" cy="260" r="2" fill="#7C6BF0" opacity="0.6" />
-        <circle cx="1100" cy="250" r="6" fill="url(#syn-glow-white)" className="animate-twinkle" />
+        <circle cx="1100" cy="250" r="6" fill="url(#syn-glow-white)" className={twinkle} />
         <circle cx="1100" cy="250" r="1.5" fill="white" opacity="0.5" />
-        <circle cx="1340" cy="240" r="7" fill="url(#syn-glow-teal)" className="animate-twinkle-slow" />
+        <circle cx="1340" cy="240" r="7" fill="url(#syn-glow-teal)" className={twinkleSlow} />
         <circle cx="1340" cy="240" r="1.5" fill="#4ECDC4" opacity="0.5" />
 
         {/* Cluster D nodes */}
-        <circle cx="580" cy="420" r="8" fill="url(#syn-glow-pink)" className="animate-twinkle" />
+        <circle cx="580" cy="420" r="8" fill="url(#syn-glow-pink)" className={twinkle} />
         <circle cx="580" cy="420" r="2" fill="#E8B4B8" opacity="0.6" />
-        <circle cx="740" cy="440" r="10" fill="url(#syn-glow-purple)" className="animate-twinkle-slow" />
+        <circle cx="740" cy="440" r="10" fill="url(#syn-glow-purple)" className={twinkleSlow} />
         <circle cx="740" cy="440" r="2.5" fill="#7C6BF0" opacity="0.7" />
-        <circle cx="860" cy="400" r="7" fill="url(#syn-glow-teal)" className="animate-twinkle-fast" />
+        <circle cx="860" cy="400" r="7" fill="url(#syn-glow-teal)" className={twinkleFast} />
         <circle cx="860" cy="400" r="1.5" fill="#4ECDC4" opacity="0.5" />
-        <circle cx="620" cy="540" r="8" fill="url(#syn-glow-white)" className="animate-twinkle" />
+        <circle cx="620" cy="540" r="8" fill="url(#syn-glow-white)" className={twinkle} />
         <circle cx="620" cy="540" r="2" fill="white" opacity="0.5" />
 
         {/* Cluster E nodes */}
-        <circle cx="160" cy="580" r="8" fill="url(#syn-glow-teal)" className="animate-twinkle-slow" />
+        <circle cx="160" cy="580" r="8" fill="url(#syn-glow-teal)" className={twinkleSlow} />
         <circle cx="160" cy="580" r="2" fill="#4ECDC4" opacity="0.6" />
-        <circle cx="300" cy="600" r="10" fill="url(#syn-glow-purple)" className="animate-twinkle" />
+        <circle cx="300" cy="600" r="10" fill="url(#syn-glow-purple)" className={twinkle} />
         <circle cx="300" cy="600" r="2.5" fill="#7C6BF0" opacity="0.7" />
-        <circle cx="320" cy="720" r="7" fill="url(#syn-glow-pink)" className="animate-twinkle-fast" />
+        <circle cx="320" cy="720" r="7" fill="url(#syn-glow-pink)" className={twinkleFast} />
         <circle cx="320" cy="720" r="1.5" fill="#E8B4B8" opacity="0.5" />
-        <circle cx="200" cy="720" r="6" fill="url(#syn-glow-white)" className="animate-twinkle" />
+        <circle cx="200" cy="720" r="6" fill="url(#syn-glow-white)" className={twinkle} />
         <circle cx="200" cy="720" r="1.5" fill="white" opacity="0.5" />
 
         {/* Cluster F nodes */}
-        <circle cx="1040" cy="560" r="8" fill="url(#syn-glow-pink)" className="animate-twinkle" />
+        <circle cx="1040" cy="560" r="8" fill="url(#syn-glow-pink)" className={twinkle} />
         <circle cx="1040" cy="560" r="2" fill="#E8B4B8" opacity="0.6" />
-        <circle cx="1180" cy="580" r="10" fill="url(#syn-glow-teal)" className="animate-twinkle-slow" />
+        <circle cx="1180" cy="580" r="10" fill="url(#syn-glow-teal)" className={twinkleSlow} />
         <circle cx="1180" cy="580" r="2.5" fill="#4ECDC4" opacity="0.7" />
-        <circle cx="1160" cy="700" r="8" fill="url(#syn-glow-purple)" className="animate-twinkle-fast" />
+        <circle cx="1160" cy="700" r="8" fill="url(#syn-glow-purple)" className={twinkleFast} />
         <circle cx="1160" cy="700" r="2" fill="#7C6BF0" opacity="0.6" />
-        <circle cx="1060" cy="700" r="6" fill="url(#syn-glow-white)" className="animate-twinkle" />
+        <circle cx="1060" cy="700" r="6" fill="url(#syn-glow-white)" className={twinkle} />
         <circle cx="1060" cy="700" r="1.5" fill="white" opacity="0.5" />
       </g>
     </svg>

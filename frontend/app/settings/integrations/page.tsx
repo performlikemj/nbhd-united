@@ -42,8 +42,9 @@ const providers: { key: string; label: string; description?: string }[] = [
 
 function TelegramCard() {
   const [linkData, setLinkData] = useState<TelegramLinkResponse | null>(null);
-  // Always fetch status — not just after generating a link
-  const { data: status } = useTelegramStatusQuery(true);
+  // Always fetch status — not just after generating a link. Fast 3s polling
+  // only while a pairing QR/deep-link is on screen; 15s otherwise.
+  const { data: status } = useTelegramStatusQuery(true, !!linkData);
   const generateLink = useGenerateTelegramLinkMutation();
   const unlinkMutation = useUnlinkTelegramMutation();
 
@@ -130,7 +131,8 @@ function TelegramCard() {
 
 function LineCard() {
   const [linkData, setLinkData] = useState<LineLinkResponse | null>(null);
-  const { data: status } = useLineStatusQuery(true);
+  // 3s polling only while the pairing QR/deep-link is visible; 15s otherwise.
+  const { data: status } = useLineStatusQuery(true, !!linkData);
   const generateLink = useGenerateLineLinkMutation();
   const unlinkMutation = useUnlinkLineMutation();
 

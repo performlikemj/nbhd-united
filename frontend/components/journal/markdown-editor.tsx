@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { TaskList } from "@tiptap/extension-list";
@@ -18,7 +18,6 @@ interface MarkdownEditorProps {
   onSave?: () => void;
   onHelpToggle?: () => void;
   autoFocus?: boolean;
-  minRows?: number;
   className?: string;
   /** localStorage key used to save/restore cursor position across open/close */
   cursorKey?: string;
@@ -152,6 +151,13 @@ export function EditorToolbar({ editor, className }: EditorToolbarProps) {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
+// Trailing debounce for markdown serialization. getMarkdown() walks the whole
+// ProseMirror doc; doing it per keystroke (and the parent re-render it caused)
+// made typing cost O(doc) twice per character.
+const EMIT_DEBOUNCE_MS = 400;
+
+type MarkdownStorage = { markdown: { getMarkdown: () => string } };
+
 export function MarkdownEditor({
   value,
   onChange,
@@ -163,6 +169,38 @@ export function MarkdownEditor({
   hideToolbar,
   onEditorReady,
 }: MarkdownEditorProps) {
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True when the doc changed since the last emit — lets blur/unmount flushes
+  // skip serialization entirely when there's nothing pending.
+  const dirtyRef = useRef(false);
+  // Last markdown we pushed up (or received). The value-sync effect below uses
+  // it to ignore round-trips of our own onChange — no comparison serialization.
+  const lastEmittedRef = useRef(value);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  const emit = useCallback((ed: Editor) => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    dirtyRef.current = false;
+    if (ed.isDestroyed) return;
+    const md = (ed.storage as unknown as MarkdownStorage).markdown.getMarkdown();
+    lastEmittedRef.current = md;
+    onChangeRef.current(md);
+  }, []);
+
+  // Flush any pending (debounced) change immediately — called on blur, before
+  // Cmd+S saves, and on unmount so no trailing keystrokes are ever dropped.
+  const flush = useCallback(
+    (ed: Editor | null) => {
+      if (!ed || !dirtyRef.current) return;
+      emit(ed);
+    },
+    [emit],
+  );
+
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
@@ -191,6 +229,7 @@ export function MarkdownEditor({
       ed.commands.focus();
     },
     onBlur({ editor: ed }) {
+      flush(ed);
       if (cursorKey) {
         localStorage.setItem(cursorKey, String(ed.state.selection.from));
       }
@@ -203,6 +242,8 @@ export function MarkdownEditor({
       handleKeyDown(view, event) {
         if ((event.metaKey || event.ctrlKey) && event.key === "s") {
           event.preventDefault();
+          // Push any debounced keystrokes up before the parent reads its draft.
+          flush(((view as unknown as { editor?: Editor }).editor) ?? null);
           onSave?.();
           return true;
         }
@@ -219,18 +260,34 @@ export function MarkdownEditor({
       },
     },
     onUpdate({ editor: ed }) {
-      const storage = ed.storage as unknown as { markdown: { getMarkdown: () => string } };
-      onChange(storage.markdown.getMarkdown());
+      // Debounced trailing emit — serialize once per pause, not per keystroke.
+      dirtyRef.current = true;
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => emit(ed), EMIT_DEBOUNCE_MS);
     },
   });
 
+  // Flush pending keystrokes on unmount so closing the editor mid-debounce
+  // can't drop the trailing edit.
   useEffect(() => {
     if (!editor) return;
-    const storage = editor.storage as unknown as { markdown: { getMarkdown: () => string } };
-    const current = storage.markdown.getMarkdown();
-    if (current !== value) {
-      editor.commands.setContent(value);
-    }
+    return () => {
+      flush(editor);
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
+    };
+  }, [editor, flush]);
+
+  useEffect(() => {
+    if (!editor) return;
+    // Changes that round-tripped from this editor's own onChange are already
+    // in the doc — skipping them avoids a second full serialization per
+    // keystroke just to compare. Only genuinely external values re-set content.
+    if (value === lastEmittedRef.current) return;
+    lastEmittedRef.current = value;
+    editor.commands.setContent(value);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 

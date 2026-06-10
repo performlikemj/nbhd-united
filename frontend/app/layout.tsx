@@ -58,7 +58,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Neighborhood United",
     description: "Your AI-powered personal assistant.",
-    images: [{ url: "/images/logo-textured.png", width: 1200, height: 630 }],
+    images: [{ url: "/images/logo-textured.png", width: 1200, height: 654 }],
   },
 };
 
@@ -80,9 +80,10 @@ export default function RootLayout({
       <body className="overflow-x-hidden bg-bg">
         <ThemeProvider>
           <Providers>
-            <div className="content-fade-up">
-              <AppShell>{children}</AppShell>
-            </div>
+            {/* No .content-fade-up here — AppShell already applies it around
+                <main>; doubling the wrapper ran two stacked entrance
+                animations over the whole app on first paint. */}
+            <AppShell>{children}</AppShell>
           </Providers>
         </ThemeProvider>
       </body>
