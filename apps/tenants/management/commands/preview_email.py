@@ -12,6 +12,8 @@ Usage::
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from django.core.mail import send_mail
 from django.core.management.base import BaseCommand, CommandError
 from django.template.loader import render_to_string
@@ -40,7 +42,10 @@ class Command(BaseCommand):
             template_root = "email/privacy_rotation_2026/email_2"
             ctx = {
                 "display_name": display_name,
-                "promo_url": "https://neighborhoodunited.org/promo/redeem?code=preview&token=PREVIEW",
+                # On-brand link (bounces through the live redeem flow). Sample
+                # valid_until so the "Good through …" line renders in the preview.
+                "promo_url": "https://hoodunited.org/promo/redeem?code=preview&token=PREVIEW",
+                "valid_until": datetime(2026, 6, 24, tzinfo=UTC),
             }
         else:
             raise CommandError(f"Unsupported --kind: {kind}")

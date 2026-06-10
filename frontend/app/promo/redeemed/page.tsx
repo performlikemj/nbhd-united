@@ -71,9 +71,8 @@ const VARIANTS: Record<Status, Variant> = {
     headline: "This offer has closed.",
     body: (
       <>
-        The promotional window ended on{" "}
-        <span className="text-white/80">June&nbsp;6,&nbsp;2026</span>. Thanks
-        for stopping by — if you&apos;d like to come back, sign-up is open.
+        This promotional window has closed. Thanks for stopping by — if
+        you&apos;d like to come back, sign-up is open.
       </>
     ),
     cta: { label: "Sign in", href: "/login" },

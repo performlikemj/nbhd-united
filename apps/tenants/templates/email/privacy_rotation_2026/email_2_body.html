@@ -156,26 +156,14 @@ Tested width: 600px. Mobile breakpoint: 600px → full-width with
           <!-- CTA -->
           <tr>
             <td class="px-page" align="center" style="padding: 36px 48px 8px 48px;">
-              <!--[if mso]>
-              <v:roundrect
-                xmlns:v="urn:schemas-microsoft-com:vml"
-                xmlns:w="urn:schemas-microsoft-com:office:word"
-                href="{{ promo_url }}"
-                style="height:54px;v-text-anchor:middle;width:240px;"
-                arcsize="50%"
-                stroke="f"
-                fillcolor="#7C6BF0">
-                <w:anchorlock/>
-                <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:15px;font-weight:700;letter-spacing:0.01em;">
-                  Claim 14 days
-                </center>
-              </v:roundrect>
-              <![endif]-->
-              <!--[if !mso]><!-- -->
-              <a href="{{ promo_url }}" class="cta-glow" target="_blank" rel="noopener" style="display: inline-block; background-color: #7C6BF0; color: #ffffff; text-decoration: none; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; font-weight: 700; padding: 16px 40px; border-radius: 999px; letter-spacing: 0.01em; box-shadow: 0 0 0 1px rgba(124, 107, 240, 0.35), 0 12px 32px rgba(124, 107, 240, 0.40);">
+              <!-- Bulletproof button: a single always-rendered anchor (no mso
+                   conditional comments, which some privacy relays / sanitizers
+                   strip — that hid the CTA on the first preview). Modern clients
+                   show the purple pill; Outlook renders a purple rectangle via
+                   mso-padding-alt. Always visible, always clickable. -->
+              <a href="{{ promo_url }}" class="cta-glow" target="_blank" rel="noopener" style="display: inline-block; background-color: #7C6BF0; color: #ffffff; text-decoration: none; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; font-weight: 700; padding: 16px 40px; border-radius: 999px; letter-spacing: 0.01em; mso-padding-alt: 16px 40px; box-shadow: 0 0 0 1px rgba(124, 107, 240, 0.35), 0 12px 32px rgba(124, 107, 240, 0.40);">
                 Claim 14 days
               </a>
-              <!--<![endif]-->
             </td>
           </tr>
 
