@@ -10,6 +10,7 @@ from django.db.models import Count, Sum
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import SimpleRateThrottle
 from rest_framework.views import APIView
 
 from apps.common.cache import tenant_cache
@@ -1252,3 +1253,74 @@ class WorkoutPlanDetailView(APIView):
         Workout.objects.filter(plan=plan).exclude(status=WorkoutStatus.PLANNED).update(plan=None)
         plan.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ── HealthKit sync (iOS) ────────────────────────────────────────────────
+
+
+class HealthKitSyncHourThrottle(SimpleRateThrottle):
+    """Per-user rate limit for the HealthKit batch sync endpoint."""
+
+    scope = "healthkit_sync_hour"
+    rate = "60/hour"
+
+    def get_cache_key(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return None
+        return self.cache_format % {"scope": self.scope, "ident": str(request.user.pk)}
+
+
+class HealthKitSyncView(APIView):
+    """POST: batch-ingest Apple Health workouts + daily metrics.
+
+    Idempotent on external_id (HealthKit sample UUID); duplicates report
+    HTTP 200 with per-item status, never 4xx. Ingest logic + invariants
+    live in apps/fuel/healthkit.py; the view owns gates, caps, and the
+    signal-suppression / single-visibility-push contract.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [HealthKitSyncHourThrottle]
+
+    def post(self, request):
+        from apps.orchestrator.envelope_registry import suppress_refresh
+        from apps.tenants.models import Tenant
+
+        from . import healthkit
+        from .signals import _enqueue_regen, suppress_cron_regen
+
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        if tenant.status == Tenant.Status.SUSPENDED:
+            return Response({"error": "suspended"}, status=status.HTTP_403_FORBIDDEN)
+        if not tenant.fuel_enabled:
+            # Flips immediately via PATCH /api/v1/fuel/settings/ — no
+            # container restart needed for ingest, so iOS can offer a
+            # one-tap enable and retry right away.
+            return Response({"error": "fuel_disabled"}, status=status.HTTP_409_CONFLICT)
+
+        data = request.data if isinstance(request.data, dict) else None
+        if data is None:
+            return Response({"error": "invalid_body"}, status=status.HTTP_400_BAD_REQUEST)
+        workouts = data.get("workouts") or []
+        daily = data.get("daily_metrics") or []
+        deleted = data.get("deleted_external_ids") or []
+        if not isinstance(workouts, list) or len(workouts) > healthkit.MAX_WORKOUTS:
+            return Response({"error": "too_many_workouts"}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(daily, list) or len(daily) > healthkit.MAX_DAILY:
+            return Response({"error": "too_many_daily_metrics"}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(deleted, list) or len(deleted) > healthkit.MAX_DELETED:
+            return Response({"error": "too_many_deleted_ids"}, status=status.HTTP_400_BAD_REQUEST)
+        if not workouts and not daily and not deleted:
+            return Response({"error": "empty_payload"}, status=status.HTTP_400_BAD_REQUEST)
+
+        with suppress_refresh(), suppress_cron_regen():
+            outcome = healthkit.ingest_healthkit_payload(tenant, data)
+
+        if outcome["wrote_any"]:
+            healthkit.push_visibility_refresh(str(tenant.id))
+        if outcome["regen_needed"]:
+            _enqueue_regen(str(tenant.id))
+
+        return Response({k: outcome[k] for k in ("results", "daily_results", "summary")})

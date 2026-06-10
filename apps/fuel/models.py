@@ -31,6 +31,7 @@ class WorkoutSource(models.TextChoices):
     USER = "user", "User"
     ASSISTANT = "assistant", "Assistant"
     TEMPLATE = "template", "Template"
+    HEALTHKIT = "healthkit", "HealthKit"
 
 
 class PlanStatus(models.TextChoices):
@@ -222,6 +223,14 @@ class Workout(models.Model):
         default="",
         help_text="Reason captured when status=skipped (e.g. 'traveling', 'kid sick').",
     )
+    external_id = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Stable id of the upstream record for imported workouts "
+        "(HealthKit sample UUID). Unique per tenant when non-empty — the "
+        "idempotency anchor for at-least-once sync delivery.",
+    )
     category = models.CharField(max_length=16, choices=WorkoutCategory.choices)
     activity = models.CharField(max_length=128, help_text="Free-text activity name, e.g. 'Push — Chest & Shoulders'")
     duration_minutes = models.IntegerField(null=True, blank=True)
@@ -274,6 +283,13 @@ class Workout(models.Model):
     class Meta:
         db_table = "fuel_workouts"
         ordering = ["-date", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "external_id"],
+                condition=~models.Q(external_id=""),
+                name="unique_workout_external_id",
+            ),
+        ]
         indexes = [
             models.Index(fields=["tenant", "date"]),
             models.Index(fields=["tenant", "category"]),
@@ -354,6 +370,15 @@ class FuelProfile(models.Model):
             "Cutover flag for the per-session Fuel cron model: when True, the "
             "tenant's _fuel:* crons are derived from Workout.scheduled_at and "
             "the legacy preferred_time-based emission is suppressed."
+        ),
+    )
+    healthkit_tombstones = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            "external_ids of deleted HealthKit-sourced workouts (FIFO-capped). "
+            "Consulted by the sync endpoint so an anchor reset (reinstall) "
+            "cannot resurrect a workout the user deleted."
         ),
     )
     created_at = models.DateTimeField(auto_now_add=True)

@@ -14,13 +14,34 @@ one regeneration call.
 from __future__ import annotations
 
 import logging
+import threading
+from contextlib import contextmanager
 
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
-from .models import Workout, WorkoutPlan
+from .models import Workout, WorkoutPlan, WorkoutSource
 
 logger = logging.getLogger(__name__)
+
+_SUPPRESS_REGEN = threading.local()
+
+
+@contextmanager
+def suppress_cron_regen():
+    """Silence the per-row Fuel cron-regen enqueue for writes in the block.
+
+    Each enqueue is a blocking QStash HTTPS publish (and runs the task
+    inline-synchronously in dev without a QStash token) — a 50-row
+    HealthKit batch would make 50 of them. The batch caller owns issuing
+    one ``_enqueue_regen`` after the loop.
+    """
+    prev = getattr(_SUPPRESS_REGEN, "active", False)
+    _SUPPRESS_REGEN.active = True
+    try:
+        yield
+    finally:
+        _SUPPRESS_REGEN.active = prev
 
 
 def _bump_fuel_version(tenant_id) -> None:
@@ -69,6 +90,8 @@ def _enqueue_regen(tenant_id: str) -> None:
 
 @receiver(post_save, sender=Workout)
 def workout_saved_regen_fuel_crons(sender, instance, **kwargs):
+    if getattr(_SUPPRESS_REGEN, "active", False):
+        return
     if not _tenant_uses_session_scheduling(instance):
         return
     _enqueue_regen(str(instance.tenant_id))
@@ -76,6 +99,8 @@ def workout_saved_regen_fuel_crons(sender, instance, **kwargs):
 
 @receiver(post_delete, sender=Workout)
 def workout_deleted_regen_fuel_crons(sender, instance, **kwargs):
+    if getattr(_SUPPRESS_REGEN, "active", False):
+        return
     if not _tenant_uses_session_scheduling(instance):
         return
     _enqueue_regen(str(instance.tenant_id))
@@ -101,7 +126,41 @@ def plan_deleted_bump_fuel_version(sender, instance, **kwargs):
     _bump_fuel_version(instance.tenant_id)
 
 
+_TOMBSTONE_CAP = 200
+
+
+@receiver(post_delete, sender=Workout)
+def workout_deleted_record_healthkit_tombstone(sender, instance, **kwargs):
+    """Remember deleted HealthKit imports so a sync anchor reset (app
+    reinstall, 30-day re-backfill) cannot resurrect them — the same
+    failure class as the task-resurrection incident (PR #847).
+
+    Only records when a FuelProfile already exists (never creates one —
+    cascade tenant deletes pass through here too).
+    """
+    if instance.source != WorkoutSource.HEALTHKIT or not instance.external_id:
+        return
+    try:
+        from .models import FuelProfile
+
+        profile = FuelProfile.objects.filter(tenant_id=instance.tenant_id).first()
+        if profile is None:
+            return
+        stones = list(profile.healthkit_tombstones or [])
+        if instance.external_id in stones:
+            return
+        stones.append(instance.external_id)
+        profile.healthkit_tombstones = stones[-_TOMBSTONE_CAP:]
+        profile.save(update_fields=["healthkit_tombstones", "updated_at"])
+    except Exception:
+        logger.warning(
+            "Failed to record HealthKit tombstone for tenant %s",
+            str(instance.tenant_id)[:8],
+            exc_info=True,
+        )
+
+
 # USER.md refresh on Fuel state changes is auto-wired by the envelope
 # registry (apps/fuel/envelope.py registers Workout / BodyWeightLog /
-# SleepLog as ``refresh_on`` triggers). Don't add USER.md push handlers
-# here — that path is owned by the registry.
+# SleepLog / RestingHeartRateLog as ``refresh_on`` triggers). Don't add
+# USER.md push handlers here — that path is owned by the registry.

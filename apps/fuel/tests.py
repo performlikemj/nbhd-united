@@ -3708,3 +3708,417 @@ class RuntimeWorkoutPlanCreateTests(TestCase):
         self.assertEqual(resp.status_code, 201, resp.data)
         self.assertEqual(resp.data["objective"], "Build pull strength")
         self.assertEqual(WorkoutPlan.objects.get(id=resp.data["id"]).objective, "Build pull strength")
+
+
+# ═════════════════════════════════════════════════════════════════════
+# HealthKit sync endpoint (POST /api/v1/fuel/healthkit/sync/)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class HealthKitSyncTests(TestCase):
+    """Idempotent ingest, planned-workout auto-complete gates, daily
+    metric upserts, tombstones, tz self-heal, and the one-push contract."""
+
+    maxDiff = None
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="HK Test", telegram_chat_id=800042)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+        self.user = self.tenant.user
+        self.user.timezone = "Asia/Tokyo"
+        self.user.save(update_fields=["timezone"])
+        FuelProfile.objects.create(tenant=self.tenant)
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def _post(self, payload):
+        return self.client.post("/api/v1/fuel/healthkit/sync/", payload, format="json")
+
+    @staticmethod
+    def _workout_item(**overrides):
+        item = {
+            "external_id": "hk-uuid-0001",
+            "activity": "Outdoor Run",
+            "category": "cardio",
+            "raw_type": "running",
+            "source_bundle": "com.apple.health.workout",
+            # 07:30 JST on 2026-06-10
+            "started_at": "2026-06-09T22:30:00Z",
+            "ended_at": "2026-06-09T23:12:00Z",
+            "duration_minutes": 42,
+            "metrics": {"distance_km": 5.214, "avg_hr": 152, "peak_hr": 171, "calories": 380, "elevation_m": 40},
+        }
+        item.update(overrides)
+        return item
+
+    # ── gates ──────────────────────────────────────────────────────────
+
+    def test_fuel_disabled_409(self):
+        self.tenant.fuel_enabled = False
+        self.tenant.save(update_fields=["fuel_enabled"])
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["error"], "fuel_disabled")
+
+    def test_suspended_403(self):
+        from apps.tenants.models import Tenant
+
+        self.tenant.status = Tenant.Status.SUSPENDED
+        self.tenant.save(update_fields=["status"])
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.data["error"], "suspended")
+
+    def test_empty_payload_400(self):
+        resp = self._post({})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "empty_payload")
+
+    def test_too_many_workouts_400(self):
+        items = [self._workout_item(external_id=f"hk-{i}") for i in range(51)]
+        resp = self._post({"workouts": items})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "too_many_workouts")
+
+    def test_throttle_configured(self):
+        from .views import HealthKitSyncView
+
+        self.assertTrue(HealthKitSyncView.throttle_classes)
+
+    # ── standalone create + idempotency ────────────────────────────────
+
+    def test_creates_standalone_workout_with_normalized_metrics(self):
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data["results"][0]["status"], "created")
+        w = Workout.objects.get(tenant=self.tenant, external_id="hk-uuid-0001")
+        self.assertEqual(w.source, "healthkit")
+        self.assertEqual(w.status, "done")
+        # 22:30Z = 07:30 JST next day — date buckets in tenant tz
+        self.assertEqual(w.date, date(2026, 6, 10))
+        self.assertEqual(w.detail_json["distance_km"], 5.21)
+        self.assertEqual(w.detail_json["avg_hr"], 152)
+        self.assertEqual(w.detail_json["elevation"], 40)  # elevation_m → elevation
+        self.assertNotIn("elevation_m", w.detail_json)
+        self.assertEqual(w.detail_json["pace"], "8:03")  # 42min / 5.21km
+        self.assertEqual(w.detail_json["_healthkit"]["raw_type"], "running")
+        self.assertFalse(w.detail_json["_healthkit"]["matched"])
+
+    def test_resync_is_duplicate_and_preserves_user_edits(self):
+        self._post({"workouts": [self._workout_item()]})
+        w = Workout.objects.get(tenant=self.tenant, external_id="hk-uuid-0001")
+        w.duration_minutes = 99  # user edit between syncs
+        w.save(update_fields=["duration_minutes"])
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "duplicate")
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant, external_id="hk-uuid-0001").count(), 1)
+        w.refresh_from_db()
+        self.assertEqual(w.duration_minutes, 99)
+
+    def test_within_batch_duplicate(self):
+        resp = self._post({"workouts": [self._workout_item(), self._workout_item()]})
+        statuses = sorted(r["status"] for r in resp.data["results"])
+        self.assertEqual(statuses, ["created", "duplicate"])
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant, external_id="hk-uuid-0001").count(), 1)
+
+    def test_invalid_item_skips_bad_continues_good(self):
+        bad = self._workout_item(external_id="")
+        good = self._workout_item(external_id="hk-good")
+        resp = self._post({"workouts": [bad, good]})
+        self.assertEqual(resp.data["results"][0]["status"], "error")
+        self.assertEqual(resp.data["results"][1]["status"], "created")
+        self.assertEqual(resp.data["summary"]["errors"], 1)
+        self.assertEqual(resp.data["summary"]["created"], 1)
+
+    def test_duration_out_of_range_rejected(self):
+        resp = self._post({"workouts": [self._workout_item(duration_minutes=0)]})
+        self.assertEqual(resp.data["results"][0]["status"], "error")
+        resp = self._post({"workouts": [self._workout_item(duration_minutes=2000)]})
+        self.assertEqual(resp.data["results"][0]["status"], "error")
+
+    # ── planned-workout auto-complete ──────────────────────────────────
+
+    def _planned(self, **overrides):
+        defaults = dict(
+            tenant=self.tenant,
+            date=date(2026, 6, 10),
+            status="planned",
+            category="cardio",
+            activity="Morning 10K Run",
+            duration_minutes=45,
+            source="assistant",
+        )
+        defaults.update(overrides)
+        return Workout.objects.create(**defaults)
+
+    def test_matches_day_only_planned_session(self):
+        planned = self._planned()
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "matched_planned")
+        planned.refresh_from_db()
+        self.assertEqual(planned.status, "done")
+        self.assertEqual(planned.external_id, "hk-uuid-0001")
+        self.assertEqual(planned.duration_minutes, 42)
+        self.assertEqual(planned.activity, "Morning 10K Run")  # plan name kept
+        self.assertTrue(planned.detail_json["_healthkit"]["matched"])
+        self.assertEqual(planned.detail_json["avg_hr"], 152)
+        self.assertEqual(planned.version, 1)
+        self.assertEqual(planned.notes_thread[-1]["who"], "system")
+        self.assertIn("Apple Health", planned.notes_thread[-1]["text"])
+        # No second row created
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 1)
+
+    def test_walk_does_not_complete_planned_run(self):
+        planned = self._planned()
+        walk = self._workout_item(external_id="hk-walk", activity="Walk", raw_type="walking", duration_minutes=50)
+        resp = self._post({"workouts": [walk]})
+        self.assertEqual(resp.data["results"][0]["status"], "created")
+        planned.refresh_from_db()
+        self.assertEqual(planned.status, "planned")
+
+    def test_walk_completes_planned_walk(self):
+        planned = self._planned(activity="Evening walk", duration_minutes=30)
+        walk = self._workout_item(external_id="hk-walk", activity="Walk", raw_type="walking", duration_minutes=35)
+        resp = self._post({"workouts": [walk]})
+        self.assertEqual(resp.data["results"][0]["status"], "matched_planned")
+        planned.refresh_from_db()
+        self.assertEqual(planned.status, "done")
+
+    def test_short_workout_does_not_complete_planned(self):
+        planned = self._planned(duration_minutes=60)
+        short = self._workout_item(duration_minutes=20)
+        resp = self._post({"workouts": [short]})
+        self.assertEqual(resp.data["results"][0]["status"], "created")
+        planned.refresh_from_db()
+        self.assertEqual(planned.status, "planned")
+
+    def test_window_gate_applies_to_single_candidate(self):
+        from datetime import datetime
+
+        # Scheduled 18:00 JST = 09:00Z; HK started 22:30Z (07:30 JST) — outside ±2h
+        planned = self._planned(scheduled_at=datetime(2026, 6, 10, 9, 0, tzinfo=UTC))
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "created")
+        planned.refresh_from_db()
+        self.assertEqual(planned.status, "planned")
+
+    def test_window_match_single_candidate(self):
+        from datetime import datetime
+
+        # Scheduled 07:00 JST = 2026-06-09 22:00Z; HK start 22:30Z is inside ±2h
+        planned = self._planned(scheduled_at=datetime(2026, 6, 9, 22, 0, tzinfo=UTC))
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "matched_planned")
+        planned.refresh_from_db()
+        self.assertEqual(planned.status, "done")
+
+    def test_multiple_day_only_candidates_is_ambiguous(self):
+        self._planned(activity="Run A")
+        self._planned(activity="Run B")
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "created")
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant, status="planned").count(), 2)
+
+    def test_edit_locked_candidate_creates_standalone(self):
+        from django.utils import timezone as dj_tz
+
+        planned = self._planned(edit_lock_until=dj_tz.now() + timedelta(minutes=5), edit_lock_owner="user")
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "created")
+        planned.refresh_from_db()
+        self.assertEqual(planned.status, "planned")
+
+    def test_matched_flip_enqueues_one_regen(self):
+        profile = FuelProfile.objects.get(tenant=self.tenant)
+        profile.use_session_scheduling = True
+        profile.save(update_fields=["use_session_scheduling"])
+        self._planned()
+        items = [
+            self._workout_item(),
+            self._workout_item(external_id="hk-2", started_at="2026-06-08T22:30:00Z"),
+            self._workout_item(external_id="hk-3", started_at="2026-06-07T22:30:00Z"),
+        ]
+        with patch("apps.cron.publish.publish_task") as publish:
+            resp = self._post({"workouts": items})
+        self.assertEqual(resp.data["summary"]["matched_planned"], 1)
+        self.assertEqual(publish.call_count, 1)
+
+    # ── daily metrics ──────────────────────────────────────────────────
+
+    def test_daily_metrics_upsert_preserves_quality(self):
+        from .models import RestingHeartRateLog, SleepLog
+
+        SleepLog.objects.create(tenant=self.tenant, date=date(2026, 6, 10), duration_hours=Decimal("6.0"), quality=4)
+        resp = self._post(
+            {"daily_metrics": [{"date": "2026-06-10", "resting_hr": 52, "sleep_hours": 7.4, "body_weight_kg": 72.5}]}
+        )
+        self.assertEqual(resp.data["daily_results"][0]["status"], "upserted")
+        sleep = SleepLog.objects.get(tenant=self.tenant, date=date(2026, 6, 10))
+        self.assertEqual(sleep.duration_hours, Decimal("7.4"))
+        self.assertEqual(sleep.quality, 4)  # user-entered quality survives
+        self.assertEqual(RestingHeartRateLog.objects.get(tenant=self.tenant, date=date(2026, 6, 10)).bpm, 52)
+        self.assertEqual(
+            BodyWeightLog.objects.get(tenant=self.tenant, date=date(2026, 6, 10)).weight_kg, Decimal("72.5")
+        )
+
+    def test_daily_metric_out_of_range(self):
+        resp = self._post({"daily_metrics": [{"date": "2026-06-10", "resting_hr": 10}]})
+        self.assertEqual(resp.data["daily_results"][0]["status"], "error")
+
+    # ── deletions + tombstones ─────────────────────────────────────────
+
+    def test_deleted_external_ids_removes_and_tombstones(self):
+        self._post({"workouts": [self._workout_item()]})
+        resp = self._post({"deleted_external_ids": ["hk-uuid-0001"]})
+        self.assertEqual(resp.data["summary"]["deleted"], 1)
+        self.assertFalse(Workout.objects.filter(tenant=self.tenant, external_id="hk-uuid-0001").exists())
+        profile = FuelProfile.objects.get(tenant=self.tenant)
+        self.assertIn("hk-uuid-0001", profile.healthkit_tombstones)
+        # Anchor-reset re-delivery cannot resurrect it
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "duplicate")
+        self.assertFalse(Workout.objects.filter(tenant=self.tenant, external_id="hk-uuid-0001").exists())
+
+    def test_nbhd_side_delete_tombstones_via_signal(self):
+        self._post({"workouts": [self._workout_item()]})
+        Workout.objects.get(tenant=self.tenant, external_id="hk-uuid-0001").delete()
+        profile = FuelProfile.objects.get(tenant=self.tenant)
+        self.assertIn("hk-uuid-0001", profile.healthkit_tombstones)
+
+    def test_deleting_non_healthkit_workout_does_not_tombstone(self):
+        w = Workout.objects.create(tenant=self.tenant, date=date(2026, 6, 10), category="cardio", activity="Manual run")
+        w.delete()
+        profile = FuelProfile.objects.get(tenant=self.tenant)
+        self.assertEqual(profile.healthkit_tombstones, [])
+
+    # ── device_tz self-heal ────────────────────────────────────────────
+
+    def test_device_tz_self_heals_utc_default(self):
+        self.user.timezone = "UTC"
+        self.user.save(update_fields=["timezone"])
+        # 16:00Z would be the same UTC day, but 01:00 JST on the 10th
+        item = self._workout_item(started_at="2026-06-09T16:00:00Z", ended_at="2026-06-09T16:42:00Z")
+        resp = self._post({"device_tz": "Asia/Tokyo", "workouts": [item]})
+        self.assertEqual(resp.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.timezone, "Asia/Tokyo")
+        w = Workout.objects.get(tenant=self.tenant, external_id="hk-uuid-0001")
+        self.assertEqual(w.date, date(2026, 6, 10))
+
+    def test_device_tz_does_not_override_explicit_timezone(self):
+        self.user.timezone = "America/New_York"
+        self.user.save(update_fields=["timezone"])
+        self._post({"device_tz": "Asia/Tokyo", "workouts": [self._workout_item()]})
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.timezone, "America/New_York")
+
+    def test_invalid_device_tz_ignored(self):
+        self.user.timezone = "UTC"
+        self.user.save(update_fields=["timezone"])
+        self._post({"device_tz": "Not/AZone", "workouts": [self._workout_item()]})
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.timezone, "UTC")
+
+    # ── visibility contract ────────────────────────────────────────────
+
+    def test_single_user_md_push_per_batch(self):
+        items = [
+            self._workout_item(external_id=f"hk-{i}", started_at=f"2026-06-0{(i % 8) + 1}T22:30:00Z") for i in range(10)
+        ]
+        with (
+            self.captureOnCommitCallbacks(execute=True),
+            patch("apps.orchestrator.workspace_envelope.push_user_md") as push,
+        ):
+            resp = self._post({"workouts": items})
+        self.assertEqual(resp.data["summary"]["created"], 10)
+        self.assertEqual(push.call_count, 1)
+        self.assertEqual(push.call_args.kwargs.get("debounce_seconds"), 0)
+
+    def test_no_push_when_nothing_written(self):
+        self._post({"workouts": [self._workout_item()]})
+        with patch("apps.orchestrator.workspace_envelope.push_user_md") as push:
+            self._post({"workouts": [self._workout_item()]})  # pure duplicate
+        self.assertEqual(push.call_count, 0)
+
+
+class HealthKitEnvelopeTests(TestCase):
+    """render_fuel additions: tenant-local today, RHR line, metric suffixes."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="HK Env Test", telegram_chat_id=800043)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+
+    def test_render_includes_rhr_and_metrics(self):
+        from apps.common.tenant_tz import tenant_today
+
+        from .envelope import render_fuel
+        from .models import RestingHeartRateLog
+
+        today = tenant_today(self.tenant)
+        RestingHeartRateLog.objects.create(tenant=self.tenant, date=today, bpm=52)
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=today,
+            status="done",
+            category="cardio",
+            activity="Run",
+            duration_minutes=42,
+            detail_json={"distance_km": 5.21, "avg_hr": 152},
+        )
+        body = render_fuel(self.tenant)
+        self.assertIn("Resting HR**: 52 bpm", body)
+        self.assertIn("5.21 km", body)
+        self.assertIn("152 bpm avg", body)
+
+    def test_stale_rhr_omitted(self):
+        from apps.common.tenant_tz import tenant_today
+
+        from .envelope import render_fuel
+        from .models import RestingHeartRateLog
+
+        RestingHeartRateLog.objects.create(
+            tenant=self.tenant, date=tenant_today(self.tenant) - timedelta(days=10), bpm=52
+        )
+        body = render_fuel(self.tenant)
+        self.assertNotIn("Resting HR", body)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+class HealthKitRuntimeSummaryTests(TestCase):
+    """nbhd_fuel_summary payload carries source, metrics, latest_resting_hr."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="HK Summary Test", telegram_chat_id=800044)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+        self.client = APIClient()
+
+    def test_summary_includes_health_fields(self):
+        from .models import RestingHeartRateLog
+
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 6, 10),
+            status="done",
+            category="cardio",
+            activity="Run",
+            source="healthkit",
+            detail_json={"distance_km": 5.21, "avg_hr": 152, "calories": 380},
+        )
+        RestingHeartRateLog.objects.create(tenant=self.tenant, date=date(2026, 6, 10), bpm=52)
+        resp = self.client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/summary/",
+            **{
+                "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+                "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+            },
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        recent = resp.data["recent_workouts"][0]
+        self.assertEqual(recent["source"], "healthkit")
+        self.assertEqual(recent["avg_hr"], 152)
+        self.assertEqual(recent["distance_km"], 5.21)
+        self.assertEqual(resp.data["latest_resting_hr"], {"date": "2026-06-10", "bpm": 52})

@@ -421,7 +421,10 @@ class RuntimeWorkoutCompleteView(APIView):
                 workout.duration_minutes = int(request.data["duration_minutes"])
             except (TypeError, ValueError):
                 pass
-        workout.save()
+        # Scoped save — a full-column save from a stale in-memory copy
+        # would blind-revert fields a concurrent HealthKit sync just wrote
+        # (external_id, merged detail_json).
+        workout.save(update_fields=["status", "notes", "rpe", "duration_minutes", "updated_at"])
         try:
             from .services import detect_prs
 
@@ -506,17 +509,24 @@ class RuntimeFuelSummaryView(APIView):
         tenant = tenant_or_resp
 
         recent = Workout.objects.filter(tenant=tenant, status="done").order_by("-date", "-created_at")[:20]
-        recent_data = [
-            {
+        recent_data = []
+        for w in recent:
+            entry = {
                 "id": str(w.id),
                 "date": str(w.date),
                 "category": w.category,
                 "activity": w.activity,
                 "duration_minutes": w.duration_minutes,
                 "rpe": w.rpe,
+                "source": w.source,
             }
-            for w in recent
-        ]
+            # Measured metrics (HealthKit imports and any logged actuals)
+            # so the assistant can coach off real data, not just labels.
+            detail = w.detail_json if isinstance(w.detail_json, dict) else {}
+            for key in ("distance_km", "avg_hr", "peak_hr", "calories"):
+                if isinstance(detail.get(key), int | float):
+                    entry[key] = detail[key]
+            recent_data.append(entry)
 
         planned = Workout.objects.filter(tenant=tenant, status="planned").order_by("date")[:10]
         planned_data = [
@@ -555,6 +565,14 @@ class RuntimeFuelSummaryView(APIView):
                 "quality": latest_sleep.quality,
             }
 
+        # Latest resting HR (HealthKit daily sync or manual log)
+        from .models import RestingHeartRateLog
+
+        latest_rhr = RestingHeartRateLog.objects.filter(tenant=tenant).order_by("-date").first()
+        rhr_data = None
+        if latest_rhr:
+            rhr_data = {"date": str(latest_rhr.date), "bpm": latest_rhr.bpm}
+
         # Active workout plans
         active_plans = WorkoutPlan.objects.filter(tenant=tenant, status=PlanStatus.ACTIVE)[:3]
         plans_data = []
@@ -580,6 +598,7 @@ class RuntimeFuelSummaryView(APIView):
                 "active_plans": plans_data,
                 "latest_body_weight": weight_data,
                 "latest_sleep": sleep_data,
+                "latest_resting_hr": rhr_data,
                 "profile": profile_data,
             }
         )
