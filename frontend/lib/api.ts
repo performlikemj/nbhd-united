@@ -34,6 +34,40 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
 
 let refreshPromise: Promise<string> | null = null;
 
+/** Shared, deduped refresh — concurrent callers await the same in-flight request. */
+function getDedupedRefresh(): Promise<string> {
+  if (!refreshPromise) {
+    refreshPromise = refreshAccessToken().finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return refreshPromise;
+}
+
+// Proactively refresh when the access token expires within this window, so
+// requests don't burn a round-trip on a guaranteed 401 → refresh → retry.
+const TOKEN_EXPIRY_SKEW_MS = 60_000;
+
+/**
+ * Best-effort check that the JWT's `exp` is within 60s (or past). Decodes the
+ * payload without verification — we only need the claim, the server still
+ * validates the signature. Malformed/absent tokens return false so we fall
+ * back to the existing 401 → refresh → retry path.
+ */
+function isTokenExpiringSoon(token: string): boolean {
+  try {
+    const payload = token.split(".")[1];
+    if (!payload) return false;
+    const decoded = JSON.parse(
+      atob(payload.replace(/-/g, "+").replace(/_/g, "/")),
+    ) as { exp?: unknown };
+    if (typeof decoded.exp !== "number") return false;
+    return decoded.exp * 1000 - Date.now() < TOKEN_EXPIRY_SKEW_MS;
+  } catch {
+    return false;
+  }
+}
+
 async function refreshAccessToken(): Promise<string> {
   const refresh = getRefreshToken();
   if (!refresh) {
@@ -58,7 +92,18 @@ async function refreshAccessToken(): Promise<string> {
 }
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const accessToken = getAccessToken();
+  let accessToken = getAccessToken();
+
+  // Proactive refresh: if the token is expired or about to expire, await the
+  // (deduped) refresh before firing. Fail open on any error — the reactive
+  // 401 → refresh → retry below still covers us.
+  if (accessToken && getRefreshToken() && isTokenExpiringSoon(accessToken)) {
+    try {
+      accessToken = await getDedupedRefresh();
+    } catch {
+      // Proceed with the stale token; the 401 handler decides what to do.
+    }
+  }
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -76,11 +121,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (response.status === 401 && getRefreshToken()) {
     try {
-      if (!refreshPromise) {
-        refreshPromise = refreshAccessToken();
-      }
-      const newToken = await refreshPromise;
-      refreshPromise = null;
+      const newToken = await getDedupedRefresh();
 
       headers["Authorization"] = `Bearer ${newToken}`;
       response = await fetch(`${API_BASE}${path}`, {
@@ -88,7 +129,6 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
         headers,
       });
     } catch {
-      refreshPromise = null;
       // Fall through — response is still the original 401
     }
   }
