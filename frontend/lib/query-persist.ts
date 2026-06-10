@@ -28,6 +28,11 @@ const PERSISTED_PREFIXES: QueryKey[] = [
   ["preferences"],
   ["personas"],
   ["sidebar-tree"],
+  // horizons + constellation/galaxy — page-level payloads so those pages
+  // paint from cache on reload instead of a blank fetch state
+  ["horizons"],
+  ["constellation"],
+  ["galaxy"],
   // fuel — page-level
   ["fuel-profile"],
   ["fuel-weekly-volume"],
