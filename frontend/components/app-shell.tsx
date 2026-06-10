@@ -178,7 +178,9 @@ function BackgroundLayers() {
         className="pointer-events-none fixed inset-0 -z-10 bg-[linear-gradient(rgba(226,232,240,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(226,232,240,0.03)_1px,transparent_1px)] bg-[size:32px_32px]"
         style={{ opacity: "var(--grid-opacity)" }}
       />
-      <SynapseNetwork className="fixed inset-0 -z-10 opacity-[0.04]" />
+      {/* Static (animated={false}): at 0.04 opacity the twinkle is imperceptible
+          but still forces continuous full-viewport compositing in the app. */}
+      <SynapseNetwork className="fixed inset-0 -z-10 opacity-[0.04]" animated={false} />
     </>
   );
 }
