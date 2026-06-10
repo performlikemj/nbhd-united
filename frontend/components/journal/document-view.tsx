@@ -1,10 +1,10 @@
 "use client";
 
 import clsx from "clsx";
+import dynamic from "next/dynamic";
 import { type MouseEvent, type TouchEvent as ReactTouchEvent, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
-import { MarkdownEditor, EditorToolbar } from "@/components/journal/markdown-editor";
 import { type Editor } from "@tiptap/react";
 import { MarkdownHelpSheet } from "@/components/journal/markdown-help-sheet";
 import { QuickLogInput } from "@/components/journal/quick-log-input";
@@ -19,6 +19,32 @@ import {
   useAppendDocumentMutation,
 } from "@/lib/queries";
 import { fetchDocument } from "@/lib/api";
+
+// TipTap (+ tiptap-markdown, extensions, ProseMirror) is a heavy chunk that
+// only matters once the user starts editing — load it on demand so the
+// journal read path ships without it. MarkdownRenderer stays static.
+const editorModule = () => import("@/components/journal/markdown-editor");
+
+const MarkdownEditor = dynamic(
+  () => editorModule().then((m) => m.MarkdownEditor),
+  {
+    ssr: false,
+    loading: () => (
+      // Placeholder sized like the editor surface (content min-h is 50vh)
+      // so the layout doesn't jump while the chunk loads.
+      <div className="min-h-[50vh] w-full space-y-3 px-4 py-3" aria-hidden="true">
+        <div className="h-3 w-2/3 stardust-skeleton rounded" />
+        <div className="h-3 w-1/2 stardust-skeleton rounded" />
+        <div className="h-3 w-3/5 stardust-skeleton rounded" />
+      </div>
+    ),
+  },
+);
+
+const EditorToolbar = dynamic(
+  () => editorModule().then((m) => m.EditorToolbar),
+  { ssr: false },
+);
 
 function todayISO(): string {
   const d = new Date();
@@ -104,7 +130,14 @@ function SaveStatusIndicator({ status }: { status: SaveStatus }) {
 
 export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: DocumentViewProps) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraftState] = useState("");
+  // Mirror of `draft` readable synchronously — the editor debounces its
+  // onChange, so save handlers must not rely on possibly-stale closure state.
+  const draftRef = useRef("");
+  const setDraft = useCallback((v: string) => {
+    draftRef.current = v;
+    setDraftState(v);
+  }, []);
   const [helpOpen, setHelpOpen] = useState(false);
   const [savedIndicator, setSavedIndicator] = useState(false);
   const saveIndicatorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -129,6 +162,23 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
 
   const mobileEditorRef = useRef<Editor | null>(null);
   const [mobileEditor, setMobileEditor] = useState<Editor | null>(null);
+  // The currently-mounted editor instance (mobile portal or desktop surface).
+  // Save handlers serialize from it directly so a debounced, not-yet-emitted
+  // keystroke can never be dropped by an explicit Save/Done.
+  const liveEditorRef = useRef<Editor | null>(null);
+
+  const latestDraft = useCallback((): string => {
+    const ed = liveEditorRef.current;
+    if (ed && !ed.isDestroyed) {
+      try {
+        const storage = ed.storage as unknown as { markdown: { getMarkdown: () => string } };
+        return storage.markdown.getMarkdown();
+      } catch {
+        // Fall back to the last emitted draft below.
+      }
+    }
+    return draftRef.current;
+  }, []);
 
   // Reset edit state when navigating to a different document
   /* eslint-disable react-hooks/set-state-in-effect -- intentional reset when props change */
@@ -177,7 +227,8 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
     };
   }, [editing, isMobile]);
 
-  // Autosave on mobile: debounced write 1.5s after the last keystroke.
+  // Autosave on mobile: debounced write 1.5s after the editor's (itself
+  // debounced) last emit. Explicit Done/Save read the live editor directly.
   useEffect(() => {
     if (!(editing && isMobile === true)) return;
     if (draft === lastSavedRef.current) return;
@@ -238,17 +289,21 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
   };
 
   // Mobile "Done" — flush any pending diff, then exit. Stays in editor on
-  // failure so unsaved keystrokes aren't silently lost.
+  // failure so unsaved keystrokes aren't silently lost. Reads the markdown
+  // straight off the live editor (latestDraft) so the editor's debounced
+  // onChange can't hide trailing keystrokes from an explicit save.
   const handleDone = async () => {
     try {
-      if (draft !== lastSavedRef.current) {
+      const latest = latestDraft();
+      if (latest !== lastSavedRef.current) {
         setSaveStatus("saving");
-        await updateMutation.mutateAsync({ kind, slug, data: { markdown: draft } });
-        lastSavedRef.current = draft;
+        await updateMutation.mutateAsync({ kind, slug, data: { markdown: latest } });
+        lastSavedRef.current = latest;
       }
       setEditing(false);
       setMobileEditor(null);
       mobileEditorRef.current = null;
+      liveEditorRef.current = null;
       setSaveStatus("idle");
     } catch {
       setSaveStatus("idle");
@@ -259,11 +314,12 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
     await updateMutation.mutateAsync({
       kind,
       slug,
-      data: { markdown: draft },
+      data: { markdown: latestDraft() },
     });
     setEditing(false);
     setMobileEditor(null);
     mobileEditorRef.current = null;
+    liveEditorRef.current = null;
     // Show saved indicator
     setSavedIndicator(true);
     if (saveIndicatorTimer.current) clearTimeout(saveIndicatorTimer.current);
@@ -274,6 +330,7 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
     setEditing(false);
     setMobileEditor(null);
     mobileEditorRef.current = null;
+    liveEditorRef.current = null;
   };
 
   const handleQuickLog = async (content: string) => {
@@ -370,6 +427,7 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
             hideToolbar
             onEditorReady={(ed) => {
               mobileEditorRef.current = ed;
+              liveEditorRef.current = ed;
               setMobileEditor(ed);
             }}
           />
@@ -431,7 +489,9 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
                 onHelpToggle={() => setHelpOpen(true)}
                 autoFocus
                 cursorKey={`doc-cursor-${kind}-${slug}`}
-                minRows={Math.max(20, draft.split("\n").length + 5)}
+                onEditorReady={(ed) => {
+                  liveEditorRef.current = ed;
+                }}
               />
             </div>
           </div>
