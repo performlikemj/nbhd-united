@@ -315,6 +315,95 @@ class CheckoutEndpointTest(TestCase):
         self.assertEqual(kwargs["metadata"]["kind"], "credit_topup")
         self.assertEqual(kwargs["metadata"]["tenant_id"], str(t.id))
 
+    @override_settings(**_STRIPE)
+    @patch("apps.billing.views.stripe.checkout.Session.create")
+    def test_stale_customer_self_heals(self, mock_create):
+        """A stale stripe_customer_id (different account/mode after a Stripe
+        migration) must not 502: clear it and retry with the email so Checkout
+        mints a fresh customer in the current account."""
+        import stripe
+
+        t = _tenant("c3", customer="cus_STALE")
+        self.client.force_authenticate(user=t.user)
+        ok = type("S", (), {"url": "https://stripe.test/ok"})()
+        mock_create.side_effect = [
+            stripe.error.InvalidRequestError("No such customer: 'cus_STALE'", "customer", code="resource_missing"),
+            ok,
+        ]
+        resp = self.client.post("/api/v1/billing/credits/checkout/", {"pack_id": "credit_5"}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(mock_create.call_count, 2)
+        # First attempt passed the stale customer; retry dropped it for the email.
+        self.assertEqual(mock_create.call_args_list[0].kwargs["customer"], "cus_STALE")
+        self.assertIsNone(mock_create.call_args_list[1].kwargs["customer"])
+        self.assertEqual(mock_create.call_args_list[1].kwargs["customer_email"], t.user.email)
+        # Stale id cleared so the webhook backfills the fresh one.
+        t.refresh_from_db()
+        self.assertEqual(t.stripe_customer_id, "")
+
+    @override_settings(**_STRIPE)
+    @patch("apps.billing.views.stripe.checkout.Session.create")
+    def test_non_customer_error_502_no_retry_no_clear(self, mock_create):
+        """A generic Stripe error (not a stale customer) still 502s, does NOT
+        retry, and must NOT wipe a valid customer id."""
+        import stripe
+
+        t = _tenant("c4", customer="cus_VALID")
+        self.client.force_authenticate(user=t.user)
+        mock_create.side_effect = stripe.error.APIConnectionError("network down")
+        resp = self.client.post("/api/v1/billing/credits/checkout/", {"pack_id": "credit_5"}, format="json")
+        self.assertEqual(resp.status_code, 502)
+        self.assertEqual(mock_create.call_count, 1)
+        t.refresh_from_db()
+        self.assertEqual(t.stripe_customer_id, "cus_VALID")
+
+
+_STRIPE_SUB = dict(
+    STRIPE_LIVE_MODE=False,
+    STRIPE_TEST_SECRET_KEY="sk_test_x",
+    STRIPE_PRICE_ID="price_x",
+    FRONTEND_URL="https://app.test",
+)
+
+
+class PortalEndpointTest(TestCase):
+    @override_settings(**_STRIPE_SUB)
+    @patch("apps.billing.views.stripe.billing_portal.Session.create")
+    def test_stale_customer_returns_409_and_clears(self, mock_portal):
+        """A stale customer on the portal path clears the id and returns 409
+        (relink) instead of an opaque 502."""
+        import stripe
+
+        t = _tenant("p1", customer="cus_STALE")
+        client = APIClient()
+        client.force_authenticate(user=t.user)
+        mock_portal.side_effect = stripe.error.InvalidRequestError(
+            "No such customer: 'cus_STALE'", "customer", code="resource_missing"
+        )
+        resp = client.post("/api/v1/billing/portal/")
+        self.assertEqual(resp.status_code, 409)
+        self.assertIn("relink", resp.data["detail"].lower())
+        t.refresh_from_db()
+        self.assertEqual(t.stripe_customer_id, "")
+
+
+class SubscriptionCheckoutTest(TestCase):
+    @override_settings(**_STRIPE_SUB)
+    @patch("apps.billing.views.stripe.checkout.Session.create")
+    def test_stripe_error_returns_502_not_500(self, mock_create):
+        """Subscription checkout must return a clean 502 on a Stripe error, not
+        crash with an unhandled 500."""
+        import stripe
+
+        t = _tenant("s1")
+        client = APIClient()
+        client.force_authenticate(user=t.user)
+        mock_create.side_effect = stripe.error.InvalidRequestError(
+            "No such price: 'price_x'", "line_items[0][price]", code="resource_missing"
+        )
+        resp = client.post("/api/v1/billing/checkout/")
+        self.assertEqual(resp.status_code, 502)
+
 
 class BalanceEndpointTest(TestCase):
     def test_returns_balance_and_packs(self):

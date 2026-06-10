@@ -46,6 +46,54 @@ def _require_stripe_api_key() -> str | None:
     return api_key
 
 
+def _is_missing_customer_error(exc: "stripe.error.StripeError") -> bool:
+    """True when Stripe rejected the ``customer`` param as non-existent.
+
+    Fires on a stale ``stripe_customer_id`` — a customer that belongs to a
+    different Stripe account or a different mode (test vs live) than the key we
+    call with. The canonical case: a tenant carries a customer/subscription from
+    an OLD account or from test mode, then the platform moves to a NEW live
+    account (object-id suffixes encode the account, so the ids are literally
+    cross-account). Stripe returns ``invalid_request_error`` /
+    ``resource_missing`` with ``param='customer'`` (message "No such customer").
+    Match on code+param first, fall back to the message so a future stripe-py
+    that drops the structured fields still self-heals.
+    """
+    if getattr(exc, "code", "") == "resource_missing" and getattr(exc, "param", "") == "customer":
+        return True
+    return "No such customer" in str(exc)
+
+
+def _is_missing_subscription_error(exc: "stripe.error.StripeError") -> bool:
+    """True when Stripe rejected the ``subscription`` param as non-existent — the
+    subscription-side twin of :func:`_is_missing_customer_error`. Fires on a
+    stale ``stripe_subscription_id`` from a different account/mode after a Stripe
+    migration (e.g. account-cancel / reactivate hitting an old-account sub id).
+    """
+    if getattr(exc, "code", "") == "resource_missing" and getattr(exc, "param", "") in ("subscription", "id"):
+        return True
+    return "No such subscription" in str(exc)
+
+
+def _clear_stale_customer(tenant: Tenant) -> None:
+    """Drop a stale ``stripe_customer_id`` so the next checkout creates a fresh
+    customer in the CURRENT account/mode (the credit-topup webhook backfills the
+    new id via the ``stripe_customer_id=""`` guard). Clears in-memory too so the
+    caller's retry takes the ``customer_email`` branch. Best-effort: a failed
+    write must not mask the original Stripe error path.
+    """
+    try:
+        Tenant.objects.filter(id=tenant.id).update(stripe_customer_id="")
+        tenant.stripe_customer_id = ""
+        logger.warning(
+            "billing: cleared stale stripe_customer_id for tenant %s (cross-account/mode customer) — "
+            "next checkout creates a fresh customer",
+            tenant.id,
+        )
+    except Exception:
+        logger.exception("billing: failed to clear stale stripe_customer_id for tenant %s", tenant.id)
+
+
 def _stripe_object_to_plain_dict(obj):
     """Convert a Stripe ``StripeObject`` to a plain dict.
 
@@ -177,6 +225,19 @@ class StripePortalView(APIView):
                 api_key=api_key,
             )
         except stripe.error.StripeError as exc:
+            # Stale customer (different account/mode after a Stripe migration): the
+            # portal genuinely needs a live customer, so we can't transparently
+            # retry. Clear the dead id and tell the user to relink — a new
+            # subscription or top-up backfills a fresh customer in THIS account.
+            if _is_missing_customer_error(exc):
+                logger.warning("Stripe portal: stale customer for tenant %s — clearing + asking to relink", tenant.id)
+                _clear_stale_customer(tenant)
+                return Response(
+                    {
+                        "detail": "Your billing profile needs to be relinked. Start a subscription or credit top-up to reconnect."
+                    },
+                    status=http_status.HTTP_409_CONFLICT,
+                )
             logger.error("Stripe portal error for tenant %s: %s", tenant.id, exc)
             return Response(
                 {"detail": "Unable to open the billing portal right now. Please try again later."},
@@ -219,21 +280,32 @@ class StripeCheckoutView(APIView):
         except Tenant.DoesNotExist:
             pass
 
-        session = stripe.checkout.Session.create(
-            customer_email=customer_email,
-            line_items=[{"price": price_id, "quantity": 1}],
-            mode="subscription",
-            success_url=f"{settings.FRONTEND_URL}/onboarding?checkout=success",
-            cancel_url=f"{settings.FRONTEND_URL}/billing?checkout=cancelled",
-            metadata=metadata,
-            consent_collection={"terms_of_service": "required"},
-            custom_text={
-                "terms_of_service_acceptance": {
-                    "message": f"I agree to the [Terms of Service]({settings.FRONTEND_URL}/legal/terms)"
-                }
-            },
-            api_key=api_key,
-        )
+        # Subscription checkout uses customer_email (not a stored customer id) so
+        # it's immune to the stale-customer migration bug — but it still must not
+        # 500 if Stripe rejects the call (bad price id, key issues): return a
+        # clean error like the other checkout paths.
+        try:
+            session = stripe.checkout.Session.create(
+                customer_email=customer_email,
+                line_items=[{"price": price_id, "quantity": 1}],
+                mode="subscription",
+                success_url=f"{settings.FRONTEND_URL}/onboarding?checkout=success",
+                cancel_url=f"{settings.FRONTEND_URL}/billing?checkout=cancelled",
+                metadata=metadata,
+                consent_collection={"terms_of_service": "required"},
+                custom_text={
+                    "terms_of_service_acceptance": {
+                        "message": f"I agree to the [Terms of Service]({settings.FRONTEND_URL}/legal/terms)"
+                    }
+                },
+                api_key=api_key,
+            )
+        except stripe.error.StripeError as exc:
+            logger.error("Stripe subscription checkout error for user %s: %s", user.id, exc)
+            return Response(
+                {"detail": "Unable to start checkout right now. Please try again later."},
+                status=http_status.HTTP_502_BAD_GATEWAY,
+            )
         return Response({"url": session.url})
 
 
@@ -282,35 +354,60 @@ class CreditCheckoutView(APIView):
             "tenant_id": str(tenant.id),
             "user_id": str(request.user.id),
         }
-        customer = tenant.stripe_customer_id or None
-        try:
-            session = stripe.checkout.Session.create(
+        line_items = [
+            {
+                "price_data": {
+                    "currency": "usd",
+                    "unit_amount": pack["price_cents"],
+                    "product_data": {"name": pack["label"]},
+                },
+                "quantity": 1,
+            }
+        ]
+
+        def _create_session(customer):
+            return stripe.checkout.Session.create(
                 mode="payment",
                 customer=customer,
                 customer_email=None if customer else request.user.email,
                 client_reference_id=str(tenant.id),
-                line_items=[
-                    {
-                        "price_data": {
-                            "currency": "usd",
-                            "unit_amount": pack["price_cents"],
-                            "product_data": {"name": pack["label"]},
-                        },
-                        "quantity": 1,
-                    }
-                ],
+                line_items=line_items,
                 metadata=meta,
                 payment_intent_data={"metadata": meta},
                 success_url=f"{settings.FRONTEND_URL}/settings/billing?topup=success",
                 cancel_url=f"{settings.FRONTEND_URL}/settings/billing?topup=cancelled",
                 api_key=api_key,
             )
+
+        customer = tenant.stripe_customer_id or None
+        try:
+            session = _create_session(customer)
         except stripe.error.StripeError as exc:
-            logger.error("Stripe credit checkout error for tenant %s: %s", tenant.id, exc)
-            return Response(
-                {"detail": "Unable to start checkout right now. Please try again later."},
-                status=http_status.HTTP_502_BAD_GATEWAY,
-            )
+            # A stale customer (different Stripe account/mode — e.g. an old test
+            # customer after a live-account migration) self-heals: drop the id and
+            # retry with the email so Checkout mints a fresh customer in THIS
+            # account. The credit-topup webhook backfills the new id.
+            if customer and _is_missing_customer_error(exc):
+                logger.warning(
+                    "Stripe credit checkout: stale customer %s for tenant %s — retrying without it",
+                    customer,
+                    tenant.id,
+                )
+                _clear_stale_customer(tenant)
+                try:
+                    session = _create_session(None)
+                except stripe.error.StripeError as retry_exc:
+                    logger.error("Stripe credit checkout retry error for tenant %s: %s", tenant.id, retry_exc)
+                    return Response(
+                        {"detail": "Unable to start checkout right now. Please try again later."},
+                        status=http_status.HTTP_502_BAD_GATEWAY,
+                    )
+            else:
+                logger.error("Stripe credit checkout error for tenant %s: %s", tenant.id, exc)
+                return Response(
+                    {"detail": "Unable to start checkout right now. Please try again later."},
+                    status=http_status.HTTP_502_BAD_GATEWAY,
+                )
         return Response({"url": session.url})
 
 
