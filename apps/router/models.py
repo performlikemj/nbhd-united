@@ -593,6 +593,14 @@ class AppChatMessage(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     replied_at = models.DateTimeField(null=True, blank=True)
+    waking_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set while the tenant container is waking from hibernation "
+        "so polling clients can show honest 'assistant is waking up' copy "
+        "instead of an indefinite typing indicator. Meaningless once "
+        "status leaves 'pending'.",
+    )
 
     class Meta:
         db_table = "app_chat_messages"

@@ -635,6 +635,14 @@ class Tenant(models.Model):
         help_text="When the container was woken for a scheduled cron job. "
         "Null = not a cron wake. Used to apply the shorter 30-min idle window.",
     )
+    last_wake_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the container was last woken from hibernation. The "
+        "message drain treats container-down errors within a grace window "
+        "of this as 'still booting' (retry soon, don't burn delivery "
+        "attempts) instead of delivery failures.",
+    )
 
     # Workspace routing
     active_workspace = models.ForeignKey(

@@ -81,10 +81,18 @@ _DRAIN_PUBLISH_RETRIES = 3
 
 # Seconds to wait after waking a hibernated container before re-attempting
 # delivery. Idle hibernation deactivates the revision, so the OpenClaw
-# container app returns 404 from its ingress until a fresh replica boots —
-# matches the 60s the wake path itself uses for cron resumption
-# (apps/orchestrator/hibernation.py).
-_WAKE_DEFER_SECONDS = 60
+# container app returns 404 from its ingress until a fresh replica boots.
+# Containers often boot in ~30s; a short defer plus the boot-grace retry
+# below delivers within ~20s of readiness instead of always waiting the
+# worst case (was a fixed 60s).
+_WAKE_DEFER_SECONDS = 20
+
+# After a wake, container-down errors within this window mean "still
+# booting" — release the lease and retry in _WAKE_DEFER_SECONDS without
+# advancing delivery_attempts (cap is only 3 and OpenClaw cold boots can
+# take 30-150s; burning attempts during boot dropped slow-boot messages).
+# Past the window a down container is treated as a real failure again.
+_WAKE_BOOT_GRACE_SECONDS = 240
 
 # Reaper sweep. Pending rows older than this with no live in-flight lease
 # are presumed stuck (publish_task raised + got swallowed, or QStash
@@ -748,6 +756,7 @@ def drain_pending_messages_for_tenant_task(
                 )
                 wake_hibernated_tenant(tenant)
                 _notify_waking(tenant, channel, channel_user_id or "")
+                _mark_ios_waking(channel, batch)
                 _reschedule_drain(
                     tenant,
                     channel,
@@ -761,6 +770,39 @@ def drain_pending_messages_for_tenant_task(
                     "skipped_in_flight": 0,
                     "woke": True,
                 }
+
+        # Boot grace: the container was woken moments ago (this drain or the
+        # webhook path) and its replica isn't serving yet. Not the message's
+        # fault — release the lease, keep the attempt counters, retry soon.
+        # Without this, the shorter _WAKE_DEFER_SECONDS would burn all
+        # _MAX_DELIVERY_ATTEMPTS during a slow cold boot.
+        if (
+            _is_container_down_error(exc)
+            and tenant.last_wake_at is not None
+            and (timezone.now() - tenant.last_wake_at).total_seconds() < _WAKE_BOOT_GRACE_SECONDS
+        ):
+            for row in batch:
+                row.delivery_in_flight_until = None
+                row.save(update_fields=["delivery_in_flight_until"])
+            logger.info(
+                "drain_pending: tenant %s still booting after wake — deferring drain %ds (no attempt burned)",
+                tenant_id[:8],
+                _WAKE_DEFER_SECONDS,
+            )
+            _mark_ios_waking(channel, batch)
+            _reschedule_drain(
+                tenant,
+                channel,
+                channel_user_id or "",
+                delay_seconds=_WAKE_DEFER_SECONDS,
+            )
+            return {
+                "delivered": 0,
+                "failed": 0,
+                "dropped": 0,
+                "skipped_in_flight": 0,
+                "booting": True,
+            }
 
         # Batch-level failure: every row in the batch shared the failed
         # POST, so every row's attempt counter advances by one. A row
@@ -882,6 +924,30 @@ def _reschedule_drain(
             channel,
             (channel_user_id or "")[:24],
         )
+
+
+def _mark_ios_waking(channel: str, batch: list[PendingMessage]) -> None:
+    """Surface a hibernation wake to polling rich clients: stamp
+    ``waking_at`` on the batch's AppChatMessage rows so
+    ``GET /chat/messages/<id>/`` can render "your assistant is waking up"
+    instead of indefinite typing dots. Telegram gets the same signal via
+    ``_notify_waking``'s push ack; rich clients have no push transport.
+    Idempotent — re-stamping on each boot-grace retry is harmless."""
+    if channel != PendingMessage.Channel.IOS or not batch:
+        return
+    client_ids = _ios_client_msg_ids(batch)
+    if not client_ids:
+        return
+    try:
+        from apps.router.models import AppChatMessage
+
+        AppChatMessage.objects.filter(
+            tenant_id=batch[0].tenant_id,
+            client_msg_id__in=client_ids,
+            status=AppChatMessage.Status.PENDING,
+        ).update(waking_at=timezone.now())
+    except Exception:
+        logger.exception("drain_pending: failed to stamp waking_at for ios batch")
 
 
 def _is_container_down_error(exc: Exception) -> bool:

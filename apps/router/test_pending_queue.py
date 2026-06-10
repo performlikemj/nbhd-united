@@ -33,6 +33,7 @@ from django.utils import timezone
 
 from apps.router.models import PendingMessage
 from apps.router.pending_queue import (
+    _WAKE_BOOT_GRACE_SECONDS,
     _WAKE_DEFER_SECONDS,
     drain_pending_messages_for_tenant_task,
     enqueue_message_for_tenant,
@@ -1328,3 +1329,149 @@ class PendingMessageColdStartCoalesceTest(TestCase):
         self.assertEqual(fresh.delivery_status, PendingMessage.Status.PENDING)
         # Fresh row didn't get a lease — the batch claim is all-or-nothing.
         self.assertIsNone(fresh.delivery_in_flight_until)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
+class WakeBootGraceTest(TestCase):
+    """Container-down errors shortly after a hibernation wake mean "still
+    booting", not "delivery failed": the drain must release the lease,
+    keep the attempt counters (cap is only 3; OpenClaw cold boots can take
+    30-150s), and retry shortly. Past the grace window a down container is
+    a real failure again. iOS turns get ``waking_at`` stamped so polling
+    clients can show honest wake copy instead of indefinite typing dots."""
+
+    @staticmethod
+    def _container_404(url, *args, **kwargs):
+        if "/v1/chat/completions" in url:
+            resp = MagicMock()
+            resp.status_code = 404
+            resp.is_success = False
+            resp.text = "Not Found"
+            resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+                "404 Not Found", request=MagicMock(), response=resp
+            )
+            return resp
+        ok = MagicMock()
+        ok.is_success = True
+        ok.status_code = 200
+        return ok
+
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant")
+    @patch("apps.router.pending_queue._looks_like_openrouter_credit_limit", return_value=False)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_booting_after_wake_defers_without_attempt_burn(self, mock_post, _mock_credit, mock_wake, mock_publish):
+        mock_post.side_effect = self._container_404
+
+        user = _make_user(telegram_chat_id=61616161)
+        tenant = _make_tenant(user)
+        Tenant.objects.filter(id=tenant.id).update(
+            hibernated_at=None,
+            last_wake_at=timezone.now() - timedelta(seconds=30),
+        )
+
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.TELEGRAM,
+            channel_user_id="61616161",
+            payload={
+                "message_text": "hello again",
+                "user_param": "61616161",
+                "user_timezone": "UTC",
+            },
+            user_text="hello again",
+        )
+
+        result = drain_pending_messages_for_tenant_task(str(tenant.id), "telegram", "61616161")
+
+        self.assertTrue(result.get("booting"))
+        # Not hibernated, so no re-wake (the wake already happened).
+        mock_wake.assert_not_called()
+
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_status, PendingMessage.Status.PENDING)
+        self.assertEqual(msg.delivery_attempts, 0)
+        self.assertIsNone(msg.delivery_in_flight_until)
+
+        drain_calls = [
+            c for c in mock_publish.call_args_list if c.args and c.args[0] == "drain_pending_messages_for_tenant"
+        ]
+        self.assertTrue(drain_calls, "expected a deferred drain reschedule")
+        self.assertEqual(drain_calls[-1].kwargs.get("delay_seconds"), _WAKE_DEFER_SECONDS)
+
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.router.pending_queue._looks_like_openrouter_credit_limit", return_value=False)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_boot_grace_expired_is_a_real_failure(self, mock_post, _mock_credit, _mock_publish):
+        mock_post.side_effect = self._container_404
+
+        user = _make_user(telegram_chat_id=62626262)
+        tenant = _make_tenant(user)
+        Tenant.objects.filter(id=tenant.id).update(
+            hibernated_at=None,
+            last_wake_at=timezone.now() - timedelta(seconds=_WAKE_BOOT_GRACE_SECONDS + 60),
+        )
+
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.TELEGRAM,
+            channel_user_id="62626262",
+            payload={
+                "message_text": "anyone there",
+                "user_param": "62626262",
+                "user_timezone": "UTC",
+            },
+            user_text="anyone there",
+        )
+
+        # Past the grace window the normal failure path applies: attempts
+        # advance and the drain re-raises so QStash retries with backoff.
+        with self.assertRaises(RuntimeError):
+            drain_pending_messages_for_tenant_task(str(tenant.id), "telegram", "62626262")
+
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_attempts, 1)
+
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant")
+    @patch("apps.billing.services.check_budget", return_value="")
+    @patch("apps.router.pending_queue._looks_like_openrouter_credit_limit", return_value=False)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_ios_wake_stamps_waking_at_for_polling_clients(
+        self, mock_post, _mock_credit, _mock_budget, _mock_wake, _mock_publish
+    ):
+        from apps.router.models import AppChatMessage, ChatThread
+
+        mock_post.side_effect = self._container_404
+
+        user = _make_user(telegram_chat_id=63636363)
+        tenant = _make_tenant(user)
+        Tenant.objects.filter(id=tenant.id).update(hibernated_at=timezone.now())
+
+        thread = ChatThread.objects.create(tenant=tenant, user=user, title="", is_main=True)
+        turn = AppChatMessage.objects.create(
+            tenant=tenant,
+            user=user,
+            thread=thread,
+            client_msg_id="cmid-wake-1",
+            user_text="good morning",
+        )
+        PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=str(thread.id),
+            payload={
+                "message_text": "good morning",
+                "user_param": f"thread:{thread.id}",
+                "user_timezone": "UTC",
+                "client_msg_id": "cmid-wake-1",
+            },
+            user_text="good morning",
+        )
+
+        result = drain_pending_messages_for_tenant_task(str(tenant.id), "ios", str(thread.id))
+
+        self.assertTrue(result.get("woke"))
+        turn.refresh_from_db()
+        self.assertEqual(turn.status, AppChatMessage.Status.PENDING)
+        self.assertIsNotNone(turn.waking_at)
