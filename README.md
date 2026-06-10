@@ -133,8 +133,8 @@ See `.env.example` for all configuration. Key ones:
 | `TELEGRAM_WEBHOOK_SECRET` | Required non-empty webhook secret for Telegram webhook validation |
 | `STRIPE_TEST_SECRET_KEY` | Stripe test key used when `STRIPE_LIVE_MODE=False` |
 | `STRIPE_LIVE_SECRET_KEY` | Stripe live key used when `STRIPE_LIVE_MODE=True` |
-| `STRIPE_PRICE_BASIC` | Stripe price ID for Basic tier checkout |
-| `STRIPE_PRICE_PLUS` | Stripe price ID for Plus tier checkout |
+| `STRIPE_PRICE_STARTER` | Stripe price ID for the single "starter" subscription tier (read by `settings.STRIPE_PRICE_ID`) — must be from the same account as the keys/webhook |
+| `DJSTRIPE_WEBHOOK_SECRET` | Signing secret of the live-account webhook endpoint → `/api/v1/billing/webhook/` (see `docs/infrastructure/STRIPE_WEBHOOK_SETUP.md`) |
 | `ANTHROPIC_API_KEY` | Shared API key for all OpenClaw instances |
 | `OPENAI_API_KEY` | Shared OpenAI API key for Whisper/voice transcription defaults |
 | `AZURE_SUBSCRIPTION_ID` | Azure subscription for Container Apps |

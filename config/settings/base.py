@@ -424,7 +424,12 @@ AZURE_KEY_VAULT_NAME = env("AZURE_KEY_VAULT_NAME", default="kv-nbhd-prod")
 AZURE_PROVISIONER_CLIENT_ID = env("AZURE_PROVISIONER_CLIENT_ID", default="")
 AZURE_STORAGE_ACCOUNT_NAME = env("AZURE_STORAGE_ACCOUNT_NAME", default="")
 
-# Stripe pricing — single plan
+# Stripe pricing — single plan.
+# NOTE: the Django setting is STRIPE_PRICE_ID, but the env var it reads is
+# STRIPE_PRICE_STARTER. When configuring the Container App, set
+# STRIPE_PRICE_STARTER=price_… (the live-account Starter price), NOT
+# STRIPE_PRICE_ID. All code references settings.STRIPE_PRICE_ID. Legacy
+# STRIPE_PRICE_BASIC/PLUS are unused (tiers collapsed to a single "starter").
 STRIPE_PRICE_ID = env("STRIPE_PRICE_STARTER", default="")
 
 # Frontend URL (for redirects)

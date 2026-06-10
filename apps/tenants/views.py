@@ -707,12 +707,28 @@ class DeleteAccountView(APIView):
                     period_end,
                     user.id,
                 )
-            except Exception:
-                logger.warning(
-                    "Could not cancel Stripe subscription for user %s — scheduling deletion anyway",
-                    user.id,
-                    exc_info=True,
-                )
+            except Exception as exc:
+                from apps.billing.views import _is_missing_subscription_error
+
+                if _is_missing_subscription_error(exc):
+                    # Stale subscription id from a prior Stripe account/mode: the
+                    # sub doesn't exist on the live account, so there is nothing to
+                    # cancel. Clear it so it stops masquerading as live linkage,
+                    # then schedule deletion as normal (period_end stays None →
+                    # treated as immediate-eligible by the deletion sweep).
+                    Tenant.objects.filter(id=tenant.id).update(stripe_subscription_id="")
+                    tenant.stripe_subscription_id = ""
+                    logger.warning(
+                        "Account-delete: stale stripe_subscription_id for user %s (cross-account/mode) — "
+                        "cleared; scheduling deletion",
+                        user.id,
+                    )
+                else:
+                    logger.warning(
+                        "Could not cancel Stripe subscription for user %s — scheduling deletion anyway",
+                        user.id,
+                        exc_info=True,
+                    )
 
             tenant.pending_deletion = True
             tenant.deletion_scheduled_at = period_end
@@ -908,12 +924,26 @@ class CancelDeletionView(APIView):
                     tenant.stripe_subscription_id,
                     user.id,
                 )
-            except Exception:
-                logger.warning(
-                    "Could not reactivate Stripe subscription for user %s",
-                    user.id,
-                    exc_info=True,
-                )
+            except Exception as exc:
+                from apps.billing.views import _is_missing_subscription_error
+
+                if _is_missing_subscription_error(exc):
+                    # Stale subscription id from a prior Stripe account/mode — the
+                    # sub no longer exists, so there is nothing to reactivate.
+                    # Clear it; the user can re-subscribe to relink to the live
+                    # account. Cancellation is still removed DB-side below.
+                    Tenant.objects.filter(id=tenant.id).update(stripe_subscription_id="")
+                    tenant.stripe_subscription_id = ""
+                    logger.warning(
+                        "Cancel-deletion: stale stripe_subscription_id for user %s (cross-account/mode) — cleared",
+                        user.id,
+                    )
+                else:
+                    logger.warning(
+                        "Could not reactivate Stripe subscription for user %s",
+                        user.id,
+                        exc_info=True,
+                    )
 
         tenant.pending_deletion = False
         tenant.deletion_scheduled_at = None

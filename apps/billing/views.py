@@ -64,6 +64,17 @@ def _is_missing_customer_error(exc: "stripe.error.StripeError") -> bool:
     return "No such customer" in str(exc)
 
 
+def _is_missing_subscription_error(exc: "stripe.error.StripeError") -> bool:
+    """True when Stripe rejected the ``subscription`` param as non-existent — the
+    subscription-side twin of :func:`_is_missing_customer_error`. Fires on a
+    stale ``stripe_subscription_id`` from a different account/mode after a Stripe
+    migration (e.g. account-cancel / reactivate hitting an old-account sub id).
+    """
+    if getattr(exc, "code", "") == "resource_missing" and getattr(exc, "param", "") in ("subscription", "id"):
+        return True
+    return "No such subscription" in str(exc)
+
+
 def _clear_stale_customer(tenant: Tenant) -> None:
     """Drop a stale ``stripe_customer_id`` so the next checkout creates a fresh
     customer in the CURRENT account/mode (the credit-topup webhook backfills the
@@ -269,21 +280,32 @@ class StripeCheckoutView(APIView):
         except Tenant.DoesNotExist:
             pass
 
-        session = stripe.checkout.Session.create(
-            customer_email=customer_email,
-            line_items=[{"price": price_id, "quantity": 1}],
-            mode="subscription",
-            success_url=f"{settings.FRONTEND_URL}/onboarding?checkout=success",
-            cancel_url=f"{settings.FRONTEND_URL}/billing?checkout=cancelled",
-            metadata=metadata,
-            consent_collection={"terms_of_service": "required"},
-            custom_text={
-                "terms_of_service_acceptance": {
-                    "message": f"I agree to the [Terms of Service]({settings.FRONTEND_URL}/legal/terms)"
-                }
-            },
-            api_key=api_key,
-        )
+        # Subscription checkout uses customer_email (not a stored customer id) so
+        # it's immune to the stale-customer migration bug — but it still must not
+        # 500 if Stripe rejects the call (bad price id, key issues): return a
+        # clean error like the other checkout paths.
+        try:
+            session = stripe.checkout.Session.create(
+                customer_email=customer_email,
+                line_items=[{"price": price_id, "quantity": 1}],
+                mode="subscription",
+                success_url=f"{settings.FRONTEND_URL}/onboarding?checkout=success",
+                cancel_url=f"{settings.FRONTEND_URL}/billing?checkout=cancelled",
+                metadata=metadata,
+                consent_collection={"terms_of_service": "required"},
+                custom_text={
+                    "terms_of_service_acceptance": {
+                        "message": f"I agree to the [Terms of Service]({settings.FRONTEND_URL}/legal/terms)"
+                    }
+                },
+                api_key=api_key,
+            )
+        except stripe.error.StripeError as exc:
+            logger.error("Stripe subscription checkout error for user %s: %s", user.id, exc)
+            return Response(
+                {"detail": "Unable to start checkout right now. Please try again later."},
+                status=http_status.HTTP_502_BAD_GATEWAY,
+            )
         return Response({"url": session.url})
 
 

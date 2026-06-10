@@ -39,7 +39,16 @@ export default function SettingsBillingPage() {
       const result = await checkoutMutation.mutateAsync();
       window.location.assign(result.url);
     } catch (err) {
-      setCheckoutError(err instanceof Error ? err.message : "Checkout failed.");
+      // The API surfaces errors as a JSON body in error.message — parse out the
+      // `detail` like openPortal does, so the user sees the friendly message
+      // (e.g. "Unable to start checkout right now") not a raw JSON string.
+      const raw = err instanceof Error ? err.message : "";
+      try {
+        const body = JSON.parse(raw);
+        setCheckoutError(body.detail || "Checkout failed. Please try again.");
+      } catch {
+        setCheckoutError("Checkout failed. Please try again.");
+      }
     }
   };
 

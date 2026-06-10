@@ -358,6 +358,53 @@ class CheckoutEndpointTest(TestCase):
         self.assertEqual(t.stripe_customer_id, "cus_VALID")
 
 
+_STRIPE_SUB = dict(
+    STRIPE_LIVE_MODE=False,
+    STRIPE_TEST_SECRET_KEY="sk_test_x",
+    STRIPE_PRICE_ID="price_x",
+    FRONTEND_URL="https://app.test",
+)
+
+
+class PortalEndpointTest(TestCase):
+    @override_settings(**_STRIPE_SUB)
+    @patch("apps.billing.views.stripe.billing_portal.Session.create")
+    def test_stale_customer_returns_409_and_clears(self, mock_portal):
+        """A stale customer on the portal path clears the id and returns 409
+        (relink) instead of an opaque 502."""
+        import stripe
+
+        t = _tenant("p1", customer="cus_STALE")
+        client = APIClient()
+        client.force_authenticate(user=t.user)
+        mock_portal.side_effect = stripe.error.InvalidRequestError(
+            "No such customer: 'cus_STALE'", "customer", code="resource_missing"
+        )
+        resp = client.post("/api/v1/billing/portal/")
+        self.assertEqual(resp.status_code, 409)
+        self.assertIn("relink", resp.data["detail"].lower())
+        t.refresh_from_db()
+        self.assertEqual(t.stripe_customer_id, "")
+
+
+class SubscriptionCheckoutTest(TestCase):
+    @override_settings(**_STRIPE_SUB)
+    @patch("apps.billing.views.stripe.checkout.Session.create")
+    def test_stripe_error_returns_502_not_500(self, mock_create):
+        """Subscription checkout must return a clean 502 on a Stripe error, not
+        crash with an unhandled 500."""
+        import stripe
+
+        t = _tenant("s1")
+        client = APIClient()
+        client.force_authenticate(user=t.user)
+        mock_create.side_effect = stripe.error.InvalidRequestError(
+            "No such price: 'price_x'", "line_items[0][price]", code="resource_missing"
+        )
+        resp = client.post("/api/v1/billing/checkout/")
+        self.assertEqual(resp.status_code, 502)
+
+
 class BalanceEndpointTest(TestCase):
     def test_returns_balance_and_packs(self):
         t = _tenant("b1", credit="7")

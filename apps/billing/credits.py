@@ -108,22 +108,31 @@ def debit_overage_credit(
     # Conditional decrement: only applies if the balance still covers `actual`,
     # so concurrent turns can't drive it negative. On a lost race, retry once
     # with a fresh read; if it still loses, draw nothing (reconcile trues up).
-    updated = Tenant.objects.filter(id=tenant_id, purchased_credit__gte=actual).update(
-        purchased_credit=F("purchased_credit") - actual
-    )
-    if not updated:
-        if _retry:
-            return debit_overage_credit(
-                tenant_id, prior_estimated, new_estimated, included_cap, description=description, _retry=False
+    #
+    # The decrement and the matching ledger row MUST be atomic — the reconcile
+    # path (reconcile_openrouter_spend) calls this directly without an outer
+    # transaction, so a failure between the UPDATE and the ledger create would
+    # drop the balance with no audit row and break purchased_credit==SUM(ledger).
+    with transaction.atomic():
+        updated = Tenant.objects.filter(id=tenant_id, purchased_credit__gte=actual).update(
+            purchased_credit=F("purchased_credit") - actual
+        )
+        if updated:
+            CreditLedger.objects.create(
+                tenant_id=tenant_id,
+                kind=CreditLedger.Kind.DEBIT,
+                amount=-actual,
+                description=description,
             )
-        return Decimal("0")
-    CreditLedger.objects.create(
-        tenant_id=tenant_id,
-        kind=CreditLedger.Kind.DEBIT,
-        amount=-actual,
-        description=description,
-    )
-    return actual
+            return actual
+    # Lost the conditional decrement race — retry once with a fresh read, else
+    # draw nothing this pass (a later reconcile trues up). Kept OUTSIDE the
+    # atomic block so the retry reads committed state.
+    if _retry:
+        return debit_overage_credit(
+            tenant_id, prior_estimated, new_estimated, included_cap, description=description, _retry=False
+        )
+    return Decimal("0")
 
 
 def debit_overage_for_turn(tenant_id, cost: Decimal) -> Decimal:
@@ -289,14 +298,6 @@ def handle_credit_refund(event_id: str, charge_data: dict) -> None:
     pi = charge_data.get("payment_intent") or ""
     if not pi:
         return
-    grant = (
-        CreditLedger.objects.filter(kind=CreditLedger.Kind.GRANT, stripe_payment_intent_id=pi)
-        .order_by("created_at")
-        .first()
-    )
-    if not grant or grant.tenant_id is None:
-        logger.info("refund: no matching credit grant for PI=%s (event=%s)", pi, event_id)
-        return
     amount = charge_data.get("amount") or 0
     refunded = charge_data.get("amount_refunded") or 0
     if amount <= 0 or refunded <= 0:
@@ -305,27 +306,45 @@ def handle_credit_refund(event_id: str, charge_data: dict) -> None:
     # (partial) refund, so claw only the INCREMENTAL delta beyond what we've
     # already reversed for this PaymentIntent — otherwise multiple partials
     # re-apply the full fraction and over-claw.
+    #
+    # Two charge.refunded events for the same PI can arrive concurrently (Stripe
+    # redelivery / parallel workers). Without serialization both read the same
+    # ``already_clawed`` and each claw the full delta → over-claw past the actual
+    # refund, which would violate "favour the customer on contention". Lock the
+    # grant row for the whole read-compute-write so the second event sees the
+    # first's reversal. (Same-event redelivery is separately deduped by the
+    # partial-unique on stripe_event_id inside refund_credit.)
     from django.db.models import Sum
 
-    frac = Decimal(refunded) / Decimal(amount)
-    target = (grant.amount * frac).quantize(_CENTS)
-    already = CreditLedger.objects.filter(kind=CreditLedger.Kind.REVERSAL, stripe_payment_intent_id=pi).aggregate(
-        s=Sum("amount")
-    )["s"] or Decimal("0")
-    already_clawed = -already  # reversals are stored as negative amounts
-    delta = (target - already_clawed).quantize(_CENTS)
-    if delta <= 0:
-        return
-    tenant = Tenant.objects.filter(id=grant.tenant_id).first()
-    if not tenant:
-        return
-    refund_credit(
-        tenant=tenant,
-        refund_dollars=delta,
-        stripe_event_id=event_id,
-        stripe_payment_intent_id=pi,
-        description="Refund clawback",
-    )
+    with transaction.atomic():
+        grant = (
+            CreditLedger.objects.select_for_update()
+            .filter(kind=CreditLedger.Kind.GRANT, stripe_payment_intent_id=pi)
+            .order_by("created_at")
+            .first()
+        )
+        if not grant or grant.tenant_id is None:
+            logger.info("refund: no matching credit grant for PI=%s (event=%s)", pi, event_id)
+            return
+        frac = Decimal(refunded) / Decimal(amount)
+        target = (grant.amount * frac).quantize(_CENTS)
+        already = CreditLedger.objects.filter(kind=CreditLedger.Kind.REVERSAL, stripe_payment_intent_id=pi).aggregate(
+            s=Sum("amount")
+        )["s"] or Decimal("0")
+        already_clawed = -already  # reversals are stored as negative amounts
+        delta = (target - already_clawed).quantize(_CENTS)
+        if delta <= 0:
+            return
+        tenant = Tenant.objects.filter(id=grant.tenant_id).first()
+        if not tenant:
+            return
+        refund_credit(
+            tenant=tenant,
+            refund_dollars=delta,
+            stripe_event_id=event_id,
+            stripe_payment_intent_id=pi,
+            description="Refund clawback",
+        )
 
 
 # ── API state (for the Credits page) ───────────────────────────────────────
