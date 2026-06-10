@@ -1,6 +1,6 @@
 """Promo redemption HTTP surface.
 
-``GET /api/v1/promos/redeem/?code=<campaign>&token=<signed>`` verifies
+``GET /api/v1/tenants/promos/redeem/?code=<campaign>&token=<signed>`` verifies
 the HMAC, checks the campaign deadline, and applies the
 trial-extension side effect on the tenant. On success / failure the
 view 302s to the frontend success page at
