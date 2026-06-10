@@ -80,9 +80,10 @@ export default function RootLayout({
       <body className="overflow-x-hidden bg-bg">
         <ThemeProvider>
           <Providers>
-            <div className="content-fade-up">
-              <AppShell>{children}</AppShell>
-            </div>
+            {/* No .content-fade-up here — AppShell already applies it around
+                <main>; doubling the wrapper ran two stacked entrance
+                animations over the whole app on first paint. */}
+            <AppShell>{children}</AppShell>
           </Providers>
         </ThemeProvider>
       </body>
