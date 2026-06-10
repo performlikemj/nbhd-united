@@ -663,7 +663,14 @@ def _unentitled_active_tenants():
     """
     now = timezone.now()
     return Tenant.objects.filter(status=Tenant.Status.ACTIVE).exclude(
-        models.Q(stripe_subscription_id__gt="") | models.Q(is_trial=True, trial_ends_at__gt=now),
+        models.Q(stripe_subscription_id__gt="")
+        | models.Q(is_trial=True, trial_ends_at__gt=now)
+        # Budget-exempt tenants (canary, internal accounts) live outside the
+        # billing lifecycle — they never carry a real subscription, so without
+        # this they read as "unentitled" and the sweep suspends them. This is
+        # what suspended the canary on 2026-06-10 when its (stale) subscription
+        # id was cleared.
+        | models.Q(is_budget_exempt=True),
     )
 
 
