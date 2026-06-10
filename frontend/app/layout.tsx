@@ -58,7 +58,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Neighborhood United",
     description: "Your AI-powered personal assistant.",
-    images: [{ url: "/images/logo-textured.png", width: 1200, height: 630 }],
+    images: [{ url: "/images/logo-textured.png", width: 1200, height: 654 }],
   },
 };
 
