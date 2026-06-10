@@ -151,7 +151,7 @@ class Command(BaseCommand):
             promo_url = f"{frontend_url}/promo/redeem?{qs}"
 
             try:
-                self._send_promo_email(user, promo_url=promo_url)
+                self._send_promo_email(user, promo_url=promo_url, valid_until=campaign.valid_until)
                 sent += 1
             except Exception:
                 email_failed += 1
@@ -166,10 +166,14 @@ class Command(BaseCommand):
         if email_failed:
             self.stdout.write(self.style.ERROR(f"Email failed: {email_failed}"))
 
-    def _send_promo_email(self, user: User, *, promo_url: str) -> None:
+    def _send_promo_email(self, user: User, *, promo_url: str, valid_until=None) -> None:
         context = {
             "display_name": getattr(user, "display_name", None) or "there",
             "promo_url": promo_url,
+            # Render the redemption deadline from the campaign row so the copy
+            # can never drift from the actual expiry (the original templates
+            # hardcoded "June 6, 2026" and went stale).
+            "valid_until": valid_until,
         }
         subject = render_to_string(
             "email/privacy_rotation_2026/email_2_subject.txt",
