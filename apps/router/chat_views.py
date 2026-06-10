@@ -22,9 +22,12 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import timedelta
 
 from django.core.exceptions import ValidationError
+from django.db import IntegrityError
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -34,6 +37,7 @@ from apps.billing.services import check_budget
 from apps.router.models import AppChatMessage, ChatThread, PendingMessage
 from apps.router.pending_queue import enqueue_message_for_tenant
 from apps.router.services import build_chat_context_marker, build_datetime_context
+from apps.tenants.throttling import ChatContextHourThrottle, ChatLocalTurnHourThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +50,39 @@ _MAX_CHARS = 8000
 # the audit record survives a pathological client.
 _REPLY_MAX_CHARS = 16000
 
-# Context-digest size bounds (chars). The default suits Apple's on-device
-# foundation model (~4k-token window shared with tool schemas + transcript);
-# clients can ask for less or more within the clamp.
-_CONTEXT_DEFAULT_CHARS = 6000
-_CONTEXT_MIN_CHARS = 1000
-_CONTEXT_MAX_CHARS = 16000
+# ``AppChatMessage.client_msg_id`` is CharField(max_length=64); Django doesn't
+# enforce that on save, so an oversized id would surface as a Postgres
+# DataError (500). Reject it instead — truncating would silently change the
+# idempotency key.
+_CLIENT_MSG_ID_MAX = 64
+
+# How far in the past a client-supplied ``occurred_at`` may sit (matches the
+# ConversationTurn retention window) and how much clock skew into the future
+# is tolerated.
+_OCCURRED_AT_MAX_AGE = timedelta(days=35)
+_OCCURRED_AT_MAX_SKEW = timedelta(minutes=5)
+
+
+def _parse_occurred_at(raw: object) -> timezone.datetime | None:
+    """Client-supplied 'when the turn actually happened' (ISO 8601).
+
+    Fail-open: anything unparsable, naive, too old, or in the future is
+    treated as absent and the row is stamped with delivery time.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = parse_datetime(text)
+    except ValueError:
+        return None
+    if parsed is None or timezone.is_naive(parsed):
+        return None
+    now = timezone.now()
+    if parsed > now + _OCCURRED_AT_MAX_SKEW or parsed < now - _OCCURRED_AT_MAX_AGE:
+        return None
+    return parsed
+
 
 # How many messages a thread-history GET returns by default.
 _HISTORY_LIMIT = 50
@@ -196,6 +227,8 @@ class ChatMessageView(APIView):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        if not isinstance(request.data, dict):
+            return Response({"error": "invalid_body"}, status=status.HTTP_400_BAD_REQUEST)
 
         text = str(request.data.get("text") or "").strip()
         if not text:
@@ -205,6 +238,8 @@ class ChatMessageView(APIView):
 
         # Idempotency: a client-supplied stable id makes retries safe.
         client_msg_id = str(request.data.get("client_msg_id") or "").strip() or uuid.uuid4().hex
+        if len(client_msg_id) > _CLIENT_MSG_ID_MAX:
+            return Response({"error": "invalid_client_msg_id"}, status=status.HTTP_400_BAD_REQUEST)
         existing = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
         if existing:
             return Response(_serialize_message(existing), status=status.HTTP_200_OK)
@@ -218,26 +253,36 @@ class ChatMessageView(APIView):
         # error so the client surfaces the reason instead of polling forever.
         budget_reason = check_budget(tenant)
         if budget_reason:
+            try:
+                turn = AppChatMessage.objects.create(
+                    tenant=tenant,
+                    user=request.user,
+                    thread=thread,
+                    client_msg_id=client_msg_id,
+                    user_text=text,
+                    status=AppChatMessage.Status.ERROR,
+                    error="budget_exhausted",
+                    replied_at=timezone.now(),
+                )
+            except IntegrityError:
+                # Concurrent retry won the (tenant, client_msg_id) race.
+                turn = AppChatMessage.objects.get(tenant=tenant, client_msg_id=client_msg_id)
+            return Response(_serialize_message(turn), status=status.HTTP_200_OK)
+
+        try:
             turn = AppChatMessage.objects.create(
                 tenant=tenant,
                 user=request.user,
                 thread=thread,
                 client_msg_id=client_msg_id,
                 user_text=text,
-                status=AppChatMessage.Status.ERROR,
-                error="budget_exhausted",
-                replied_at=timezone.now(),
+                status=AppChatMessage.Status.PENDING,
             )
+        except IntegrityError:
+            # Concurrent retry won the (tenant, client_msg_id) race; the
+            # winner already enqueued the tenant turn — replay, don't re-enqueue.
+            turn = AppChatMessage.objects.get(tenant=tenant, client_msg_id=client_msg_id)
             return Response(_serialize_message(turn), status=status.HTTP_200_OK)
-
-        turn = AppChatMessage.objects.create(
-            tenant=tenant,
-            user=request.user,
-            thread=thread,
-            client_msg_id=client_msg_id,
-            user_text=text,
-            status=AppChatMessage.Status.PENDING,
-        )
 
         user_tz = getattr(request.user, "timezone", None) or "UTC"
         # Decorate like the other channels: current-time marker + the
@@ -272,24 +317,47 @@ class ChatContextView(APIView):
     window. This is what makes the private mode assistant "know who you are"
     without any prompt text ever reaching a cloud model: the user's own data
     flows DOWN to the device; nothing flows out to a model provider.
+
+    Unlike USER.md (consumed inside the tenant's placeholder-space pipeline),
+    this digest is user-facing: PII placeholders are rehydrated to real
+    values before it leaves, mirroring ``clean_reply_for_capture``.
     """
 
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ChatContextHourThrottle]
 
     def get(self, request):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
 
-        try:
-            max_chars = int(request.query_params.get("max_chars", _CONTEXT_DEFAULT_CHARS))
-        except (TypeError, ValueError):
-            max_chars = _CONTEXT_DEFAULT_CHARS
-        max_chars = max(_CONTEXT_MIN_CHARS, min(max_chars, _CONTEXT_MAX_CHARS))
+        from apps.orchestrator.workspace_envelope import (
+            CONTEXT_DIGEST_DEFAULT_CHARS,
+            CONTEXT_DIGEST_MAX_CHARS,
+            CONTEXT_DIGEST_MIN_CHARS,
+            render_context_digest,
+        )
 
-        from apps.orchestrator.workspace_envelope import render_context_digest
+        try:
+            max_chars = int(request.query_params.get("max_chars", CONTEXT_DIGEST_DEFAULT_CHARS))
+        except (TypeError, ValueError):
+            max_chars = CONTEXT_DIGEST_DEFAULT_CHARS
+        max_chars = max(CONTEXT_DIGEST_MIN_CHARS, min(max_chars, CONTEXT_DIGEST_MAX_CHARS))
 
         context_md = render_context_digest(tenant, max_chars=max_chars)
+
+        # The device has no entity map, so a raw ``[PERSON_1]`` would be
+        # parroted to the user verbatim. Fail-open: a rehydration error
+        # serves placeholder-space text rather than no context at all.
+        entity_map = getattr(tenant, "pii_entity_map", None)
+        if entity_map:
+            try:
+                from apps.pii.redactor import rehydrate_text
+
+                context_md = rehydrate_text(context_md, entity_map)
+            except Exception:
+                logger.exception("chat context: PII rehydrate failed (non-fatal)")
+
         return _no_store(
             Response(
                 {
@@ -312,27 +380,41 @@ class ChatLocalTurnView(APIView):
     to the tenant container and no model budget is consumed: the reply was
     produced on-device, this is the after-the-fact record of it.
 
+    INTENDED data flow (and the privacy copy must agree): the recorded text
+    enters the USER.md conversation digest, which the tenant runtime — and
+    therefore OpenRouter (zero-data-retention) — sees on later turns and
+    crons. Private mode's promise is that INFERENCE for the turn stays on
+    the device, not that the conversation is invisible to the user's own
+    assistant afterwards; without this flow, crons and the other channels
+    would be blind to on-device chats, which is the gap this endpoint closes.
+
     Idempotent on ``client_msg_id`` (clients retry from an offline outbox).
+    ``occurred_at`` (optional, ISO 8601) backdates an outbox-delayed turn to
+    when it actually happened, so the digest's "today" stays honest.
     """
 
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ChatLocalTurnHourThrottle]
 
     def post(self, request):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
-
-        user_text = str(request.data.get("text") or "").strip()
-        if not user_text:
-            return Response({"error": "empty_message"}, status=status.HTTP_400_BAD_REQUEST)
-        if len(user_text) > _MAX_CHARS:
-            return Response({"error": "message_too_long"}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(request.data, dict):
+            return Response({"error": "invalid_body"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Truncate rather than reject: the record is an audit of a turn that
-        # already happened — losing it entirely is worse than losing its tail.
+        # already happened — losing it entirely is worse than losing its
+        # tail. (The enqueueing /messages/ endpoint rejects instead; its
+        # bound protects the queue and the prompt, which don't exist here.)
+        user_text = str(request.data.get("text") or "").strip()[:_MAX_CHARS]
+        if not user_text:
+            return Response({"error": "empty_message"}, status=status.HTTP_400_BAD_REQUEST)
         reply_text = str(request.data.get("reply_text") or "").strip()[:_REPLY_MAX_CHARS]
 
         client_msg_id = str(request.data.get("client_msg_id") or "").strip() or uuid.uuid4().hex
+        if len(client_msg_id) > _CLIENT_MSG_ID_MAX:
+            return Response({"error": "invalid_client_msg_id"}, status=status.HTTP_400_BAD_REQUEST)
         existing = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
         if existing:
             return Response(_serialize_message(existing), status=status.HTTP_200_OK)
@@ -342,17 +424,29 @@ class ChatLocalTurnView(APIView):
             return Response({"error": "thread_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
         now = timezone.now()
-        turn = AppChatMessage.objects.create(
-            tenant=tenant,
-            user=request.user,
-            thread=thread,
-            client_msg_id=client_msg_id,
-            user_text=user_text,
-            reply_text=reply_text,
-            status=AppChatMessage.Status.READY,
-            source=AppChatMessage.Source.ON_DEVICE,
-            replied_at=now,
-        )
+        occurred_at = _parse_occurred_at(request.data.get("occurred_at"))
+        try:
+            turn = AppChatMessage.objects.create(
+                tenant=tenant,
+                user=request.user,
+                thread=thread,
+                client_msg_id=client_msg_id,
+                user_text=user_text,
+                reply_text=reply_text,
+                status=AppChatMessage.Status.READY,
+                source=AppChatMessage.Source.ON_DEVICE,
+                replied_at=occurred_at or now,
+            )
+        except IntegrityError:
+            # Concurrent outbox retry won the (tenant, client_msg_id) race.
+            turn = AppChatMessage.objects.get(tenant=tenant, client_msg_id=client_msg_id)
+            return Response(_serialize_message(turn), status=status.HTTP_200_OK)
+        if occurred_at is not None:
+            # created_at is auto_now_add (ignores supplied values), but the
+            # conversation digest dates turns by it — backdate via update()
+            # so an outbox-delayed turn lands on the day it happened.
+            AppChatMessage.objects.filter(pk=turn.pk).update(created_at=occurred_at)
+            turn.refresh_from_db()
         ChatThread.objects.filter(id=thread.id).update(last_active_at=now)
 
         # Same debounced USER.md push a captured Telegram/LINE turn triggers,

@@ -44,3 +44,29 @@ class UserPATMintHourThrottle(SimpleRateThrottle):
         if not request.user or not request.user.is_authenticated:
             return None
         return self.cache_format % {"scope": self.scope, "ident": str(request.user.pk)}
+
+
+class _UserScopedThrottle(SimpleRateThrottle):
+    """Throttle a JWT-authed request keyed by user id."""
+
+    def get_cache_key(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return None
+        return self.cache_format % {"scope": self.scope, "ident": str(request.user.pk)}
+
+
+class ChatLocalTurnHourThrottle(_UserScopedThrottle):
+    """On-device turn records are human-paced (one per chat exchange); this
+    only has to stop a runaway client from minting unbounded rows on a
+    budget-exempt endpoint."""
+
+    scope = "chat_local_turn_hour"
+    rate = "240/hour"
+
+
+class ChatContextHourThrottle(_UserScopedThrottle):
+    """The context digest renders every envelope section per call; clients
+    cache it for 15 minutes, so even multi-device use stays tiny."""
+
+    scope = "chat_context_hour"
+    rate = "120/hour"

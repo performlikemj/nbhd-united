@@ -208,6 +208,60 @@ class IOSChatContextTest(TestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertIn("aced the big interview", resp.data["context_md"])
 
+    def test_rehydrates_placeholders_and_skips_privacy_section(self):
+        from apps.common.tenant_tz import tenant_today
+        from apps.router.models import ConversationTurn
+
+        self.tenant.pii_entity_map = {"[PERSON_1]": "Alice"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        ConversationTurn.objects.create(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="123",
+            local_date=tenant_today(self.tenant),
+            user_text="met [PERSON_1] for lunch",
+        )
+
+        resp = self.client.get("/api/v1/chat/context/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        # The device has no entity map: placeholders must arrive rehydrated…
+        self.assertIn("met Alice for lunch", resp.data["context_md"])
+        self.assertNotIn("[PERSON_1]", resp.data["context_md"])
+        # …and the container-only placeholder instructions (which promise a
+        # restoration layer that doesn't exist on this path) must be absent.
+        self.assertNotIn("## Privacy Placeholders", resp.data["context_md"])
+
+    def test_conversation_digest_survives_budget_pressure(self):
+        from apps.orchestrator.envelope_registry import EnvelopeSection
+
+        def section(key, order, body, heading=None):
+            return EnvelopeSection(
+                key=key,
+                heading=heading or f"## {key}",
+                render=lambda t: body,
+                enabled=lambda t: True,
+                refresh_on=(),
+                order=order,
+            )
+
+        fakes = [
+            section("bulky_one", 10, "z" * 600),
+            section("bulky_two", 20, "z" * 600),
+            section("bulky_three", 30, "z" * 600),
+            section("conversation_digest", 65, "today: real talk", heading="## Conversation so far"),
+        ]
+        with patch("apps.orchestrator.workspace_envelope.all_sections", return_value=fakes):
+            resp = self.client.get("/api/v1/chat/context/?max_chars=1000")
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        md = resp.data["context_md"]
+        self.assertLessEqual(len(md), 1000)
+        # The conversation digest renders LAST but is the most load-bearing
+        # context for a client-side model — bulky early sections must not
+        # starve it out of the budget.
+        self.assertIn("today: real talk", md)
+        self.assertNotIn("bulky_three", md)
+
     def test_max_chars_is_clamped_and_respected(self):
         low = self.client.get("/api/v1/chat/context/?max_chars=50")
         self.assertEqual(low.data["max_chars"], 1000)
@@ -311,13 +365,84 @@ class IOSOnDeviceTurnRecordTest(TestCase):
         empty = self.client.post("/api/v1/chat/turns/", {"reply_text": "r"}, format="json")
         self.assertEqual(empty.status_code, 400)
 
-        long_reply = self.client.post(
+        # Over-long content is TRUNCATED, never rejected: the turn already
+        # happened; losing the record entirely is worse than losing its tail.
+        long_turn = self.client.post(
             "/api/v1/chat/turns/",
-            {"text": "hi", "reply_text": "x" * 20000},
+            {"text": "y" * 9000, "reply_text": "x" * 20000},
             format="json",
         )
-        self.assertEqual(long_reply.status_code, 201, long_reply.content)
-        self.assertEqual(len(long_reply.data["reply_text"]), 16000)
+        self.assertEqual(long_turn.status_code, 201, long_turn.content)
+        self.assertEqual(len(long_turn.data["user_text"]), 8000)
+        self.assertEqual(len(long_turn.data["reply_text"]), 16000)
+
+        bad_id = self.client.post(
+            "/api/v1/chat/turns/",
+            {"text": "hi", "client_msg_id": "z" * 65},
+            format="json",
+        )
+        self.assertEqual(bad_id.status_code, 400)
+        self.assertEqual(bad_id.data["error"], "invalid_client_msg_id")
+
+        bad_body = self.client.post("/api/v1/chat/turns/", ["not", "a", "dict"], format="json")
+        self.assertEqual(bad_body.status_code, 400)
+        self.assertEqual(bad_body.data["error"], "invalid_body")
+
+    def test_occurred_at_backdates_outbox_delayed_turns(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        yesterday = timezone.now() - timedelta(days=1)
+        resp = self.client.post(
+            "/api/v1/chat/turns/",
+            {
+                "text": "chatted on the plane",
+                "reply_text": "noted",
+                "occurred_at": yesterday.isoformat(),
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        turn = AppChatMessage.objects.get(tenant=self.tenant, client_msg_id=resp.data["client_msg_id"])
+        self.assertEqual(turn.created_at, yesterday)
+        self.assertEqual(turn.replied_at, yesterday)
+
+        # Unparsable / future / ancient timestamps fall back to delivery time.
+        for bad in ("not-a-date", (timezone.now() + timedelta(days=2)).isoformat()):
+            r = self.client.post(
+                "/api/v1/chat/turns/",
+                {"text": f"turn {bad}", "occurred_at": bad},
+                format="json",
+            )
+            self.assertEqual(r.status_code, 201, r.content)
+            row = AppChatMessage.objects.get(tenant=self.tenant, client_msg_id=r.data["client_msg_id"])
+            self.assertGreater(row.created_at, timezone.now() - timedelta(minutes=1))
+
+    def test_concurrent_duplicate_returns_existing(self):
+        from django.db import IntegrityError
+
+        first = self.client.post(
+            "/api/v1/chat/turns/",
+            {"text": "one", "client_msg_id": "race-od"},
+            format="json",
+        )
+        self.assertEqual(first.status_code, 201, first.content)
+
+        # Simulate losing the existence-check race: the row appears between
+        # the .first() check and the INSERT.
+        with (
+            patch.object(AppChatMessage.objects, "filter") as mock_filter,
+            patch.object(AppChatMessage.objects, "create", side_effect=IntegrityError("dup")),
+        ):
+            mock_filter.return_value.first.return_value = None
+            resp = self.client.post(
+                "/api/v1/chat/turns/",
+                {"text": "one", "client_msg_id": "race-od"},
+                format="json",
+            )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.data["client_msg_id"], "race-od")
 
     def test_requires_auth(self):
         anon = APIClient()
