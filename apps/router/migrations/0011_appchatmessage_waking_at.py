@@ -4,15 +4,18 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('router', '0010_conversationturn'),
+        ("router", "0010_conversationturn"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='appchatmessage',
-            name='waking_at',
-            field=models.DateTimeField(blank=True, help_text="Set while the tenant container is waking from hibernation so polling clients can show honest 'assistant is waking up' copy instead of an indefinite typing indicator. Meaningless once status leaves 'pending'.", null=True),
+            model_name="appchatmessage",
+            name="waking_at",
+            field=models.DateTimeField(
+                blank=True,
+                help_text="Set while the tenant container is waking from hibernation so polling clients can show honest 'assistant is waking up' copy instead of an indefinite typing indicator. Meaningless once status leaves 'pending'.",
+                null=True,
+            ),
         ),
     ]
