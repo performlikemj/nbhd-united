@@ -500,8 +500,10 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
         logger.exception("idle_wake: failed to wake container for %s", tid)
         return False
 
-    # 2. Clear hibernation flag
-    Tenant.objects.filter(id=tenant.id).update(hibernated_at=None)
+    # 2. Clear hibernation flag; stamp the wake so the message drain can
+    # tell "still booting after a wake" (retry soon, keep delivery
+    # attempts) apart from a genuinely down container.
+    Tenant.objects.filter(id=tenant.id).update(hibernated_at=None, last_wake_at=timezone.now())
 
     # 3. Apply pending config (writes to file share before container finishes booting)
     if tenant.pending_config_version > tenant.config_version:

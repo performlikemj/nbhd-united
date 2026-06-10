@@ -106,6 +106,9 @@ def _serialize_message(msg: AppChatMessage) -> dict:
         "error": msg.error,
         "created_at": msg.created_at.isoformat(),
         "replied_at": msg.replied_at.isoformat() if msg.replied_at else None,
+        # Set while a hibernated container boots; clients show "waking up"
+        # copy when status is still pending and this is non-null.
+        "waking_at": msg.waking_at.isoformat() if msg.waking_at else None,
     }
 
 
