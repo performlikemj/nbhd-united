@@ -1,13 +1,17 @@
 {% autoescape off %}Hi {{ display_name|default:"there" }},
 
-Thanks for sticking with us through the privacy upgrade. As a small
-thank-you, we'd like to put fourteen days back on your account — on us.
+We've spent the past while making NBHD United more private — including
+turning on zero data retention with our AI provider. In plain terms:
+your conversations aren't kept after they're answered, and they're never
+used to train AI models. Your data does exactly one thing — make your
+assistant more helpful to you. Nothing else.
 
+To mark it, we'd like to put fourteen days back on your account — on us.
 No card, no checkout. Your trial extends the moment you click.
 
   {{ promo_url }}
 
-Good through June 6, 2026.
+Good through {{ valid_until|date:"F j, Y" }}.
 
 — NBHD United
 neighborhoodunited.org

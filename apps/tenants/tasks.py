@@ -75,12 +75,17 @@ def preview_email_task(kind: int = 1, to: str = "", display_name: str = "Preview
 
 
 def send_promo_campaign_task() -> dict:
-    """QStash-dispatched wrapper around ``send_promo_campaign`` for the
-    June 2 trial-extension blast.
+    """QStash-dispatched wrapper around ``send_promo_campaign`` — the privacy /
+    zero-data-retention trial-extension blast (14 days free).
 
     Constants are inlined here on purpose — this task fires exactly once
     on a known date. The management command remains available for
     ad-hoc / future campaigns with different parameters.
+
+    NOTE: the original June-2026 fire was never triggered (no PromoCampaign row
+    was ever created); this is the re-send with a fresh code + redemption window
+    and the ZDR messaging. The ``code`` is unique, so the original
+    ``privacy-june-2026`` audience snapshot is untouched.
     """
     from io import StringIO
 
@@ -89,10 +94,10 @@ def send_promo_campaign_task() -> dict:
     buf = StringIO()
     call_command(
         "send_promo_campaign",
-        code="privacy-june-2026",
+        code="privacy-zdr-2026",
         kind="trial_extension",
         days=14,
-        valid_until="2026-06-06T00:00:00+00:00",
+        valid_until="2026-06-24T00:00:00+00:00",
         stdout=buf,
     )
     return {"output": buf.getvalue()[-2000:]}
