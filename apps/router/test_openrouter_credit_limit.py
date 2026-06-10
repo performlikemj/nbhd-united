@@ -96,6 +96,19 @@ class HandleOpenRouterCreditLimitTest(TestCase):
         # chat_id arg was coerced to int.
         self.assertEqual(mock_send.call_args.args[0], 123456)
 
+    @patch("apps.billing.credits.sync_or_key_limit")
+    @patch("apps.router.views._hibernate_for_quota")
+    def test_budget_exempt_raises_ceiling_not_hibernated(self, mock_hibernate, mock_sync):
+        """A budget-exempt tenant (canary/internal) that 402s must have its OR key
+        ceiling raised and NOT be hibernated — the 2026-06-10 canary outage."""
+        self.tenant.is_budget_exempt = True
+        self.tenant.save(update_fields=["is_budget_exempt"])
+
+        _handle_openrouter_credit_limit(self.tenant, channel="telegram", channel_user_id="123456")
+
+        mock_sync.assert_called_once()
+        mock_hibernate.assert_not_called()
+
     @patch("apps.router.pending_queue._send_telegram_markdown")
     @patch("apps.router.views._hibernate_for_quota")
     def test_telegram_invalid_chat_id_skips_send_without_crashing(self, mock_hibernate, mock_send):

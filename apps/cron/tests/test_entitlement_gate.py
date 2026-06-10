@@ -146,6 +146,24 @@ class BroadcastMessageEntitlementTest(TestCase):
         self.assertEqual(body["enqueued"], 1)
 
 
+class UnentitledExemptExclusionTest(TestCase):
+    """Budget-exempt tenants (canary, internal) must never be classified as
+    'unentitled' — the daily sweep suspended the canary on 2026-06-10 once its
+    stale subscription id was cleared."""
+
+    def test_exempt_tenant_excluded_normal_included(self):
+        from apps.cron.views import _unentitled_active_tenants
+
+        exempt = _make_tenant(suffix=50, stripe_sub="", is_budget_exempt=True)
+        normal = _make_tenant(suffix=51, stripe_sub="")  # no sub, not exempt → unentitled
+        subscribed = _make_tenant(suffix=52, stripe_sub="sub_live_x")  # entitled
+
+        ids = set(_unentitled_active_tenants().values_list("id", flat=True))
+        self.assertNotIn(exempt.id, ids)
+        self.assertIn(normal.id, ids)
+        self.assertNotIn(subscribed.id, ids)
+
+
 class BroadcastSingleTenantEntitlementTest(TestCase):
     """broadcast_single_tenant_task must skip unentitled tenants."""
 

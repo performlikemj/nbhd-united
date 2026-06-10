@@ -198,27 +198,32 @@ def _handle_openrouter_credit_limit(
     from apps.router.error_messages import error_msg
     from apps.router.views import _hibernate_for_quota
 
-    # Credit-aware: a tenant holding prepaid credit must NOT be hibernated when
-    # their per-tenant OR key 402s at the included cap. Raise the key ceiling to
-    # include their credit and let them keep going — the soft gate (check_budget)
-    # + record_usage debit enforce the precise balance, and reconcile trues up.
+    # Exempt-aware + credit-aware: a budget-exempt tenant (canary, internal) or a
+    # tenant holding prepaid credit must NOT be hibernated when their per-tenant OR
+    # key 402s at the included cap. Raise the key ceiling (exempt → high fixed cap,
+    # credit → included+credit) and let them keep going — the soft gate
+    # (check_budget) + record_usage debit enforce the precise balance, and reconcile
+    # trues up. WITHOUT the exempt check here, an exempt tenant with $0 credit fell
+    # straight through to hibernate + suspend (the 2026-06-10 canary outage).
     try:
-        tenant.refresh_from_db(fields=["purchased_credit", "monthly_cost_budget", "model_tier", "openrouter_key_hash"])
+        tenant.refresh_from_db(
+            fields=["purchased_credit", "monthly_cost_budget", "model_tier", "openrouter_key_hash", "is_budget_exempt"]
+        )
     except Exception:
         logger.exception("OR credit-limit: failed to refresh tenant=%s for credit check", str(tenant.id)[:8])
-    if getattr(tenant, "purchased_credit", Decimal("0")) > 0:
+    if getattr(tenant, "is_budget_exempt", False) or getattr(tenant, "purchased_credit", Decimal("0")) > 0:
         try:
             from apps.billing.credits import sync_or_key_limit
 
             sync_or_key_limit(tenant)
             logger.info(
-                "OR credit-limit: tenant=%s holds prepaid credit — raised key ceiling, NOT hibernating",
+                "OR credit-limit: tenant=%s is budget-exempt or holds credit — raised key ceiling, NOT hibernating",
                 str(tenant.id)[:8],
             )
             return
         except Exception:
             logger.exception(
-                "OR credit-limit: credit re-raise failed for tenant=%s; falling through to hibernate",
+                "OR credit-limit: ceiling re-raise failed for tenant=%s; falling through to hibernate",
                 str(tenant.id)[:8],
             )
 

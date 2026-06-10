@@ -49,6 +49,12 @@ def sync_or_key_limit(tenant) -> None:
     turn — the soft gate (check_budget) + record_usage debit remain the precise
     enforcement; this just keeps the hard OR ceiling high enough not to 402
     prematurely. No-op unless per-tenant keys are enabled and a key exists.
+
+    Budget-exempt tenants (canary, internal accounts) get a high fixed ceiling
+    (``OPENROUTER_EXEMPT_KEY_LIMIT``) instead of the included-cap math: they are
+    meant to run without a spend cap, so pinning their sub-key to the $5 tier
+    default would 402 them (and trip the breaker → hibernation) the moment they
+    cross it — exactly the trap that suspended the canary 2026-06-10.
     """
     from django.conf import settings
 
@@ -60,8 +66,11 @@ def sync_or_key_limit(tenant) -> None:
     try:
         from apps.billing.openrouter_admin import update_sub_key
 
-        tenant.refresh_from_db(fields=["purchased_credit", "monthly_cost_budget", "model_tier"])
-        new_limit = float(tenant.effective_cost_budget + tenant.purchased_credit)
+        tenant.refresh_from_db(fields=["purchased_credit", "monthly_cost_budget", "model_tier", "is_budget_exempt"])
+        if tenant.is_budget_exempt:
+            new_limit = float(getattr(settings, "OPENROUTER_EXEMPT_KEY_LIMIT", 1000.0))
+        else:
+            new_limit = float(tenant.effective_cost_budget + tenant.purchased_credit)
         update_sub_key(key_hash, limit_dollars=new_limit)
     except Exception:
         logger.warning("credit: failed to sync OR sub-key limit for tenant %s", str(tenant.id)[:8], exc_info=True)

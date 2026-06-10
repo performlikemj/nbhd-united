@@ -434,6 +434,17 @@ class OrKeySyncOnTest(TestCase):
         # ceiling = effective_cap(5) + balance(10)
         self.assertEqual(mock_update.call_args.kwargs["limit_dollars"], 15.0)
 
+    @patch("apps.billing.openrouter_admin.update_sub_key")
+    def test_exempt_tenant_gets_high_fixed_ceiling(self, mock_update):
+        """Budget-exempt tenants get OPENROUTER_EXEMPT_KEY_LIMIT, not the $5 tier
+        cap — otherwise OR 402s them and the breaker hibernates (canary outage)."""
+        t = _tenant("okx", budget="5", exempt=True)
+        Tenant.objects.filter(id=t.id).update(openrouter_key_hash="kh_x")
+        t.refresh_from_db()
+        credits.sync_or_key_limit(t)
+        mock_update.assert_called_once()
+        self.assertEqual(mock_update.call_args.kwargs["limit_dollars"], 1000.0)
+
 
 class OrKeySyncOffTest(TestCase):
     @patch("apps.billing.openrouter_admin.update_sub_key")

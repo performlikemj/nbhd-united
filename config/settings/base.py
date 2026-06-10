@@ -388,6 +388,11 @@ AZURE_KV_SECRET_OPENROUTER_MANAGEMENT_KEY = env(
     "AZURE_KV_SECRET_OPENROUTER_MANAGEMENT_KEY",
     default="openrouter-management-key",
 )
+# Per-tenant OR sub-key ceiling for budget-exempt tenants (canary, internal
+# accounts). They run without a spend cap, so their sub-key must sit well above
+# any realistic monthly usage — otherwise OR 402s and the credit-limit breaker
+# hibernates + suspends them (the 2026-06-10 canary outage).
+OPENROUTER_EXEMPT_KEY_LIMIT = env.float("OPENROUTER_EXEMPT_KEY_LIMIT", default=1000.0)
 OPENROUTER_PER_TENANT_KEYS_ENABLED = env.bool(
     "OPENROUTER_PER_TENANT_KEYS_ENABLED",
     default=False,
