@@ -169,3 +169,157 @@ class IOSChatRoutingTest(TestCase):
         anon = APIClient()
         resp = anon.post("/api/v1/chat/messages/", {"text": "hi"}, format="json")
         self.assertIn(resp.status_code, (401, 403))
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
+class IOSChatContextTest(TestCase):
+    """The context-digest endpoint: what makes the PRIVATE on-device mode
+    know who the user is. Data flows down to the device; no prompt text
+    ever flows out to a model provider."""
+
+    def setUp(self):
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_returns_compact_digest(self):
+        resp = self.client.get("/api/v1/chat/context/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIn("Current local time", resp.data["context_md"])
+        self.assertEqual(resp.data["max_chars"], 6000)
+        self.assertIn("generated_at", resp.data)
+        # Chat reads must never be HTTP-cached (same rule as message polls).
+        self.assertEqual(resp["Cache-Control"], "no-store")
+
+    def test_digest_contains_real_conversation_state(self):
+        from apps.common.tenant_tz import tenant_today
+        from apps.router.models import ConversationTurn
+
+        ConversationTurn.objects.create(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="123",
+            local_date=tenant_today(self.tenant),
+            user_text="I aced the big interview today",
+            reply_text="Congratulations!",
+        )
+        resp = self.client.get("/api/v1/chat/context/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIn("aced the big interview", resp.data["context_md"])
+
+    def test_max_chars_is_clamped_and_respected(self):
+        low = self.client.get("/api/v1/chat/context/?max_chars=50")
+        self.assertEqual(low.data["max_chars"], 1000)
+        self.assertLessEqual(len(low.data["context_md"]), 1000)
+
+        high = self.client.get("/api/v1/chat/context/?max_chars=999999")
+        self.assertEqual(high.data["max_chars"], 16000)
+
+        junk = self.client.get("/api/v1/chat/context/?max_chars=banana")
+        self.assertEqual(junk.data["max_chars"], 6000)
+
+    def test_requires_auth(self):
+        anon = APIClient()
+        resp = anon.get("/api/v1/chat/context/")
+        self.assertIn(resp.status_code, (401, 403))
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
+class IOSOnDeviceTurnRecordTest(TestCase):
+    """Recording turns that already happened on the client's own model.
+
+    The on-device assistant is a first-class channel: its turns land in
+    thread history and the conversation digest, but nothing is enqueued to
+    the tenant container and no model budget is consumed."""
+
+    def setUp(self):
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch("apps.router.conversation_capture.schedule_user_md_refresh")
+    def test_records_ready_turn_without_enqueue(self, mock_refresh):
+        resp = self.client.post(
+            "/api/v1/chat/turns/",
+            {"text": "log my run", "reply_text": "Logged it.", "client_msg_id": "od1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertEqual(resp.data["status"], "ready")
+        self.assertEqual(resp.data["source"], "on_device")
+        self.assertEqual(resp.data["reply_text"], "Logged it.")
+        self.assertIsNotNone(resp.data["replied_at"])
+
+        # Nothing routed to the tenant container.
+        self.assertEqual(PendingMessage.objects.filter(tenant=self.tenant).count(), 0)
+        # The conversation digest gets the same debounced USER.md push a
+        # captured Telegram/LINE turn triggers.
+        mock_refresh.assert_called_once()
+
+    def test_idempotent_on_client_msg_id(self):
+        first = self.client.post(
+            "/api/v1/chat/turns/",
+            {"text": "one", "reply_text": "r", "client_msg_id": "dup-od"},
+            format="json",
+        )
+        self.assertEqual(first.status_code, 201, first.content)
+        second = self.client.post(
+            "/api/v1/chat/turns/",
+            {"text": "two", "reply_text": "r2", "client_msg_id": "dup-od"},
+            format="json",
+        )
+        self.assertEqual(second.status_code, 200, second.content)
+        self.assertEqual(
+            AppChatMessage.objects.filter(tenant=self.tenant, client_msg_id="dup-od").count(),
+            1,
+        )
+
+    def test_turn_lands_in_thread_history_and_digest(self):
+        self.client.post(
+            "/api/v1/chat/turns/",
+            {"text": "planned tomorrow's workout offline", "reply_text": "Nice plan."},
+            format="json",
+        )
+        main = ChatThread.objects.get(tenant=self.tenant, is_main=True)
+        self.assertIsNotNone(main.last_active_at)
+
+        history = self.client.get(f"/api/v1/chat/threads/{main.id}/messages/")
+        self.assertEqual(history.status_code, 200, history.content)
+        self.assertEqual(len(history.data["messages"]), 1)
+        self.assertEqual(history.data["messages"][0]["source"], "on_device")
+
+        from apps.router.conversation_capture import build_conversation_digest
+
+        digest = build_conversation_digest(self.tenant)
+        self.assertIn("planned tomorrow's workout", digest)
+
+    @patch("apps.router.chat_views.check_budget", return_value="personal")
+    def test_no_budget_gate(self, _mock_budget):
+        # An over-budget tenant can still RECORD on-device turns — the reply
+        # was produced on the device; no platform model spend is involved.
+        resp = self.client.post(
+            "/api/v1/chat/turns/",
+            {"text": "offline while over budget", "reply_text": "ok"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertEqual(resp.data["status"], "ready")
+
+    def test_validation(self):
+        empty = self.client.post("/api/v1/chat/turns/", {"reply_text": "r"}, format="json")
+        self.assertEqual(empty.status_code, 400)
+
+        long_reply = self.client.post(
+            "/api/v1/chat/turns/",
+            {"text": "hi", "reply_text": "x" * 20000},
+            format="json",
+        )
+        self.assertEqual(long_reply.status_code, 201, long_reply.content)
+        self.assertEqual(len(long_reply.data["reply_text"]), 16000)
+
+    def test_requires_auth(self):
+        anon = APIClient()
+        resp = anon.post("/api/v1/chat/turns/", {"text": "hi"}, format="json")
+        self.assertIn(resp.status_code, (401, 403))

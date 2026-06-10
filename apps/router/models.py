@@ -558,6 +558,15 @@ class AppChatMessage(models.Model):
         READY = "ready"
         ERROR = "error"
 
+    class Source(models.TextChoices):
+        # Reply produced by the tenant's OpenClaw runtime (the normal
+        # POST → enqueue → drain → poll flow).
+        TENANT = "tenant"
+        # Turn ran entirely on the client's local model (iOS private mode)
+        # and was recorded here AFTER the fact so thread history and the
+        # USER.md conversation digest still see it. Never enqueued.
+        ON_DEVICE = "on_device"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(
         "tenants.Tenant",
@@ -584,6 +593,13 @@ class AppChatMessage(models.Model):
         max_length=16,
         choices=Status.choices,
         default=Status.PENDING,
+    )
+    source = models.CharField(
+        max_length=16,
+        choices=Source.choices,
+        default=Source.TENANT,
+        help_text="Where the assistant reply was produced: the tenant runtime, "
+        "or the client's on-device model (recorded post-hoc).",
     )
     error = models.CharField(
         max_length=64,

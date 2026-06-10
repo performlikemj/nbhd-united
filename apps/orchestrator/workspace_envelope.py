@@ -133,6 +133,50 @@ def render_managed_region(tenant: Tenant) -> str:
     return "\n".join(parts)
 
 
+def render_context_digest(tenant: Tenant, *, max_chars: int = 6000) -> str:
+    """Compact plain-markdown snapshot of the tenant's state for clients that
+    run their own model (the iOS private/on-device assistant).
+
+    Same per-pillar sections as USER.md's managed region — goals, tasks,
+    fuel, finance, recent journal, conversation digest — but rendered for a
+    SMALL context window: no sentinel markers (nothing merges this back into
+    a file), each section body is truncated, and the total is hard-capped.
+    Registry ``order`` doubles as priority: when the budget runs out, later
+    (lower-priority) sections are dropped whole rather than interleaved.
+    """
+    max_chars = max(1000, min(int(max_chars), 16000))
+    per_section = max(400, max_chars // 6)
+
+    parts: list[str] = [_render_current_time_line(tenant), ""]
+    total = sum(len(p) + 1 for p in parts)
+
+    for section in all_sections():
+        try:
+            if not section.enabled(tenant):
+                continue
+            body = section.render(tenant)
+        except Exception:
+            # Mirror render_managed_region: one broken section must not
+            # blank the whole digest.
+            logger.exception(
+                "Context digest section '%s' raised for tenant %s",
+                section.key,
+                str(tenant.id)[:8],
+            )
+            continue
+        if not body:
+            continue
+        if len(body) > per_section:
+            body = body[: per_section - 1].rstrip() + "…"
+        chunk = f"{section.heading}\n{body}\n"
+        if total + len(chunk) > max_chars:
+            break
+        parts.append(chunk)
+        total += len(chunk) + 1
+
+    return "\n".join(parts).strip() + "\n"
+
+
 def _is_default_boilerplate(content: str) -> bool:
     """Detect OpenClaw's default seeded USER.md content.
 
