@@ -74,6 +74,18 @@ def _resolve_thread(request, tenant) -> ChatThread | None:
         return None
 
 
+def _no_store(response):
+    """Chat reads must never be served from an HTTP cache.
+
+    Without an explicit header, ETagMiddleware stamps GETs with
+    ``private, max-age=10`` — which lets a client's HTTP cache replay a
+    stale "pending" poll body for up to 10s AFTER the reply is ready,
+    adding that long to perceived chat latency.
+    """
+    response["Cache-Control"] = "no-store"
+    return response
+
+
 def _serialize_thread(thread: ChatThread) -> dict:
     return {
         "id": str(thread.id),
@@ -109,7 +121,7 @@ class ChatThreadListView(APIView):
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
         _get_or_create_main_thread(tenant, request.user)
         threads = ChatThread.objects.filter(tenant=tenant)
-        return Response({"threads": [_serialize_thread(t) for t in threads]})
+        return _no_store(Response({"threads": [_serialize_thread(t) for t in threads]}))
 
     def post(self, request):
         tenant = getattr(request.user, "tenant", None)
@@ -145,11 +157,13 @@ class ChatThreadMessagesView(APIView):
         # Newest N, returned oldest→newest so the app can append in order.
         rows = list(AppChatMessage.objects.filter(thread=thread).order_by("-created_at")[:limit])
         rows.reverse()
-        return Response(
-            {
-                "thread": _serialize_thread(thread),
-                "messages": [_serialize_message(m) for m in rows],
-            }
+        return _no_store(
+            Response(
+                {
+                    "thread": _serialize_thread(thread),
+                    "messages": [_serialize_message(m) for m in rows],
+                }
+            )
         )
 
 
@@ -244,4 +258,4 @@ class ChatMessageDetailView(APIView):
         turn = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
         if not turn:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
-        return Response(_serialize_message(turn))
+        return _no_store(Response(_serialize_message(turn)))

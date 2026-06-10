@@ -38,6 +38,21 @@ def _publish_log_context(task_name: str, args, kwargs):
 # surfacing as a generic 400 deep inside the SDK.
 _DEDUP_FORBIDDEN = (":", " ", "\t", "\n", "\r")
 
+# One QStash client per (process, token). Constructing a client per publish
+# re-handshakes TLS to Upstash (~150-400ms) inside the request that called
+# publish_task — pure per-message latency. httpx.Client (used internally by
+# the SDK) is thread-safe, so sharing across gthread workers is fine.
+_qstash_client: tuple[str, Any] | None = None
+
+
+def _get_qstash_client(token: str):
+    global _qstash_client
+    if _qstash_client is None or _qstash_client[0] != token:
+        from qstash import QStash
+
+        _qstash_client = (token, QStash(token=token))
+    return _qstash_client[1]
+
 
 def publish_task(
     task_name: str,
@@ -89,9 +104,7 @@ def publish_task(
         return execute_task_sync(task_path, *args, **kwargs)
 
     try:
-        from qstash import QStash
-
-        client = QStash(token=qstash_token)
+        client = _get_qstash_client(qstash_token)
         url = f"{api_base_url}/api/cron/trigger/{task_name}/"
 
         publish_kwargs: dict = {
@@ -172,9 +185,7 @@ def publish_batch(
         return count
 
     try:
-        from qstash import QStash
-
-        client = QStash(token=qstash_token)
+        client = _get_qstash_client(qstash_token)
         messages = []
         for task in tasks:
             task_name, args, kwargs = task[0], task[1], task[2]

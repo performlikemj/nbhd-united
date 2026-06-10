@@ -2,9 +2,13 @@
 
 import logging
 
+from django.utils import timezone
 from rest_framework import exceptions
 from rest_framework.authentication import BaseAuthentication
 from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework_simplejwt.exceptions import AuthenticationFailed as JWTAuthenticationFailed
+from rest_framework_simplejwt.exceptions import InvalidToken
+from rest_framework_simplejwt.settings import api_settings as jwt_settings
 
 from .middleware import _tenant_context, set_rls_context
 
@@ -29,6 +33,35 @@ class JWTAuthenticationWithRLS(JWTAuthentication):
     non-null ``password_last_changed_at`` — meaning a rotation has
     happened since the token's issue.
     """
+
+    def get_user(self, validated_token):
+        """SimpleJWT's ``get_user`` with the tenant preloaded.
+
+        The stock implementation fetches the User alone; ``authenticate()``
+        then touches ``user.tenant``, costing a second cross-region query on
+        every request. ``select_related`` folds both into one round trip.
+        Mirrors rest_framework_simplejwt 5.5.1 semantics otherwise.
+        """
+        try:
+            user_id = validated_token[jwt_settings.USER_ID_CLAIM]
+        except KeyError as e:
+            raise InvalidToken("Token contained no recognizable user identification") from e
+
+        try:
+            user = self.user_model.objects.select_related("tenant").get(**{jwt_settings.USER_ID_FIELD: user_id})
+        except self.user_model.DoesNotExist as e:
+            raise JWTAuthenticationFailed("User not found", code="user_not_found") from e
+
+        if jwt_settings.CHECK_USER_IS_ACTIVE and not user.is_active:
+            raise JWTAuthenticationFailed("User is inactive", code="user_inactive")
+
+        if jwt_settings.CHECK_REVOKE_TOKEN:
+            from rest_framework_simplejwt.utils import get_md5_hash_password
+
+            if validated_token.get(jwt_settings.REVOKE_TOKEN_CLAIM) != get_md5_hash_password(user.password):
+                raise JWTAuthenticationFailed("The user's password has been changed.", code="password_changed")
+
+        return user
 
     def authenticate(self, request):
         result = super().authenticate(request)
@@ -102,8 +135,10 @@ class PersonalAccessTokenAuthentication(BaseAuthentication):
             _tenant_context.tenant = tenant
             set_rls_context(tenant_id=tenant.id, user_id=user.id)
 
-        # Stamp last_used_at (fire-and-forget UPDATE, no full save)
-        pat.touch()
+        # Stamp last_used_at, throttled to once a minute — the unconditional
+        # UPDATE added a cross-region write round trip to every PAT request.
+        if pat.last_used_at is None or (timezone.now() - pat.last_used_at).total_seconds() > 60:
+            pat.touch()
 
         # Stash the PAT on the request for downstream scope checks
         request.auth_pat = pat

@@ -19,28 +19,43 @@ def _is_mock() -> bool:
     return os.environ.get("AZURE_MOCK", "false").lower() == "true"
 
 
+# Credential and container client are cached per process. Both are
+# thread-safe and cache/refresh their AAD tokens internally; constructing
+# them per call re-ran the IMDS token exchange (1-3s) inside request-path
+# operations like wake_container_app.
+_provisioner_credential = None
+_container_client = None
+
+
 def _get_provisioner_credential():
     """Get credential for the provisioning identity (elevated permissions).
 
     In production, uses the dedicated user-assigned managed identity.
     In local dev, falls back to DefaultAzureCredential (Azure CLI login).
     """
-    from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
+    global _provisioner_credential
+    if _provisioner_credential is None:
+        from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 
-    client_id = str(getattr(settings, "AZURE_PROVISIONER_CLIENT_ID", "") or "").strip()
-    if client_id:
-        return ManagedIdentityCredential(client_id=client_id)
-    return DefaultAzureCredential()
+        client_id = str(getattr(settings, "AZURE_PROVISIONER_CLIENT_ID", "") or "").strip()
+        if client_id:
+            _provisioner_credential = ManagedIdentityCredential(client_id=client_id)
+        else:
+            _provisioner_credential = DefaultAzureCredential()
+    return _provisioner_credential
 
 
 def get_container_client():
-    """Get Azure Container Apps API client."""
+    """Get Azure Container Apps API client (cached per process)."""
     if _is_mock():
         return None
 
-    from azure.mgmt.appcontainers import ContainerAppsAPIClient
+    global _container_client
+    if _container_client is None:
+        from azure.mgmt.appcontainers import ContainerAppsAPIClient
 
-    return ContainerAppsAPIClient(_get_provisioner_credential(), settings.AZURE_SUBSCRIPTION_ID)
+        _container_client = ContainerAppsAPIClient(_get_provisioner_credential(), settings.AZURE_SUBSCRIPTION_ID)
+    return _container_client
 
 
 def get_identity_client():
