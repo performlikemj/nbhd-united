@@ -679,12 +679,13 @@ export default function ConstellationPage() {
             const isNeighbor = !isFocal && (focusAdj?.has(String(n.id)) ?? false);
             const dimmed = focusId != null && !isFocal && !isNeighbor;
             const label = nodeLabel(n);
-            // Label budget: the focal node always; its neighbours only when the
-            // neighbourhood is small enough to stay readable (hovering a hub
-            // would otherwise caption every member at once \u2014 an unreadable
-            // pile); everything else waits for a readable zoom.
+            // Label budget: the focal node always; its neighbours only when
+            // tracing a LESSON's few links (\u22645). A focused cluster never
+            // captions members \u2014 even a 4-lesson island piles labels onto the
+            // hover card; the card (name \u00b7 count \u00b7 tags) is the cluster's voice.
+            const clusterFocus = focusId != null && String(focusId).startsWith("c:");
             const smallHood = (focusAdj?.size ?? 0) <= 5;
-            const showLabel = isFocal || (isNeighbor && smallHood) || zoom >= 1.25;
+            const showLabel = isFocal || (isNeighbor && smallHood && !clusterFocus) || zoom >= 1.25;
             const maxLen = isFocal || isNeighbor ? 40 : 22;
             // Ambient labels alternate above/below so side-by-side nodes collide less.
             const above = !isFocal && !isNeighbor && typeof n.id === "number" && n.id % 2 === 0;
