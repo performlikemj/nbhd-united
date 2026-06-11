@@ -32,6 +32,10 @@ const CONFIG = {
   DOCK_RADIUS: 100,
   TRIGGER_RADIUS: 260,
   SHIP: { accel: 380, turn: 3.3, drag: 95, maxVel: 360 },
+  // Flight feel — all visual-only (SHIP above is the physics): how far the camera
+  // leads the velocity, how much the zoom breathes out at full speed, how hard the
+  // sprite banks into a turn, and the S/↓ brake strength.
+  FEEL: { look: 0.22, zoomOut: 0.11, bank: 0.24, brake: 3.2 },
 };
 
 // Star stages re-skinned to the product palette: slate → teal → purple → gold.
@@ -297,6 +301,16 @@ export class GalaxyScene extends Phaser.Scene {
   private tutorBusy = false;
   private tutorInput!: HTMLElement | null;
   private destroyed = false; // set on teardown — guards async resolves touching the scene
+  // ── Flight feel (visual-only; none of this touches the physics) ──
+  private trail?: Phaser.GameObjects.Particles.ParticleEmitter; // comet tail behind the ship
+  private touchGfx?: Phaser.GameObjects.Graphics; // the on-screen thumbstick (screen space)
+  private touchMag = 1; // 0..1 throttle from the stick's throw
+  private camLook = { x: 0, y: 0 }; // smoothed velocity lookahead for the camera
+  private zoomFxUntil = 0; // while a deliberate zoom tween runs, the speed zoom stands down
+  private prevRot = 0; // last-frame heading, for banking
+  private docking = false; // mid touchdown-glide (input stays paused)
+  private meteorTimer?: Phaser.Time.TimerEvent;
+  private rmQuery: MediaQueryList | null = null; // cached prefers-reduced-motion (read per frame)
 
   constructor(galaxy: GalaxyData, overlayRoot: HTMLElement) {
     super("galaxy");
@@ -339,6 +353,8 @@ export class GalaxyScene extends Phaser.Scene {
       .setDepth(9)
       .setVisible(false);
     this.mapGfx = this.add.graphics().setDepth(6); // survey-mode overlays (ship ring + selection)
+    this.touchGfx = this.add.graphics().setScrollFactor(0).setDepth(15); // touch thumbstick (drawn per-frame)
+    this.scheduleMeteor();
     this.prompt = this.add
       .text(0, 0, "[E] Land", {
         fontSize: "13px",
@@ -366,6 +382,8 @@ export class GalaxyScene extends Phaser.Scene {
   private teardownCopilot() {
     this.destroyed = true;
     if (this.toastTimer) { window.clearTimeout(this.toastTimer); this.toastTimer = 0; }
+    this.meteorTimer?.remove();
+    this.meteorTimer = undefined;
     this.clearWaypoint();
     // If we tore down while the note textarea was focused (keyboard disabled),
     // restore it so a remount never starts with flight controls dead.
@@ -407,6 +425,14 @@ export class GalaxyScene extends Phaser.Scene {
     cg.generateTexture("core", 16, 16);
     cg.destroy();
 
+    // A clean stroked circle for ripples (touchdown / course pings) — graphics
+    // strokes can't tween, an image of one can.
+    const rg = this.make.graphics({ x: 0, y: 0 }, false);
+    rg.lineStyle(4, 0xffffff, 1);
+    rg.strokeCircle(40, 40, 36);
+    rg.generateTexture("ring", 80, 80);
+    rg.destroy();
+
     const sg = this.make.graphics({ x: 0, y: 0 }, false);
     sg.fillStyle(0xa5b4ff, 1);
     sg.fillTriangle(30, 12, 4, 3, 4, 21);
@@ -435,6 +461,9 @@ export class GalaxyScene extends Phaser.Scene {
     const H = this.world.h;
     const density = Math.min(6, (W * H) / (3600 * 2400)); // keep the void starry as the world grows
     const layers = [
+      // The deep field barely scrolls — it's what makes the nearer layers read as
+      // motion. Three planes of parallax turn "panning a picture" into depth.
+      { n: Math.round(320 * density), alpha: 0.32, sf: 0.14, r: 0.9 },
       { n: Math.round(240 * density), alpha: 0.5, sf: 0.35, r: 1.2 },
       { n: Math.round(140 * density), alpha: 0.8, sf: 0.6, r: 1.6 },
     ];
@@ -667,6 +696,19 @@ export class GalaxyScene extends Phaser.Scene {
         emitting: false,
       })
       .setDepth(7);
+    // Comet tail — the flight path made visible. Emission follows speed (see
+    // flightFeel), so a drift leaves a whisper and a full burn a streak.
+    this.trail = this.add
+      .particles(0, 0, "glow", {
+        lifespan: 520,
+        scale: { start: 0.085, end: 0.012 },
+        alpha: { start: 0.5, end: 0 },
+        tint: [0x7c6bf0, 0x9bd9ff],
+        blendMode: "ADD",
+        emitting: false,
+      })
+      .setDepth(7);
+    this.prevRot = this.ship.rotation;
     this.cameras.main.startFollow(this.ship, true, 0.09, 0.09);
     // Explorer's view: frame roughly ONE neighbourhood around the ship so you fly
     // among the stars (the whole-map overview lives in the fixed minimap). Derived
@@ -772,7 +814,7 @@ export class GalaxyScene extends Phaser.Scene {
 
   private buildTouch() {
     this.landBtn = this.q("#cg-land-btn");
-    if (this.landBtn) (this.landBtn as HTMLButtonElement).onclick = () => { if (this.candidate && !this.paused && !this.mapMode) this.openPanel(this.candidate); };
+    if (this.landBtn) (this.landBtn as HTMLButtonElement).onclick = () => { if (this.candidate && !this.paused && !this.mapMode) this.dockAndOpen(this.candidate); };
 
     // Survey/map-mode controls.
     this.mapBtn = this.q("#cg-map-btn");
@@ -812,6 +854,15 @@ export class GalaxyScene extends Phaser.Scene {
     });
   }
 
+  // Every deliberate camera zoom (map, reveal, duel) goes through here so the
+  // per-frame speed zoom (flightFeel) stands down until the tween — plus any
+  // hold the caller needs (e.g. a reveal's dwell) — has finished. Without this
+  // the two write cam.zoom on the same frames and the camera judders.
+  private tweenZoom(target: number, ms: number, hold = 0) {
+    this.zoomFxUntil = this.time.now + ms + hold;
+    this.cameras.main.zoomTo(target, ms, "Sine.easeInOut");
+  }
+
   // ── Survey / map mode ──
   // Park the ship and roam: drag to pan, scroll/pinch to zoom, tap a star to set a
   // course. Picking a destination flies you there (the arrive-steering autopilot);
@@ -821,6 +872,8 @@ export class GalaxyScene extends Phaser.Scene {
     this.mapMode = true;
     this.autopilot = null;
     this.deselectMapStar();
+    this.touch.active = false;
+    if (this.touchGfx) this.touchGfx.clear();
     this.ship.body.setVelocity(0, 0);
     this.ship.body.setAcceleration(0, 0);
     const cam = this.cameras.main;
@@ -830,7 +883,7 @@ export class GalaxyScene extends Phaser.Scene {
     const survey = Phaser.Math.Clamp(this.flightZoom * 0.42, this.mapMinZoom, this.flightZoom);
     const ms = this.reducedMotion() ? 0 : 450;
     cam.pan(this.ship.x, this.ship.y, ms, "Sine.easeInOut");
-    cam.zoomTo(survey, ms, "Sine.easeInOut");
+    this.tweenZoom(survey, ms);
     this.setMapUI(true);
   }
 
@@ -842,8 +895,11 @@ export class GalaxyScene extends Phaser.Scene {
     this.setMapUI(false);
     const cam = this.cameras.main;
     cam.startFollow(this.ship, true, 0.08, 0.08);
-    cam.zoomTo(this.flightZoom, this.reducedMotion() ? 0 : 450, "Sine.easeInOut");
-    if (travelTo) this.autopilot = { x: travelTo.x, y: travelTo.y, star: travelTo };
+    this.tweenZoom(this.flightZoom, this.reducedMotion() ? 0 : 450);
+    if (travelTo) {
+      this.autopilot = { x: travelTo.x, y: travelTo.y, star: travelTo };
+      this.pingTarget(travelTo.x, travelTo.y); // confirm the course visually
+    }
   }
 
   private setMapUI(on: boolean) {
@@ -960,11 +1016,204 @@ export class GalaxyScene extends Phaser.Scene {
     }
     if (near) {
       const ds = Phaser.Math.Distance.Between(this.ship.x, this.ship.y, near.x, near.y);
-      if (ds < CONFIG.DOCK_RADIUS) this.openPanel(near);
-      else this.autopilot = { x: near.x, y: near.y, star: near };
+      if (ds < CONFIG.DOCK_RADIUS) {
+        this.dockAndOpen(near);
+      } else {
+        this.autopilot = { x: near.x, y: near.y, star: near };
+        this.pingTarget(near.x, near.y);
+      }
     } else {
       this.autopilot = { x: p.worldX, y: p.worldY, star: null };
+      this.pingTarget(p.worldX, p.worldY);
     }
+  }
+
+  // ── landing: a touch of ceremony ──
+  // Glide the last few pixels onto the star's surface, ring out a touchdown
+  // ripple, then open the panel — landing on a thought should feel like a
+  // landing, not a modal popping. Reduced motion goes straight to the panel.
+  private dockAndOpen(entry: StarEntry) {
+    if (this.docking || this.paused) return;
+    if (this.reducedMotion()) { this.openPanel(entry); return; }
+    this.docking = true;
+    this.paused = true; // freezes steering/encounters while we glide in
+    const ship = this.ship;
+    ship.body.setVelocity(0, 0);
+    ship.body.setAcceleration(0, 0);
+    this.touch.active = false;
+    if (this.touchGfx) this.touchGfx.clear();
+    this.ring.clear();
+    this.prompt.setVisible(false);
+    if (this.landBtn) this.landBtn.classList.remove("show");
+    // Touchdown point just off the star's surface, along the approach line; face
+    // the star the short way round (a raw rotation tween can spin the long way).
+    const ang = Phaser.Math.Angle.Between(entry.x, entry.y, ship.x, ship.y);
+    const face = ship.rotation + Phaser.Math.Angle.Wrap(ang + Math.PI - ship.rotation);
+    this.tweens.add({
+      targets: ship,
+      x: entry.x + Math.cos(ang) * (entry.r + 26),
+      y: entry.y + Math.sin(ang) * (entry.r + 26),
+      rotation: face,
+      scaleX: 1,
+      scaleY: 1,
+      duration: 340,
+      ease: "Sine.Out",
+      onComplete: () => {
+        if (this.destroyed) return;
+        this.landingRipple(entry);
+        this.time.delayedCall(140, () => {
+          this.docking = false;
+          if (!this.destroyed) this.openPanel(entry);
+        });
+      },
+    });
+  }
+
+  // Touchdown ripple in the star's own constellation colour; a first-ever visit
+  // also gets a small starburst — discovering a thought should feel rewarded.
+  private landingRipple(entry: StarEntry) {
+    const tint = clusterColor(entry.data.cluster_id);
+    const base = (entry.r + 14) / 36;
+    const ring = this.add
+      .image(entry.x, entry.y, "ring")
+      .setTint(tint)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setScale(base)
+      .setAlpha(0.85)
+      .setDepth(6);
+    this.tweens.add({ targets: ring, scale: base * 2.3, alpha: 0, duration: 620, ease: "Sine.Out", onComplete: () => ring.destroy() });
+    if (!entry.visited) {
+      const burst = this.add
+        .particles(entry.x, entry.y, "core", {
+          speed: { min: 50, max: 150 },
+          scale: { start: 0.42, end: 0 },
+          alpha: { start: 0.9, end: 0 },
+          lifespan: 650,
+          blendMode: "ADD",
+          tint,
+          emitting: false,
+        })
+        .setDepth(6);
+      burst.explode(14);
+      this.time.delayedCall(800, () => burst.destroy());
+    }
+  }
+
+  // A quick ring ping where a course was set (tap-to-travel / map "Fly here") so
+  // the input always lands somewhere visible.
+  private pingTarget(x: number, y: number) {
+    if (this.reducedMotion()) return;
+    const ring = this.add
+      .image(x, y, "ring")
+      .setTint(BEAM)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setScale(0.5)
+      .setAlpha(0.8)
+      .setDepth(6);
+    this.tweens.add({ targets: ring, scale: 1.5, alpha: 0, duration: 520, ease: "Sine.Out", onComplete: () => ring.destroy() });
+  }
+
+  // The thumbstick the finger is already making: a ring at the touch anchor, a
+  // knob at the (clamped) drag point. Pure feedback — input is unchanged — but
+  // it makes touch flight legible: you can SEE your heading and throttle.
+  private drawTouchStick() {
+    const g = this.touchGfx;
+    if (!g) return;
+    g.clear();
+    if (!this.touch.active || this.touch.moved <= 12 || this.paused || this.mapMode) return;
+    const ax = this.touch.anchorX;
+    const ay = this.touch.anchorY;
+    const dx = this.touch.curX - ax;
+    const dy = this.touch.curY - ay;
+    const d = Math.hypot(dx, dy) || 1;
+    const R = 56;
+    const kx = ax + (dx / d) * Math.min(d, R);
+    const ky = ay + (dy / d) * Math.min(d, R);
+    g.fillStyle(0x9bd9ff, 0.07);
+    g.fillCircle(ax, ay, R);
+    g.lineStyle(1.5, 0x9bd9ff, 0.35);
+    g.strokeCircle(ax, ay, R);
+    g.lineStyle(2, 0x9bd9ff, 0.5);
+    g.lineBetween(ax, ay, kx, ky);
+    g.fillStyle(0xcfeaff, 0.85);
+    g.fillCircle(kx, ky, 13);
+  }
+
+  // ── Flight feel: every frame, all visual-only (the arcade physics is untouched) ──
+  private flightFeel(time: number, dt: number) {
+    const ship = this.ship;
+    const rm = this.reducedMotion();
+    const speed = ship.body.velocity.length();
+    const speedT = Phaser.Math.Clamp(speed / CONFIG.SHIP.maxVel, 0, 1);
+
+    // Bank into the turn (squash across the hull), stretch a touch with speed.
+    // Exponential smoothing so the feel is identical at 60 and 120 Hz.
+    const dRot = Phaser.Math.Angle.Wrap(ship.rotation - this.prevRot);
+    this.prevRot = ship.rotation;
+    const bank = rm ? 0 : Phaser.Math.Clamp(Math.abs(dRot) / (CONFIG.SHIP.turn * Math.max(dt, 0.001)), 0, 1);
+    const ease = 1 - Math.exp(-9 * dt);
+    ship.scaleY = Phaser.Math.Linear(ship.scaleY, 1 - CONFIG.FEEL.bank * bank, ease);
+    ship.scaleX = Phaser.Math.Linear(ship.scaleX, 1 + (rm ? 0 : 0.07 * speedT), ease);
+
+    // Comet tail — emission follows speed.
+    if (this.trail && !rm && speed > 36) {
+      const back = 14 + speedT * 5;
+      this.trail.emitParticleAt(
+        ship.x - Math.cos(ship.rotation) * back + (Math.random() - 0.5) * 4,
+        ship.y - Math.sin(ship.rotation) * back + (Math.random() - 0.5) * 4,
+        speedT > 0.6 ? 2 : 1,
+      );
+    }
+
+    // Camera: lead the velocity so you can see where you're going, and breathe
+    // the zoom out at speed so fast feels fast. The zoom lerp stands down while
+    // a deliberate zoom tween owns the camera (see tweenZoom).
+    if (rm) return;
+    const cam = this.cameras.main;
+    const lookEase = 1 - Math.exp(-3.5 * dt);
+    this.camLook.x = Phaser.Math.Linear(this.camLook.x, ship.body.velocity.x * CONFIG.FEEL.look, lookEase);
+    this.camLook.y = Phaser.Math.Linear(this.camLook.y, ship.body.velocity.y * CONFIG.FEEL.look, lookEase);
+    cam.setFollowOffset(-this.camLook.x, -this.camLook.y);
+    if (time > this.zoomFxUntil) {
+      cam.setZoom(Phaser.Math.Linear(cam.zoom, this.flightZoom * (1 - CONFIG.FEEL.zoomOut * speedT), 1 - Math.exp(-2.2 * dt)));
+    }
+  }
+
+  // ── Meteors: pure atmosphere ──
+  // A faint shooting star every so often, only over live flight (never a panel /
+  // duel / the map, where it would distract) and never under reduced motion.
+  private scheduleMeteor() {
+    this.meteorTimer = this.time.delayedCall(Phaser.Math.Between(7000, 16000), () => {
+      if (this.destroyed) return;
+      if (!this.reducedMotion() && !this.paused && !this.encounterActive && !this.mapMode) this.spawnMeteor();
+      this.scheduleMeteor();
+    });
+  }
+
+  private spawnMeteor() {
+    const view = this.cameras.main.worldView;
+    const x = view.x + Math.random() * view.width;
+    const y = view.y + Math.random() * view.height * 0.7;
+    let ang = Phaser.Math.FloatBetween(0.35, 0.85); // gentle diagonal, falling
+    if (Math.random() < 0.5) ang = Math.PI - ang;
+    const streak = this.add
+      .image(x, y, "glow")
+      .setScale(2.6, 0.14)
+      .setRotation(ang)
+      .setAlpha(0.7)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setTint(0xcfe0ff)
+      .setDepth(1);
+    const dist = 520 + Math.random() * 360;
+    this.tweens.add({
+      targets: streak,
+      x: x + Math.cos(ang) * dist,
+      y: y + Math.sin(ang) * dist,
+      alpha: 0,
+      duration: 900 + Math.random() * 500,
+      ease: "Sine.In",
+      onComplete: () => streak.destroy(),
+    });
   }
 
   // ── landing panel ──
@@ -1443,8 +1692,12 @@ export class GalaxyScene extends Phaser.Scene {
   }
 
   private reducedMotion(): boolean {
+    // Called per-frame now (flight feel) — cache the MediaQueryList; .matches
+    // stays live if the OS setting changes mid-session.
     try {
-      return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (typeof window === "undefined") return false;
+      this.rmQuery ??= window.matchMedia("(prefers-reduced-motion: reduce)");
+      return this.rmQuery.matches;
     } catch {
       return false;
     }
@@ -1458,11 +1711,11 @@ export class GalaxyScene extends Phaser.Scene {
     const need = Math.min(cam.width, cam.height) / (d * 2 + 240);
     const target = Phaser.Math.Clamp(need, 0.3, this.flightZoom);
     if (target >= this.flightZoom - 0.01) return; // already on-screen — nothing to reveal
-    cam.zoomTo(target, 700, "Sine.easeInOut");
+    this.tweenZoom(target, 700, 1800); // hold through the dwell so the speed zoom can't cut the reveal short
     this.revealTimer?.remove();
     this.revealTimer = this.time.delayedCall(1800, () => {
       // Don't fight a survey-mode zoom if the player entered the map meanwhile.
-      if (this.waypointStar && !this.mapMode) cam.zoomTo(this.flightZoom, 600, "Sine.easeInOut");
+      if (this.waypointStar && !this.mapMode) this.tweenZoom(this.flightZoom, 600);
     });
   }
 
@@ -1675,7 +1928,7 @@ export class GalaxyScene extends Phaser.Scene {
     const targetZoom = Phaser.Math.Clamp((this.scale.width * 0.5) / (sep + 90), 0.7, 1.25);
     const yShift = (this.scale.height * 0.28) / targetZoom;
     cam.pan(midX, midY + yShift, 700, "Sine.easeInOut");
-    cam.zoomTo(targetZoom, 700, "Sine.easeInOut");
+    this.tweenZoom(targetZoom, 700);
 
     // populate the sheet
     const name = this.q("#cg-enc-name");
@@ -1797,9 +2050,8 @@ export class GalaxyScene extends Phaser.Scene {
   }
 
   private restoreCamera() {
-    const cam = this.cameras.main;
-    cam.zoomTo(this.encPrevZoom || 1, 520, "Sine.easeInOut");
-    cam.startFollow(this.ship, true, 0.08, 0.08);
+    this.tweenZoom(this.encPrevZoom || this.flightZoom, 520);
+    this.cameras.main.startFollow(this.ship, true, 0.08, 0.08);
   }
 
   // Fixed bottom-right minimap: the whole world outline + cluster-coloured star
@@ -1917,6 +2169,15 @@ export class GalaxyScene extends Phaser.Scene {
       this.ring.clear();
       this.prompt.setVisible(false);
       if (this.landBtn) this.landBtn.classList.remove("show");
+      if (this.touchGfx) this.touchGfx.clear();
+      // Let the camera's velocity lead settle back onto the (now parked) ship so
+      // a panel never opens with the star pushed off-centre.
+      if (!this.reducedMotion()) {
+        const lookEase = 1 - Math.exp(-3.5 * dt);
+        this.camLook.x = Phaser.Math.Linear(this.camLook.x, 0, lookEase);
+        this.camLook.y = Phaser.Math.Linear(this.camLook.y, 0, lookEase);
+        this.cameras.main.setFollowOffset(-this.camLook.x, -this.camLook.y);
+      }
       this.wobbleNega(time);
       return;
     }
@@ -1943,6 +2204,8 @@ export class GalaxyScene extends Phaser.Scene {
     const left = this.cursors.left.isDown || this.keys.A.isDown;
     const right = this.cursors.right.isDown || this.keys.D.isDown;
     const keyThrust = this.cursors.up.isDown || this.keys.W.isDown;
+    const braking = this.cursors.down.isDown || this.keys.S.isDown;
+    this.touchMag = 1;
 
     if (left || right || keyThrust) {
       this.autopilot = null;
@@ -1950,7 +2213,11 @@ export class GalaxyScene extends Phaser.Scene {
       if (right) ship.rotation += CONFIG.SHIP.turn * dt;
       thrusting = keyThrust;
     } else if (this.touch.active && this.touch.moved > 12) {
+      // The drag is a thumbstick: direction steers, throw throttles — a short
+      // drag noses around a neighbourhood, a full one opens the burn.
       this.steerToward(Phaser.Math.Angle.Between(this.touch.anchorX, this.touch.anchorY, this.touch.curX, this.touch.curY), dt);
+      const throw_ = Phaser.Math.Distance.Between(this.touch.anchorX, this.touch.anchorY, this.touch.curX, this.touch.curY);
+      this.touchMag = Phaser.Math.Clamp(throw_ / 56, 0.3, 1); // 56 = the stick's visual radius
       thrusting = true;
     } else if (this.autopilot) {
       // Tap/click-to-travel with proper "arrive" steering. The old version thrust
@@ -1967,8 +2234,7 @@ export class GalaxyScene extends Phaser.Scene {
         const arrived = t.star;
         this.autopilot = null;
         if (arrived) {
-          ship.body.velocity.scale(0.2);
-          this.openPanel(arrived);
+          this.dockAndOpen(arrived);
         } else {
           ship.body.setVelocity(0, 0);
         }
@@ -1986,12 +2252,22 @@ export class GalaxyScene extends Phaser.Scene {
       }
     }
 
+    // The brake beats thrust: S/↓ eases you to a stop and drops any course.
+    if (braking) {
+      this.autopilot = null;
+      thrusting = false;
+      ship.body.velocity.scale(Math.max(0, 1 - CONFIG.FEEL.brake * dt));
+    }
+
     if (thrusting) {
-      this.physics.velocityFromRotation(ship.rotation, CONFIG.SHIP.accel, ship.body.acceleration);
+      this.physics.velocityFromRotation(ship.rotation, CONFIG.SHIP.accel * this.touchMag, ship.body.acceleration);
       this.flame.emitParticleAt(ship.x - Math.cos(ship.rotation) * 16, ship.y - Math.sin(ship.rotation) * 16, 2);
     } else {
       ship.body.setAcceleration(0, 0);
     }
+
+    this.flightFeel(time, dt);
+    this.drawTouchStick();
 
     this.updateNeighborhoods();
 
@@ -2003,11 +2279,13 @@ export class GalaxyScene extends Phaser.Scene {
     this.candidate = best;
     this.ring.clear();
     if (best) {
-      this.ring.lineStyle(2, 0xffffff, 0.85);
-      this.ring.strokeCircle(best.x, best.y, best.r + 16);
+      // The dock ring breathes — "you can land here" should beckon, not assert.
+      const wob = this.reducedMotion() ? 0 : Math.sin(time / 200);
+      this.ring.lineStyle(2, 0xffffff, 0.78 + wob * 0.18);
+      this.ring.strokeCircle(best.x, best.y, best.r + 16 + wob * 2.5);
       this.prompt.setPosition(best.x, best.y - best.r - 22).setVisible(true);
       if (this.landBtn) this.landBtn.classList.add("show");
-      if (Phaser.Input.Keyboard.JustDown(this.keys.E)) this.openPanel(best);
+      if (Phaser.Input.Keyboard.JustDown(this.keys.E)) this.dockAndOpen(best);
     } else {
       this.prompt.setVisible(false);
       if (this.landBtn) this.landBtn.classList.remove("show");

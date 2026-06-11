@@ -35,7 +35,7 @@ export function ConstellationGame({ galaxy }: { galaxy: GalaxyData }) {
       <div id="cg-help" className="cg-help">
         {/* CSS swaps these by pointer type — coarse/touch devices can't press keys. */}
         <span className="cg-help-keys">
-          <b>WASD / arrows</b> fly &nbsp;·&nbsp; <b>E</b> land &nbsp;·&nbsp; <b>M</b> map &nbsp;·&nbsp; <b>Esc</b> back
+          <b>WASD / arrows</b> fly &nbsp;·&nbsp; <b>S</b> brake &nbsp;·&nbsp; <b>E</b> land &nbsp;·&nbsp; <b>M</b> map &nbsp;·&nbsp; <b>Esc</b> back
         </span>
         <span className="cg-help-touch">
           <b>Drag</b> to fly &nbsp;·&nbsp; <b>tap</b> a star to travel &nbsp;·&nbsp; <b>Map</b> to survey
