@@ -33,6 +33,18 @@ const VH = 1900;
 
 function clusterColor(id: number): string { return CLUSTER_PALETTE[Math.abs(id) % CLUSTER_PALETTE.length]; }
 
+// Lessons wear their constellation's colour (the galaxy + iOS views already do)
+// so groups read as colour families at a glance; kind still drives the shape.
+function nodeColor(n: GraphNode): string {
+  if (n.kind === "Lesson") return n.cluster_id != null ? clusterColor(n.cluster_id) : "#9FB0C8";
+  if (n.kind === "Cluster") return n.color || KIND_COLORS.Cluster;
+  return KIND_COLORS[n.kind];
+}
+
+// Every colour a node can wear — one soft radial-gradient halo def per colour
+// (cheap glow; per-node blur filters are what kill mobile).
+const HALO_COLORS = [...new Set([...CLUSTER_PALETTE, ...Object.values(KIND_COLORS), "#9FB0C8"])];
+
 function nodeLabel(n: GraphNode): string {
   if (n.kind === "Lesson") { const t = n.text?.split(".")[0]; return t ? (t.length > 80 ? t.slice(0, 77) + "\u2026" : t + ".") : String(n.id); }
   if (n.kind === "Cluster") return n.constellation || n.label;
@@ -41,9 +53,10 @@ function nodeLabel(n: GraphNode): string {
   return String(n.id);
 }
 
-function nodeRadius(n: GraphNode, zoom: number): number {
-  const base = n.kind === "Cluster" ? 24 : n.kind === "Lesson" ? 12 + (n.weight || 2) * 1.6 : n.kind === "Evidence" ? 10 : 8;
-  return base * Math.max(0.7, Math.min(1.4, zoom * 0.95));
+// Base (world-unit) radius; the render counter-scales each node group so the
+// on-screen size stays in the same comfortable band across zoom levels.
+function nodeRadius(n: GraphNode): number {
+  return n.kind === "Cluster" ? 24 : n.kind === "Lesson" ? 12 + (n.weight || 2) * 1.6 : n.kind === "Evidence" ? 10 : 8;
 }
 
 function cypherPathFor(node: GraphNode): string {
@@ -73,7 +86,7 @@ function detectRefines(nodes: ConstellationNode[]): Array<{ from: number; to: nu
 
 function buildGraphData(data: ConstellationData): GraphData {
   const { nodes, edges, affinity_edges, clusters } = data;
-  const lessonNodes: GraphNode[] = nodes.map((n) => ({ id: n.id, kind: "Lesson" as const, label: n.tags.slice(0, 2).join(" / ") || n.text.split(/\s+/).slice(0, 5).join(" "), text: n.text, context: n.context, tags: n.tags, source_type: n.source_type, source_ref: n.source_ref, created_at: n.created_at, cluster_id: n.cluster_id ?? undefined, weight: 3 }));
+  const lessonNodes: GraphNode[] = nodes.map((n) => ({ id: n.id, kind: "Lesson" as const, label: n.tags.slice(0, 2).join(" / ") || n.text.split(/\s+/).slice(0, 5).join(" "), text: n.text, context: n.context, tags: n.tags, source_type: n.source_type, source_ref: n.source_ref, created_at: n.created_at, cluster_id: n.cluster_id ?? undefined, weight: 3, x: n.x, y: n.y }));
   const clusterNodes: GraphNode[] = clusters.map((c) => ({ id: `c:${c.id}`, kind: "Cluster" as const, label: c.label, constellation: c.label, theme: c.label, color: clusterColor(c.id) }));
   const evidenceNodes: GraphNode[] = nodes.filter((n) => n.source_ref).map((n) => ({ id: `ev:${n.id}`, kind: "Evidence" as const, label: n.source_ref!, source_type: n.source_type, source_ref: n.source_ref, created_at: n.created_at }));
   const tagSet = new Set<string>(); nodes.forEach((n) => n.tags.forEach((t) => tagSet.add(t)));
@@ -105,49 +118,168 @@ function clusterByTags(nodes: ConstellationNode[]): { clusters: ConstellationDat
 }
 
 // ── Graph layout ─────────────────────────────────────────────────────────────
+// Semantic islands. The backend already projects every lesson's embedding to 2D
+// (PCA — the same coordinates the galaxy game flies through), so the layout's
+// job is presentation, not invention: seed each constellation at its embedding
+// centroid (similar constellations stay neighbours), relax the islands apart so
+// each owns its region with void between, and keep each lesson's real position
+// within its island. The old ring-of-hubs fanned every cluster outward and sent
+// every cross-cluster link straight through the empty middle — the hairball.
 
-function layoutGraph(graphNodes: GraphNode[], _graphEdges: GraphEdge[], clusters: ConstellationData["clusters"]): Record<string, { x: number; y: number }> {
-  const cx = VW / 2, cy = VH / 2, ringR = Math.min(VW, VH) * 0.44;
-  const cc: Record<number, { x: number; y: number }> = {};
-  clusters.forEach((c, i) => { const a = (i / clusters.length) * Math.PI * 2 - Math.PI / 2 + 0.3; cc[c.id] = { x: cx + Math.cos(a) * ringR, y: cy + Math.sin(a) * ringR }; });
+const GOLDEN = Math.PI * (3 - Math.sqrt(5)); // golden-angle spiral for coordless nodes
+
+function layoutGraph(graphNodes: GraphNode[], graphEdges: GraphEdge[], clusters: ConstellationData["clusters"]): Record<string, { x: number; y: number }> {
   const pos: Record<string, { x: number; y: number }> = {};
-  graphNodes.filter((n) => n.kind === "Cluster").forEach((n) => { const cid = parseInt(String(n.id).split(":")[1], 10); if (cc[cid]) pos[String(n.id)] = { ...cc[cid] }; });
-  const byCluster: Record<number, GraphNode[]> = {};
-  graphNodes.filter((n) => n.kind === "Lesson").forEach((n) => { (byCluster[n.cluster_id ?? -1] ||= []).push(n); });
-  Object.entries(byCluster).forEach(([cidStr, list]) => {
-    const cid = Number(cidStr), center = cc[cid];
-    if (!center) { list.forEach((n, i) => { const a = (i / list.length) * Math.PI * 2; pos[String(n.id)] = { x: cx + Math.cos(a) * 160, y: cy + Math.sin(a) * 160 }; }); return; }
-    const sorted = [...list].sort((a, b) => (b.weight || 0) - (a.weight || 0));
-    const count = sorted.length;
-    // Ring radii grow with cluster size so dense clusters fan out instead of overlapping.
-    const innerR = 250 + count * 7, outerR = innerR + 210;
-    const splitAt = count > 6 ? Math.ceil(count / 2) : count;
-    // Big clusters wrap a wider arc (toward a full circle) so nodes don't crowd a narrow fan.
-    const spread = Math.min(Math.PI * 1.9, Math.PI * 1.05 + count * 0.06);
-    sorted.forEach((n, i) => {
-      const onOuter = i >= splitAt, ringList = onOuter ? sorted.slice(splitAt) : sorted.slice(0, splitAt);
-      const ringIdx = onOuter ? i - splitAt : i, ringCount = ringList.length;
-      const toC = Math.atan2(cy - center.y, cx - center.x), a0 = toC + Math.PI - spread / 2;
-      const angle = a0 + (ringCount > 1 ? (ringIdx / (ringCount - 1)) * spread : spread / 2);
-      pos[String(n.id)] = { x: center.x + Math.cos(angle) * (onOuter ? outerR : innerR), y: center.y + Math.sin(angle) * (onOuter ? outerR : innerR) };
-    });
+  const lessons = graphNodes.filter((n) => n.kind === "Lesson");
+  const hasXY = (n: GraphNode) => n.x != null && n.y != null && isFinite(n.x) && isFinite(n.y);
+  const valid = lessons.filter(hasXY);
+
+  // PCA bounds → canvas mapping (the semantic seed for hubs and lone lessons).
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const n of valid) { minX = Math.min(minX, n.x!); maxX = Math.max(maxX, n.x!); minY = Math.min(minY, n.y!); maxY = Math.max(maxY, n.y!); }
+  const spanX = maxX - minX || 1, spanY = maxY - minY || 1;
+  const toWorld = (x: number, y: number) => ({ x: ((x - minX) / spanX) * (VW * 0.76) + VW * 0.12, y: ((y - minY) / spanY) * (VH * 0.76) + VH * 0.12 });
+
+  const byCluster = new Map<number, GraphNode[]>();
+  for (const n of lessons) { if (n.cluster_id != null) { const a = byCluster.get(n.cluster_id) ?? []; a.push(n); byCluster.set(n.cluster_id, a); } }
+
+  // Island radius: room for a disc of members.
+  const discR = new Map<number, number>();
+  for (const [cid, arr] of byCluster) discR.set(cid, Math.max(170, 64 * Math.sqrt(arr.length) + 70));
+
+  // Hub seeds: embedding centroid; clusters with no positioned members get a ring slot.
+  const cidList = clusters.map((c) => c.id);
+  const hub = new Map<number, { x: number; y: number }>();
+  cidList.forEach((cid, i) => {
+    const members = (byCluster.get(cid) ?? []).filter(hasXY);
+    if (members.length && valid.length >= 2) {
+      let mx = 0, my = 0;
+      for (const m of members) { mx += m.x!; my += m.y!; }
+      hub.set(cid, toWorld(mx / members.length, my / members.length));
+    } else {
+      const a = (i / Math.max(1, cidList.length)) * Math.PI * 2 - Math.PI / 2;
+      hub.set(cid, { x: VW / 2 + Math.cos(a) * VW * 0.3, y: VH / 2 + Math.sin(a) * VH * 0.3 });
+    }
   });
+
+  // Relax hubs apart: pairwise floor = both islands' discs + a void gap, so every
+  // constellation reads as its own place even when the embeddings sit cramped.
+  for (let it = 0; it < 120; it++) {
+    for (let i = 0; i < cidList.length; i++) for (let j = i + 1; j < cidList.length; j++) {
+      const a = hub.get(cidList[i])!, b = hub.get(cidList[j])!;
+      const need = (discR.get(cidList[i]) ?? 170) + (discR.get(cidList[j]) ?? 170) + 170;
+      const dx = a.x - b.x, dy = a.y - b.y, d = Math.hypot(dx, dy) || 0.01;
+      if (d < need) { const push = (need - d) * 0.5, nx = dx / d, ny = dy / d; a.x += nx * push; a.y += ny * push; b.x -= nx * push; b.y -= ny * push; }
+    }
+  }
+
+  graphNodes.filter((n) => n.kind === "Cluster").forEach((n) => {
+    const cid = parseInt(String(n.id).split(":")[1], 10);
+    const h = hub.get(cid);
+    if (h) pos[String(n.id)] = { ...h };
+  });
+
+  // Members keep their embedding shape, scaled into the island; coordless ones
+  // take golden-angle spiral slots (organic fill, never a lattice).
+  for (const [cid, arr] of byCluster) {
+    const h = hub.get(cid)!;
+    const R = discR.get(cid)!;
+    const withXY = arr.filter(hasXY);
+    let cpx = 0, cpy = 0;
+    for (const m of withXY) { cpx += m.x!; cpy += m.y!; }
+    cpx /= Math.max(1, withXY.length); cpy /= Math.max(1, withXY.length);
+    let maxD = 0;
+    for (const m of withXY) maxD = Math.max(maxD, Math.hypot(m.x! - cpx, m.y! - cpy));
+    const k = maxD > 1e-9 ? (R * 0.8) / maxD : 0;
+    let slot = 0;
+    for (const m of arr) {
+      if (hasXY(m) && k > 0) {
+        pos[String(m.id)] = { x: h.x + (m.x! - cpx) * k, y: h.y + (m.y! - cpy) * k };
+      } else {
+        const a = slot * GOLDEN, r = R * 0.82 * Math.sqrt((slot + 0.6) / Math.max(1, arr.length));
+        pos[String(m.id)] = { x: h.x + Math.cos(a) * r, y: h.y + Math.sin(a) * r };
+        slot++;
+      }
+    }
+  }
+
+  // Lone lessons sit at their own embedding spot — their place in the map is real.
+  let lone = 0;
+  for (const n of lessons) {
+    if (n.cluster_id != null) continue;
+    if (hasXY(n) && valid.length >= 2) { pos[String(n.id)] = toWorld(n.x!, n.y!); }
+    else { const a = lone * GOLDEN; pos[String(n.id)] = { x: VW / 2 + Math.cos(a) * VW * 0.36, y: VH / 2 + Math.sin(a) * VH * 0.36 }; lone++; }
+  }
+
+  // Collision relax over ALL lessons (the old pass only separated same-cluster
+  // pairs, so island edges could overlap) + clearance around every hub so its
+  // name has room to breathe.
+  const ids = lessons.map((n) => String(n.id));
+  const MIND = 95, HUBD = 130;
+  for (let it = 0; it < 80; it++) {
+    for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
+      const pa = pos[ids[i]], pb = pos[ids[j]];
+      if (!pa || !pb) continue;
+      const dx = pa.x - pb.x, dy = pa.y - pb.y, d = Math.sqrt(dx * dx + dy * dy + 0.01);
+      if (d < MIND) { const push = (MIND - d) * 0.45, nx = dx / d, ny = dy / d; pa.x += nx * push; pa.y += ny * push; pb.x -= nx * push; pb.y -= ny * push; }
+    }
+    for (const idStr of ids) {
+      const p = pos[idStr];
+      if (!p) continue;
+      for (const cid of cidList) {
+        const h = hub.get(cid)!;
+        const dx = p.x - h.x, dy = p.y - h.y, d = Math.hypot(dx, dy) || 0.01;
+        if (d < HUBD) { p.x += (dx / d) * (HUBD - d); p.y += (dy / d) * (HUBD - d); }
+      }
+    }
+  }
+
+  // Evidence rides just outside its lesson, away from the hub.
   graphNodes.filter((n) => n.kind === "Evidence").forEach((n) => {
     const pid = String(n.id).split(":")[1], p = pos[pid], parent = graphNodes.find((x) => x.kind === "Lesson" && String(x.id) === pid);
-    if (!p || !parent) { pos[String(n.id)] = { x: cx, y: cy }; return; }
-    const center = cc[parent.cluster_id ?? -1]; if (!center) { pos[String(n.id)] = { x: p.x + 42, y: p.y }; return; }
-    const dx = p.x - center.x, dy = p.y - center.y, d = Math.hypot(dx, dy) || 1;
-    pos[String(n.id)] = { x: p.x + (dx / d) * 42, y: p.y + (dy / d) * 42 };
+    if (!p || !parent) { pos[String(n.id)] = { x: VW / 2, y: VH / 2 }; return; }
+    const h = parent.cluster_id != null ? hub.get(parent.cluster_id) : undefined;
+    if (!h) { pos[String(n.id)] = { x: p.x + 48, y: p.y }; return; }
+    const dx = p.x - h.x, dy = p.y - h.y, d = Math.hypot(dx, dy) || 1;
+    pos[String(n.id)] = { x: p.x + (dx / d) * 48, y: p.y + (dy / d) * 48 };
   });
-  graphNodes.filter((n) => n.kind === "Tag").forEach((n, i) => { const a = (i / graphNodes.filter((x) => x.kind === "Tag").length) * Math.PI * 2; pos[String(n.id)] = { x: cx + Math.cos(a) * (70 + (i % 3) * 24), y: cy + Math.sin(a) * (70 + (i % 3) * 24) }; });
-  // Repulsion
-  const lids = graphNodes.filter((n) => n.kind === "Lesson").map((n) => String(n.id));
-  const lc = Object.fromEntries(graphNodes.filter((n) => n.kind === "Lesson").map((n) => [String(n.id), n.cluster_id ?? -1]));
-  for (let it = 0; it < 70; it++) for (let i = 0; i < lids.length; i++) for (let j = i + 1; j < lids.length; j++) {
-    if (lc[lids[i]] !== lc[lids[j]]) continue;
-    const pa = pos[lids[i]], pb = pos[lids[j]]; if (!pa || !pb) continue;
-    const dx = pa.x - pb.x, dy = pa.y - pb.y, d = Math.sqrt(dx * dx + dy * dy + 0.01);
-    if (d < 175) { const push = (175 - d) * 0.4, nx = dx / d, ny = dy / d; pa.x += nx * push; pa.y += ny * push; pb.x -= nx * push; pb.y -= ny * push; }
+
+  // Tags hover near the lessons that carry them — not a pile in the centre.
+  graphNodes.filter((n) => n.kind === "Tag").forEach((n, i) => {
+    const carriers = graphEdges.filter((e) => e.type === "TAGGED_WITH" && String(e.target) === String(n.id)).map((e) => pos[String(e.source)]).filter((p): p is { x: number; y: number } => !!p);
+    const a = i * GOLDEN;
+    if (carriers.length) {
+      let mx = 0, my = 0;
+      for (const c of carriers) { mx += c.x; my += c.y; }
+      pos[String(n.id)] = { x: mx / carriers.length + Math.cos(a) * 72, y: my / carriers.length + Math.sin(a) * 72 };
+    } else {
+      pos[String(n.id)] = { x: VW / 2 + Math.cos(a) * 220, y: VH / 2 + Math.sin(a) * 220 };
+    }
+  });
+
+  // Fit the relaxed layout back into the canvas (centred, uniform scale) so the
+  // initial view always frames the whole map.
+  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+  for (const key in pos) { const p = pos[key]; bx0 = Math.min(bx0, p.x); by0 = Math.min(by0, p.y); bx1 = Math.max(bx1, p.x); by1 = Math.max(by1, p.y); }
+  if (isFinite(bx0)) {
+    const m = 150, bw = Math.max(1, bx1 - bx0), bh = Math.max(1, by1 - by0);
+    const s = Math.min(1.1, (VW - 2 * m) / bw, (VH - 2 * m) / bh);
+    const ox = (VW - bw * s) / 2, oy = (VH - bh * s) / 2;
+    for (const key in pos) { const p = pos[key]; p.x = ox + (p.x - bx0) * s; p.y = oy + (p.y - by0) * s; }
+    // The fit can compress a crowded layout below readable spacing — a short
+    // post-fit touch-up restores a floor between lessons, clamped to canvas.
+    if (s < 0.9) {
+      for (let it = 0; it < 30; it++) for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
+        const pa = pos[ids[i]], pb = pos[ids[j]];
+        if (!pa || !pb) continue;
+        const dx = pa.x - pb.x, dy = pa.y - pb.y, d = Math.sqrt(dx * dx + dy * dy + 0.01);
+        if (d < 74) {
+          const push = (74 - d) * 0.4, nx = dx / d, ny = dy / d;
+          pa.x = Math.min(VW - 110, Math.max(110, pa.x + nx * push)); pa.y = Math.min(VH - 110, Math.max(110, pa.y + ny * push));
+          pb.x = Math.min(VW - 110, Math.max(110, pb.x - nx * push)); pb.y = Math.min(VH - 110, Math.max(110, pb.y - ny * push));
+        }
+      }
+    }
   }
   return pos;
 }
@@ -165,7 +297,7 @@ function GlyphFor({ kind, color, r = 16, selected = false }: { kind: GraphNodeKi
 // ── Property Inspector ───────────────────────────────────────────────────────
 
 function Inspector({ node, neighbors, onClose, onJump, onDelete, deleting }: { node: GraphNode; neighbors: Array<{ other: GraphNode; type: GraphRelType; dir: "in" | "out"; similarity?: number }>; onClose: () => void; onJump: (id: string | number) => void; onDelete: (id: number) => void; deleting: boolean }) {
-  const color = node.kind === "Cluster" ? node.color || KIND_COLORS[node.kind] : KIND_COLORS[node.kind];
+  const color = nodeColor(node);
   const cypher = cypherPathFor(node);
   const [copied, setCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -205,7 +337,7 @@ function Inspector({ node, neighbors, onClose, onJump, onDelete, deleting }: { n
       </div>
       {neighbors.length > 0 && (<div className="mt-5">
         <div className="flex items-center justify-between mb-2"><span className="text-[9px] uppercase tracking-[0.22em] text-[#64748B] font-headline">Relationships</span><span className="text-[9px] text-[#64748B]">{neighbors.length}</span></div>
-        <div className="space-y-1">{neighbors.map((nb, i) => { const relC = REL_COLORS[nb.type]; const oC = nb.other.kind === "Cluster" ? nb.other.color || KIND_COLORS[nb.other.kind] : KIND_COLORS[nb.other.kind]; return (
+        <div className="space-y-1">{neighbors.map((nb, i) => { const relC = REL_COLORS[nb.type]; const oC = nodeColor(nb.other); return (
           <button key={`nb-${i}`} type="button" onClick={() => onJump(nb.other.id)} className="w-full text-left rounded-lg border border-white/[0.06] hover:border-white/20 bg-white/[0.02] hover:bg-white/[0.05] px-3 py-2 flex items-center gap-2 transition group">
             <span className="text-[9px] shrink-0" style={{ color: relC, fontFamily: "var(--font-mono, monospace)" }}>{nb.dir === "out" ? "\u2192" : "\u2190"} :{nb.type}{nb.similarity ? `:${nb.similarity.toFixed(2)}` : ""}</span>
             <span className="h-3 w-px bg-white/10 mx-1" /><span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: oC }} />
@@ -325,8 +457,21 @@ export default function ConstellationPage() {
   const [query, setQuery] = useState("");
   const baseScale = stageSize.w && stageSize.h ? Math.min(stageSize.w / VW, stageSize.h / VH) : 1;
   const scale = baseScale * zoom;
-  const toScreen = useCallback((x: number, y: number) => ({ x: stageSize.w / 2 + (x - VW / 2) * scale + pan.x, y: stageSize.h / 2 + (y - VH / 2) * scale + pan.y }), [stageSize.w, stageSize.h, scale, pan.x, pan.y]);
   const screenToWorld = useCallback((sx: number, sy: number) => ({ x: (sx - stageSize.w / 2 - pan.x) / scale + VW / 2, y: (sy - stageSize.h / 2 - pan.y) / scale + VH / 2 }), [stageSize.w, stageSize.h, scale, pan.x, pan.y]);
+
+  // Focus = the selected node, or (desktop) the hovered one. Focusing lights up
+  // a node's neighbourhood and quiets everything else — the single best tool
+  // against hairball reading.
+  const focusId = selectedId ?? hover;
+  const focusAdj = useMemo(() => {
+    if (focusId == null) return null;
+    const s = new Set<string>();
+    for (const e of graphData.edges) {
+      if (String(e.source) === String(focusId)) s.add(String(e.target));
+      else if (String(e.target) === String(focusId)) s.add(String(e.source));
+    }
+    return s;
+  }, [focusId, graphData]);
 
   // Shared pointer logic for mouse + touch
   const pinchRef = useRef<{ d0: number; z0: number } | null>(null);
@@ -447,7 +592,7 @@ export default function ConstellationPage() {
               {query && <button type="button" onClick={() => setQuery("")} className="text-[#64748B] hover:text-white text-[10px]">clear</button>}
             </div>
             {results.length > 0 && (<div className="absolute left-0 right-0 top-full mt-1 rounded-xl border border-white/10 bg-black/85 backdrop-blur-xl overflow-hidden z-40">
-              {results.map((n) => { const c = n.kind === "Cluster" ? n.color || KIND_COLORS[n.kind] : KIND_COLORS[n.kind]; return (<button key={String(n.id)} type="button" onClick={() => { focusNode(n.id); setQuery(""); }} className="w-full text-left px-3 py-2 hover:bg-white/[0.04] flex items-center gap-2 border-b border-white/[0.04] last:border-0">
+              {results.map((n) => { const c = nodeColor(n); return (<button key={String(n.id)} type="button" onClick={() => { focusNode(n.id); setQuery(""); }} className="w-full text-left px-3 py-2 hover:bg-white/[0.04] flex items-center gap-2 border-b border-white/[0.04] last:border-0">
                 <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: c, boxShadow: `0 0 6px ${c}` }} />
                 <span className="text-[9px] uppercase tracking-[0.2em] text-[#64748B] w-16 shrink-0 font-headline">{n.kind}</span>
                 <span className="text-[11px] text-white truncate flex-1">{nodeLabel(n)}</span>
@@ -490,41 +635,64 @@ export default function ConstellationPage() {
               <span className="text-[11px] text-white font-serif italic">{isoNode.constellation || isoNode.label}</span>
             </button>); })()}
           {showHint && !isolated && (<div className="hidden sm:flex items-center gap-2 pl-2.5 pr-2 h-7 rounded-full border border-white/10 bg-black/60 backdrop-blur-xl text-[10px] text-[#94A3B8]">
-            <span style={{ fontFamily: "var(--font-mono, monospace)" }}>Positions are approximate &middot; drag to rearrange &middot; click a cluster to focus</span>
+            <span style={{ fontFamily: "var(--font-mono, monospace)" }}>Similar thoughts sit near each other &middot; hover to trace connections &middot; click a cluster to focus</span>
             <button type="button" onClick={dismissHint} className="ml-1 text-[#64748B] hover:text-white px-1">&times;</button>
           </div>)}
         </div>)}
 
-        {/* SVG graph */}
+        {/* SVG graph \u2014 one transformed world group, so panning moves a single
+            attribute instead of re-deriving every node/edge coordinate. */}
         {stageSize.w > 0 && (<svg className="absolute inset-0 w-full h-full" style={{ overflow: "visible" }}>
-          <defs>{Object.entries(REL_COLORS).map(([type, color]) => (<marker key={`m-${type}`} id={`arrow-${type}`} viewBox="0 -5 10 10" refX={9} refY={0} markerWidth={6} markerHeight={6} orient="auto"><path d="M0,-4 L9,0 L0,4" fill={color} opacity="0.75" /></marker>))}</defs>
+          <defs>
+            <marker id="arrow-REFINES" viewBox="0 -5 10 10" refX={9} refY={0} markerUnits="userSpaceOnUse" markerWidth={12 / scale} markerHeight={12 / scale} orient="auto"><path d="M0,-4 L9,0 L0,4" fill={REL_COLORS.REFINES} opacity="0.75" /></marker>
+            {HALO_COLORS.map((c) => (<radialGradient key={`h-${c}`} id={`halo-${c.slice(1)}`}><stop offset="0%" stopColor={c} stopOpacity="0.35" /><stop offset="55%" stopColor={c} stopOpacity="0.10" /><stop offset="100%" stopColor={c} stopOpacity="0" /></radialGradient>))}
+          </defs>
+          <g transform={`translate(${stageSize.w / 2 + pan.x} ${stageSize.h / 2 + pan.y}) scale(${scale}) translate(${-VW / 2} ${-VH / 2})`}>
           <g>{visibleEdges.map((e, i) => {
             const sP = positions[String(e.source)], tP = positions[String(e.target)]; if (!sP || !tP) return null;
-            const s = toScreen(sP.x, sP.y), t = toScreen(tP.x, tP.y), color = REL_COLORS[e.type] || "#64748B";
-            const isTouching = selectedId != null && (String(e.source) === String(selectedId) || String(e.target) === String(selectedId));
-            const dimmed = selectedId != null && !isTouching;
-            const op = dimmed ? 0.15 : isTouching ? 1 : e.type === "SIMILAR_TO" ? Math.max(0.4, e.similarity || 0.5) : 0.7;
-            const mx = (s.x + t.x) / 2, my = (s.y + t.y) / 2, dx = t.x - s.x, dy = t.y - s.y, d = Math.hypot(dx, dy) || 1;
-            const nx = -dy / d, ny = dx / d, curve = 10 + ((i * 7) % 14), qx = mx + nx * curve, qy = my + ny * curve;
+            // In-cluster spokes wear their constellation's hue; the rest keep legend colours.
+            const cidT = e.type === "IN_CLUSTER" ? parseInt(String(e.target).split(":")[1], 10) : NaN;
+            const color = Number.isNaN(cidT) ? REL_COLORS[e.type] || "#64748B" : clusterColor(cidT);
+            const isTouching = focusId != null && (String(e.source) === String(focusId) || String(e.target) === String(focusId));
+            const dimmed = focusId != null && !isTouching;
+            // Quiet by default, loud on focus: the web of links is context, not content.
+            const base = e.type === "SIMILAR_TO" ? 0.12 + (e.similarity || 0.5) * 0.22 : e.type === "IN_CLUSTER" ? 0.32 : 0.6;
+            const op = dimmed ? 0.05 : isTouching ? 0.95 : base;
+            const dx = tP.x - sP.x, dy = tP.y - sP.y, d = Math.hypot(dx, dy) || 1;
+            const nx = -dy / d, ny = dx / d;
+            // Long similarity bridges bow AROUND space instead of cutting through
+            // islands \u2014 distance-proportional curvature is what kills the hairball.
+            const bow = (e.type === "SIMILAR_TO" ? Math.min(300, d * 0.22) + ((i * 7) % 24) : 14) * ((i % 2) * 2 - 1);
+            const qx = (sP.x + tP.x) / 2 + nx * bow, qy = (sP.y + tP.y) / 2 + ny * bow;
             return (<g key={`e-${i}`} style={{ transition: "opacity 200ms", opacity: op }}>
-              <path d={`M ${s.x} ${s.y} Q ${qx} ${qy} ${t.x} ${t.y}`} fill="none" stroke={color} strokeWidth={isTouching ? 1.5 : e.type === "IN_CLUSTER" ? 1 : 1.1} strokeDasharray={e.type === "TAGGED_WITH" ? "2 4" : e.type === "REFINES" ? "6 3" : undefined} markerEnd={e.type !== "SIMILAR_TO" ? `url(#arrow-${e.type})` : undefined} />
-              {isTouching && (<g><rect x={qx - e.type.length * 3.2} y={qy - 7} width={e.type.length * 6.4 + 2} height={14} rx={4} fill="#04070b" opacity="0.85" /><text x={qx} y={qy + 3} textAnchor="middle" fill={color} fontSize="9" style={{ fontFamily: "var(--font-mono, monospace)", letterSpacing: "0.08em" }}>{e.type}{e.type === "SIMILAR_TO" && e.similarity ? `:${e.similarity.toFixed(2)}` : ""}</text></g>)}
+              <path d={`M ${sP.x} ${sP.y} Q ${qx} ${qy} ${tP.x} ${tP.y}`} fill="none" stroke={color} strokeWidth={isTouching ? 2 : 1.2} vectorEffect="non-scaling-stroke" strokeDasharray={e.type === "TAGGED_WITH" ? `${2 / scale} ${4 / scale}` : e.type === "REFINES" ? `${6 / scale} ${3 / scale}` : undefined} markerEnd={e.type === "REFINES" ? "url(#arrow-REFINES)" : undefined} />
+              {selectedId != null && isTouching && (<g transform={`translate(${qx} ${qy}) scale(${1 / scale})`}><rect x={-e.type.length * 3.2 - 1} y={-7} width={e.type.length * 6.4 + 2} height={14} rx={4} fill="#04070b" opacity="0.85" /><text y={3} textAnchor="middle" fill={color} fontSize="9" style={{ fontFamily: "var(--font-mono, monospace)", letterSpacing: "0.08em" }}>{e.type}{e.type === "SIMILAR_TO" && e.similarity ? `:${e.similarity.toFixed(2)}` : ""}</text></g>)}
             </g>);
           })}</g>
           <g>{visibleNodes.map((n) => {
             const p = positions[String(n.id)]; if (!p) return null;
-            const s = toScreen(p.x, p.y), color = n.kind === "Cluster" ? n.color || KIND_COLORS[n.kind] : KIND_COLORS[n.kind];
-            const r = nodeRadius(n, zoom), isSel = String(selectedId) === String(n.id), isHov = String(hover) === String(n.id);
-            const isTouching = selected && neighbors.some((x) => String(x.other.id) === String(n.id));
-            const dimmed = selected && !isSel && !isTouching;
-            const label = nodeLabel(n), showLabel = isSel || isHov || isTouching || n.kind === "Cluster";
-            return (<g key={`n-${n.id}`} transform={`translate(${s.x} ${s.y})`} data-graphnode data-node-id={String(n.id)} style={{ cursor: "grab", opacity: dimmed ? 0.3 : 1, transition: "opacity 200ms" }} onMouseEnter={() => setHover(n.id)} onMouseLeave={() => setHover(null)}>
-              {(isSel || isHov) && <circle r={r * 1.8} fill={color} opacity={0.3} style={{ filter: "blur(6px)" }} />}
+            const color = nodeColor(n), r = nodeRadius(n);
+            const isSel = String(selectedId) === String(n.id);
+            const isFocal = focusId != null && String(focusId) === String(n.id);
+            const isNeighbor = !isFocal && (focusAdj?.has(String(n.id)) ?? false);
+            const dimmed = focusId != null && !isFocal && !isNeighbor;
+            const label = nodeLabel(n);
+            // Labels: always on hubs and the focused neighbourhood; the rest fade
+            // in once you zoom in enough that they'd be readable, not clutter.
+            const showLabel = isFocal || isNeighbor || zoom >= 1.15;
+            const maxLen = isFocal || isNeighbor ? 40 : 26;
+            const k = Math.max(0.7, Math.min(1.4, zoom * 0.95)) / scale; // constant on-screen size
+            return (<g key={`n-${n.id}`} transform={`translate(${p.x} ${p.y}) scale(${k})`} data-graphnode data-node-id={String(n.id)} style={{ cursor: "grab", opacity: dimmed ? 0.25 : 1, transition: "opacity 200ms" }} onMouseEnter={() => setHover(n.id)} onMouseLeave={() => setHover(null)}>
+              {(n.kind === "Lesson" || n.kind === "Cluster") && <circle r={r * (n.kind === "Cluster" ? 2.6 : 2.2)} fill={`url(#halo-${color.slice(1)})`} opacity={isFocal || isNeighbor ? 1 : 0.65} />}
               <GlyphFor kind={n.kind} color={color} r={r} selected={isSel} />
-              {n.kind === "Cluster" && <text y="3" textAnchor="middle" fill={color} fontSize="9" className="font-headline" style={{ letterSpacing: "0.12em", textTransform: "uppercase" }}>{n.theme?.split(" ")[0] || "CL"}</text>}
-              {showLabel && (<g transform={`translate(0 ${r + 14})`}><rect x={-(Math.min(label.length, 40) * 3.2) - 4} y={-9} width={Math.min(label.length, 40) * 6.4 + 8} height={16} rx={4} fill="#04070b" opacity={isSel ? 0.95 : 0.75} stroke={isSel ? color : "transparent"} strokeWidth="0.5" /><text textAnchor="middle" y="3" fill={isSel ? "#fff" : "#CBD5E1"} fontSize="10" className={n.kind === "Lesson" ? "font-serif" : "font-headline"} fontStyle={n.kind === "Lesson" ? "italic" : "normal"}>{label.length > 40 ? label.slice(0, 38) + "\u2026" : label}</text></g>)}
+              {n.kind === "Cluster" ? (
+                <text y={r + 24} textAnchor="middle" fill={color} fontSize="14" className="font-serif" fontStyle="italic" opacity={dimmed ? 0.35 : 0.92} style={{ letterSpacing: "0.04em" }}>{label}</text>
+              ) : showLabel && (
+                <g transform={`translate(0 ${r + 14})`}><rect x={-(Math.min(label.length, maxLen) * 3.2) - 4} y={-9} width={Math.min(label.length, maxLen) * 6.4 + 8} height={16} rx={4} fill="#04070b" opacity={isSel ? 0.95 : 0.6} stroke={isSel ? color : "transparent"} strokeWidth="0.5" /><text textAnchor="middle" y="3" fill={isSel ? "#fff" : "#CBD5E1"} fontSize="10" className={n.kind === "Lesson" ? "font-serif" : "font-headline"} fontStyle={n.kind === "Lesson" ? "italic" : "normal"}>{label.length > maxLen ? label.slice(0, maxLen - 2) + "\u2026" : label}</text></g>
+              )}
             </g>);
           })}</g>
+          </g>
         </svg>)}
 
         {/* Legend */}
