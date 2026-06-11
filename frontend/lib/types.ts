@@ -556,6 +556,9 @@ export interface GraphNode {
   weight?: number;
   constellation?: string;
   theme?: string;
+  /** Backend PCA projection of the lesson embedding — the semantic layout seed. */
+  x?: number | null;
+  y?: number | null;
 }
 
 export interface GraphEdge {
