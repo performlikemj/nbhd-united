@@ -87,7 +87,7 @@ function detectRefines(nodes: ConstellationNode[]): Array<{ from: number; to: nu
 function buildGraphData(data: ConstellationData): GraphData {
   const { nodes, edges, affinity_edges, clusters } = data;
   const lessonNodes: GraphNode[] = nodes.map((n) => ({ id: n.id, kind: "Lesson" as const, label: n.tags.slice(0, 2).join(" / ") || n.text.split(/\s+/).slice(0, 5).join(" "), text: n.text, context: n.context, tags: n.tags, source_type: n.source_type, source_ref: n.source_ref, created_at: n.created_at, cluster_id: n.cluster_id ?? undefined, weight: 3, x: n.x, y: n.y }));
-  const clusterNodes: GraphNode[] = clusters.map((c) => ({ id: `c:${c.id}`, kind: "Cluster" as const, label: c.label, constellation: c.label, theme: c.label, color: clusterColor(c.id) }));
+  const clusterNodes: GraphNode[] = clusters.map((c) => ({ id: `c:${c.id}`, kind: "Cluster" as const, label: c.label, constellation: c.label, theme: c.label, color: clusterColor(c.id), count: c.count, tags: c.tags }));
   const evidenceNodes: GraphNode[] = nodes.filter((n) => n.source_ref).map((n) => ({ id: `ev:${n.id}`, kind: "Evidence" as const, label: n.source_ref!, source_type: n.source_type, source_ref: n.source_ref, created_at: n.created_at }));
   const tagSet = new Set<string>(); nodes.forEach((n) => n.tags.forEach((t) => tagSet.add(t)));
   const tagNodes: GraphNode[] = [...tagSet].map((t) => ({ id: `tag:${t}`, kind: "Tag" as const, label: t }));
@@ -465,13 +465,15 @@ export default function ConstellationPage() {
   const focusId = selectedId ?? hover;
   const focusAdj = useMemo(() => {
     if (focusId == null) return null;
+    // VISIBLE edges only — a node connected solely through a hidden tag/evidence
+    // edge shouldn't brighten (or count toward the label budget below).
     const s = new Set<string>();
-    for (const e of graphData.edges) {
+    for (const e of visibleEdges) {
       if (String(e.source) === String(focusId)) s.add(String(e.target));
       else if (String(e.target) === String(focusId)) s.add(String(e.source));
     }
     return s;
-  }, [focusId, graphData]);
+  }, [focusId, visibleEdges]);
 
   // Shared pointer logic for mouse + touch
   const pinchRef = useRef<{ d0: number; z0: number } | null>(null);
@@ -677,18 +679,31 @@ export default function ConstellationPage() {
             const isNeighbor = !isFocal && (focusAdj?.has(String(n.id)) ?? false);
             const dimmed = focusId != null && !isFocal && !isNeighbor;
             const label = nodeLabel(n);
-            // Labels: always on hubs and the focused neighbourhood; the rest fade
-            // in once you zoom in enough that they'd be readable, not clutter.
-            const showLabel = isFocal || isNeighbor || zoom >= 1.15;
-            const maxLen = isFocal || isNeighbor ? 40 : 26;
+            // Label budget: the focal node always; its neighbours only when the
+            // neighbourhood is small enough to stay readable (hovering a hub
+            // would otherwise caption every member at once \u2014 an unreadable
+            // pile); everything else waits for a readable zoom.
+            const smallHood = (focusAdj?.size ?? 0) <= 5;
+            const showLabel = isFocal || (isNeighbor && smallHood) || zoom >= 1.25;
+            const maxLen = isFocal || isNeighbor ? 40 : 22;
+            // Ambient labels alternate above/below so side-by-side nodes collide less.
+            const above = !isFocal && !isNeighbor && typeof n.id === "number" && n.id % 2 === 0;
             const k = Math.max(0.7, Math.min(1.4, zoom * 0.95)) / scale; // constant on-screen size
             return (<g key={`n-${n.id}`} transform={`translate(${p.x} ${p.y}) scale(${k})`} data-graphnode data-node-id={String(n.id)} style={{ cursor: "grab", opacity: dimmed ? 0.25 : 1, transition: "opacity 200ms" }} onMouseEnter={() => setHover(n.id)} onMouseLeave={() => setHover(null)}>
               {(n.kind === "Lesson" || n.kind === "Cluster") && <circle r={r * (n.kind === "Cluster" ? 2.6 : 2.2)} fill={`url(#halo-${color.slice(1)})`} opacity={isFocal || isNeighbor ? 1 : 0.65} />}
               <GlyphFor kind={n.kind} color={color} r={r} selected={isSel} />
               {n.kind === "Cluster" ? (
-                <text y={r + 24} textAnchor="middle" fill={color} fontSize="14" className="font-serif" fontStyle="italic" opacity={dimmed ? 0.35 : 0.92} style={{ letterSpacing: "0.04em" }}>{label}</text>
+                <g>
+                  <text y={r + 24} textAnchor="middle" fill={color} fontSize={isFocal ? 15 : 14} className="font-serif" fontStyle="italic" opacity={dimmed ? 0.35 : isFocal ? 1 : 0.92} style={{ letterSpacing: "0.04em" }}>{label}</text>
+                  {/* What this constellation is about \u2014 instead of captioning every member. */}
+                  {isFocal && (n.count || n.tags?.length) ? (
+                    <text y={r + 42} textAnchor="middle" fill="#94A3B8" fontSize="10" className="font-headline" style={{ letterSpacing: "0.06em" }}>
+                      {[n.count ? `${n.count} ${n.count === 1 ? "lesson" : "lessons"}` : "", ...(n.tags ?? []).slice(0, 3)].filter(Boolean).join("  \u00b7  ")}
+                    </text>
+                  ) : null}
+                </g>
               ) : showLabel && (
-                <g transform={`translate(0 ${r + 14})`}><rect x={-(Math.min(label.length, maxLen) * 3.2) - 4} y={-9} width={Math.min(label.length, maxLen) * 6.4 + 8} height={16} rx={4} fill="#04070b" opacity={isSel ? 0.95 : 0.6} stroke={isSel ? color : "transparent"} strokeWidth="0.5" /><text textAnchor="middle" y="3" fill={isSel ? "#fff" : "#CBD5E1"} fontSize="10" className={n.kind === "Lesson" ? "font-serif" : "font-headline"} fontStyle={n.kind === "Lesson" ? "italic" : "normal"}>{label.length > maxLen ? label.slice(0, maxLen - 2) + "\u2026" : label}</text></g>
+                <g transform={`translate(0 ${above ? -(r + 12) : r + 14})`}><rect x={-(Math.min(label.length, maxLen) * 3.2) - 4} y={-9} width={Math.min(label.length, maxLen) * 6.4 + 8} height={16} rx={4} fill="#04070b" opacity={isSel ? 0.95 : 0.6} stroke={isSel ? color : "transparent"} strokeWidth="0.5" /><text textAnchor="middle" y="3" fill={isSel ? "#fff" : "#CBD5E1"} fontSize="10" className={n.kind === "Lesson" ? "font-serif" : "font-headline"} fontStyle={n.kind === "Lesson" ? "italic" : "normal"}>{label.length > maxLen ? label.slice(0, maxLen - 2) + "\u2026" : label}</text></g>
               )}
             </g>);
           })}</g>
