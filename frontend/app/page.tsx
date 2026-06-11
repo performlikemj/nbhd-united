@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { isLoggedIn } from "@/lib/auth";
 import { Starfield } from "@/components/landing/starfield";
+import { SiteFooter } from "@/components/site-footer";
 import { ConstellationLines } from "@/components/landing/constellation-lines";
 import { SynapseNetwork } from "@/components/landing/synapse-network";
 
@@ -224,6 +225,8 @@ export default function LandingPage() {
           </div>
         </div>
       </section>
+
+      <SiteFooter />
     </div>
   );
 }
