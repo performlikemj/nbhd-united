@@ -133,6 +133,88 @@ def render_managed_region(tenant: Tenant) -> str:
     return "\n".join(parts)
 
 
+# Context-digest size bounds (chars), owned here so the renderer's clamp and
+# the API view's echoed ``max_chars`` can never drift apart. The default
+# suits Apple's on-device foundation model (~4k-token window shared with
+# tool schemas + transcript).
+CONTEXT_DIGEST_DEFAULT_CHARS = 6000
+CONTEXT_DIGEST_MIN_CHARS = 1000
+CONTEXT_DIGEST_MAX_CHARS = 16000
+
+# Sections that only make sense inside the tenant container's pipeline.
+# ``privacy_placeholders`` instructs the model to emit ``[PERSON_N]``
+# placeholders verbatim and promises a platform restoration layer — which
+# exists on the relay path but NOT on a client device, where the digest is
+# served rehydrated instead.
+_CLIENT_DIGEST_SKIP_KEYS = frozenset({"privacy_placeholders"})
+
+
+def render_context_digest(tenant: Tenant, *, max_chars: int = CONTEXT_DIGEST_DEFAULT_CHARS) -> str:
+    """Compact plain-markdown snapshot of the tenant's state for clients that
+    run their own model (the iOS private/on-device assistant).
+
+    Same per-pillar sections as USER.md's managed region — goals, tasks,
+    fuel, finance, recent journal, conversation digest — but rendered for a
+    SMALL context window: no sentinel markers (nothing merges this back into
+    a file), each section body is truncated, and the total is hard-capped.
+
+    Budgeting: room for the conversation digest is reserved up front — it is
+    the most load-bearing section for a client-side model (cross-channel
+    conversational continuity) but renders late in display order, so without
+    the reservation bulky early sections would starve it out. Other sections
+    that don't fit are skipped, not a hard stop, so smaller later sections
+    can still make the cut.
+    """
+    max_chars = max(CONTEXT_DIGEST_MIN_CHARS, min(int(max_chars), CONTEXT_DIGEST_MAX_CHARS))
+    per_section = max(400, max_chars // 6)
+
+    parts: list[str] = [_render_current_time_line(tenant), ""]
+    total = sum(len(p) + 1 for p in parts)
+
+    chunks: list[tuple[str, str]] = []
+    for section in all_sections():
+        if section.key in _CLIENT_DIGEST_SKIP_KEYS:
+            continue
+        try:
+            if not section.enabled(tenant):
+                continue
+            body = section.render(tenant)
+        except Exception:
+            # Mirror render_managed_region: one broken section must not
+            # blank the whole digest.
+            logger.exception(
+                "Context digest section '%s' raised for tenant %s",
+                section.key,
+                str(tenant.id)[:8],
+            )
+            continue
+        if not body:
+            continue
+        if len(body) > per_section:
+            body = body[: per_section - 1].rstrip() + "…"
+        chunks.append((section.key, f"{section.heading}\n{body}\n"))
+
+    reserved = 0
+    for key, chunk in chunks:
+        if key == "conversation_digest" and total + len(chunk) + 1 <= max_chars:
+            reserved = len(chunk) + 1
+            break
+
+    for key, chunk in chunks:
+        if key == "conversation_digest":
+            if reserved:
+                parts.append(chunk)
+                total += len(chunk) + 1
+                reserved = 0
+            continue
+        if total + len(chunk) + 1 + reserved > max_chars:
+            continue
+        parts.append(chunk)
+        total += len(chunk) + 1
+
+    return "\n".join(parts).strip() + "\n"
+
+
 def _is_default_boilerplate(content: str) -> bool:
     """Detect OpenClaw's default seeded USER.md content.
 

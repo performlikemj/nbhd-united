@@ -147,7 +147,7 @@ def record_conversation_turn(
         return None
 
     _maybe_prune()
-    _schedule_user_md_refresh(tenant)
+    schedule_user_md_refresh(tenant)
     return row
 
 
@@ -169,12 +169,16 @@ def _maybe_prune() -> None:
         logger.exception("conversation_capture: prune pass failed (non-fatal)")
 
 
-def _schedule_user_md_refresh(tenant) -> None:
+def schedule_user_md_refresh(tenant) -> None:
     """Schedule a debounced USER.md push so the digest reflects the new turn.
 
     Mirrors the registry's on-commit + background-thread shape, but with a real
     debounce window (see ``_REFRESH_DEBOUNCE_SECONDS``). Synchronous on_commit
     when background threads are disabled (tests/dev) for deterministic behavior.
+
+    Public: also called by the on-device turn-record endpoint
+    (``apps.router.chat_views.ChatLocalTurnView``) — an on-device turn changes
+    the conversation digest exactly like a captured Telegram/LINE turn does.
     """
     tenant_id = str(getattr(tenant, "id", "") or "")
     if not tenant_id:
