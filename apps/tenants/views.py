@@ -845,6 +845,51 @@ _VALID_TASK_SLUGS = {
 }
 
 
+class AvailableModelsView(APIView):
+    """List the models this tenant may select — for the default model and the
+    per-task overrides. The set is the tier base + the live free offer + any BYO
+    extras (exactly what PreferredModelView/TaskModelPreferencesView validate
+    against), with display names and pricing so clients never hard-code a tier's
+    models. Read-only; the writes stay on the preferred-model / task-model views.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response(
+                {"detail": "No tenant found. Complete onboarding first."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        from apps.billing.constants import MODEL_RATES, display_name_for_model
+
+        models = []
+        for model_id in _get_allowed_models(tenant):
+            rate = MODEL_RATES.get(model_id, {})
+            models.append(
+                {
+                    "id": model_id,
+                    "label": display_name_for_model(model_id),
+                    "input_per_million": rate.get("input"),
+                    "output_per_million": rate.get("output"),
+                }
+            )
+        models.sort(key=lambda m: m["label"].lower())
+
+        return Response(
+            {
+                "models": models,
+                "preferred_model": tenant.preferred_model or "",
+                "model_tier": tenant.model_tier,
+                "task_model_preferences": tenant.task_model_preferences or {},
+                "task_slugs": sorted(_VALID_TASK_SLUGS),
+            }
+        )
+
+
 class TaskModelPreferencesView(APIView):
     """Set per-task model overrides for scheduled jobs."""
 

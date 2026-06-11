@@ -11,6 +11,7 @@ from .runtime_views import (
 )
 from .telegram_views import telegram_generate_link, telegram_status, telegram_unlink
 from .views import (
+    AvailableModelsView,
     CancelDeletionView,
     DeleteAccountView,
     EntityRegistryItemView,
@@ -84,6 +85,7 @@ urlpatterns = [
     path("cancel-deletion/", CancelDeletionView.as_view(), name="cancel-deletion"),
     path("settings/preferred-model/", PreferredModelView.as_view(), name="preferred-model"),
     path("settings/task-model-preferences/", TaskModelPreferencesView.as_view(), name="task-model-preferences"),
+    path("settings/available-models/", AvailableModelsView.as_view(), name="available-models"),
     # Internal runtime endpoint for the agent to acknowledge welcome delivery.
     path(
         "runtime/<uuid:tenant_id>/welcomes/<str:feature>/",
