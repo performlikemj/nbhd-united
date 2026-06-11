@@ -76,19 +76,19 @@ def _is_starter_tier(tenant: Tenant) -> bool:
     return getattr(tenant, "model_tier", "") == "starter"
 
 
+# This message is relayed by the assistant into whatever channel the user is
+# chatting on — including the iOS app, where App Review Guideline 3.1.1 forbids
+# directing users to an external purchase ("steering"). The gate endpoint can't
+# know the channel, so the copy must be store-safe everywhere: explain the
+# restriction, no upgrade pitch, no billing URL.
 STARTER_BLOCKED_MESSAGE = (
     "🔒 Destructive actions are not available on the Starter plan.\n\n"
     "Your agent tried to perform an irreversible action, but this is "
     "restricted on the Starter plan. Some AI models are more vulnerable "
     "to prompt injection — where unexpected input tricks the agent into "
     "doing something you didn't ask for.\n\n"
-    "Upgrading to Premium gives you:\n"
-    "• A more resilient AI model (Claude by Anthropic)\n"
-    "• Full Google Workspace access with confirmation prompts\n"
-    "• Every irreversible action requires your explicit approval\n\n"
     "📖 Learn more about prompt injection:\n"
-    "   https://genai.owasp.org/llmrisk/llm01-prompt-injection/\n\n"
-    "⬆️ Upgrade: https://neighborhoodunited.org/billing"
+    "   https://genai.owasp.org/llmrisk/llm01-prompt-injection/"
 )
 
 
