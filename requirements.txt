@@ -64,7 +64,7 @@ azure-mgmt-costmanagement==4.0.1
     # via -r requirements.in
 azure-mgmt-msi==7.1.0
     # via -r requirements.in
-azure-mgmt-storage==24.0.1
+azure-mgmt-storage==25.0.0
     # via -r requirements.in
 azure-storage-file-share==12.26.0
     # via -r requirements.in
