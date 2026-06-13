@@ -45,6 +45,22 @@ DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"] = True
 DATABASES["default"]["CONN_MAX_AGE"] = env.int("DB_CONN_MAX_AGE", default=600)
 DATABASES["default"]["CONN_HEALTH_CHECKS"] = True
 
+# Disable psycopg3 client-side prepared statements under transaction-mode
+# pooling. In transaction mode (port 6543) Supavisor leases a different
+# backend per transaction, so a statement PREPAREd on backend A is not
+# guaranteed to exist when the next execution lands on backend B —
+# psycopg3's default (prepare a query after 5 executions) would then raise
+# `prepared statement "_pg3_N" does not exist`. Setting prepare_threshold
+# to None turns off auto-preparation entirely; the per-statement cost is
+# negligible and it makes the 5432→6543 cutover safe. Harmless on the
+# direct/session connection too (it just never prepares), and on local/CI
+# (psycopg3 there as well). The EMAXCONNSESSION incidents (2026-05-15,
+# 2026-06-12 silent Telegram drops) traced to the secret being pointed at
+# the SESSION pooler (5432) instead of 6543 — once corrected, this guard
+# keeps transaction mode from surfacing a prepared-statement regression.
+DATABASES["default"].setdefault("OPTIONS", {})
+DATABASES["default"]["OPTIONS"]["prepare_threshold"] = None
+
 # Security
 SECURE_SSL_REDIRECT = True
 SECURE_HSTS_SECONDS = 31536000
