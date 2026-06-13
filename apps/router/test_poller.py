@@ -651,3 +651,63 @@ class TelegramPollerSessionContextDualReadTest(TestCase):
         out = self.poller._build_session_context_inner(self.tenant, "anything")
         self.assertIn("Your current tasks", out)
         self.assertIn("Call accountant", out)
+
+
+@override_settings(
+    TELEGRAM_BOT_TOKEN="TEST-BOT-TOKEN",
+    TELEGRAM_WEBHOOK_SECRET="test-secret",
+)
+class TelegramPollerOffsetAdvanceTest(TestCase):
+    """``_process_update`` must advance the read offset only after an update
+    is handled — never before the DB-touching setup that can fail on an
+    exhausted Supabase pooler (EMAXCONNSESSION). Advancing early acked the
+    update to Telegram unprocessed and silently dropped the user's message.
+    """
+
+    def setUp(self):
+        self.poller = TelegramPoller()
+        self.poller.offset = 0
+
+    @patch("apps.router.poller.TelegramPoller._handle_update")
+    @patch("apps.router.inbound_dedup.claim_inbound_event", return_value=True)
+    @patch("apps.tenants.middleware.set_rls_context")
+    def test_offset_advances_after_successful_handle(self, _rls, _claim, mock_handle):
+        self.poller._process_update({"update_id": 4242, "message": {"text": "hi"}})
+        mock_handle.assert_called_once()
+        self.assertEqual(self.poller.offset, 4243)
+
+    @patch("apps.router.poller.TelegramPoller._handle_update")
+    @patch("apps.tenants.middleware.set_rls_context")
+    def test_offset_NOT_advanced_when_rls_context_fails(self, mock_rls, mock_handle):
+        # Simulate the pooler exhaustion that drops the connection before any
+        # processing happens.
+        from django.db.utils import OperationalError
+
+        mock_rls.side_effect = OperationalError("EMAXCONNSESSION max clients reached")
+
+        with self.assertRaises(OperationalError):
+            self.poller._process_update({"update_id": 5000, "message": {"text": "lost?"}})
+
+        # The update must NOT be acked — offset stays put so the next poll
+        # re-fetches and retries it instead of losing the message.
+        self.assertEqual(self.poller.offset, 0)
+        mock_handle.assert_not_called()
+
+    @patch("apps.router.poller.TelegramPoller._handle_update")
+    @patch("apps.router.inbound_dedup.claim_inbound_event", return_value=False)
+    @patch("apps.tenants.middleware.set_rls_context")
+    def test_duplicate_update_advances_offset_and_skips(self, _rls, _claim, mock_handle):
+        self.poller._process_update({"update_id": 7777, "message": {"text": "dup"}})
+        mock_handle.assert_not_called()
+        # A duplicate was already handled on a prior sighting — ack it so we
+        # don't re-fetch forever.
+        self.assertEqual(self.poller.offset, 7778)
+
+    @patch("apps.router.poller.TelegramPoller._handle_update")
+    @patch("apps.router.inbound_dedup.claim_inbound_event", return_value=True)
+    @patch("apps.tenants.middleware.set_rls_context")
+    def test_poison_update_advances_offset_to_avoid_wedge(self, _rls, _claim, mock_handle):
+        # A bug handling THIS specific update must not wedge the poller.
+        mock_handle.side_effect = ValueError("bad message shape")
+        self.poller._process_update({"update_id": 9001, "message": {"text": "poison"}})
+        self.assertEqual(self.poller.offset, 9002)

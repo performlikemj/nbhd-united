@@ -654,11 +654,27 @@ class TelegramPoller:
     # ------------------------------------------------------------------
 
     def _process_update(self, update: dict) -> None:
-        """Process a single Telegram update."""
-        update_id = update.get("update_id", 0)
-        self.offset = update_id + 1
+        """Process a single Telegram update.
 
-        # Set service-role RLS context for DB access
+        The read offset is advanced only AFTER the update has been handled
+        (or deliberately skipped as a duplicate) — never before. Advancing
+        it up front meant any failure in the DB-touching setup below — most
+        often an ``EMAXCONNSESSION`` from an exhausted Supabase pooler in
+        ``set_rls_context`` — propagated out of this method with the offset
+        already moved, so the next ``getUpdates`` acked the update to
+        Telegram *unprocessed*. The user's message was silently dropped:
+        no reply, no enqueue, no retry. Deferring the advance lets a
+        transient failure fall through to the poll loop's backoff and the
+        same update is re-fetched next poll; the dedup ledger
+        (``claim_inbound_event``) keeps a crashed-after-handling update
+        from being answered twice.
+        """
+        update_id = update.get("update_id", 0)
+
+        # Set service-role RLS context for DB access. If this raises (pooler
+        # exhaustion / DB unreachable) the exception propagates to the poll
+        # loop WITHOUT advancing the offset, so the update is retried on the
+        # next poll instead of being acked-and-lost.
         from apps.tenants.middleware import set_rls_context
 
         set_rls_context(service_role=True)
@@ -671,12 +687,21 @@ class TelegramPoller:
 
         if update_id and not claim_inbound_event(f"tg:{update_id}"):
             logger.info("Telegram poller: skipping duplicate update %s", update_id)
+            # Already handled on a prior sighting — safe to ack so we don't
+            # re-fetch it forever.
+            self.offset = update_id + 1
             return
 
         try:
             self._handle_update(update)
         except Exception:
+            # Poison update (a bug handling THIS message, not infra): log
+            # and let the offset advance below so one bad update can't wedge
+            # the poller re-fetching it on every poll.
             logger.exception("Unhandled error processing update %s", update_id)
+
+        # Handled (or logged as poison) — now it's safe to advance past it.
+        self.offset = update_id + 1
 
     def _handle_update(self, update: dict) -> None:
         """Core routing logic for a single update."""
