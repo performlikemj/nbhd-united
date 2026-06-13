@@ -1,6 +1,19 @@
 import { wrapTool } from "../../tool-logger.js";
 const wrap = (def) => wrapTool(def, { plugin: "nbhd-journal-tools" });
 
+// Authoritative document kinds — mirrors apps/journal Document.Kind (the NBHD
+// runtime validates `kind` against this set and 400s with `invalid_kind`
+// otherwise; observed on the canary 2026-06-13 when the model passed an
+// out-of-set kind). Used as a JSON-schema `enum` on every document `kind`
+// param so the model is constrained to valid values rather than guessing.
+// Keep in sync with apps/journal/models.py Document.Kind.
+const DOCUMENT_KIND_ENUM = ["daily", "weekly", "monthly", "goal", "project", "tasks", "ideas", "memory"];
+// Writable freeform kinds for nbhd_document_put. Excludes goal/tasks on purpose:
+// those have dedicated lifecycle tools (nbhd_goal_* / nbhd_task_*) and new writes
+// must land there, so the put enum and its "Do NOT use for goals or tasks"
+// description agree instead of contradicting.
+const DOCUMENT_PUT_KIND_ENUM = ["daily", "weekly", "monthly", "project", "ideas", "memory"];
+
 /**
  * NBHD Journal Tools Plugin (v2)
  *
@@ -144,6 +157,7 @@ export default function register(api) {
         properties: {
           kind: {
             type: "string",
+            enum: DOCUMENT_KIND_ENUM,
             description: "Document kind: daily, weekly, monthly, goal, project, tasks, ideas, memory.",
           },
           slug: {
@@ -180,7 +194,8 @@ export default function register(api) {
         properties: {
           kind: {
             type: "string",
-            description: "Document kind: daily, weekly, monthly, goal, project, tasks, ideas, memory.",
+            enum: DOCUMENT_PUT_KIND_ENUM,
+            description: "Document kind: daily, weekly, monthly, project, ideas, memory. (Goals and tasks use the dedicated nbhd_goal_* / nbhd_task_* tools, not this one.)",
           },
           slug: {
             type: "string",
@@ -309,6 +324,7 @@ export default function register(api) {
         properties: {
           kind: {
             type: "string",
+            enum: DOCUMENT_KIND_ENUM,
             description: "Document kind (default: daily).",
           },
           slug: {
@@ -373,7 +389,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_daily_note_set_section",
       description:
-        "Set the content of a specific section in the daily note. Use for writing structured sections like Morning Report, Weather, News, Focus, or Evening Check-in.",
+        "Set the content of a specific section in the daily note. REQUIRED: `section_slug` (the section to write, e.g. 'morning-report') AND `content` (the markdown). Both must be set in every call. Use for writing structured sections like Morning Report, Weather, News, Focus, or Evening Check-in.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -418,7 +434,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_daily_note_append",
       description:
-        "Append a quick timestamped log entry to the daily note. Auto-timestamps with current time and author=agent. Use ONLY for narrative reflection, mood, observations, or prose journaling. For ACTIONABLE ITEMS the user wants to remember to do (reminders, follow-ups, todos, 'remind me to X') use `nbhd_task_create` instead — even if mentioned casually in chat. Tasks have status + due_date and are queryable; daily-note prose is not.",
+        "Append a quick timestamped log entry to the daily note. REQUIRED: `content` (the markdown to append) — must be set in every call. Auto-timestamps with current time and author=agent. Use ONLY for narrative reflection, mood, observations, or prose journaling. For ACTIONABLE ITEMS the user wants to remember to do (reminders, follow-ups, todos, 'remind me to X') use `nbhd_task_create` instead — even if mentioned casually in chat. Tasks have status + due_date and are queryable; daily-note prose is not.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -593,6 +609,7 @@ export default function register(api) {
           },
           kind: {
             type: "string",
+            enum: DOCUMENT_KIND_ENUM,
             description: "Optional: filter to a specific document kind (daily, weekly, monthly, goal, project, tasks, ideas, memory).",
           },
           limit: {
@@ -663,7 +680,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_lesson_suggest",
       description:
-        "Suggest a candidate lesson for user approval. Creates a pending lesson with user-facing text, optional context, source metadata, and auto-generated tags.",
+        "Suggest a candidate lesson for user approval. REQUIRED: `text` (the lesson/insight in 1-3 sentences) — must be set in every call. Creates a pending lesson with user-facing text, optional context, source metadata, and auto-generated tags.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1511,7 +1528,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_task_update",
       description:
-        "Update a task — change title, description, pillar, due_date, parent goal, or related_ref. PATCH semantics. For status changes, prefer nbhd_task_complete / nbhd_task_skip / nbhd_task_defer.",
+        "Update a task — change title, description, pillar, due_date, parent goal, or related_ref. REQUIRED: `task_id` (the task UUID to update) — must be set in every call. PATCH semantics. For status changes, prefer nbhd_task_complete / nbhd_task_skip / nbhd_task_defer.",
       parameters: {
         type: "object",
         additionalProperties: false,

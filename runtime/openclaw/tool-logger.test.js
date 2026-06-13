@@ -235,3 +235,144 @@ test("safeErrorMessage handles odd inputs", () => {
   const long = "a".repeat(500);
   assert.equal(safeErrorMessage(new Error(long)).length, 200);
 });
+
+// ── Required-parameter guard (added 2026-06-13) ──────────────────────────────
+// Centralized presence-check so the model gets one complete error naming every
+// omitted required field. Presence-only: empty strings still reach execute so
+// no previously-accepted call is newly rejected.
+
+test("required guard: omitted required param throws before execute", async () => {
+  let executed = false;
+  const def = wrapTool({
+    name: "nbhd_test_req",
+    parameters: { type: "object", properties: { section_slug: { type: "string" }, content: { type: "string" } }, required: ["section_slug", "content"] },
+    async execute() { executed = true; return "should-not-run"; },
+  });
+  const cap = captureConsole();
+  try {
+    await assert.rejects(
+      () => def.execute("id-1", { content: "hi" }), // section_slug omitted
+      (err) => {
+        assert.match(err.message, /missing required parameter\(s\): section_slug/);
+        assert.match(err.message, /requires: section_slug, content/);
+        return true;
+      },
+    );
+    assert.equal(executed, false, "execute must NOT run when a required arg is missing");
+    assert.equal(cap.captured.length, 2); // call + error
+    assert.match(cap.captured[1], /^\[nbhd:tools\] error nbhd_test_req id=\d+ duration=\d+ms message=missing required parameter/);
+  } finally {
+    cap.restore();
+  }
+});
+
+test("required guard: names ALL omitted required fields at once", async () => {
+  const def = wrapTool({
+    name: "nbhd_test_req_multi",
+    parameters: { type: "object", properties: { a: {}, b: {}, c: {} }, required: ["a", "b", "c"] },
+    async execute() { return "x"; },
+  });
+  const cap = captureConsole();
+  try {
+    await assert.rejects(
+      () => def.execute("id-2", { b: "present" }),
+      (err) => {
+        assert.match(err.message, /missing required parameter\(s\): a, c/);
+        return true;
+      },
+    );
+  } finally {
+    cap.restore();
+  }
+});
+
+test("required guard: all required present → executes normally", async () => {
+  const def = wrapTool({
+    name: "nbhd_test_req_ok",
+    parameters: { type: "object", properties: { task_id: {} }, required: ["task_id"] },
+    async execute(_id, params) { return `ok:${params.task_id}`; },
+  });
+  const cap = captureConsole();
+  try {
+    const r = await def.execute("id-3", { task_id: "abc" });
+    assert.equal(r, "ok:abc");
+    assert.match(cap.captured[1], /^\[nbhd:tools\] ok nbhd_test_req_ok/);
+  } finally {
+    cap.restore();
+  }
+});
+
+test("required guard is presence-only: empty string still reaches execute (no regression)", async () => {
+  let seen;
+  const def = wrapTool({
+    name: "nbhd_test_req_empty",
+    parameters: { type: "object", properties: { text: {} }, required: ["text"] },
+    async execute(_id, params) { seen = params.text; return "ran"; },
+  });
+  const cap = captureConsole();
+  try {
+    const r = await def.execute("id-4", { text: "" }); // empty but PRESENT
+    assert.equal(r, "ran", "empty-string required arg must still reach execute");
+    assert.equal(seen, "");
+  } finally {
+    cap.restore();
+  }
+});
+
+test("required guard: no required array → never blocks", async () => {
+  const def = wrapTool({
+    name: "nbhd_test_no_req",
+    parameters: { type: "object", properties: { q: {} } },
+    async execute() { return "ran"; },
+  });
+  const cap = captureConsole();
+  try {
+    assert.equal(await def.execute("id-5", {}), "ran");
+  } finally {
+    cap.restore();
+  }
+});
+
+// ── Guard arg-position robustness (adversarial finding 2026-06-13) ────────────
+// OpenClaw calls execute(toolCallId, params, signal, onUpdate) → params=args[1],
+// but legacy tools (image-gen, finance gravity_query) destructure args[0]. The
+// guard must read the real params object from either position and never grab
+// the AbortSignal at args[2].
+
+test("required guard reads params from args[1] (canonical toolCallId, params)", async () => {
+  let ran = false;
+  const def = wrapTool({
+    name: "nbhd_test_canonical",
+    parameters: { type: "object", properties: { prompt: {} }, required: ["prompt"] },
+    async execute(_id, params) { ran = true; return params.prompt; },
+  });
+  // present → passes
+  assert.equal(await def.execute("call-1", { prompt: "hi" }, {}, () => {}), "hi");
+  assert.equal(ran, true);
+  // omitted → guard throws (does not misread the toolCallId string)
+  await assert.rejects(() => def.execute("call-2", {}, {}, () => {}), /missing required parameter\(s\): prompt/);
+});
+
+test("required guard reads params from args[0] for legacy single-arg execute(params)", async () => {
+  const def = wrapTool({
+    name: "nbhd_test_legacy_arg",
+    parameters: { type: "object", properties: { prompt: {} }, required: ["prompt"] },
+    async execute(params) { return params.prompt; }, // legacy: params at args[0]
+  });
+  // Called single-arg → params at args[0]; guard must find it, not throw.
+  assert.equal(await def.execute({ prompt: "legacy" }), "legacy");
+});
+
+test("required guard never mistakes args[2] (signal) for params", async () => {
+  const def = wrapTool({
+    name: "nbhd_test_signal",
+    parameters: { type: "object", properties: { prompt: {} }, required: ["prompt"] },
+    async execute(_id, params) { return params && params.prompt; },
+  });
+  // params at args[1] is {} (model sent nothing); a non-null signal sits at args[2].
+  // Guard must validate args[1]={} (→ prompt missing), NOT the signal object.
+  await assert.rejects(
+    () => def.execute("call-3", {}, { aborted: false }, () => {}),
+    /missing required parameter\(s\): prompt/,
+  );
+});

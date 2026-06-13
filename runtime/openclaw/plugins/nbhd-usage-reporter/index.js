@@ -213,22 +213,20 @@ export default function register(api) {
     return;
   }
 
-  // OpenClaw 2026.5.28 moved plugin hook registration from the legacy
-  // `api.on(event, handler)` to `api.registerHook(event, handler)`. On 5.28
-  // `api.on` still exists (so a `typeof api.on` guard passes and the plugin
-  // logs "registered") but it no longer wires up conversation hooks — so
-  // `llm_output`/`agent_end` silently never fire and usage_records stop
-  // fleet-wide. Prefer registerHook; keep the api.on fallback so this shared
-  // plugin keeps working on 5.7 tenants during the staged rollout.
-  const subscribe =
-    typeof api.registerHook === "function"
-      ? (event, handler) => api.registerHook(event, handler)
-      : typeof api.on === "function"
-        ? (event, handler) => api.on(event, handler)
-        : null;
-  if (!subscribe) {
+  // model_call_started / llm_output / agent_end are TYPED conversation hooks
+  // (members of OpenClaw's PLUGIN_HOOK_NAMES). On BOTH 5.7 and 5.28 they must be
+  // registered via `api.on` → registerTypedHook → the `typedHooks` registry that
+  // the conversation dispatchers (getHooksForName) actually read. `api.registerHook`
+  // is a DIFFERENT, INTERNAL-hook API (registry.hooks; requires opts.name) that
+  // never fires for these events. PR #746 wrongly switched this plugin to
+  // registerHook — which is exactly why register() threw "hook registration
+  // missing name" on 5.28 (and, even with a name, would have registered the hooks
+  // into a registry nothing reads). Verified against the openclaw@2026.5.28 SDK
+  // (loader: on → registerTypedHook; hook-runner: getHooksForName reads typedHooks).
+  if (typeof api.on !== "function") {
     return;
   }
+  const subscribe = (event, handler) => api.on(event, handler);
 
   api.logger.info("NBHD usage reporter plugin registered");
 

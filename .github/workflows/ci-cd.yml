@@ -257,6 +257,16 @@ jobs:
         run: |
           node --test runtime/openclaw/suppress-chmod-eperm.test.mjs
 
+      - name: Run nbhd toolcall + hook-registration tests
+        # Same autoinstall guard as the redact step so the sidecar doesn't
+        # patch node:test's streams (tool-logger.test.js captures console.log).
+        env:
+          NBHD_REDACT_STDOUT_DISABLE_AUTOINSTALL: "1"
+        run: |
+          node --test runtime/openclaw/tool-logger.test.js
+          node --test runtime/openclaw/plugins/nbhd-journal-tools/schema.test.mjs
+          node --test runtime/openclaw/plugins/nbhd-usage-reporter/register.test.mjs
+
       - name: Audit OpenClaw chmod call-site inventory
         # Diffs the chmod-family callee shapes in the pinned OpenClaw npm
         # package against runtime/openclaw/chmod-audit-baseline.txt. Fails
