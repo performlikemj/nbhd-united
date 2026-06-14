@@ -7,6 +7,7 @@ from django.test import TestCase, override_settings
 
 from apps.billing.constants import NEMOTRON_FREE_MODEL
 from apps.billing.model_health import model_health_check
+from apps.billing.model_offers import INACTIVE_OFFER_DISABLE_THRESHOLD
 from apps.billing.models import FreeModelOffer
 from apps.tenants.models import Tenant, User
 
@@ -31,6 +32,21 @@ def _models_resp(prompt="0", completion="0"):
                 {
                     "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
                     "pricing": {"prompt": prompt, "completion": completion},
+                }
+            ]
+        }
+    )
+
+
+def _models_resp_without_offer():
+    """A SUCCESSFUL /models read that does NOT list the offer slug — i.e. the slug
+    was retired/renamed (positive evidence, vs an empty read from an outage)."""
+    return _Resp(
+        {
+            "data": [
+                {
+                    "id": "deepseek/deepseek-v4-pro",
+                    "pricing": {"prompt": "0.1", "completion": "0.2"},
                 }
             ]
         }
@@ -132,3 +148,35 @@ class ModelHealthTransitionTest(TestCase):
         self.assertTrue(FreeModelOffer.load().is_active)
         self.assertFalse(mock_notify.called)
         self.assertFalse(mock_publish.called)
+
+    # ── self-heal: auto-disable a never-activated offer whose slug was retired ──
+    @patch(
+        "apps.billing.model_health._ping",
+        return_value=(False, INACTIVE_OFFER_DISABLE_THRESHOLD),
+    )
+    @patch("apps.billing.model_health.requests.get", return_value=_models_resp_without_offer())
+    def test_auto_disables_inactive_offer_when_slug_retired(self, _get, _ping, mock_notify, mock_publish):
+        # Offer is enabled + never activated (default). A SUCCESSFUL /models read omits
+        # the slug (retired) AND pings have failed past the threshold → kill-switch off.
+        result = model_health_check()
+        self.assertEqual(result["transition"], "auto_disabled")
+        offer = FreeModelOffer.load()
+        self.assertFalse(offer.enabled)
+        self.assertEqual(offer.last_transition_reason, "auto_disabled_retired_slug")
+        # Next tick short-circuits on `not offer.enabled` — no further transition.
+        self.assertEqual(model_health_check()["transition"], "none")
+
+    @patch(
+        "apps.billing.model_health._ping",
+        return_value=(False, INACTIVE_OFFER_DISABLE_THRESHOLD),
+    )
+    @patch(
+        "apps.billing.model_health.requests.get",
+        side_effect=requests.exceptions.ConnectionError("models endpoint down"),
+    )
+    def test_outage_does_not_auto_disable_inactive_offer(self, _get, _ping, mock_notify, mock_publish):
+        # /models read FAILS (pricing_map empty) → no positive 'slug retired' signal,
+        # so a transient OpenRouter outage must NOT kill a valid (never-activated) promo.
+        result = model_health_check()
+        self.assertEqual(result["transition"], "held (not yet available)")
+        self.assertTrue(FreeModelOffer.load().enabled)

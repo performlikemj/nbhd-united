@@ -1354,12 +1354,20 @@ def dedup_crons(request):
 _HEALTH_ALERT_COOLDOWN_SECONDS = 30 * 60  # 30 minutes
 
 
-def _send_alert_to_personal_openclaw(message: str) -> bool:
+def _send_alert_to_personal_openclaw(message: str) -> str:
     """Send a health alert to MJ's personal OpenClaw agent.
 
-    Routes through the Cloudflare tunnel to the personal gateway.
-    The agent receives the alert and can propose fixes without acting.
-    Returns True on success.
+    Routes through the Cloudflare tunnel to the personal gateway. The agent
+    receives the alert and can propose fixes without acting.
+
+    Returns a delivery status:
+      - "delivered"    — the gateway accepted it (HTTP 200)
+      - "undeliverable" — a config/auth problem that retrying won't fix
+                          (missing env, a 3xx CF-Access login redirect, or a 4xx).
+                          The caller suppresses re-alerting for the cooldown window
+                          so we don't POST a doomed request every 5 minutes.
+      - "transient"    — a 5xx / network blip; the caller leaves the cooldown unset
+                          so the next tick retries against a (hopefully) healthy gateway.
     """
     import httpx
 
@@ -1370,7 +1378,7 @@ def _send_alert_to_personal_openclaw(message: str) -> bool:
 
     if not gateway_url or not gateway_token:
         logger.warning("ADMIN_OPENCLAW_GATEWAY_URL or TOKEN not configured")
-        return False
+        return "undeliverable"
 
     headers = {
         "Authorization": f"Bearer {gateway_token}",
@@ -1400,16 +1408,35 @@ def _send_alert_to_personal_openclaw(message: str) -> bool:
                     {"role": "user", "content": message},
                 ],
             },
+            # httpx does NOT follow redirects by default — a 302 is returned as-is
+            # (which is what we want: a CF-Access login redirect must read as a
+            # failure, not be chased to an HTML login page).
             timeout=30,
         )
-        if resp.status_code == 200:
-            logger.info("Health alert delivered to personal OpenClaw")
-            return True
-        logger.warning("Personal OpenClaw returned %d: %s", resp.status_code, resp.text[:200])
-        return False
     except Exception:
-        logger.exception("Failed to send alert to personal OpenClaw")
-        return False
+        logger.exception("Failed to send alert to personal OpenClaw (transient)")
+        return "transient"
+
+    if resp.status_code == 200:
+        logger.info("Health alert delivered to personal OpenClaw")
+        return "delivered"
+    if resp.status_code in (301, 302, 303, 307, 308):
+        # A 3xx to the gateway means Cloudflare Access bounced us to its login page:
+        # the CF-Access service token (CF_ACCESS_CLIENT_ID/SECRET) is missing/stale,
+        # or the CF-Access app has no Service-Auth policy admitting it. Retrying every
+        # tick won't help — fix the token/policy in Cloudflare Zero Trust.
+        logger.error(
+            "Personal OpenClaw alert redirected (HTTP %d) — Cloudflare Access rejected "
+            "the service token; alert NOT delivered. Check CF_ACCESS_CLIENT_ID/SECRET "
+            "and the CF-Access Service-Auth policy for the admin gateway.",
+            resp.status_code,
+        )
+        return "undeliverable"
+    if 400 <= resp.status_code < 500:
+        logger.error("Personal OpenClaw alert rejected (HTTP %d): %s", resp.status_code, resp.text[:200])
+        return "undeliverable"
+    logger.warning("Personal OpenClaw returned %d (transient): %s", resp.status_code, resp.text[:200])
+    return "transient"
 
 
 @csrf_exempt
@@ -1460,10 +1487,16 @@ def run_health_check(request):
             if len(unhealthy) > 10:
                 lines.append(f"  ... and {len(unhealthy) - 10} more")
 
-            sent = _send_alert_to_personal_openclaw("\n".join(lines))
-            if sent:
+            status = _send_alert_to_personal_openclaw("\n".join(lines))
+            # Start the cooldown when the alert was delivered OR is undeliverable for
+            # a reason retrying won't fix (missing config / CF-Access 302 / 4xx) — the
+            # latter is what stops the doomed POST from firing every 5 minutes. A
+            # transient 5xx/network failure leaves the cooldown unset so the next tick
+            # retries.
+            if status in ("delivered", "undeliverable"):
                 cache.set(cache_key, True, _HEALTH_ALERT_COOLDOWN_SECONDS)
-            summary["alerted"] = sent
+            summary["alerted"] = status == "delivered"
+            summary["alert_status"] = status
         else:
             logger.info("Health check: %d unhealthy, alert suppressed (cooldown)", len(unhealthy))
             summary["alerted"] = False

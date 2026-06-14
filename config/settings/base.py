@@ -143,6 +143,16 @@ SIMPLE_JWT = {
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "SIGNING_KEY": env("JWT_SECRET", default=SECRET_KEY),
     "TOKEN_OBTAIN_SERIALIZER": "apps.tenants.serializers.EmailTokenObtainPairSerializer",
+    # NOTE: refresh-token rotation (ROTATE_REFRESH_TOKENS + BLACKLIST_AFTER_ROTATION)
+    # is intentionally NOT enabled here. Both clients are now rotation-READY (web
+    # api.ts + iOS RemoteAPI persist the rotated refresh and single-flight), but
+    # flipping the flag safely needs a coordinated rollout that this change does not
+    # do: (1) frontend-first deploy ordering so open/old web bundles don't discard
+    # the rotated token and get force-logged-out; (2) the iOS refresh-retry loop must
+    # re-read the keychain between attempts so a lost-response double-spend can't
+    # silently sign the user out; (3) a scheduled `flushexpiredtokens` to reap the
+    # OutstandingToken/BlacklistedToken rows rotation creates; (4) cross-tab refresh
+    # coordination on web. Enable as a deliberate follow-up, not a drive-by.
 }
 
 # CORS

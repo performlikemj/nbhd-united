@@ -33,6 +33,17 @@ from apps.billing.constants import (
 # OpenClaw's runWithModelFallback).
 OFFER_FAILURE_THRESHOLD = 3
 
+# Number of consecutive failed reachability checks before we auto-disable an offer
+# that is *enabled but has never activated*. Distinct from (and far larger than)
+# OFFER_FAILURE_THRESHOLD: that one yanks a live offer on a short outage, whereas
+# this one only fires when the offer never went live at all — i.e. the configured
+# slug is simply gone (OpenRouter retired/renamed it → a permanent 404). At the
+# 30-minute cron cadence, 48 checks ≈ 24h of continuous failure, which a real
+# transient blip won't reach. When tripped we flip the `enabled` kill-switch off so
+# we stop pinging a dead slug forever; relaunching means setting a valid model_id
+# and re-enabling.
+INACTIVE_OFFER_DISABLE_THRESHOLD = 48
+
 
 def _offer():
     # Late import — this module is imported from config_generator during
