@@ -24,7 +24,16 @@ import {
   IconLogOut,
 } from "@/components/icons/constellation";
 
-const publicPages = ["/", "/login", "/signup", "/legal/terms", "/legal/privacy", "/legal/refund"];
+const publicPages = [
+  "/",
+  "/login",
+  "/signup",
+  "/forgot-password",
+  "/reset-password",
+  "/legal/terms",
+  "/legal/privacy",
+  "/legal/refund",
+];
 
 interface NavItem {
   href: string;
@@ -285,7 +294,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   // full-screen experience with its own Exit affordance; it must own the viewport
   // on mobile too, or the sticky header + mobile tab bar paint over the canvas and
   // steal touch at the top/bottom edges (making portrait feel unplayable).
-  const fullBleedPages = ["/", "/signup", "/login", "/onboarding"];
+  const fullBleedPages = ["/", "/signup", "/login", "/forgot-password", "/reset-password", "/onboarding"];
   if (fullBleedPages.includes(pathname) || pathname === "/constellation/play") {
     return (
       <ErrorBoundary>
