@@ -59,6 +59,46 @@ function safeErrorMessage(err) {
   return String(msg).replace(/\s+/g, " ").trim().slice(0, 200);
 }
 
+function requiredList(parameters) {
+  const req = parameters && parameters.required;
+  return Array.isArray(req) ? req.filter((k) => typeof k === "string") : [];
+}
+
+/**
+ * Resolve the params object from an execute(...) call's args, tolerant of both
+ * argument conventions present in this codebase:
+ *   - canonical OpenClaw: execute(toolCallId, params, signal, onUpdate) → args[1]
+ *   - a few legacy nbhd tools (nbhd-image-gen, finance gravity_query):
+ *     execute(params) / execute({...}) → args[0]
+ * We check args[1] first, then args[0], and NEVER fall through to args[2]+
+ * (those hold the AbortSignal / onUpdate callback, never params). This makes
+ * the required-arg guard safe regardless of how an individual tool destructures
+ * its signature — it always validates the object OpenClaw actually passed.
+ */
+function paramsFromArgs(args) {
+  const isPlainObject = (v) => v != null && typeof v === "object" && !Array.isArray(v);
+  if (isPlainObject(args[1])) return args[1];
+  if (isPlainObject(args[0])) return args[0];
+  return {};
+}
+
+/**
+ * Required-parameter presence check. Returns the list of required keys that
+ * the model OMITTED entirely (undefined/null). Deliberately presence-only —
+ * it does NOT reject empty strings/arrays, so it can never newly reject a
+ * call that the tool's own execute() previously accepted; the per-tool
+ * `if (!x) throw` checks remain the backstop for empty values. This exists
+ * to turn the observed "model omits a required arg" failures (canary
+ * 2026-06-13: section_slug/content/text/task_id) into ONE uniform error that
+ * names every required field, so the model fixes them all in a single retry.
+ */
+function missingRequiredParams(parameters, params) {
+  const req = requiredList(parameters);
+  if (req.length === 0) return [];
+  const obj = params && typeof params === "object" ? params : {};
+  return req.filter((key) => obj[key] === undefined || obj[key] === null);
+}
+
 /**
  * Wrap a tool definition so its execute() emits uniform tool-boundary
  * log lines. Returns a NEW object so plugins can pass it straight to
@@ -101,6 +141,26 @@ function wrapTool(toolDef, opts = {}) {
     const callId = nextCallId();
     const start = Date.now();
     console.log(`[nbhd:tools] call ${name} id=${callId}`);
+
+    // Schema-driven required-arg guard. Fails fast with ONE complete message
+    // naming every omitted required field (and the full required set), instead
+    // of the first-gap-only `<x> is required` each tool throws. Presence-only,
+    // so well-formed calls are unaffected. Resolves params from args[1]/args[0]
+    // (see paramsFromArgs) so it's correct for both signature conventions.
+    const missing = missingRequiredParams(toolDef.parameters, paramsFromArgs(args));
+    if (missing.length > 0) {
+      const duration = Date.now() - start;
+      const err = new Error(
+        `missing required parameter(s): ${missing.join(", ")}. ` +
+          `${name} requires: ${requiredList(toolDef.parameters).join(", ")}. ` +
+          `Re-call ${name} with every required parameter set.`,
+      );
+      console.log(
+        `[nbhd:tools] error ${name} id=${callId} duration=${duration}ms message=${safeErrorMessage(err)}`,
+      );
+      throw err;
+    }
+
     try {
       const result = await originalExecute.apply(this, args);
       const duration = Date.now() - start;
