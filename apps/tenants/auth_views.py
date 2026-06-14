@@ -22,7 +22,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from apps.common.cache import tenant_cache
 
 from .models import Tenant
-from .serializers import TenantSerializer, UserSerializer
+from .serializers import EmailTokenObtainPairSerializer, TenantSerializer, UserSerializer
 
 User = get_user_model()
 
@@ -158,11 +158,20 @@ class PasswordResetConfirmView(APIView):
             )
 
         user.set_password(new_password)
-        user.save(update_fields=["password"])
+        # Persist the password_last_changed_at stamp that the custom
+        # ``set_password`` override bumps in memory. Omitting it from
+        # update_fields silently drops the bump, which (a) defeats
+        # force-logout-on-rotation (old JWTs survive the reset) and
+        # (b) leaves a stale stamp that would reject the token we mint below.
+        user.save(update_fields=["password", "password_last_changed_at"])
 
         # Sign the user back in so they land on the dashboard without a
-        # second login step.
-        refresh = RefreshToken.for_user(user)
+        # second login step. Mint via the serializer's ``get_token`` so the
+        # token carries the ``pw_iat`` claim — ``RefreshToken.for_user``
+        # omits it, and JWTAuthenticationWithRLS then rejects the brand-new
+        # token as "issued before the last password change" for any user
+        # with a non-null password_last_changed_at.
+        refresh = EmailTokenObtainPairSerializer.get_token(user)
         return Response(
             {
                 "access": str(refresh.access_token),
