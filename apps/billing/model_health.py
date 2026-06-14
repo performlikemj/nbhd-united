@@ -36,6 +36,7 @@ from apps.billing.constants import (
     display_name_for_model,
 )
 from apps.billing.model_offers import (
+    INACTIVE_OFFER_DISABLE_THRESHOLD,
     OFFER_FAILURE_THRESHOLD,
     record_model_failure,
     record_model_pricing,
@@ -90,6 +91,27 @@ def model_health_check() -> dict[str, Any]:
         if offer_free is True and reachable:
             _transition(offer, new_active=True, reason="available")
             result["transition"] = "activated"
+        elif _slug_retired(pricing_map, offer.model_id) and fail_count >= INACTIVE_OFFER_DISABLE_THRESHOLD:
+            # Enabled but never activated, AND we have positive evidence the slug is
+            # gone: a SUCCESSFUL /models read that doesn't list it (OpenRouter retired
+            # /renamed it → permanent 404), confirmed by a long run of failed pings.
+            # Requiring the successful-read signal means a transient OpenRouter outage
+            # (which leaves pricing_map empty → _slug_retired False) can NOT kill a
+            # valid pre-launch promo; only a real retire does. Flip the kill-switch off
+            # so we stop pinging a dead slug every tick (the `not offer.enabled`
+            # early-return above short-circuits future ticks). Relaunch = set a valid
+            # model_id + re-enable.
+            offer.enabled = False
+            offer.last_transition_reason = "auto_disabled_retired_slug"
+            offer.save(update_fields=["enabled", "last_transition_reason", "updated_at"])
+            logger.warning(
+                "model_health_check: auto-disabled free offer — model %s absent from a "
+                "successful /models read and unreachable for %d consecutive checks; never "
+                "activated. Set a valid model_id and re-enable to relaunch.",
+                offer.model_id,
+                fail_count,
+            )
+            result["transition"] = "auto_disabled"
         else:
             result["transition"] = "held (not yet available)"
     else:
@@ -140,6 +162,13 @@ def _offer_free_status(pricing_map: dict[str, dict], model_id: str) -> bool | No
     if slug not in pricing_map:
         return None
     return _pricing_is_free(pricing_map[slug])
+
+
+def _slug_retired(pricing_map: dict[str, dict], model_id: str) -> bool:
+    """True only when a SUCCESSFUL /models read does NOT list the slug — positive
+    evidence OpenRouter retired/renamed it (permanent 404). A failed/empty read
+    (pricing_map == {}) returns False: an outage is not evidence the slug is gone."""
+    return bool(pricing_map) and normalize_model_id(model_id) not in pricing_map
 
 
 def _ping(model_id: str) -> tuple[bool, int]:

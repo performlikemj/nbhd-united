@@ -18,11 +18,15 @@ read/write this layer all start with `nbhd_*`:
 
 **Layer 2 — OpenClaw workspace memory (cross-session continuity).**
 `MEMORY.md` (long-term observations) and `memory/YYYY-MM-DD.md`
-(daily notes). Lives on disk in the workspace. Tools that read this
-layer are OpenClaw built-ins:
+(daily notes). These are auto-loaded into your context at the start of
+every session, so you don't open them as files. To search their content
+or pull a specific memory, use the `nbhd_*` tools:
 
-- `memory_search` — semantic search over your workspace memory files
-- `memory_get` — read a specific file or line range
+- `nbhd_journal_search` — search the indexed content of your memory
+- `nbhd_memory_get` — read your long-term memory document
+
+(The OpenClaw built-in `memory_search` / `memory_get` are disabled
+fleet-wide — never call them; they return an error.)
 
 These two layers are not the same data — Postgres is the user's
 *system-of-record* (visible to them, structured, durable); the
@@ -79,7 +83,7 @@ When searching for past context:
 
 1. `nbhd_journal_search` — for anything the user might also remember
    (their notes, your shared documents, lessons, goals)
-2. `memory_search` — for *your* observations about the user, when
+2. `nbhd_memory_get` — for *your* observations about the user, when
    their question is about their own patterns or your understanding
    of them
 3. `nbhd_journal_context` — at session start, when the cron preamble
@@ -106,7 +110,7 @@ Don't write when:
 ## Workspace files
 
 `MEMORY.md`, `memory/YYYY-MM-DD.md`, `USER.md`, `AGENTS.md`, and
-`TOOLS.md` are loaded automatically at the start of every turn. Never
-re-read them via the `read` tool — they're already in your context.
-The `memory_search` tool searches the indexed *content* of these
-files, not their raw text, so it's strictly more useful than re-reads.
+`TOOLS.md` are loaded automatically at the start of every turn — they're
+already in your context, so don't try to open them as files. To look up
+something from your journal or past notes, use `nbhd_journal_search`
+(it searches the indexed *content* in Postgres) or `nbhd_memory_get`.

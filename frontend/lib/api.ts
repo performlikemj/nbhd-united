@@ -87,7 +87,11 @@ async function refreshAccessToken(): Promise<string> {
   }
 
   const data = await response.json();
-  setTokens(data.access, refresh);
+  // With ROTATE_REFRESH_TOKENS the response carries a NEW refresh token and the
+  // presented one is blacklisted on use — persist the rotated one or the next
+  // refresh dies. Falls back to the old token when rotation is off (no `refresh`
+  // field), so this is safe regardless of the server setting.
+  setTokens(data.access, data.refresh ?? refresh);
   return data.access;
 }
 

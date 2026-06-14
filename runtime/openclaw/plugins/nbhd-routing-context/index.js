@@ -39,6 +39,56 @@ const REPEATED_WORD_RUN = /\b(\w+)\b(?:\s+\1\b){7,}/i;
 // `2026-2026-05-14` style — prefix doubling from degenerate generation.
 const DOUBLED_YEAR_DATE = /\b\d{4}-\d{4}-\d{2}-\d{2}\b/;
 
+// Built-in tools that are NOT in this fleet's tenant catalog but the model still
+// occasionally tries to call:
+//   - coding tools (`tools.allow` omits the `coding` profile): exec/read/write/
+//     edit/process (+ bash/apply_patch aliases the model has been seen to guess)
+//   - management tools (`tools.deny`): session_status/sessions_*/agents_list/...
+//   - workspace-memory built-ins, disabled fleet-wide: memory_search/memory_get
+// The model emits `tool_call({id:"exec"})` etc. and the runtime answers a bare
+// "Unknown tool id: exec" — correct, but non-actionable, so it retries the same
+// dead call. We intercept at `before_tool_call` and return a corrective tool_result
+// so it switches to an nbhd_* tool instead of looping.
+//
+// SAFE BY CONSTRUCTION: we only steer ids that are NEVER in this fleet's catalog.
+// If a name is genuinely unavailable, the alternative is the same dead call — so a
+// wrong guess here can only replace one unusable result with a more helpful one. If
+// a future config re-adds any of these, drop it from this set.
+export const REMOVED_BUILTIN_TOOL_IDS = new Set([
+  "exec", "read", "write", "edit", "process", "bash", "apply_patch", "apply-patch",
+  "session_status", "sessions_list", "sessions_history", "sessions_send",
+  "agents_list", "gateway", "nodes",
+  "memory_search", "memory_get",
+]);
+
+// The toolSearch meta-tool the model invokes to run a catalog tool by id. In
+// `mode:"tools"` (fleet default) the model only sees tool_search/tool_describe/
+// tool_call, so a call to "exec" arrives as tool_call({id:"exec"}).
+const TOOL_DISPATCH_META = "tool_call";
+
+function extractDispatchedToolId(params) {
+  if (!params || typeof params !== "object") return "";
+  const raw = params.id ?? params.toolId ?? params.tool ?? params.name ?? "";
+  return typeof raw === "string" ? raw.trim().toLowerCase() : "";
+}
+
+// Pure decision for the before_tool_call guard: returns the {block, blockReason}
+// result for a dispatched removed-built-in, or undefined to let the call proceed.
+// Exported so the tests bind to THIS logic (no hand-mirrored copy to drift).
+export function decideRemovedToolBlock(event) {
+  if (!event || event.toolName !== TOOL_DISPATCH_META) return undefined;
+  const id = extractDispatchedToolId(event.params);
+  if (!id || !REMOVED_BUILTIN_TOOL_IDS.has(id)) return undefined;
+  return {
+    block: true,
+    blockReason:
+      `The tool \`${id}\` is not available in this environment. Do NOT call ` +
+      `\`${id}\` again. Use the nbhd_* tools instead — call \`tool_search\` to ` +
+      `find the right one (e.g. journal, fuel, finance, tasks, goals), then ` +
+      `\`tool_call\` with that tool's id. If no tool fits, just answer in text.`,
+  };
+}
+
 function asTrimmedString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -101,5 +151,31 @@ export default function register(api) {
         "I had trouble composing a reply just now — could you say that " +
         "again? (Internal error: degenerate output filter triggered.)",
     };
+  });
+
+  // Turn a dead call to a stripped built-in into a corrective tool_result so
+  // the model adapts instead of repeating "Unknown tool id: exec". See
+  // REMOVED_BUILTIN_TOOL_IDS above. `before_tool_call` is FAIL-CLOSED (a throw
+  // blocks the call), so the whole body is wrapped — any unexpected error
+  // degrades to a no-op (the runtime's own "Unknown tool id" path), never an
+  // accidental block of a legitimate tool.
+  api.on("before_tool_call", (event) => {
+    try {
+      const decision = decideRemovedToolBlock(event);
+      if (!decision) return undefined;
+      const id = extractDispatchedToolId(event && event.params);
+      api.logger.info(
+        `nbhd-routing-context: steering removed built-in tool '${id}' to nbhd_* ` +
+        `(runId=${asTrimmedString(event && event.runId) || "?"})`,
+      );
+      return decision;
+    } catch (err) {
+      try {
+        api.logger.warn(`nbhd-routing-context: before_tool_call guard error: ${err}`);
+      } catch (_ignored) {
+        // logging must never turn a guard hiccup into a blocked call
+      }
+      return undefined;
+    }
   });
 }
