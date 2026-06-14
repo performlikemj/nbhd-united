@@ -30,6 +30,8 @@ const publicPages = [
   "/signup",
   "/forgot-password",
   "/reset-password",
+  "/promo/redeem",
+  "/promo/redeemed",
   "/legal/terms",
   "/legal/privacy",
   "/legal/refund",
@@ -294,7 +296,16 @@ export function AppShell({ children }: { children: ReactNode }) {
   // full-screen experience with its own Exit affordance; it must own the viewport
   // on mobile too, or the sticky header + mobile tab bar paint over the canvas and
   // steal touch at the top/bottom edges (making portrait feel unplayable).
-  const fullBleedPages = ["/", "/signup", "/login", "/forgot-password", "/reset-password", "/onboarding"];
+  const fullBleedPages = [
+    "/",
+    "/signup",
+    "/login",
+    "/forgot-password",
+    "/reset-password",
+    "/promo/redeem",
+    "/promo/redeemed",
+    "/onboarding",
+  ];
   if (fullBleedPages.includes(pathname) || pathname === "/constellation/play") {
     return (
       <ErrorBoundary>
