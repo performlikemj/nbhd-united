@@ -22,7 +22,7 @@ python-telegram-bot>=22.8
 qrcode[pil]
 
 # AI / LLM
-litellm>=1.88.1,<1.88.2  # 1.82.8 compromised — supply chain attack
+litellm>=1.89.0,<1.89.1  # 1.82.8 compromised — supply chain attack
 openai
 tiktoken
 pgvector
