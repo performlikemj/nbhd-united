@@ -9,17 +9,29 @@ import { requestPasswordReset } from "@/lib/api";
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  const [rateLimited, setRateLimited] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    setRateLimited(false);
     setLoading(true);
     try {
       await requestPasswordReset(email);
-    } catch {
-      // Intentionally swallow: never reveal whether the email exists.
-    } finally {
       setSubmitted(true);
+    } catch (err) {
+      // A 429 means the rate limiter tripped (per-email 3/hr, per-IP 5/hr) and
+      // no email was sent — showing the "check your inbox" confirmation would
+      // leave the user waiting for mail that never arrives. 429 is
+      // existence-independent, so surfacing it doesn't reveal whether the
+      // account exists. Any other failure still falls through to the generic
+      // confirmation, preserving the no-enumeration guarantee.
+      if ((err as { status?: number } | null)?.status === 429) {
+        setRateLimited(true);
+      } else {
+        setSubmitted(true);
+      }
+    } finally {
       setLoading(false);
     }
   };
@@ -74,6 +86,13 @@ export default function ForgotPasswordPage() {
                   placeholder="you@example.com"
                 />
               </div>
+
+              {rateLimited && (
+                <p className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-2.5 text-sm text-rose-300">
+                  Too many reset requests. Please wait an hour before trying
+                  again.
+                </p>
+              )}
 
               <button
                 type="submit"
