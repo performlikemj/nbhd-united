@@ -50,6 +50,7 @@ COPY runtime/openclaw/plugins/nbhd-fuel-tools /opt/nbhd/plugins/nbhd-fuel-tools
 COPY runtime/openclaw/plugins/nbhd-insights-tools /opt/nbhd/plugins/nbhd-insights-tools
 COPY runtime/openclaw/plugins/nbhd-settings-tools /opt/nbhd/plugins/nbhd-settings-tools
 COPY runtime/openclaw/plugins/nbhd-routing-context /opt/nbhd/plugins/nbhd-routing-context
+COPY runtime/openclaw/plugins/nbhd-activity-stream /opt/nbhd/plugins/nbhd-activity-stream
 COPY runtime/openclaw/plugins/nbhd-automation-tools /opt/nbhd/plugins/nbhd-automation-tools
 COPY runtime/openclaw/plugins/nbhd-cron-enforcement /opt/nbhd/plugins/nbhd-cron-enforcement
 COPY skills/gws-* /opt/nbhd/skills/

@@ -1,0 +1,23 @@
+{
+  "id": "nbhd-activity-stream",
+  "name": "NBHD Activity Stream",
+  "description": "Narrates agent activity (tool use, composing) back to the NBHD control-plane so polling clients and the iOS Siri Live Activity can show what the assistant is doing instead of an opaque spinner.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string",
+        "description": "Override NBHD API base URL. Defaults to NBHD_API_BASE_URL env var."
+      },
+      "tenantId": {
+        "type": "string",
+        "description": "Override tenant ID. Defaults to NBHD_TENANT_ID env var."
+      },
+      "internalApiKey": {
+        "type": "string",
+        "description": "Override internal API key. Defaults to NBHD_INTERNAL_API_KEY env var."
+      }
+    }
+  }
+}

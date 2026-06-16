@@ -617,6 +617,23 @@ class AppChatMessage(models.Model):
         "instead of an indefinite typing indicator. Meaningless once "
         "status leaves 'pending'.",
     )
+    # Live agent-activity narration while status=pending. The container's
+    # tool-call hooks report progress to ProgressEventView, which updates these
+    # in place; polling clients render them (in-app "searching your journal…"
+    # instead of dumb dots; the iOS-27 Siri Live Activity maps `phase` to
+    # progress.localizedDescription). Meaningless once status leaves 'pending'.
+    phase = models.CharField(
+        max_length=24,
+        blank=True,
+        default="",
+        help_text="Coarse activity phase: '', 'waking', 'thinking', 'tool', 'composing'.",
+    )
+    phase_detail = models.CharField(
+        max_length=200,
+        blank=True,
+        default="",
+        help_text="Human-readable detail for the current phase, e.g. 'searching your journal'.",
+    )
 
     class Meta:
         db_table = "app_chat_messages"
@@ -716,3 +733,65 @@ class ConversationTurn(models.Model):
 
     def __str__(self) -> str:
         return f"ConversationTurn({self.channel}, {self.local_date}, tenant={self.tenant_id})"
+
+
+class DeviceToken(models.Model):
+    """An APNs device token for a user's iOS install.
+
+    Lets the control plane push "your answer is ready" when a fire-and-forget
+    (Siri-escalated) or backgrounded turn completes — the cross-cutting APNs gap
+    in ``HER_SIRI_ARCHITECTURE.md``. Without it, a fire-and-forget reply only
+    surfaces on the next app foreground (``SiriCaptureSync``).
+
+    A token belongs to one device install; ``(user, token)`` is unique and
+    upserted on registration. Tokens APNs reports as Unregistered (HTTP 410) are
+    pruned by the sender so the table self-heals on reinstall / token rotation.
+    """
+
+    class Environment(models.TextChoices):
+        SANDBOX = "sandbox"
+        PRODUCTION = "production"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        "tenants.Tenant",
+        on_delete=models.CASCADE,
+        related_name="device_tokens",
+    )
+    user = models.ForeignKey(
+        "tenants.User",
+        on_delete=models.CASCADE,
+        related_name="device_tokens",
+    )
+    # APNs device tokens are 32-byte (64 hex char) today, but Apple has signalled
+    # they may grow; bound generously rather than pin to 64.
+    token = models.CharField(max_length=200)
+    environment = models.CharField(
+        max_length=16,
+        choices=Environment.choices,
+        default=Environment.PRODUCTION,
+        help_text="Which APNs host the token is valid for (sandbox builds vs App Store / TestFlight).",
+    )
+    bundle_id = models.CharField(max_length=128, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "device_tokens"
+        ordering = ["-last_seen_at"]
+        constraints = [
+            # A device token identifies one physical install, which is owned by
+            # exactly one (current) user. Global uniqueness on the token makes
+            # registration a single atomic upsert that re-points the token to the
+            # registering user — no cross-user/-tenant delete (which would let a
+            # token-holder evict another tenant's row), no delete+create race, and
+            # it guarantees a push for user A never reaches a device now used by
+            # user B (the prior owner's row is overwritten, not duplicated).
+            models.UniqueConstraint(fields=["token"], name="uniq_device_token"),
+        ]
+        indexes = [
+            models.Index(fields=["tenant"], name="device_token_tenant_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"DeviceToken({self.environment}, user={self.user_id})"

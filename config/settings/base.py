@@ -341,6 +341,16 @@ OPENCLAW_ROUTING_CONTEXT_PLUGIN_PATH = env(
     "OPENCLAW_ROUTING_CONTEXT_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-routing-context",
 )
+# Activity-stream plugin — narrates agent tool-use/composing to the control plane
+# for the in-app "thinking" state + iOS-27 Siri Live Activity (HER_SIRI_ARCHITECTURE
+# §4.3). OPT-IN: ID defaults to "" so it's built into the image but inert (no fleet
+# load) until enabled by setting OPENCLAW_ACTIVITY_STREAM_PLUGIN_ID="nbhd-activity-stream"
+# — flip on once the client consumes `phase`/`phase_detail`.
+OPENCLAW_ACTIVITY_STREAM_PLUGIN_ID = env("OPENCLAW_ACTIVITY_STREAM_PLUGIN_ID", default="")
+OPENCLAW_ACTIVITY_STREAM_PLUGIN_PATH = env(
+    "OPENCLAW_ACTIVITY_STREAM_PLUGIN_PATH",
+    default="/opt/nbhd/plugins/nbhd-activity-stream",
+)
 COMPOSIO_REDDIT_AUTH_CONFIG_ID = env("COMPOSIO_REDDIT_AUTH_CONFIG_ID", default="")
 
 OPENCLAW_CONTAINER_SECRET_BACKEND = env(
@@ -392,6 +402,29 @@ AZURE_KV_SECRET_OPENROUTER_API_KEY = env(
 # no LLM spend, no deploy. See apps/lessons/copilot.py.
 COPILOT_MODEL = env("COPILOT_MODEL", default="anthropic/claude-haiku-4.5")
 COPILOT_LLM_ENABLED = env.bool("COPILOT_LLM_ENABLED", default=True)
+
+# Siri tiered responder (HER_SIRI_ARCHITECTURE.md). The Tier-2 fast responder
+# reuses the fleet "fast" model (the slot mapped to scheduled/worker tasks) —
+# NOT a per-tenant field. Override the ordered candidate list via env if needed.
+SIRI_FAST_MODELS = env.list(
+    "SIRI_FAST_MODELS",
+    default=["openrouter/deepseek/deepseek-v4-flash", "openrouter/deepseek/deepseek-v4-pro"],
+)
+
+# APNs (Apple Push Notification service) — token-based (.p8) auth. The push path
+# is fully gated: a logged no-op unless ALL of these are set (operator provisions
+# the .p8 from the Apple Developer account → Key Vault → env), and HTTP/2
+# requires httpx[http2] (the `h2` package). See apps/common/apns.py.
+#   APNS_AUTH_KEY    — the .p8 EC private key contents (PEM string).
+#   APNS_KEY_ID      — the 10-char key id of that .p8.
+#   APNS_TEAM_ID     — the 10-char Apple Developer team id.
+#   APNS_BUNDLE_ID   — the app bundle id (apns-topic), e.g. org.hoodunited.nbhd.
+#   APNS_USE_SANDBOX — True for sandbox/dev builds (api.sandbox.push.apple.com).
+APNS_AUTH_KEY = env("APNS_AUTH_KEY", default="").replace("\\n", "\n")
+APNS_KEY_ID = env("APNS_KEY_ID", default="")
+APNS_TEAM_ID = env("APNS_TEAM_ID", default="")
+APNS_BUNDLE_ID = env("APNS_BUNDLE_ID", default="")
+APNS_USE_SANDBOX = env.bool("APNS_USE_SANDBOX", default=False)
 
 # Per-tenant OpenRouter sub-keys (PR #1.6).
 #
