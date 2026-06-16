@@ -1873,6 +1873,12 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             str(getattr(settings, "OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID", "") or "").strip(),
             str(getattr(settings, "OPENCLAW_ROUTING_CONTEXT_PLUGIN_PATH", "") or "").strip(),
         ),
+        # Activity-stream producer — opt-in (ID defaults to "" → filtered out below
+        # by the `if pid` guard, so it's dormant until enabled). See base.py.
+        (
+            str(getattr(settings, "OPENCLAW_ACTIVITY_STREAM_PLUGIN_ID", "") or "").strip(),
+            str(getattr(settings, "OPENCLAW_ACTIVITY_STREAM_PLUGIN_PATH", "") or "").strip(),
+        ),
     ]
     # Reddit plugin — conditionally loaded only when tenant has an active Reddit connection
     from apps.integrations.models import Integration as _Integration

@@ -549,12 +549,19 @@ class ChatProgressEventView(APIView):
         client_msg_id = str(request.data.get("client_msg_id") or "").strip()
         phase = str(request.data.get("phase") or "").strip()[:24]
         detail = str(request.data.get("detail") or "").strip()[:200]
-        if not client_msg_id or not phase:
+        if not phase:
             return Response({"error": "missing_fields"}, status=status.HTTP_400_BAD_REQUEST)
 
-        updated = AppChatMessage.objects.filter(
-            tenant_id=tenant_id,
-            client_msg_id=client_msg_id,
-            status=AppChatMessage.Status.PENDING,
-        ).update(phase=phase, phase_detail=detail)
+        base = AppChatMessage.objects.filter(tenant_id=tenant_id, status=AppChatMessage.Status.PENDING)
+        if client_msg_id:
+            qs = base.filter(client_msg_id=client_msg_id)
+        else:
+            # The runtime's tool-call hook knows the OpenClaw run, not the
+            # client_msg_id. Per-tenant turns are serialized (one container) and
+            # only app/Siri turns create AppChatMessage rows, so the tenant's
+            # most-recent PENDING turn IS the in-flight one to narrate. (A
+            # Telegram/LINE turn creates no row → this no-ops, which is correct.)
+            latest_pk = base.order_by("-created_at").values_list("pk", flat=True).first()
+            qs = base.filter(pk=latest_pk) if latest_pk is not None else base.none()
+        updated = qs.update(phase=phase, phase_detail=detail)
         return Response({"updated": bool(updated)}, status=status.HTTP_200_OK)

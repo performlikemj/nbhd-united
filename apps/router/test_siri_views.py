@@ -10,9 +10,11 @@ callback's "never mutate a finished turn" invariant.
 from __future__ import annotations
 
 import secrets
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.router.models import AppChatMessage, PendingMessage
@@ -303,3 +305,24 @@ class ChatProgressEventTest(TestCase):
             HTTP_X_NBHD_TENANT_ID=str(self.tenant.id),
         )
         self.assertEqual(resp.status_code, 400)
+
+    def test_updates_latest_pending_when_no_client_msg_id(self):
+        # The runtime hook only knows the run, not the client_msg_id → it omits it
+        # and the control plane narrates the tenant's most-recent PENDING turn.
+        older = self._pending("old")
+        AppChatMessage.objects.filter(pk=older.pk).update(created_at=timezone.now() - timedelta(minutes=5))
+        newer = self._pending("new")
+        resp = self.client.post(
+            self._url(),
+            {"phase": "tool", "detail": "checking your journal"},  # no client_msg_id
+            format="json",
+            HTTP_X_NBHD_INTERNAL_KEY="test-key",
+            HTTP_X_NBHD_TENANT_ID=str(self.tenant.id),
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.data["updated"])
+        newer.refresh_from_db()
+        older.refresh_from_db()
+        self.assertEqual(newer.phase, "tool")
+        self.assertEqual(newer.phase_detail, "checking your journal")
+        self.assertEqual(older.phase, "")  # only the in-flight (newest) turn is narrated

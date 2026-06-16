@@ -341,6 +341,16 @@ OPENCLAW_ROUTING_CONTEXT_PLUGIN_PATH = env(
     "OPENCLAW_ROUTING_CONTEXT_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-routing-context",
 )
+# Activity-stream plugin — narrates agent tool-use/composing to the control plane
+# for the in-app "thinking" state + iOS-27 Siri Live Activity (HER_SIRI_ARCHITECTURE
+# §4.3). OPT-IN: ID defaults to "" so it's built into the image but inert (no fleet
+# load) until enabled by setting OPENCLAW_ACTIVITY_STREAM_PLUGIN_ID="nbhd-activity-stream"
+# — flip on once the client consumes `phase`/`phase_detail`.
+OPENCLAW_ACTIVITY_STREAM_PLUGIN_ID = env("OPENCLAW_ACTIVITY_STREAM_PLUGIN_ID", default="")
+OPENCLAW_ACTIVITY_STREAM_PLUGIN_PATH = env(
+    "OPENCLAW_ACTIVITY_STREAM_PLUGIN_PATH",
+    default="/opt/nbhd/plugins/nbhd-activity-stream",
+)
 COMPOSIO_REDDIT_AUTH_CONFIG_ID = env("COMPOSIO_REDDIT_AUTH_CONFIG_ID", default="")
 
 OPENCLAW_CONTAINER_SECRET_BACKEND = env(
