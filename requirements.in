@@ -45,8 +45,9 @@ torch>=2.0,<3.0
 transformers>=5.9.0,<5.10.0
 sentencepiece>=0.2
 
-# HTTP client (for routing to OpenClaw instances)
-httpx
+# HTTP client (for routing to OpenClaw instances). [http2] pulls h2 — APNs
+# speaks HTTP/2 only (see apps/common/apns.py).
+httpx[http2]
 
 # Redis cache (shared across workers/containers)
 django-redis

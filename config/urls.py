@@ -66,6 +66,7 @@ urlpatterns = [
     path("api/v1/line/", include("apps.router.line_urls")),
     path("api/v1/chat/", include("apps.router.chat_urls")),
     path("api/v1/siri/", include("apps.router.siri_urls")),
+    path("api/v1/push/", include("apps.router.push_urls")),
     path("api/v1/coreai/", include("apps.router.coreai_urls")),
     path("api/v1/cron-jobs/", include("apps.cron.tenant_urls")),
     path("api/v1/workspaces/", include("apps.journal.workspace_urls")),

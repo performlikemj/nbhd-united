@@ -1440,6 +1440,15 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
             status=AppChatMessage.Status.READY,
             replied_at=now,
         )
+        # Notify the device the reply landed (closes the fire-and-forget gap for
+        # Siri-escalated / backgrounded turns). No-op unless APNs is configured;
+        # fail-open. The app suppresses the alert if the thread is foregrounded.
+        try:
+            from apps.router.push_views import notify_app_reply_ready
+
+            notify_app_reply_ready(tenant, client_ids, text)
+        except Exception:
+            logger.warning("ios: reply-ready push failed (non-fatal)", exc_info=True)
     else:
         AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=client_ids).update(
             status=AppChatMessage.Status.ERROR,
