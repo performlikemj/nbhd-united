@@ -26,6 +26,7 @@ goes through the budget-gated enqueue path).
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 
 from django.conf import settings
@@ -200,12 +201,14 @@ class SiriRespondView(APIView):
         if not reply:
             return None
         # Sentinel may arrive alone or with a trailing reason; treat any leading
-        # sentinel as escalation.
+        # sentinel as escalation. Case-insensitive so a mixed-case `[[escalate]]`
+        # still escalates.
         if reply.upper().startswith(_ESCALATE_SENTINEL):
             return None
         # Defensive: a model that ignored the "plain text" instruction shouldn't
-        # leak a stray sentinel mid-reply into the spoken answer.
-        return reply.replace(_ESCALATE_SENTINEL, "").strip() or None
+        # leak a stray (mixed-case) sentinel mid-reply into the spoken answer.
+        cleaned = re.sub(re.escape(_ESCALATE_SENTINEL), "", reply, flags=re.IGNORECASE).strip()
+        return cleaned or None
 
     def _escalate(self, request, tenant, intent: str) -> Response:
         client_msg_id = str(request.data.get("client_msg_id") or "").strip() or uuid.uuid4().hex

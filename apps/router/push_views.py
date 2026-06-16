@@ -50,21 +50,23 @@ class PushRegisterView(APIView):
             environment = DeviceToken.Environment.PRODUCTION
         bundle_id = str(request.data.get("bundle_id") or "").strip()[:128]
 
-        # (user, token) is unique; upsert so a re-register just refreshes
-        # environment/last_seen. A token can migrate users (device handoff /
-        # account switch on the same install): re-point it to the current user.
-        DeviceToken.objects.filter(token=token).exclude(user=request.user).delete()
+        # ``token`` is globally unique, so a single upsert re-points the device to
+        # the registering user (account switch / device handoff on the same
+        # install) atomically — no cross-user delete, no delete+create race.
+        # update_or_create absorbs the same-token concurrent retry via the unique
+        # constraint (it re-fetches on IntegrityError).
         DeviceToken.objects.update_or_create(
-            user=request.user,
             token=token,
-            defaults={"tenant": tenant, "environment": environment, "bundle_id": bundle_id},
+            defaults={"user": request.user, "tenant": tenant, "environment": environment, "bundle_id": bundle_id},
         )
         return Response({"registered": True}, status=status.HTTP_200_OK)
 
     def delete(self, request):
-        if not isinstance(request.data, dict):
-            return Response({"error": "invalid_body"}, status=status.HTTP_400_BAD_REQUEST)
-        token = str(request.data.get("device_token") or "").strip()
+        # Token may ride a query param (clients whose DELETE carries no body) or
+        # the request body.
+        token = str(request.query_params.get("device_token") or "").strip()
+        if not token and isinstance(request.data, dict):
+            token = str(request.data.get("device_token") or "").strip()
         if not token:
             return Response({"error": "invalid_token"}, status=status.HTTP_400_BAD_REQUEST)
         DeviceToken.objects.filter(user=request.user, token=token).delete()

@@ -780,7 +780,14 @@ class DeviceToken(models.Model):
         db_table = "device_tokens"
         ordering = ["-last_seen_at"]
         constraints = [
-            models.UniqueConstraint(fields=["user", "token"], name="uniq_user_device_token"),
+            # A device token identifies one physical install, which is owned by
+            # exactly one (current) user. Global uniqueness on the token makes
+            # registration a single atomic upsert that re-points the token to the
+            # registering user — no cross-user/-tenant delete (which would let a
+            # token-holder evict another tenant's row), no delete+create race, and
+            # it guarantees a push for user A never reaches a device now used by
+            # user B (the prior owner's row is overwritten, not duplicated).
+            models.UniqueConstraint(fields=["token"], name="uniq_device_token"),
         ]
         indexes = [
             models.Index(fields=["tenant"], name="device_token_tenant_idx"),

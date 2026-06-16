@@ -183,6 +183,42 @@ class SiriRespondTest(TestCase):
             resp = self.client.post("/api/v1/siri/respond/", {"intent": "x", "client_msg_id": "s4"}, format="json")
         self.assertTrue(resp.data["escalated"])
 
+    @patch("apps.router.siri_views._rehydrated_snapshot", return_value="STATE")
+    @patch("apps.common.openrouter.chat_completion", return_value=_completion("Sure, I can [[escalate]] help"))
+    def test_midreply_mixedcase_sentinel_stripped_not_leaked(self, _cc, _snap):
+        # A stray mixed-case sentinel NOT at the start → still an answer, but the
+        # marker must be stripped (case-insensitively), never spoken to the user.
+        resp = self.client.post("/api/v1/siri/respond/", {"intent": "help me"}, format="json")
+        self.assertTrue(resp.data["answered"])
+        self.assertNotIn("[[", resp.data["text"])
+        self.assertNotIn("escalate", resp.data["text"].lower())
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
+class ChatMessageIdempotencyTest(TestCase):
+    """Regression: idempotency must precede thread validation in ChatMessageView
+    (a retry with a stale/invalid thread_id replays the existing turn, not 404)."""
+
+    def setUp(self):
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_retry_with_invalid_thread_replays_existing(self, mock_post):
+        mock_post.return_value = _ok_drain_response()
+        r1 = self.client.post("/api/v1/chat/messages/", {"text": "hi", "client_msg_id": "k1"}, format="json")
+        self.assertEqual(r1.status_code, 201, r1.content)
+        # Same client_msg_id, but a valid-format UUID that resolves to no thread.
+        r2 = self.client.post(
+            "/api/v1/chat/messages/",
+            {"text": "hi", "client_msg_id": "k1", "thread_id": "00000000-0000-0000-0000-000000000000"},
+            format="json",
+        )
+        self.assertEqual(r2.status_code, 200, r2.content)
+        self.assertEqual(r2.data["client_msg_id"], "k1")
+
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")
 class ChatProgressEventTest(TestCase):

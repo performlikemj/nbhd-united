@@ -1443,10 +1443,24 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
         # Notify the device the reply landed (closes the fire-and-forget gap for
         # Siri-escalated / backgrounded turns). No-op unless APNs is configured;
         # fail-open. The app suppresses the alert if the thread is foregrounded.
+        # Dispatched OFF the drain path: a slow APNs send (≤10s timeout) must not
+        # block the drain task / hold the per-key lease. Synchronous in tests
+        # (NBHD_DISABLE_BACKGROUND_THREADS) for determinism.
         try:
+            from django.conf import settings as _settings
+
             from apps.router.push_views import notify_app_reply_ready
 
-            notify_app_reply_ready(tenant, client_ids, text)
+            if getattr(_settings, "NBHD_DISABLE_BACKGROUND_THREADS", False):
+                notify_app_reply_ready(tenant, list(client_ids), text)
+            else:
+                import threading
+
+                threading.Thread(
+                    target=notify_app_reply_ready,
+                    args=(tenant, list(client_ids), text),
+                    daemon=True,
+                ).start()
         except Exception:
             logger.warning("ios: reply-ready push failed (non-fatal)", exc_info=True)
     else:

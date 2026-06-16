@@ -86,13 +86,16 @@ class PushRegisterTest(TestCase):
 
     def test_token_migrates_to_current_user(self):
         # Same physical device token previously registered to another user
-        # (account switch on one install) re-points to the current user.
+        # (account switch on one install) re-points to the current user — and the
+        # token stays globally unique (exactly one owner), so a push for the old
+        # user can never reach the device now used by the new one.
         other = _make_user()
         _make_tenant(other)
         DeviceToken.objects.create(user=other, tenant=other.tenant, token=_VALID_TOKEN)
         self.client.post("/api/v1/push/register/", {"device_token": _VALID_TOKEN}, format="json")
-        self.assertFalse(DeviceToken.objects.filter(user=other, token=_VALID_TOKEN).exists())
-        self.assertTrue(DeviceToken.objects.filter(user=self.user, token=_VALID_TOKEN).exists())
+        rows = DeviceToken.objects.filter(token=_VALID_TOKEN)
+        self.assertEqual(rows.count(), 1)
+        self.assertEqual(rows.first().user_id, self.user.id)
 
     def test_unregister(self):
         DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN)

@@ -317,6 +317,15 @@ class ChatMessageView(APIView):
         client_msg_id = str(request.data.get("client_msg_id") or "").strip() or uuid.uuid4().hex
         if len(client_msg_id) > _CLIENT_MSG_ID_MAX:
             return Response({"error": "invalid_client_msg_id"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Idempotency MUST precede thread validation: a retry carrying the same
+        # client_msg_id but a now-stale/invalid thread_id must replay the existing
+        # turn (200), not 404. (enqueue_tenant_turn re-checks too, but only after
+        # a thread is resolved — so the early replay has to live here.)
+        existing = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
+        if existing:
+            return Response(_serialize_message(existing), status=status.HTTP_200_OK)
+
         thread = _resolve_thread(request, tenant)
         if thread is None:
             return Response({"error": "thread_not_found"}, status=status.HTTP_404_NOT_FOUND)
