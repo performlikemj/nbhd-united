@@ -47,8 +47,8 @@ def apns_configured() -> bool:
     )
 
 
-def _apns_host() -> str:
-    return "api.sandbox.push.apple.com" if getattr(settings, "APNS_USE_SANDBOX", False) else "api.push.apple.com"
+def _apns_host(sandbox: bool) -> str:
+    return "api.sandbox.push.apple.com" if sandbox else "api.push.apple.com"
 
 
 def _provider_jwt(now: int) -> str:
@@ -69,13 +69,14 @@ def _provider_jwt(now: int) -> str:
     return token
 
 
-def _http2_client():
-    """An HTTP/2 httpx client, or None if HTTP/2 (the ``h2`` package) is absent."""
+def _http2_client(sandbox: bool):
+    """An HTTP/2 httpx client for the chosen APNs host, or None if HTTP/2 (the
+    ``h2`` package) is absent."""
     import httpx
 
     try:
-        return httpx.Client(http2=True, base_url=f"https://{_apns_host()}", timeout=10.0)
-    except (ImportError, Exception):  # noqa: BLE001 — h2 missing surfaces as a runtime error
+        return httpx.Client(http2=True, base_url=f"https://{_apns_host(sandbox)}", timeout=10.0)
+    except Exception:  # noqa: BLE001 — h2 missing surfaces as a runtime error
         return None
 
 
@@ -84,10 +85,17 @@ def send_push(
     *,
     title: str,
     body: str,
+    sandbox: bool | None = None,
     thread_id: str | None = None,
     extra: dict | None = None,
 ) -> dict:
-    """Send one alert to each device token. Never raises.
+    """Send one alert to each device token on the matching APNs host. Never raises.
+
+    ``sandbox`` picks the host (a token from a Debug build is only valid on the
+    sandbox host, a TestFlight/App Store token only on production). Callers should
+    pass it per the device's stored ``environment``; when omitted it falls back to
+    the ``APNS_USE_SANDBOX`` global. All tokens in one call MUST share an
+    environment — group by environment before calling.
 
     Returns ``{"sent", "failed", "unregistered": [tokens], "skipped": reason|None}``.
     ``unregistered`` carries tokens APNs rejected as stale (410 / BadDeviceToken)
@@ -101,6 +109,8 @@ def send_push(
     if not apns_configured():
         result["skipped"] = "not_configured"
         return result
+    if sandbox is None:
+        sandbox = bool(getattr(settings, "APNS_USE_SANDBOX", False))
 
     try:
         import httpx  # noqa: F401
@@ -108,7 +118,7 @@ def send_push(
         result["skipped"] = "httpx_missing"
         return result
 
-    client = _http2_client()
+    client = _http2_client(sandbox)
     if client is None:
         logger.warning("apns: HTTP/2 unavailable (install httpx[http2]); push skipped")
         result["skipped"] = "http2_unavailable"

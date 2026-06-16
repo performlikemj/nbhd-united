@@ -98,20 +98,31 @@ def notify_app_reply_ready(tenant, client_msg_ids, reply_text: str | None) -> No
         )
         if msg is None:
             return
-        tokens = list(DeviceToken.objects.filter(user=msg.user).values_list("token", flat=True))
-        if not tokens:
+        rows = list(DeviceToken.objects.filter(user=msg.user).values("token", "environment"))
+        if not rows:
             return
         preview = " ".join((reply_text or "").split())
         if len(preview) > _PREVIEW_CHARS:
             preview = preview[: _PREVIEW_CHARS - 1].rstrip() + "…"
-        res = send_push(
-            tokens,
-            title="NBHD",
-            body=preview or "Your assistant replied.",
-            thread_id=str(msg.thread_id),
-            extra={"client_msg_id": msg.client_msg_id},
-        )
-        stale = res.get("unregistered") or []
+
+        # Route each device to the APNs host matching its environment — a sandbox
+        # (Debug-build) token and a production (App Store) token can coexist for one
+        # user, and a token sent to the wrong host fails with BadDeviceToken.
+        by_env: dict[str, list[str]] = {}
+        for r in rows:
+            by_env.setdefault(r["environment"], []).append(r["token"])
+
+        stale: list[str] = []
+        for env_name, env_tokens in by_env.items():
+            res = send_push(
+                env_tokens,
+                title="NBHD",
+                body=preview or "Your assistant replied.",
+                sandbox=(env_name == DeviceToken.Environment.SANDBOX),
+                thread_id=str(msg.thread_id),
+                extra={"client_msg_id": msg.client_msg_id},
+            )
+            stale.extend(res.get("unregistered") or [])
         if stale:
             DeviceToken.objects.filter(user=msg.user, token__in=stale).delete()
     except Exception:

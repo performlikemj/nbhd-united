@@ -151,6 +151,23 @@ class ApnsSenderTest(TestCase):
         res = send_push([_VALID_TOKEN], title="t", body="b")
         self.assertEqual(res["skipped"], "http2_unavailable")
 
+    @override_settings(**_APNS_SETTINGS)
+    @patch("apps.common.apns._provider_jwt", return_value="jwt")
+    @patch("apps.common.apns._http2_client")
+    def test_sandbox_flag_selects_host(self, mock_factory, _jwt):
+        fake = MagicMock()
+        fake.__enter__.return_value = fake
+        fake.__exit__.return_value = False
+        fake.post.return_value = MagicMock(status_code=200)
+        mock_factory.return_value = fake
+
+        from apps.common.apns import send_push
+
+        send_push([_VALID_TOKEN], title="t", body="b", sandbox=True)
+        mock_factory.assert_called_with(True)  # → sandbox host
+        send_push([_VALID_TOKEN], title="t", body="b", sandbox=False)
+        mock_factory.assert_called_with(False)  # → production host
+
 
 class NotifyReplyReadyTest(TestCase):
     def setUp(self):
@@ -198,3 +215,25 @@ class NotifyReplyReadyTest(TestCase):
         with patch("apps.common.apns.send_push") as mock_send:
             notify_app_reply_ready(self.tenant, ["r1"], "here you go")
         mock_send.assert_not_called()
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_routes_each_environment_to_its_host(self):
+        # A sandbox (Debug) device and a production (App Store) device for the same
+        # user → one send per environment, each with the matching sandbox flag.
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN_2, environment="production")
+        from apps.router.push_views import notify_app_reply_ready
+
+        calls = []
+
+        def _capture(tokens, **kw):
+            calls.append((sorted(tokens), kw.get("sandbox")))
+            return {"sent": len(tokens), "failed": 0, "unregistered": [], "skipped": None}
+
+        with patch("apps.common.apns.send_push", side_effect=_capture):
+            notify_app_reply_ready(self.tenant, ["r1"], "hi")
+
+        self.assertEqual(len(calls), 2)
+        by_sandbox = {sandbox: tokens for tokens, sandbox in calls}
+        self.assertEqual(by_sandbox[True], [_VALID_TOKEN])  # sandbox token → sandbox host
+        self.assertEqual(by_sandbox[False], [_VALID_TOKEN_2])  # production token → prod host
