@@ -4,20 +4,29 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('router', '0012_appchatmessage_source'),
+        ("router", "0012_appchatmessage_source"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='appchatmessage',
-            name='phase',
-            field=models.CharField(blank=True, default='', help_text="Coarse activity phase: '', 'waking', 'thinking', 'tool', 'composing'.", max_length=24),
+            model_name="appchatmessage",
+            name="phase",
+            field=models.CharField(
+                blank=True,
+                default="",
+                help_text="Coarse activity phase: '', 'waking', 'thinking', 'tool', 'composing'.",
+                max_length=24,
+            ),
         ),
         migrations.AddField(
-            model_name='appchatmessage',
-            name='phase_detail',
-            field=models.CharField(blank=True, default='', help_text="Human-readable detail for the current phase, e.g. 'searching your journal'.", max_length=200),
+            model_name="appchatmessage",
+            name="phase_detail",
+            field=models.CharField(
+                blank=True,
+                default="",
+                help_text="Human-readable detail for the current phase, e.g. 'searching your journal'.",
+                max_length=200,
+            ),
         ),
     ]
