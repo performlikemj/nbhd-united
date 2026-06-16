@@ -54,4 +54,16 @@ class Migration(migrations.Migration):
                 "constraints": [models.UniqueConstraint(fields=("token",), name="uniq_device_token")],
             },
         ),
+        # Enable RLS to match the public-schema lockdown invariant
+        # (tenants/0059 + tenants/0066). Test
+        # ``test_rls_enabled_on_owned_public_tables`` fails otherwise.
+        # No policies here: the Django backend connects as the table owner and
+        # bypasses RLS, while the anon role PostgREST exposes has no grant on this
+        # table — structural lockdown. Mirrors apps/router/migrations/0010_conversationturn.py.
+        migrations.RunSQL(
+            sql="ALTER TABLE device_tokens ENABLE ROW LEVEL SECURITY;",
+            # NOT disabling on reverse — would re-expose the table; CreateModel's
+            # reverse drops the table anyway, so there's nothing meaningful to undo.
+            reverse_sql=migrations.RunSQL.noop,
+        ),
     ]
