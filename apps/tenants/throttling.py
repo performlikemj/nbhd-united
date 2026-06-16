@@ -70,3 +70,21 @@ class ChatContextHourThrottle(_UserScopedThrottle):
 
     scope = "chat_context_hour"
     rate = "120/hour"
+
+
+class SiriRespondMinuteThrottle(_UserScopedThrottle):
+    """The Tier-2 fast responder calls a model on every request (platform ZDR
+    key, platform-absorbed cost). Human voice pacing is a few per minute; this
+    only stops a runaway client from racking up model spend or hammering
+    OpenRouter."""
+
+    scope = "siri_respond_minute"
+    rate = "30/minute"
+
+
+class SiriStatusMinuteThrottle(_UserScopedThrottle):
+    """The status snapshot is a deterministic no-LLM read, but still bound it
+    so a stuck client can't poll it in a tight loop."""
+
+    scope = "siri_status_minute"
+    rate = "60/minute"

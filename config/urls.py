@@ -2,6 +2,7 @@ from django.contrib import admin
 from django.urls import include, path
 
 from apps.integrations.runtime_views import RuntimeBYOErrorReportView, RuntimeUsageReportView
+from apps.router.chat_views import ChatProgressEventView
 from apps.router.views import serve_chart_image, serve_meditation_audio
 
 urlpatterns = [
@@ -43,6 +44,14 @@ urlpatterns = [
         RuntimeBYOErrorReportView.as_view(),
         name="runtime-byo-error-report-internal",
     ),
+    # Agent activity stream — container→Django. The runtime's tool-call hooks
+    # POST progress (waking/thinking/tool/composing) for an in-flight turn so
+    # polling clients can narrate it (and the iOS-27 Live Activity can show it).
+    path(
+        "api/v1/internal/runtime/<uuid:tenant_id>/chat/progress/",
+        ChatProgressEventView.as_view(),
+        name="chat-progress-event-internal",
+    ),
     # Action gating — container→Django (request + poll)
     path(
         "api/v1/internal/runtime/<uuid:tenant_id>/gate/",
@@ -56,6 +65,7 @@ urlpatterns = [
     path("api/v1/telegram/", include("apps.router.urls")),
     path("api/v1/line/", include("apps.router.line_urls")),
     path("api/v1/chat/", include("apps.router.chat_urls")),
+    path("api/v1/siri/", include("apps.router.siri_urls")),
     path("api/v1/coreai/", include("apps.router.coreai_urls")),
     path("api/v1/cron-jobs/", include("apps.cron.tenant_urls")),
     path("api/v1/workspaces/", include("apps.journal.workspace_urls")),

@@ -153,7 +153,84 @@ def _serialize_message(msg: AppChatMessage) -> dict:
         # Set while a hibernated container boots; clients show "waking up"
         # copy when status is still pending and this is non-null.
         "waking_at": msg.waking_at.isoformat() if msg.waking_at else None,
+        # Live agent-activity narration (waking/thinking/using tool/composing)
+        # — drives the in-app "thinking" state and the iOS-27 Live Activity.
+        "phase": msg.phase,
+        "phase_detail": msg.phase_detail,
     }
+
+
+def enqueue_tenant_turn(*, tenant, user, text: str, thread: ChatThread, client_msg_id: str):
+    """Create a PENDING ``AppChatMessage`` and enqueue a Tier-3 OpenClaw turn.
+
+    The single chokepoint for "route this ask to the full tenant agent": used by
+    both the normal ``ChatMessageView`` POST and the Tier-2 fast-responder
+    escalation path (``apps.router.siri_views``). Idempotent on
+    ``client_msg_id`` and budget-gated, exactly once.
+
+    Returns ``(turn, created)`` — ``created`` is True only when a fresh PENDING
+    turn was enqueued (so the caller can pick 201 vs 200). A budget-exhausted
+    turn is recorded as ERROR and returned with ``created=False`` (nothing
+    enqueued, no container woken).
+    """
+    existing = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
+    if existing:
+        return existing, False
+
+    # Budget gate — don't enqueue work (or wake a container) for an over-budget
+    # tenant. Recorded as an error so the client surfaces the reason.
+    budget_reason = check_budget(tenant)
+    if budget_reason:
+        try:
+            turn = AppChatMessage.objects.create(
+                tenant=tenant,
+                user=user,
+                thread=thread,
+                client_msg_id=client_msg_id,
+                user_text=text,
+                status=AppChatMessage.Status.ERROR,
+                error="budget_exhausted",
+                replied_at=timezone.now(),
+            )
+        except IntegrityError:
+            turn = AppChatMessage.objects.get(tenant=tenant, client_msg_id=client_msg_id)
+        return turn, False
+
+    try:
+        turn = AppChatMessage.objects.create(
+            tenant=tenant,
+            user=user,
+            thread=thread,
+            client_msg_id=client_msg_id,
+            user_text=text,
+            status=AppChatMessage.Status.PENDING,
+        )
+    except IntegrityError:
+        # Concurrent retry won the (tenant, client_msg_id) race; the winner
+        # already enqueued the tenant turn — replay, don't re-enqueue.
+        turn = AppChatMessage.objects.get(tenant=tenant, client_msg_id=client_msg_id)
+        return turn, False
+
+    user_tz = getattr(user, "timezone", None) or "UTC"
+    # Decorate like the other channels: current-time marker + the
+    # "this is a chat turn, don't pre-load workspace docs" marker.
+    message_text = build_datetime_context(user_tz) + build_chat_context_marker() + text
+
+    enqueue_message_for_tenant(
+        tenant=tenant,
+        channel=PendingMessage.Channel.IOS,
+        channel_user_id=str(thread.id),
+        payload={
+            "message_text": message_text,
+            "user_param": _thread_user_param(thread),
+            "user_timezone": user_tz,
+            "client_msg_id": client_msg_id,
+            "thread_id": str(thread.id),
+        },
+        user_text_excerpt=text,
+    )
+    ChatThread.objects.filter(id=thread.id).update(last_active_at=timezone.now())
+    return turn, True
 
 
 class ChatThreadListView(APIView):
@@ -240,71 +317,19 @@ class ChatMessageView(APIView):
         client_msg_id = str(request.data.get("client_msg_id") or "").strip() or uuid.uuid4().hex
         if len(client_msg_id) > _CLIENT_MSG_ID_MAX:
             return Response({"error": "invalid_client_msg_id"}, status=status.HTTP_400_BAD_REQUEST)
-        existing = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
-        if existing:
-            return Response(_serialize_message(existing), status=status.HTTP_200_OK)
-
         thread = _resolve_thread(request, tenant)
         if thread is None:
             return Response({"error": "thread_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # Budget gate — mirror the webhook: don't enqueue work (or wake a
-        # container) for an over-budget tenant. The turn is recorded as an
-        # error so the client surfaces the reason instead of polling forever.
-        budget_reason = check_budget(tenant)
-        if budget_reason:
-            try:
-                turn = AppChatMessage.objects.create(
-                    tenant=tenant,
-                    user=request.user,
-                    thread=thread,
-                    client_msg_id=client_msg_id,
-                    user_text=text,
-                    status=AppChatMessage.Status.ERROR,
-                    error="budget_exhausted",
-                    replied_at=timezone.now(),
-                )
-            except IntegrityError:
-                # Concurrent retry won the (tenant, client_msg_id) race.
-                turn = AppChatMessage.objects.get(tenant=tenant, client_msg_id=client_msg_id)
-            return Response(_serialize_message(turn), status=status.HTTP_200_OK)
-
-        try:
-            turn = AppChatMessage.objects.create(
-                tenant=tenant,
-                user=request.user,
-                thread=thread,
-                client_msg_id=client_msg_id,
-                user_text=text,
-                status=AppChatMessage.Status.PENDING,
-            )
-        except IntegrityError:
-            # Concurrent retry won the (tenant, client_msg_id) race; the
-            # winner already enqueued the tenant turn — replay, don't re-enqueue.
-            turn = AppChatMessage.objects.get(tenant=tenant, client_msg_id=client_msg_id)
-            return Response(_serialize_message(turn), status=status.HTTP_200_OK)
-
-        user_tz = getattr(request.user, "timezone", None) or "UTC"
-        # Decorate like the other channels: current-time marker + the
-        # "this is a chat turn, don't pre-load workspace docs" marker.
-        message_text = build_datetime_context(user_tz) + build_chat_context_marker() + text
-
-        enqueue_message_for_tenant(
+        turn, created = enqueue_tenant_turn(
             tenant=tenant,
-            channel=PendingMessage.Channel.IOS,
-            channel_user_id=str(thread.id),
-            payload={
-                "message_text": message_text,
-                "user_param": _thread_user_param(thread),
-                "user_timezone": user_tz,
-                "client_msg_id": client_msg_id,
-                "thread_id": str(thread.id),
-            },
-            user_text_excerpt=text,
+            user=request.user,
+            text=text,
+            thread=thread,
+            client_msg_id=client_msg_id,
         )
-        ChatThread.objects.filter(id=thread.id).update(last_active_at=timezone.now())
-
-        return Response(_serialize_message(turn), status=status.HTTP_201_CREATED)
+        http = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        return Response(_serialize_message(turn), status=http)
 
 
 class ChatContextView(APIView):
@@ -472,3 +497,55 @@ class ChatMessageDetailView(APIView):
         if not turn:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
         return _no_store(Response(_serialize_message(turn)))
+
+
+class ChatProgressEventView(APIView):
+    """POST (internal, container → control plane): narrate an in-flight turn.
+
+    The per-tenant runtime's tool-call hooks report coarse progress here —
+    ``waking`` → ``thinking`` → ``tool`` (+ a human detail like "searching your
+    journal") → ``composing`` — so a polling client can show what the assistant
+    is doing instead of an opaque spinner (and the iOS-27 Siri Live Activity can
+    map it to ``progress.localizedDescription``).
+
+    Auth: ``X-NBHD-Internal-Key`` + ``X-NBHD-Tenant-Id`` (same internal-runtime
+    auth as usage/gate callbacks). Best-effort narration: only a still-``pending``
+    turn is updated; a missing/finished turn is a 200 no-op so a late event can
+    never resurrect or mutate a completed turn.
+    """
+
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def post(self, request, tenant_id):
+        from apps.integrations.internal_auth import (
+            InternalAuthError,
+            validate_internal_runtime_request,
+        )
+
+        try:
+            validate_internal_runtime_request(
+                provided_key=request.headers.get("X-NBHD-Internal-Key", ""),
+                provided_tenant_id=request.headers.get("X-NBHD-Tenant-Id", ""),
+                expected_tenant_id=str(tenant_id),
+            )
+        except InternalAuthError as exc:
+            return Response(
+                {"error": "internal_auth_failed", "detail": str(exc)},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        if not isinstance(request.data, dict):
+            return Response({"error": "invalid_body"}, status=status.HTTP_400_BAD_REQUEST)
+        client_msg_id = str(request.data.get("client_msg_id") or "").strip()
+        phase = str(request.data.get("phase") or "").strip()[:24]
+        detail = str(request.data.get("detail") or "").strip()[:200]
+        if not client_msg_id or not phase:
+            return Response({"error": "missing_fields"}, status=status.HTTP_400_BAD_REQUEST)
+
+        updated = AppChatMessage.objects.filter(
+            tenant_id=tenant_id,
+            client_msg_id=client_msg_id,
+            status=AppChatMessage.Status.PENDING,
+        ).update(phase=phase, phase_detail=detail)
+        return Response({"updated": bool(updated)}, status=status.HTTP_200_OK)

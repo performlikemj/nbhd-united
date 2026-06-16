@@ -617,6 +617,23 @@ class AppChatMessage(models.Model):
         "instead of an indefinite typing indicator. Meaningless once "
         "status leaves 'pending'.",
     )
+    # Live agent-activity narration while status=pending. The container's
+    # tool-call hooks report progress to ProgressEventView, which updates these
+    # in place; polling clients render them (in-app "searching your journal…"
+    # instead of dumb dots; the iOS-27 Siri Live Activity maps `phase` to
+    # progress.localizedDescription). Meaningless once status leaves 'pending'.
+    phase = models.CharField(
+        max_length=24,
+        blank=True,
+        default="",
+        help_text="Coarse activity phase: '', 'waking', 'thinking', 'tool', 'composing'.",
+    )
+    phase_detail = models.CharField(
+        max_length=200,
+        blank=True,
+        default="",
+        help_text="Human-readable detail for the current phase, e.g. 'searching your journal'.",
+    )
 
     class Meta:
         db_table = "app_chat_messages"
