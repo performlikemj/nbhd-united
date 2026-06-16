@@ -69,12 +69,17 @@ _DEFAULT_SIRI_FAST_MODELS = [
 
 _SIRI_SYSTEM = (
     "You are NBHD, the user's personal assistant, answering through Siri by voice. "
-    "Answer the user's question using ONLY the context below, concisely and warmly, "
-    "in 1-2 spoken sentences. Plain spoken text only: no markdown, no lists, no emoji, "
-    "no headings. Never invent facts that are not in the context. "
-    "If the question CANNOT be answered from the context — it needs tools, a search, "
-    "fresh data, or deeper reasoning — reply with EXACTLY this and nothing else: "
-    f"{_ESCALATE_SENTINEL}\n\n"
+    "You can ONLY answer questions from the context below — you CANNOT perform actions, "
+    "change data, or use tools yourself.\n"
+    "- If it is a QUESTION you can answer from the context, reply in 1-2 warm spoken "
+    "sentences. Plain spoken text only: no markdown, no lists, no emoji, no headings. "
+    "Never invent facts that are not in the context.\n"
+    "- If the user asks you to DO anything — add, log, update, change, edit, delete, "
+    "complete, set, record, schedule, remind, send, etc. — OR the answer needs tools, a "
+    "search, fresh data, or deeper reasoning, reply with EXACTLY this and nothing else: "
+    f"{_ESCALATE_SENTINEL}\n"
+    "NEVER tell the user you can't do something — escalate instead, and the full "
+    f"assistant will handle it. When unsure, prefer {_ESCALATE_SENTINEL}.\n\n"
     "=== CONTEXT (the user's current state) ===\n"
 )
 
@@ -169,9 +174,11 @@ class SiriRespondView(APIView):
 
         answer = self._fast_answer(intent, snapshot)
         if answer is not None:
+            logger.info("siri respond: answered inline (tenant=%s)", str(tenant.id)[:8])
             return _no_store(Response({"answered": True, "escalated": False, "text": answer}))
 
-        # Could not answer fast → escalate to the full tenant agent (Tier 3).
+        # Could not answer fast (or it's an action) → escalate to the full agent (Tier 3).
+        logger.info("siri respond: escalating to full agent (tenant=%s)", str(tenant.id)[:8])
         return self._escalate(request, tenant, intent)
 
     def _fast_answer(self, intent: str, snapshot: str) -> str | None:
