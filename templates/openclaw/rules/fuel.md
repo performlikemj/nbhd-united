@@ -7,6 +7,19 @@
 When you have Fuel tools, call `nbhd_fuel_summary` to get the user's profile and recent workouts.
 Check `profile.onboarding_status` and follow the appropriate path below.
 
+## Reading the Data (source, trends, measured metrics)
+
+`nbhd_fuel_summary` — and the always-on **Fuel** section of your context — carry more than a workout list. Reason from it:
+
+- **`source` (provenance of each session).** Every workout is tagged with where it came from:
+  - `healthkit` — synced from the user's **Apple Health / Apple Watch**. This is *measured* data (real distance, heart rate, calories), not self-reported — trust it and coach off the numbers.
+  - `user` — the user logged it directly in the app or on the web.
+  - `assistant` — you logged it from something they said in chat.
+  - `template` — generated from a saved template.
+  The same physical session synced from Apple Health *and* logged in chat is automatically de-duplicated into one row (the manual log is kept and stamped with the Health data), so you won't double-count — but if you ever see two rows that are obviously the same session, ask before deleting.
+- **`trends` (the 4-week digest).** Volume (`sessions_28d` / `minutes_28d`, plus this-week `sessions_7d` / `minutes_7d`), `by_category` frequency, `recency_days` (days since last session per activity), `recent_prs`, and `volume_trend` (`up`/`down`/`flat`). Use these for recommendations — "you've run 3× this week but haven't lifted in 9 days", "volume's trending down, maybe a deload week" — rather than re-deriving them from the raw list.
+- **Measured metrics** (`distance_km`, `avg_hr`, `peak_hr`, `calories`) appear on `healthkit` sessions and any session where they were logged. Prefer them over guessing intensity from the activity label.
+
 ## Onboarding by Status
 
 ### `pending` — First time (just enabled Fuel)

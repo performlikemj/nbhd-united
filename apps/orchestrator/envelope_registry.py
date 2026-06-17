@@ -44,6 +44,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from django.db import transaction
@@ -90,6 +91,27 @@ class EnvelopeSection:
 
 _REGISTRY: list[EnvelopeSection] = []
 _REGISTRY_LOCK = threading.Lock()
+
+_SUPPRESS = threading.local()
+
+
+@contextmanager
+def suppress_refresh():
+    """Silence the per-row USER.md refresh for writes made inside the block.
+
+    For batch writers (HealthKit sync) where N per-row pushes would storm
+    the file share; the caller owns issuing ONE ``push_user_md`` after the
+    batch. The flag is read at signal time on the mutating thread — under
+    autocommit the receiver's ``on_commit`` fires immediately inside the
+    save, so checking any later (in the callback or the push thread) would
+    be too late.
+    """
+    prev = getattr(_SUPPRESS, "active", False)
+    _SUPPRESS.active = True
+    try:
+        yield
+    finally:
+        _SUPPRESS.active = prev
 
 
 def register_section(
@@ -153,6 +175,8 @@ def _universal_refresh_receiver(sender, instance, **kwargs) -> None:
     dev) the push runs synchronously inside the on_commit callback — no
     thread, behavior is deterministic.
     """
+    if getattr(_SUPPRESS, "active", False):
+        return
     tenant_id = _resolve_tenant_id(instance)
     if tenant_id is None:
         return

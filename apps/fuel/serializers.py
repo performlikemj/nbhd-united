@@ -125,8 +125,16 @@ class WorkoutSerializer(serializers.ModelSerializer):
         # When scheduled_at is provided without an explicit date, derive date
         # from it in the tenant's local timezone — this keeps day-bucketed
         # queries (calendar, weekly summary) consistent with the time-of-day.
+        # DRF normalizes parsed datetimes to UTC, so .date() alone would
+        # bucket a JST 07:00 session onto the previous day.
         if attrs.get("scheduled_at") and not attrs.get("date"):
-            attrs["date"] = attrs["scheduled_at"].date()
+            tenant = self.context.get("tenant") or (self.instance.tenant if self.instance else None)
+            if tenant is not None:
+                from apps.common.tenant_tz import tenant_tz
+
+                attrs["date"] = attrs["scheduled_at"].astimezone(tenant_tz(tenant)).date()
+            else:
+                attrs["date"] = attrs["scheduled_at"].date()
         if not attrs.get("date") and not self.instance:
             raise serializers.ValidationError({"date": "Either date or scheduled_at is required."})
 

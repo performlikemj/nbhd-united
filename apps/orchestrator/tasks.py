@@ -978,6 +978,12 @@ def regenerate_fuel_crons_task(tenant_id: str) -> dict:
     tenant = Tenant.objects.filter(id=tenant_id).select_related("user").first()
     if not tenant or not tenant.container_fqdn:
         return {"added": 0, "removed": 0, "unchanged": 0, "errors": 0}
+    # Hibernated (scale 0/0) or suspended containers can't serve gateway
+    # calls — background HealthKit syncs would otherwise generate recurring
+    # GatewayError noise for idle tenants. Reconcile-on-wake catches up.
+    if tenant.hibernated_at is not None or tenant.status == Tenant.Status.SUSPENDED:
+        logger.info("regenerate_fuel_crons: skipping %s (hibernated/suspended)", tenant_id[:8])
+        return {"added": 0, "removed": 0, "unchanged": 0, "errors": 0, "skipped": True}
     return regenerate_fuel_crons(tenant)
 
 
