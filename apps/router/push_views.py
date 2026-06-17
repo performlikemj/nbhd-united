@@ -29,6 +29,52 @@ _TOKEN_RE = re.compile(r"^[0-9a-fA-F]{32,200}$")
 # Preview length for the push body — a glanceable taste of the reply.
 _PREVIEW_CHARS = 140
 
+# A markdown table separator row (e.g. ``| --- | --- |``) — the reliable marker
+# that a reply contains a table, which has no readable one-line plain-text form.
+_TABLE_SEP_RE = re.compile(r"(?m)^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?\s*$")
+
+# Content-free fallback when a reply has no good glanceable preview (a table, or
+# empty text) — keeps structured / sensitive content off the lock screen.
+_GENERIC_BODY = "Your reply is ready — tap to read."
+
+
+def _markdown_to_plain_prose(text: str) -> str:
+    """Strip common markdown to a single readable line — no visible syntax, no
+    box-drawing. For prose replies only; tables are handled upstream."""
+    s = text
+    s = re.sub(r"```.*?```", " ", s, flags=re.DOTALL)  # fenced code blocks
+    s = re.sub(r"`([^`]*)`", r"\1", s)  # inline code
+    s = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", s)  # images
+    s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", s)  # links → text
+    s = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", s)  # ATX headings
+    s = re.sub(r"(?m)^\s*>\s?", "", s)  # blockquotes
+    s = re.sub(r"(?m)^\s*[-*+]\s+", "", s)  # bullet markers
+    s = re.sub(r"(?m)^\s*\d+\.\s+", "", s)  # ordered-list markers
+    s = re.sub(r"(?m)^\s*([-*_])\1{2,}\s*$", " ", s)  # horizontal rules
+    s = re.sub(r"(\*\*|__)(.*?)\1", r"\2", s)  # bold
+    s = re.sub(r"(\*|_)(.*?)\1", r"\2", s)  # italic
+    s = s.replace("*", "").replace("`", "")  # stray markers
+    return " ".join(s.split())  # collapse to one line
+
+
+def _notification_body(reply_text: str | None) -> str:
+    """Plain-text push body for a reply (APNs alert text is plain text only).
+
+    Hybrid per Apple HIG: a short, markdown-stripped one-line *taste* for simple
+    prose replies, but a generic content-free line for tables (no readable
+    one-line form) or empty replies — keeping structured / sensitive content off
+    the lock screen and out of Announce.
+    """
+    text = reply_text or ""
+    if not text.strip() or _TABLE_SEP_RE.search(text):
+        return _GENERIC_BODY
+    plain = _markdown_to_plain_prose(text)
+    if not plain:
+        return _GENERIC_BODY
+    if len(plain) > _PREVIEW_CHARS:
+        plain = plain[: _PREVIEW_CHARS - 1].rstrip() + "…"
+    return plain
+
 
 class PushRegisterView(APIView):
     """POST: register/refresh this install's APNs token. DELETE: unregister it."""
@@ -164,9 +210,7 @@ def notify_app_reply_ready(tenant, client_msg_ids, reply_text: str | None) -> No
         rows = list(DeviceToken.objects.filter(user=msg.user).values("token", "environment"))
         if not rows:
             return
-        preview = " ".join((reply_text or "").split())
-        if len(preview) > _PREVIEW_CHARS:
-            preview = preview[: _PREVIEW_CHARS - 1].rstrip() + "…"
+        preview = _notification_body(reply_text)
 
         # Route each device to the APNs host matching its environment — a sandbox
         # (Debug-build) token and a production (App Store) token can coexist for one
@@ -180,7 +224,7 @@ def notify_app_reply_ready(tenant, client_msg_ids, reply_text: str | None) -> No
             res = send_push(
                 env_tokens,
                 title="NBHD",
-                body=preview or "Your assistant replied.",
+                body=preview,
                 sandbox=(env_name == DeviceToken.Environment.SANDBOX),
                 thread_id=str(msg.thread_id),
                 extra={"client_msg_id": msg.client_msg_id},
