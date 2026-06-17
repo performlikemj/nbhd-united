@@ -242,3 +242,23 @@ class AuditLogTest(TestCase):
             )
         )
         self.assertEqual(rec.outcome, OUTCOME_NO_KEY_CONFIGURED)
+
+    def test_rendered_message_carries_provenance_for_log_analytics(self):
+        """The provenance/outcome must appear in the RENDERED message, not
+        just `extra`. Production's formatter is plain-text and drops `extra`,
+        and the Phase 1d audit gate greps the message string for
+        `key_provenance=legacy_global`. This guards against regressing to a
+        fields-only emit that makes the gate silently unobservable.
+        """
+        tenant = _make_tenant(internal_api_key="")
+        rec = self._capture(
+            lambda: validate_internal_runtime_request(
+                provided_key="global-key",
+                provided_tenant_id=str(tenant.id),
+                expected_tenant_id=str(tenant.id),
+            )
+        )
+        message = rec.getMessage()
+        self.assertIn(f"key_provenance={PROVENANCE_LEGACY_GLOBAL}", message)
+        self.assertIn(f"outcome={OUTCOME_SUCCESS}", message)
+        self.assertIn(str(tenant.id), message)
