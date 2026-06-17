@@ -209,6 +209,82 @@ class NotifyReplyReadyTest(TestCase):
         self.assertFalse(DeviceToken.objects.filter(token=_VALID_TOKEN).exists())
 
     @override_settings(**_APNS_SETTINGS)
+    def test_markdown_prose_reply_is_stripped_to_plain_text(self):
+        # Markdown prose → a clean one-line taste; no raw syntax in the banner.
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        from apps.router.push_views import notify_app_reply_ready
+
+        md = "## Today\n\n**Upper push** + _conditioning_. See [the plan](https://x.co)."
+        captured = {}
+
+        def _capture(tokens, **kw):
+            captured.update(kw)
+            return {"sent": 1, "failed": 0, "unregistered": [], "skipped": None}
+
+        with patch("apps.common.apns.send_push", side_effect=_capture):
+            notify_app_reply_ready(self.tenant, ["r1"], md)
+
+        body = captured["body"]
+        for sym in ("**", "##", "__", "](", "https://"):
+            self.assertNotIn(sym, body)
+        self.assertIn("Upper push", body)
+        self.assertIn("conditioning", body)
+        self.assertIn("the plan", body)  # link text kept, URL dropped
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_table_reply_falls_back_to_generic_body(self):
+        # A table has no readable one-line form → generic, content-free body.
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        from apps.router.push_views import _GENERIC_BODY, notify_app_reply_ready
+
+        md = "Here's your week:\n\n| Day | Workout |\n| --- | --- |\n| Mon | Push |\n| Tue | Mobility |"
+        captured = {}
+
+        def _capture(tokens, **kw):
+            captured.update(kw)
+            return {"sent": 1, "failed": 0, "unregistered": [], "skipped": None}
+
+        with patch("apps.common.apns.send_push", side_effect=_capture):
+            notify_app_reply_ready(self.tenant, ["r1"], md)
+
+        self.assertEqual(captured["body"], _GENERIC_BODY)
+        self.assertNotIn("|", captured["body"])
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_empty_reply_uses_generic_body(self):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        from apps.router.push_views import _GENERIC_BODY, notify_app_reply_ready
+
+        captured = {}
+
+        def _capture(tokens, **kw):
+            captured.update(kw)
+            return {"sent": 1, "failed": 0, "unregistered": [], "skipped": None}
+
+        with patch("apps.common.apns.send_push", side_effect=_capture):
+            notify_app_reply_ready(self.tenant, ["r1"], "   \n\t ")
+
+        self.assertEqual(captured["body"], _GENERIC_BODY)
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_long_prose_reply_is_truncated(self):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        from apps.router.push_views import _PREVIEW_CHARS, notify_app_reply_ready
+
+        md = "word " * 200  # ~1000 chars of prose
+        captured = {}
+
+        def _capture(tokens, **kw):
+            captured.update(kw)
+            return {"sent": 1, "failed": 0, "unregistered": [], "skipped": None}
+
+        with patch("apps.common.apns.send_push", side_effect=_capture):
+            notify_app_reply_ready(self.tenant, ["r1"], md)
+
+        self.assertLessEqual(len(captured["body"]), _PREVIEW_CHARS)
+        self.assertTrue(captured["body"].endswith("…"))
+
+    @override_settings(**_APNS_SETTINGS)
     def test_noop_when_no_device_tokens(self):
         from apps.router.push_views import notify_app_reply_ready
 
@@ -341,3 +417,34 @@ class PushTestEndpointTest(TestCase):
         by_sandbox = {sandbox: tokens for tokens, sandbox in calls}
         self.assertEqual(by_sandbox[True], [_VALID_TOKEN])  # sandbox token → sandbox host
         self.assertEqual(by_sandbox[False], [_VALID_TOKEN_2])  # production token → prod host
+
+
+class NotificationBodyTest(TestCase):
+    """The plain-text push-body reducer (APNs alert text is plain-text only):
+    strip markdown prose to one readable line; generic fallback for tables/empty."""
+
+    def test_prose_is_stripped_to_one_clean_line(self):
+        from apps.router.push_views import _notification_body
+
+        self.assertEqual(
+            _notification_body("# Hi\n\n**bold** and `code` and *em*"),
+            "Hi bold and code and em",
+        )
+
+    def test_links_keep_text_drop_url(self):
+        from apps.router.push_views import _notification_body
+
+        self.assertEqual(_notification_body("see [the plan](https://x.co/y)"), "see the plan")
+
+    def test_bullets_become_one_line(self):
+        from apps.router.push_views import _notification_body
+
+        self.assertEqual(_notification_body("- one\n- two\n- three"), "one two three")
+
+    def test_table_and_empty_use_generic(self):
+        from apps.router.push_views import _GENERIC_BODY, _notification_body
+
+        self.assertEqual(_notification_body("| a | b |\n| --- | --- |\n| 1 | 2 |"), _GENERIC_BODY)
+        self.assertEqual(_notification_body(""), _GENERIC_BODY)
+        self.assertEqual(_notification_body(None), _GENERIC_BODY)
+        self.assertEqual(_notification_body("   \n\t"), _GENERIC_BODY)
