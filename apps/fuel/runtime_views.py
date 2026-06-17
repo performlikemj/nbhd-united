@@ -26,6 +26,7 @@ from .models import (
     Workout,
     WorkoutCategory,
     WorkoutPlan,
+    WorkoutSource,
     WorkoutStatus,
 )
 
@@ -171,6 +172,12 @@ class RuntimeLogWorkoutView(APIView):
                 tenant=tenant,
                 date=workout_date,
                 status=workout_status,
+                # Provenance: this path is the assistant logging on the user's
+                # behalf from a chat message (any channel). Distinct from a
+                # user tapping "log workout" in the app/web (consumer endpoint
+                # → source=user) and from Apple Health sync (source=healthkit),
+                # so the model can reason about where a session came from.
+                source=WorkoutSource.ASSISTANT,
                 category=category,
                 activity=activity,
                 duration_minutes=duration,
@@ -591,6 +598,13 @@ class RuntimeFuelSummaryView(APIView):
                 }
             )
 
+        # Computed 4-week aggregates (volume, frequency-by-activity, recency,
+        # recent PRs) so a deep-dive answers off trends, not just the raw row
+        # list above — the same digest the always-on USER.md fuel section shows.
+        from .services import weekly_trends
+
+        trends = weekly_trends(tenant)
+
         return Response(
             {
                 "recent_workouts": recent_data,
@@ -599,6 +613,7 @@ class RuntimeFuelSummaryView(APIView):
                 "latest_body_weight": weight_data,
                 "latest_sleep": sleep_data,
                 "latest_resting_hr": rhr_data,
+                "trends": trends,
                 "profile": profile_data,
             }
         )

@@ -1,8 +1,10 @@
 """USER.md ``Fuel — fitness state`` section.
 
-Today's planned workout, last 3 done sessions (with measured metrics
-when present, e.g. HealthKit imports), last body weight (with 7d delta),
-last sleep entry, recent resting HR. Gated on ``tenant.fuel_enabled``.
+Today's planned workout, a computed 4-week trends digest (volume,
+frequency-by-activity, recency, recent PRs — what a coach reasons from,
+not a raw row dump), the single most-recent done session with measured
+metrics + provenance, last body weight (with 7d delta), last sleep entry,
+recent resting HR. Gated on ``tenant.fuel_enabled``.
 """
 
 from __future__ import annotations
@@ -22,7 +24,11 @@ from apps.tenants.models import Tenant
     refresh_on=(Workout, BodyWeightLog, SleepLog, RestingHeartRateLog),
     order=40,
 )
-def render_fuel(tenant: Tenant, *, max_chars: int = 1000) -> str:
+def render_fuel(tenant: Tenant, *, max_chars: int = 1200) -> str:
+    # Local import: services imports back into fuel models, and pulling it
+    # at module load would couple envelope registration to that chain.
+    from apps.fuel.services import weekly_trends_digest
+
     # Tenant-local day, not server UTC — a JST tenant's "today" section
     # would otherwise flip at 09:00 local.
     today = tenant_today(tenant)
@@ -42,29 +48,40 @@ def render_fuel(tenant: Tenant, *, max_chars: int = 1000) -> str:
             bits[0] += f" — {planned_today.duration_minutes} min"
         sections.append("\n".join(bits))
 
-    recent_done = list(
+    # Computed 4-week trends — what a coach reasons from. Replaces the old
+    # raw "last 3 sessions" dump (the least information-dense rows in the
+    # section); the single most-recent session below keeps concrete colour.
+    trends = weekly_trends_digest(tenant)
+    if trends:
+        sections.append(trends)
+
+    last_done = (
         Workout.objects.filter(
             tenant=tenant,
             status=WorkoutStatus.DONE,
             date__gte=today - _timedelta(days=14),
-        ).order_by("-date")[:3]
+        )
+        .order_by("-date", "-created_at")
+        .first()
     )
-    if recent_done:
-        lines = ["**Recent sessions** (last 14d):"]
-        for w in recent_done:
-            line = f"- {w.date.isoformat()} — {w.activity} ({w.category}"
-            if w.rpe:
-                line += f", RPE {w.rpe}"
-            if w.duration_minutes:
-                line += f", {w.duration_minutes}m"
-            detail = w.detail_json if isinstance(w.detail_json, dict) else {}
-            if isinstance(detail.get("distance_km"), int | float):
-                line += f", {detail['distance_km']} km"
-            if isinstance(detail.get("avg_hr"), int):
-                line += f", {detail['avg_hr']} bpm avg"
-            line += ")"
-            lines.append(line)
-        sections.append("\n".join(lines))
+    if last_done:
+        line = f"- **Last session**: {last_done.date.isoformat()} — {last_done.activity} ({last_done.category}"
+        if last_done.rpe:
+            line += f", RPE {last_done.rpe}"
+        if last_done.duration_minutes:
+            line += f", {last_done.duration_minutes}m"
+        detail = last_done.detail_json if isinstance(last_done.detail_json, dict) else {}
+        if isinstance(detail.get("distance_km"), int | float):
+            line += f", {detail['distance_km']} km"
+        if isinstance(detail.get("avg_hr"), int):
+            line += f", {detail['avg_hr']} bpm avg"
+        line += ")"
+        # Provenance: HealthKit imports are measured watch data the model can
+        # coach off; manual/chat logs are user-asserted. Only flag HK (the
+        # signal the assistant most needs to disambiguate).
+        if last_done.source == "healthkit":
+            line += " · via Apple Health"
+        sections.append(line)
 
     last_weight = BodyWeightLog.objects.filter(tenant=tenant).order_by("-date").first()
     if last_weight:

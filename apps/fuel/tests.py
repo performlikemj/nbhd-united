@@ -3945,6 +3945,102 @@ class HealthKitSyncTests(TestCase):
         self.assertEqual(resp.data["summary"]["matched_planned"], 1)
         self.assertEqual(publish.call_count, 1)
 
+    # ── cross-source adopt-guard (don't double-count) ──────────────────
+
+    def _manual_log(self, **overrides):
+        """An existing DONE workout the user logged in-app/chat — no
+        external_id, so it would escape the HK unique constraint."""
+        defaults = dict(
+            tenant=self.tenant,
+            date=date(2026, 6, 10),
+            status="done",
+            category="cardio",
+            activity="Evening run",
+            duration_minutes=40,
+            source="user",
+        )
+        defaults.update(overrides)
+        return Workout.objects.create(**defaults)
+
+    def test_hk_adopts_existing_manual_log(self):
+        manual = self._manual_log()
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "matched_log")
+        self.assertEqual(resp.data["summary"]["matched_log"], 1)
+        # No duplicate row — the manual log is adopted, not re-created.
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 1)
+        manual.refresh_from_db()
+        self.assertEqual(manual.external_id, "hk-uuid-0001")
+        self.assertEqual(manual.source, "user")  # authorship preserved
+        self.assertEqual(manual.duration_minutes, 40)  # user's value preserved
+        self.assertEqual(manual.detail_json["avg_hr"], 152)  # HK metric filled in
+        self.assertTrue(manual.detail_json["_healthkit"]["adopted"])
+        self.assertIn("Apple Health", manual.notes_thread[-1]["text"])
+
+    def test_adopt_preserves_user_detail_fills_gaps(self):
+        # User logged the distance themselves; HK shouldn't clobber it but
+        # should add the heart-rate it measured.
+        manual = self._manual_log(detail_json={"distance_km": 9.99})
+        self._post({"workouts": [self._workout_item()]})
+        manual.refresh_from_db()
+        self.assertEqual(manual.detail_json["distance_km"], 9.99)  # user value wins
+        self.assertEqual(manual.detail_json["avg_hr"], 152)  # HK gap-fill
+
+    def test_adopted_log_resync_is_duplicate(self):
+        self._manual_log()
+        self._post({"workouts": [self._workout_item()]})
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "duplicate")
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 1)
+
+    def test_hk_does_not_adopt_different_category(self):
+        manual = self._manual_log(category="strength", activity="Lifting")
+        resp = self._post({"workouts": [self._workout_item()]})  # cardio
+        self.assertEqual(resp.data["results"][0]["status"], "created")
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 2)
+        manual.refresh_from_db()
+        self.assertEqual(manual.external_id, "")
+
+    def test_hk_does_not_adopt_duration_mismatch(self):
+        # HK is 42 min; a 10-min manual log is not the same session.
+        manual = self._manual_log(duration_minutes=10)
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "created")
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 2)
+        manual.refresh_from_db()
+        self.assertEqual(manual.external_id, "")
+
+    def test_ambiguous_manual_logs_not_adopted(self):
+        # Two same-day same-category day-only logs — no way to know which,
+        # so create standalone rather than risk a wrong merge.
+        self._manual_log(activity="Run A")
+        self._manual_log(activity="Run B")
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "created")
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant, external_id="").count(), 2)
+
+    def test_edit_locked_manual_log_not_adopted(self):
+        from django.utils import timezone as dj_tz
+
+        manual = self._manual_log(edit_lock_until=dj_tz.now() + timedelta(minutes=5))
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "created")
+        manual.refresh_from_db()
+        self.assertEqual(manual.external_id, "")
+
+    def test_planned_match_precedes_adopt(self):
+        # A planned session AND a manual log both exist for the day — the
+        # planned completion wins; the manual log is left untouched.
+        planned = self._planned()
+        manual = self._manual_log()
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "matched_planned")
+        planned.refresh_from_db()
+        manual.refresh_from_db()
+        self.assertEqual(planned.status, "done")
+        self.assertEqual(planned.external_id, "hk-uuid-0001")
+        self.assertEqual(manual.external_id, "")
+
     # ── daily metrics ──────────────────────────────────────────────────
 
     def test_daily_metrics_upsert_preserves_quality(self):
@@ -4086,6 +4182,76 @@ class HealthKitEnvelopeTests(TestCase):
         self.assertNotIn("Resting HR", body)
 
 
+class FuelTrendsDigestTests(TestCase):
+    """weekly_trends aggregates + render_fuel trends digest + provenance."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Trends Test", telegram_chat_id=800046)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+
+    def _done(self, days_ago, category, minutes, **overrides):
+        from apps.common.tenant_tz import tenant_today
+
+        defaults = dict(
+            tenant=self.tenant,
+            date=tenant_today(self.tenant) - timedelta(days=days_ago),
+            status="done",
+            category=category,
+            activity=category.title(),
+            duration_minutes=minutes,
+        )
+        defaults.update(overrides)
+        return Workout.objects.create(**defaults)
+
+    def test_weekly_trends_empty_when_no_workouts(self):
+        from .services import weekly_trends
+
+        self.assertEqual(weekly_trends(self.tenant), {})
+
+    def test_weekly_trends_aggregates(self):
+        from .services import weekly_trends
+
+        self._done(0, "strength", 60)
+        self._done(2, "cardio", 30)
+        self._done(3, "strength", 45)
+        self._done(20, "mobility", 20)
+        self._done(40, "cardio", 30)  # outside the 28-day window — excluded
+        t = weekly_trends(self.tenant)
+        self.assertEqual(t["sessions_28d"], 4)
+        self.assertEqual(t["minutes_28d"], 155)
+        self.assertEqual(t["sessions_7d"], 3)
+        self.assertEqual(t["minutes_7d"], 135)
+        cats = {c["category"]: c["count"] for c in t["by_category"]}
+        self.assertEqual(cats, {"strength": 2, "cardio": 1, "mobility": 1})
+        self.assertEqual(t["recency_days"]["strength"], 0)
+        self.assertEqual(t["recency_days"]["cardio"], 2)
+
+    def test_render_fuel_includes_trends_digest(self):
+        from .envelope import render_fuel
+
+        self._done(0, "strength", 60)
+        self._done(2, "cardio", 30)
+        body = render_fuel(self.tenant)
+        self.assertIn("Trends", body)
+        self.assertIn("By activity", body)
+        self.assertIn("Last session", body)
+
+    def test_render_fuel_flags_healthkit_provenance(self):
+        from .envelope import render_fuel
+
+        self._done(0, "cardio", 42, source="healthkit", detail_json={"distance_km": 5.2})
+        body = render_fuel(self.tenant)
+        self.assertIn("via Apple Health", body)
+
+    def test_render_fuel_no_provenance_label_for_manual(self):
+        from .envelope import render_fuel
+
+        self._done(0, "cardio", 42, source="user")
+        body = render_fuel(self.tenant)
+        self.assertNotIn("via Apple Health", body)
+
+
 @override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
 class HealthKitRuntimeSummaryTests(TestCase):
     """nbhd_fuel_summary payload carries source, metrics, latest_resting_hr."""
@@ -4122,6 +4288,44 @@ class HealthKitRuntimeSummaryTests(TestCase):
         self.assertEqual(recent["avg_hr"], 152)
         self.assertEqual(recent["distance_km"], 5.21)
         self.assertEqual(resp.data["latest_resting_hr"], {"date": "2026-06-10", "bpm": 52})
+
+    def test_summary_includes_trends(self):
+        from apps.common.tenant_tz import tenant_today
+
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=tenant_today(self.tenant),
+            status="done",
+            category="cardio",
+            activity="Run",
+            duration_minutes=30,
+        )
+        resp = self.client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/summary/",
+            **{
+                "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+                "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+            },
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertIn("trends", resp.data)
+        self.assertEqual(resp.data["trends"]["sessions_28d"], 1)
+
+    def test_runtime_log_tagged_assistant_source(self):
+        resp = self.client.post(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/log/",
+            {"activity": "Run", "category": "cardio", "duration_minutes": 30},
+            format="json",
+            **{
+                "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+                "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+            },
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        w = Workout.objects.get(id=resp.data["id"])
+        # Logged via the assistant/chat path → tagged assistant, distinct
+        # from a direct in-app log (source=user) or Apple Health (healthkit).
+        self.assertEqual(w.source, "assistant")
 
 
 class HealthKitSyncHardeningTests(TestCase):

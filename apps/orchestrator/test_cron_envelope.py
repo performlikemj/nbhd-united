@@ -331,10 +331,15 @@ class EnvelopeFuelStateTest(TestCase):
                 duration_minutes=30,
             )
         out = envelope_fuel_state(self.tenant)
-        self.assertIn("Recent sessions", out)
-        # Limited to 3 most recent
-        self.assertEqual(out.count("Session "), 3)
+        # The raw "last 3 sessions" dump is replaced by a computed trends
+        # digest (volume / frequency / recency) plus the single most-recent
+        # session for concrete colour.
+        self.assertIn("Trends", out)
+        self.assertIn("4 sessions", out)
+        self.assertIn("Last session", out)
         self.assertIn("RPE 7", out)
+        # Only the most recent session is shown verbatim now.
+        self.assertEqual(out.count("Session "), 1)
 
     def test_includes_body_weight_with_delta(self):
         from datetime import date as _date

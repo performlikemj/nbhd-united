@@ -331,10 +331,112 @@ def _complete_planned(locked: Workout, clean: dict) -> dict:
     }
 
 
+def _find_adoptable_log(tenant, clean: dict, tz, consumed: set) -> Workout | None:
+    """Pick an existing manually-logged DONE session this HK sample is a
+    duplicate of, or None.
+
+    The same physical session logged in-app / in chat (``external_id=""``)
+    and then synced from Apple Health would otherwise become two rows — the
+    manual one escapes the partial unique constraint (empty external_id)
+    and double-counts in every volume/frequency aggregate. When a confident
+    single match exists the caller ADOPTS it (stamps the HK external_id +
+    fills measured metrics) instead of creating a duplicate — symmetric
+    with how a PLANNED row is completed.
+
+    Conservative by construction (a false merge silently undercounts, which
+    is worse than a duplicate the user can delete): same tenant-local day,
+    compatible category, duration plausibility BOTH directions, time window
+    when the row carries a scheduled time, edit-lock-aware, low-signal
+    walk/hike exclusion, and ambiguity (several day-only candidates) means
+    no guess.
+    """
+    local_date = clean["started_at"].astimezone(tz).date()
+    compat = _COMPAT.get(clean["category"], {clean["category"]})
+    low_signal = clean["raw_type"] in _LOW_SIGNAL_TYPES
+    now = dj_timezone.now()
+    dur = clean["duration_minutes"]
+
+    viable = []
+    for c in Workout.objects.filter(
+        tenant=tenant,
+        status=WorkoutStatus.DONE,
+        external_id="",
+        date=local_date,
+        category__in=compat,
+    ).exclude(id__in=consumed):
+        if c.edit_lock_until and c.edit_lock_until > now:
+            continue
+        if low_signal and not any(k in (c.activity or "").lower() for k in ("walk", "hike")):
+            continue
+        # Same session ⇒ similar duration. Reject both a too-short stroll
+        # standing in for a long run and a too-long lift for a short flow.
+        if c.duration_minutes:
+            lo = _MIN_DURATION_RATIO * c.duration_minutes
+            hi = c.duration_minutes / _MIN_DURATION_RATIO
+            if not (lo <= dur <= hi):
+                continue
+        if c.scheduled_at:
+            window_start = c.window_start_at or (c.scheduled_at - timedelta(hours=2))
+            window_end = c.window_end_at or (c.scheduled_at + timedelta(hours=2))
+            if not (window_start <= clean["started_at"] <= window_end):
+                continue
+        viable.append(c)
+
+    if not viable:
+        return None
+    if len(viable) == 1:
+        return viable[0]
+    # Multiple same-day same-category manual logs: only resolve when a
+    # scheduled time lets us pick the closest; otherwise no guess.
+    timed = [c for c in viable if c.scheduled_at]
+    if not timed:
+        return None
+    return min(timed, key=lambda c: abs(c.scheduled_at - clean["started_at"]))
+
+
+def _adopt_existing_log(locked: Workout, clean: dict) -> dict:
+    """Stamp the HK external_id onto a pre-existing manual DONE log and
+    enrich it with measured metrics, instead of creating a duplicate row.
+
+    Non-destructive: the user's activity / duration / category and any
+    detail values they entered are preserved (HK metrics only fill gaps);
+    the stamped external_id makes future re-syncs idempotent and a later HK
+    deletion tombstone-safe. Caller holds ``select_for_update`` on the row.
+    """
+    existing_detail = dict(locked.detail_json or {})
+    hk_detail = _hk_detail(clean, matched=True)
+    # User-entered values win on conflict; HK measured keys fill the gaps.
+    merged = {**hk_detail, **existing_detail}
+    hk_block = dict(hk_detail.get("_healthkit") or {})
+    hk_block["adopted"] = True
+    merged["_healthkit"] = hk_block
+
+    thread = list(locked.notes_thread or [])
+    thread.append(
+        {
+            "at": dj_timezone.now().isoformat(),
+            "who": "system",
+            "text": f"Linked to Apple Health ({clean['activity']}, {clean['duration_minutes']}m)",
+        }
+    )
+
+    locked.external_id = clean["external_id"]
+    locked.detail_json = merged
+    locked.notes_thread = thread
+    locked.version += 1
+    locked.save(update_fields=["external_id", "detail_json", "notes_thread", "version", "updated_at"])
+
+    return {
+        "external_id": clean["external_id"],
+        "status": "matched_log",
+        "workout_id": str(locked.id),
+    }
+
+
 def _ingest_workout(tenant, clean: dict, tz, consumed: set) -> dict:
     eid = clean["external_id"]
     candidate = _find_candidate(tenant, clean, tz, consumed)
-    matched: Workout | None = None
+    completed_planned: Workout | None = None  # only this path runs detect_prs
     try:
         with transaction.atomic():
             if candidate is not None:
@@ -345,22 +447,36 @@ def _ingest_workout(tenant, clean: dict, tz, consumed: set) -> dict:
                 )
                 if locked is not None:
                     result = _complete_planned(locked, clean)
-                    matched = locked
+                    completed_planned = locked
                 # Lost the race (assistant or another device flipped it
-                # first) — fall through to a standalone create.
-            if matched is None:
-                workout = Workout.objects.create(
-                    tenant=tenant,
-                    date=clean["started_at"].astimezone(tz).date(),
-                    status=WorkoutStatus.DONE,
-                    source=WorkoutSource.HEALTHKIT,
-                    external_id=eid,
-                    category=clean["category"],
-                    activity=clean["activity"],
-                    duration_minutes=clean["duration_minutes"],
-                    detail_json=_hk_detail(clean, matched=False),
-                )
-                result = {"external_id": eid, "status": "created", "workout_id": str(workout.id)}
+                # first) — fall through to adopt-or-create.
+            if completed_planned is None:
+                # No planned session to complete — does an existing manual
+                # DONE log already record this same session? Adopt it rather
+                # than creating a duplicate that inflates every aggregate.
+                adoptable = _find_adoptable_log(tenant, clean, tz, consumed)
+                locked_log = None
+                if adoptable is not None:
+                    locked_log = (
+                        Workout.objects.select_for_update()
+                        .filter(id=adoptable.id, tenant=tenant, status=WorkoutStatus.DONE, external_id="")
+                        .first()
+                    )
+                if locked_log is not None:
+                    result = _adopt_existing_log(locked_log, clean)
+                else:
+                    workout = Workout.objects.create(
+                        tenant=tenant,
+                        date=clean["started_at"].astimezone(tz).date(),
+                        status=WorkoutStatus.DONE,
+                        source=WorkoutSource.HEALTHKIT,
+                        external_id=eid,
+                        category=clean["category"],
+                        activity=clean["activity"],
+                        duration_minutes=clean["duration_minutes"],
+                        detail_json=_hk_detail(clean, matched=False),
+                    )
+                    result = {"external_id": eid, "status": "created", "workout_id": str(workout.id)}
     except IntegrityError:
         # The per-item savepoint already rolled back. Classify instead of
         # blanket-reporting duplicate — an FK violation must not masquerade
@@ -372,14 +488,16 @@ def _ingest_workout(tenant, clean: dict, tz, consumed: set) -> dict:
 
     # detect_prs runs OUTSIDE the atomic block: a swallowed DB error inside
     # it would mark the transaction needs_rollback and silently undo the
-    # flip while the response still reported matched_planned.
-    if matched is not None:
+    # flip while the response still reported matched_planned. Adoption does
+    # NOT re-run it — the row was already DONE (detect_prs ran at log time)
+    # and HK imports carry no strength sets for it to act on.
+    if completed_planned is not None:
         try:
             from .services import detect_prs
 
-            detect_prs(tenant, matched)
+            detect_prs(tenant, completed_planned)
         except Exception:
-            logger.warning("detect_prs failed for HK-completed workout %s", matched.id, exc_info=True)
+            logger.warning("detect_prs failed for HK-completed workout %s", completed_planned.id, exc_info=True)
     return result
 
 
@@ -490,7 +608,7 @@ def ingest_healthkit_payload(tenant, payload: dict) -> dict:
 
     results = []
     consumed: set = set()
-    counts = {"created": 0, "matched_planned": 0, "duplicates": 0, "errors": 0}
+    counts = {"created": 0, "matched_planned": 0, "matched_log": 0, "duplicates": 0, "errors": 0}
     for clean, err, item in cleans:
         if err:
             raw_id = item.get("external_id") if isinstance(item, dict) else None
@@ -507,13 +625,18 @@ def ingest_healthkit_payload(tenant, payload: dict) -> dict:
         if res["status"] == "matched_planned":
             consumed.add(res["workout_id"])
             counts["matched_planned"] += 1
+        elif res["status"] == "matched_log":
+            # Adopted an existing manual log — reserve it so a second HK
+            # sample in this batch can't adopt the same row.
+            consumed.add(res["workout_id"])
+            counts["matched_log"] += 1
         elif res["status"] == "created":
             counts["created"] += 1
         elif res["status"] == "duplicate":
             counts["duplicates"] += 1
         else:
             counts["errors"] += 1
-        if res["status"] in ("created", "matched_planned", "duplicate"):
+        if res["status"] in ("created", "matched_planned", "matched_log", "duplicate"):
             existing.add(eid)
 
     daily_results = [_ingest_daily(tenant, item, tz) for item in (payload.get("daily_metrics") or [])]
@@ -528,7 +651,9 @@ def ingest_healthkit_payload(tenant, payload: dict) -> dict:
             "daily_upserted": daily_upserted,
             "daily_errors": len(daily_results) - daily_upserted,
         },
-        "wrote_any": bool(counts["created"] or counts["matched_planned"] or deleted_count or daily_upserted),
+        "wrote_any": bool(
+            counts["created"] or counts["matched_planned"] or counts["matched_log"] or deleted_count or daily_upserted
+        ),
         "regen_needed": bool(counts["matched_planned"] and profile is not None and profile.use_session_scheduling),
     }
 

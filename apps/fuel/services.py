@@ -634,3 +634,129 @@ def detect_prs(tenant, workout) -> list[dict]:
                 )
 
     return new_prs
+
+
+# --------------------------------------------------------------------------
+# Trends digest — computed workout aggregates the assistant reasons from.
+# --------------------------------------------------------------------------
+#
+# A coach reasons from *trends* (weekly volume, what you train, how recently,
+# whether load is climbing), not a raw list of the last few sessions. These
+# feed two surfaces: the always-on USER.md ``fuel`` section
+# (``render_fuel`` → ``weekly_trends_digest``) and the on-demand
+# ``nbhd_fuel_summary`` tool (``RuntimeFuelSummaryView`` → ``weekly_trends``).
+# Source-agnostic by design: a session counts toward volume whether it came
+# from Apple Health, the app, or a chat log — provenance is carried per-row
+# in ``Workout.source`` and surfaced separately.
+
+_TRENDS_WINDOW_DAYS = 28
+_PR_UNIT = {"est_1rm": " kg", "distance": " km", "hold_s": " s", "reps": " reps"}
+
+
+def weekly_trends(tenant) -> dict:
+    """Structured workout aggregates over the last 4 weeks, or ``{}`` if none.
+
+    Returns volume (7d + 28d sessions/minutes), frequency-by-category,
+    days-since-last per category (recency), recent personal records (load
+    progression), and a coarse 7d-vs-prior-7d volume trend. Tenant-local
+    day boundaries so a JST tenant's "this week" doesn't flip at 09:00.
+    """
+    from datetime import timedelta
+
+    from django.db.models import Count, Max, Sum
+
+    from apps.common.tenant_tz import tenant_today
+
+    from .models import PersonalRecord, Workout, WorkoutStatus
+
+    today = tenant_today(tenant)
+    start_28 = today - timedelta(days=_TRENDS_WINDOW_DAYS - 1)
+    start_7 = today - timedelta(days=6)
+    prior_7_start = today - timedelta(days=13)
+    prior_7_end = today - timedelta(days=7)
+
+    done = Workout.objects.filter(tenant=tenant, status=WorkoutStatus.DONE, date__gte=start_28, date__lte=today)
+
+    def _vol(qs) -> tuple[int, int]:
+        agg = qs.aggregate(n=Count("id"), mins=Sum("duration_minutes"))
+        return agg["n"] or 0, agg["mins"] or 0
+
+    sessions_28, minutes_28 = _vol(done)
+    if sessions_28 == 0:
+        return {}
+
+    sessions_7, minutes_7 = _vol(done.filter(date__gte=start_7))
+    minutes_prior_7 = (
+        done.filter(date__gte=prior_7_start, date__lte=prior_7_end).aggregate(mins=Sum("duration_minutes"))["mins"] or 0
+    )
+
+    by_category = list(
+        done.values("category")
+        .annotate(count=Count("id"), minutes=Sum("duration_minutes"))
+        .order_by("-count", "-minutes")
+    )
+
+    recency_days = {
+        row["category"]: (today - row["last"]).days for row in done.values("category").annotate(last=Max("date"))
+    }
+
+    recent_prs = list(
+        PersonalRecord.objects.filter(tenant=tenant, date__gte=start_28)
+        .order_by("-date", "-value")[:3]
+        .values("exercise_name", "value", "metric", "date")
+    )
+
+    if minutes_prior_7 == 0:
+        trend = "up" if minutes_7 > 0 else "flat"
+    elif minutes_7 > minutes_prior_7 * 1.1:
+        trend = "up"
+    elif minutes_7 < minutes_prior_7 * 0.9:
+        trend = "down"
+    else:
+        trend = "flat"
+
+    return {
+        "sessions_7d": sessions_7,
+        "minutes_7d": minutes_7,
+        "sessions_28d": sessions_28,
+        "minutes_28d": minutes_28,
+        "by_category": by_category,
+        "recency_days": recency_days,
+        "recent_prs": recent_prs,
+        "volume_trend": trend,
+    }
+
+
+def weekly_trends_digest(tenant) -> str:
+    """Terse markdown rendering of :func:`weekly_trends` for USER.md, or "".
+
+    Kept to ~4 lines — this rides inside the char-capped ``fuel`` envelope
+    section, so it must out-earn the raw session rows it replaces.
+    """
+    t = weekly_trends(tenant)
+    if not t:
+        return ""
+
+    arrow = {"up": "↑", "down": "↓", "flat": "→"}[t["volume_trend"]]
+    lines = ["**Trends** (last 4 wks):"]
+    lines.append(
+        f"- {t['sessions_28d']} sessions · {t['minutes_28d']} min — "
+        f"this wk {t['sessions_7d']} · {t['minutes_7d']} min {arrow}"
+    )
+    if t["by_category"]:
+        freq = ", ".join(f"{c['category']} ×{c['count']}" for c in t["by_category"][:4])
+        lines.append(f"- By activity: {freq}")
+    if t["recency_days"]:
+        rec = sorted(t["recency_days"].items(), key=lambda kv: kv[1])[:3]
+        recs = ", ".join(f"{cat} today" if days <= 0 else f"{cat} {days}d ago" for cat, days in rec)
+        lines.append(f"- Last: {recs}")
+    if t["recent_prs"]:
+
+        def _fmt_pr(pr: dict) -> str:
+            val = pr["value"]
+            shown = f"{val:.0f}" if val == val.to_integral_value() else f"{val}"
+            unit = _PR_UNIT.get(pr["metric"], "")
+            return f"{pr['exercise_name']} {shown}{unit} ({pr['date'].strftime('%b %d')})"
+
+        lines.append("- PRs: " + ", ".join(_fmt_pr(pr) for pr in t["recent_prs"]))
+    return "\n".join(lines)
