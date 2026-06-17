@@ -25,6 +25,28 @@ def _parse_version(v: str) -> tuple[int, ...]:
     return tuple(int(x) for x in v.split("."))
 
 
+def openclaw_version_for_image_tag(image_tag: str) -> str:
+    """Map a container image tag to the OpenClaw version it ships.
+
+    Image tags are ``<version>-<sha>`` (e.g. ``2026.5.28-755d789``). The
+    config generator keys its config SCHEMA off ``tenant.openclaw_version``
+    (the agents.defaults.llm vs params/contextPruning split at the 5.0 / 5.28
+    boundaries). If that field drifts behind the running image, generated
+    configs use an older schema the image rejects (``agents.defaults: Invalid
+    input``) and the container crash-loops. Any code path that changes a
+    tenant's image MUST also update ``openclaw_version`` via this mapping so
+    the two stay in lockstep (mirrors ``bump_openclaw_version_for_tenant``).
+
+    Bare-sha / ``latest`` tags carry no version prefix → fall back to
+    ``OPENCLAW_CURRENT_VERSION`` (the version shipped by the current fleet
+    image, which is what those tags resolve to in practice).
+    """
+    import re
+
+    match = re.match(r"^(\d{4}\.\d+\.\d+)", image_tag or "")
+    return match.group(1) if match else OPENCLAW_CURRENT_VERSION
+
+
 # ── 2026.4.5 policy (original) ──────────────────────────────────────
 
 _DENIED_TOOLS_2026_4_5: tuple[str, ...] = (

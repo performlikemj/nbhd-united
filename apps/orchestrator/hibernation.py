@@ -462,6 +462,13 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
     """
     tid = str(tenant.id)[:8]
 
+    # Tracks whether the image refresh below moved openclaw_version (the field
+    # that drives config SCHEMA generation). When it does, step 3 must force a
+    # config regen so the new schema reaches the file share before the
+    # container reads it — otherwise the just-deployed image boots against a
+    # stale-schema config and crash-loops on "agents.defaults: Invalid input".
+    version_synced = False
+
     # 1. Wake the container — image-refresh path takes priority over plain wake
     try:
         from django.conf import settings as django_settings
@@ -471,6 +478,7 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
             update_container_image,
             wake_container_app,
         )
+        from apps.orchestrator.tool_policy import openclaw_version_for_image_tag
 
         desired_tag = getattr(django_settings, "OPENCLAW_IMAGE_TAG", "latest") or "latest"
         current_tag = tenant.container_image_tag or ""
@@ -482,12 +490,28 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
             registry = getattr(django_settings, "AZURE_ACR_SERVER", "nbhdunited.azurecr.io")
             desired_image = f"{registry}/nbhd-openclaw:{desired_tag}"
             update_container_image(tenant.container_id, desired_image)
-            Tenant.objects.filter(id=tenant.id).update(container_image_tag=desired_tag)
+
+            # Keep openclaw_version (config SCHEMA) in lockstep with the image
+            # we just deployed. Fleet version bumps skip hibernated tenants, so
+            # a tenant can wake onto a much newer image while its
+            # openclaw_version is stale; the next config it gets is then the
+            # wrong schema for the running image → crash loop. Mirror
+            # bump_openclaw_version_for_tenant (incident 2026-06-17: 44aaee8d
+            # woke onto 2026.5.28 with openclaw_version stuck at 2026.4.25).
+            new_version = openclaw_version_for_image_tag(desired_tag)
+            image_updates = {"container_image_tag": desired_tag}
+            if new_version and (tenant.openclaw_version or "") != new_version:
+                image_updates["openclaw_version"] = new_version
+                tenant.openclaw_version = new_version  # in-memory sync for step 3
+                version_synced = True
+            Tenant.objects.filter(id=tenant.id).update(**image_updates)
+            tenant.container_image_tag = desired_tag
             logger.info(
-                "idle_wake: refreshed image for %s (%s -> %s)",
+                "idle_wake: refreshed image for %s (%s -> %s, version -> %s)",
                 tid,
                 current_tag[:10] if current_tag else "?",
                 desired_tag[:10],
+                new_version,
             )
         elif ensure_plugin_runtime_deps_mount(tenant.container_id):
             # In single-revision mode, adding the mount creates a new revision
@@ -505,17 +529,35 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
     # attempts) apart from a genuinely down container.
     Tenant.objects.filter(id=tenant.id).update(hibernated_at=None, last_wake_at=timezone.now())
 
-    # 3. Apply pending config (writes to file share before container finishes booting)
+    # 3. Apply pending config (writes to file share before container finishes
+    # booting). Normally gated on pending>config, but two states need a forced
+    # regen even when pending==config — both otherwise invisible to the apply
+    # machinery and both proven crash-loop causes (incident 2026-06-17):
+    #   - version_synced: the image refresh above moved openclaw_version, so
+    #     the on-share config is now the wrong schema for the running image.
+    #   - config_version == 0: the tenant never had a version-tracked config
+    #     write; its openclaw.json exists only if the provision-time env-var
+    #     seed succeeded. If that seed failed, the share has no config and the
+    #     container crash-loops on the startup gate ("Config file missing").
+    # Bump pending so the apply below actually writes (the apply task and this
+    # gate both no-op while pending<=config).
+    if (version_synced or tenant.config_version == 0) and tenant.pending_config_version <= tenant.config_version:
+        try:
+            tenant.bump_pending_config()  # increments pending_config_version + saves
+        except Exception:
+            logger.exception("idle_wake: failed to bump pending config for %s", tid)
+
     if tenant.pending_config_version > tenant.config_version:
         try:
             from apps.cron.publish import publish_task
 
             publish_task("apply_single_tenant_config", str(tenant.id))
             logger.info(
-                "idle_wake: queued config apply for %s (v%d→v%d)",
+                "idle_wake: queued config apply for %s (v%d→v%d, version_synced=%s)",
                 tid,
                 tenant.config_version,
                 tenant.pending_config_version,
+                version_synced,
             )
         except Exception:
             logger.exception("idle_wake: failed to queue config apply for %s", tid)
