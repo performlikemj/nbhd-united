@@ -237,3 +237,107 @@ class NotifyReplyReadyTest(TestCase):
         by_sandbox = {sandbox: tokens for tokens, sandbox in calls}
         self.assertEqual(by_sandbox[True], [_VALID_TOKEN])  # sandbox token → sandbox host
         self.assertEqual(by_sandbox[False], [_VALID_TOKEN_2])  # production token → prod host
+
+
+class PushTestEndpointTest(TestCase):
+    """The self-service ``POST /api/v1/push/test/`` delivery probe: auth-gated,
+    self-targeting only, fixed no-PII body, counts-only response, host routing
+    per environment, and stale-token pruning."""
+
+    def setUp(self):
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_requires_auth(self):
+        resp = APIClient().post("/api/v1/push/test/", {}, format="json")
+        self.assertIn(resp.status_code, (401, 403))
+
+    def test_noop_when_not_configured(self):
+        # No APNs settings → returns a skip without touching the sender, even
+        # though a token exists.
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN)
+        with patch("apps.common.apns.send_push") as mock_send:
+            resp = self.client.post("/api/v1/push/test/", {}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["skipped"], "not_configured")
+        mock_send.assert_not_called()
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_noop_when_no_tokens(self):
+        with patch("apps.common.apns.send_push") as mock_send:
+            resp = self.client.post("/api/v1/push/test/", {}, format="json")
+        self.assertEqual(resp.json()["skipped"], "no_tokens")
+        mock_send.assert_not_called()
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_sends_only_to_callers_own_tokens(self):
+        # A token for the caller AND one for a different user; only the caller's
+        # is ever targeted — the endpoint takes no token from the request body.
+        other = _make_user()
+        _make_tenant(other)
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        DeviceToken.objects.create(user=other, tenant=other.tenant, token=_VALID_TOKEN_2, environment="sandbox")
+
+        captured = {}
+
+        def _capture(tokens, **kw):
+            captured["tokens"] = list(tokens)
+            return {"sent": len(tokens), "failed": 0, "unregistered": [], "skipped": None}
+
+        with patch("apps.common.apns.send_push", side_effect=_capture):
+            resp = self.client.post("/api/v1/push/test/", {}, format="json")
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json(), {"sent": 1, "failed": 0, "unregistered": 0})
+        self.assertEqual(captured["tokens"], [_VALID_TOKEN])
+        self.assertNotIn(_VALID_TOKEN_2, captured["tokens"])
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_body_is_static_with_no_user_data(self):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        captured = {}
+
+        def _capture(tokens, **kw):
+            captured.update(kw)
+            return {"sent": 1, "failed": 0, "unregistered": [], "skipped": None}
+
+        with patch("apps.common.apns.send_push", side_effect=_capture):
+            self.client.post("/api/v1/push/test/", {}, format="json")
+
+        # Fixed body + generic title; no thread_id / extra correlator that could
+        # carry a message or thread identifier.
+        self.assertEqual(captured["title"], "NBHD")
+        self.assertEqual(captured["body"], "Test push — notifications are working.")
+        self.assertIsNone(captured.get("thread_id"))
+        self.assertIsNone(captured.get("extra"))
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_prunes_unregistered_token(self):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        with patch(
+            "apps.common.apns.send_push",
+            return_value={"sent": 0, "failed": 1, "unregistered": [_VALID_TOKEN], "skipped": None},
+        ):
+            resp = self.client.post("/api/v1/push/test/", {}, format="json")
+        self.assertEqual(resp.json()["unregistered"], 1)
+        self.assertFalse(DeviceToken.objects.filter(token=_VALID_TOKEN).exists())
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_routes_each_environment_to_its_host(self):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN_2, environment="production")
+        calls = []
+
+        def _capture(tokens, **kw):
+            calls.append((sorted(tokens), kw.get("sandbox")))
+            return {"sent": len(tokens), "failed": 0, "unregistered": [], "skipped": None}
+
+        with patch("apps.common.apns.send_push", side_effect=_capture):
+            resp = self.client.post("/api/v1/push/test/", {}, format="json")
+
+        self.assertEqual(resp.json()["sent"], 2)
+        by_sandbox = {sandbox: tokens for tokens, sandbox in calls}
+        self.assertEqual(by_sandbox[True], [_VALID_TOKEN])  # sandbox token → sandbox host
+        self.assertEqual(by_sandbox[False], [_VALID_TOKEN_2])  # production token → prod host

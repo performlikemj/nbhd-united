@@ -18,6 +18,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.router.models import DeviceToken
+from apps.tenants.throttling import PushTestMinuteThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,68 @@ class PushRegisterView(APIView):
             return Response({"error": "invalid_token"}, status=status.HTTP_400_BAD_REQUEST)
         DeviceToken.objects.filter(user=request.user, token=token).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class PushTestView(APIView):
+    """POST: send a static, no-PII test push to the CALLER'S OWN device(s).
+
+    A self-service "is delivery working?" probe for confirming on-device
+    notification delivery end to end (APNs ``200`` means Apple accepted it, not
+    that the device displayed it — this lets a user verify the last hop).
+    Security properties:
+
+    * JWT-authed, and it operates ONLY on ``request.user``'s registered tokens —
+      it never accepts a target token from the request, so it cannot push to any
+      other device.
+    * The push body is a FIXED string: no reply text, journal, finance, name, or
+      any user/tenant data is ever placed in the payload.
+    * The response carries counts only — never the token or any PII.
+    * Rate-limited so it can't be used to hammer APNs or spam a device.
+
+    Routes each device to the APNs host matching its stored ``environment`` and
+    prunes any token APNs reports as unregistered (410), exactly like the
+    reply-ready path, so a stale token self-heals (the app re-registers on next
+    launch).
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [PushTestMinuteThrottle]
+
+    def post(self, request):
+        from apps.common.apns import apns_configured, send_push
+
+        if not apns_configured():
+            return Response({"sent": 0, "failed": 0, "skipped": "not_configured"}, status=status.HTTP_200_OK)
+
+        rows = list(DeviceToken.objects.filter(user=request.user).values("token", "environment"))
+        if not rows:
+            return Response({"sent": 0, "failed": 0, "skipped": "no_tokens"}, status=status.HTTP_200_OK)
+
+        # Route each device to the APNs host matching its environment (a sandbox
+        # Debug-build token and a production App Store token can coexist).
+        by_env: dict[str, list[str]] = {}
+        for r in rows:
+            by_env.setdefault(r["environment"], []).append(r["token"])
+
+        sent = failed = 0
+        stale: list[str] = []
+        for env_name, env_tokens in by_env.items():
+            res = send_push(
+                env_tokens,
+                title="NBHD",
+                body="Test push — notifications are working.",  # static; no user data
+                sandbox=(env_name == DeviceToken.Environment.SANDBOX),
+            )
+            sent += res.get("sent", 0)
+            failed += res.get("failed", 0)
+            stale.extend(res.get("unregistered") or [])
+        if stale:
+            DeviceToken.objects.filter(user=request.user, token__in=stale).delete()
+
+        return Response(
+            {"sent": sent, "failed": failed, "unregistered": len(stale)},
+            status=status.HTTP_200_OK,
+        )
 
 
 def notify_app_reply_ready(tenant, client_msg_ids, reply_text: str | None) -> None:
