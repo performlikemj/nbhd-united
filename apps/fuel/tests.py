@@ -4010,6 +4010,33 @@ class HealthKitSyncTests(TestCase):
         manual.refresh_from_db()
         self.assertEqual(manual.external_id, "")
 
+    def test_hk_does_not_adopt_durationless_day_only_log(self):
+        # A chat log like "did a lift this morning" carries neither a duration
+        # nor a scheduled time — no signal to tell a genuinely separate same-day
+        # same-category session apart, so HK must NOT silently merge onto it
+        # (a false merge undercounts; a duplicate is recoverable).
+        manual = self._manual_log(duration_minutes=None)
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "created")
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 2)
+        manual.refresh_from_db()
+        self.assertEqual(manual.external_id, "")
+
+    def test_hk_adopts_durationless_log_when_time_matches(self):
+        from datetime import datetime
+
+        # No duration, but a scheduled time inside the HK sample's window is a
+        # strong same-session signal — adopt rather than duplicate.
+        manual = self._manual_log(
+            duration_minutes=None,
+            scheduled_at=datetime(2026, 6, 9, 22, 0, tzinfo=UTC),
+        )
+        resp = self._post({"workouts": [self._workout_item()]})
+        self.assertEqual(resp.data["results"][0]["status"], "matched_log")
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 1)
+        manual.refresh_from_db()
+        self.assertEqual(manual.external_id, "hk-uuid-0001")
+
     def test_ambiguous_manual_logs_not_adopted(self):
         # Two same-day same-category day-only logs — no way to know which,
         # so create standalone rather than risk a wrong merge.

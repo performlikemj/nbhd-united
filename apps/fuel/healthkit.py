@@ -375,6 +375,14 @@ def _find_adoptable_log(tenant, clean: dict, tz, consumed: set) -> Workout | Non
             hi = c.duration_minutes / _MIN_DURATION_RATIO
             if not (lo <= dur <= hi):
                 continue
+        elif not c.scheduled_at:
+            # No duration AND no scheduled time ⇒ no signal to tell a genuinely
+            # separate same-day same-category session apart (a chat log like
+            # "did a lift this morning" carries neither). Adopting here would
+            # risk a silent false-merge — an undercount, which this module is
+            # deliberately more conservative against than a duplicate the user
+            # can delete — so fall through to a standalone create.
+            continue
         if c.scheduled_at:
             window_start = c.window_start_at or (c.scheduled_at - timedelta(hours=2))
             window_end = c.window_end_at or (c.scheduled_at + timedelta(hours=2))
