@@ -253,14 +253,43 @@ def apply_single_tenant_image_task(tenant_id: str, desired_tag: str) -> None:
 
     # Phase 2: Update the container image.
     desired_image = f"{django_settings.AZURE_ACR_SERVER}/nbhd-openclaw:{desired_tag}"
+    version_changed = False
     try:
         update_container_image(tenant.container_id, desired_image)
-        Tenant.objects.filter(id=tenant_id).update(
-            container_image_tag=desired_tag,
-        )
+        # Keep openclaw_version (config SCHEMA) in lockstep with the image we
+        # just deployed. The config generator keys schema off openclaw_version;
+        # moving the image without moving the version leaves the tenant on a
+        # stale-schema config the new image rejects ("agents.defaults: Invalid
+        # input") → crash loop. Mirrors bump_openclaw_version_for_tenant /
+        # the wake path (incident 2026-06-17).
+        from apps.orchestrator.tool_policy import openclaw_version_for_image_tag
+
+        new_version = openclaw_version_for_image_tag(desired_tag)
+        image_update = {"container_image_tag": desired_tag}
+        version_changed = bool(new_version) and tenant.openclaw_version != new_version
+        if version_changed:
+            image_update["openclaw_version"] = new_version
+        Tenant.objects.filter(id=tenant_id).update(**image_update)
     except Exception:
         logger.exception("apply_single_tenant_image failed for %s", tenant_id)
         return
+
+    # Regenerate the config against the new schema version so the file share
+    # matches the image we just deployed. The config task enqueued alongside
+    # this one (batch 1 of apply_pending_configs) ran against the OLD
+    # openclaw_version, so its output is the wrong schema for the new image.
+    if version_changed:
+        try:
+            from apps.orchestrator.services import update_tenant_config
+
+            update_tenant_config(tenant_id)
+            logger.info(
+                "apply_single_tenant_image: regenerated config for %s after version sync -> %s",
+                tenant_id[:8],
+                new_version,
+            )
+        except Exception:
+            logger.exception("apply_single_tenant_image: config regen failed for %s", tenant_id)
 
     # Phase 3: Schedule post-restart cron restore (90s for container startup).
     from apps.cron.publish import publish_task as publish_qstash_task

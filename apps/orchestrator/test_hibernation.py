@@ -16,8 +16,14 @@ from django.utils import timezone
 
 from apps.cron.gateway_client import GatewayError
 from apps.orchestrator.hibernation import _capture_tenant_cron_schedules, wake_hibernated_tenant
+from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION, openclaw_version_for_image_tag
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
+
+
+def _apply_config_published(mock_publish) -> bool:
+    """True if a config-apply task was published via the mocked publish_task."""
+    return any(call.args and call.args[0] == "apply_single_tenant_config" for call in mock_publish.call_args_list)
 
 
 class WakeHibernatedTenantImageRefreshTest(TestCase):
@@ -151,6 +157,112 @@ class WakeHibernatedTenantImageRefreshTest(TestCase):
         mock_ensure_mount.assert_called_once_with("oc-wake-test")
         mock_wake.assert_called_once_with("oc-wake-test")
         mock_update_image.assert_not_called()
+
+
+class OpenClawVersionForImageTagTest(TestCase):
+    """The image-tag → schema-version mapping that keeps openclaw_version in
+    lockstep with the running image (prevents the agents.defaults crash loop)."""
+
+    def test_parses_version_prefix(self):
+        self.assertEqual(openclaw_version_for_image_tag("2026.5.28-755d789"), "2026.5.28")
+        self.assertEqual(openclaw_version_for_image_tag("2026.4.25-abc123"), "2026.4.25")
+
+    def test_falls_back_to_current_for_bare_sha_or_latest(self):
+        self.assertEqual(openclaw_version_for_image_tag("4a969adbbe6c3e"), OPENCLAW_CURRENT_VERSION)
+        self.assertEqual(openclaw_version_for_image_tag("latest"), OPENCLAW_CURRENT_VERSION)
+        self.assertEqual(openclaw_version_for_image_tag(""), OPENCLAW_CURRENT_VERSION)
+
+
+class WakeConfigSchemaSyncTest(TestCase):
+    """Regression guards for the 2026-06-17 crash-loop incident: a tenant
+    woken onto a newer image kept a stale ``openclaw_version`` (config schema)
+    and/or a missing ``openclaw.json``, so the new image rejected the config
+    (``agents.defaults: Invalid input``) or found no config and crash-looped.
+    Wake must sync the version to the image and force a config write for the
+    invisible ``pending==config`` states.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Wake Schema", telegram_chat_id=55512345)
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.container_id = "oc-schema-test"
+        self.tenant.container_fqdn = "oc-schema-test.internal"
+        self.tenant.hibernated_at = timezone.now()
+        self.tenant.save()
+
+    @override_settings(OPENCLAW_IMAGE_TAG="2026.5.28-755d789", AZURE_ACR_SERVER="test.azurecr.io")
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.azure_client.wake_container_app")
+    @patch("apps.orchestrator.azure_client.update_container_image")
+    def test_wake_syncs_version_and_forces_config_apply_when_stale(self, mock_update_image, _mock_wake, mock_publish):
+        """Image refresh onto a newer tag must move openclaw_version with it
+        and queue a config regen even when pending==config."""
+        Tenant.objects.filter(id=self.tenant.id).update(
+            openclaw_version="2026.4.25",
+            container_image_tag="2026.4.25-oldsha",
+            config_version=3,
+            pending_config_version=3,
+        )
+        self.tenant.refresh_from_db()
+
+        result = wake_hibernated_tenant(self.tenant)
+
+        self.assertTrue(result)
+        mock_update_image.assert_called_once()
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.openclaw_version, "2026.5.28")
+        self.assertEqual(self.tenant.container_image_tag, "2026.5.28-755d789")
+        # pending bumped past config so the apply actually writes
+        self.assertGreater(self.tenant.pending_config_version, self.tenant.config_version)
+        self.assertTrue(_apply_config_published(mock_publish))
+
+    @override_settings(OPENCLAW_IMAGE_TAG="2026.5.28-755d789", AZURE_ACR_SERVER="test.azurecr.io")
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.azure_client.wake_container_app")
+    @patch("apps.orchestrator.azure_client.ensure_plugin_runtime_deps_mount", return_value=False)
+    @patch("apps.orchestrator.azure_client.update_container_image")
+    def test_wake_forces_config_apply_when_never_configured(
+        self, mock_update_image, _mock_mount, _mock_wake, mock_publish
+    ):
+        """config_version==0 (never version-applied) forces a config write on
+        wake even with no image refresh — covers a failed provision-time seed
+        that left the share with no openclaw.json."""
+        Tenant.objects.filter(id=self.tenant.id).update(
+            openclaw_version="2026.5.28",
+            container_image_tag="2026.5.28-755d789",  # already current → no image refresh
+            config_version=0,
+            pending_config_version=0,
+        )
+        self.tenant.refresh_from_db()
+
+        result = wake_hibernated_tenant(self.tenant)
+
+        self.assertTrue(result)
+        mock_update_image.assert_not_called()  # image already current
+        self.tenant.refresh_from_db()
+        self.assertGreater(self.tenant.pending_config_version, self.tenant.config_version)
+        self.assertTrue(_apply_config_published(mock_publish))
+
+    @override_settings(OPENCLAW_IMAGE_TAG="2026.5.28-755d789", AZURE_ACR_SERVER="test.azurecr.io")
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.azure_client.wake_container_app")
+    @patch("apps.orchestrator.azure_client.ensure_plugin_runtime_deps_mount", return_value=False)
+    @patch("apps.orchestrator.azure_client.update_container_image")
+    def test_wake_no_forced_apply_for_healthy_tenant(self, _mock_update_image, _mock_mount, _mock_wake, mock_publish):
+        """A configured tenant already on the current version/image must NOT
+        get a forced config apply (avoid needless regen churn every wake)."""
+        Tenant.objects.filter(id=self.tenant.id).update(
+            openclaw_version="2026.5.28",
+            container_image_tag="2026.5.28-755d789",
+            config_version=7,
+            pending_config_version=7,
+        )
+        self.tenant.refresh_from_db()
+
+        result = wake_hibernated_tenant(self.tenant)
+
+        self.assertTrue(result)
+        self.assertFalse(_apply_config_published(mock_publish))
 
 
 class CaptureTenantCronSchedulesFallbackTest(TestCase):
