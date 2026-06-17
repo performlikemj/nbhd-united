@@ -88,3 +88,12 @@ class SiriStatusMinuteThrottle(_UserScopedThrottle):
 
     scope = "siri_status_minute"
     rate = "60/minute"
+
+
+class PushTestMinuteThrottle(_UserScopedThrottle):
+    """The self-service test-push probe sends a real APNs request to the user's
+    own device(s). Human use is a tap or two to verify delivery; this stops a
+    client from using it to hammer APNs or spam a device."""
+
+    scope = "push_test_minute"
+    rate = "10/minute"
