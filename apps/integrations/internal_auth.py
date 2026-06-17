@@ -65,9 +65,21 @@ def _emit_audit(
     is intentionally low — auth failures are not exceptional here, they're
     operational signal. A separate alert can be wired on
     `outcome != "success"` patterns when the fleet is fully migrated.
+
+    The provenance/outcome are folded into the message STRING, not just the
+    `extra` dict: the production log formatter is plain-text
+    ("{levelname} {asctime} {name} {message}") and does not render `extra`
+    fields, so a fields-only event reaches Log Analytics as a bare
+    "internal_auth_event" with no provenance. Without this, the Phase 1d
+    gate ("zero key_provenance=legacy_global hits for 48h") is unobservable.
+    The `extra` dict is retained for any future JSON/structured handler.
     """
     logger.info(
-        "internal_auth_event",
+        "internal_auth_event key_provenance=%s outcome=%s provided_tenant_id=%s expected_tenant_id=%s",
+        key_provenance,
+        outcome,
+        provided_tenant_id or "-",
+        expected_tenant_id or "-",
         extra={
             "event": "internal_auth_event",
             "provided_tenant_id": provided_tenant_id,
