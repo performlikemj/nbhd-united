@@ -35,9 +35,69 @@ export function ConstellationGame({
     const host = canvasRef.current;
     const root = rootRef.current;
     if (!host || !root) return;
-    const game = mountGalaxyGame(host, root, galaxy, { wormholes, initialWarp });
+
+    let game: ReturnType<typeof mountGalaxyGame> | null = null;
+    let disposed = false;
+    let remounting = false;
+
+    // iOS Safari / WKWebView routinely DROPS the WebGL context on backgrounding,
+    // device lock, or memory pressure (a documented iOS 16.7–17+ regression).
+    // Phaser preventDefaults the loss and tries to restore — but our textures are
+    // generated on the GPU at runtime (makeTextures → generateTexture) with no
+    // CPU-side source, so Phaser physically cannot re-upload them and the scene
+    // comes back BLACK. A clean remount re-runs create()/makeTextures() and is the
+    // only reliable recovery. (Losing the ship's position is fine after a
+    // backgrounding-induced loss.)
+    const scheduleRemount = () => {
+      if (disposed || remounting) return;
+      remounting = true;
+      // Defer so Phaser's own (synchronous) restore handler finishes first.
+      setTimeout(() => {
+        remounting = false;
+        if (!disposed) mount();
+      }, 0);
+    };
+
+    const onRestored = () => scheduleRemount();
+
+    const onVisibility = () => {
+      if (!game || disposed) return;
+      if (document.hidden) {
+        // Backgrounded: stop the render loop (battery, and shrinks the window in
+        // which iOS reaps the GL context).
+        game.loop.sleep();
+      } else {
+        game.loop.wake();
+        // If the context was lost while we were away and never recovered, rebuild.
+        const r = game.renderer;
+        if ("contextLost" in r && r.contextLost) scheduleRemount();
+      }
+    };
+
+    const mount = () => {
+      if (game) {
+        game.events.off("contextrestored", onRestored);
+        try {
+          game.destroy(true);
+        } catch {
+          // The old canvas/context may already be gone — destroy is best-effort.
+        }
+      }
+      game = mountGalaxyGame(host, root, galaxy, { wormholes, initialWarp });
+      game.events.on("contextrestored", onRestored);
+    };
+
+    mount();
+    document.addEventListener("visibilitychange", onVisibility);
+
     return () => {
-      game.destroy(true);
+      disposed = true;
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (game) {
+        game.events.off("contextrestored", onRestored);
+        game.destroy(true);
+        game = null;
+      }
     };
     // wormholes/initialWarp are read once at mount; remounting the whole game on
     // every wormholes refetch would tear down flight state, so they're
