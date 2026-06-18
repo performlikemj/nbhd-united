@@ -4,11 +4,9 @@ from django.db import migrations
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0087_app_user_idle_session_timeout'),
-        ('tenants', '0087_tenant_last_wake_at'),
+        ("tenants", "0087_app_user_idle_session_timeout"),
+        ("tenants", "0087_tenant_last_wake_at"),
     ]
 
-    operations = [
-    ]
+    operations = []

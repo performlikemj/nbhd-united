@@ -467,9 +467,7 @@ class ChatSinceFeedTest(TestCase):
         self.tenant = _make_tenant(self.user)
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
-        self.main = ChatThread.objects.create(
-            tenant=self.tenant, user=self.user, is_main=True, title="Main"
-        )
+        self.main = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True, title="Main")
         self._base = timezone.now() - timedelta(hours=2)
         self._td = timedelta
 
@@ -727,9 +725,7 @@ class IOSDrainDropPushTest(TestCase):
 
         self.user = _make_user()
         self.tenant = _make_tenant(self.user)
-        self.thread = ChatThread.objects.create(
-            tenant=self.tenant, user=self.user, is_main=True, title="Main"
-        )
+        self.thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True, title="Main")
 
     def _pending_turn(self, cid):
         from apps.router.models import PendingMessage

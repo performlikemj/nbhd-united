@@ -5,29 +5,32 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('router', '0014_devicetoken'),
-        ('tenants', '0087_tenant_last_wake_at'),
+        ("router", "0014_devicetoken"),
+        ("tenants", "0087_tenant_last_wake_at"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='appchatmessage',
-            name='notified_at',
-            field=models.DateTimeField(blank=True, help_text="Set when an APNs 'reply ready' / 'error' push was first claimed for this turn. The atomic isnull→now claim makes the push idempotent: a re-drained batch (QStash retry, re-leased batch) won't push twice.", null=True),
+            model_name="appchatmessage",
+            name="notified_at",
+            field=models.DateTimeField(
+                blank=True,
+                help_text="Set when an APNs 'reply ready' / 'error' push was first claimed for this turn. The atomic isnull→now claim makes the push idempotent: a re-drained batch (QStash retry, re-leased batch) won't push twice.",
+                null=True,
+            ),
         ),
         migrations.AddIndex(
-            model_name='appchatmessage',
-            index=models.Index(fields=['tenant', 'created_at'], name='appchat_tenant_created_idx'),
+            model_name="appchatmessage",
+            index=models.Index(fields=["tenant", "created_at"], name="appchat_tenant_created_idx"),
         ),
         migrations.AddIndex(
-            model_name='conversationturn',
-            index=models.Index(fields=['tenant', 'created_at'], name='conv_turn_tenant_created_idx'),
+            model_name="conversationturn",
+            index=models.Index(fields=["tenant", "created_at"], name="conv_turn_tenant_created_idx"),
         ),
         migrations.AddIndex(
-            model_name='proactiveoutbound',
-            index=models.Index(fields=['tenant', 'created_at'], name='proactive_tenant_created_idx'),
+            model_name="proactiveoutbound",
+            index=models.Index(fields=["tenant", "created_at"], name="proactive_tenant_created_idx"),
         ),
     ]
