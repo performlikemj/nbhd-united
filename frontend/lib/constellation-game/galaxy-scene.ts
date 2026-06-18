@@ -329,6 +329,7 @@ export class GalaxyScene extends Phaser.Scene {
     this.physics.world.setBounds(0, 0, world.w, world.h);
     this.cameras.main.setBounds(0, 0, world.w, world.h);
     this.cameras.main.setBackgroundColor("#0b0f13");
+    this.applyColorGrade();
 
     this.buildStarfield();
     this.buildNeighborhoods(pos);
@@ -456,10 +457,31 @@ export class GalaxyScene extends Phaser.Scene {
     ng.destroy();
   }
 
+  // A single cinematic colour grade over the whole frame — one cheap full-screen
+  // GPU pass (already compiled into Phaser, 0 added bytes): richer saturation,
+  // gentle filmic contrast, and a subtle cool/teal cast that pulls the flat
+  // "#0b0f13 + coloured dots" toward a deliberate deep-space palette. WebGL-only;
+  // skipped on the (rare) Canvas fallback. Not animated, so it always applies.
+  private applyColorGrade() {
+    if (this.game.renderer.type !== Phaser.WEBGL) return;
+    const cm = this.cameras.main.filters?.internal.addColorMatrix();
+    if (!cm) return;
+    cm.colorMatrix.saturate(0.12);
+    cm.colorMatrix.contrast(0.06, true);
+    // Subtle cool cast: trim red a touch, lift blue a touch (brightness-preserving).
+    cm.colorMatrix.multiply(
+      [0.97, 0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 0, 1.05, 0, 0, 0, 0, 0, 1, 0],
+      true,
+    );
+  }
+
   private buildStarfield() {
     const W = this.world.w;
     const H = this.world.h;
     const density = Math.min(6, (W * H) / (3600 * 2400)); // keep the void starry as the world grows
+    // Star colour temperatures — mostly white-blue, some warm amber, a few hot
+    // blue — so the field reads as a real sky instead of uniform noise dots.
+    const STAR_HUES = [0xcfe0ff, 0xcfe0ff, 0xcfe0ff, 0xe9f1ff, 0xfff0d8, 0xffe6c4, 0xaecbff];
     const layers = [
       // The deep field barely scrolls — it's what makes the nearer layers read as
       // motion. Three planes of parallax turn "panning a picture" into depth.
@@ -470,9 +492,47 @@ export class GalaxyScene extends Phaser.Scene {
     for (const L of layers) {
       const g = this.add.graphics().setScrollFactor(L.sf).setDepth(0);
       for (let i = 0; i < L.n; i++) {
-        g.fillStyle(0xcfe0ff, L.alpha * (0.4 + Math.random() * 0.6));
+        g.fillStyle(STAR_HUES[(Math.random() * STAR_HUES.length) | 0], L.alpha * (0.4 + Math.random() * 0.6));
         g.fillCircle(Math.random() * W * 1.4, Math.random() * H * 1.4, L.r * (0.6 + Math.random()));
       }
+    }
+    this.buildMilkyWay(W, H, density);
+  }
+
+  // A faint diagonal galactic band: a tilted river of dim stars concentrated on a
+  // spine, plus a few large soft haze puffs along it — structure and a sense of
+  // scale instead of an even sprinkle. Drawn once into the deep parallax field.
+  private buildMilkyWay(W: number, H: number, density: number) {
+    const cx = W / 2;
+    const cy = H / 2;
+    const ang = -0.5; // band tilt (radians)
+    const ca = Math.cos(ang);
+    const sa = Math.sin(ang);
+    const len = Math.hypot(W, H) * 0.75;
+    const halfW = Math.min(W, H) * 0.16;
+    const g = this.add.graphics().setScrollFactor(0.1).setDepth(0);
+    const N = Math.round(420 * density);
+    for (let i = 0; i < N; i++) {
+      const t = (Math.random() - 0.5) * len; // along the band
+      // Bias toward the spine (sum-of-uniforms ≈ gaussian) so the band has a core.
+      const off = ((Math.random() + Math.random() + Math.random()) / 3 - 0.5) * 2 * halfW;
+      const x = cx + t * ca - off * sa;
+      const y = cy + t * sa + off * ca;
+      const fall = 1 - Math.min(1, Math.abs(off) / halfW);
+      g.fillStyle(0xdfe9ff, 0.05 + 0.1 * fall * Math.random());
+      g.fillCircle(x, y, 0.6 + Math.random() * 0.8);
+    }
+    // A few large, very faint haze clouds along the spine (reuse the puff texture).
+    for (let i = 0; i < 5; i++) {
+      const t = (i / 4 - 0.5) * len * 0.85;
+      this.add
+        .image(cx + t * ca, cy + t * sa, "puff")
+        .setScrollFactor(0.1)
+        .setDepth(0)
+        .setBlendMode(Phaser.BlendModes.ADD)
+        .setTint(0x9fb6e8)
+        .setScale((halfW * 2.4) / 80)
+        .setAlpha(0.045);
     }
   }
 
@@ -2304,6 +2364,10 @@ export function mountGalaxyGame(canvasParent: HTMLElement, overlayRoot: HTMLElem
     parent: canvasParent,
     backgroundColor: "#0b0f13",
     scale: { mode: Phaser.Scale.RESIZE, width: "100%", height: "100%" },
+    // Hint the OS to pick the performant GPU path (Phaser default is "default").
+    // Phaser renders at CSS-pixel resolution (it never multiplies by
+    // devicePixelRatio), so this is the lever, not a DPR cap.
+    render: { powerPreference: "high-performance" },
     physics: { default: "arcade", arcade: { debug: false } },
     scene: new GalaxyScene(galaxy, overlayRoot),
   });
