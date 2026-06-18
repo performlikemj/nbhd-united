@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import re
 
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -36,6 +37,11 @@ _TABLE_SEP_RE = re.compile(r"(?m)^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?
 # Content-free fallback when a reply has no good glanceable preview (a table, or
 # empty text) — keeps structured / sensitive content off the lock screen.
 _GENERIC_BODY = "Your reply is ready — tap to read."
+
+# Content-free body for a turn that ended in error (budget exhausted, empty
+# model reply). Never carries the machine reason — nothing diagnostic on the
+# lock screen.
+_ERROR_BODY = "Your assistant couldn't finish that — tap to try again."
 
 
 def _markdown_to_plain_prose(text: str) -> str:
@@ -182,13 +188,18 @@ class PushTestView(APIView):
         )
 
 
-def notify_app_reply_ready(tenant, client_msg_ids, reply_text: str | None) -> None:
-    """Push 'your answer is ready' for a just-completed iOS turn. Fail-open.
+def _notify_turn(tenant, client_msg_ids, *, body: str, content_available: bool) -> None:
+    """Push one alert for a just-completed iOS turn, exactly once. Fail-open.
 
     Short-circuits before any DB work when APNs isn't configured (the common
-    case today). Prunes tokens APNs reports as unregistered so the table
-    self-heals. The iOS app is expected to suppress the alert when the relevant
-    thread is already foregrounded (UNUserNotificationCenterDelegate).
+    case today). Idempotency: an atomic ``notified_at`` claim guarantees a single
+    push per turn even if the drain re-runs (a QStash retry, a re-leased batch) —
+    ``apns-collapse-id`` is the device-side belt, this claim is the server-side
+    suspenders. Routes each device to the APNs host matching its stored
+    ``environment`` (a wrong-host send fails silently) and prunes tokens APNs
+    reports as unregistered so the table self-heals. The iOS app is expected to
+    suppress the alert when the relevant thread is already foregrounded
+    (UNUserNotificationCenterDelegate).
     """
     from apps.common.apns import apns_configured, send_push
 
@@ -200,6 +211,14 @@ def notify_app_reply_ready(tenant, client_msg_ids, reply_text: str | None) -> No
     try:
         from apps.router.models import AppChatMessage
 
+        # Atomic claim: only the first delivery to reach these turn(s) pushes.
+        # ``notified_at__isnull`` makes a re-drain a no-op (rowcount 0).
+        claimed = AppChatMessage.objects.filter(
+            tenant=tenant, client_msg_id__in=client_msg_ids, notified_at__isnull=True
+        ).update(notified_at=timezone.now())
+        if not claimed:
+            return
+
         msg = (
             AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=client_msg_ids)
             .select_related("user")
@@ -210,7 +229,6 @@ def notify_app_reply_ready(tenant, client_msg_ids, reply_text: str | None) -> No
         rows = list(DeviceToken.objects.filter(user=msg.user).values("token", "environment"))
         if not rows:
             return
-        preview = _notification_body(reply_text)
 
         # Route each device to the APNs host matching its environment — a sandbox
         # (Debug-build) token and a production (App Store) token can coexist for one
@@ -224,13 +242,28 @@ def notify_app_reply_ready(tenant, client_msg_ids, reply_text: str | None) -> No
             res = send_push(
                 env_tokens,
                 title="NBHD",
-                body=preview,
+                body=body,
                 sandbox=(env_name == DeviceToken.Environment.SANDBOX),
                 thread_id=str(msg.thread_id),
+                collapse_id=msg.client_msg_id,
+                content_available=content_available,
                 extra={"client_msg_id": msg.client_msg_id},
             )
             stale.extend(res.get("unregistered") or [])
         if stale:
             DeviceToken.objects.filter(user=msg.user, token__in=stale).delete()
     except Exception:
-        logger.warning("push: notify_app_reply_ready failed (non-fatal)", exc_info=True)
+        logger.warning("push: notify turn failed (non-fatal)", exc_info=True)
+
+
+def notify_app_reply_ready(tenant, client_msg_ids, reply_text: str | None) -> None:
+    """Push 'your answer is ready' for a just-completed iOS turn (hybrid push)."""
+    _notify_turn(tenant, client_msg_ids, body=_notification_body(reply_text), content_available=True)
+
+
+def notify_app_reply_error(tenant, client_msg_ids) -> None:
+    """Push a generic 'couldn't finish' alert for a turn that ended in error
+    (budget exhausted, empty model reply). Content-free body — no reason on the
+    lock screen. Same idempotent, per-environment, self-healing path as the
+    reply-ready push."""
+    _notify_turn(tenant, client_msg_ids, body=_ERROR_BODY, content_available=True)

@@ -322,6 +322,8 @@ class ProactiveOutbound(models.Model):
                 fields=["created_at"],
                 name="proactive_outb_created_idx",
             ),
+            # Ascending walk for the ?since= cross-channel history feed.
+            models.Index(fields=["tenant", "created_at"], name="proactive_tenant_created_idx"),
         ]
 
     def __str__(self) -> str:
@@ -634,6 +636,13 @@ class AppChatMessage(models.Model):
         default="",
         help_text="Human-readable detail for the current phase, e.g. 'searching your journal'.",
     )
+    notified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set when an APNs 'reply ready' / 'error' push was first claimed "
+        "for this turn. The atomic isnull→now claim makes the push idempotent: a "
+        "re-drained batch (QStash retry, re-leased batch) won't push twice.",
+    )
 
     class Meta:
         db_table = "app_chat_messages"
@@ -646,6 +655,10 @@ class AppChatMessage(models.Model):
         ]
         indexes = [
             models.Index(fields=["thread", "created_at"], name="appchat_thread_idx"),
+            # Ascending cross-channel walk for the ?since= history feed (both the
+            # user and assistant message rows of a turn key off created_at, so a
+            # single (tenant, created_at) index covers the keyset pagination).
+            models.Index(fields=["tenant", "created_at"], name="appchat_tenant_created_idx"),
         ]
 
     def __str__(self) -> str:
@@ -729,6 +742,8 @@ class ConversationTurn(models.Model):
                 name="conv_turn_thread_idx",
             ),
             models.Index(fields=["created_at"], name="conv_turn_created_idx"),
+            # Ascending walk for the ?since= cross-channel history feed.
+            models.Index(fields=["tenant", "created_at"], name="conv_turn_tenant_created_idx"),
         ]
 
     def __str__(self) -> str:

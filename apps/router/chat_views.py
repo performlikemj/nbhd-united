@@ -293,12 +293,44 @@ class ChatThreadMessagesView(APIView):
 
 class ChatMessageView(APIView):
     """POST: send a message → enqueue an OpenClaw turn through the tenant.
+    GET:  the flat, cursor-paginated cross-channel history feed (``?since=``).
 
-    Returns immediately with the (pending) turn; the client polls
+    POST returns immediately with the (pending) turn; the client polls
     ``ChatMessageDetailView`` for the reply. Idempotent on ``client_msg_id``.
     """
 
     permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """Ascending cross-channel message history after an opaque cursor.
+
+        ``?since=<cursor>`` (absent/empty = from the beginning); ``?limit=`` is
+        clamped to the server bound. Returns ``{"messages": [...], "cursor":
+        <next>}`` — see ``apps.router.chat_history`` for the row contract and
+        cursor semantics. The cursor is replica-safe (a ``(created_at, id)``
+        keyset), so any replica answers the same ``?since=`` identically.
+        """
+        from apps.router.chat_history import DEFAULT_PAGE_SIZE, build_since_page
+
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            limit = int(request.query_params.get("limit", DEFAULT_PAGE_SIZE))
+        except (TypeError, ValueError):
+            limit = DEFAULT_PAGE_SIZE
+
+        # Non-app channels (Telegram/LINE/cron) have no thread FK → map them to
+        # the tenant's single shared main thread so iOS sees one rolling thread.
+        main_thread = _get_or_create_main_thread(tenant, request.user)
+        messages, next_cursor = build_since_page(
+            tenant,
+            str(main_thread.id),
+            cursor=request.query_params.get("since"),
+            limit=limit,
+        )
+        return _no_store(Response({"messages": messages, "cursor": next_cursor}))
 
     def post(self, request):
         tenant = getattr(request.user, "tenant", None)

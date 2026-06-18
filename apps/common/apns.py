@@ -88,6 +88,8 @@ def send_push(
     sandbox: bool | None = None,
     thread_id: str | None = None,
     extra: dict | None = None,
+    collapse_id: str | None = None,
+    content_available: bool = False,
 ) -> dict:
     """Send one alert to each device token on the matching APNs host. Never raises.
 
@@ -96,6 +98,16 @@ def send_push(
     pass it per the device's stored ``environment``; when omitted it falls back to
     the ``APNS_USE_SANDBOX`` global. All tokens in one call MUST share an
     environment — group by environment before calling.
+
+    ``collapse_id`` sets ``apns-collapse-id`` so APNs coalesces repeat pushes for
+    the same turn on the device (a re-fired drain replaces, never stacks). Apple
+    caps it at 64 bytes — it is truncated to fit.
+
+    ``content_available`` adds ``content-available: 1`` to the ``aps`` block: a
+    *hybrid* push (visible alert + a best-effort silent wake) so a backgrounded
+    app can opportunistically pre-fetch the reply. iOS throttles silent wakes and
+    won't fire them on force-quit / with Background App Refresh off — that's
+    expected; the visible alert and the tap path remain the dependable ones.
 
     Returns ``{"sent", "failed", "unregistered": [tokens], "skipped": reason|None}``.
     ``unregistered`` carries tokens APNs rejected as stale (410 / BadDeviceToken)
@@ -134,6 +146,10 @@ def send_push(
         return result
 
     aps: dict = {"aps": {"alert": {"title": title, "body": body}, "sound": "default"}}
+    if content_available:
+        # Hybrid push: a visible alert AND a best-effort silent background wake.
+        # Valid alongside apns-push-type=alert (set below).
+        aps["aps"]["content-available"] = 1
     if thread_id:
         aps["aps"]["thread-id"] = str(thread_id)
         aps["thread_id"] = str(thread_id)
@@ -146,6 +162,11 @@ def send_push(
         "apns-push-type": "alert",
         "apns-priority": "10",
     }
+    if collapse_id:
+        # APNs coalesces pushes sharing a collapse id on the device. Apple caps
+        # it at 64 BYTES — truncate on the byte boundary (not chars) so a
+        # multibyte id can't overflow it and get the push rejected (400).
+        headers["apns-collapse-id"] = str(collapse_id).encode("utf-8")[:64].decode("utf-8", "ignore")
 
     try:
         with client:
