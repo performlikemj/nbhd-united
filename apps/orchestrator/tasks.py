@@ -748,8 +748,19 @@ def hibernate_idle_tenants_task() -> dict:
     failed = 0
     skipped_cron_wake = 0
     skipped_imminent_cron = 0
+    # Claim the idle candidates under a SHORT transaction — ``list(...)`` forces
+    # the queryset to evaluate while the ``FOR UPDATE`` lock is held, then the
+    # lock is released at the ``with`` exit, BEFORE any external work. Holding
+    # ``select_for_update`` across the per-tenant Azure / gateway calls would pin
+    # a Supavisor (transaction-pooler) backend for the whole sweep and, now that
+    # ``app_user`` has ``idle_in_transaction_session_timeout`` set, risk the
+    # transaction being reaped mid-sweep on a slow/cold container. Correctness is
+    # unchanged: the wake-for-cron race is closed by the live
+    # ``_cron_active_or_imminent`` lookahead (300s window ≫ the seconds-long
+    # hibernate), not the row lock; the per-tenant ``refresh_from_db`` +
+    # ``hibernated_at`` guard prevent double-hibernation across concurrent sweeps.
     with transaction.atomic():
-        idle_tenants = (
+        idle_tenants = list(
             Tenant.objects.filter(
                 status=Tenant.Status.ACTIVE,
                 container_id__gt="",
@@ -760,42 +771,42 @@ def hibernate_idle_tenants_task() -> dict:
             .select_for_update(skip_locked=True)
         )
 
-        from apps.orchestrator.hibernation import _cron_active_or_imminent
+    from apps.orchestrator.hibernation import _cron_active_or_imminent
 
-        for tenant in idle_tenants:
-            # Re-check last_message_at + cron_wake_at to avoid TOCTOU race
-            # with wake_for_cron_task (which sets cron_wake_at) and inbound
-            # user messages.
-            tenant.refresh_from_db(fields=["last_message_at", "hibernated_at", "cron_wake_at"])
-            if tenant.hibernated_at:
-                continue
-            if tenant.last_message_at and tenant.last_message_at >= cutoff:
-                continue
-            if tenant.cron_wake_at and tenant.cron_wake_at >= cutoff:
-                # A cron wake landed between the queryset and the refresh
-                # — let check_cron_wake_idle handle it.
-                skipped_cron_wake += 1
-                continue
+    for tenant in idle_tenants:
+        # Re-check last_message_at + cron_wake_at to avoid TOCTOU race
+        # with wake_for_cron_task (which sets cron_wake_at) and inbound
+        # user messages.
+        tenant.refresh_from_db(fields=["last_message_at", "hibernated_at", "cron_wake_at"])
+        if tenant.hibernated_at:
+            continue
+        if tenant.last_message_at and tenant.last_message_at >= cutoff:
+            continue
+        if tenant.cron_wake_at and tenant.cron_wake_at >= cutoff:
+            # A cron wake landed between the queryset and the refresh
+            # — let check_cron_wake_idle handle it.
+            skipped_cron_wake += 1
+            continue
 
-            # Forward-looking guard: ``cron_wake_at`` only catches tenants
-            # we just woke for a cron. Long-running awake tenants miss
-            # that signal entirely, so the in-flight + lookahead check
-            # below covers the canary 2026-05-12 12:00 case (continuously
-            # awake since the morning deploy, killed mid-evening-check-in).
-            defer_reason = _cron_active_or_imminent(tenant)
-            if defer_reason:
-                skipped_imminent_cron += 1
-                logger.info(
-                    "hibernate_idle_tenants: deferring tenant %s (%s)",
-                    str(tenant.id)[:8],
-                    defer_reason,
-                )
-                continue
+        # Forward-looking guard: ``cron_wake_at`` only catches tenants
+        # we just woke for a cron. Long-running awake tenants miss
+        # that signal entirely, so the in-flight + lookahead check
+        # below covers the canary 2026-05-12 12:00 case (continuously
+        # awake since the morning deploy, killed mid-evening-check-in).
+        defer_reason = _cron_active_or_imminent(tenant)
+        if defer_reason:
+            skipped_imminent_cron += 1
+            logger.info(
+                "hibernate_idle_tenants: deferring tenant %s (%s)",
+                str(tenant.id)[:8],
+                defer_reason,
+            )
+            continue
 
-            if hibernate_idle_tenant(tenant):
-                hibernated += 1
-            else:
-                failed += 1
+        if hibernate_idle_tenant(tenant):
+            hibernated += 1
+        else:
+            failed += 1
 
     logger.info(
         "hibernate_idle_tenants: hibernated=%d failed=%d skipped_cron_wake=%d skipped_imminent_cron=%d",
