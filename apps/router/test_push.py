@@ -168,6 +168,58 @@ class ApnsSenderTest(TestCase):
         send_push([_VALID_TOKEN], title="t", body="b", sandbox=False)
         mock_factory.assert_called_with(False)  # → production host
 
+    @override_settings(**_APNS_SETTINGS)
+    @patch("apps.common.apns._provider_jwt", return_value="jwt")
+    @patch("apps.common.apns._http2_client")
+    def test_collapse_id_and_content_available_ride_the_request(self, mock_factory, _jwt):
+        fake = MagicMock()
+        fake.__enter__.return_value = fake
+        fake.__exit__.return_value = False
+        fake.post.return_value = MagicMock(status_code=200)
+        mock_factory.return_value = fake
+
+        from apps.common.apns import send_push
+
+        send_push([_VALID_TOKEN], title="NBHD", body="hi", collapse_id="r1", content_available=True)
+        _args, kwargs = fake.post.call_args
+        # apns-collapse-id coalesces repeat pushes for the same turn on device.
+        self.assertEqual(kwargs["headers"]["apns-collapse-id"], "r1")
+        # Hybrid push: visible alert + a silent background wake.
+        self.assertEqual(kwargs["json"]["aps"]["content-available"], 1)
+
+    @override_settings(**_APNS_SETTINGS)
+    @patch("apps.common.apns._provider_jwt", return_value="jwt")
+    @patch("apps.common.apns._http2_client")
+    def test_collapse_id_truncated_to_64_bytes(self, mock_factory, _jwt):
+        fake = MagicMock()
+        fake.__enter__.return_value = fake
+        fake.__exit__.return_value = False
+        fake.post.return_value = MagicMock(status_code=200)
+        mock_factory.return_value = fake
+
+        from apps.common.apns import send_push
+
+        send_push([_VALID_TOKEN], title="NBHD", body="hi", collapse_id="z" * 100)
+        _args, kwargs = fake.post.call_args
+        self.assertEqual(len(kwargs["headers"]["apns-collapse-id"]), 64)
+
+    @override_settings(**_APNS_SETTINGS)
+    @patch("apps.common.apns._provider_jwt", return_value="jwt")
+    @patch("apps.common.apns._http2_client")
+    def test_no_collapse_or_content_available_by_default(self, mock_factory, _jwt):
+        fake = MagicMock()
+        fake.__enter__.return_value = fake
+        fake.__exit__.return_value = False
+        fake.post.return_value = MagicMock(status_code=200)
+        mock_factory.return_value = fake
+
+        from apps.common.apns import send_push
+
+        send_push([_VALID_TOKEN], title="t", body="b")
+        _args, kwargs = fake.post.call_args
+        self.assertNotIn("apns-collapse-id", kwargs["headers"])
+        self.assertNotIn("content-available", kwargs["json"]["aps"])
+
 
 class NotifyReplyReadyTest(TestCase):
     def setUp(self):
@@ -313,6 +365,82 @@ class NotifyReplyReadyTest(TestCase):
         by_sandbox = {sandbox: tokens for tokens, sandbox in calls}
         self.assertEqual(by_sandbox[True], [_VALID_TOKEN])  # sandbox token → sandbox host
         self.assertEqual(by_sandbox[False], [_VALID_TOKEN_2])  # production token → prod host
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_ready_push_carries_collapse_id_and_content_available(self):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        from apps.router.push_views import notify_app_reply_ready
+
+        captured = {}
+
+        def _capture(tokens, **kw):
+            captured.update(kw)
+            return {"sent": 1, "failed": 0, "unregistered": [], "skipped": None}
+
+        with patch("apps.common.apns.send_push", side_effect=_capture):
+            notify_app_reply_ready(self.tenant, ["r1"], "hello there")
+
+        self.assertEqual(captured["collapse_id"], "r1")  # turn's client_msg_id
+        self.assertTrue(captured["content_available"])
+        self.assertEqual(captured["extra"], {"client_msg_id": "r1"})
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_idempotent_no_double_push_on_redrain(self):
+        # A re-drained batch (QStash retry / re-lease) must not push twice — the
+        # notified_at claim makes the second call a no-op.
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        from apps.router.push_views import notify_app_reply_ready
+
+        calls = []
+
+        def _capture(tokens, **kw):
+            calls.append(kw)
+            return {"sent": 1, "failed": 0, "unregistered": [], "skipped": None}
+
+        with patch("apps.common.apns.send_push", side_effect=_capture):
+            notify_app_reply_ready(self.tenant, ["r1"], "hi")
+            notify_app_reply_ready(self.tenant, ["r1"], "hi")
+
+        self.assertEqual(len(calls), 1)
+        self.msg.refresh_from_db()
+        self.assertIsNotNone(self.msg.notified_at)
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_error_push_uses_generic_body(self):
+        # An error-terminal turn pushes a content-free 'couldn't finish' — never
+        # the machine reason (no diagnostic text on the lock screen).
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        from apps.router.push_views import _ERROR_BODY, notify_app_reply_error
+
+        captured = {}
+
+        def _capture(tokens, **kw):
+            captured.update(kw)
+            return {"sent": 1, "failed": 0, "unregistered": [], "skipped": None}
+
+        with patch("apps.common.apns.send_push", side_effect=_capture):
+            notify_app_reply_error(self.tenant, ["r1"])
+
+        self.assertEqual(captured["body"], _ERROR_BODY)
+        self.assertEqual(captured["collapse_id"], "r1")
+        self.assertTrue(captured["content_available"])
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_error_push_is_also_idempotent(self):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        from apps.router.push_views import notify_app_reply_error
+
+        calls = []
+
+        def _capture(tokens, **kw):
+            calls.append(kw)
+            return {"sent": 1, "failed": 0, "unregistered": [], "skipped": None}
+
+        with patch("apps.common.apns.send_push", side_effect=_capture):
+            notify_app_reply_error(self.tenant, ["r1"])
+            notify_app_reply_error(self.tenant, ["r1"])
+
+        self.assertEqual(len(calls), 1)
 
 
 class PushTestEndpointTest(TestCase):

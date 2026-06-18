@@ -1014,6 +1014,13 @@ def _send_apology_for_stale_pending_message(
     still relevant. The minutes-since-send is included so the user can
     place which message slipped through.
     """
+    # iOS has no channel-native apology push: the client poll/since feed reads
+    # AppChatMessage status, so flip the turn to ERROR and fire the generic
+    # 'couldn't finish' APNs push (idempotent) — otherwise it spins forever.
+    if msg.channel == PendingMessage.Channel.IOS:
+        _store_ios_turn_error(tenant, [msg], "stale")
+        return
+
     from apps.router.error_messages import error_msg
 
     excerpt = (msg.user_text or "").strip().replace("\n", " ")
@@ -1087,6 +1094,13 @@ def _send_apology_for_dropped_pending_message(tenant: Tenant, msg: PendingMessag
     (e.g. different copy for warm-tenant vs cold-start failures) doesn't
     require splitting one helper into two with awkward conditionals.
     """
+    # iOS has no channel-native apology push: the client poll/since feed reads
+    # AppChatMessage status, so flip the turn to ERROR and fire the generic
+    # 'couldn't finish' APNs push (idempotent) — otherwise it spins forever.
+    if msg.channel == PendingMessage.Channel.IOS:
+        _store_ios_turn_error(tenant, [msg], "dropped")
+        return
+
     from apps.router.error_messages import error_msg, strip_internal_framing
 
     # Defense in depth: even though every call site is supposed to pass
@@ -1423,11 +1437,29 @@ def _ios_client_msg_ids(batch: list[PendingMessage]) -> list[str]:
     return [cid for cid in ids if cid]
 
 
+def _dispatch_push(target, *args) -> None:
+    """Run an APNs notify helper OFF the drain path: a slow send (≤10s timeout)
+    must not block the drain task / hold the per-key lease. Synchronous under
+    ``NBHD_DISABLE_BACKGROUND_THREADS`` (tests) for determinism. Fail-open."""
+    try:
+        from django.conf import settings as _settings
+
+        if getattr(_settings, "NBHD_DISABLE_BACKGROUND_THREADS", False):
+            target(*args)
+        else:
+            import threading
+
+            threading.Thread(target=target, args=args, daemon=True).start()
+    except Exception:
+        logger.warning("ios: push dispatch failed (non-fatal)", exc_info=True)
+
+
 def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: str | None) -> None:
     """Persist the assistant reply onto the AppChatMessage rows for this
     batch so the polling client can read it. Empty / gateway-error replies
     flip the turn to ``error`` so the client doesn't poll forever."""
     from apps.router.models import AppChatMessage
+    from apps.router.push_views import notify_app_reply_error, notify_app_reply_ready
 
     client_ids = _ios_client_msg_ids(batch)
     if not client_ids:
@@ -1442,37 +1474,24 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
         )
         # Notify the device the reply landed (closes the fire-and-forget gap for
         # Siri-escalated / backgrounded turns). No-op unless APNs is configured;
-        # fail-open. The app suppresses the alert if the thread is foregrounded.
-        # Dispatched OFF the drain path: a slow APNs send (≤10s timeout) must not
-        # block the drain task / hold the per-key lease. Synchronous in tests
-        # (NBHD_DISABLE_BACKGROUND_THREADS) for determinism.
-        try:
-            from django.conf import settings as _settings
-
-            from apps.router.push_views import notify_app_reply_ready
-
-            if getattr(_settings, "NBHD_DISABLE_BACKGROUND_THREADS", False):
-                notify_app_reply_ready(tenant, list(client_ids), text)
-            else:
-                import threading
-
-                threading.Thread(
-                    target=notify_app_reply_ready,
-                    args=(tenant, list(client_ids), text),
-                    daemon=True,
-                ).start()
-        except Exception:
-            logger.warning("ios: reply-ready push failed (non-fatal)", exc_info=True)
+        # fail-open; idempotent (notified_at claim). The app suppresses the alert
+        # if the thread is foregrounded.
+        _dispatch_push(notify_app_reply_ready, tenant, list(client_ids), text)
     else:
         AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=client_ids).update(
             status=AppChatMessage.Status.ERROR,
             error="empty_response",
             replied_at=now,
         )
+        # An empty terminal reply is still a turn the user is waiting on — push a
+        # generic 'couldn't finish' so a backgrounded / Siri-escalated turn
+        # doesn't go silent until the next foreground.
+        _dispatch_push(notify_app_reply_error, tenant, list(client_ids))
 
 
 def _store_ios_turn_error(tenant: Tenant, batch: list[PendingMessage], reason: str) -> None:
     from apps.router.models import AppChatMessage
+    from apps.router.push_views import notify_app_reply_error
 
     client_ids = _ios_client_msg_ids(batch)
     if not client_ids:
@@ -1482,6 +1501,9 @@ def _store_ios_turn_error(tenant: Tenant, batch: list[PendingMessage], reason: s
         error=reason,
         replied_at=timezone.now(),
     )
+    # Notify the device the turn ended in error (e.g. budget exhausted on a
+    # Siri-escalated / backgrounded turn). Generic body, idempotent, fail-open.
+    _dispatch_push(notify_app_reply_error, tenant, list(client_ids))
 
 
 def _clean_assistant_text_for_app(tenant: Tenant, ai_text: str) -> str:

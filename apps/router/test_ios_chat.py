@@ -448,3 +448,323 @@ class IOSOnDeviceTurnRecordTest(TestCase):
         anon = APIClient()
         resp = anon.post("/api/v1/chat/turns/", {"text": "hi"}, format="json")
         self.assertIn(resp.status_code, (401, 403))
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
+class ChatSinceFeedTest(TestCase):
+    """The flat cross-channel ``GET /api/v1/chat/messages/?since=`` history feed
+    (W2): unions app + Telegram/LINE + cron turns into one ascending, dedup-able,
+    cursor-paginated stream so the iOS app sees every channel."""
+
+    def setUp(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.router.models import ChatThread
+
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.main = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True, title="Main")
+        self._base = timezone.now() - timedelta(hours=2)
+        self._td = timedelta
+
+    def _at(self, minutes: int):
+        return self._base + self._td(minutes=minutes)
+
+    def _app_turn(self, *, cid, user_text, reply_text, minute, status="ready"):
+        m = AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=self.main,
+            client_msg_id=cid,
+            user_text=user_text,
+            reply_text=reply_text,
+            status=status,
+        )
+        AppChatMessage.objects.filter(pk=m.pk).update(created_at=self._at(minute))
+        return m
+
+    def _conv_turn(self, *, channel, user_text, reply_text, minute):
+        from apps.common.tenant_tz import tenant_today
+        from apps.router.models import ConversationTurn
+
+        t = ConversationTurn.objects.create(
+            tenant=self.tenant,
+            channel=channel,
+            channel_user_id="123",
+            local_date=tenant_today(self.tenant),
+            user_text=user_text,
+            reply_text=reply_text,
+        )
+        ConversationTurn.objects.filter(pk=t.pk).update(created_at=self._at(minute))
+        return t
+
+    def _cron_send(self, *, message_text, minute):
+        from apps.router.models import ProactiveOutbound
+
+        p = ProactiveOutbound.objects.create(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="123",
+            message_text=message_text,
+            job_name="Morning Briefing",
+        )
+        ProactiveOutbound.objects.filter(pk=p.pk).update(created_at=self._at(minute))
+        return p
+
+    def _get(self, since=None, limit=None):
+        params = {}
+        if since is not None:
+            params["since"] = since
+        if limit is not None:
+            params["limit"] = limit
+        return self.client.get("/api/v1/chat/messages/", params)
+
+    def test_requires_auth(self):
+        resp = APIClient().get("/api/v1/chat/messages/")
+        self.assertIn(resp.status_code, (401, 403))
+
+    def test_empty_since_unions_all_channels_ascending(self):
+        self._app_turn(cid="a1", user_text="ping", reply_text="pong", minute=1)
+        self._conv_turn(channel="telegram", user_text="tg hi", reply_text="tg yo", minute=2)
+        self._cron_send(message_text="Good morning!", minute=3)
+
+        resp = self._get()
+        self.assertEqual(resp.status_code, 200, resp.content)
+        msgs = resp.data["messages"]
+        # app(user, assistant) + telegram(user, assistant) + cron(assistant) = 5
+        self.assertEqual([m["role"] for m in msgs], ["user", "assistant", "user", "assistant", "assistant"])
+        self.assertEqual([m["source"] for m in msgs], ["app", "app", "telegram", "telegram", "cron"])
+        self.assertEqual(msgs[0]["text"], "ping")
+        self.assertEqual(msgs[1]["text"], "pong")
+        self.assertEqual(msgs[4]["text"], "Good morning!")
+        # Strictly ascending created_at.
+        stamps = [m["created_at"] for m in msgs]
+        self.assertEqual(stamps, sorted(stamps))
+        # Cursor returned for the next poll.
+        self.assertIsNotNone(resp.data["cursor"])
+
+    def test_client_msg_id_only_on_device_user_rows(self):
+        self._app_turn(cid="a1", user_text="ping", reply_text="pong", minute=1)
+        self._conv_turn(channel="telegram", user_text="tg hi", reply_text="tg yo", minute=2)
+
+        msgs = self._get().data["messages"]
+        app_user, app_asst, tg_user, tg_asst = msgs
+        self.assertEqual(app_user["client_msg_id"], "a1")  # device-originated → echoed for dedup
+        self.assertNotIn("client_msg_id", app_asst)  # assistant rows never carry it
+        self.assertNotIn("client_msg_id", tg_user)  # other channel → not device-originated
+        self.assertNotIn("client_msg_id", tg_asst)
+
+    def test_non_app_rows_map_to_main_thread(self):
+        self._conv_turn(channel="line", user_text="hi", reply_text="yo", minute=1)
+        self._cron_send(message_text="ping", minute=2)
+        msgs = self._get().data["messages"]
+        for m in msgs:
+            self.assertEqual(m["thread_id"], str(self.main.id))
+
+    def test_pending_app_turn_emits_only_user_row(self):
+        # A turn still awaiting its reply shows the user's sent message but no
+        # (empty) assistant row.
+        self._app_turn(cid="p1", user_text="working?", reply_text="", minute=1, status="pending")
+        msgs = self._get().data["messages"]
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0]["role"], "user")
+        self.assertEqual(msgs[0]["text"], "working?")
+
+    def test_error_app_turn_emits_only_user_row(self):
+        self._app_turn(cid="e1", user_text="spendy", reply_text="", minute=1, status="error")
+        msgs = self._get().data["messages"]
+        self.assertEqual([m["role"] for m in msgs], ["user"])
+
+    def test_ids_are_stable_across_calls(self):
+        self._app_turn(cid="a1", user_text="ping", reply_text="pong", minute=1)
+        first = [m["id"] for m in self._get().data["messages"]]
+        second = [m["id"] for m in self._get().data["messages"]]
+        self.assertEqual(first, second)
+        self.assertEqual(len(set(first)), len(first))  # globally unique
+
+    def test_same_timestamp_cluster_is_fully_paged(self):
+        # Several turns sharing the EXACT created_at (e.g. an offline outbox
+        # flushed with one occurred_at) must ALL be paged through — never
+        # truncated off the fetch window and silently skipped. Regression for
+        # the keyset cluster-loss bug.
+        from apps.common.tenant_tz import tenant_today
+        from apps.router.models import ConversationTurn
+
+        ts = self._at(5)
+        for i in range(3):
+            t = ConversationTurn.objects.create(
+                tenant=self.tenant,
+                channel="telegram",
+                channel_user_id="123",
+                local_date=tenant_today(self.tenant),
+                user_text=f"u{i}",
+                reply_text=f"r{i}",
+            )
+            ConversationTurn.objects.filter(pk=t.pk).update(created_at=ts)
+
+        # Single-shot read sees all 6 (3 turns x user+assistant).
+        single = sorted(m["id"] for m in self._get(limit=100).data["messages"])
+        self.assertEqual(len(single), 6)
+
+        # A paginated walk at the smallest page size must return the SAME id set.
+        seen = []
+        cursor = None
+        for _ in range(50):  # generous bound; converges well before this
+            resp = self._get(since=cursor, limit=1)
+            page = resp.data["messages"]
+            if not page:
+                break
+            seen.extend(m["id"] for m in page)
+            cursor = resp.data["cursor"]
+        self.assertEqual(sorted(seen), single)
+        self.assertEqual(len(seen), 6)  # no loss, no dupes
+
+    def test_object_cursor_restarts_from_beginning(self):
+        # A corrupted cursor that base64+JSON-decodes to an OBJECT (not a list)
+        # must restart from the beginning, never 500 (which would wedge the
+        # polling client). Regression for the uncaught-KeyError path.
+        import base64
+        import json
+
+        self._app_turn(cid="a1", user_text="ping", reply_text="pong", minute=1)
+        bad = base64.urlsafe_b64encode(json.dumps({"x": 1}).encode()).decode()
+        resp = self._get(since=bad)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(len(resp.data["messages"]), 2)
+
+    def test_cursor_pagination_walks_without_dupes(self):
+        self._app_turn(cid="a1", user_text="ping", reply_text="pong", minute=1)
+        self._conv_turn(channel="telegram", user_text="tg hi", reply_text="tg yo", minute=2)
+        self._cron_send(message_text="Good morning!", minute=3)
+
+        seen = []
+        cursor = None
+        for _ in range(10):  # generous bound; should converge in 3 pages
+            resp = self._get(since=cursor, limit=2)
+            self.assertEqual(resp.status_code, 200, resp.content)
+            page = resp.data["messages"]
+            if not page:
+                break
+            self.assertLessEqual(len(page), 2)  # server-bounded page size
+            seen.extend(m["id"] for m in page)
+            cursor = resp.data["cursor"]
+
+        self.assertEqual(len(seen), 5)
+        self.assertEqual(len(set(seen)), 5)  # no duplicates across pages
+
+    def test_empty_page_echoes_cursor_and_does_not_advance(self):
+        self._app_turn(cid="a1", user_text="ping", reply_text="pong", minute=1)
+        first = self._get(limit=100)
+        cursor = first.data["cursor"]
+        self.assertEqual(len(first.data["messages"]), 2)
+
+        # Re-poll from the tail: nothing new → empty page, SAME cursor echoed.
+        again = self._get(since=cursor)
+        self.assertEqual(again.data["messages"], [])
+        self.assertEqual(again.data["cursor"], cursor)
+
+    def test_limit_is_server_bounded(self):
+        for i in range(5):
+            self._app_turn(cid=f"a{i}", user_text=f"u{i}", reply_text=f"r{i}", minute=i + 1)
+        # Ask for more than the cap → clamped (we only have 10 rows here, but the
+        # request must not error and must honor the bound semantics).
+        resp = self._get(limit=9999)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertLessEqual(len(resp.data["messages"]), 100)
+
+    def test_malformed_cursor_restarts_from_beginning(self):
+        self._app_turn(cid="a1", user_text="ping", reply_text="pong", minute=1)
+        resp = self._get(since="not-a-valid-cursor")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        # Lenient: garbage cursor → from the beginning, not a 4xx wedge.
+        self.assertEqual(len(resp.data["messages"]), 2)
+
+    def test_on_device_turns_appear_as_app_source(self):
+        self._app_turn(cid="od1", user_text="logged offline", reply_text="noted", minute=1, status="ready")
+        AppChatMessage.objects.filter(client_msg_id="od1").update(source="on_device")
+        msgs = self._get().data["messages"]
+        self.assertEqual([m["source"] for m in msgs], ["app", "app"])
+
+    def test_tenant_isolation(self):
+        # A different tenant's turns must never leak into this feed.
+        other_user = _make_user()
+        other_tenant = _make_tenant(other_user)
+        from apps.common.tenant_tz import tenant_today
+        from apps.router.models import ConversationTurn
+
+        ConversationTurn.objects.create(
+            tenant=other_tenant,
+            channel="telegram",
+            channel_user_id="999",
+            local_date=tenant_today(other_tenant),
+            user_text="secret",
+            reply_text="leak?",
+        )
+        self._app_turn(cid="a1", user_text="mine", reply_text="ok", minute=1)
+        msgs = self._get().data["messages"]
+        texts = [m["text"] for m in msgs]
+        self.assertNotIn("secret", texts)
+        self.assertNotIn("leak?", texts)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key", NBHD_DISABLE_BACKGROUND_THREADS=True)
+class IOSDrainDropPushTest(TestCase):
+    """Drain-level terminal drops must not strand an iOS turn as PENDING.
+
+    When a queued iOS turn is dropped past the delivery-attempts cap or aged out
+    as stale, the apology helpers have no channel-native push for iOS — so they
+    must flip the AppChatMessage to ERROR and fire the generic 'couldn't finish'
+    APNs push, or the client polls a spinner forever with no notification."""
+
+    def setUp(self):
+        from apps.router.models import ChatThread
+
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True, title="Main")
+
+    def _pending_turn(self, cid):
+        from apps.router.models import PendingMessage
+
+        turn = AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=self.thread,
+            client_msg_id=cid,
+            user_text="do the thing",
+            status="pending",
+        )
+        # Unsaved is fine: the apology helper only reads .channel / .payload.
+        pmsg = PendingMessage(
+            tenant=self.tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=str(self.thread.id),
+            payload={"client_msg_id": cid},
+        )
+        return turn, pmsg
+
+    def test_dropped_ios_turn_errors_and_pushes(self):
+        from apps.router.pending_queue import _send_apology_for_dropped_pending_message
+
+        turn, pmsg = self._pending_turn("d1")
+        with patch("apps.router.push_views.notify_app_reply_error") as mock_notify:
+            _send_apology_for_dropped_pending_message(self.tenant, pmsg)
+        turn.refresh_from_db()
+        self.assertEqual(turn.status, "error")
+        self.assertEqual(turn.error, "dropped")
+        mock_notify.assert_called_once_with(self.tenant, ["d1"])
+
+    def test_stale_ios_turn_errors_and_pushes(self):
+        from apps.router.pending_queue import _send_apology_for_stale_pending_message
+
+        turn, pmsg = self._pending_turn("s1")
+        with patch("apps.router.push_views.notify_app_reply_error") as mock_notify:
+            _send_apology_for_stale_pending_message(self.tenant, pmsg, 700.0)
+        turn.refresh_from_db()
+        self.assertEqual(turn.status, "error")
+        self.assertEqual(turn.error, "stale")
+        mock_notify.assert_called_once_with(self.tenant, ["s1"])
