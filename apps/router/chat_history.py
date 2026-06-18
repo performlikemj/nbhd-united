@@ -11,7 +11,7 @@ Shape per message row (the contract iOS dedups/merges against):
 
     {
       "id": "<stable, globally-unique>",   # primary dedup key (remoteId)
-      "client_msg_id": "<id>",             # ONLY on device-originated rows
+      "client_msg_id": "<id>",             # BOTH rows of a device-originated turn; absent on other channels
       "role": "user" | "assistant",
       "text": "<markdown, PII-rehydrated>",
       "created_at": "<ISO8601 UTC>",
@@ -25,6 +25,11 @@ Design notes
   single ``AppChatMessage`` / ``ConversationTurn`` row) is emitted as up to TWO
   message rows — a ``user`` row and an ``assistant`` row — each with its own
   stable id. A ``ProactiveOutbound`` (cron) is a single ``assistant`` row.
+* **client_msg_id.** Carried on BOTH the user and assistant rows of a turn the
+  device originated (``AppChatMessage``), so the client — which writes both rows
+  optimistically before any server id exists — can dedup each by
+  ``(client_msg_id, role)`` instead of double-inserting. Absent on other-channel
+  rows (Telegram/LINE/cron), which the device never wrote locally.
 * **Ordering.** Both rows of a turn key off the turn's ``created_at``; the
   synthetic id suffix (``:0`` user, ``:1`` assistant) breaks the tie so the user
   row always precedes its reply. The sort key ``(created_at, id)`` is a TOTAL,
@@ -152,6 +157,12 @@ def _app_rows(m, main_thread_id):
                 text=m.reply_text,
                 source="app",
                 thread_id=thread_id,
+                # Both halves of a device-originated turn carry the originating
+                # client_msg_id as a dedup correlation key: the client wrote BOTH
+                # rows optimistically (no server id yet), so the assistant row also
+                # needs a shared key for the merge to backfill it instead of
+                # inserting a duplicate. The client dedups by (client_msg_id, role).
+                client_msg_id=m.client_msg_id,
             )
         )
     return out
