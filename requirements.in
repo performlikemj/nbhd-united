@@ -41,7 +41,7 @@ presidio-analyzer>=2.2    # Pattern recognizers only (credit card Luhn, IBAN che
 # transformers needs an explicit torch (or TF/JAX) backend; we use the
 # PyTorch path for AutoModelForTokenClassification. Pin to CPU-only torch
 # via the `torch` package — production images don't have CUDA.
-torch>=2.0,<3.0
+torch>=2.12.1,<3.0
 transformers>=5.9.0,<5.10.0
 sentencepiece>=0.2
 
