@@ -547,15 +547,18 @@ class ChatSinceFeedTest(TestCase):
         # Cursor returned for the next poll.
         self.assertIsNotNone(resp.data["cursor"])
 
-    def test_client_msg_id_only_on_device_user_rows(self):
+    def test_client_msg_id_on_both_device_rows_not_other_channels(self):
         self._app_turn(cid="a1", user_text="ping", reply_text="pong", minute=1)
         self._conv_turn(channel="telegram", user_text="tg hi", reply_text="tg yo", minute=2)
 
         msgs = self._get().data["messages"]
         app_user, app_asst, tg_user, tg_asst = msgs
-        self.assertEqual(app_user["client_msg_id"], "a1")  # device-originated → echoed for dedup
-        self.assertNotIn("client_msg_id", app_asst)  # assistant rows never carry it
-        self.assertNotIn("client_msg_id", tg_user)  # other channel → not device-originated
+        # BOTH halves of a device-originated turn carry the originating client_msg_id
+        # so the client can dedup each optimistic row by (client_msg_id, role).
+        self.assertEqual(app_user["client_msg_id"], "a1")
+        self.assertEqual(app_asst["client_msg_id"], "a1")
+        # Other-channel rows were never written locally → no correlation key.
+        self.assertNotIn("client_msg_id", tg_user)
         self.assertNotIn("client_msg_id", tg_asst)
 
     def test_non_app_rows_map_to_main_thread(self):
