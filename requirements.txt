@@ -241,7 +241,7 @@ jsonschema-specifications==2025.9.1
     # via jsonschema
 kiwisolver==1.5.0
     # via matplotlib
-litellm==1.89.1
+litellm==1.89.2
     # via -r requirements.in
 markdown-it-py==4.0.0
     # via rich
