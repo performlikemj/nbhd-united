@@ -94,7 +94,7 @@ click==8.3.1
     #   typer
 cloudpathlib==0.23.0
     # via weasel
-composio==0.13.1
+composio==0.15.0
     # via -r requirements.in
 composio-client==1.39.0
     # via composio
