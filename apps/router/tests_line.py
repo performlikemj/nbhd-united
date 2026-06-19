@@ -406,11 +406,15 @@ class CronDeliveryChannelRoutingTest(TestCase):
         self.assertEqual(view._resolve_channel(user), "line")
 
     def test_resolve_channel_none_when_unlinked(self):
+        # A genuinely unlinked user — no Telegram/LINE AND no registered iOS
+        # device — has no delivery surface, so the channel is None. Uses a real
+        # User (not a MagicMock) because resolve now does a DeviceToken lookup on
+        # the no-messaging-link path. (A user with only a device resolves to
+        # 'app'; see ResolveUserChannelTest in test_proactive_push.py.)
+        from apps.tenants.models import User
+
         view = self._get_view()
-        user = MagicMock()
-        user.preferred_channel = "telegram"
-        user.line_user_id = None
-        user.telegram_chat_id = None
+        user = User.objects.create_user(username="unlinked_routing", email="unlinked_routing@example.com")
         self.assertIsNone(view._resolve_channel(user))
 
 

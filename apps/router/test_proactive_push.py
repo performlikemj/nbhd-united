@@ -293,3 +293,115 @@ class CronDeliveryEmitsPushTest(TestCase):
         mock_send.assert_called_once()
         row = ProactiveOutbound.objects.get(tenant=self.tenant)
         self.assertIsNotNone(row.notified_at)
+
+
+class ResolveUserChannelTest(TestCase):
+    """The 'app' delivery target: an iOS-only user (no Telegram/LINE) resolves to
+    'app' so crons still reach them; nothing linked at all → None."""
+
+    def setUp(self):
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+
+    def test_app_only_user_resolves_to_app(self):
+        from apps.router.cron_delivery import resolve_user_channel
+
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        self.assertEqual(resolve_user_channel(self.user), "app")
+
+    def test_no_surface_resolves_to_none(self):
+        from apps.router.cron_delivery import resolve_user_channel
+
+        # No Telegram, no LINE, no device → genuinely nowhere to deliver.
+        self.assertIsNone(resolve_user_channel(self.user))
+
+    def test_telegram_link_wins_over_app(self):
+        # A user with both Telegram and the app keeps Telegram as the channel —
+        # 'app' is only a fallback for users with no messaging link. (They still
+        # get the parallel iOS push via record_proactive_outbound.)
+        from apps.router.cron_delivery import resolve_user_channel
+
+        self.user.telegram_chat_id = 999
+        self.user.save()
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        self.assertEqual(resolve_user_channel(self.user), "telegram")
+
+
+@override_settings(
+    NBHD_DISABLE_BACKGROUND_THREADS=True,
+    TELEGRAM_BOT_TOKEN="test-token",
+    LINE_CHANNEL_ACCESS_TOKEN="test-line-token",
+    NBHD_INTERNAL_API_KEY="test-key",
+    **_APNS_SETTINGS,
+)
+class CronDeliveryAppOnlyTest(TestCase):
+    """An iOS-only user (no Telegram/LINE) gets crons delivered straight to the
+    app — a push + a ?since= feed row — instead of the old 422 drop."""
+
+    def setUp(self):
+        self.user = _make_user()  # NB: no telegram_chat_id / line_user_id
+        self.tenant = _make_tenant(self.user)
+        ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True, title="Main")
+        self.client = APIClient()
+        self.url = f"/api/v1/integrations/runtime/{self.tenant.id}/send-to-user/"
+        _rate_counts.clear()
+
+    def _headers(self):
+        return {"HTTP_X_NBHD_INTERNAL_KEY": "test-key", "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id)}
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_app_only_user_delivered_via_push_no_channel_send(self, mock_client_cls):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+
+        with patch("apps.common.apns.send_push", side_effect=_ok) as mock_send:
+            resp = self.client.post(
+                self.url, {"message": "Heads up — check-in time."}, format="json", **self._headers()
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json().get("channel"), "app")
+        # No Telegram/LINE HTTP send was attempted — the app IS the delivery.
+        mock_client_cls.assert_not_called()
+        # The push fired and the row is recorded as the 'app' channel + claimed.
+        mock_send.assert_called_once()
+        row = ProactiveOutbound.objects.get(tenant=self.tenant)
+        self.assertEqual(row.channel, "app")
+        self.assertEqual(row.channel_user_id, str(self.user.id))
+        self.assertIsNotNone(row.notified_at)
+
+    def test_no_surface_at_all_still_422(self):
+        # No Telegram, no LINE, AND no device token → nothing to deliver to.
+        with patch("apps.common.apns.send_push") as mock_send:
+            resp = self.client.post(self.url, {"message": "hello"}, format="json", **self._headers())
+        self.assertEqual(resp.status_code, 422)
+        mock_send.assert_not_called()
+        self.assertFalse(ProactiveOutbound.objects.filter(tenant=self.tenant).exists())
+
+
+class AppChannelReachesSinceFeedTest(TestCase):
+    """Closing the loop: an 'app'-channel ProactiveOutbound must surface in the
+    GET /chat/messages/?since= feed (as a source='cron' assistant row) — that
+    feed, not the push payload, is how the iOS app actually shows the text. If
+    this regressed, an app-only user would get a buzz but never see the message."""
+
+    def test_app_channel_row_appears_as_cron_in_since_feed(self):
+        from apps.router.chat_history import build_since_page
+
+        user = _make_user()
+        tenant = _make_tenant(user)
+        main_thread = ChatThread.objects.create(tenant=tenant, user=user, is_main=True, title="Main")
+        row = ProactiveOutbound.objects.create(
+            tenant=tenant,
+            channel="app",  # the iOS-only delivery target
+            channel_user_id=str(user.id),
+            message_text="Heads up — check-in time.",
+        )
+
+        messages, _cursor = build_since_page(tenant, str(main_thread.id), cursor=None, limit=100)
+
+        cron_rows = [m for m in messages if m["source"] == "cron"]
+        self.assertEqual(len(cron_rows), 1)
+        self.assertEqual(cron_rows[0]["id"], f"cron:{row.id}")
+        self.assertEqual(cron_rows[0]["role"], "assistant")
+        self.assertEqual(cron_rows[0]["text"], "Heads up — check-in time.")
+        self.assertEqual(cron_rows[0]["thread_id"], str(main_thread.id))

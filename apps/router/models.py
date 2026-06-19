@@ -263,6 +263,9 @@ class ProactiveOutbound(models.Model):
     class Channel(models.TextChoices):
         TELEGRAM = "telegram"
         LINE = "line"
+        # iOS-only users have no Telegram/LINE chat id — the message is delivered
+        # as an APNs push + a ?since= feed row, so the iOS app is its own channel.
+        APP = "app"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(

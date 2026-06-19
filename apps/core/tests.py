@@ -637,6 +637,28 @@ class NotifyMeditationReadyTests(TestCase):
         self.assertFalse(delivered)
         mock_send.assert_not_called()
 
+    def test_app_only_user_delivered_via_app_channel(self):
+        # iOS-only user (no Telegram/LINE, has a registered device) → delivered
+        # via the 'app' channel: no messaging-channel send, recorded as
+        # channel='app' (which fires the iOS push + the ?since= feed row).
+        from apps.router.models import DeviceToken
+
+        user = self.tenant.user
+        user.telegram_chat_id = None
+        user.save(update_fields=["telegram_chat_id"])
+        DeviceToken.objects.create(user=user, tenant=self.tenant, token="a" * 64, environment="sandbox")
+        session = self._session()
+        with (
+            patch("apps.router.services.send_telegram_message") as mock_send,
+            patch("apps.router.proactive_context.record_proactive_outbound") as mock_record,
+        ):
+            delivered = services.notify_meditation_ready(session)
+        self.assertTrue(delivered)
+        mock_send.assert_not_called()
+        mock_record.assert_called_once()
+        self.assertEqual(mock_record.call_args.kwargs["channel"], "app")
+        self.assertEqual(mock_record.call_args.kwargs["channel_user_id"], str(user.id))
+
     def test_inactive_tenant_does_not_send(self):
         self.tenant.status = Tenant.Status.PENDING
         self.tenant.save(update_fields=["status"])

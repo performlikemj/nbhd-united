@@ -49,7 +49,11 @@ def resolve_user_channel(user) -> str | None:
     """Determine which channel to use for outbound messages to ``user``.
 
     Respects ``preferred_channel`` when that channel is linked; otherwise falls
-    back to whichever channel is linked. Returns None if neither is linked.
+    back to whichever messaging channel is linked. When NO Telegram/LINE channel
+    is linked but the user has a registered iOS device, returns ``"app"`` — an
+    iOS-only user (the common case for App Store installs) still gets crons,
+    delivered as an APNs push + a ``?since=`` feed row instead of a chat message.
+    Returns None only when there is no delivery surface at all.
 
     Module-level so backend proactive senders (e.g. Core notify-on-ready) route
     identically to ``CronDeliveryView`` without duplicating the logic.
@@ -64,11 +68,17 @@ def resolve_user_channel(user) -> str | None:
     if preferred == "telegram" and telegram_chat_id:
         return "telegram"
 
-    # Fallback: whichever is linked.
+    # Fallback: whichever messaging channel is linked.
     if line_user_id:
         return "line"
     if telegram_chat_id:
         return "telegram"
+
+    # No Telegram/LINE link — deliver straight to the iOS app if it's installed.
+    from apps.router.models import DeviceToken
+
+    if DeviceToken.objects.filter(user=user).exists():
+        return "app"
 
     return None
 
@@ -136,7 +146,7 @@ class CronDeliveryView(APIView):
             return Response(
                 {
                     "error": "no_channel_linked",
-                    "detail": "User has not linked Telegram or LINE.",
+                    "detail": "User has no Telegram/LINE link and no registered device.",
                 },
                 status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
@@ -177,6 +187,13 @@ class CronDeliveryView(APIView):
                 line_user_id=channel_user_id,
                 message_text=message_text,
             )
+        elif channel == "app":
+            # iOS-only user: there's no Telegram/LINE chat to send to. The APNs
+            # push + the ?since= feed row ARE the delivery — both produced by
+            # record_proactive_outbound below. Use the user id as the stable
+            # per-user app identifier.
+            channel_user_id = str(tenant.user_id)
+            resp = Response({"status": "sent", "channel": "app"})
         else:
             channel_user_id = str(tenant.user.telegram_chat_id or "")
             resp = self._send_via_telegram(

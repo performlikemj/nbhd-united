@@ -381,6 +381,11 @@ def notify_meditation_ready(session: MeditationSession) -> bool:
     if channel == "line":
         channel_user_id = getattr(user, "line_user_id", "") or ""
         delivered = _send_line_text(tenant, channel_user_id, message)
+    elif channel == "app":
+        # iOS-only user: no Telegram/LINE to send to — the APNs push + the
+        # ?since= feed row written by record_proactive_outbound are the delivery.
+        channel_user_id = str(user.id)
+        delivered = True
     else:
         chat_id = getattr(user, "telegram_chat_id", None)
         channel_user_id = str(chat_id or "")
