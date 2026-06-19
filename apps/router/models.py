@@ -309,6 +309,17 @@ class ProactiveOutbound(models.Model):
             "follow-up window so back-to-back replies still see context."
         ),
     )
+    notified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Set when an APNs push was first claimed for this proactive / cron "
+            "send so the iOS app pings the user (the counterpart to "
+            "``AppChatMessage.notified_at``). The atomic isnull→now claim makes "
+            "the push idempotent. Distinct from ``consumed_at`` (inbound-envelope "
+            "thread continuity), which is deliberately re-surfaced."
+        ),
+    )
 
     class Meta:
         db_table = "proactive_outbounds"

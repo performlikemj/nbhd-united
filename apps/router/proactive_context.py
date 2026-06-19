@@ -85,7 +85,7 @@ def record_proactive_outbound(
     smaller wrong than 500ing the cron tool call. Errors are logged.
     """
     try:
-        return ProactiveOutbound.objects.create(
+        row = ProactiveOutbound.objects.create(
             tenant=tenant,
             channel=channel,
             channel_user_id=channel_user_id,
@@ -101,6 +101,44 @@ def record_proactive_outbound(
             job_name or "-",
         )
         return None
+
+    # Ping the user's iPhone(s) that a proactive / cron message just landed — the
+    # missing leg that left crons silent on iOS (Telegram/LINE delivered, but the
+    # APNs push only ever fired for app-originated turns). The push is a
+    # wake-and-sync trigger; the app pulls the text from the ?since= feed. This is
+    # the SINGLE chokepoint every ProactiveOutbound funnels through, so it covers
+    # both CronDeliveryView and core.services.notify_meditation_ready. Dispatched
+    # off the request path + fail-soft so an APNs send never delays or loses the
+    # already-delivered cron message.
+    _dispatch_ios_push(tenant, str(row.id), message_text)
+    return row
+
+
+def _dispatch_ios_push(tenant, proactive_id: str, body_source: str) -> None:
+    """Fire the iOS APNs push for a just-recorded proactive row OFF the request
+    path: an APNs send (≤10s timeout) must not delay the cron tool-call response.
+    Synchronous under ``NBHD_DISABLE_BACKGROUND_THREADS`` (tests) for determinism.
+    Mirrors ``apps.router.pending_queue._dispatch_push``. Fail-open."""
+
+    def _run() -> None:
+        try:
+            from apps.router.push_views import notify_proactive_ready
+
+            notify_proactive_ready(tenant, proactive_id, body_source)
+        except Exception:
+            logger.warning("proactive iOS push failed (non-fatal)", exc_info=True)
+
+    try:
+        from django.conf import settings
+
+        if getattr(settings, "NBHD_DISABLE_BACKGROUND_THREADS", False):
+            _run()
+        else:
+            import threading
+
+            threading.Thread(target=_run, daemon=True).start()
+    except Exception:
+        logger.warning("proactive iOS push dispatch failed (non-fatal)", exc_info=True)
 
 
 _STRUCTURED_GUIDANCE = (
