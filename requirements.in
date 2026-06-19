@@ -26,7 +26,7 @@ litellm>=1.89.2,<1.89.3  # 1.82.8 compromised — supply chain attack
 openai
 tiktoken
 pgvector
-google-genai>=2.8.0    # Gemini TTS — Core pillar meditation render (apps/core/render.py)
+google-genai>=2.9.0    # Gemini TTS — Core pillar meditation render (apps/core/render.py)
 
 # PII redaction (outgoing LLM traffic)
 presidio-analyzer>=2.2    # Pattern recognizers only (credit card Luhn, IBAN checksum)

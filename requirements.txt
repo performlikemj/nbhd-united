@@ -176,7 +176,7 @@ fsspec==2026.2.0
     #   torch
 google-auth[requests]==2.53.0
     # via google-genai
-google-genai==2.8.0
+google-genai==2.9.0
     # via -r requirements.in
 gunicorn==26.0.0
     # via -r requirements.in
