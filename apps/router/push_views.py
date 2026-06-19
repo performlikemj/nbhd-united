@@ -201,7 +201,7 @@ def _notify_turn(tenant, client_msg_ids, *, body: str, content_available: bool) 
     suppress the alert when the relevant thread is already foregrounded
     (UNUserNotificationCenterDelegate).
     """
-    from apps.common.apns import apns_configured, send_push
+    from apps.common.apns import apns_configured
 
     if not apns_configured():
         return
@@ -226,34 +226,62 @@ def _notify_turn(tenant, client_msg_ids, *, body: str, content_available: bool) 
         )
         if msg is None:
             return
-        rows = list(DeviceToken.objects.filter(user=msg.user).values("token", "environment"))
-        if not rows:
-            return
-
-        # Route each device to the APNs host matching its environment — a sandbox
-        # (Debug-build) token and a production (App Store) token can coexist for one
-        # user, and a token sent to the wrong host fails with BadDeviceToken.
-        by_env: dict[str, list[str]] = {}
-        for r in rows:
-            by_env.setdefault(r["environment"], []).append(r["token"])
-
-        stale: list[str] = []
-        for env_name, env_tokens in by_env.items():
-            res = send_push(
-                env_tokens,
-                title="NBHD",
-                body=body,
-                sandbox=(env_name == DeviceToken.Environment.SANDBOX),
-                thread_id=str(msg.thread_id),
-                collapse_id=msg.client_msg_id,
-                content_available=content_available,
-                extra={"client_msg_id": msg.client_msg_id},
-            )
-            stale.extend(res.get("unregistered") or [])
-        if stale:
-            DeviceToken.objects.filter(user=msg.user, token__in=stale).delete()
+        _push_to_user_devices(
+            msg.user,
+            body=body,
+            thread_id=str(msg.thread_id),
+            collapse_id=msg.client_msg_id,
+            content_available=content_available,
+            extra={"client_msg_id": msg.client_msg_id},
+        )
     except Exception:
         logger.warning("push: notify turn failed (non-fatal)", exc_info=True)
+
+
+def _push_to_user_devices(
+    user,
+    *,
+    body: str,
+    thread_id: str | None,
+    collapse_id: str | None,
+    content_available: bool,
+    extra: dict,
+) -> None:
+    """Send one ``body`` alert to each of ``user``'s registered devices.
+
+    Routes each device to the APNs host matching its stored ``environment`` — a
+    sandbox (Debug-build) token and a production (App Store) token can coexist
+    for one user, and a token sent to the wrong host fails with BadDeviceToken —
+    and prunes any token APNs reports as unregistered (410) so the table
+    self-heals. Shared by the app-turn (``_notify_turn``) and cron / proactive
+    (``notify_proactive_ready``) push paths so the per-environment fan-out and
+    self-healing live in exactly one place.
+    """
+    from apps.common.apns import send_push
+
+    rows = list(DeviceToken.objects.filter(user=user).values("token", "environment"))
+    if not rows:
+        return
+
+    by_env: dict[str, list[str]] = {}
+    for r in rows:
+        by_env.setdefault(r["environment"], []).append(r["token"])
+
+    stale: list[str] = []
+    for env_name, env_tokens in by_env.items():
+        res = send_push(
+            env_tokens,
+            title="NBHD",
+            body=body,
+            sandbox=(env_name == DeviceToken.Environment.SANDBOX),
+            thread_id=thread_id,
+            collapse_id=collapse_id,
+            content_available=content_available,
+            extra=extra,
+        )
+        stale.extend(res.get("unregistered") or [])
+    if stale:
+        DeviceToken.objects.filter(user=user, token__in=stale).delete()
 
 
 def notify_app_reply_ready(tenant, client_msg_ids, reply_text: str | None) -> None:
@@ -267,3 +295,58 @@ def notify_app_reply_error(tenant, client_msg_ids) -> None:
     lock screen. Same idempotent, per-environment, self-healing path as the
     reply-ready push."""
     _notify_turn(tenant, client_msg_ids, body=_ERROR_BODY, content_available=True)
+
+
+def notify_proactive_ready(tenant, proactive_id, body_source: str | None) -> None:
+    """Push 'new message' for a just-delivered cron / proactive send, once.
+
+    The iOS counterpart to ``notify_app_reply_ready`` for messages the user did
+    NOT initiate from the app — a cron check-in, a meditation-ready ping, any
+    ``nbhd_send_to_user`` proactive push. Such a send has no ``AppChatMessage``
+    and no ``client_msg_id``, so idempotency rides ``ProactiveOutbound.notified_at``
+    (the same atomic isnull→now claim) and the recipient is resolved from
+    ``tenant.user`` (a ``ProactiveOutbound`` carries only a channel id, not a User).
+
+    The push is only a wake-and-sync trigger: its body is a glanceable, PII-safe
+    taste; the authoritative text reaches the app via the ``GET /chat/messages/
+    ?since=`` feed (the ``cron:<id>`` row). Short-circuits before any DB work when
+    APNs is unconfigured (the common case today). Fail-open.
+    """
+    from apps.common.apns import apns_configured
+
+    if not apns_configured():
+        return
+    if not proactive_id:
+        return
+    try:
+        from apps.router.models import ChatThread, ProactiveOutbound
+
+        # Atomic claim: only the first push for this row wins. A re-run for the
+        # same row (a future retry / reconcile path) is a no-op (rowcount 0).
+        claimed = ProactiveOutbound.objects.filter(id=proactive_id, notified_at__isnull=True).update(
+            notified_at=timezone.now()
+        )
+        if not claimed:
+            return
+
+        user = getattr(tenant, "user", None)
+        if user is None:
+            return
+
+        # The cron row maps to the tenant's shared main thread in the ?since= feed
+        # (chat_history._proactive_rows); mirror that thread-id here so a future
+        # thread-aware client routes the alert to the same place. iOS ignores
+        # thread-id today, so a tenant without a main thread (None) is fine.
+        main_thread_id = ChatThread.objects.filter(tenant=tenant, is_main=True).values_list("id", flat=True).first()
+
+        collapse = f"cron:{proactive_id}"
+        _push_to_user_devices(
+            user,
+            body=_notification_body(body_source),
+            thread_id=str(main_thread_id) if main_thread_id else None,
+            collapse_id=collapse,
+            content_available=True,
+            extra={"id": collapse, "source": "cron"},
+        )
+    except Exception:
+        logger.warning("push: notify proactive failed (non-fatal)", exc_info=True)
