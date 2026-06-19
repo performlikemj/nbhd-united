@@ -145,7 +145,7 @@ django==6.0.6
     #   djangorestframework-simplejwt
 django-cors-headers==4.9.0
     # via -r requirements.in
-django-environ==0.13.0
+django-environ==0.14.0
     # via -r requirements.in
 django-extensions==4.1
     # via -r requirements.in
