@@ -14,7 +14,7 @@ PyJWT
 qstash>=2.0
 
 # Payments
-dj-stripe>=2.9
+dj-stripe>=2.10.4
 stripe
 
 # Telegram
