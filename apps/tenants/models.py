@@ -14,6 +14,7 @@ from .agenda_models import AgendaEngagement  # noqa: F401
 from .line_models import LineLinkToken  # noqa: F401
 
 # Import so Django discovers the models for migrations
+from .oauth_models import OAuthAuthorizationCode  # noqa: F401
 from .pat_models import PersonalAccessToken  # noqa: F401
 from .promo_models import PromoCampaign, PromoRedemption  # noqa: F401
 from .telegram_models import TelegramLinkToken  # noqa: F401

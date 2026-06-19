@@ -97,3 +97,29 @@ class PushTestMinuteThrottle(_UserScopedThrottle):
 
     scope = "push_test_minute"
     rate = "10/minute"
+
+
+class AuthorizeMintMinuteThrottle(_UserScopedThrottle):
+    """The web→app PKCE begin endpoint mints a one-time code for the
+    authenticated SPA user. One mint per sign-up tap; this only stops a runaway
+    client from flooding the table."""
+
+    scope = "authorize_mint_minute"
+    rate = "30/minute"
+
+
+class ExchangeMinuteThrottle(SimpleRateThrottle):
+    """The web→app PKCE exchange endpoint is ``AllowAny`` (the code is the
+    bearer of trust), so throttle per client IP. Honour the Container Apps
+    proxy header, matching ``auth_views._client_ip``."""
+
+    scope = "exchange_minute"
+    rate = "30/minute"
+
+    def get_cache_key(self, request, view):
+        forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
+        if forwarded:
+            ident = forwarded.split(",")[0].strip()
+        else:
+            ident = request.META.get("REMOTE_ADDR", "")
+        return self.cache_format % {"scope": self.scope, "ident": ident or "anon"}

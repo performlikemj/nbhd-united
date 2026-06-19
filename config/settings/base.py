@@ -523,6 +523,12 @@ API_BASE_URL = env("API_BASE_URL", default="http://localhost:8000")
 # Invite code for gated signup (set to gate registration; leave empty for open signup)
 PREVIEW_ACCESS_KEY = env("PREVIEW_ACCESS_KEY", default="")
 
+# Web→app PKCE handoff (iOS "Create an account"). The one-time authorization
+# code's TTL and the redirect_uri allowlist enforced at /authorize/ + /exchange/.
+# Defaults match the shipped iOS contract (WebAuth.redirectURI = nbhd://auth/callback).
+AUTH_EXCHANGE_CODE_TTL_SECONDS = env.int("AUTH_EXCHANGE_CODE_TTL_SECONDS", default=300)
+AUTH_ALLOWED_REDIRECT_URIS = env.list("AUTH_ALLOWED_REDIRECT_URIS", default=["nbhd://auth/callback"])
+
 # OAuth client credentials
 GOOGLE_OAUTH_CLIENT_ID = env("GOOGLE_OAUTH_CLIENT_ID", default="")
 GOOGLE_OAUTH_CLIENT_SECRET = env("GOOGLE_OAUTH_CLIENT_SECRET", default="")

@@ -8,6 +8,7 @@ from .auth_views import (
     PasswordResetRequestView,
     SignupView,
 )
+from .oauth_views import AuthorizeBeginView, ExchangeView
 from .pat_views import PATCreateView, PATListView, PATRevokeView
 
 urlpatterns = [
@@ -31,4 +32,7 @@ urlpatterns = [
     path("tokens/", PATListView.as_view(), name="pat-list"),
     path("tokens/create/", PATCreateView.as_view(), name="pat-create"),
     path("tokens/<uuid:token_id>/", PATRevokeView.as_view(), name="pat-revoke"),
+    # Web→app PKCE handoff (iOS "Create an account")
+    path("authorize/", AuthorizeBeginView.as_view(), name="auth-authorize"),
+    path("exchange/", ExchangeView.as_view(), name="auth-exchange"),
 ]
