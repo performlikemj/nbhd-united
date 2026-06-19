@@ -6,6 +6,7 @@ import { FormEvent, useState } from "react";
 
 import { fetchMe, login } from "@/lib/api";
 import { setTokens } from "@/lib/auth";
+import { hasPendingAppAuthorize } from "@/lib/app-authorize";
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
 
 export default function LoginPage() {
@@ -23,6 +24,12 @@ export default function LoginPage() {
     try {
       const tokens = await login(email, password);
       setTokens(tokens.access, tokens.refresh);
+      // Mid-flight iOS "Create an account" / sign-in handoff: hand control back
+      // to /app/authorize, which mints the one-time code and redirects nbhd://.
+      if (hasPendingAppAuthorize()) {
+        router.replace("/app/authorize");
+        return;
+      }
       try {
         const me = await fetchMe();
         const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active" || !me.tenant.user.telegram_chat_id;
