@@ -22,9 +22,25 @@ Same isolated + agentTurn shape. System tasks have a **foreground / background**
 
 The Phase 2 sync is implemented as a one-shot cron the agent creates at the end of its run. These are named `_sync:<task name>` and are hidden from the user-facing UI. They self-clean: the systemEvent text instructs the main session to call `cron remove _sync:<task name>` after noting the summary. Don't manually create, modify, or delete `_sync:*` jobs.
 
-### Messaging rule
+### Messaging rule — NON-NEGOTIABLE
 
-The native `message` tool does not work in subscriber containers — **always use `nbhd_send_to_user` to deliver messages to the user.** OC's runner-fallback `delivery.mode: "announce"` is also broken on this fleet (no Telegram bot token at the OC channel layer; nbhd-telegram plugin handles outbound). **Always pass `delivery: {"mode": "none"}` explicitly** — if you omit `delivery`, OC defaults to `announce` for isolated+agentTurn and `cron add` is rejected at submit-time with `delivery.channel is required when multiple channels are configured`.
+Every cron MUST deliver its message through **`delivery: {"mode": "none"}` + a call to `nbhd_send_to_user`** at fire time. There is no exception.
+
+**NEVER** set `delivery.mode` to `"announce"`, `"telegram"`, or `"line"`, and **NEVER** add a `delivery.channel`. Those use OC's built-in channel delivery, which on this fleet:
+
+1. **Silently fails to deliver at all** — there is no Telegram bot token at the OC channel layer, so an `announce`/channel cron is broken and errors at fire time (`Delivering to Telegram requires target <chatId>`), and the user gets *nothing*; and
+2. **Bypasses the iOS app entirely** — built-in delivery goes container→Telegram/LINE and never touches the backend, so no iOS push notification is sent and iPhone-only users never see the message. Only the `nbhd_send_to_user` path reaches the backend, which is what fires the iOS push.
+
+If you omit `delivery`, OC defaults to `announce` (same broken result) and multi-channel users hit `delivery.channel is required when multiple channels are configured`. So `delivery: {"mode": "none"}` is not optional — it is the only correct value.
+
+```
+❌ "delivery": {"mode": "announce"}                          // fails to send AND no iOS push
+❌ "delivery": {"mode": "telegram", "channel": "telegram"}   // same
+❌  (no delivery block)                                      // OC defaults to announce → broken
+✅ "delivery": {"mode": "none"}   + the agentTurn message calls nbhd_send_to_user
+```
+
+The native `message` tool also does not work in subscriber containers — `nbhd_send_to_user` is the one and only way to reach the user.
 
 **Journal writes are MANDATORY when the cron prompt asks for them.** Use `nbhd_daily_note_set_section` and `nbhd_daily_note_append` exactly as the cron prompt instructs. Do not assume normal memory hooks will cover it — they will not, and the Journal app will be empty if you skip the explicit calls.
 

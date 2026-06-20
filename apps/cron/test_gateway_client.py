@@ -7,7 +7,133 @@ from unittest import mock
 
 from django.test import TestCase
 
-from apps.cron.gateway_client import _next_fire_at, cron_exists, cron_get
+from apps.cron.gateway_client import (
+    _next_fire_at,
+    _normalize_cron_delivery_for_ios,
+    cron_exists,
+    cron_get,
+    invoke_gateway_tool,
+)
+
+_OMIT = object()  # sentinel: build a job with NO delivery block
+
+
+class NormalizeCronDeliveryTests(TestCase):
+    """The backstop that forces a Django-pushed cron onto the iOS-reachable
+    delivery path (delivery.mode:"none" + nbhd_send_to_user)."""
+
+    def _job(self, delivery, *, message="Send the daily digest.", name="Daily Digest", kind="agentTurn", tools=None):
+        payload = {"kind": kind, "message": message}
+        if tools is not None:
+            payload["toolsAllow"] = tools
+        job = {"name": name, "payload": payload, "sessionTarget": "isolated"}
+        if delivery is not _OMIT:
+            job["delivery"] = delivery
+        return job
+
+    def test_announce_is_rewritten_to_none(self):
+        job = _normalize_cron_delivery_for_ios(self._job({"mode": "announce"}))
+        self.assertEqual(job["delivery"], {"mode": "none"})
+
+    def test_channel_delivery_is_rewritten(self):
+        job = _normalize_cron_delivery_for_ios(self._job({"mode": "telegram", "channel": "telegram"}))
+        self.assertEqual(job["delivery"], {"mode": "none"})
+
+    def test_missing_delivery_block_is_rewritten(self):
+        # No delivery block → OC defaults to announce → must be normalized.
+        job = _normalize_cron_delivery_for_ios(self._job(_OMIT))
+        self.assertEqual(job["delivery"], {"mode": "none"})
+
+    def test_mode_none_is_unchanged_idempotent(self):
+        original = self._job({"mode": "none"}, message="Compose the digest, then call nbhd_send_to_user.")
+        job = _normalize_cron_delivery_for_ios(original)
+        self.assertEqual(job["delivery"], {"mode": "none"})
+
+    def test_message_is_never_mutated(self):
+        # The backstop touches ONLY delivery — never the message — so it can't
+        # perturb the reconciler's message-body drift detection.
+        msg = "Compose the digest."
+        job = _normalize_cron_delivery_for_ios(self._job({"mode": "announce"}, message=msg))
+        self.assertEqual(job["payload"]["message"], msg)
+
+    def test_systemevent_payload_is_skipped(self):
+        # Heartbeat/sync systemEvents are not user deliveries — never touch them.
+        job = _normalize_cron_delivery_for_ios(self._job({"mode": "announce"}, kind="systemEvent"))
+        self.assertEqual(job["delivery"], {"mode": "announce"})
+
+    def test_sync_continuity_cron_is_skipped(self):
+        job = _normalize_cron_delivery_for_ios(self._job(_OMIT, name="_sync:Evening Check-in"))
+        self.assertNotIn("delivery", job)
+
+
+class InvokeGatewayToolDeliveryNormalizationTests(TestCase):
+    """The backstop fires at the invoke_gateway_tool push boundary, for both the
+    {"job"} (cron.add / recreate) and {"jobId","patch"} (cron.update) shapes."""
+
+    class _FakeTenant:
+        id = "t-1"
+        container_fqdn = "oc-test.example.com"
+        internal_api_key = "k"
+
+    def _invoke_capture(self, tool, args):
+        """Call invoke_gateway_tool with the gateway POST stubbed; return the body
+        the gateway would have received."""
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"ok": True, "result": {}}
+
+        def _fake_post(url, json, headers, timeout):
+            captured["body"] = json
+            return _Resp()
+
+        with mock.patch("apps.cron.gateway_client.requests.post", side_effect=_fake_post):
+            invoke_gateway_tool(self._FakeTenant(), tool, args)
+        return captured["body"]
+
+    def test_cron_add_job_delivery_is_normalized(self):
+        body = self._invoke_capture(
+            "cron.add",
+            {
+                "job": {
+                    "name": "Digest",
+                    "payload": {"kind": "agentTurn", "message": "send"},
+                    "delivery": {"mode": "announce"},
+                }
+            },
+        )
+        self.assertEqual(body["args"]["job"]["delivery"], {"mode": "none"})
+
+    def test_cron_add_does_not_mutate_callers_dict(self):
+        original = {
+            "job": {
+                "name": "Digest",
+                "payload": {"kind": "agentTurn", "message": "send"},
+                "delivery": {"mode": "announce"},
+            }
+        }
+        self._invoke_capture("cron.add", original)
+        # Caller's dict is untouched (deep-copied before normalize).
+        self.assertEqual(original["job"]["delivery"], {"mode": "announce"})
+
+    def test_cron_update_patch_delivery_is_normalized(self):
+        body = self._invoke_capture(
+            "cron.update",
+            {"jobId": "Digest", "patch": {"delivery": {"mode": "telegram", "channel": "telegram"}}},
+        )
+        self.assertEqual(body["args"]["patch"]["delivery"], {"mode": "none"})
+
+    def test_cron_update_patch_without_delivery_untouched(self):
+        body = self._invoke_capture("cron.update", {"jobId": "Digest", "patch": {"enabled": False}})
+        self.assertEqual(body["args"]["patch"], {"enabled": False})
+
+    def test_non_cron_tool_args_untouched(self):
+        body = self._invoke_capture("cron.list", {"includeDisabled": True})
+        self.assertEqual(body["args"], {"includeDisabled": True})
 
 
 class NextFireAtTests(TestCase):
