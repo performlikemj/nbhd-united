@@ -23,6 +23,68 @@ class GatewayError(Exception):
         self.status_code = status_code
 
 
+# Delivery modes where OpenClaw delivers the cron's output ITSELF (container →
+# Telegram/LINE) instead of routing the send through Django's CronDeliveryView.
+# These bypass ``record_proactive_outbound`` → so NO iOS APNs push fires — and
+# on this fleet OC's built-in channel delivery is broken anyway (no bot token at
+# the OC channel layer). The only iOS-reachable shape is ``delivery.mode:"none"``
+# + the agent calling ``nbhd_send_to_user`` at fire time, which hits Django and
+# pushes. See ``templates/openclaw/docs/cron-management.md``.
+_IOS_SAFE_DELIVERY = {"mode": "none"}
+
+
+def _is_ios_safe_delivery(delivery: Any) -> bool:
+    """True only for an explicit ``delivery.mode:"none"`` with no channel — the one
+    shape that routes a cron's send through Django (and thus the iOS push)."""
+    return isinstance(delivery, dict) and delivery.get("mode") == "none" and not delivery.get("channel")
+
+
+def _normalize_cron_delivery_for_ios(job: dict) -> dict:
+    """Coerce a user-delivery cron onto the iOS-reachable delivery path, in place.
+
+    Any cron that delivers via OpenClaw's built-in channel path — ``delivery.mode``
+    in {announce, telegram, line}, a ``delivery.channel``, or no ``delivery`` block
+    at all (OC then defaults to announce) — bypasses Django's ``CronDeliveryView``
+    and therefore the iOS push (and is broken on this fleet besides). Rewrite the
+    delivery to ``{"mode": "none"}`` so the send routes through the agent's
+    ``nbhd_send_to_user`` call → Django → ``record_proactive_outbound`` →
+    ``notify_proactive_ready`` and the device pings.
+
+    Touches ONLY the delivery block — never the message — so it can't perturb the
+    reconciler's payload-aware drift detection (which compares the message body and
+    ``model``/``kind``/``schedule``, not ``delivery``). The crons that reach this
+    path are Django-pushed (platform/typed/console), which already instruct the
+    agent to call ``nbhd_send_to_user``; the delivery mode is the only thing wrong.
+
+    Deliberately skips internal crons that are NOT user deliveries: ``systemEvent``
+    payloads (heartbeat/sync events) and the agent's hidden ``_sync:*`` continuity
+    crons. Idempotent: a job already on ``delivery.mode:"none"`` is returned
+    unchanged.
+
+    NOTE: this is the BACKSTOP for crons Django pushes. A cron the agent creates by
+    calling raw ``cron.add`` INSIDE its container never transits this path — that
+    requires the wrapping-plugin guard (deferred). See ``cron_reconcile.py``'s
+    "creation-time enforcement" note.
+    """
+    if not isinstance(job, dict):
+        return job
+
+    # Internal, non-user-delivery crons: never touch.
+    name = job.get("name")
+    if isinstance(name, str) and name.startswith("_sync:"):
+        return job
+    payload = job.get("payload")
+    if isinstance(payload, dict) and payload.get("kind") == "systemEvent":
+        return job
+
+    # iOS-safe == an explicit delivery.mode:"none" with no channel. Everything
+    # else (absent, {}, announce/telegram/line, channel-bearing) is rewritten.
+    if not _is_ios_safe_delivery(job.get("delivery")):
+        job["delivery"] = dict(_IOS_SAFE_DELIVERY)
+
+    return job
+
+
 def get_gateway_token_for_tenant(tenant: Tenant) -> str:
     """Resolve the bearer token Django must send when calling this tenant's gateway.
 
@@ -82,6 +144,26 @@ def invoke_gateway_tool(tenant: Tenant, tool: str, args: dict[str, Any]) -> dict
     """
     if not tenant.container_fqdn:
         raise GatewayError(f"Tenant {tenant.id} has no container FQDN")
+
+    # Backstop: force every Django-pushed cron onto the iOS-reachable delivery
+    # path (delivery.mode:"none" + nbhd_send_to_user). Deep-copy so we never
+    # mutate the caller's dict. No-op for already-safe jobs and non-cron tools.
+    # Two arg shapes carry delivery: cron.add/full recreate as {"job": {...}}
+    # (the live, canonical path) and cron.update as {"jobId", "patch": {...}} (a
+    # field patch — only reached for non-canonical tenants, covered defensively).
+    if tool in ("cron.add", "cron.update") and isinstance(args, dict):
+        import copy
+
+        if isinstance(args.get("job"), dict):
+            args = {**args, "job": _normalize_cron_delivery_for_ios(copy.deepcopy(args["job"]))}
+        elif (
+            isinstance(args.get("patch"), dict)
+            and "delivery" in args["patch"]
+            and not _is_ios_safe_delivery(args["patch"].get("delivery"))
+        ):
+            patch = copy.deepcopy(args["patch"])
+            patch["delivery"] = dict(_IOS_SAFE_DELIVERY)
+            args = {**args, "patch": patch}
 
     token = _get_gateway_token(tenant)
     url = f"https://{tenant.container_fqdn}/tools/invoke"
