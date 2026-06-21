@@ -1,0 +1,62 @@
+[
+ {
+  "id": "FA-1072",
+  "area": "tenants-auth",
+  "layer": "backend",
+  "feature": "Welcome Email on Provisioning",
+  "user_role": "system/cron",
+  "user_story": "As the platform, I want to send a Day-0 welcome email after a tenant is provisioned so that new subscribers know how to connect Telegram and get started.",
+  "expected_behaviour": "send_welcome_email(tenant) in apps/tenants/emails.py is called during provisioning. Idempotent: if tenant.welcome_email_sent_at is already set, returns False immediately. If user has no email address, skips and returns False. Checks LINE quota availability via LineQuotaState; if exhausted, uses 'Telegram' instead of 'Telegram or LINE' in the CTA to avoid offering a capped channel. Sends multipart HTML+text via Mailgun using welcome_subject/body templates. On confirmed send, stamps tenant.welcome_email_sent_at and saves. Exceptions are caught and logged (never bubbles to caller).",
+  "entry_points": "apps/tenants/emails.py:send_welcome_email",
+  "dependencies": "Mailgun (via Django email backend), Supabase/Postgres, apps/router/models.py:LineQuotaState",
+  "inventory_notes": "Non-critical — caller (orchestrator provisioning flow) must not roll back tenant state if this fails. welcome_email_sent_at is the idempotency stamp."
+ },
+ {
+  "id": "FA-1073",
+  "area": "tenants-auth",
+  "layer": "backend",
+  "feature": "Promotional Campaign Redemption",
+  "user_role": "anonymous user",
+  "user_story": "As a subscriber who received a promotional email, I want to click a signed redemption link so that my trial period is extended without needing to log in.",
+  "expected_behaviour": "GET /api/v1/tenants/promos/redeem/?code=<campaign_code>&token=<hmac_signed> is AllowAny. Validates: both params present; PromoCampaign exists for code; campaign not past valid_until; HMAC token (Django Signer with salt 'nbhd.promos.v1') verifies and campaign code inside token matches URL param; User and Tenant exist. Active Stripe subscribers are redirected with status=active_subscription. Already-redeemed (unique_together IntegrityError) redirects with status=already. On success: inserts PromoRedemption row first (outside atomic block), then in atomic block extends trial_ends_at, sets is_trial=True, sets status=ACTIVE. Always 302-redirects to {FRONTEND_URL}/promo/redeemed?status=<outcome>.",
+  "entry_points": "apps/tenants/promo_views.py:redeem_promo ; apps/tenants/promo_signing.py:verify_promo_token ; GET /api/v1/tenants/promos/redeem/",
+  "dependencies": "Supabase/Postgres, Mailgun (send side via send_promo_campaign command)",
+  "inventory_notes": "Double-click idempotency via unique_together (campaign, user) — IntegrityError is caught and treated as 'already'. Redemption row inserted outside atomic() to avoid poisoning a parent transaction on IntegrityError."
+ },
+ {
+  "id": "FA-1074",
+  "area": "tenants-auth",
+  "layer": "backend",
+  "feature": "PAT Throttling",
+  "user_role": "subscriber",
+  "user_story": "As the platform, I want PAT-authenticated API calls to be rate-limited per token so that a single misbehaving app cannot exhaust server or billing budgets.",
+  "expected_behaviour": "PATSessionIngestMinuteThrottle (60/minute) and PATSessionIngestDayThrottle (5000/day) are keyed by PAT id (not user). Non-PAT (JWT) requests return None from get_cache_key(), bypassing throttle. UserPATMintHourThrottle (10/hour) is applied at PAT creation (PATCreateView), keyed by user id. ExchangeMinuteThrottle (30/minute) is keyed per client IP, honours X-Forwarded-For. AuthorizeMintMinuteThrottle (30/minute) is keyed per user id. Throttle rates are backed by Django cache (Redis).",
+  "entry_points": "apps/tenants/throttling.py:PATSessionIngestMinuteThrottle ; apps/tenants/throttling.py:PATSessionIngestDayThrottle ; apps/tenants/throttling.py:UserPATMintHourThrottle ; apps/tenants/throttling.py:ExchangeMinuteThrottle ; apps/tenants/throttling.py:AuthorizeMintMinuteThrottle",
+  "dependencies": "Redis (Django cache backend)",
+  "inventory_notes": "Blast radius of a leaked/abused PAT is limited to 5000 requests/day rather than unlimited. Revoking the PAT immediately stops all further auth."
+ },
+ {
+  "id": "FA-1075",
+  "area": "tenants-auth",
+  "layer": "backend",
+  "feature": "Expired Telegram Link Token Cleanup (Cron)",
+  "user_role": "system/cron",
+  "user_story": "As the platform, I want expired Telegram link tokens to be purged regularly so that stale rows do not accumulate in the database.",
+  "expected_behaviour": "cleanup_expired_telegram_tokens() in apps/tenants/tasks.py deletes all TelegramLinkToken rows where expires_at < now() - 1 hour. Called via QStash cron. Returns a string with count of deleted rows for audit logging. No side effects beyond the DELETE.",
+  "entry_points": "apps/tenants/tasks.py:cleanup_expired_telegram_tokens",
+  "dependencies": "Supabase/Postgres, QStash",
+  "inventory_notes": "TelegramLinkToken is a short-lived QR-pairing token, not a JWT. Separate model from PersonalAccessToken."
+ },
+ {
+  "id": "FA-1076",
+  "area": "tenants-auth",
+  "layer": "backend",
+  "feature": "Django Admin User/Tenant Management",
+  "user_role": "admin/operator",
+  "user_story": "As an admin/operator, I want to view, search, and manage User and Tenant records in the Django admin so that I can investigate issues and perform manual interventions.",
+  "expected_behaviour": "UserAdmin extends BaseUserAdmin with Telegram fields (telegram_chat_id, telegram_user_id, telegram_username, display_name, language, preferences) exposed as an extra fieldset. List display shows username, display_name, telegram_chat_id, is_active. TenantAdmin shows user, status, model_tier, is_budget_exempt, container_id, messages_today, messages_this_month, created_at. Filterable by status/model_tier/is_budget_exempt. Searchable by user__username/display_name/container_id. id, created_at, updated_at, provisioned_at are read-only. Standard Django admin auth (session-based) required.",
+  "entry_points": "apps/tenants/admin.py:UserAdmin ; apps/tenants/admin.py:TenantAdmin",
+  "dependencies": "Supabase/Postgres",
+  "inventory_notes": "Admin does not enforce tenant-scoped RLS — admin users access all rows. Password rotation via admin triggers set_password override and bumps password_last_changed_at."
+ }
+]

@@ -1,0 +1,14 @@
+[
+ {
+  "id": "FA-0427",
+  "area": "fe-landing-auth",
+  "layer": "frontend",
+  "feature": "Starfield canvas animation",
+  "user_role": "anonymous user",
+  "user_story": "As a visitor, I want an animated starfield background so that the pages have a distinctive visual identity.",
+  "expected_behaviour": "A canvas element fills its container absolutely (aria-hidden, pointer-events-none). On mount, stars are initialised at density 1 per 4000px². Each star has a random position, radius (0.3–1.8px), opacity, speed, and colour from 4 options (white, purple, teal, pink). Stars flicker via a sine wave on their opacity. When prefers-reduced-motion is detected, stars are drawn once without animation. Canvas resizes with the window. RAF is cancelled on component unmount.",
+  "entry_points": "frontend/components/landing/starfield.tsx:Starfield",
+  "dependencies": "",
+  "inventory_notes": "prefers-reduced-motion check is done once at mount; it does not reactively update if the user changes their OS setting mid-session."
+ }
+]

@@ -1,0 +1,110 @@
+[
+ {
+  "id": "FA-1045",
+  "area": "router-telegram",
+  "layer": "backend",
+  "feature": "Stuck message reaper",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want a periodic reaper to republish drain tasks for PendingMessage rows that have been stuck for >90s so that messages are never permanently lost due to QStash publish failures or DLQ.",
+  "expected_behaviour": "reap_stuck_inbound_messages_task scans PendingMessage for rows with delivery_status=PENDING, created_at older than 90s (_REAPER_STUCK_AGE_SECONDS), and no live in-flight lease. Groups by distinct (tenant_id, channel, channel_user_id) keys (capped at 200 per tick). Republishes drain_pending_messages_for_tenant task via QStash for each key with retries=3. The drain task's SELECT FOR UPDATE SKIP LOCKED safely handles concurrent execution. Logs warning with counts only when stuck rows found. Returns {stuck_keys, republished, errors}.",
+  "entry_points": "apps/router/pending_queue.py:reap_stuck_inbound_messages_task",
+  "dependencies": "Supabase/Postgres (PendingMessage), QStash (publish_task)",
+  "inventory_notes": "Three scenarios it covers: (1) publish_task raised at enqueue time, (2) QStash DLQ after all retries failed, (3) gunicorn worker killed mid-claim. Stale-message guard in the drain task prevents 7-hour-old messages from being delivered to OC."
+ },
+ {
+  "id": "FA-1046",
+  "area": "router-telegram",
+  "layer": "backend",
+  "feature": "Dropped/stale message apology",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber whose message could not be delivered after 3 attempts or sat stuck for >10 minutes, I want to receive an apology message so that I know what happened and can resend.",
+  "expected_behaviour": "_send_apology_for_dropped_pending_message is called when a PendingMessage reaches _MAX_DELIVERY_ATTEMPTS=3. _send_apology_for_stale_pending_message is called when the head row is older than _STALE_MESSAGE_AGE_SECONDS=600s. Both use localized error_msg templates (dropped_message/dropped_message_with_excerpt or stale_message/stale_message_with_excerpt). For Telegram, sends via httpx POST to sendMessage. user_text is sanitized by strip_internal_framing to remove [System:...]/[Now:...]/[chat:...] framing before excerpting (max 50 chars). Age is formatted as Nm or ~Nh. iOS turns instead flip AppChatMessage status to ERROR and fire notify_app_reply_error APNs push.",
+  "entry_points": "apps/router/pending_queue.py:_send_apology_for_dropped_pending_message ; apps/router/pending_queue.py:_send_apology_for_stale_pending_message",
+  "dependencies": "Telegram Bot API (sendMessage), apps/router/error_messages:error_msg",
+  "inventory_notes": "Excerpt stripping via strip_internal_framing prevents users from seeing '[System: just updated. User's message:] ...' in apology messages."
+ },
+ {
+  "id": "FA-1047",
+  "area": "router-telegram",
+  "layer": "backend",
+  "feature": "Wake-up ack for hibernated Telegram tenant (drain path)",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber whose container is woken from hibernation by the drain task, I want to receive a 'waking up' message immediately so that I know my message was received during the ~60s boot.",
+  "expected_behaviour": "_notify_waking(tenant, channel, channel_user_id) is called by the drain task when it detects a hibernated-container 404 and initiates wake. For Telegram channel only, sends error_msg(lang, 'hibernation_waking') via httpx POST to sendMessage. Best-effort — never raises. Mirrors the webhook path's ACK_FRESH response. The _mark_ios_waking function stamps waking_at on AppChatMessage rows for iOS clients instead.",
+  "entry_points": "apps/router/pending_queue.py:_notify_waking ; apps/router/pending_queue.py:_mark_ios_waking",
+  "dependencies": "Telegram Bot API (sendMessage), Supabase/Postgres (AppChatMessage for iOS)",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-1048",
+  "area": "router-telegram",
+  "layer": "backend",
+  "feature": "Token usage recording after Telegram turns",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want token usage to be recorded after every AI turn so that billing and quota enforcement reflect actual consumption.",
+  "expected_behaviour": "In the webhook path: _record_usage_from_openclaw_result extracts usage from the OpenClaw response (checks usage.input_tokens/input/output_tokens/output, also nested under result.usage or result.result.usage). Calls record_usage(tenant, event_type='message', input_tokens, output_tokens, model_used). model_used is resolved via resolve_model_for_attribution(tenant, result). Logs USAGE_MISSING if no usage payload, USAGE_ZERO if payload has zero counts. In the drain task path: _record_usage_safe extracts prompt_tokens/input_tokens/completion_tokens/output_tokens, passes message_count=len(batch) so per-tenant message counters count user-perceived sends.",
+  "entry_points": "apps/router/views.py:_record_usage_from_openclaw_result ; apps/router/pending_queue.py:_record_usage_safe ; apps/router/poller.py:TelegramPoller._record_usage",
+  "dependencies": "Supabase/Postgres (UsageRecord via billing/services:record_usage), apps/billing/services:resolve_model_for_attribution",
+  "inventory_notes": "Usage recording failures are caught and logged but never re-raised — billing failure must not wedge the queue or lose a delivered message."
+ },
+ {
+  "id": "FA-1049",
+  "area": "router-telegram",
+  "layer": "backend",
+  "feature": "Route cache (chat_id → container_fqdn)",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want tenant routing lookups to be cached in memory so that repeated DB queries per Telegram update are avoided.",
+  "expected_behaviour": "resolve_container(chat_id) checks the in-process _route_cache dict. If entry exists and is <ROUTE_CACHE_TTL=60s old, returns cached FQDN. Otherwise queries User by telegram_chat_id, fetches ACTIVE Tenant with container_fqdn, caches and returns. Returns None if user/tenant not found. invalidate_cache(chat_id) removes entry. clear_cache() clears all. Used in historical webhook path; current poller path uses resolve_tenant_by_chat_id which does a DB query on each update (cache not used for the full Tenant object).",
+  "entry_points": "apps/router/services.py:resolve_container ; apps/router/services.py:invalidate_cache ; apps/router/services.py:clear_cache",
+  "dependencies": "Supabase/Postgres (User, Tenant models)",
+  "inventory_notes": "In-process only — not shared between workers or poller instances."
+ },
+ {
+  "id": "FA-1050",
+  "area": "router-telegram",
+  "layer": "backend",
+  "feature": "Forwarding timeout by model type",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want the HTTP timeout when forwarding to OpenClaw to be extended for reasoning and BYO-Claude models so that long inference turns are not prematurely aborted.",
+  "expected_behaviour": "get_forwarding_timeout(tenant) returns (timeout_seconds, is_reasoning). Checks tenant.preferred_model against REASONING_MODELS and BYO_SLOW_MODELS sets. Reasoning/slow models get REASONING_MODEL_TIMEOUT (240s); others get DEFAULT_CHAT_TIMEOUT (120s). In the webhook path, is_reasoning drives wh_timeout=120.0 vs 30.0. In the drain path, _resolve_chat_timeout returns the timeout for httpx.post.",
+  "entry_points": "apps/router/services.py:get_forwarding_timeout ; apps/router/pending_queue.py:_resolve_chat_timeout",
+  "dependencies": "apps/billing/constants:REASONING_MODELS, DEFAULT_CHAT_TIMEOUT, REASONING_MODEL_TIMEOUT, BYO_SLOW_MODELS",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-1051",
+  "area": "router-telegram",
+  "layer": "backend",
+  "feature": "PII rehydration in outbound Telegram responses",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want PII placeholder tokens in AI responses to be replaced with real names before delivery so that I see natural language instead of [PERSON_1] tokens.",
+  "expected_behaviour": "In _send_rich_response (poller) and relay_ai_response_to_telegram (drain): if tenant.pii_entity_map is set, calls apps/pii/redactor:rehydrate_text(text, entity_map) before any other processing. Same in clean_reply_for_capture for ConversationTurn storage. Fails open — exceptions are logged but do not block delivery.",
+  "entry_points": "apps/router/poller.py:TelegramPoller._send_rich_response ; apps/router/pending_queue.py:relay_ai_response_to_telegram ; apps/router/conversation_capture.py:clean_reply_for_capture",
+  "dependencies": "apps/pii/redactor:rehydrate_text, Supabase/Postgres (Tenant.pii_entity_map)",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-1052",
+  "area": "router-telegram",
+  "layer": "backend",
+  "feature": "Insight marker extraction in Telegram outbound responses",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want [[insight:slug]]...[[/insight]] markers in AI responses to be extracted and stored as AssistantInsight rows so that insights are persisted across channels.",
+  "expected_behaviour": "In both _send_rich_response (poller) and relay_ai_response_to_telegram (drain), apps/insights/markers:extract_and_record_insights(text, tenant=tenant) is called before chart processing. Strips marker tokens and persists AssistantInsight rows. Fails open. Also called in _clean_assistant_text_for_app for iOS turns. Runs before chart processing so insights nested near chart markers still record.",
+  "entry_points": "apps/router/poller.py:TelegramPoller._send_rich_response ; apps/router/pending_queue.py:relay_ai_response_to_telegram",
+  "dependencies": "Supabase/Postgres (AssistantInsight via apps/insights/markers), apps/insights/markers:extract_and_record_insights",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-1053",
+  "area": "router-telegram",
+  "layer": "backend",
+  "feature": "ASCII chart leak logging",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to log when AI responses contain ASCII chart data without a [[chart:]] marker so that chart rendering issues can be detected and diagnosed.",
+  "expected_behaviour": "In both _send_rich_response (poller) and relay_ai_response_to_telegram (drain), apps/router/output_guards:log_ascii_chart_leak(text, tenant_id, channel) is called before any content transformation. Logs a warning if ASCII chart patterns are detected without a corresponding [[chart:]] marker. Non-blocking, no effect on message delivery.",
+  "entry_points": "apps/router/output_guards.py:log_ascii_chart_leak ; apps/router/poller.py:TelegramPoller._send_rich_response ; apps/router/pending_queue.py:relay_ai_response_to_telegram",
+  "dependencies": "",
+  "inventory_notes": ""
+ }
+]

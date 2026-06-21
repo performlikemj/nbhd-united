@@ -1,0 +1,98 @@
+[
+ {
+  "id": "FA-0509",
+  "area": "fe-shell-common",
+  "layer": "frontend",
+  "feature": "Skeleton loading placeholders",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want content areas to show a pulsing placeholder while data is loading so that the layout does not shift when data arrives.",
+  "expected_behaviour": "`Skeleton` renders a `div` with `animate-pulse rounded bg-border`. Accepts a `className` for sizing. Two pre-built composite skeletons: `StatCardSkeleton` renders a card-shaped skeleton with three bars (header, value, subtext); `SectionCardSkeleton` (accepts `lines` prop, default 3) renders a card with a title bar, subtitle bar, and N content lines. These are used as loading states in dashboard and settings sections while data queries are fetching.",
+  "entry_points": "frontend/components/skeleton.tsx:Skeleton ; frontend/components/skeleton.tsx:StatCardSkeleton ; frontend/components/skeleton.tsx:SectionCardSkeleton",
+  "dependencies": "",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-0510",
+  "area": "fe-shell-common",
+  "layer": "frontend",
+  "feature": "Markdown renderer with interactive checkboxes",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to read structured markdown content (headings, lists, tables, code blocks, checkboxes) rendered properly so that my journal documents and AI responses are legible.",
+  "expected_behaviour": "`MarkdownRenderer` uses `react-markdown` with `remark-gfm` (GitHub Flavored Markdown: tables, strikethrough, task lists) and `remark-breaks` (newlines as `<br>`). Prose styling is applied via Tailwind typography classes. When an `onCheckboxToggle` callback is provided, GFM task-list checkboxes are rendered as interactive inputs: clicking scans the raw markdown for the matching checkbox by state (checked/unchecked) and calls `onCheckboxToggle(lineIndex, newChecked)`. Without the callback, checkboxes are rendered as disabled. Tables overflow horizontally (`overflow-x-auto`). The component is `React.memo`'d — it only re-runs the remark pipeline when `content` or `onCheckboxToggle` changes.",
+  "entry_points": "frontend/components/markdown-renderer.tsx:MarkdownRenderer",
+  "dependencies": "",
+  "inventory_notes": "The checkbox-matching algorithm finds the FIRST checkbox whose current checked state matches `props.checked`. This is fragile for documents with multiple checkboxes of the same state in sequence — the wrong line index may be reported. It also uses `===` on booleans so `props.checked` must be a real boolean, not null/undefined."
+ },
+ {
+  "id": "FA-0511",
+  "area": "fe-shell-common",
+  "layer": "frontend",
+  "feature": "Account card — finance account display",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber using the Gravity finance feature, I want each of my accounts displayed as a card with balance, type, and payoff progress so that I can see my financial position at a glance.",
+  "expected_behaviour": "`AccountCard` renders a `<article>` with: an emoji icon (type-mapped), account nickname, type label, APR (if present), monthly minimum payment (if present), and current balance formatted as USD. For debt accounts with a `payoff_progress` value, a `<div role='progressbar'>` bar is shown with `aria-valuenow/min/max` and `aria-label='X% paid off'`. Below the bar, '% Paid' and 'Original balance' labels appear. If `onArchive` is provided, a circular archive icon button appears on hover (opacity-0 → opacity-100 on group hover, always visible on mobile). Debt accounts use accent colour; savings accounts use signal (teal) colour.",
+  "entry_points": "frontend/components/account-card.tsx:AccountCard",
+  "dependencies": "FinanceAccount type from lib/types.ts; rendered in the Gravity (Finance) area",
+  "inventory_notes": "The archive button has `aria-label='Archive {nickname}'` and `min-h-[44px]` but the visual affordance is hidden on desktop behind group-hover — keyboard users can still focus and activate it via `focus-visible:opacity-100`."
+ },
+ {
+  "id": "FA-0512",
+  "area": "fe-shell-common",
+  "layer": "frontend",
+  "feature": "Dark theme enforcement",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want the app to always use the dark theme so that it matches the Constellation brand aesthetic.",
+  "expected_behaviour": "`ThemeProvider` on mount (client-only, `useEffect`) sets `document.documentElement.setAttribute('data-theme', 'dark')`, `colorScheme = 'dark'`, and updates the `<meta name='theme-color'>` to `#0b0f13`. The `Theme` type is a literal `'dark'` — `setTheme` and `toggleTheme` are no-ops. No toggle UI exists.",
+  "entry_points": "frontend/components/theme-provider.tsx:ThemeProvider",
+  "dependencies": "",
+  "inventory_notes": "ThemeProvider is NOT imported/used in providers.tsx or app-shell.tsx in the code read. Its usage must be in the root layout (not audited here). The context API is exposed (`useTheme`) but the toggle is intentionally a no-op."
+ },
+ {
+  "id": "FA-0513",
+  "area": "fe-shell-common",
+  "layer": "frontend",
+  "feature": "Site footer with legal and contact links",
+  "user_role": "anonymous user",
+  "user_story": "As a user on a public page, I want a footer with links to legal policies and contact information so that I can access important information and reach support.",
+  "expected_behaviour": "`SiteFooter` renders a `<footer role='contentinfo'>` with: a logo link to `/` (mono, uppercase, tracking-wide), and a `<nav aria-label='Footer links'>` with links to `/legal/terms`, `/legal/privacy`, `/legal/refund`, `/legal/commerce-disclosure` (Japanese commerce law page, shown in Japanese characters '特定商取引法'), and a `mailto:mj@bywayofmj.com` contact link. All links use `hover:text-ink-muted` transition. Only shown on public (non-full-bleed, non-authenticated) pages.",
+  "entry_points": "frontend/components/site-footer.tsx:SiteFooter",
+  "dependencies": "",
+  "inventory_notes": "The commerce disclosure link points to `/legal/commerce-disclosure` which is not in the `publicPages` array in AppShell — if that route exists, AppShell would guard it (redirect to login). Verify that route is in publicPages or that it uses the `pathname.startsWith('/legal/')` check that is already present."
+ },
+ {
+  "id": "FA-0514",
+  "area": "fe-shell-common",
+  "layer": "frontend",
+  "feature": "Web Vitals console logging",
+  "user_role": "subscriber",
+  "user_story": "As a developer monitoring performance, I want Core Web Vitals (LCP, FID/INP, CLS, FCP, TTFB) logged to the console so that I can measure real-user performance without a third-party service.",
+  "expected_behaviour": "`WebVitals` is mounted in `Providers` and calls `useReportWebVitals`. Each metric fires a `console.log` with format `[web-vitals] NAME=value rating=rating id=id`. CLS values are formatted to 3 decimal places; all others are rounded to integers. No data is sent to any external service.",
+  "entry_points": "frontend/components/web-vitals.tsx:WebVitals ; frontend/app/providers.tsx:Providers",
+  "dependencies": "",
+  "inventory_notes": "This is a development/monitoring aid, not a user-facing feature. It renders `null` (no DOM output). In production builds the hook is still active and logs to the console."
+ },
+ {
+  "id": "FA-0515",
+  "area": "fe-shell-common",
+  "layer": "frontend",
+  "feature": "Background visual layers (gradient + grid + synapse network)",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want a subtle branded background on every authenticated page so that the app feels cohesive and premium without distracting from content.",
+  "expected_behaviour": "`BackgroundLayers` renders three `pointer-events-none fixed inset-0 -z-10` layers: (1) a gradient from `var(--bg-gradient)`, (2) a subtle crosshatch grid at `var(--grid-opacity)`, (3) a static (non-animated) `SynapseNetwork` canvas at 4% opacity. Using `animated={false}` avoids continuous full-viewport compositing overhead while keeping the visual texture. These layers are rendered on all public (non-full-bleed) and authenticated layouts.",
+  "entry_points": "frontend/components/app-shell.tsx:BackgroundLayers ; frontend/components/landing/synapse-network.tsx:SynapseNetwork",
+  "dependencies": "",
+  "inventory_notes": "BackgroundLayers is rendered in both the public page variant and the authenticated variant of AppShell. Full-bleed pages do not get it."
+ },
+ {
+  "id": "FA-0516",
+  "area": "fe-shell-common",
+  "layer": "frontend",
+  "feature": "Skip-to-main-content accessibility link",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber using a keyboard or screen reader, I want a skip link so that I can bypass the navigation and jump directly to the page content.",
+  "expected_behaviour": "An `<a href='#main-content'>` with class `skip-link` is rendered as the first focusable element in every AppShell layout variant (full-bleed, public, and authenticated). The `#main-content` id is set on the `<main>` element. The skip link is visually hidden by default and should become visible on focus (styling defined in global CSS as `.skip-link` — not visible in the component files).",
+  "entry_points": "frontend/components/app-shell.tsx:AppShell",
+  "dependencies": "",
+  "inventory_notes": "The visual appearance of the skip link depends on `.skip-link` CSS in globals.css, which was not read as part of this audit."
+ }
+]

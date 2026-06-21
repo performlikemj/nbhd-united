@@ -1,0 +1,62 @@
+[
+ {
+  "id": "FA-0676",
+  "area": "integrations",
+  "layer": "backend",
+  "feature": "Reddit integration status check",
+  "user_role": "container runtime",
+  "user_story": "As an OpenClaw container, I want to check if Reddit is connected for the tenant so that the AI assistant knows whether Reddit tools are available.",
+  "expected_behaviour": "GET /api/v1/integrations/runtime/<tenant_id>/reddit/status/ — internal auth. Checks for active Integration row with provider=reddit. Returns {connected: bool, provider_email: str} HTTP 200.",
+  "entry_points": "apps/integrations/runtime_views.py:RedditStatusView ; GET /api/v1/integrations/runtime/{tenant_id}/reddit/status/",
+  "dependencies": "Postgres (Integration model)",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-0677",
+  "area": "integrations",
+  "layer": "backend",
+  "feature": "Reddit integration disconnect — agent-initiated",
+  "user_role": "container runtime",
+  "user_story": "As an OpenClaw container, I want to disconnect the Reddit integration for the tenant so that the user's Reddit access is revoked when they ask.",
+  "expected_behaviour": "POST /api/v1/integrations/runtime/<tenant_id>/reddit/disconnect/ — internal auth. Calls disconnect_integration(tenant, 'reddit') which deletes the Composio connected account (best-effort) and hard-deletes the Integration row. Returns {disconnected: true} HTTP 200. 500 on unexpected error.",
+  "entry_points": "apps/integrations/runtime_views.py:RedditDisconnectView ; apps/integrations/services.py:disconnect_integration ; POST /api/v1/integrations/runtime/{tenant_id}/reddit/disconnect/",
+  "dependencies": "Composio API, Postgres",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-0678",
+  "area": "integrations",
+  "layer": "backend",
+  "feature": "Reddit tool execution via Composio",
+  "user_role": "container runtime",
+  "user_story": "As an OpenClaw container, I want to execute Reddit actions (digest, search, post, comment, etc.) via the Composio tool bridge so that the AI assistant can interact with Reddit on the user's behalf.",
+  "expected_behaviour": "POST /api/v1/integrations/runtime/<tenant_id>/reddit/tool/ — internal auth. Body: {action (required), ...params}. Maps action to Composio tool slug via _REDDIT_ACTION_MAP: digest→REDDIT_GET_R_TOP, search→REDDIT_SEARCH_ACROSS_SUBREDDITS, my_activity→REDDIT_GET_REDDIT_USER_ABOUT, comments→REDDIT_RETRIEVE_POST_COMMENTS, post→REDDIT_CREATE_REDDIT_POST, reply→REDDIT_POST_REDDIT_COMMENT, edit→REDDIT_EDIT_REDDIT_COMMENT_OR_POST, delete_post→REDDIT_DELETE_REDDIT_POST, delete_comment→REDDIT_DELETE_REDDIT_COMMENT, new→REDDIT_GET_NEW, controversial→REDDIT_GET_CONTROVERSIAL. Calls Composio tools.execute. PII-redacts result. Returns result HTTP 200. 400 on unknown action, missing required params, or Composio unsuccessful result. 503 on provider config error. 500 on unexpected error.",
+  "entry_points": "apps/integrations/runtime_views.py:RedditToolView ; apps/integrations/services.py:execute_reddit_tool ; POST /api/v1/integrations/runtime/{tenant_id}/reddit/tool/",
+  "dependencies": "Composio API, Postgres (Integration model), apps/pii",
+  "inventory_notes": "dangerously_skip_version_check=True is passed to Composio tools.execute. 400/404 from Composio triggers a 'reconnect required' ValueError surfaced to agent as 400."
+ },
+ {
+  "id": "FA-0679",
+  "area": "integrations",
+  "layer": "backend",
+  "feature": "GWS credentials file share write/delete (side effect of OAuth connect/disconnect)",
+  "user_role": "system/cron",
+  "user_story": "As the platform, I want to write Google OAuth credentials to the tenant's Azure File Share in gws CLI format so that the OpenClaw container's gws CLI can authenticate to Google Workspace.",
+  "expected_behaviour": "Called automatically by connect_integration when provider_group='google': writes {type: authorized_user, client_id, client_secret, refresh_token} as JSON to 'ws-<tenant_prefix>/gws-credentials.json' on Azure File Share using storage account key retrieved from Azure Management API. On disconnect_integration: deletes the file (best-effort, swallows errors). Uses AZURE_MOCK env var to skip real Azure calls in dev/test.",
+  "entry_points": "apps/integrations/services.py:_write_gws_credentials_to_file_share ; apps/integrations/services.py:_delete_gws_credentials_from_file_share ; apps/integrations/services.py:connect_integration",
+  "dependencies": "Azure File Share, Azure Storage Management API, azure-storage-file-share SDK",
+  "inventory_notes": "avoids overwrite=True kwarg due to azure-storage-file-share 12.24/azure-core 1.39 bug where it leaks through to requests HTTP transport. Uses explicit length= param instead."
+ },
+ {
+  "id": "FA-0680",
+  "area": "integrations",
+  "layer": "backend",
+  "feature": "Integration admin view",
+  "user_role": "admin/operator",
+  "user_story": "As an operator, I want to view and filter integration records in Django admin so that I can diagnose OAuth issues and monitor connection states.",
+  "expected_behaviour": "Django admin at /admin/integrations/integration/ — standard ModelAdmin with list_display (provider, tenant, status, provider_email, connected_at) and list_filter (provider, status). No custom actions. Read/write access to all Integration fields including key_vault_secret_name and composio_connected_account_id.",
+  "entry_points": "apps/integrations/admin.py:IntegrationAdmin",
+  "dependencies": "Postgres (Integration model)",
+  "inventory_notes": "Sensitive fields (key_vault_secret_name) are visible to admin users; no masking."
+ }
+]

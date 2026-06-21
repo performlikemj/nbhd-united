@@ -1,0 +1,98 @@
+[
+ {
+  "id": "FA-0877",
+  "area": "orchestrator-provisioning",
+  "layer": "backend",
+  "feature": "Tenant List and Audit",
+  "user_role": "admin/operator",
+  "user_story": "As an operator, I want to list all tenants with their provisioning state so that I can audit the fleet and identify tenants needing attention.",
+  "expected_behaviour": "`list_tenants` management command: queries all tenants (optionally filtered by `--status`), prints one line per tenant: `id display_name status model_tier container_id messages_this_month`. `tenant_audit` management command: prints all tenants ordered by creation date with `id | status | container_id | created_at | email`, followed by total count and per-status breakdown. Both are read-only diagnostic commands with no side effects.",
+  "entry_points": "apps/orchestrator/management/commands/list_tenants.py:Command ; apps/orchestrator/management/commands/tenant_audit.py:Command",
+  "dependencies": "apps/tenants models",
+  "inventory_notes": "list_tenants includes messages_this_month for at-a-glance usage monitoring. tenant_audit is older and simpler; list_tenants is the preferred operational command with status filtering."
+ },
+ {
+  "id": "FA-0878",
+  "area": "orchestrator-provisioning",
+  "layer": "backend",
+  "feature": "Plugin Runtime Deps EmptyDir Mount Retrofit",
+  "user_role": "admin/operator",
+  "user_story": "As an operator, I want to retrofit the plugin-runtime-deps EmptyDir mount onto existing tenant containers so that OpenClaw's bundled-channel installer avoids EPERM errors on the SMB file share.",
+  "expected_behaviour": "`ensure_plugin_runtime_deps_mount(container_id)` from azure_client: checks if the EmptyDir volume mount already exists on the Container App revision; if not, patches the app to add the mount (creates a new revision in single-revision mode, which wakes the container). Returns True if mount was added, False if already present. Management command `ensure_runtime_deps_mount`: supports `--tenant UUID` or `--all` (all active non-hibernated tenants); `--dry-run` lists targets. Also called from `wake_hibernated_tenant` when not doing an image refresh.",
+  "entry_points": "apps/orchestrator/management/commands/ensure_runtime_deps_mount.py:Command ; apps/orchestrator/azure_client.py:ensure_plugin_runtime_deps_mount ; apps/orchestrator/hibernation.py:wake_hibernated_tenant",
+  "dependencies": "Azure Container Apps, apps/tenants models",
+  "inventory_notes": "New tenants get the mount at provisioning time. Hibernated tenants get it on natural wake. This command targets active awake tenants that predate the fix. In single-revision mode, adding a mount creates a new revision and auto-activates, which wakes the container as a side effect."
+ },
+ {
+  "id": "FA-0879",
+  "area": "orchestrator-provisioning",
+  "layer": "backend",
+  "feature": "Canary Image Deployment",
+  "user_role": "admin/operator",
+  "user_story": "As an operator, I want to deploy a custom image tag to a single tenant for canary testing without updating the fleet's tracking record so that the canary automatically reverts on the next normal rollout.",
+  "expected_behaviour": "Management command `canary_tenant_image --container oc-* --tag canary-<sha>`: calls `update_container_image(container, image)` to deploy `registry/nbhd-openclaw:canary-<sha>` to the specified container. Does NOT update `Tenant.container_image_tag` in the DB, so the canary is transparent to the fleet reconciler. On the next normal `apply_pending_configs` run, the tenant's DB tag (pointing to the prior canonical tag) will trigger a reconcile that reverts the canary to the fleet image.",
+  "entry_points": "apps/orchestrator/management/commands/canary_tenant_image.py:Command",
+  "dependencies": "Azure Container Apps, apps/orchestrator/azure_client (update_container_image)",
+  "inventory_notes": "By design, `container_image_tag` is not updated. This means the canary auto-reverts — there is no explicit undo step. Requires AZURE_ACR_SERVER to be configured."
+ },
+ {
+  "id": "FA-0880",
+  "area": "orchestrator-provisioning",
+  "layer": "backend",
+  "feature": "Disable Tenant Telegram Polling",
+  "user_role": "admin/operator",
+  "user_story": "As an operator, I want to remove TELEGRAM_BOT_TOKEN and OPENCLAW_WEBHOOK_SECRET from tenant containers so that per-tenant polling is disabled in favor of a central poller.",
+  "expected_behaviour": "Management command `disable_tenant_telegram_polling`: accepts `--tenant-id` (repeatable) or `--all-active`. For each target tenant with `status='active'` and non-empty `container_id`: calls `update_container_env_var(container_id, 'TELEGRAM_BOT_TOKEN', '')` and `update_container_env_var(container_id, 'OPENCLAW_WEBHOOK_SECRET', '')`. Each env var patch creates a new revision (single-revision mode). Reports patched/failed counts.",
+  "entry_points": "apps/orchestrator/management/commands/disable_tenant_telegram_polling.py:Command ; apps/orchestrator/azure_client.py:update_container_env_var",
+  "dependencies": "Azure Container Apps, apps/tenants models",
+  "inventory_notes": "Uses raw SQL to fetch tenant IDs for the --all-active path. Each env var update triggers a new revision in single-revision mode. This is a one-shot migration command for the Telegram single-revision architecture change."
+ },
+ {
+  "id": "FA-0881",
+  "area": "orchestrator-provisioning",
+  "layer": "backend",
+  "feature": "Per-Tenant Prompt Extras Management",
+  "user_role": "admin/operator",
+  "user_story": "As an operator, I want to set or clear per-tenant prompt extras on a canary tenant's AGENTS.md so that experimental instructions reach a single tenant without fleet rollout.",
+  "expected_behaviour": "Management command `set_prompt_extras --tenant-id UUID --section agents_md [--file PATH | --stdin | --clear]`: loads `User.preferences['prompt_extras']`, sets or removes the given section's value. Refuses to write empty extras. Saves `user.preferences` on `User` model. Prints next step: run `force_apply_configs` to push the updated workspace file to the file share. Only known sections accepted: `agents_md`. Does NOT push the file automatically.",
+  "entry_points": "apps/orchestrator/management/commands/set_prompt_extras.py:Command",
+  "dependencies": "apps/tenants models (User.preferences)",
+  "inventory_notes": "Requires a follow-up `force_apply_configs` (or `update_all_configs`) run to push the rendered AGENTS.md with the new extras to the Azure File Share. The running container reads the updated file on its next session boot."
+ },
+ {
+  "id": "FA-0882",
+  "area": "orchestrator-provisioning",
+  "layer": "backend",
+  "feature": "Grounding Probe Diagnostic",
+  "user_role": "admin/operator",
+  "user_story": "As an operator, I want to probe whether a specific topic is grounded in a tenant's cron-visible data so that I can diagnose hallucination or missing context issues before they reach the user.",
+  "expected_behaviour": "Management command `grounding_probe --tenant UUID-PREFIX --topic TEXT [--expect SUBSTRING ...]` and `probe_grounding(tenant, topic, expect_terms)` in `grounding_probe.py`: renders the user state envelope (USER.md managed region) and queries `nbhd_journal_search` for reachable documents. Checks: is topic in USER.md envelope, which docs reference the topic (ranked by relevance), which `--expect` terms appear in: a PROJECT-kind doc (canonical), elsewhere (misfiled?), or nowhere (absent). Returns a report with `grounded`, `grounded_in_project`, per-term verdicts, newest source timestamp. Management command prints a VERDICT: GREEN (in project doc), AMBER (reachable but not in project doc), or RED (not grounded). Exits non-zero if not GREEN (or not grounded if no expect terms). Read-only — no writes.",
+  "entry_points": "apps/orchestrator/grounding_probe.py:probe_grounding ; apps/orchestrator/management/commands/grounding_probe.py:Command",
+  "dependencies": "apps/journal (search), apps/orchestrator/workspace_envelope (render managed region), apps/tenants models",
+  "inventory_notes": "Exit code 0 = GREEN or grounded; 1 = AMBER/RED. Doubles as a pass/fail check in operator scripts. No data is written during the probe."
+ },
+ {
+  "id": "FA-0883",
+  "area": "orchestrator-provisioning",
+  "layer": "backend",
+  "feature": "USER.md Content Audit",
+  "user_role": "admin/operator",
+  "user_story": "As an operator, I want to audit the state of USER.md across all active tenants so that I can decide when to deploy a fleet-wide managed region rollout.",
+  "expected_behaviour": "Management command `audit_user_md [--verbose]`: for each active tenant with a container, downloads `workspace/USER.md` from the file share and classifies as: `missing` (file not found), `empty` (blank), `boilerplate` (matches OC default), `managed` (has NBHD sentinels), `agent` (has content but no sentinels). Prints classification per tenant and a summary count table. With `--verbose`, also prints first 200 chars of agent-only content for manual inspection. Errors (file share inaccessible) are counted separately. Read-only.",
+  "entry_points": "apps/orchestrator/management/commands/audit_user_md.py:Command",
+  "dependencies": "Azure File Share (download_workspace_file), apps/tenants models",
+  "inventory_notes": "Agent classification means the tenant's assistant has written custom content to USER.md outside platform sentinels — the first managed push will prepend the managed region and preserve the agent content below. Knowing this in advance helps operators understand what will change."
+ },
+ {
+  "id": "FA-0884",
+  "area": "orchestrator-provisioning",
+  "layer": "backend",
+  "feature": "Fleet USER.md Refresh Task",
+  "user_role": "system/cron",
+  "user_story": "As a system, I want to push updated USER.md to all active tenants every hour so that the current local time line and latest state is always fresh when crons fire.",
+  "expected_behaviour": "`refresh_user_md_fleet_task()`: queries all active tenants (including hibernated) with `container_id`. For each, calls `push_user_md(tenant, force=True, debounce_seconds=0)`. Per-tenant failures are logged and skipped. Returns `{pushed, failed}`. Run hourly by QStash to bound staleness of the `_Current local time: ...` line to ≤1 hour. Hibernated tenants are included because the Azure File Share is always mounted and the next wake-fired turn reads the freshly-pushed USER.md.",
+  "entry_points": "apps/orchestrator/tasks.py:refresh_user_md_fleet_task ; apps/orchestrator/management/commands/refresh_user_md.py:Command",
+  "dependencies": "Azure File Share, apps/orchestrator/workspace_envelope, apps/tenants models",
+  "inventory_notes": "Cost per tenant: one file share read + one write (~150-400ms typical). Signal-driven refreshes cover state changes (goal/task/fuel writes); this hourly sweep bounds the time-line staleness for tenants idle between signals. The management command provides the same push on-demand with optional `--tenant UUID-PREFIX` filter."
+ }
+]

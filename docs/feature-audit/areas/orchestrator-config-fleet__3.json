@@ -1,0 +1,86 @@
+[
+ {
+  "id": "FA-0834",
+  "area": "orchestrator-config-fleet",
+  "layer": "backend",
+  "feature": "Fleet USER.md Refresh (refresh_user_md_fleet_task)",
+  "user_role": "system/cron",
+  "user_story": "As a system, I want to push a fresh USER.md to every active tenant hourly so that the local-time line and state snapshot are never more than 1 hour stale.",
+  "expected_behaviour": "QStash task `refresh_user_md_fleet`. Queries all ACTIVE tenants with `container_id`. For each: calls `push_user_md(tenant, force=True, debounce_seconds=0)`. Per-tenant failures are logged and skipped — one bad file share does not block the fleet. Returns {pushed, failed}. Includes hibernated tenants (file share is always mounted; the next wake-fired turn sees the freshly-pushed USER.md).",
+  "entry_points": "apps/orchestrator/tasks.py:refresh_user_md_fleet_task",
+  "dependencies": "Azure Storage (File Share), Supabase/Postgres, envelope_registry",
+  "inventory_notes": "Cost: one file-share read + one write per tenant (~150-400ms). Complements signal-driven refreshes which fire on state changes (goal saved, fuel logged, etc.)."
+ },
+ {
+  "id": "FA-0835",
+  "area": "orchestrator-config-fleet",
+  "layer": "backend",
+  "feature": "Welcome Cron Reconcile (reconcile_welcomes_task)",
+  "user_role": "system/cron",
+  "user_story": "As a system, I want to daily reconcile welcome crons for Fuel and Finance features so that tenants whose welcome was dropped (agent crash, container restart) are re-queued within 24 hours.",
+  "expected_behaviour": "QStash task `reconcile_welcomes`. For each ACTIVE tenant with container: if `tenant.fuel_enabled` → calls `_schedule_fuel_welcome(tenant)` from `apps.fuel.views`; if `tenant.finance_active` → calls `_schedule_finance_welcome(tenant)` from `apps.finance.views`. Both schedulers are self-healing: replace stale one-shots whose fire date passed, skip confirmed-delivered, surface transport failures. Returns {tenants, fuel: Counter, finance: Counter, statuses} where Counter keys are WelcomeStatus values.",
+  "entry_points": "apps/orchestrator/tasks.py:reconcile_welcomes_task",
+  "dependencies": "OpenClaw gateway (cron.add, cron.list), Supabase/Postgres, QStash",
+  "inventory_notes": "Backstop for the deploy-time backfill + live toggle path. Any tenant whose welcome got orphaned will be re-queued within 24h."
+ },
+ {
+  "id": "FA-0836",
+  "area": "orchestrator-config-fleet",
+  "layer": "backend",
+  "feature": "Broadcast Message to Tenant (broadcast_single_tenant_task)",
+  "user_role": "admin/operator",
+  "user_story": "As an operator, I want to send a one-off agent-driven message to a single tenant's container so that targeted announcements can be delivered via the assistant.",
+  "expected_behaviour": "`broadcast_single_tenant_task(tenant_id, message)` — QStash task. Guards: tenant not found or no container_fqdn → return. No entitlement or not ACTIVE → skip with log. POSTs to `https://{fqdn}/v1/chat/completions` with `{model: 'openclaw', messages: [{role: 'user', content: message}]}`, using gateway JWT and X-User-Timezone header. Timeout 120s. Logs outcome (success, timeout, HTTP error, other error).",
+  "entry_points": "apps/orchestrator/tasks.py:broadcast_single_tenant_task",
+  "dependencies": "OpenClaw container (/v1/chat/completions), Supabase/Postgres",
+  "inventory_notes": "The agent processes the message and delivers to the user via `nbhd_send_to_user`. This is the Django-side broadcast path — not used for cron-driven proactive outbound (those go through the container's internal cron scheduler)."
+ },
+ {
+  "id": "FA-0837",
+  "area": "orchestrator-config-fleet",
+  "layer": "backend",
+  "feature": "Tenant Listing (list_tenants management command)",
+  "user_role": "admin/operator",
+  "user_story": "As an operator, I want to list all tenants with their status, model tier, container info, and monthly message count so that I can get a quick fleet overview.",
+  "expected_behaviour": "Management command `list_tenants [--status <status>]`. Queries all Tenant rows (with optional status filter) joined with User. Prints one line per tenant: UUID, display_name, status, model_tier, container_id, messages_this_month. No pagination or JSON output format.",
+  "entry_points": "apps/orchestrator/management/commands/list_tenants.py:Command",
+  "dependencies": "Supabase/Postgres",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-0838",
+  "area": "orchestrator-config-fleet",
+  "layer": "backend",
+  "feature": "Deferred Gateway Call (apply_or_defer_gateway_call)",
+  "user_role": "system/cron",
+  "user_story": "As a system, I want settings-time gateway calls to be deferred gracefully for hibernated containers so that user-facing settings changes don't fail when the container is asleep.",
+  "expected_behaviour": "`apply_or_defer_gateway_call(tenant, fn, label)` — synchronous helper used by settings endpoints that need to both write DB state and signal the running container. If `tenant.hibernated_at is None` (awake): calls `fn()`. If `fn()` raises `GatewayError` and `is_container_unavailable_error(exc)` is True: writes deferred state via `_write_deferred_state`. If hibernated: skips `fn()` immediately, calls `_write_deferred_state`. Returns the `DEFERRED` sentinel object in both defer cases, or the return value of `fn()` on success. `_write_deferred_state` calls `generate_openclaw_config + upload_config_to_file_share` once per request (guarded by `tenant._deferred_config_written` instance flag).",
+  "entry_points": "apps/orchestrator/hibernation.py:apply_or_defer_gateway_call ; apps/orchestrator/hibernation.py:_write_deferred_state",
+  "dependencies": "Azure Storage (File Share), OpenClaw gateway (caller's fn), Supabase/Postgres",
+  "inventory_notes": "Caller contract: DB mutation must already be committed before calling this. Caller must bump `pending_config_version` so the `apply_pending_configs` scheduler catches drift at next wake. Non-container-unavailable GatewayError propagates (not swallowed) — only genuine 'container is down' errors are deferred."
+ },
+ {
+  "id": "FA-0839",
+  "area": "orchestrator-config-fleet",
+  "layer": "backend",
+  "feature": "Persona Workspace Files Rendering (render_workspace_files)",
+  "user_role": "system/cron",
+  "user_story": "As a system, I want to render persona-specific workspace files (AGENTS.md, SOUL.md, IDENTITY.md, rule templates) at provisioning and config-refresh time so that each tenant's assistant has the correct personality and operational guidelines.",
+  "expected_behaviour": "`render_workspace_files(persona_key, tenant)` from `apps/orchestrator/personas.py` — renders a set of workspace files keyed by env-var name (NBHD_AGENTS_MD, NBHD_SOUL_MD, NBHD_IDENTITY_MD, NBHD_DOC_TOOLS_REFERENCE, etc.) using Django template rendering with tenant context. Called during provisioning and from `update_tenant_config`. Overwrite-always files (AGENTS.md, doc/*) are written every refresh. Seed-once files (SOUL.md, IDENTITY.md) use `upload_workspace_file(..., skip_if_exists=True)` — never overwrite agent-evolved content. Rule files rendered by `render_workspace_rules()` are always overwritten to `workspace/rules/`.",
+  "entry_points": "apps/orchestrator/personas.py:render_workspace_files ; apps/orchestrator/personas.py:render_workspace_rules ; apps/orchestrator/services.py:update_tenant_config",
+  "dependencies": "Azure Storage (File Share), Supabase/Postgres (tenant + user preferences)",
+  "inventory_notes": "Persona key read from `tenant.user.preferences.get('agent_persona', 'neighbor')`. SOUL.md and IDENTITY.md use `skip_if_exists=True` to preserve agent evolution — mirrors the `[ ! -f ]` guards in the container's `entrypoint.sh`."
+ },
+ {
+  "id": "FA-0840",
+  "area": "orchestrator-config-fleet",
+  "layer": "backend",
+  "feature": "Per-Tenant OpenRouter Sub-Key Lifecycle",
+  "user_role": "system/cron",
+  "user_story": "As a system, I want each tenant to have an isolated OpenRouter sub-key with a monthly spending cap so that one high-usage tenant cannot exhaust the shared API budget.",
+  "expected_behaviour": "Created during `provision_tenant` when `OPENROUTER_PER_TENANT_KEYS_ENABLED=True` and `secret_backend=keyvault`. Calls `create_sub_key(label, limit_dollars=TIER_COST_BUDGETS[tier], limit_reset='monthly')` from `apps.billing.openrouter_admin`. Stores key to Key Vault as `openrouter-<tenant_prefix>` secret, saves `openrouter_key_secret_name` and `openrouter_key_hash` to Tenant row. On provisioning failure: logs warning and falls back to shared key (non-fatal). Deleted during `deprovision_tenant`: `delete_sub_key(openrouter_key_hash)` then `_delete_secret_from_kv(openrouter_key_secret_name)`. Deletion failures log and continue — orphaned sub-keys are swept by `sweep_orphan_openrouter_keys` command.",
+  "entry_points": "apps/orchestrator/services.py:provision_tenant ; apps/orchestrator/services.py:deprovision_tenant",
+  "dependencies": "OpenRouter Admin API (create_sub_key, delete_sub_key), Azure Key Vault, Supabase/Postgres",
+  "inventory_notes": "Feature-flagged via `OPENROUTER_PER_TENANT_KEYS_ENABLED`. Limit reset is monthly. The Key Vault role assignment for the sub-key secret is included in `assign_key_vault_role` call alongside the internal-key secret."
+ }
+]

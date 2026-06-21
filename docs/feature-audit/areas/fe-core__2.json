@@ -1,0 +1,38 @@
+[
+ {
+  "id": "FA-0282",
+  "area": "fe-core",
+  "layer": "frontend",
+  "feature": "Stats dashboard — sessions this week, total minutes, streak, last sat",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to see my meditation statistics so that I can track my consistency over time.",
+  "expected_behaviour": "Four stat cards are displayed in a 2-column (mobile) / 4-column (sm+) grid with staggered reveal animation. Cards: 'This week' (count of sessions in last 7 days), 'Total' (total minutes across all sessions), 'Streak' (consecutive days with ≥1 sit anchored at today or yesterday), 'Last sat' (relative date label of most recent session, '—' if none). All computed client-side from the library data using computeCoreStats(). During loading, pulse skeletons replace the cards (aria-hidden). Stats are recomputed reactively when sessions or timezone changes.",
+  "entry_points": "frontend/app/core/page.tsx:CorePage (stats = computeCoreStats(libItems, tz)) ; frontend/components/core/core-stats.tsx:CoreStats ; frontend/lib/core.ts:computeCoreStats",
+  "dependencies": "GET /api/v1/core/sessions/ (source data), GET /api/v1/me/ (timezone via useMeQuery)",
+  "inventory_notes": "Streak logic: starts at today's day-key; if today has no sit, rewinds one day before counting. Streak breaks if any calendar day (in tenant tz) has no sit. Total minutes uses durationMin (derived from duration_ms / 60000, minimum 1, defaults to 10 if no duration_ms)."
+ },
+ {
+  "id": "FA-0283",
+  "area": "fe-core",
+  "layer": "frontend",
+  "feature": "Timezone-aware date labeling",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want dates to display relative to my timezone so that 'Today' reflects my local calendar day, not UTC.",
+  "expected_behaviour": "The tenant's IANA timezone is read from me.timezone (via useMeQuery). Fallback order: me.timezone → Intl.DateTimeFormat().resolvedOptions().timeZone → 'UTC'. All date comparisons (Today/Yesterday/week window/streak) use dayKeyInTz() which renders dates via en-CA locale in the tenant timezone. If tz resolves after the library loads (cache warm-up), the library is re-projected reactively via the useMemo on [sessions, tz]. The relative label 'Today'/'Yesterday' is recomputed on every render.",
+  "entry_points": "frontend/app/core/page.tsx:CorePage (tz, library useMemo) ; frontend/lib/core.ts:dayKeyInTz, toMeditation, computeCoreStats, relativeDateLabel",
+  "dependencies": "GET /api/v1/me/ (me.timezone via useMeQuery)",
+  "inventory_notes": "The comment in page.tsx explicitly documents that the old browser-tz behavior only bites before the cache warms. The streak and week window calculations in computeCoreStats use shiftDayKey() anchored at UTC noon to avoid DST edge cases."
+ },
+ {
+  "id": "FA-0284",
+  "area": "fe-core",
+  "layer": "frontend",
+  "feature": "Breathing orb animation and reduced-motion safety",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want the orb to animate calmly so that the mindfulness surface feels meditative, and I want the animation to respect my motion preferences.",
+  "expected_behaviour": "The BreathingOrb renders three concentric expanding-ring spans (core-breathe-ring class) with staggered animation delays (0s, 2.3s, 4.6s) and a pulsing outer halo (core-breathe-glow). The orb body itself has a core-breathe class. All three CSS animation classes disable their animation under prefers-reduced-motion (per the comment in the component). On hover, the orb body scales to 1.03; on active, scales to 0.98. Focus-visible: ring-2 ring-signal/60 with a ring-offset-4 on dark bg.",
+  "entry_points": "frontend/components/core/breathing-orb.tsx:BreathingOrb",
+  "dependencies": "",
+  "inventory_notes": "The core-breathe, core-breathe-ring, core-breathe-glow CSS classes must be defined in globals.css with @media (prefers-reduced-motion: reduce) overrides. These classes are referenced but not defined in the component file itself."
+ }
+]

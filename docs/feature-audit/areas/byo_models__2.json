@@ -1,0 +1,38 @@
+[
+ {
+  "id": "FA-0079",
+  "area": "byo_models",
+  "layer": "backend",
+  "feature": "Effective primary model computation (BYO-aware)",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want the settings API to show me the actual model my assistant is using right now (including BYO selection and free-offer overrides) so I can see the real active model.",
+  "expected_behaviour": "`effective_primary_model(tenant)` calls `resolve_tenant_models(tenant)` and returns the primary from its result. `resolve_tenant_models` applies a four-step resolution: (1) tier default, (2) limited-time free offer override, (3) BYO extras appended to the allowlist, (4) tenant.preferred_model wins if it's in the allowlist. When BYO primary is selected, fallbacks are emptied. `TenantSerializer.get_effective_model` calls this; any exception falls back to `tenant.preferred_model or ''` so the settings payload is never broken by a config error.",
+  "entry_points": "apps/orchestrator/config_generator.py:effective_primary_model ; apps/orchestrator/config_generator.py:resolve_tenant_models ; apps/tenants/serializers.py:TenantSerializer.get_effective_model",
+  "dependencies": "Supabase/Postgres",
+  "inventory_notes": "BYO extras require the credential to be non-ERROR status. A credential in ERROR state is excluded and the model is not offered in the allowlist, so the preferred_model may not match any allowed entry — the resolution falls through to the tier default."
+ },
+ {
+  "id": "FA-0080",
+  "area": "byo_models",
+  "layer": "backend",
+  "feature": "BYO secret name builder and KV naming contract",
+  "user_role": "system/cron",
+  "user_story": "As the platform, I want a deterministic and Azure-compliant Key Vault secret name for each BYO credential so the container can reference it via a stable KV path.",
+  "expected_behaviour": "`secret_name_for(tenant, provider, mode)` returns `<tenant.key_vault_prefix>-byo-<provider>-<mode_sanitized>` where sanitization replaces `_` with `-` (e.g. `cli_subscription` → `cli-subscription`). Raises `ValueError` if `tenant.key_vault_prefix` is empty. The resulting name must match `^[0-9a-zA-Z-]+$` (Azure Key Vault constraint). This name is stored in `BYOCredential.key_vault_secret_name` and used as both the KV secret path and the Container App secret reference name.",
+  "entry_points": "apps/byo_models/services.py:secret_name_for",
+  "dependencies": "Azure Key Vault",
+  "inventory_notes": "Underscore-to-hyphen sanitization is one-way and stable; the DB enum value (`cli_subscription`) is unchanged. Without this, Azure returns 400 BadParameter on set_secret."
+ },
+ {
+  "id": "FA-0081",
+  "area": "byo_models",
+  "layer": "backend",
+  "feature": "BYO-aware allowed models set for tier gating",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want the model picker and per-task model validation to include my connected BYO models so I can select them from any surface that offers model choice.",
+  "expected_behaviour": "`_get_allowed_models(tenant)` in `apps/tenants/views.py` merges the active free offer (if any), the tier's `TIER_MODEL_CONFIGS` dict, and BYO extras from `_byo_model_extras(tenant)`. This combined dict is used by both `PreferredModelView.patch` (subscriber API) and `RuntimePreferredModelView.post` (container API) to gate model selection. A model not in the union dict gets a 400 rejection. This ensures BYO models are selectable only when the credential is non-ERROR.",
+  "entry_points": "apps/tenants/views.py:_get_allowed_models",
+  "dependencies": "Supabase/Postgres",
+  "inventory_notes": "BYO models do not belong to any billing tier — they are additive on top of the tier allowlist regardless of the subscriber's plan level."
+ }
+]

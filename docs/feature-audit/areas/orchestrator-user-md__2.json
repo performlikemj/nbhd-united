@@ -1,0 +1,74 @@
+[
+ {
+  "id": "FA-0903",
+  "area": "orchestrator-user-md",
+  "layer": "backend",
+  "feature": "USER.md Provision-Time Seed",
+  "user_role": "system/cron",
+  "user_story": "As a system, I want USER.md seeded with the platform-managed envelope immediately after a tenant is provisioned so that the OpenClaw container has current state on its very first boot.",
+  "expected_behaviour": "In provision_tenant(), after saving container_id/container_fqdn and status=ACTIVE, calls push_user_md(tenant, force=True) as a post-provision non-critical step. force=True bypasses debounce. Exceptions are caught and logged with a warning but do NOT roll back the tenant to PENDING. This runs synchronously (not in a background thread) because the container is not yet serving requests.",
+  "entry_points": "apps/orchestrator/services.py:provision_tenant (post-provision step 4d) ; apps/orchestrator/workspace_envelope.py:push_user_md",
+  "dependencies": "Azure File Share, Supabase/Postgres",
+  "inventory_notes": "AGENTS.md/SOUL.md/IDENTITY.md are also written during provisioning via render_workspace_files + create_container_app. SOUL.md and IDENTITY.md use skip_if_exists=True so future config refreshes do not overwrite agent-evolved content."
+ },
+ {
+  "id": "FA-0904",
+  "area": "orchestrator-user-md",
+  "layer": "backend",
+  "feature": "Day-0 Welcome Email on Provision",
+  "user_role": "system/cron",
+  "user_story": "As a system, I want a welcome email sent to new subscribers immediately after provisioning so that web-signup users (who have no Telegram chat_id) receive their first contact.",
+  "expected_behaviour": "send_welcome_email(tenant) is called in provision_tenant() as a non-critical post-provision step (exceptions swallowed). Idempotent via tenant.welcome_email_sent_at: if set, returns False immediately. Requires user.email; returns False if missing. Checks LineQuotaState.get().is_exhausted to determine whether to mention LINE in the CTA (failing closed — skips LINE mention if quota check fails). Renders email/welcome_subject.txt + email/welcome_body.txt templates. Sends via Django send_mail. On success, stamps tenant.welcome_email_sent_at = now().",
+  "entry_points": "apps/tenants/emails.py:send_welcome_email ; apps/orchestrator/services.py:provision_tenant (step 4c)",
+  "dependencies": "Mailgun (Django email backend), Supabase/Postgres (LineQuotaState, Tenant.welcome_email_sent_at)",
+  "inventory_notes": "Telegram-connected users also receive an in-chat welcome via send_telegram_message(chat_id, WELCOME_MESSAGE) in step 4b. Email is idempotent on welcome_email_sent_at; Telegram is best-effort (exception swallowed)."
+ },
+ {
+  "id": "FA-0905",
+  "area": "orchestrator-user-md",
+  "layer": "backend",
+  "feature": "Zombie Heartbeat Cron Cleanup (Management Command)",
+  "user_role": "admin/operator",
+  "user_story": "As an operator, I want to remove Heartbeat Check-in cron jobs from tenants where heartbeat is disabled so that the agent is not woken hourly for a feature that is turned off.",
+  "expected_behaviour": "python manage.py remove_zombie_heartbeats [--dry-run]. Queries ACTIVE tenants with container_id and heartbeat_enabled=False. For each: calls cron.list on the gateway; if 'Heartbeat Check-in' job is found, calls cron.remove with its id/jobId. Skips tenants with no container_fqdn. --dry-run reports what would be removed without writing. Returns removed/skipped/errors counts. Sleeps 1s between tenants to avoid Azure gateway rate limits.",
+  "entry_points": "apps/orchestrator/management/commands/remove_zombie_heartbeats.py:Command.handle",
+  "dependencies": "OpenClaw container gateway (cron.list, cron.remove per tenant)",
+  "inventory_notes": "Also available as remove_zombie_heartbeats_task() in tasks.py (triggerable via QStash TASK_REGISTRY). Not currently registered as a recurring QStash cron."
+ },
+ {
+  "id": "FA-0906",
+  "area": "orchestrator-user-md",
+  "layer": "backend",
+  "feature": "AGENTS.md Config Refresh Push (update_tenant_config)",
+  "user_role": "system/cron",
+  "user_story": "As a system, I want AGENTS.md and all workspace docs re-pushed to the file share every time a tenant's config is refreshed so that template, persona, and prompt-extras changes land atomically with the config version bump.",
+  "expected_behaviour": "update_tenant_config(tenant_id) re-renders workspace files and uploads them after writing openclaw.json. Overwrites: AGENTS.md, all workspace/docs/ files (tools-reference.md, channel-formatting.md, cron-management.md, error-handling.md, error-handling.md, privacy-redaction.md, platform-guide.md). Seeds once (skip_if_exists=True): SOUL.md, IDENTITY.md. Uploads all .md files from templates/openclaw/rules/ to workspace/rules/. Then calls push_user_md(tenant, force=True). Channel-formatting doc chosen based on user.preferred_channel (telegram vs line). Privacy-redaction doc only added for tiers with PERSON entity redaction enabled. Workspace file failures are logged but do not abort the config write.",
+  "entry_points": "apps/orchestrator/services.py:update_tenant_config",
+  "dependencies": "Azure File Share, Azure Key Vault (AGENTS.md/SOUL.md templates), Supabase/Postgres",
+  "inventory_notes": "SOUL.md and IDENTITY.md use skip_if_exists=True — they belong to the agent after first provision. Overwriting would silently erase agent-evolved persona files."
+ },
+ {
+  "id": "FA-0907",
+  "area": "orchestrator-user-md",
+  "layer": "backend",
+  "feature": "Templates.md (Daily Note Template Reference) in Workspace",
+  "user_role": "system/cron",
+  "user_story": "As a system, I want a TEMPLATES.md workspace file that describes the tenant's configured daily note sections so that the agent knows exactly which slugs to use for nbhd_daily_note_set_section calls.",
+  "expected_behaviour": "render_templates_md(tenant) calls journal.services.get_default_template(tenant). If no template, returns '# Daily Note Template\\n\\nNo template configured yet.' Otherwise renders section list with title, slug, source, and optional seed content. Included in render_workspace_files() result as NBHD_SKILL_TEMPLATES_MD (only when tenant is provided). Uploaded to the container during provision and config refreshes.",
+  "entry_points": "apps/orchestrator/personas.py:render_templates_md ; apps/orchestrator/personas.py:render_workspace_files",
+  "dependencies": "Supabase/Postgres (NoteTemplate model via apps/journal/services.py:get_default_template)",
+  "inventory_notes": "NBHD_SKILL_TEMPLATES_MD is only populated when tenant is not None — the function also serves persona-only contexts (tests, admin tools) where no tenant is available."
+ },
+ {
+  "id": "FA-0908",
+  "area": "orchestrator-user-md",
+  "layer": "backend",
+  "feature": "Agenda Envelope Section in USER.md",
+  "user_role": "system/cron",
+  "user_story": "As a system, I want a cross-pillar agenda section in USER.md that shows open-thread counts and untouched feature introductions so that any proactive cron can naturally weave in a feature intro when relevant.",
+  "expected_behaviour": "Registered via @register_section(key='agenda', order=5) in apps/orchestrator/agenda_envelope.py. Enabled for all tenants (lambda t: True). Renders: open task count, open goal count, planned workout count, active payoff plans, and 'untouched introductions' (features where fuel_enabled or finance_active but welcomes_sent[feature] is null). Includes agent guidance: 'read first, weave selectively, never enumerate'. Contributes to both USER.md and context_digest. Triggered by post_save/post_delete on Task, Goal, Workout, PayoffPlan, AgendaEngagement models.",
+  "entry_points": "apps/orchestrator/agenda_envelope.py:render (registered via @register_section)",
+  "dependencies": "Supabase/Postgres (Task, Goal, Workout, PayoffPlan, AgendaEngagement, Tenant.welcomes_sent, Tenant.fuel_enabled, Tenant.finance_active)",
+  "inventory_notes": "Phase A only — engagement-aware priority (last_surfaced_at) is deferred to Phase B. 'Untouched intro' detection uses welcomes_sent[feature] is null, not a live cron check."
+ }
+]

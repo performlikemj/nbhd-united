@@ -1,0 +1,62 @@
+[
+ {
+  "id": "FA-0219",
+  "area": "fe-billing-usage",
+  "layer": "frontend",
+  "feature": "Usage history table with show more/less",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to browse individual usage records so that I can audit what API calls my assistant has made and their costs.",
+  "expected_behaviour": "A 'Usage History' SectionCard fetches GET /api/v1/dashboard/usage/ via useUsageHistoryQuery (staleTime 60s). While loading it renders SectionCardSkeleton lines=5. Once resolved, a table shows Date, Event Type, Model, Tokens (input+output), and Cost (4dp) per record. Initially only the first 5 records (USAGE_HISTORY_PREVIEW) are shown. When total records exceed 5, a 'Show all N records' button appears; clicking it sets showAllUsage=true revealing all rows. A second click toggles back to 'Show less'. When results is empty the text 'No usage records yet.' renders.",
+  "entry_points": "frontend/app/settings/usage/page.tsx:SettingsUsagePage ; frontend/lib/queries.ts:useUsageHistoryQuery ; frontend/lib/api.ts:fetchUsageHistory ; GET /api/v1/dashboard/usage/",
+  "dependencies": "",
+  "inventory_notes": "Dates are formatted with new Date(record.created_at).toLocaleDateString() — locale is the browser's default, no timezone normalization."
+ },
+ {
+  "id": "FA-0220",
+  "area": "fe-billing-usage",
+  "layer": "frontend",
+  "feature": "Cost transparency breakdown",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to see exactly how my $12/mo is spent across AI model costs, infrastructure, and surplus so that I can trust where my money goes.",
+  "expected_behaviour": "A 'Where Your Money Goes' SectionCard fetches GET /api/v1/billing/usage/transparency/ (staleTime 5min). Three StatCards show AI Model Usage (accent), Platform Infrastructure, and Community Impact (signal tone if donation enabled). A stacked horizontal bar visualises the split: accent (AI%), slate (platform%), emerald (donation% if >0). Below the bar, three colour-coded legend tiles echo the three buckets. An explanation string from transparency.explanation renders as prose. Infrastructure is labelled 'actual' (green badge) or 'estimate' (amber badge) based on infra_breakdown.source. A collapsible <details> 'Model pricing' table shows each model's input/output rate per 1M tokens. When transparency is null/undefined a 'Transparency data unavailable.' fallback renders.",
+  "entry_points": "frontend/app/settings/usage/page.tsx:SettingsUsagePage ; frontend/lib/queries.ts:useTransparencyQuery ; frontend/lib/api.ts:fetchTransparency ; GET /api/v1/billing/usage/transparency/",
+  "dependencies": "",
+  "inventory_notes": "Infrastructure breakdown drill-down shows container, database_share, and storage_share separately. splitTotal is clamped to minimum 0.01 to prevent division-by-zero in percentage calculations."
+ },
+ {
+  "id": "FA-0221",
+  "area": "fe-billing-usage",
+  "layer": "frontend",
+  "feature": "Donate surplus toggle",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to opt in to donating my monthly surplus to a food charity so that unused money from my subscription goes to a good cause.",
+  "expected_behaviour": "An emerald-tinted article below the transparency breakdown has a toggle switch (role=switch, aria-checked). Current state comes from transparency.donation_enabled. Clicking the toggle calls PATCH /api/v1/billing/donation-preference/ with {donation_enabled: !current} via useDonationPreferenceMutation. The mutation applies an optimistic update to the ['usage-transparency'] cache, reverts on error, and invalidates on settle. While pending the toggle renders at 50% opacity. When donation is enabled a percentage selector appears with options [25, 50, 75, 100]; clicking one calls the same mutation with {donation_percentage: pct}. When surplus > 0 and mealsEstimate (floor(donationAmount / 0.25)) > 0, a green message shows '~N meals for children' with a Feeding America attribution link.",
+  "entry_points": "frontend/app/settings/usage/page.tsx:SettingsUsagePage ; frontend/lib/queries.ts:useDonationPreferenceMutation ; frontend/lib/api.ts:updateDonationPreference ; PATCH /api/v1/billing/donation-preference/",
+  "dependencies": "GET /api/v1/billing/usage/transparency/ (donation_enabled, donation_percentage, surplus, donation_amount)",
+  "inventory_notes": "Optimistic update merges only the changed field; the rest of the TransparencyData shape is preserved. No success toast is shown — the toggle state itself is the feedback."
+ },
+ {
+  "id": "FA-0222",
+  "area": "fe-billing-usage",
+  "layer": "frontend",
+  "feature": "Promo code bounce / redemption relay",
+  "user_role": "anonymous user",
+  "user_story": "As a prospective or returning user clicking a campaign email link, I want to be redirected to the backend so that my promo code is verified and applied without manual entry.",
+  "expected_behaviour": "GET /promo/redeem?code=&token= renders a loading screen ('Redeeming your offer…'). On mount useEffect reads code and token from useSearchParams. If either is missing it immediately does window.location.replace('/promo/redeemed?status=invalid'). Otherwise it constructs GET ${API_BASE}/api/v1/tenants/promos/redeem/?code=&token= and calls window.location.replace() to hand off to the backend. The backend verifies the HMAC and 302s to /promo/redeemed?status=<outcome>. The page is wrapped in a Suspense boundary; the fallback shows 'Loading…'",
+  "entry_points": "frontend/app/promo/redeem/page.tsx:PromoRedeemPage ; /promo/redeem?code=&token= ; GET /api/v1/tenants/promos/redeem/",
+  "dependencies": "Backend promo redemption endpoint with HMAC verification",
+  "inventory_notes": "API_BASE falls back to 'http://localhost:8000' if NEXT_PUBLIC_API_BASE_URL is not set. This is a hard full-page navigate (window.location.replace) not a Next.js router call, so the SPA state is discarded."
+ },
+ {
+  "id": "FA-0223",
+  "area": "fe-billing-usage",
+  "layer": "frontend",
+  "feature": "Promo redemption outcome screen",
+  "user_role": "anonymous user",
+  "user_story": "As a user who clicked a promo link, I want to see a clear confirmation or error message so that I know whether my trial extension was applied.",
+  "expected_behaviour": "GET /promo/redeemed?status=<status> reads the status param via useSearchParams. Five status values are handled: 'success' (purple glyph, 'You're back on, for 14 days.' → CTA to /dashboard), 'already' (teal glyph, 'Already claimed.' → /dashboard), 'expired' (grey glyph, 'This offer has closed.' → /login), 'invalid' (rose glyph, 'We couldn't read that link.' → /login), 'active_subscription' (teal glyph, 'You're already covered.' → /dashboard). Unrecognised statuses fall back to the 'invalid' variant. Each variant renders a glyph icon, italic serif headline, body copy, and a min-h-[44px] CTA button. Wrapped in Suspense with 'Loading…' fallback.",
+  "entry_points": "frontend/app/promo/redeemed/page.tsx:PromoRedeemedPage ; /promo/redeemed?status=",
+  "dependencies": "Backend 302 redirect from /api/v1/tenants/promos/redeem/",
+  "inventory_notes": "This page is accessible without authentication (onboarding shell). All five status variant CTA hrefs are hardcoded strings, not dynamic."
+ }
+]

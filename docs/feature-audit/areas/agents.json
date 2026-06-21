@@ -1,0 +1,14 @@
+[
+ {
+  "id": "FA-0012",
+  "area": "agents",
+  "layer": "backend",
+  "feature": "AgentSession / MemoryItem / Message schema (dormant scaffold)",
+  "user_role": "system/cron",
+  "user_story": "As a system developer, I want per-tenant agent session and memory storage so that future agentic features can track conversation history and persistent key-value memories per tenant.",
+  "expected_behaviour": "The agents app exists only as two migration files (0001_initial + 0002_initial) that define three database tables: agent_sessions (UUID PK, title, is_active, message_count, timestamps, FK→tenants.tenant), memory_items (UUID PK, key, value, category in [general/preference/fact/instruction/contact], timestamps, FK→tenants.tenant; unique_together on (tenant, key)), and messages (UUID PK, role in [user/assistant/system], content, metadata JSON, tokens_used, model_used, cost_estimate, timestamps, FK→agents.AgentSession). There is no models.py, views.py, admin.py, urls.py, apps.py, or any other Python module. The app is not listed in INSTALLED_APPS. No other app in the codebase imports from apps.agents. The migrations would be applied only if the app were added to INSTALLED_APPS and migrate was run; currently the tables may or may not exist in the database but no live code reads or writes them.",
+  "entry_points": "apps/agents/migrations/0001_initial.py:Migration ; apps/agents/migrations/0002_initial.py:Migration",
+  "dependencies": "apps.tenants (Tenant FK)",
+  "inventory_notes": "The app was scaffolded on 2026-02-08 and never wired up. It is absent from INSTALLED_APPS in config/settings/base.py. All three models are purely speculative schema — no views, serializers, signals, admin registrations, or URL routes exist. The memory_items table's unique_together (tenant, key) suggests it was intended as a per-tenant key-value store for the AI assistant. Any activation would require adding 'apps.agents' to INSTALLED_APPS, creating models.py to match the migration schema, and wiring URLs/views."
+ }
+]

@@ -1,0 +1,86 @@
+[
+ {
+  "id": "FA-0791",
+  "area": "lessons",
+  "layer": "backend",
+  "feature": "Lesson dedup QStash task",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to run lesson deduplication on a schedule so that the constellation stays clean without manual operator intervention",
+  "expected_behaviour": "dedup_lessons_task() calls the dedup_lessons management command via call_command() and returns {ok: True, output_bytes, output_lines}. Lesson text content is not echoed to logs or the return payload (security: avoids surfacing user content in QStash dashboards). Callable as a QStash endpoint.",
+  "entry_points": "apps/lessons/tasks.py:dedup_lessons_task",
+  "dependencies": "QStash, Supabase/Postgres, numpy",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-0792",
+  "area": "lessons",
+  "layer": "backend",
+  "feature": "Lesson rewrite to actionable — management command",
+  "user_role": "admin/operator",
+  "user_story": "As an operator, I want to rewrite observation-style lessons into actionable advice so that the constellation has forward-looking guidance rather than backward-looking observations",
+  "expected_behaviour": "python manage.py rewrite_lessons_actionable [--dry-run] [--tenant UUID] — Queries all approved lessons (or per-tenant). For each: calls OpenRouter (claude-sonnet-4.6, temp=0.2) with the rewrite prompt. If rewritten text differs: saves updated lesson.text, calls process_approved_lesson (regenerates embedding, creates new connections). Re-clusters all affected tenants. Dry-run prints before/after without saving. Skips lessons where LLM returns unchanged text.",
+  "entry_points": "apps/lessons/management/commands/rewrite_lessons_actionable.py:Command ; apps/lessons/services.py:process_approved_lesson",
+  "dependencies": "OpenRouter API (claude-sonnet-4.6), OpenAI Embeddings API, Supabase/Postgres",
+  "inventory_notes": "One-time data migration tool. Regenerating embeddings after rewrite rebuilds connections from scratch."
+ },
+ {
+  "id": "FA-0793",
+  "area": "lessons",
+  "layer": "backend",
+  "feature": "Sample lessons seed — management command",
+  "user_role": "admin/operator",
+  "user_story": "As an operator, I want to seed sample lessons with pre-built clusters and connections so that I can test the constellation UI without real user data",
+  "expected_behaviour": "python manage.py seed_sample_lessons --tenant UUID [--clear] — Creates 25 lessons across 6 clusters (Creative Discipline, Deep Relationships, Body & Energy, Leadership & Teams, Money & Time, Self-Knowledge) with hardcoded positions and tags. Creates 28 LessonConnection edges (within-cluster and cross-cluster bridges). All created as status='approved'. No embeddings generated (no OpenAI call). --clear deletes existing lessons first.",
+  "entry_points": "apps/lessons/management/commands/seed_sample_lessons.py:Command",
+  "dependencies": "Supabase/Postgres",
+  "inventory_notes": "No embedding vectors — lessons won't appear in semantic search or pgvector clustering. Positions are random within [-0.8, 0.8] with seed 42."
+ },
+ {
+  "id": "FA-0794",
+  "area": "lessons",
+  "layer": "backend",
+  "feature": "Admin — lesson/connection/tutoring/journal management",
+  "user_role": "admin/operator",
+  "user_story": "As an operator, I want to browse and manage lessons, connections, tutoring sessions, and star journal entries in the Django admin so that I can diagnose and fix data issues",
+  "expected_behaviour": "Django admin registers LessonAdmin (list_display: id, tenant, status, source_type, cluster_id, cluster_label, shared, created_at; filters: tenant, status, source_type, shared; search: text, context, source_ref, tags), LessonConnectionAdmin (list_display: from_lesson, to_lesson, connection_type, similarity; filter: connection_type), TutoringSessionAdmin (list_display: star, mastery_achieved, new_star_stage, skipped; filter: mastery_achieved/stage/skipped; id+created_at readonly), StarJournalEntryAdmin (list_display: tenant, star, entry_type; filter: entry_type, tenant; id+created_at readonly).",
+  "entry_points": "apps/lessons/admin.py:LessonAdmin ; apps/lessons/admin.py:LessonConnectionAdmin ; apps/lessons/admin.py:TutoringSessionAdmin ; apps/lessons/admin.py:StarJournalEntryAdmin",
+  "dependencies": "Supabase/Postgres",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-0795",
+  "area": "lessons",
+  "layer": "backend",
+  "feature": "Star growth engine",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to monotonically promote a star's stage as the subscriber engages with it so that the constellation visually reflects depth of engagement",
+  "expected_behaviour": "apply_star_growth(star) computes stage from persisted counts: score = tutoring_sessions_count*3 + journal_entries.count()*1.5 + connections_out.count(). Stage ladder: proto (score=0, no engagement), ignited (>=1 of any), radiant (sessions>=3 or notes>=3 or connections>=5 or score>=5), supernova (sessions>=8 or notes>=8 or score>=14). Only promotes (STAGE_RANK check). Saves star_stage field if promoted. Called by: end_tutoring, star_journal_create, star connect action.",
+  "entry_points": "apps/lessons/growth.py:apply_star_growth ; apps/lessons/growth.py:compute_star_stage",
+  "dependencies": "Supabase/Postgres",
+  "inventory_notes": "DB queries on journal_entries and connections_out are issued inside compute_star_stage — may be N+1 if called in a loop. Monotonic: a star can never regress."
+ },
+ {
+  "id": "FA-0796",
+  "area": "lessons",
+  "layer": "backend",
+  "feature": "Agglomerative clustering + label generation + position computation",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to cluster, label, and position lessons in 2D so that the constellation game can render meaningful spatial groupings",
+  "expected_behaviour": "refresh_constellation(tenant) orchestrates three steps: (1) cluster_lessons: requires >=5 embedding-bearing approved lessons; computes O(n^2) cosine similarity, runs average-linkage agglomerative clustering (threshold=0.84, max_cluster=8), ejects outliers (coherence_min=0.72), bulk-updates cluster_id. (2) generate_cluster_labels: TF-IDF over tags + text tokens, domain tags weighted 2x over behavioral tags, ambiguity fallback. (3) compute_positions: PCA SVD projection to 2D, cluster centroids on orbit circle (radius=0.62), per-cluster territory scaling, noise lessons near center; clips to [-1.0, 1.0]. All updates in atomic transactions. Returns {total, clustered, clusters, noise, clusters_labeled, positions_computed}.",
+  "entry_points": "apps/lessons/clustering.py:refresh_constellation ; apps/lessons/clustering.py:cluster_lessons ; apps/lessons/clustering.py:generate_cluster_labels ; apps/lessons/clustering.py:compute_positions",
+  "dependencies": "Supabase/Postgres, numpy",
+  "inventory_notes": "Called after every approval, Telegram callback approval, runtime lesson creation, dedup run, and backfill. O(n^2) in Python — performance concern at large lesson counts."
+ },
+ {
+  "id": "FA-0797",
+  "area": "lessons",
+  "layer": "backend",
+  "feature": "Embedding generation and similarity-based connection creation",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to generate an embedding for a newly approved lesson and link it to similar lessons so that semantic search and the constellation graph work correctly",
+  "expected_behaviour": "process_approved_lesson(lesson): calls generate_embedding(lesson.text) via POST https://api.openai.com/v1/embeddings with model text-embedding-3-small (1536 dimensions, timeout=10s). Saves embedding. Then create_connections: find_similar_lessons uses pgvector CosineDistance against same-tenant approved lessons (threshold=0.75, limit=5, stops on first result below threshold). Creates bidirectional LessonConnection via get_or_create (connection_type='similar'). Raises ValueError on missing OPENAI_API_KEY or empty API response.",
+  "entry_points": "apps/lessons/services.py:process_approved_lesson ; apps/lessons/services.py:generate_embedding ; apps/lessons/services.py:create_connections ; apps/lessons/services.py:find_similar_lessons",
+  "dependencies": "OpenAI Embeddings API (text-embedding-3-small), Supabase/Postgres, pgvector",
+  "inventory_notes": "Threshold is 0.75 cosine similarity for auto-connections (vs 0.65 for dedup). API call uses requests with 10s timeout — synchronous, called inline in the approval flow."
+ }
+]
