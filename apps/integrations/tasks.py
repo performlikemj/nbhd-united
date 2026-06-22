@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from .models import Integration
 from .services import (
+    COMPOSIO_MANAGED_PROVIDERS,
     get_provider_client_credentials,
     load_tokens_from_key_vault,
     refresh_integration_tokens,
@@ -32,6 +33,7 @@ def refresh_expiring_integrations_task() -> dict[str, int]:
         .filter(
             status=Integration.Status.ACTIVE,
         )
+        .exclude(provider__in=COMPOSIO_MANAGED_PROVIDERS)
         .filter(Q(token_expires_at__isnull=True) | Q(token_expires_at__lte=threshold))
     )
 

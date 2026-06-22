@@ -279,6 +279,8 @@ class LessonViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="galaxy/summary")
     def galaxy_summary(self, request):
         """Quick HUD summary: star counts by stage, cluster count, recent activity."""
+        if not hasattr(request.user, "tenant"):
+            return Response({"error": "tenant_required"}, status=status.HTTP_400_BAD_REQUEST)
         tenant = self.request.user.tenant
         approved = Lesson.objects.filter(tenant=tenant, status="approved")
 

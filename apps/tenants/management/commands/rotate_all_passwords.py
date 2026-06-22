@@ -12,11 +12,18 @@ Idempotent — re-running the command skips users whose
 ``--since`` cutoff. So a partial-Mailgun-outage retry only re-emails
 users that didn't get the first wave.
 
+If a user's password was rotated but the reset email failed, that user is
+locked out (unusable password, no reset link) and a same-``--since`` retry
+silently skips them. Use ``--resend-only`` to re-send the reset email to
+every already-rotated user (unusable password) without re-rotating — this
+recovers email-failed users regardless of ``--since``.
+
 Usage::
 
     python manage.py rotate_all_passwords --reason="june-2026-privacy-hygiene"
     python manage.py rotate_all_passwords --reason="..." --dry-run
     python manage.py rotate_all_passwords --reason="..." --since 2026-06-01T00:00:00Z
+    python manage.py rotate_all_passwords --reason="..." --resend-only
 """
 
 from __future__ import annotations
@@ -64,8 +71,29 @@ class Command(BaseCommand):
                 "first run missed."
             ),
         )
+        parser.add_argument(
+            "--resend-only",
+            action="store_true",
+            help=(
+                "Do not rotate any passwords. Only re-send the reset email to "
+                "users who are already rotated (unusable password) — recovers "
+                "users whose reset email failed on a prior run without "
+                "re-bumping password_last_changed_at. Ignores --since."
+            ),
+        )
 
-    def handle(self, *args, reason: str, dry_run: bool, since: str | None, **opts):
+    def handle(
+        self,
+        *args,
+        reason: str,
+        dry_run: bool,
+        since: str | None,
+        resend_only: bool = False,
+        **opts,
+    ):
+        if resend_only:
+            return self._handle_resend_only(reason=reason, dry_run=dry_run)
+
         owner_email = (getattr(settings, "PLATFORM_OWNER_EMAIL", "") or "").strip().lower()
         if not owner_email:
             self.stdout.write(
@@ -122,14 +150,76 @@ class Command(BaseCommand):
                 )
 
         self.stdout.write(self.style.SUCCESS("=" * 60))
-        self.stdout.write(self.style.SUCCESS(f"Rotated + emailed: {rotated}"))
+        self.stdout.write(self.style.SUCCESS(f"Rotated + emailed (got reset link): {rotated}"))
         self.stdout.write(f"Skipped (already rotated since --since): {skipped_already}")
         self.stdout.write(f"Skipped (no email address):              {skipped_no_email}")
+        # Total passwords actually rotated (locked out) = those emailed plus those
+        # whose email failed. Surface it as one number so a partial-Mailgun-outage
+        # run doesn't undercount the real blast radius.
+        self.stdout.write(
+            self.style.WARNING(f"Total passwords rotated / locked out: {rotated + email_failed}")
+        )
         if email_failed:
             self.stdout.write(
                 self.style.ERROR(
                     f"⚠️  Email failed (rotated but no reset link sent): {email_failed} — "
-                    f"check logs and manually resend (--resend-only flag is a future enhancement)"
+                    f"these users are locked out; re-run with --resend-only to re-send their reset link"
+                )
+            )
+
+    def _handle_resend_only(self, *, reason: str, dry_run: bool):
+        """Re-send the reset email to already-rotated users without touching
+        their password. Recovers users whose email failed on a prior run.
+
+        Targets users with an email and an unusable password (the state
+        ``set_unusable_password()`` leaves them in). Does NOT re-bump
+        ``password_last_changed_at``, so outstanding JWTs stay invalidated
+        and the existing reset token remains valid.
+        """
+        owner_email = (getattr(settings, "PLATFORM_OWNER_EMAIL", "") or "").strip().lower()
+        self.stdout.write(f"Resending reset links (reason={reason}, dry_run={dry_run})")
+
+        qs = User.objects.all()
+        if owner_email:
+            qs = qs.exclude(email__iexact=owner_email)
+
+        resent = 0
+        skipped_no_email = 0
+        skipped_usable = 0
+        email_failed = 0
+
+        for user in qs.iterator():
+            if not user.email:
+                skipped_no_email += 1
+                continue
+            if user.has_usable_password():
+                # Never rotated (or already reset) — nothing to resend.
+                skipped_usable += 1
+                continue
+
+            if dry_run:
+                self.stdout.write(f"  [dry-run] would resend reset link to {user.email}")
+                continue
+
+            try:
+                self._send_reset_email(user, reason=reason)
+                resent += 1
+            except Exception:
+                email_failed += 1
+                logger.exception(
+                    "rotate_all_passwords --resend-only: email send failed for user %s",
+                    user.id,
+                )
+
+        self.stdout.write(self.style.SUCCESS("=" * 60))
+        self.stdout.write(self.style.SUCCESS(f"Reset links re-sent: {resent}"))
+        self.stdout.write(f"Skipped (usable password — not rotated): {skipped_usable}")
+        self.stdout.write(f"Skipped (no email address):              {skipped_no_email}")
+        if email_failed:
+            self.stdout.write(
+                self.style.ERROR(
+                    f"⚠️  Resend still failed for {email_failed} user(s) — "
+                    f"check logs and retry --resend-only"
                 )
             )
 

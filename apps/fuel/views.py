@@ -729,7 +729,7 @@ class WorkoutDuplicateView(APIView):
 
         new_workout = Workout.objects.create(
             tenant=tenant,
-            date=date_cls.today(),
+            date=today_in_tenant_tz(tenant),
             status="planned",
             category=source.category,
             activity=source.activity,
@@ -1030,6 +1030,16 @@ class RestingHRDetailView(APIView):
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
         serializer = RestingHeartRateLogSerializer(entry, data=request.data, partial=True, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
+        # (tenant, date) is unique. If the user is moving an entry onto a
+        # date already occupied by another row, surface a 409 with a clean
+        # message instead of an opaque 500 from the integrity error.
+        new_date = serializer.validated_data.get("date")
+        if new_date and new_date != entry.date:
+            if RestingHeartRateLog.objects.filter(tenant=tenant, date=new_date).exclude(id=entry.id).exists():
+                return Response(
+                    {"error": "date_conflict", "detail": f"An entry already exists for {new_date}."},
+                    status=status.HTTP_409_CONFLICT,
+                )
         serializer.save()
         return Response(serializer.data)
 
@@ -1125,6 +1135,16 @@ class SleepDetailView(APIView):
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
         serializer = SleepLogSerializer(entry, data=request.data, partial=True, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
+        # (tenant, date) is unique. If the user is moving an entry onto a
+        # date already occupied by another row, surface a 409 with a clean
+        # message instead of an opaque 500 from the integrity error.
+        new_date = serializer.validated_data.get("date")
+        if new_date and new_date != entry.date:
+            if SleepLog.objects.filter(tenant=tenant, date=new_date).exclude(id=entry.id).exists():
+                return Response(
+                    {"error": "date_conflict", "detail": f"An entry already exists for {new_date}."},
+                    status=status.HTTP_409_CONFLICT,
+                )
         serializer.save()
         return Response(serializer.data)
 
@@ -1222,11 +1242,9 @@ class WorkoutPlanDetailView(APIView):
 
         # Regenerate planned workouts if schedule or weeks changed
         if plan.schedule_json != old_schedule or plan.weeks != old_weeks:
-            from datetime import date as _date
-
             from .runtime_views import _expand_plan_workouts
 
-            today = _date.today()
+            today = today_in_tenant_tz(tenant)
             Workout.objects.filter(plan=plan, status=WorkoutStatus.PLANNED, date__gte=today).delete()
             elapsed_days = (today - plan.start_date).days
             elapsed_weeks = max(0, elapsed_days // 7)

@@ -27,24 +27,27 @@ interface ParsedCronResult {
   monthDay: string;
 }
 
+// Indices are standard cron day-of-week values (0=Sunday, 1=Monday, ... 6=Saturday)
+// so the array index maps directly to the cron DOW field — no remapping needed on
+// emit (buildCronFromState) or parse (parseCronExpr).
 const WEEKDAY_LABELS = [
+  "Sun",
   "Mon",
   "Tue",
   "Wed",
   "Thu",
   "Fri",
   "Sat",
-  "Sun",
 ] as const;
 
 const WEEKDAY_NAMES = [
+  "Sunday",
   "Monday",
   "Tuesday",
   "Wednesday",
   "Thursday",
   "Friday",
   "Saturday",
-  "Sunday",
 ] as const;
 
 const DAY_OF_MONTH_LABELS = [

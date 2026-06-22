@@ -189,8 +189,14 @@ export function TodayCheckIn() {
       return;
     }
 
-    await Promise.allSettled(jobs);
-    setForceEdit(false);
+    const results = await Promise.allSettled(jobs);
+    const allSucceeded = results.every((r) => r.status === "fulfilled");
+    if (allSucceeded) {
+      setForceEdit(false);
+    }
+    // On partial failure: keep the form expanded so the user can see which
+    // fields still need saving. The global mutation onError toast already
+    // signals the failure; leaving the form open lets the user retry.
   };
 
   // -- COLLAPSED STATE ---------------------------------------------------

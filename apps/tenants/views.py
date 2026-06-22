@@ -767,7 +767,13 @@ class PreferredModelView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request):
-        tenant = request.user.tenant
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response(
+                {"detail": "No tenant found. Complete onboarding first."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
         model_id = request.data.get("preferred_model", "")
 
         allowed = _get_allowed_models(tenant)
@@ -896,7 +902,13 @@ class TaskModelPreferencesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request):
-        tenant = request.user.tenant
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response(
+                {"detail": "No tenant found. Complete onboarding first."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
         prefs = request.data.get("task_model_preferences", {})
 
         if not isinstance(prefs, dict):
@@ -1118,12 +1130,15 @@ class EntityRegistryItemView(APIView):
         current["updated_at"] = timezone.now().isoformat()
 
         # Rebuild via to_storage_value to drop empty optionals + keep
-        # JSON compact.
+        # JSON compact. Preserve arbiter_judged_at so the next arbiter sweep
+        # does not re-evaluate an already-judged entry just because the user
+        # edited its name/relationship/notes.
         new_value = to_storage_value(
             current.get("name", ""),
             relationship=current.get("relationship", ""),
             notes=current.get("notes", ""),
             updated_at=current["updated_at"],
+            arbiter_judged_at=current.get("arbiter_judged_at"),
         )
         entity_map[placeholder] = new_value
 

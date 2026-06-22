@@ -728,17 +728,26 @@ class Tenant(models.Model):
 
     @classmethod
     def entitled_active(cls):
-        """Active tenants with valid entitlement (paid or unexpired trial)."""
+        """Active tenants with valid entitlement (paid, unexpired trial, or budget-exempt).
+
+        Uses positive inclusion logic to mirror the exact inverse of
+        _unentitled_active_tenants() in apps/cron/views.py. The previous
+        negative-exclude approach missed "ghost" tenants whose is_trial flag was
+        flipped to False without a SUSPENDED transition — they passed the narrow
+        .exclude(is_trial=True, ...) filter even though has_entitlement returns
+        False for them, causing spurious cron seeding and config applies for up
+        to one day until the daily expire_trials sweep caught them.
+        """
         from django.utils import timezone
 
         now = timezone.now()
         return cls.objects.filter(
             status=cls.Status.ACTIVE,
             container_id__gt="",
-        ).exclude(
-            is_trial=True,
-            trial_ends_at__lte=now,
-            stripe_subscription_id="",
+        ).filter(
+            models.Q(stripe_subscription_id__gt="")
+            | models.Q(is_trial=True, trial_ends_at__gt=now)
+            | models.Q(is_budget_exempt=True),
         )
 
     @property

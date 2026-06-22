@@ -41,7 +41,15 @@ logger = logging.getLogger(__name__)
 # only in OpenClaw's SQLite (the agent writes them via the cron tool) and
 # self-clean. If we managed them, the reconciler would race the agent and
 # remove them mid-flight.
-_UNMANAGED_PREFIXES: tuple[str, ...] = ("_sync:",)
+#
+#   * ``_sync:``  — Phase-2 sync crons, agent-written and self-cleaning.
+#   * ``_fuel:``  — per-session Fuel crons. These are owned solely by
+#     ``apps/orchestrator/fuel_cron.py:regenerate_fuel_crons`` (written via
+#     ``cron.add`` with NO ``managed=True`` CronJob row backing them). If
+#     this reconciler owned them, they'd be absent from ``desired_by_name``
+#     and get removed on every pass — a destructive flapping race against
+#     the fuel reconciler that just added them.
+_UNMANAGED_PREFIXES: tuple[str, ...] = ("_sync:", "_fuel:")
 
 # Schedule kinds that the reconciler treats as unmanaged. ``kind:"at"`` is
 # a one-shot whose gateway-side default is ``deleteAfterRun=true`` — the

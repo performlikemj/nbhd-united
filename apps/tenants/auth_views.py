@@ -185,7 +185,7 @@ class SignupView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        email = request.data.get("email")
+        email = (request.data.get("email") or "").strip().lower()
         password = request.data.get("password")
         display_name = request.data.get("display_name", "Friend")
 
@@ -204,10 +204,18 @@ class SignupView(APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-        if User.objects.filter(email=email).exists():
+        if User.objects.filter(email__iexact=email).exists():
             return Response(
                 {"detail": "A user with this email already exists."},
                 status=status.HTTP_409_CONFLICT,
+            )
+
+        try:
+            validate_password(password)
+        except DjangoValidationError as exc:
+            return Response(
+                {"detail": " ".join(exc.messages)},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         user = User.objects.create_user(

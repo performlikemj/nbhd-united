@@ -259,9 +259,14 @@ def extract_chat_id(update: dict) -> int | None:
 def get_forwarding_timeout(tenant: Tenant) -> tuple[float, bool]:
     """Return ``(timeout_seconds, is_reasoning)`` for a tenant's active model.
 
-    Reasoning models (e.g. Kimi K2.6) get a longer timeout because their
+    Reasoning models (e.g. Kimi K2.6) and BYO slow models (Anthropic
+    Sonnet/Opus via the bundled CLI) get a longer timeout because their
     inference is slower.  The second element signals whether the caller
     should show a "still thinking" notice.
+
+    Mirrors ``_resolve_chat_timeout`` in ``apps/router/pending_queue.py`` so
+    the typing/nudge timing here matches the per-attempt chat-completion
+    timeout the drain actually applies.
     """
     from apps.billing.constants import (
         DEFAULT_CHAT_TIMEOUT,
@@ -269,8 +274,15 @@ def get_forwarding_timeout(tenant: Tenant) -> tuple[float, bool]:
         REASONING_MODELS,
     )
 
+    # ``BYO_SLOW_MODELS`` was introduced in PR #430. Fall back gracefully
+    # if it isn't present yet so this module's import never breaks.
+    try:
+        from apps.billing.constants import BYO_SLOW_MODELS
+    except ImportError:  # pragma: no cover — defensive
+        BYO_SLOW_MODELS: set[str] = set()
+
     model = tenant.preferred_model or ""
-    is_reasoning = model in REASONING_MODELS
+    is_reasoning = model in REASONING_MODELS or model in BYO_SLOW_MODELS
     return (REASONING_MODEL_TIMEOUT if is_reasoning else DEFAULT_CHAT_TIMEOUT, is_reasoning)
 
 

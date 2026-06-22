@@ -607,6 +607,13 @@ def update_tenant_config(tenant_id: str) -> None:
             "NBHD_DOC_CRON_MANAGEMENT": "workspace/docs/cron-management.md",
             "NBHD_DOC_ERROR_HANDLING": "workspace/docs/error-handling.md",
             "NBHD_DOC_PRIVACY_REDACTION": "workspace/docs/privacy-redaction.md",
+            # Daily-journal skill templates.md — the canonical slug source the
+            # prompt points the agent at. Re-uploaded on config refresh so a
+            # post-provision default-template edit (which fires
+            # update_tenant_config_task) actually reaches the running container
+            # instead of leaving the boot-time env-var copy stale. Destination
+            # must match entrypoint.sh's SKILL_TEMPLATES_DST.
+            "NBHD_SKILL_TEMPLATES_MD": "workspace/skills/nbhd-managed/daily-journal/references/templates.md",
         }
 
         # Deploy full or silent platform guide based on feature_tips_enabled

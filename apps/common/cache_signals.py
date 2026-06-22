@@ -84,6 +84,7 @@ def _register():
         _bump(instance, ["fuel"])
 
     @receiver(post_save, sender=FuelProfile)
+    @receiver(post_delete, sender=FuelProfile)
     def _profile_changed(sender, instance, **kwargs):
         _bump(instance, ["fuel"])
 

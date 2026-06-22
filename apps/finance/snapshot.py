@@ -32,8 +32,11 @@ def create_monthly_snapshots(snapshot_date: date | None = None) -> int:
     created_count = 0
     for tenant in tenants:
         try:
-            _create_snapshot_for_tenant(tenant, snapshot_date)
-            created_count += 1
+            # _create_snapshot_for_tenant returns None on the duplicate-skip and
+            # no-accounts-skip paths. Only count rows actually written so the
+            # return value matches the docstring ("number of snapshots created").
+            if _create_snapshot_for_tenant(tenant, snapshot_date) is not None:
+                created_count += 1
         except Exception:
             logger.exception("Failed to create finance snapshot for tenant %s", tenant.id)
 

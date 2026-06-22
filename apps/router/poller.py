@@ -747,6 +747,12 @@ class TelegramPoller:
                 self._handle_extraction_callback(update, tenant)
                 return
 
+            # Reconciliation undo callbacks (Remove/Undo button on the
+            # morning extraction summary — callback_data ``task_action:undo:<id>``)
+            if callback_data.startswith("task_action:"):
+                self._handle_task_action_callback(update, tenant)
+                return
+
             # Action gate callbacks (approve/deny destructive actions)
             if callback_data.startswith("gate_approve:") or callback_data.startswith("gate_deny:"):
                 self._handle_gate_callback(update, tenant, callback_data, callback_id, chat_id)
@@ -845,22 +851,17 @@ class TelegramPoller:
 
         # Provisioning tenant — assistant is still waking up
         if tenant.status in (Tenant.Status.PENDING, Tenant.Status.PROVISIONING):
-            self._send_message(
-                chat_id,
-                "Your assistant is waking up! 🌅 This usually takes about a minute. "
-                "I'll be ready to chat shortly — just send your message again in a moment!",
-            )
+            lang = getattr(tenant.user, "language", None) or "en"
+            self._send_message(chat_id, error_msg(lang, "waking_up"))
             return
 
         # Paused tenant — trial ended or payment lapsed
         frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
         if tenant.status == Tenant.Status.SUSPENDED and not tenant.is_trial and not bool(tenant.stripe_subscription_id):
+            lang = getattr(tenant.user, "language", None) or "en"
             self._send_message(
                 chat_id,
-                "Your assistant is paused. Running an AI agent costs real money "
-                "— cloud servers, model tokens (every reply costs us), and storage. "
-                "We keep things transparent so you know exactly where your money goes.\n\n"
-                f"Ready to pick up where you left off? {frontend_url}/settings/billing",
+                error_msg(lang, "suspended", billing_url=f"{frontend_url}/settings/billing"),
             )
             return
 
@@ -938,7 +939,8 @@ class TelegramPoller:
         # Upload photo to tenant workspace if present
         image_path = None
         msg_data = update.get("message") or update.get("edited_message") or {}
-        if msg_data.get("photo"):
+        had_photo = bool(msg_data.get("photo"))
+        if had_photo:
             self._send_typing(chat_id)
             image_path = self._upload_photo_to_workspace(tenant, msg_data)
 
@@ -946,6 +948,15 @@ class TelegramPoller:
         if image_path:
             # Tell agent where the image is so it can use the image tool
             message_text = f"[Photo attached: {image_path}]\n{message_text}"
+        elif had_photo:
+            # The photo couldn't be downloaded/uploaded (e.g. >5MB cap in
+            # ``_download_photo``). Tell the agent so it can tell the user
+            # instead of confidently replying to an image it never saw —
+            # mirrors the document/voice "couldn't process" markers.
+            message_text = (
+                "[Photo too large to process — please send a smaller image under 5 MB]\n"
+                f"{message_text}"
+            )
 
         # Contextual recall: inject goals/tasks + relevant history on session start
         if self._is_new_session(tenant):
@@ -1318,6 +1329,23 @@ class TelegramPoller:
             self._send_message(chat_id, error_msg(lang, "provisioning_setup"))
             return
 
+        # Redact PII from the user's text BEFORE the agent-only markers are
+        # prepended below — so the third-party LLM provider never sees the
+        # raw name/email/phone the subscriber typed. We redact the bare
+        # ``message_text`` (photo prefix + session-recall context, if any)
+        # and the apology excerpt, but NOT the proactive/datetime/chat
+        # markers added afterwards (running the NER detector over those
+        # structural markers makes it misfire). ``redact_user_message``
+        # mints/reuses ``[PERSON_N]`` placeholders against the tenant's
+        # ``pii_entity_map``; outbound rehydration is already wired in the
+        # relay path so the user still sees the real values. Fail-open:
+        # ``redact_user_message`` swallows its own errors and returns the
+        # original text, so redaction never blocks delivery.
+        from apps.pii.redactor import redact_user_message
+
+        message_text = redact_user_message(message_text, tenant)
+        raw_user_text = redact_user_message(raw_user_text, tenant)
+
         user_tz = tenant.user.timezone or "UTC"
 
         # Chat sessionKey is flat: one continuous session per user.
@@ -1475,6 +1503,30 @@ class TelegramPoller:
                 self._execute_telegram_response(response_data)
         except Exception:
             logger.exception("Error handling extraction callback")
+            callback_id = update["callback_query"].get("id")
+            if callback_id:
+                lang = getattr(tenant.user, "language", None) or "en"
+                self._answer_callback_query(callback_id, error_msg(lang, "forwarding_error"))
+
+    def _handle_task_action_callback(self, update: dict, tenant: Tenant) -> None:
+        """Handle reconciliation ``PendingTaskAction`` undo callbacks.
+
+        Bridges the webhook-style handler into the poller path the same way
+        ``_handle_extraction_callback`` does: the handler performs the undo +
+        edits the channel message itself, and returns an ``answerCallbackQuery``
+        response dict which we execute so the tapped button stops spinning.
+        """
+        from .task_action_callbacks import handle_task_action_callback
+
+        try:
+            import json as _json
+
+            json_response = handle_task_action_callback(update, tenant)
+            response_data = _json.loads(json_response.content)
+            if response_data:
+                self._execute_telegram_response(response_data)
+        except Exception:
+            logger.exception("Error handling task_action callback")
             callback_id = update["callback_query"].get("id")
             if callback_id:
                 lang = getattr(tenant.user, "language", None) or "en"

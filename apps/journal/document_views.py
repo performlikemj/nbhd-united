@@ -462,6 +462,11 @@ class SidebarTreeView(APIView):
         if "daily" in tree:
             tree["daily"].sort(key=lambda x: x["slug"], reverse=True)
 
+        # Sort weekly reviews by slug (YYYY-MM-DD week-start date) descending so
+        # the [:12] cap keeps the 12 most-recent weeks, not the 12 most-recently-edited.
+        if "weekly" in tree:
+            tree["weekly"].sort(key=lambda x: x["slug"], reverse=True)
+
         # Define the sidebar structure
         sidebar = [
             {"kind": "daily", "label": "Daily Notes", "items": tree.get("daily", [])[:30]},

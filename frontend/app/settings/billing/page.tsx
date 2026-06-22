@@ -197,11 +197,6 @@ export default function SettingsBillingPage() {
               <Link href="/legal/privacy" className="underline hover:text-ink-muted">Privacy Policy</Link>, and{" "}
               <Link href="/legal/refund" className="underline hover:text-ink-muted">Refund Policy</Link>.
             </p>
-            {checkoutError && (
-              <p className="mt-4 rounded-panel border border-rose-border bg-rose-bg px-4 py-2.5 text-sm text-rose-text">
-                {checkoutError}
-              </p>
-            )}
           </div>
         )}
       </SectionCard>

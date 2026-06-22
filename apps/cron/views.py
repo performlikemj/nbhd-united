@@ -195,6 +195,12 @@ TASK_MAP = {
     # tenant denylist so the next message stops re-minting them.
     # See apps/pii/arbiter.py and issue #660.
     "pii_arbiter": "apps.pii.arbiter.pii_arbiter_task",
+    # User-facing scheduled automations — per-minute dispatcher that runs
+    # every ACTIVE Automation whose next_run_at has elapsed. Without this the
+    # automations CRUD surface is dead for scheduled fires (manual-run only).
+    # See apps/automations/scheduler.py:run_due_automations. NOTE: also needs a
+    # SYSTEM_CRONS entry in register_system_crons.py to create the QStash schedule.
+    "run_due_automations": "apps.automations.tasks.run_due_automations_task",
 }
 
 
@@ -1347,7 +1353,8 @@ def dedup_crons(request):
         logger.exception("Batch publish failed for dedup")
         enqueued = 0
 
-    return JsonResponse({"enqueued": enqueued, "failed": 0})
+    failed = len(batch_tasks) - enqueued
+    return JsonResponse({"enqueued": enqueued, "failed": failed})
 
 
 # Cooldown: don't send duplicate alerts within this window
@@ -1679,7 +1686,16 @@ def rollout_byo_persona_refresh(request):
 # to handle arbitrary fleet sizes (sequential `bump_openclaw_version --all`
 # inside a request handler would time out for fleets >10 tenants).
 _ATOMIC_BUMP_LOCK_KEY = "rollout_atomic_bump:in_flight"
-_ATOMIC_BUMP_LOCK_TTL_SECONDS = 60 * 30  # 30 min — covers slowest fleet rollout
+# This lock only guards the *enqueue* (the eligibility query + publish_batch
+# fan-out below), which completes in milliseconds — it is released in the
+# finally block as soon as the tasks are queued, NOT held for the duration of
+# the rollout. Double-bumps of the same tenant are prevented at the task layer
+# instead: bump_openclaw_atomic_per_tenant re-checks version+image_tag at
+# execution time (apps/orchestrator/tasks.py) and bump_openclaw_version_for_tenant
+# snapshots-before-write / restores-on-failure, so a repeated write is idempotent.
+# A 5-minute TTL is ample headroom for the enqueue path while still expiring a
+# lock orphaned by a worker death mid-fan-out.
+_ATOMIC_BUMP_LOCK_TTL_SECONDS = 60 * 5
 
 
 @csrf_exempt

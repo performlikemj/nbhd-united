@@ -23,6 +23,11 @@ Models covered:
   list + ``intent.has_stated_goal`` signal.
 - ``Document`` — legacy goals/tasks docs still read by HorizonsView
   for non-migrated tenants.
+- ``PendingExtraction`` — HorizonsView surfaces pending_extractions;
+  ExtractionDismissView and the typed-task approve path only write
+  PendingExtraction.status, so without this receiver the dashboard tag
+  is not bumped and a stale-cache refetch can transiently show already-
+  dismissed/approved extractions until the TTL expires.
 
 ``Task`` is intentionally excluded — HorizonsView doesn't surface Task
 state, and ``compute_signals`` doesn't read Task. Add a receiver here
@@ -38,7 +43,7 @@ from django.dispatch import receiver
 
 from apps.common.cache import bump_tag
 from apps.insights.models import AssistantInsight, UserVoicePref
-from apps.journal.models import Document, Goal
+from apps.journal.models import Document, Goal, PendingExtraction
 
 logger = logging.getLogger("nbhd.cache")
 
@@ -85,4 +90,14 @@ def _bump_on_goal(sender, instance, **kwargs):
 def _bump_on_document(sender, instance, **kwargs):
     # Any Document kind matters — the dashboard surfaces goals, tasks,
     # weekly reviews (Weekly Pulse), and daily notes (momentum streak).
+    _bump_for(instance)
+
+
+@receiver(post_save, sender=PendingExtraction)
+@receiver(post_delete, sender=PendingExtraction)
+def _bump_on_pending_extraction(sender, instance, **kwargs):
+    # HorizonsView surfaces pending_extractions; ExtractionDismissView and
+    # the typed-task approve path write only PendingExtraction.status, so
+    # this receiver ensures the dashboard tag is bumped on every status change,
+    # preventing stale-cache refetches from re-showing dismissed/approved items.
     _bump_for(instance)

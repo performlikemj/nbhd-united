@@ -456,7 +456,7 @@ class WeeklyReviewDetailView(APIView):
         tenant = _get_tenant_for_user(request.user)
         review = _get_weekly_review_for_tenant(tenant=tenant, review_id=review_id)
         review.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response(status=status.HTTP_204_NO_CONTENT, headers=DEPRECATION_HEADERS)
 
 
 # ---------------------------------------------------------------------------
@@ -517,7 +517,8 @@ class TemplateDetailView(APIView):
         template = NoteTemplate.objects.filter(tenant=tenant, id=template_id).first()
         if not template:
             return Response({"error": "template not found."}, status=404)
-        if template.is_default:
+        was_default = template.is_default
+        if was_default:
             alternate = NoteTemplate.objects.filter(tenant=tenant).exclude(id=template.id).first()
             if not alternate:
                 return Response({"error": "cannot delete the last template."}, status=400)
@@ -525,6 +526,16 @@ class TemplateDetailView(APIView):
             alternate.save(update_fields=["is_default"])
 
         template.delete()
+
+        # Mirror PATCH: push updated skill config when the default template changed.
+        if was_default:
+            try:
+                from apps.orchestrator.tasks import update_tenant_config_task
+
+                update_tenant_config_task.delay(str(tenant.id))
+            except Exception:
+                pass  # Non-blocking; config update is best-effort.
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

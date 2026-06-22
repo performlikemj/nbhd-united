@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 interface TimezoneSelectorProps {
   value: string;
@@ -116,13 +116,8 @@ export default function TimezoneSelector({
     ? value
     : normalizedDefaultTimezone || "UTC";
 
-  // When the filter hides the currently selected timezone, auto-select the
-  // first visible option so the displayed value matches what will be saved.
-  useEffect(() => {
-    if (filteredTimezones.length > 0 && !filteredTimezones.includes(currentValue)) {
-      onChange(filteredTimezones[0]);
-    }
-  }, [filteredTimezones, currentValue, onChange]);
+  // Whether the current selection is hidden by the active filter.
+  const currentValueFiltered = filteredTimezones.length > 0 && !filteredTimezones.includes(currentValue);
 
   return (
     <div className={`space-y-2 ${className}`.trim()}>
@@ -147,15 +142,24 @@ export default function TimezoneSelector({
           {timezoneGroups.length === 0 ? (
             <option value={currentValue}>No timezones match your search</option>
           ) : (
-            timezoneGroups.map((group) => (
-              <optgroup key={group.region} label={group.region}>
-                {group.options.map((timezone) => (
-                  <option key={timezone} value={timezone}>
-                    {`${timezone} (${getUtcOffsetLabel(timezone)})`}
+            <>
+              {currentValueFiltered && (
+                <optgroup label="Current selection">
+                  <option value={currentValue}>
+                    {`${currentValue} (${getUtcOffsetLabel(currentValue)})`}
                   </option>
-                ))}
-              </optgroup>
-            ))
+                </optgroup>
+              )}
+              {timezoneGroups.map((group) => (
+                <optgroup key={group.region} label={group.region}>
+                  {group.options.map((timezone) => (
+                    <option key={timezone} value={timezone}>
+                      {`${timezone} (${getUtcOffsetLabel(timezone)})`}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </>
           )}
         </select>
       </label>

@@ -205,12 +205,9 @@ class RuntimePreferredModelView(APIView):
 
     @staticmethod
     def _state(tenant: Tenant) -> dict:
-        from apps.orchestrator.config_generator import TIER_MODEL_CONFIGS, _byo_model_extras
+        from apps.tenants.views import _get_allowed_models
 
-        allowed = {
-            **TIER_MODEL_CONFIGS.get(tenant.model_tier, {}),
-            **_byo_model_extras(tenant),
-        }
+        allowed = _get_allowed_models(tenant)
         return {
             "preferred_model": tenant.preferred_model,
             "applied_model": tenant.applied_model,

@@ -309,12 +309,38 @@ _SENDERS = {
 
 
 def send_gate_confirmation(tenant: Tenant, action: PendingAction) -> None:
-    """Send a confirmation prompt to the user on their preferred platform."""
-    channel = getattr(tenant.user, "preferred_channel", "") or "telegram"
+    """Send a confirmation prompt to the user on their delivery channel.
+
+    Resolves the channel via ``resolve_user_channel`` (the same logic the cron /
+    proactive senders use) rather than reading ``preferred_channel`` directly.
+    ``preferred_channel`` defaults to ``"telegram"`` even for iOS-only App Store
+    users (who have a ``DeviceToken`` but no ``telegram_chat_id``/``line_user_id``),
+    so reading it directly would route an iOS-only user to the Telegram sender,
+    which fails deep with a misleading "no Telegram chat_id" log while the action
+    silently expires with no prompt ever delivered.
+
+    There is currently no in-app gate surface (approve/deny handlers exist only in
+    the Telegram poller and LINE webhook), so when no Telegram/LINE channel is
+    linked we cannot deliver an actionable confirmation. Rather than fail silently,
+    log a clear, explicit warning so the no-surface case is visible and diagnosable.
+    """
+    from apps.router.cron_delivery import resolve_user_channel
+
+    channel = resolve_user_channel(tenant.user)
     sender, _ = _SENDERS.get(channel, (None, None))
 
     if not sender:
-        logger.warning("No gate sender for channel %s (tenant %s)", channel, tenant.id)
+        # ``channel`` is "app" (iOS-only DeviceToken user) or None (no surface).
+        # No actionable in-app gate path exists yet, so the action will expire
+        # after 5 minutes — surface that clearly instead of failing silently.
+        logger.warning(
+            "Cannot deliver gate confirmation for action %s (tenant %s): "
+            "no Telegram/LINE channel for resolved channel %r — action will "
+            "expire without user confirmation",
+            action.id,
+            tenant.id,
+            channel,
+        )
         return
 
     msg_id = sender(tenant, action)

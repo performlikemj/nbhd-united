@@ -1722,7 +1722,11 @@ class RuntimeLessonSearchView(APIView):
             )
 
         try:
-            lessons = search_lessons(tenant=tenant, query=query, limit=limit)
+            # Materialize the QuerySet inside the guard so DB-execution
+            # failures (OperationalError, pgvector unavailable, network drop)
+            # are mapped to the search_failed envelope rather than raised
+            # during the later, unguarded iteration.
+            lessons = list(search_lessons(tenant=tenant, query=query, limit=limit))
         except ValueError as exc:
             return Response(
                 {"error": "search_failed", "detail": str(exc)},
@@ -1992,7 +1996,13 @@ class RuntimeJournalSearchView(APIView):
 
         query = request.query_params.get("q", "").strip()
         kind = request.query_params.get("kind", "").strip()
-        limit = min(int(request.query_params.get("limit", "20")), 50)
+        try:
+            limit = _parse_positive_int(request.query_params.get("limit"), default=20, max_value=50)
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if not query:
             return Response(
@@ -2375,21 +2385,48 @@ class RuntimeProfileUpdateView(APIView):
 
         if "display_name" in data:
             name = (data["display_name"] or "").strip()
-            if name and len(name) <= 100:
-                user.display_name = name
-                updated_fields.append("display_name")
+            if not name:
+                return Response(
+                    {"error": "invalid_display_name", "detail": "display_name must not be empty."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if len(name) > 100:
+                return Response(
+                    {"error": "invalid_display_name", "detail": "display_name must be 100 characters or fewer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            user.display_name = name
+            updated_fields.append("display_name")
 
         if "language" in data:
             lang = (data["language"] or "").strip()
-            if lang and len(lang) <= 10:
-                user.language = lang
-                updated_fields.append("language")
+            if not lang:
+                return Response(
+                    {"error": "invalid_language", "detail": "language must not be empty."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if len(lang) > 10:
+                return Response(
+                    {"error": "invalid_language", "detail": "language must be 10 characters or fewer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            user.language = lang
+            updated_fields.append("language")
 
         if "location_city" in data:
             city = (data["location_city"] or "").strip()
-            if city and len(city) <= 255:
-                user.location_city = city
-                updated_fields.append("location_city")
+            if not city:
+                return Response(
+                    {"error": "invalid_location_city", "detail": "location_city must not be empty."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if len(city) > 255:
+                return Response(
+                    {"error": "invalid_location_city", "detail": "location_city must be 255 characters or fewer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            user.location_city = city
+            updated_fields.append("location_city")
 
         if "location_lat" in data and "location_lon" in data:
             try:

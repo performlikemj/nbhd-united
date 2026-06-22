@@ -7,7 +7,8 @@ from typing import Any
 
 import requests
 from django.conf import settings
-from django.db.models import FloatField, QuerySet, Value
+from django.db import transaction
+from django.db.models import FloatField, Q, QuerySet, Value
 from django.db.models.expressions import ExpressionWrapper
 from pgvector.django import CosineDistance
 
@@ -77,21 +78,53 @@ def find_similar_lessons(
 
 
 def create_connections(lesson: Lesson) -> int:
-    """Create bidirectional LessonConnection edges for similar approved lessons."""
+    """Reconcile bidirectional similarity edges for the lesson against its current embedding.
+
+    The lesson's auto-generated ``similar`` edges are brought in line with the
+    current embedding: edges to peers that are no longer similar (e.g. after a
+    rewrite) are removed so they can't draw spurious links or mask the correct
+    affinity edges in the constellation/galaxy views, and surviving similar
+    edges have their weight refreshed. User-curated edge types
+    (``user_linked``/``builds_on``/``contradicts``) are preserved.
+    """
     created = 0
 
-    for similar_lesson, similarity in find_similar_lessons(lesson):
-        _, created_forward = LessonConnection.objects.get_or_create(
-            from_lesson=lesson,
-            to_lesson=similar_lesson,
-            defaults={"similarity": similarity, "connection_type": "similar"},
-        )
-        _, created_reverse = LessonConnection.objects.get_or_create(
-            from_lesson=similar_lesson,
-            to_lesson=lesson,
-            defaults={"similarity": similarity, "connection_type": "similar"},
-        )
-        created += int(created_forward) + int(created_reverse)
+    with transaction.atomic():
+        similar = find_similar_lessons(lesson)
+        current_peer_ids = {peer.pk for peer, _ in similar}
+
+        # Drop the lesson's stale auto-similarity edges — peers that are no
+        # longer similar under the current embedding (e.g. after a rewrite) —
+        # so they can't draw spurious links or mask the correct affinity edge.
+        # Only ``similar`` edges are touched, so user-curated edge types
+        # (user_linked/builds_on/contradicts) are preserved. We never delete an
+        # edge to a peer that is still similar, so the recreate count stays 0
+        # when the similar set is unchanged.
+        LessonConnection.objects.filter(connection_type="similar").filter(
+            Q(from_lesson=lesson) & ~Q(to_lesson_id__in=current_peer_ids)
+            | Q(to_lesson=lesson) & ~Q(from_lesson_id__in=current_peer_ids)
+        ).delete()
+
+        for similar_lesson, similarity in similar:
+            # Key on the unique (from, to) pair; if a user-curated edge already
+            # exists for the pair, leave it untouched rather than overwrite it.
+            # Surviving ``similar`` edges have their similarity refreshed so the
+            # weight tracks the current embedding.
+            _, created_forward = LessonConnection.objects.get_or_create(
+                from_lesson=lesson,
+                to_lesson=similar_lesson,
+                defaults={"similarity": similarity, "connection_type": "similar"},
+            )
+            _, created_reverse = LessonConnection.objects.get_or_create(
+                from_lesson=similar_lesson,
+                to_lesson=lesson,
+                defaults={"similarity": similarity, "connection_type": "similar"},
+            )
+            LessonConnection.objects.filter(
+                Q(from_lesson=lesson, to_lesson=similar_lesson) | Q(from_lesson=similar_lesson, to_lesson=lesson),
+                connection_type="similar",
+            ).update(similarity=similarity)
+            created += int(created_forward) + int(created_reverse)
 
     return created
 
@@ -115,5 +148,6 @@ def search_lessons(tenant: Tenant, query: str, limit: int = 10) -> QuerySet[Less
     return (
         Lesson.objects.filter(tenant=tenant, status="approved", embedding__isnull=False)
         .annotate(similarity=similarity_expr)
+        .prefetch_related("journal_entries", "tutoring_sessions")
         .order_by("-similarity")[:limit]
     )

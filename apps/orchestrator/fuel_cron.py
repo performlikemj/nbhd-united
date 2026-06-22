@@ -130,6 +130,22 @@ def regenerate_fuel_crons(tenant: Tenant) -> dict:
         logger.debug("regenerate_fuel_crons: tenant %s not on new flow — skipping", tenant.id)
         return summary
 
+    # Hibernated (scale 0/0) or suspended containers can't serve gateway
+    # calls. The per-tenant task guards this, but the hourly fleet reconcile
+    # (reconcile_fuel_crons_task) and any other caller must not slip through:
+    # a ``cron.list`` POST to a scaled-to-zero container raises GatewayError
+    # (a full stack trace + inflated error telemetry every hour) and can
+    # cold-start an idle container, undermining hibernation. Reconcile-on-wake
+    # rebuilds these crons, so skipping here loses nothing.
+    from apps.tenants.models import Tenant
+
+    if getattr(tenant, "hibernated_at", None) is not None or tenant.status == Tenant.Status.SUSPENDED:
+        logger.info(
+            "regenerate_fuel_crons: skipping %s (hibernated/suspended)",
+            str(tenant.id)[:8],
+        )
+        return summary
+
     desired = derive_fuel_cron_jobs(tenant)
     desired_by_name: dict[str, dict] = {j["name"]: j for j in desired}
 

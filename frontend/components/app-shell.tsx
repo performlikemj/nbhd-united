@@ -218,7 +218,7 @@ function MobileTabBar({
               key={item.href}
               href={item.href}
               aria-current={active ? "page" : undefined}
-              className="flex flex-1 flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] font-medium transition-all duration-200 min-h-[44px]"
+              className="relative flex flex-1 flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] font-medium transition-all duration-200 min-h-[44px]"
             >
               <span
                 className={clsx(
@@ -351,12 +351,13 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className="mx-auto flex w-full max-w-6xl min-w-0 items-center justify-between gap-2 px-3 py-2.5 sm:gap-3 sm:px-6">
           {/* Left: Logo + concise title */}
           <div className="flex items-center gap-2.5 min-w-0 shrink-0">
-            <Link
-              href="/journal"
-              className="shrink-0 rounded-lg focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B0F13]"
-            >
-              <BrandLogo size={32} />
-            </Link>
+            {/* BrandLogo renders its own <Link href="/"> internally; wrapping it in
+                another Link would produce invalid nested anchors. Leave BrandLogo
+                standalone here — it links to "/" which is sensible for logged-in
+                users. To make it link to /journal instead, brand-logo.tsx needs an
+                asLink={false} prop so the outer Link can own navigation (see
+                FA-0494). */}
+            <BrandLogo size={32} />
             <span className="text-xs font-medium text-ink-faint tracking-wide hidden xl:block">
               Neighborhood
             </span>

@@ -2,6 +2,7 @@
 
 import logging
 
+from django.db import transaction
 from rest_framework import status
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.permissions import IsAuthenticated
@@ -214,23 +215,31 @@ class CoreComposeView(APIView):
         if not getattr(tenant, "core_enabled", False):
             return Response({"error": "core_not_enabled"}, status=status.HTTP_403_FORBIDDEN)
 
-        in_flight = (
-            MeditationSession.objects.filter(
-                tenant=tenant, status__in=[MeditationStatus.PENDING, MeditationStatus.RENDERING]
-            )
-            .order_by("-created_at")
-            .first()
-        )
-        if in_flight:
-            return Response({"meditation_id": str(in_flight.id), "status": in_flight.status})
-
         from apps.common.tenant_tz import tenant_today
 
-        session = MeditationSession.objects.create(
-            tenant=tenant,
-            date=tenant_today(tenant),  # the user's LOCAL day, not server UTC
-            status=MeditationStatus.PENDING,
-        )
+        # Atomic coalesce: lock the tenant row so concurrent POST requests cannot
+        # both pass the in-flight check and create duplicate sessions.
+        with transaction.atomic():
+            from apps.tenants.models import Tenant as _Tenant
+
+            _Tenant.objects.select_for_update().get(pk=tenant.pk)
+
+            in_flight = (
+                MeditationSession.objects.filter(
+                    tenant=tenant, status__in=[MeditationStatus.PENDING, MeditationStatus.RENDERING]
+                )
+                .order_by("-created_at")
+                .first()
+            )
+            if in_flight:
+                return Response({"meditation_id": str(in_flight.id), "status": in_flight.status})
+
+            session = MeditationSession.objects.create(
+                tenant=tenant,
+                date=tenant_today(tenant),  # the user's LOCAL day, not server UTC
+                status=MeditationStatus.PENDING,
+            )
+
         try:
             from apps.cron.publish import publish_task
 

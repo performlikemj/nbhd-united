@@ -212,9 +212,21 @@ def enqueue_tenant_turn(*, tenant, user, text: str, thread: ChatThread, client_m
         return turn, False
 
     user_tz = getattr(user, "timezone", None) or "UTC"
+    # PII redaction for outgoing LLM-provider traffic. Redact the bare user
+    # text BEFORE prepending the datetime/chat markers (redacting the
+    # assembled body makes the NER detector misfire on the structural
+    # markers). We redact ONLY the LLM-bound payload — the user's own
+    # AppChatMessage.user_text (persisted above) and the display excerpt stay
+    # verbatim so the iOS ?since= feed shows exactly what the user typed.
+    # Outbound rehydration is already wired in the drain path, so [PERSON_N]
+    # placeholders round-trip. redact_user_message swallows its own errors
+    # and returns the original text, so it never blocks delivery.
+    from apps.pii.redactor import redact_user_message
+
+    redacted_text = redact_user_message(text, tenant)
     # Decorate like the other channels: current-time marker + the
     # "this is a chat turn, don't pre-load workspace docs" marker.
-    message_text = build_datetime_context(user_tz) + build_chat_context_marker() + text
+    message_text = build_datetime_context(user_tz) + build_chat_context_marker() + redacted_text
 
     enqueue_message_for_tenant(
         tenant=tenant,

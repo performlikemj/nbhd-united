@@ -77,6 +77,17 @@ export default function FinancePage() {
   const archivedQuery = useArchivedFinanceAccountsQuery(showArchived);
   const { data: tenant } = useTenantQuery();
 
+  // Open the confirm dialog for an account, clearing any error left over from a
+  // previous failed archive so a freshly-opened dialog never shows a stale error.
+  const openArchiveDialog = (account: FinanceAccount) => {
+    archiveMutation.reset();
+    setConfirmArchive(account);
+  };
+  const closeArchiveDialog = () => {
+    archiveMutation.reset();
+    setConfirmArchive(null);
+  };
+
   // Gravity is paused platform-wide for privacy — show a notice instead of the
   // dashboard if someone reaches /finance directly (the nav tab is hidden).
   if (tenant && tenant.gravity_available === false) {
@@ -145,6 +156,22 @@ export default function FinancePage() {
             will start tracking for you.
           </p>
         </div>
+
+        {/* Archived Accounts — keep the restore path reachable even when every
+            account has been archived (otherwise the only recovery is to create
+            a brand-new account first). */}
+        <ArchivedAccountsSection
+          expanded={showArchived}
+          onToggle={() => setShowArchived((v) => !v)}
+          isLoading={archivedQuery.isLoading}
+          accounts={archivedQuery.data ?? []}
+          onRestore={(account) => unarchiveMutation.mutate(account.id)}
+          restoringId={
+            unarchiveMutation.isPending
+              ? (unarchiveMutation.variables as string | undefined)
+              : undefined
+          }
+        />
       </div>
     );
   }
@@ -222,7 +249,7 @@ export default function FinancePage() {
             <div className="divide-y divide-white/5 space-y-6">
               {debtAccounts.map((account) => (
                 <div key={account.id} className="pt-6 first:pt-0">
-                  <AccountCard account={account} onArchive={setConfirmArchive} />
+                  <AccountCard account={account} onArchive={openArchiveDialog} />
                 </div>
               ))}
             </div>
@@ -238,7 +265,7 @@ export default function FinancePage() {
             <div className="divide-y divide-white/5 space-y-6">
               {savingsAccounts.map((account) => (
                 <div key={account.id} className="pt-6 first:pt-0">
-                  <AccountCard account={account} onArchive={setConfirmArchive} />
+                  <AccountCard account={account} onArchive={openArchiveDialog} />
                 </div>
               ))}
             </div>
@@ -292,7 +319,7 @@ export default function FinancePage() {
       {confirmArchive && (
         <ConfirmArchiveDialog
           account={confirmArchive}
-          onCancel={() => setConfirmArchive(null)}
+          onCancel={closeArchiveDialog}
           onConfirm={() => {
             const target = confirmArchive;
             archiveMutation.mutate(target.id, {

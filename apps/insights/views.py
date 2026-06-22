@@ -352,17 +352,23 @@ def _record_insight_impl(
     confidence: float | None,
     model_version: str,
 ) -> AssistantInsight:
-    topic = resolve_topic(pillar, topic_input, model_version=model_version)
-    return AssistantInsight.objects.create(
-        tenant=tenant,
-        pillar=pillar,
-        topic=topic,
-        statement=statement,
-        evidence_refs=evidence_refs or {},
-        confidence=confidence if confidence is not None else 0.0,
-        status=AssistantInsight.Status.OPEN,
-        author_model_version=model_version,
-    )
+    # Wrap both operations in a single atomic block so that a proposed topic
+    # created by resolve_topic is never committed without the insight that
+    # prompted it (prevents orphaned proposed-topic rows on insight-create failure).
+    from django.db import transaction as _tx
+
+    with _tx.atomic():
+        topic = resolve_topic(pillar, topic_input, model_version=model_version)
+        return AssistantInsight.objects.create(
+            tenant=tenant,
+            pillar=pillar,
+            topic=topic,
+            statement=statement,
+            evidence_refs=evidence_refs or {},
+            confidence=confidence if confidence is not None else 0.0,
+            status=AssistantInsight.Status.OPEN,
+            author_model_version=model_version,
+        )
 
 
 def _validate_record_body(data: dict) -> tuple[Response, None] | tuple[None, dict]:

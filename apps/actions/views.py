@@ -221,6 +221,17 @@ class GatePollView(APIView):
                 display_summary=action.display_summary,
                 result=ActionStatus.EXPIRED,
             )
+            # Clear the stale Approve/Deny buttons on the platform confirmation
+            # message, exactly as the user-response paths do. Without this the
+            # buttons linger indefinitely on timeout-expiry and a later tap is a
+            # confusing no-op (GateRespondView returns 410). Never let a
+            # messaging hiccup break the poll response the container needs.
+            try:
+                from .messaging import update_gate_message
+
+                update_gate_message(action)
+            except Exception:
+                logger.warning("Failed to refresh gate message on expiry for action %s", action.id, exc_info=True)
 
         return Response(
             {

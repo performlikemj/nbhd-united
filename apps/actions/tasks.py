@@ -1,20 +1,23 @@
-"""Celery tasks for action gating."""
+"""Action expiry sweep — invoked via QStash cron, not Celery."""
 
 from __future__ import annotations
 
 import logging
 
-from celery import shared_task
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
 
-@shared_task
-def expire_stale_pending_actions():
-    """Expire pending actions past their deadline.
+def expire_stale_pending_actions() -> str:
+    """Expire pending actions past their deadline and update platform messages.
 
-    Run every 60 seconds via Celery Beat (or QStash cron).
+    Run every 60 seconds via a QStash cron entry registered in TASK_MAP
+    (see apps/cron/views.py).  Returns a summary string 'Expired N actions'.
+
+    Errors in update_gate_message are caught and logged per action but do
+    not abort the sweep, so one broken platform channel cannot stall expiry
+    of other actions.
     """
     from .messaging import update_gate_message
     from .models import ActionAuditLog, ActionStatus, PendingAction

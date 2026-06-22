@@ -5,6 +5,7 @@ import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { memo, useMemo } from "react";
 import type { Components } from "react-markdown";
+import type { Element } from "hast";
 
 interface MarkdownRendererProps {
   content: string;
@@ -24,40 +25,37 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
 }: MarkdownRendererProps) {
   const components = useMemo<Components>(
     () => ({
-      input: (props: React.InputHTMLAttributes<HTMLInputElement>) => {
+      input: ({
+        node,
+        ...props
+      }: React.InputHTMLAttributes<HTMLInputElement> & {
+        node?: Element;
+      }) => {
         if (props.type !== "checkbox") return <input {...props} />;
 
-        const handleChange = () => {
-          if (!onCheckboxToggle) return;
-          // Find which checkbox this is by counting checkboxes in the markdown
-          const lines = content.split("\n");
-          const checked = props.checked ?? false;
+        // Resolve the exact source line this checkbox came from via the AST
+        // node's position data, so clicking checkbox B toggles B — not the
+        // first same-state checkbox. (react-markdown line numbers are 1-based;
+        // onCheckboxToggle expects a 0-based line index.)
+        const sourceLine = node?.position?.start.line;
 
-          // Count through lines to find matching checkbox
-          for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            const match = line.match(/^(\s*[-*+]\s*)\[([ xX])\]/);
-            if (match) {
-              const isChecked = match[2] !== " ";
-              if (isChecked === checked) {
-                onCheckboxToggle(i, !checked);
-                return;
-              }
-            }
-          }
+        const handleChange = () => {
+          if (!onCheckboxToggle || sourceLine == null) return;
+          const checked = props.checked ?? false;
+          onCheckboxToggle(sourceLine - 1, !checked);
         };
 
         return (
           <input
             {...props}
-            disabled={!onCheckboxToggle}
+            disabled={!onCheckboxToggle || sourceLine == null}
             onChange={handleChange}
             className="mr-2 h-4 w-4 cursor-pointer rounded border-border accent-accent"
           />
         );
       },
     }),
-    [content, onCheckboxToggle],
+    [onCheckboxToggle],
   );
 
   return (

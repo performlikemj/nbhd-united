@@ -76,7 +76,7 @@ export function Starfield({ className = "" }: { className?: string }) {
         ctx.fill();
       }
 
-      rafRef.current = requestAnimationFrame(draw);
+      if (!prefersReduced) rafRef.current = requestAnimationFrame(draw);
     }
 
     if (prefersReduced) {

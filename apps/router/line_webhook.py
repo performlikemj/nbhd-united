@@ -908,6 +908,13 @@ class LineWebhookView(View):
         msg_type = message.get("type", "")
         reply_token = event.get("replyToken")
         line_user_id = event.get("source", {}).get("userId", "")
+        # Set when the audio branch resolves the tenant early (to gate voice
+        # during onboarding before the paid Whisper call); the shared text flow
+        # below reuses it instead of resolving the same LINE user twice. The
+        # flag distinguishes "resolved to None (unrecognized)" from "not yet
+        # resolved" so we never resolve a second time.
+        prefetched_tenant: Tenant | None = None
+        tenant_prefetched = False
 
         # Audio/voice messages — transcribe via Whisper
         if msg_type == "audio":
@@ -921,6 +928,25 @@ class LineWebhookView(View):
                 message_id,
                 line_user_id,
             )
+            # Reject voice during onboarding BEFORE incurring the paid Whisper
+            # call: a user still onboarding can only answer with typed text, so
+            # transcribing here would waste an API call on a discarded transcript
+            # and leave the user staring at a long loading animation before the
+            # rejection. The full pipeline (provisioning/suspended/budget/wake +
+            # needs_reintroduction reset) still runs below for non-onboarding users.
+            _audio_tenant = _resolve_tenant_by_line_user_id(line_user_id)
+            if _audio_tenant is not None and (
+                not _audio_tenant.onboarding_complete or _audio_tenant.onboarding_step == 0
+            ):
+                _send_line_flex(
+                    line_user_id,
+                    build_short_bubble("I'll be ready for stickers and voice soon! For now, please type your answer."),
+                )
+                return
+            # Reuse this resolution downstream so the shared text flow doesn't
+            # resolve the same LINE user a second time after transcription.
+            prefetched_tenant = _audio_tenant
+            tenant_prefetched = True
             _show_loading(line_user_id)
             transcript = _transcribe_line_audio(message_id)
             if transcript:
@@ -992,8 +1018,8 @@ class LineWebhookView(View):
             self._process_link(line_user_id, event, token)
             return
 
-        # Resolve tenant
-        tenant = _resolve_tenant_by_line_user_id(line_user_id)
+        # Resolve tenant (reuse the audio branch's early resolution if present)
+        tenant = prefetched_tenant if tenant_prefetched else _resolve_tenant_by_line_user_id(line_user_id)
 
         if not tenant:
             frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
@@ -1209,6 +1235,19 @@ class LineWebhookView(View):
         # excerpt useless ("It started with: '[Now: …'").
         raw_user_text = raw_user_text if raw_user_text is not None else message_text
 
+        # PII redaction for outgoing LLM-provider traffic. Redact the BARE
+        # user text here, BEFORE the proactive/datetime/chat markers are
+        # prepended below — running redaction over the assembled body makes
+        # the NER detector misfire on the structural markers. Mirrors the
+        # Telegram poller seam (poller.py:_forward_to_container). Outbound
+        # rehydration is already wired (line 657), so [PERSON_N] placeholders
+        # round-trip. ``redact_user_message`` swallows its own errors and
+        # returns the original text, so redaction never blocks delivery.
+        from apps.pii.redactor import redact_user_message
+
+        message_text = redact_user_message(message_text, tenant)
+        raw_user_text = redact_user_message(raw_user_text, tenant)
+
         lang = tenant.user.language or "en"
 
         if not tenant.container_fqdn or tenant.status == "provisioning":
@@ -1305,6 +1344,45 @@ class LineWebhookView(View):
         # Lesson approval callbacks (agent-suggested)
         if data.startswith("lesson:"):
             self._handle_lesson_postback(tenant, data)
+            return
+
+        # Generic button forwards spawn a real AI turn, so they must clear the
+        # same suspension + budget pre-flight gate as a typed message — otherwise
+        # a tapped button skips the gate a typed message enforces and can land a
+        # billable turn on a suspended/over-budget tenant. (The special-prefix
+        # branches above act on stored DB state and don't spawn turns.)
+        frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
+        if (
+            tenant.status == Tenant.Status.SUSPENDED
+            and not tenant.is_trial
+            and not bool(tenant.stripe_subscription_id)
+        ):
+            lang = tenant.user.language or "en"
+            _send_line_flex(
+                line_user_id,
+                build_status_bubble(
+                    error_msg(lang, "suspended", billing_url=f"{frontend_url}/settings/billing"),
+                    tone="warning",
+                ),
+            )
+            return
+
+        budget_reason = check_budget(tenant)
+        if budget_reason:
+            from apps.router.views import _hibernate_for_quota
+
+            _hibernate_for_quota(tenant)
+            lang = tenant.user.language or "en"
+            if budget_reason == "global":
+                msg_key = "budget_unavailable"
+                kwargs: dict[str, str] = {}
+            else:
+                msg_key = "budget_exhausted_trial" if tenant.is_trial else "budget_exhausted_paid"
+                kwargs = {"plus_message": "", "billing_url": f"{frontend_url}/billing"}
+            _send_line_flex(
+                line_user_id,
+                build_status_bubble(error_msg(lang, msg_key, **kwargs), tone="warning"),
+            )
             return
 
         # Forward postback data as a message to the agent
@@ -1500,6 +1578,12 @@ class LineWebhookView(View):
 
             lesson = Lesson.objects.filter(id=lesson_id, tenant=tenant, status="pending").first()
             if not lesson:
+                # Already resolved — acknowledge instead of leaving a stale card's
+                # button feeling dead. Stay silent only if the lesson is truly gone.
+                resolved = Lesson.objects.filter(id=lesson_id, tenant=tenant).first()
+                if resolved is not None:
+                    status_text = "already saved" if resolved.status == "approved" else "already skipped"
+                    _send_line_follow_up(tenant, f"👍 That one's {status_text}!")
                 return
 
             from apps.pii.redactor import rehydrate_for_tenant

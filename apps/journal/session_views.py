@@ -161,7 +161,15 @@ class SessionListView(APIView):
 
         since = request.query_params.get("since")
         if since:
-            qs = qs.filter(session_start__gte=since)
+            from django.utils.dateparse import parse_date, parse_datetime
+
+            parsed_since = parse_datetime(since) or parse_date(since)
+            if parsed_since is None:
+                return Response(
+                    {"detail": "since must be an ISO date/datetime."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            qs = qs.filter(session_start__gte=parsed_since)
 
         include_test = request.query_params.get("include_test", "false").lower() == "true"
         if not include_test:
@@ -183,6 +191,13 @@ class SessionDetailView(APIView):
     """GET/DELETE /api/v1/sessions/{id}/ — retrieve or delete a session."""
 
     permission_classes = [HasSessionsReadScope]
+
+    def get_permissions(self):
+        # DELETE is destructive — require the write scope, mirroring
+        # SessionCreateView. GET keeps the class-level read scope.
+        if self.request.method == "DELETE":
+            return [HasSessionsWriteScope()]
+        return super().get_permissions()
 
     def get(self, request, session_id):
         tenant = getattr(request.user, "tenant", None)

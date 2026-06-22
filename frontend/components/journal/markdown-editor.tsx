@@ -132,14 +132,22 @@ export function EditorToolbar({ editor, className }: EditorToolbarProps) {
       <div className="mx-1.5 h-4 w-px bg-white/[0.06] shrink-0" />
 
       <ToolbarButton
-        onClick={() => editor?.chain().focus().sinkListItem("listItem").run()}
+        onClick={() => {
+          if (!editor) return;
+          const itemType = editor.isActive("taskList") ? "taskItem" : "listItem";
+          editor.chain().focus().sinkListItem(itemType).run();
+        }}
         title="Indent (Tab)"
         active={false}
       >
         <IndentIcon />
       </ToolbarButton>
       <ToolbarButton
-        onClick={() => editor?.chain().focus().liftListItem("listItem").run()}
+        onClick={() => {
+          if (!editor) return;
+          const itemType = editor.isActive("taskList") ? "taskItem" : "listItem";
+          editor.chain().focus().liftListItem(itemType).run();
+        }}
         title="Outdent (Shift+Tab)"
         active={false}
       >
@@ -250,10 +258,13 @@ export function MarkdownEditor({
         if (event.key === "Tab") {
           event.preventDefault();
           const tiptap = (view as any).editor as Editor | undefined;
+          // TaskItem's node name is 'taskItem'; bullet/ordered lists use
+          // 'listItem'. Passing the wrong type makes sink/lift a silent no-op.
+          const itemType = tiptap?.isActive("taskList") ? "taskItem" : "listItem";
           if (event.shiftKey) {
-            return tiptap?.chain().focus().liftListItem("listItem").run() ?? false;
+            return tiptap?.chain().focus().liftListItem(itemType).run() ?? false;
           } else {
-            return tiptap?.chain().focus().sinkListItem("listItem").run() ?? false;
+            return tiptap?.chain().focus().sinkListItem(itemType).run() ?? false;
           }
         }
         return false;

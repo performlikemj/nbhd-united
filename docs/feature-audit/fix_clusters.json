@@ -1,0 +1,968 @@
+[
+ {
+  "cluster_id": "C01",
+  "defect_ids": [
+   "FA-0913",
+   "FA-0914",
+   "FA-0929",
+   "FA-1015",
+   "FA-1016",
+   "FA-1021",
+   "FA-1023",
+   "FA-1036",
+   "FA-1050"
+  ],
+  "files": [
+   "apps/pii/redactor.py",
+   "apps/router/error_messages.py",
+   "apps/router/pending_queue.py",
+   "apps/router/poller.py",
+   "apps/router/services.py",
+   "apps/router/views.py"
+  ],
+  "count": 9,
+  "top_severity": "high",
+  "areas": [
+   "pii",
+   "router-telegram"
+  ]
+ },
+ {
+  "cluster_id": "C02",
+  "defect_ids": [
+   "FA-0653",
+   "FA-0656",
+   "FA-0657",
+   "FA-0662",
+   "FA-0783",
+   "FA-0792",
+   "FA-0973",
+   "FA-0974",
+   "FA-0995"
+  ],
+  "files": [
+   "apps/integrations/runtime_views.py",
+   "apps/journal/path_validation.py",
+   "apps/lessons/agent_context.py",
+   "apps/lessons/management/commands/rewrite_lessons_actionable.py",
+   "apps/lessons/services.py",
+   "apps/router/line_webhook.py",
+   "apps/router/onboarding.py"
+  ],
+  "count": 9,
+  "top_severity": "medium",
+  "areas": [
+   "integrations",
+   "lessons",
+   "router-line"
+  ]
+ },
+ {
+  "cluster_id": "C03",
+  "defect_ids": [
+   "FA-0023",
+   "FA-0138",
+   "FA-0143",
+   "FA-0536",
+   "FA-1071",
+   "FA-1085",
+   "FA-1140"
+  ],
+  "files": [
+   "apps/automations/scheduler.py",
+   "apps/automations/tasks.py",
+   "apps/cron/views.py",
+   "apps/finance/snapshot.py",
+   "apps/tenants/management/commands/rotate_all_passwords.py",
+   "apps/tenants/tasks.py"
+  ],
+  "count": 7,
+  "top_severity": "critical",
+  "areas": [
+   "automations",
+   "cron",
+   "finance",
+   "tenants-auth",
+   "tenants-comms",
+   "tenants-core"
+  ]
+ },
+ {
+  "cluster_id": "C04",
+  "defect_ids": [
+   "FA-0207",
+   "FA-0221",
+   "FA-0269",
+   "FA-0293",
+   "FA-0294",
+   "FA-0406",
+   "FA-0511"
+  ],
+  "files": [
+   "frontend/app/core/page.tsx",
+   "frontend/app/finance/page.tsx",
+   "frontend/app/journal/templates/page.tsx",
+   "frontend/app/settings/billing/page.tsx",
+   "frontend/app/settings/usage/page.tsx",
+   "frontend/components/account-card.tsx",
+   "frontend/lib/api.ts",
+   "frontend/lib/queries.ts",
+   "frontend/tailwind.config.ts"
+  ],
+  "count": 7,
+  "top_severity": "medium",
+  "areas": [
+   "fe-billing-usage",
+   "fe-core",
+   "fe-finance",
+   "fe-journal",
+   "fe-shell-common"
+  ]
+ },
+ {
+  "cluster_id": "C05",
+  "defect_ids": [
+   "FA-0555",
+   "FA-0567",
+   "FA-0568",
+   "FA-0570",
+   "FA-0582",
+   "FA-0584"
+  ],
+  "files": [
+   "apps/fuel/runtime_views.py",
+   "apps/fuel/services.py",
+   "apps/fuel/views.py"
+  ],
+  "count": 6,
+  "top_severity": "medium",
+  "areas": [
+   "fuel"
+  ]
+ },
+ {
+  "cluster_id": "C06",
+  "defect_ids": [
+   "FA-0586",
+   "FA-0819",
+   "FA-0824",
+   "FA-0846",
+   "FA-0866"
+  ],
+  "files": [
+   "apps/fuel/signals.py",
+   "apps/orchestrator/cron_reconcile.py",
+   "apps/orchestrator/fuel_cron.py",
+   "apps/orchestrator/tasks.py"
+  ],
+  "count": 5,
+  "top_severity": "high",
+  "areas": [
+   "fuel",
+   "orchestrator-config-fleet",
+   "orchestrator-provisioning"
+  ]
+ },
+ {
+  "cluster_id": "C07",
+  "defect_ids": [
+   "FA-0175",
+   "FA-0187",
+   "FA-0472",
+   "FA-0473",
+   "FA-0474"
+  ],
+  "files": [
+   "frontend/app/settings/cron-jobs/page.tsx"
+  ],
+  "count": 5,
+  "top_severity": "low",
+  "areas": [
+   "fe-automations",
+   "fe-settings"
+  ]
+ },
+ {
+  "cluster_id": "C08",
+  "defect_ids": [
+   "FA-0390",
+   "FA-0391",
+   "FA-0392",
+   "FA-0396"
+  ],
+  "files": [
+   "frontend/components/journal/document-header.tsx",
+   "frontend/components/journal/document-view.tsx",
+   "frontend/components/journal/markdown-editor.tsx"
+  ],
+  "count": 4,
+  "top_severity": "high",
+  "areas": [
+   "fe-journal"
+  ]
+ },
+ {
+  "cluster_id": "C09",
+  "defect_ids": [
+   "FA-0081",
+   "FA-0920",
+   "FA-1112",
+   "FA-1114"
+  ],
+  "files": [
+   "apps/pii/entity_registry.py",
+   "apps/tenants/views.py"
+  ],
+  "count": 4,
+  "top_severity": "low",
+  "areas": [
+   "byo_models",
+   "pii",
+   "tenants-core"
+  ]
+ },
+ {
+  "cluster_id": "C10",
+  "defect_ids": [
+   "FA-0440",
+   "FA-0441",
+   "FA-0442"
+  ],
+  "files": [
+   "frontend/app/settings/page.tsx"
+  ],
+  "count": 3,
+  "top_severity": "medium",
+  "areas": [
+   "fe-settings"
+  ]
+ },
+ {
+  "cluster_id": "C11",
+  "defect_ids": [
+   "FA-0228",
+   "FA-0229",
+   "FA-0231"
+  ],
+  "files": [
+   "frontend/app/constellation/page.tsx"
+  ],
+  "count": 3,
+  "top_severity": "medium",
+  "areas": [
+   "fe-constellation"
+  ]
+ },
+ {
+  "cluster_id": "C12",
+  "defect_ids": [
+   "FA-0362",
+   "FA-0363",
+   "FA-0364"
+  ],
+  "files": [
+   "frontend/app/settings/integrations/page.tsx"
+  ],
+  "count": 3,
+  "top_severity": "low",
+  "areas": [
+   "fe-integrations"
+  ]
+ },
+ {
+  "cluster_id": "C13",
+  "defect_ids": [
+   "FA-0596",
+   "FA-0607",
+   "FA-0617"
+  ],
+  "files": [
+   "apps/insights/admin.py",
+   "apps/insights/migrations/0002_seed_canonical_topics.py",
+   "apps/insights/runtime_views.py",
+   "apps/insights/seed.py",
+   "apps/insights/topic_resolver.py",
+   "apps/insights/views.py"
+  ],
+  "count": 3,
+  "top_severity": "low",
+  "areas": [
+   "insights"
+  ]
+ },
+ {
+  "cluster_id": "C14",
+  "defect_ids": [
+   "FA-0180",
+   "FA-0469"
+  ],
+  "files": [
+   "frontend/components/schedule-builder.tsx"
+  ],
+  "count": 2,
+  "top_severity": "high",
+  "areas": [
+   "fe-automations",
+   "fe-settings"
+  ]
+ },
+ {
+  "cluster_id": "C15",
+  "defect_ids": [
+   "FA-0316",
+   "FA-0317"
+  ],
+  "files": [
+   "frontend/components/fuel/workout-detail.tsx"
+  ],
+  "count": 2,
+  "top_severity": "medium",
+  "areas": [
+   "fe-fuel"
+  ]
+ },
+ {
+  "cluster_id": "C16",
+  "defect_ids": [
+   "FA-0742",
+   "FA-0744"
+  ],
+  "files": [
+   "apps/journal/session_views.py"
+  ],
+  "count": 2,
+  "top_severity": "medium",
+  "areas": [
+   "journal-workspace-sessions"
+  ]
+ },
+ {
+  "cluster_id": "C17",
+  "defect_ids": [
+   "FA-0020",
+   "FA-0026"
+  ],
+  "files": [
+   "apps/automations/services.py",
+   "apps/automations/views.py"
+  ],
+  "count": 2,
+  "top_severity": "medium",
+  "areas": [
+   "automations"
+  ]
+ },
+ {
+  "cluster_id": "C18",
+  "defect_ids": [
+   "FA-0074",
+   "FA-1148"
+  ],
+  "files": [
+   "apps/tenants/runtime_views.py"
+  ],
+  "count": 2,
+  "top_severity": "low",
+  "areas": [
+   "byo_models",
+   "tenants-core"
+  ]
+ },
+ {
+  "cluster_id": "C19",
+  "defect_ids": [
+   "FA-0100",
+   "FA-0101"
+  ],
+  "files": [
+   "apps/core/serializers.py",
+   "apps/core/views.py"
+  ],
+  "count": 2,
+  "top_severity": "low",
+  "areas": [
+   "core"
+  ]
+ },
+ {
+  "cluster_id": "C20",
+  "defect_ids": [
+   "FA-0241",
+   "FA-0242"
+  ],
+  "files": [
+   "frontend/app/constellation/pending/page.tsx"
+  ],
+  "count": 2,
+  "top_severity": "low",
+  "areas": [
+   "fe-constellation"
+  ]
+ },
+ {
+  "cluster_id": "C21",
+  "defect_ids": [
+   "FA-0377",
+   "FA-0379"
+  ],
+  "files": [
+   "frontend/app/journal/layout.tsx",
+   "frontend/app/journal/page.tsx",
+   "frontend/components/journal/sidebar.tsx"
+  ],
+  "count": 2,
+  "top_severity": "low",
+  "areas": [
+   "fe-journal"
+  ]
+ },
+ {
+  "cluster_id": "C22",
+  "defect_ids": [
+   "FA-0494",
+   "FA-0497"
+  ],
+  "files": [
+   "frontend/components/app-shell.tsx"
+  ],
+  "count": 2,
+  "top_severity": "low",
+  "areas": [
+   "fe-shell-common"
+  ]
+ },
+ {
+  "cluster_id": "C23",
+  "defect_ids": [
+   "FA-0690",
+   "FA-0692"
+  ],
+  "files": [
+   "apps/journal/views.py"
+  ],
+  "count": 2,
+  "top_severity": "low",
+  "areas": [
+   "journal-core"
+  ]
+ },
+ {
+  "cluster_id": "C24",
+  "defect_ids": [
+   "FA-0828",
+   "FA-0876"
+  ],
+  "files": [
+   "apps/orchestrator/management/commands/check_gateway_health.py"
+  ],
+  "count": 2,
+  "top_severity": "low",
+  "areas": [
+   "orchestrator-config-fleet",
+   "orchestrator-provisioning"
+  ]
+ },
+ {
+  "cluster_id": "C25",
+  "defect_ids": [
+   "FA-1054",
+   "FA-1095"
+  ],
+  "files": [
+   "apps/tenants/auth_views.py"
+  ],
+  "count": 2,
+  "top_severity": "low",
+  "areas": [
+   "tenants-auth",
+   "tenants-core"
+  ]
+ },
+ {
+  "cluster_id": "C26",
+  "defect_ids": [
+   "FA-0628"
+  ],
+  "files": [
+   "apps/integrations/services.py",
+   "apps/integrations/tasks.py"
+  ],
+  "count": 1,
+  "top_severity": "high",
+  "areas": [
+   "integrations"
+  ]
+ },
+ {
+  "cluster_id": "C27",
+  "defect_ids": [
+   "FA-0510"
+  ],
+  "files": [
+   "frontend/components/markdown-renderer.tsx"
+  ],
+  "count": 1,
+  "top_severity": "high",
+  "areas": [
+   "fe-shell-common"
+  ]
+ },
+ {
+  "cluster_id": "C28",
+  "defect_ids": [
+   "FA-0341"
+  ],
+  "files": [
+   "frontend/app/horizons/page.tsx",
+   "frontend/app/journal/goal/[slug]/page.tsx",
+   "frontend/components/goal-card.tsx"
+  ],
+  "count": 1,
+  "top_severity": "high",
+  "areas": [
+   "fe-insights-horizons"
+  ]
+ },
+ {
+  "cluster_id": "C29",
+  "defect_ids": [
+   "FA-0334"
+  ],
+  "files": [
+   "frontend/components/fuel/use-distance-unit.ts"
+  ],
+  "count": 1,
+  "top_severity": "medium",
+  "areas": [
+   "fe-fuel"
+  ]
+ },
+ {
+  "cluster_id": "C30",
+  "defect_ids": [
+   "FA-0533"
+  ],
+  "files": [
+   "apps/finance/query_views.py"
+  ],
+  "count": 1,
+  "top_severity": "medium",
+  "areas": [
+   "finance"
+  ]
+ },
+ {
+  "cluster_id": "C31",
+  "defect_ids": [
+   "FA-0907"
+  ],
+  "files": [
+   "apps/orchestrator/personas.py",
+   "apps/orchestrator/services.py",
+   "entrypoint.sh"
+  ],
+  "count": 1,
+  "top_severity": "medium",
+  "areas": [
+   "orchestrator-user-md"
+  ]
+ },
+ {
+  "cluster_id": "C32",
+  "defect_ids": [
+   "FA-0951"
+  ],
+  "files": [
+   "apps/router/cron_delivery.py"
+  ],
+  "count": 1,
+  "top_severity": "medium",
+  "areas": [
+   "router-chat"
+  ]
+ },
+ {
+  "cluster_id": "C33",
+  "defect_ids": [
+   "FA-0006"
+  ],
+  "files": [
+   "apps/actions/messaging.py"
+  ],
+  "count": 1,
+  "top_severity": "medium",
+  "areas": [
+   "actions"
+  ]
+ },
+ {
+  "cluster_id": "C34",
+  "defect_ids": [
+   "FA-0029"
+  ],
+  "files": [
+   "apps/billing/views.py"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "billing"
+  ]
+ },
+ {
+  "cluster_id": "C35",
+  "defect_ids": [
+   "FA-0059"
+  ],
+  "files": [
+   "apps/billing/admin.py"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "billing"
+  ]
+ },
+ {
+  "cluster_id": "C36",
+  "defect_ids": [
+   "FA-0083"
+  ],
+  "files": [
+   "apps/common/apps.py",
+   "apps/common/cache_signals.py"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "common"
+  ]
+ },
+ {
+  "cluster_id": "C37",
+  "defect_ids": [
+   "FA-0162"
+  ],
+  "files": [
+   "apps/cron/management/commands/register_system_crons.py"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "cron"
+  ]
+ },
+ {
+  "cluster_id": "C38",
+  "defect_ids": [
+   "FA-0173"
+  ],
+  "files": [
+   "apps/common/cache.py",
+   "apps/dashboard/apps.py",
+   "apps/dashboard/receivers.py"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "dashboard"
+  ]
+ },
+ {
+  "cluster_id": "C39",
+  "defect_ids": [
+   "FA-0198"
+  ],
+  "files": [
+   "frontend/components/timezone-selector.tsx"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "fe-automations"
+  ]
+ },
+ {
+  "cluster_id": "C40",
+  "defect_ids": [
+   "FA-0212"
+  ],
+  "files": [
+   "frontend/components/billing/credits-card.tsx"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "fe-billing-usage"
+  ]
+ },
+ {
+  "cluster_id": "C41",
+  "defect_ids": [
+   "FA-0256"
+  ],
+  "files": [
+   "frontend/lib/constellation-game/galaxy-scene.ts"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "fe-constellation"
+  ]
+ },
+ {
+  "cluster_id": "C42",
+  "defect_ids": [
+   "FA-0413"
+  ],
+  "files": [
+   "frontend/app/login/page.tsx"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "fe-landing-auth"
+  ]
+ },
+ {
+  "cluster_id": "C43",
+  "defect_ids": [
+   "FA-0415"
+  ],
+  "files": [
+   "frontend/app/signup/page.tsx"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "fe-landing-auth"
+  ]
+ },
+ {
+  "cluster_id": "C44",
+  "defect_ids": [
+   "FA-0427"
+  ],
+  "files": [
+   "frontend/components/landing/starfield.tsx"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "fe-landing-auth"
+  ]
+ },
+ {
+  "cluster_id": "C45",
+  "defect_ids": [
+   "FA-0437"
+  ],
+  "files": [
+   "frontend/app/settings/layout.tsx"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "fe-settings"
+  ]
+ },
+ {
+  "cluster_id": "C46",
+  "defect_ids": [
+   "FA-0531"
+  ],
+  "files": [
+   "apps/finance/runtime_views.py",
+   "apps/finance/services.py"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "finance"
+  ]
+ },
+ {
+  "cluster_id": "C47",
+  "defect_ids": [
+   "FA-0700"
+  ],
+  "files": [
+   "apps/journal/document_views.py"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "journal-core"
+  ]
+ },
+ {
+  "cluster_id": "C48",
+  "defect_ids": [
+   "FA-0763"
+  ],
+  "files": [
+   "apps/lessons/views.py"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "lessons"
+  ]
+ },
+ {
+  "cluster_id": "C49",
+  "defect_ids": [
+   "FA-0788"
+  ],
+  "files": [
+   "apps/lessons/management/commands/dedup_lessons.py"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "lessons"
+  ]
+ },
+ {
+  "cluster_id": "C50",
+  "defect_ids": [
+   "FA-0814"
+  ],
+  "files": [
+   "apps/orchestrator/hibernation.py"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "orchestrator-config-fleet"
+  ]
+ },
+ {
+  "cluster_id": "C51",
+  "defect_ids": [
+   "FA-0899"
+  ],
+  "files": [
+   "apps/orchestrator/management/commands/backfill_welcomes.py"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "orchestrator-user-md"
+  ]
+ },
+ {
+  "cluster_id": "C52",
+  "defect_ids": [
+   "FA-0908"
+  ],
+  "files": [
+   "apps/orchestrator/agenda_envelope.py"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "orchestrator-user-md"
+  ]
+ },
+ {
+  "cluster_id": "C53",
+  "defect_ids": [
+   "FA-1136"
+  ],
+  "files": [
+   "apps/tenants/models.py"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "tenants-core"
+  ]
+ },
+ {
+  "cluster_id": "C54",
+  "defect_ids": [
+   "FA-0007"
+  ],
+  "files": [
+   "apps/actions/tasks.py"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "actions"
+  ]
+ },
+ {
+  "cluster_id": "C55",
+  "defect_ids": [
+   "FA-0046"
+  ],
+  "files": [
+   "apps/billing/model_health.py",
+   "apps/billing/tasks.py"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "billing"
+  ]
+ },
+ {
+  "cluster_id": "C56",
+  "defect_ids": [
+   "FA-0053"
+  ],
+  "files": [
+   "apps/billing/management/commands/cap_budget.py"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "billing"
+  ]
+ },
+ {
+  "cluster_id": "C57",
+  "defect_ids": [
+   "FA-0303"
+  ],
+  "files": [
+   "frontend/components/fuel/today-checkin.tsx"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "fe-fuel"
+  ]
+ },
+ {
+  "cluster_id": "C58",
+  "defect_ids": [
+   "FA-0324"
+  ],
+  "files": [
+   "frontend/components/fuel/history.tsx"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "fe-fuel"
+  ]
+ },
+ {
+  "cluster_id": "C59",
+  "defect_ids": [
+   "FA-0335"
+  ],
+  "files": [
+   "frontend/components/fuel/body-weight.tsx",
+   "frontend/components/fuel/use-weight-unit.ts"
+  ],
+  "count": 1,
+  "top_severity": "low",
+  "areas": [
+   "fe-fuel"
+  ]
+ }
+]

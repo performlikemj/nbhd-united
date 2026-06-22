@@ -116,6 +116,16 @@ class AutomationManualRunView(APIView):
             )
         except AutomationLimitError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # execute_automation swallows dispatch errors (tenant not active, no
+        # container endpoint, missing telegram_chat_id) and returns a FAILED
+        # run rather than re-raising. Surface that at the HTTP layer so a
+        # subscriber clicking "Run now" gets a failure status code, not a 201.
+        if run.status == AutomationRun.Status.FAILED:
+            return Response(
+                AutomationRunSerializer(run).data,
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
         return Response(AutomationRunSerializer(run).data, status=status.HTTP_201_CREATED)
 
 

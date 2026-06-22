@@ -119,8 +119,20 @@ _ALLOWED_FILTERS = {
     "plan": {"is_active", "strategy"},
 }
 
+# Order-by must reference real DB columns. ``is_debt`` and ``payoff_progress``
+# are Python @property methods on FinanceAccount (not columns), so they belong
+# in ``_ALLOWED_FIELDS`` (serializable / requestable via ``fields=``) but NOT
+# here — ordering by them would raise FieldError -> HTTP 500. Default: a
+# resource's order-by allowlist mirrors its field allowlist; overrides below
+# carve out non-column properties.
+_ALLOWED_ORDER_BY = {
+    "accounts": _ALLOWED_FIELDS["accounts"] - {"is_debt", "payoff_progress"},
+}
+
+# group_by must also reference real DB columns (qs.values(...)); ``is_debt`` is
+# a property, not a column.
 _ALLOWED_GROUP_BY = {
-    "accounts": {"account_type", "is_debt"},
+    "accounts": {"account_type"},
     "transactions": {"transaction_type", "account_id", "account_nickname", "date"},
     "plan": set(),
 }
@@ -315,7 +327,10 @@ class FinanceQueryView(BaseQueryView):
     def _order(self, qs: QuerySet, query: FinanceQueryRequest, resource: str) -> QuerySet:
         if query.order_by:
             field = query.order_by.lstrip("-")
-            if field not in _ALLOWED_FIELDS[resource]:
+            # Order-by must hit a real DB column; fall back to the field
+            # allowlist for resources whose serializable fields are all columns.
+            allowed = _ALLOWED_ORDER_BY.get(resource, _ALLOWED_FIELDS[resource])
+            if field not in allowed:
                 raise QueryExecutionError(
                     "invalid_order_by",
                     f"order_by={query.order_by!r} not allowed for resource={resource}",

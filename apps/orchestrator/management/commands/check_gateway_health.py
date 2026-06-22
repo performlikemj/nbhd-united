@@ -38,7 +38,7 @@ class Command(BaseCommand):
             passed = check(tenant)
             if not passed:
                 self.stderr.write(self.style.ERROR("\nStopped at first failure."))
-                return
+                raise CommandError(f"Gateway health check failed at: {check.__name__}")
 
         self.stdout.write(self.style.SUCCESS("\nAll checks passed."))
 
@@ -127,10 +127,11 @@ class Command(BaseCommand):
     def _check_tools_invoke(self, tenant: Tenant) -> bool:
         self.stdout.write("\n5. tools/invoke works (cron.list)")
         from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
+        from apps.orchestrator.services import _extract_cron_jobs
 
         try:
             result = invoke_gateway_tool(tenant, "cron.list", {})
-            job_count = len(result.get("jobs", []))
+            job_count = len(_extract_cron_jobs(result) or [])
             self.stdout.write(f"   returned {job_count} jobs")
             self.stdout.write(self.style.SUCCESS("   PASS"))
             return True

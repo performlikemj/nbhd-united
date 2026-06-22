@@ -977,13 +977,20 @@ def _send_apology_for_dropped_message(tenant: Tenant, msg) -> None:
                 str(tenant.id)[:8],
             )
     else:
-        # Telegram apology not yet wired up — Telegram path uses
-        # forward_to_openclaw which has its own retry envelope, so the
-        # head-of-line stall pattern is less acute here. Log only.
-        logger.info(
-            "deliver_buffered: dropped Telegram msg for tenant %s (apology not impl)",
-            str(tenant.id)[:8],
-        )
+        # Telegram: send the same localized apology via the existing
+        # send_telegram_message helper (plain Bot API call, no assistant loop).
+        telegram_chat_id = getattr(tenant.user, "telegram_chat_id", None)
+        if not telegram_chat_id:
+            return
+        from apps.router.services import send_telegram_message
+
+        try:
+            send_telegram_message(telegram_chat_id, text)
+        except Exception:
+            logger.exception(
+                "deliver_buffered: failed to push apology to Telegram for tenant %s",
+                str(tenant.id)[:8],
+            )
 
 
 def _buffered_row_is_voice(msg) -> bool:

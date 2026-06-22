@@ -20,6 +20,14 @@ export function CreditsCard() {
   );
   const [error, setError] = useState("");
 
+  // Strip ?topup= from the URL on mount so a manual refresh or revisit of the
+  // same URL doesn't re-display the banner or trigger spurious re-fetches.
+  // The topup state value is already captured, so the current render is unaffected.
+  useEffect(() => {
+    if (!topup) return;
+    window.history.replaceState({}, "", window.location.pathname);
+  }, [topup]);
+
   // The success redirect can beat the webhook that actually grants the credit,
   // so never trust the redirect — just re-fetch the server balance a couple of
   // times and show a "processing" note until it lands.

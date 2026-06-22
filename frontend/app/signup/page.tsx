@@ -44,7 +44,7 @@ export default function SignupPage() {
       }
       try {
         const me = await fetchMe();
-        const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active" || !me.tenant.user.telegram_chat_id;
+        const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active" || (!me.tenant.user.telegram_chat_id && !me.line_user_id);
         router.push(isOnboardingNeeded ? "/onboarding" : "/journal");
       } catch {
         router.push("/onboarding");

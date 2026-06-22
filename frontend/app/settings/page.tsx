@@ -108,8 +108,6 @@ const TIMEZONE_GROUPS: Array<{ region: string; zones: string[] }> = [
       "Europe/Belgrade",
       "Europe/Brussels",
       "Europe/Minsk",
-      "Europe/Zurich",
-      "Europe/Madrid",
     ],
   },
   {
@@ -183,7 +181,6 @@ const TIMEZONE_GROUPS: Array<{ region: string; zones: string[] }> = [
       "Africa/Algiers",
       "Africa/Brazzaville",
       "Africa/Ceuta",
-      "Africa/Cairo",
       "Africa/Juba",
     ],
   },
@@ -192,28 +189,24 @@ const TIMEZONE_GROUPS: Array<{ region: string; zones: string[] }> = [
 function offsetLabel(tz: string): string {
   if (!tz) return "UTC+0";
 
-  const map: Record<string, string> = {
-    "Asia/Tokyo": "JST, UTC+9",
-    "America/New_York": "EST, UTC-5",
-    "America/Los_Angeles": "PST, UTC-8",
-    "Europe/London": "GMT, UTC+0",
-    "Europe/Berlin": "CET, UTC+1",
-    "Europe/Paris": "CET, UTC+1",
-    "America/Chicago": "CST, UTC-6",
-    "America/Denver": "MST, UTC-7",
-    "America/Santiago": "CLST, UTC-3",
-    "America/Sao_Paulo": "BRT, UTC-3",
-    "Asia/Shanghai": "CST, UTC+8",
-    "Asia/Seoul": "KST, UTC+9",
-    "Asia/Singapore": "SGT, UTC+8",
-    "Asia/Kolkata": "IST, UTC+5:30",
-    "Asia/Karachi": "PKT, UTC+5",
-    "Asia/Jakarta": "WIB, UTC+7",
-    "Australia/Sydney": "AEST, UTC+10",
-    "Pacific/Auckland": "NZST, UTC+12",
-  };
+  // Compute the real current offset/abbreviation for any IANA zone at runtime.
+  // Falls back gracefully if the zone is invalid or unsupported by the runtime.
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      timeZoneName: "shortOffset",
+    }).formatToParts(new Date());
+    const offset = parts.find((p) => p.type === "timeZoneName")?.value;
+    if (offset) {
+      // "GMT+9" / "GMT-5" / "GMT" → "UTC+9" / "UTC-5" / "UTC+0"
+      const normalized = offset.replace(/^GMT/, "UTC").replace(/^UTC$/, "UTC+0");
+      return normalized;
+    }
+  } catch {
+    // Invalid time zone string — fall through to default.
+  }
 
-  return map[tz] ?? "UTC";
+  return "UTC+0";
 }
 
 function findTimezoneLabel(tz: string) {
@@ -253,6 +246,7 @@ export default function SettingsPage() {
 
   const [savingField, setSavingField] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState("");
+  const [saveStatus, setSaveStatus] = useState<"success" | "error">("success");
 
   const languageLookup = useMemo(() => {
     const map = new Map<string, string>();
@@ -291,6 +285,7 @@ export default function SettingsPage() {
   const clearStatus = () => {
     setSavingField(null);
     setSaveMessage("");
+    setSaveStatus("success");
   };
 
   const clearRefreshStatus = () => {
@@ -303,6 +298,7 @@ export default function SettingsPage() {
     payload: { display_name?: string; language?: string; timezone?: string; location_city?: string; location_lat?: number | null; location_lon?: number | null },
   ) => {
     setSaveMessage("");
+    setSaveStatus("success");
     setSavingField(field);
 
     const previousTimezone = me?.timezone;
@@ -331,6 +327,7 @@ export default function SettingsPage() {
         setSaveMessage("Saved!");
       }
     } catch (error) {
+      setSaveStatus("error");
       setSaveMessage(error instanceof Error ? error.message : "Failed to save. Please try again.");
     } finally {
       setSavingField(null);
@@ -389,6 +386,7 @@ export default function SettingsPage() {
   const handlePersonaSave = async () => {
     if (selectedPersona && selectedPersona !== currentPersona) {
       await updatePrefs.mutateAsync({ agent_persona: selectedPersona });
+      setSaveStatus("success");
       setSaveMessage("Saved!");
       window.setTimeout(clearStatus, 3000);
     }
@@ -787,7 +785,14 @@ export default function SettingsPage() {
       </SectionCard>
 
       {saveMessage ? (
-        <div className="rounded-panel border border-signal/30 bg-signal-faint px-3 py-2 text-sm text-signal">
+        <div
+          role={saveStatus === "error" ? "alert" : "status"}
+          className={
+            saveStatus === "error"
+              ? "rounded-panel border border-rose-border bg-rose-bg px-3 py-2 text-sm text-rose-text"
+              : "rounded-panel border border-signal/30 bg-signal-faint px-3 py-2 text-sm text-signal"
+          }
+        >
           {saveMessage}
         </div>
       ) : null}

@@ -179,6 +179,27 @@ def apply_single_tenant_config_task(tenant_id: str, _is_followup_retry: bool = F
 
     tenant.refresh_from_db()
 
+    # update_tenant_config silently returns WITHOUT writing the file share
+    # when the tenant is not ACTIVE or has lost its container_id (see
+    # services.py update_tenant_config guard). If the tenant became
+    # SUSPENDED / lost its container between this task's version gate and the
+    # write, advancing config_version here would falsely mark the change
+    # applied and strand it — apply_pending_configs, billing reactivation,
+    # idle-wake reconcile, and even manual force_apply all gate on
+    # pending > config, so none would ever retry. Mirror the write guard:
+    # only stamp the version when a real write actually happened. Leaving
+    # pending_config_version > config_version lets the natural re-queue paths
+    # retry once the tenant is ACTIVE again.
+    if tenant.status != Tenant.Status.ACTIVE or not tenant.container_id:
+        logger.info(
+            "Config write skipped for tenant %s (status=%s, container=%s) — "
+            "leaving pending_config_version ahead for retry",
+            str(tenant_id)[:8],
+            tenant.status,
+            bool(tenant.container_id),
+        )
+        return
+
     Tenant.objects.filter(id=tenant_id).update(
         config_version=db_models.F("pending_config_version"),
         config_refreshed_at=tz.now(),

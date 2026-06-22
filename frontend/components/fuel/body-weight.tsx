@@ -345,11 +345,17 @@ function DeleteConfirmDialog({
 
 function UnitToggle({ unit, onChange }: { unit: "kg" | "lbs"; onChange: (u: "kg" | "lbs") => void }) {
   return (
-    <div className="flex gap-0.5 rounded-full border border-border p-0.5">
+    <div
+      role="group"
+      aria-label="Weight unit"
+      className="flex gap-0.5 rounded-full border border-border p-0.5"
+    >
       {(["kg", "lbs"] as const).map((u) => (
         <button
           key={u}
+          type="button"
           onClick={() => onChange(u)}
+          aria-pressed={unit === u}
           className={`rounded-full min-h-[36px] min-w-[44px] px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider transition ${
             unit === u ? "bg-surface-hover text-ink" : "text-ink-faint hover:text-ink"
           }`}

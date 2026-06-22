@@ -48,12 +48,14 @@ class Command(BaseCommand):
         if options["uncap"]:
             # Set spent to 0 to uncap
             budget.spent_dollars = 0
-            budget.save(update_fields=["spent_dollars"])
+            budget.is_capped = False
+            budget.save(update_fields=["spent_dollars", "is_capped"])
             self.stdout.write(self.style.SUCCESS(f"Budget uncapped. Spent reset to $0 / ${budget.budget_dollars}."))
         else:
             # Set spent = budget to cap
             budget.spent_dollars = budget.budget_dollars
-            budget.save(update_fields=["spent_dollars"])
+            budget.is_capped = True
+            budget.save(update_fields=["spent_dollars", "is_capped"])
             self.stdout.write(
                 self.style.WARNING(
                     f"Budget capped. Spent set to ${budget.spent_dollars} / ${budget.budget_dollars}. "

@@ -329,9 +329,19 @@ export function useDonationPreferenceMutation() {
     onMutate: async (newData: { donation_enabled?: boolean; donation_percentage?: number }) => {
       await queryClient.cancelQueries({ queryKey: ["usage-transparency"] });
       const previous = queryClient.getQueryData<TransparencyData>(["usage-transparency"]);
-      queryClient.setQueryData<TransparencyData>(["usage-transparency"], (old) =>
-        old ? { ...old, ...newData } : old,
-      );
+      queryClient.setQueryData<TransparencyData>(["usage-transparency"], (old) => {
+        if (!old) return old;
+        // Recompute the server-derived donation_amount client-side so the impact
+        // dollars / meals estimate stay consistent with the optimistic
+        // enabled/percentage change (server: round(surplus * pct/100, 4)).
+        const effectiveEnabled = newData.donation_enabled ?? old.donation_enabled;
+        const effectivePct = newData.donation_percentage ?? old.donation_percentage;
+        const donation_amount =
+          effectiveEnabled && old.surplus > 0
+            ? Math.round(old.surplus * (effectivePct / 100) * 10000) / 10000
+            : 0;
+        return { ...old, ...newData, donation_amount };
+      });
       return { previous };
     },
     onError: (_err, _newData, context) => {

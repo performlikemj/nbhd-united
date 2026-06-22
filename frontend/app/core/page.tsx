@@ -19,10 +19,16 @@ const COMPOSE_MSGS = ["Drawing on your week…", "Finding the words…", "Placin
 // cross-fades. (Was 700ms, which flashed.)
 const COMPOSE_MSG_INTERVAL_MS = 3800;
 const POLL_INTERVAL_MS = 3500;
-// Stop *watching* after this long — the render's own channel ping still lands,
-// so a slow render (rate-limited TTS) becomes "I'll message you" rather than a
-// spinner that never ends.
+// After this long we stop the *fast* watch and switch the copy to "I'll message
+// you" (the render's own channel ping still lands). We keep a slow background
+// poll going so a late terminal result — a post-timeout `failed` (which sends
+// no channel ping) or a slow `ready` — still flips the UI instead of stranding
+// the user on "Still composing…".
 const POLL_TIMEOUT_MS = 4 * 60_000;
+const SLOW_POLL_INTERVAL_MS = 30_000;
+// Hard ceiling so the background poll can't run forever (≈20 min after the fast
+// timeout). Past this the channel ping / a manual reload is the recovery path.
+const POLL_HARD_TIMEOUT_MS = POLL_TIMEOUT_MS + 20 * 60_000;
 
 export default function CorePage() {
   // Start in "loading" — never paint the compose CTA before we know whether
@@ -131,10 +137,17 @@ export default function CorePage() {
             return;
           }
         }
-        if (Date.now() - started > POLL_TIMEOUT_MS) {
-          // Give up watching, but it's still rendering — the ping will arrive.
+        const elapsed = Date.now() - started;
+        if (elapsed > POLL_HARD_TIMEOUT_MS) {
+          // Stop entirely — the channel ping / a reload is the recovery path now.
           pollRef.current.active = false;
+          return;
+        }
+        if (elapsed > POLL_TIMEOUT_MS) {
+          // Past the fast window: switch the copy to "I'll message you" but keep
+          // a slow background poll alive so a late `failed`/`ready` still lands.
           setLongRunning(true);
+          window.setTimeout(tick, SLOW_POLL_INTERVAL_MS);
           return;
         }
         window.setTimeout(tick, POLL_INTERVAL_MS);

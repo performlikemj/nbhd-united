@@ -26,6 +26,16 @@ function subscribe(callback: () => void) {
   };
 }
 
+/**
+ * Returns the user's preferred weight unit and a setter.
+ *
+ * NOTE: This preference is stored in localStorage only (device-local).
+ * Unlike `useDistanceUnit`, which reads from and writes back to the server-side
+ * `FuelProfile.distance_unit` field, weight unit has no server-side backing.
+ * A different browser or cleared storage silently resets to "kg".
+ * To make this cross-device, add a `weight_unit` field to FuelProfile
+ * (backend migration + serializer) and mirror the `useDistanceUnit` pattern.
+ */
 export function useWeightUnit() {
   const unit = useSyncExternalStore(subscribe, getSnapshot, () => "kg" as WeightUnit);
 

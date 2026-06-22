@@ -357,13 +357,15 @@ def enqueue_message_for_tenant(
     Returns the freshly created ``PendingMessage`` row so callers can
     log / inspect.
 
-    NOTE: webhooks must do channel-specific preprocessing (workspace
-    routing, datetime context injection, PII redaction, etc.) BEFORE
-    enqueuing. The queue is dumb on purpose — it just POSTs the
-    prepared payload at the container and relays the reply. That keeps
-    the drain task channel-agnostic and avoids re-resolving routing at
-    drain time, when the user might already be in a different
-    workspace.
+    NOTE: callers must do channel-specific preprocessing (workspace
+    routing, datetime context injection, inbound PII redaction of the
+    user's text, etc.) BEFORE enqueuing — the redacted text is what gets
+    stored on the row and forwarded. The Telegram poller does this in
+    ``TelegramPoller._forward_to_container``. The queue itself is dumb on
+    purpose — it just POSTs the prepared payload at the container and
+    relays the reply, so it never re-runs redaction over the assembled
+    body (which carries structural markers the NER detector would
+    misfire on).
     """
     msg = PendingMessage.objects.create(
         tenant=tenant,
@@ -1613,10 +1615,7 @@ def relay_ai_response_to_telegram(tenant: Tenant, chat_id: int, ai_text: str) ->
             text = text.replace(match.group(0), "")
 
     # Strip MEDIA references and attempt to send any embedded images
-    # via sendPhoto. We don't bring the full _send_rich_response logic
-    # here (no inline button parsing yet) — that's a follow-up if it
-    # turns out queued Telegram replies need it. Hibernation-buffered
-    # delivery for Telegram has the same limitation today.
+    # via sendPhoto. Mirrors ``poller._send_rich_response``.
     media_pattern = re.compile(
         r"MEDIA:(\S+\.(?:jpg|jpeg|png|gif|webp))",
         re.IGNORECASE,
@@ -1638,10 +1637,24 @@ def relay_ai_response_to_telegram(tenant: Tenant, chat_id: int, ai_text: str) ->
     text = media_pattern.sub("", text)
     text = workspace_pattern.sub("", text).strip()
 
+    # Parse inline buttons: [[button:Label|callback_data]] — same as
+    # ``poller._send_rich_response``. Without this the markers leaked as
+    # literal text on the (production) queue drain path and the
+    # ``agent:``-prefixed callback at poller.py was never reachable on
+    # Telegram. The poller already handles the resulting button taps.
+    button_pattern = re.compile(r"\[\[button:([^|]+)\|([^\]]+)\]\]")
+    buttons = button_pattern.findall(text)
+    text = button_pattern.sub("", text).strip()
+
+    reply_markup = None
+    if buttons:
+        keyboard = [[{"text": label.strip(), "callback_data": f"agent:{data.strip()}"}] for label, data in buttons]
+        reply_markup = {"inline_keyboard": keyboard}
+
     if not text:
         return True
 
-    return _send_telegram_markdown(chat_id, text)
+    return _send_telegram_markdown(chat_id, text, reply_markup=reply_markup)
 
 
 # ---------------------------------------------------------------------------
@@ -1699,7 +1712,7 @@ def _split_telegram_message(text: str, max_len: int = _TG_MAX_LEN) -> list[str]:
     return [c for c in chunks if c]
 
 
-def _send_telegram_markdown(chat_id: int, text: str) -> bool:
+def _send_telegram_markdown(chat_id: int, text: str, reply_markup: dict | None = None) -> bool:
     """Render the assistant's markdown to Telegram HTML and deliver it.
 
     The agent emits CommonMark/GFM; Telegram's legacy ``Markdown`` parse-mode
@@ -1708,6 +1721,9 @@ def _send_telegram_markdown(chat_id: int, text: str) -> bool:
     bold headings, aligned monospace tables, real anchors, no visible markdown.
     Each block-bounded chunk is sent with ``parse_mode="HTML"``; on the rare
     rejection we degrade that chunk to tag-free text (still markdown-free).
+
+    ``reply_markup`` (e.g. an ``inline_keyboard`` of agent buttons) is attached
+    to the LAST chunk only, mirroring ``TelegramPoller._send_rich_response``.
     """
     base = _telegram_api_base()
     if not base:
@@ -1724,19 +1740,25 @@ def _send_telegram_markdown(chat_id: int, text: str) -> bool:
     for i, chunk in enumerate(chunks):
         if i > 0:
             time.sleep(0.3)  # brief delay between chunks (matches poller)
+        payload = {"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"}
+        if reply_markup and i == len(chunks) - 1:
+            payload["reply_markup"] = reply_markup
         try:
             resp = httpx.post(
                 f"{base}/sendMessage",
-                json={"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"},
+                json=payload,
                 timeout=10,
             )
             if resp.is_success:
                 continue
             if resp.status_code == 400:
                 # HTML rejected — retry as tag-free plain text (no markdown).
+                plain_payload = {"chat_id": chat_id, "text": strip_telegram_html(chunk)}
+                if reply_markup and i == len(chunks) - 1:
+                    plain_payload["reply_markup"] = reply_markup
                 plain = httpx.post(
                     f"{base}/sendMessage",
-                    json={"chat_id": chat_id, "text": strip_telegram_html(chunk)},
+                    json=plain_payload,
                     timeout=10,
                 )
                 overall = overall and plain.is_success

@@ -65,7 +65,7 @@ class Command(BaseCommand):
             if feature in ("fuel", "both") and tenant.fuel_enabled:
                 self._run_one(tenant, short, "fuel", per_feature["fuel"])
 
-            if feature in ("finance", "both") and tenant.finance_enabled:
+            if feature in ("finance", "both") and tenant.finance_active:
                 self._run_one(tenant, short, "finance", per_feature["finance"])
 
         self.stdout.write(self.style.SUCCESS("Done."))

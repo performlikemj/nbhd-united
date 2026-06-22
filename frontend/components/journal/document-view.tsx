@@ -140,6 +140,9 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
   }, []);
   const [helpOpen, setHelpOpen] = useState(false);
   const [savedIndicator, setSavedIndicator] = useState(false);
+  // Desktop Save error surface — set when the explicit PATCH fails so the user
+  // isn't left guessing whether the save landed. Cleared on retry / new edit.
+  const [saveError, setSaveError] = useState(false);
   const saveIndicatorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const lastSavedRef = useRef<string>("");
@@ -285,6 +288,7 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
     setDraft(initial);
     lastSavedRef.current = initial;
     setSaveStatus("idle");
+    setSaveError(false);
     setEditing(true);
   };
 
@@ -311,11 +315,19 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
   };
 
   const handleSave = async () => {
-    await updateMutation.mutateAsync({
-      kind,
-      slug,
-      data: { markdown: latestDraft() },
-    });
+    setSaveError(false);
+    try {
+      await updateMutation.mutateAsync({
+        kind,
+        slug,
+        data: { markdown: latestDraft() },
+      });
+    } catch {
+      // Keep the editor open (no data loss) and surface the failure so the
+      // user can retry instead of being left unsure whether the save landed.
+      setSaveError(true);
+      return;
+    }
     setEditing(false);
     setMobileEditor(null);
     mobileEditorRef.current = null;
@@ -328,6 +340,7 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
 
   const handleCancel = () => {
     setEditing(false);
+    setSaveError(false);
     setMobileEditor(null);
     mobileEditorRef.current = null;
     liveEditorRef.current = null;
@@ -494,6 +507,11 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
                 }}
               />
             </div>
+            {saveError && (
+              <p className="mt-2 text-sm text-rose-text" role="alert">
+                Couldn&apos;t save your changes. Your edits are still here — tap Save to try again.
+              </p>
+            )}
           </div>
         ) : (
           <div

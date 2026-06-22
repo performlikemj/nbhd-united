@@ -23,6 +23,12 @@ MAX_RUNS_PER_DAY = 12
 
 MIN_RUN_INTERVAL = timedelta(minutes=MIN_INTERVAL_MINUTES)
 
+# A RUNNING AutomationRun older than this is treated as stranded (e.g. the
+# worker was hard-killed between marking RUNNING and dispatching). When
+# get_or_create returns such a row, it is re-dispatched so a single eviction
+# can no longer permanently wedge the automation's schedule.
+STALE_RUNNING_THRESHOLD = timedelta(minutes=15)
+
 
 class AutomationError(Exception):
     """Base automation exception."""
@@ -430,7 +436,23 @@ def execute_automation(
         )
 
     if not created:
-        return run
+        # A pre-existing RUNNING row that is older than the stale threshold
+        # means a prior dispatch was hard-killed (OOM/eviction/SIGKILL)
+        # between marking RUNNING and dispatching — it never advanced
+        # next_run_at, so the scheduler keeps re-selecting this automation
+        # and rebuilding the same window-deterministic key, getting this
+        # same stranded row back forever. Re-dispatch it instead of
+        # short-circuiting so the schedule can recover without manual
+        # intervention. Terminal rows (succeeded/failed/skipped) and fresh
+        # RUNNING rows (a genuine concurrent invocation in flight) still
+        # short-circuit.
+        is_stale_running = (
+            run.status == AutomationRun.Status.RUNNING
+            and run.started_at is not None
+            and (timezone.now() - run.started_at) >= STALE_RUNNING_THRESHOLD
+        )
+        if not is_stale_running:
+            return run
 
     run.status = AutomationRun.Status.RUNNING
     run.started_at = timezone.now()

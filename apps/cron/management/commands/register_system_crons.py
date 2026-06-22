@@ -108,6 +108,14 @@ SYSTEM_CRONS = [
     # + a 1-token reachability ping) and flip it on transitions. See
     # apps/billing/model_health.py.
     ("model-health-check", "*/30 * * * *", "/api/cron/trigger/model_health_check/"),
+    # Every minute — global dispatcher for user-defined scheduled automations.
+    # run_due_automations selects ACTIVE Automation rows whose next_run_at has
+    # passed and executes them. Without this schedule the automations CRUD
+    # surface is manual-run only and never fires on its configured cadence.
+    # Minute granularity matches compute_next_run_at; it is a single global
+    # query, so the every-minute tick is cheap (mirrors reap-stuck-inbound).
+    # See apps/automations/scheduler.py:run_due_automations.
+    ("run-due-automations", "* * * * *", "/api/cron/trigger/run_due_automations/"),
 ]
 
 
@@ -202,6 +210,7 @@ class Command(BaseCommand):
 
             if dry_run:
                 self.stdout.write(f"  [dry-run] would register: {name} → {cron_expr} → {destination}")
+                registered += 1
                 continue
 
             create_resp = httpx.post(
