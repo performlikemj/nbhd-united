@@ -300,16 +300,6 @@ export default function SettingsCronJobsPage() {
   }, []);
 
   /* ── Feedback helpers ── */
-  const setSuccess = (
-    setState: (state: ActionFeedback) => void,
-    timeoutRef: { current: ReturnType<typeof setTimeout> | null },
-  ) => {
-    setState({ status: "success", text: "" });
-    timeoutRef.current = setTimeout(() => {
-      setState({ status: "idle", text: "" });
-    }, SAVE_CLEAR_DELAY_MS);
-  };
-
   const setError = (
     setState: (state: ActionFeedback) => void,
     timeoutRef: { current: ReturnType<typeof setTimeout> | null },
@@ -679,11 +669,7 @@ export default function SettingsCronJobsPage() {
                   disabled={createMutation.isPending}
                   className={`${getSaveButtonClass(createFeedback.status)} w-full sm:w-auto min-h-[48px]`}
                 >
-                  {createMutation.isPending
-                    ? "Creating..."
-                    : createFeedback.status === "success"
-                      ? "✓ Created"
-                      : "Create"}
+                  {createMutation.isPending ? "Creating..." : "Create"}
                 </button>
                 {createFeedback.status === "error" ? (
                   <p className="text-xs text-rose-500">{createFeedback.text}</p>

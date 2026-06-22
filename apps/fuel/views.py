@@ -30,6 +30,7 @@ from .models import (
     FuelGoal,
     FuelProfile,
     PersonalRecord,
+    PlanStatus,
     RestingHeartRateLog,
     SleepLog,
     Workout,
@@ -1188,20 +1189,54 @@ class WorkoutPlanListView(APIView):
         return Response(result)
 
     def post(self, request):
+        from django.db import transaction
+
+        from .runtime_views import _expand_plan_workouts, _validate_normalize_schedule
+
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
         serializer = WorkoutPlanSerializer(data=request.data, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
-        plan = serializer.save()
 
-        # Expand the schedule template into individual planned Workout rows
-        if plan.schedule_json and plan.start_date and plan.weeks:
-            from .runtime_views import _expand_plan_workouts
+        # Validate + normalise schedule_json before persisting anything so a
+        # non-dict day value is rejected with 400 instead of raising AttributeError
+        # inside _expand_plan_workouts (mirrors the runtime path's pre-persist gate).
+        raw_schedule = serializer.validated_data.get("schedule_json") or {}
+        if raw_schedule:
+            normalized_schedule, sched_err = _validate_normalize_schedule(raw_schedule)
+            if sched_err is not None:
+                return sched_err
+            serializer.validated_data["schedule_json"] = normalized_schedule
 
-            _expand_plan_workouts(plan, tenant, plan.schedule_json, plan.start_date, plan.weeks)
+        # Idempotency: a double-submit with the same name + start_date returns
+        # the existing active plan rather than duplicating it and its calendar.
+        start_date = serializer.validated_data.get("start_date")
+        name = serializer.validated_data.get("name", "")
+        if start_date and name:
+            existing = WorkoutPlan.objects.filter(
+                tenant=tenant, name=name, start_date=start_date, status=PlanStatus.ACTIVE
+            ).first()
+            if existing is not None:
+                data = WorkoutPlanSerializer(existing).data
+                data["workout_count"] = Workout.objects.filter(plan=existing).count()
+                data["deduped"] = True
+                return Response(data, status=status.HTTP_200_OK)
 
-        data = serializer.data
+        # Wrap the plan row + calendar expansion in one transaction so a
+        # mid-loop failure in _expand_plan_workouts rolls back the plan row too.
+        try:
+            with transaction.atomic():
+                plan = serializer.save()
+                if plan.schedule_json and plan.start_date and plan.weeks:
+                    _expand_plan_workouts(plan, tenant, plan.schedule_json, plan.start_date, plan.weeks)
+        except Exception as exc:
+            return Response(
+                {"error": "create_failed", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        data = WorkoutPlanSerializer(plan).data
         data["workout_count"] = Workout.objects.filter(plan=plan).count()
         return Response(data, status=status.HTTP_201_CREATED)
 
@@ -1225,6 +1260,10 @@ class WorkoutPlanDetailView(APIView):
         return Response(data)
 
     def patch(self, request, plan_id):
+        from django.db import transaction
+
+        from .runtime_views import _expand_plan_workouts, _validate_normalize_schedule
+
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
@@ -1238,20 +1277,38 @@ class WorkoutPlanDetailView(APIView):
 
         serializer = WorkoutPlanSerializer(plan, data=request.data, partial=True, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
-        plan = serializer.save()
 
-        # Regenerate planned workouts if schedule or weeks changed
-        if plan.schedule_json != old_schedule or plan.weeks != old_weeks:
-            from .runtime_views import _expand_plan_workouts
+        # Validate + normalise any incoming schedule_json before saving so a
+        # malformed day value is rejected with 400 rather than raising AttributeError
+        # inside _expand_plan_workouts (mirrors the runtime regen path).
+        raw_schedule = serializer.validated_data.get("schedule_json")
+        if raw_schedule:
+            normalized_schedule, sched_err = _validate_normalize_schedule(raw_schedule)
+            if sched_err is not None:
+                return sched_err
+            serializer.validated_data["schedule_json"] = normalized_schedule
 
-            today = today_in_tenant_tz(tenant)
-            Workout.objects.filter(plan=plan, status=WorkoutStatus.PLANNED, date__gte=today).delete()
-            elapsed_days = (today - plan.start_date).days
-            elapsed_weeks = max(0, elapsed_days // 7)
-            remaining_weeks = max(0, plan.weeks - elapsed_weeks)
-            if remaining_weeks > 0:
-                regen_start = max(today, plan.start_date)
-                _expand_plan_workouts(plan, tenant, plan.schedule_json, regen_start, remaining_weeks)
+        # Wrap the save + calendar regen in one transaction so a mid-loop failure
+        # in _expand_plan_workouts rolls back the plan update and the partial deletes.
+        try:
+            with transaction.atomic():
+                plan = serializer.save()
+
+                # Regenerate planned workouts if schedule or weeks changed
+                if plan.schedule_json != old_schedule or plan.weeks != old_weeks:
+                    today = today_in_tenant_tz(tenant)
+                    Workout.objects.filter(plan=plan, status=WorkoutStatus.PLANNED, date__gte=today).delete()
+                    elapsed_days = (today - plan.start_date).days
+                    elapsed_weeks = max(0, elapsed_days // 7)
+                    remaining_weeks = max(0, plan.weeks - elapsed_weeks)
+                    if remaining_weeks > 0:
+                        regen_start = max(today, plan.start_date)
+                        _expand_plan_workouts(plan, tenant, plan.schedule_json, regen_start, remaining_weeks)
+        except Exception as exc:
+            return Response(
+                {"error": "regen_failed", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         data = WorkoutPlanSerializer(plan).data
         data["workout_count"] = Workout.objects.filter(plan=plan).count()

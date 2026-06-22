@@ -929,14 +929,19 @@ class LineWebhookView(View):
                 line_user_id,
             )
             # Reject voice during onboarding BEFORE incurring the paid Whisper
-            # call: a user still onboarding can only answer with typed text, so
-            # transcribing here would waste an API call on a discarded transcript
-            # and leave the user staring at a long loading animation before the
-            # rejection. The full pipeline (provisioning/suspended/budget/wake +
-            # needs_reintroduction reset) still runs below for non-onboarding users.
+            # call: a user still onboarding (or eligible for re-introduction) can
+            # only answer with typed text, so transcribing here would waste an API
+            # call on a discarded transcript and leave the user staring at a long
+            # loading animation before the rejection. This mirrors the downstream
+            # needs_reintroduction gate so that backfilled/default-profile users are
+            # also caught here rather than after paying for a Whisper call.
             _audio_tenant = _resolve_tenant_by_line_user_id(line_user_id)
+            from apps.router.onboarding import needs_reintroduction as _needs_reintroduction
+
             if _audio_tenant is not None and (
-                not _audio_tenant.onboarding_complete or _audio_tenant.onboarding_step == 0
+                not _audio_tenant.onboarding_complete
+                or _audio_tenant.onboarding_step == 0
+                or _needs_reintroduction(_audio_tenant)
             ):
                 _send_line_flex(
                     line_user_id,
@@ -1413,23 +1418,38 @@ class LineWebhookView(View):
             if action.status != ActionStatus.PENDING:
                 return
 
+            # Expired? Use conditional UPDATE so the sweep cannot have already
+            # flipped the row between our is_expired check and the write.
             if action.is_expired:
-                action.status = ActionStatus.EXPIRED
-                action.save(update_fields=["status"])
-                ActionAuditLog.objects.create(
-                    tenant=tenant,
-                    action_type=action.action_type,
-                    action_payload=action.action_payload,
-                    display_summary=action.display_summary,
-                    result=ActionStatus.EXPIRED,
-                )
-                update_gate_message(action)
+                updated = PendingAction.objects.filter(
+                    id=action.id,
+                    status=ActionStatus.PENDING,
+                ).update(status=ActionStatus.EXPIRED)
+                if updated:
+                    action.status = ActionStatus.EXPIRED
+                    ActionAuditLog.objects.create(
+                        tenant=tenant,
+                        action_type=action.action_type,
+                        action_payload=action.action_payload,
+                        display_summary=action.display_summary,
+                        result=ActionStatus.EXPIRED,
+                    )
+                    update_gate_message(action)
                 return
 
+            # Apply response using a conditional UPDATE so the sweep cannot
+            # clobber an approve that lands at the deadline boundary.
             now = timezone.now()
-            action.status = ActionStatus.APPROVED if is_approve else ActionStatus.DENIED
+            new_status = ActionStatus.APPROVED if is_approve else ActionStatus.DENIED
+            updated = PendingAction.objects.filter(
+                id=action.id,
+                status=ActionStatus.PENDING,
+            ).update(status=new_status, responded_at=now)
+            if not updated:
+                # Sweep flipped EXPIRED between our read and write; nothing to do.
+                return
+            action.status = new_status
             action.responded_at = now
-            action.save(update_fields=["status", "responded_at"])
 
             ActionAuditLog.objects.create(
                 tenant=tenant,

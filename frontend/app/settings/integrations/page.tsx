@@ -597,11 +597,11 @@ function IntegrationsContent() {
             ? "Reconnection required"
             : (provider.description ?? "Not connected yet.");
 
-          // Badge: revoked/expired shows as error, no integration = pending
+          // Badge: pass raw status so StatusPill renders its per-status tone
+          // (revoked=slate, expired=amber, error=rose — deliberately distinct).
+          // needsReconnect is used only for description/button, not the badge.
           const badgeStatus = isActive
             ? "active"
-            : needsReconnect
-            ? "error"
             : isConnected
             ? (integration?.status ?? "pending")
             : "pending";

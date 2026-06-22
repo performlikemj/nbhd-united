@@ -118,7 +118,7 @@ export default function GoalDetailClient() {
           </h1>
         </header>
         <div className="mt-6">
-          <MarkdownRenderer content={goal.preview} />
+          <MarkdownRenderer content={goal.markdown || goal.preview} />
         </div>
       </article>
     </GoalShell>

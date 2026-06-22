@@ -38,27 +38,35 @@ class Command(BaseCommand):
 
         if options["status"]:
             self.stdout.write(
-                f"Month: {budget.month}\n"
+                f"Month:  {budget.month}\n"
                 f"Budget: ${budget.budget_dollars}\n"
                 f"Spent:  ${budget.spent_dollars}\n"
                 f"Over:   {budget.is_over_budget}\n"
+                f"Capped: {budget.is_capped}\n"
             )
             return
 
         if options["uncap"]:
-            # Set spent to 0 to uncap
-            budget.spent_dollars = 0
+            # Clear the kill-switch only. Do NOT touch spent_dollars — that
+            # column tracks true month-to-date platform spend (surfaced in the
+            # transparency UI and trued up hourly by reconcile_openrouter_spend),
+            # so zeroing it would both wipe the accurate figure and let the next
+            # reconcile re-derive remaining <= 0 and silently re-cap.
             budget.is_capped = False
-            budget.save(update_fields=["spent_dollars", "is_capped"])
-            self.stdout.write(self.style.SUCCESS(f"Budget uncapped. Spent reset to $0 / ${budget.budget_dollars}."))
+            budget.save(update_fields=["is_capped"])
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"Budget uncapped. Spent ${budget.spent_dollars} / ${budget.budget_dollars} (unchanged)."
+                )
+            )
         else:
-            # Set spent = budget to cap
-            budget.spent_dollars = budget.budget_dollars
+            # Engage the kill-switch only. spent_dollars stays the true figure;
+            # is_capped is the enforcement signal read by check_budget.
             budget.is_capped = True
-            budget.save(update_fields=["spent_dollars", "is_capped"])
+            budget.save(update_fields=["is_capped"])
             self.stdout.write(
                 self.style.WARNING(
-                    f"Budget capped. Spent set to ${budget.spent_dollars} / ${budget.budget_dollars}. "
+                    f"Budget capped. Spent ${budget.spent_dollars} / ${budget.budget_dollars}. "
                     "All messages will show the platform budget exceeded notice."
                 )
             )

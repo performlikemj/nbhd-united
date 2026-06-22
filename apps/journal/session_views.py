@@ -163,7 +163,10 @@ class SessionListView(APIView):
         if since:
             from django.utils.dateparse import parse_date, parse_datetime
 
-            parsed_since = parse_datetime(since) or parse_date(since)
+            try:
+                parsed_since = parse_datetime(since) or parse_date(since)
+            except (ValueError, TypeError):
+                parsed_since = None
             if parsed_since is None:
                 return Response(
                     {"detail": "since must be an ISO date/datetime."},

@@ -151,6 +151,11 @@ TASK_MAP = {
     "schedule_fuel_welcome": "apps.fuel.tasks.schedule_fuel_welcome_task",
     # Gravity (finance) welcome cron — delayed after finance toggle
     "schedule_finance_welcome": "apps.finance.tasks.schedule_finance_welcome_task",
+    # Monthly FinanceSnapshot — point-in-time debt/savings/net-worth history.
+    # Fires on the 1st of each month via QStash. Idempotent per (tenant, date).
+    # The /api/v1/finance/snapshots/ endpoint reads these rows; without this
+    # cron the endpoint always returns an empty list.
+    "snapshot_finance_monthly": "apps.finance.tasks.create_monthly_snapshots_task",
     # Core (mindfulness) welcome cron + on-demand meditation render
     "schedule_core_welcome": "apps.core.tasks.schedule_core_welcome_task",
     "render_meditation": "apps.core.tasks.render_meditation_task",

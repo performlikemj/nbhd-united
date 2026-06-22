@@ -316,4 +316,21 @@ def build_conversation_digest(tenant) -> str:
             tail = f' — "{first_user}…"' if first_user else ""
             lines.append(f"- {day} · {len(day_turns)} message(s){tail}")
 
-    return "\n".join(lines)
+    digest = "\n".join(lines)
+
+    # Rehydrate placeholders (e.g. [PERSON_1]) so the USER.md envelope delivers
+    # real-value text to the container, matching what ChatContextView already
+    # does at render time (chat_views.py:430-437). Telegram ConversationTurn
+    # user_text is stored redacted (poller.py:1375), so without this the digest
+    # mixes placeholder user-lines with rehydrated reply-lines and raw iOS
+    # user-lines — asymmetric and less useful for proactive grounding. Fail-open.
+    entity_map = getattr(tenant, "pii_entity_map", None)
+    if entity_map:
+        try:
+            from apps.pii.redactor import rehydrate_text
+
+            digest = rehydrate_text(digest, entity_map)
+        except Exception:
+            logger.exception("conversation_capture: digest PII rehydrate failed (non-fatal)")
+
+    return digest

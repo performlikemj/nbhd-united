@@ -153,6 +153,17 @@ class BaseQueryView(APIView):
                 {"error": exc.code, "detail": exc.message},
                 status=exc.status_code,
             )
+        except FieldError as exc:
+            # Belt-and-suspenders: a serializer-only field (e.g. a relation
+            # traversal not backed by a real column) reaching qs.order_by /
+            # qs.values would raise FieldError -> HTTP 500. Translate it into
+            # a clean 400 so the strict query contract holds even if a future
+            # allowlist entry slips through.
+            logger.warning("query FieldError on %s: %s", self.__class__.__name__, exc)
+            return Response(
+                {"error": "invalid_query", "detail": "query references a field that is not a real database column"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         limit = getattr(query, "limit", None)
         has_more = bool(limit) and isinstance(data, list) and row_count >= limit

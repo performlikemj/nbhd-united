@@ -429,6 +429,13 @@ class TelegramPoller:
                         self._send_message(chat_id, chunk, parse_mode="HTML")
             else:
                 self._send_markdown(chat_id, clean_text)
+        elif reply_markup:
+            # Buttons-only reply: agent emitted [[button:...]] markers with no prose.
+            # clean_text is empty after stripping but we still need to deliver the
+            # keyboard. Telegram's sendMessage requires non-empty text; use a
+            # middle-dot placeholder (printable, survives strip()) so reply_markup
+            # is not silently dropped.
+            self._send_message(chat_id, "·", reply_markup=reply_markup)
 
     def _send_typing(self, chat_id: int) -> None:
         """Send 'typing' chat action to Telegram."""
@@ -1350,6 +1357,9 @@ class TelegramPoller:
         # below, all of which are agent-only metadata. If we let it stand in
         # for the excerpt, the apology shows "It started with: '[Now: …'"
         # which is useless for jogging the user's memory.
+        # Track whether raw_user_text aliases message_text so we can avoid a
+        # redundant NER inference pass below (FA-1015).
+        _raw_aliases_message = raw_user_text is None
         raw_user_text = raw_user_text if raw_user_text is not None else message_text
 
         lang = getattr(tenant.user, "language", None) or "en"
@@ -1372,7 +1382,11 @@ class TelegramPoller:
         from apps.pii.redactor import redact_user_message
 
         message_text = redact_user_message(message_text, tenant)
-        raw_user_text = redact_user_message(raw_user_text, tenant)
+        # When raw_user_text was not provided by the caller it was aliased to
+        # the same string as message_text (above). In that case reuse the
+        # already-redacted message_text rather than running a second identical
+        # DeBERTa NER pass over the same content.
+        raw_user_text = message_text if _raw_aliases_message else redact_user_message(raw_user_text, tenant)
 
         user_tz = tenant.user.timezone or "UTC"
 
@@ -1590,28 +1604,43 @@ class TelegramPoller:
                 self._answer_callback_query(callback_id, f"Already {action.status}")
                 return
 
-            # Expired?
+            # Expired? Use conditional UPDATE so the sweep cannot have already
+            # flipped the row between our is_expired check and the write.
             if action.is_expired:
-                action.status = ActionStatus.EXPIRED
-                action.save(update_fields=["status"])
-                ActionAuditLog.objects.create(
-                    tenant=tenant,
-                    action_type=action.action_type,
-                    action_payload=action.action_payload,
-                    display_summary=action.display_summary,
-                    result=ActionStatus.EXPIRED,
-                )
-                update_gate_message(action)
+                updated = PendingAction.objects.filter(
+                    id=action.id,
+                    status=ActionStatus.PENDING,
+                ).update(status=ActionStatus.EXPIRED)
+                if updated:
+                    action.status = ActionStatus.EXPIRED
+                    ActionAuditLog.objects.create(
+                        tenant=tenant,
+                        action_type=action.action_type,
+                        action_payload=action.action_payload,
+                        display_summary=action.display_summary,
+                        result=ActionStatus.EXPIRED,
+                    )
+                    update_gate_message(action)
                 self._answer_callback_query(callback_id, "⏰ Expired")
                 return
 
-            # Apply response
+            # Apply response using a conditional UPDATE so the sweep cannot
+            # clobber an approve that lands at the deadline boundary.
             from django.utils import timezone
 
             now = timezone.now()
-            action.status = ActionStatus.APPROVED if is_approve else ActionStatus.DENIED
+            new_status = ActionStatus.APPROVED if is_approve else ActionStatus.DENIED
+            updated = PendingAction.objects.filter(
+                id=action.id,
+                status=ActionStatus.PENDING,
+            ).update(status=new_status, responded_at=now)
+            if not updated:
+                # Sweep flipped EXPIRED between our read and write; treat as expired.
+                action.refresh_from_db(fields=["status"])
+                self._answer_callback_query(callback_id, f"Already {action.status}")
+                return
+            action.status = new_status
             action.responded_at = now
-            action.save(update_fields=["status", "responded_at"])
 
             ActionAuditLog.objects.create(
                 tenant=tenant,

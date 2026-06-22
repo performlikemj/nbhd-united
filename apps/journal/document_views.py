@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 from collections import defaultdict
 
+from django.db import transaction
 from django.http import Http404
 from django.utils import timezone
 from rest_framework import serializers, status
@@ -412,11 +413,14 @@ class DocumentAppendView(APIView):
 
         doc = _get_or_create_document(tenant, kind, slug)
 
-        time_str = data.get("time") or timezone.now().strftime("%H:%M")
-        entry_block = f"\n\n### {time_str} — MJ\n{data['content'].strip()}\n"
-
-        doc.markdown = (doc.markdown or "").rstrip() + entry_block
-        doc.save()
+        with transaction.atomic():
+            # Re-read under a row lock to serialise concurrent appends and
+            # prevent a lost-update when two writers hit the same document.
+            doc = Document.objects.select_for_update().get(pk=doc.pk)
+            time_str = data.get("time") or timezone.now().strftime("%H:%M")
+            entry_block = f"\n\n### {time_str} — MJ\n{data['content'].strip()}\n"
+            doc.markdown = (doc.markdown or "").rstrip() + entry_block
+            doc.save(update_fields=["markdown", "updated_at"])
 
         return Response(DocumentSerializer(doc).data, status=status.HTTP_201_CREATED)
 

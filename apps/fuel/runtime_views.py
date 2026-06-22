@@ -1429,7 +1429,11 @@ class RuntimeWorkoutPlanDetailView(APIView):
                 return workout.edit_lock_until > timezone.now()
 
             rec = reconcile_plan_state(
-                plan, plan.schedule_json, plan.weeks, today=today_in_tenant_tz(tenant)
+                plan,
+                plan.schedule_json,
+                plan.weeks,
+                today=today_in_tenant_tz(tenant),
+                week_overrides=plan.week_overrides,
             )
             try:
                 counts = apply_reconciliation(

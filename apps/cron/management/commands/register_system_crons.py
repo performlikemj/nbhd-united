@@ -76,6 +76,11 @@ SYSTEM_CRONS = [
     # to PillarSnapshot. Feeds the assistant's history/drill/compare tools.
     # Skips hibernated tenants; idempotent per ISO week.
     ("snapshot-gravity-weekly", "0 5 * * 0", "/api/cron/trigger/snapshot_gravity_weekly/"),
+    # Monthly on 1st at 06:00 UTC — write FinanceSnapshot for every
+    # finance-enabled active tenant. Idempotent per (tenant, date).
+    # Powers the /api/v1/finance/snapshots/ endpoint (monthly debt/savings
+    # history); without this cron that endpoint always returns an empty list.
+    ("snapshot-finance-monthly", "0 6 1 * *", "/api/cron/trigger/snapshot_finance_monthly/"),
     # Hourly dispatcher for Phase 4 weekly reflection. Fires for each tenant
     # whose local time is Sunday 09:00 (timezone-aware). Synthesis runs
     # Django-side via LiteLLM — no OpenClaw container wake, no user-quota cost.

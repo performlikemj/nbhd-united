@@ -61,6 +61,9 @@ MAX_WORKOUTS = 50
 MAX_DAILY = 31
 MAX_DELETED = 100
 
+# Must match signals._TOMBSTONE_CAP so both write paths enforce the same cap.
+_TOMBSTONE_CAP = 200
+
 # HK activity types that must not auto-complete a planned session unless
 # the plan itself is a walk/hike — a dog walk must not complete a 10K.
 _LOW_SIGNAL_TYPES = {"walking", "hiking"}
@@ -600,6 +603,15 @@ def ingest_healthkit_payload(tenant, payload: dict) -> dict:
             row.delete()
             deleted_count += 1
         tombstones.update(deleted_ids)
+        # Persist the full tombstone set regardless of whether any rows were
+        # actually deleted.  The post_delete signal only fires when a row
+        # exists; when the HK sample was deleted before it ever synced, or was
+        # already removed, no signal fires and the tombstone is silently lost.
+        # Without this, an anchor reset / app reinstall can resurrect the
+        # sample — the same resurrection class as PR #847.
+        if profile is not None:
+            profile.healthkit_tombstones = list(tombstones)[-_TOMBSTONE_CAP:]
+            profile.save(update_fields=["healthkit_tombstones", "updated_at"])
 
     raw_workouts = payload.get("workouts") or []
     cleans: list[tuple[dict | None, str | None, object]] = []

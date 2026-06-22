@@ -127,6 +127,12 @@ _ALLOWED_FILTERS = {
 # carve out non-column properties.
 _ALLOWED_ORDER_BY = {
     "accounts": _ALLOWED_FIELDS["accounts"] - {"is_debt", "payoff_progress"},
+    # ``account_nickname`` is serialized from ``account.nickname`` (a relation
+    # traversal), not a column on FinanceTransaction — ordering by it would
+    # raise FieldError -> HTTP 500. Drop it so order_by=account_nickname
+    # returns a clean invalid_order_by 400.
+    "transactions": _ALLOWED_FIELDS["transactions"] - {"account_nickname"},
+    "plan": _ALLOWED_FIELDS["plan"],
 }
 
 # group_by must also reference real DB columns (qs.values(...)); ``is_debt`` is

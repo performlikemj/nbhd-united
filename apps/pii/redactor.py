@@ -318,15 +318,11 @@ def _redact_user_message(
         pattern = re.compile(re.escape(original), re.IGNORECASE)
         out = pattern.sub(placeholder, out)
 
-    # Step 2: Run detection on the (partially redacted) text for NEW entities
-    # Derive current max counters from existing map
-    type_counters: dict[str, int] = {}
-    for placeholder_key in existing_map:
-        match = _PLACEHOLDER_RE.match(placeholder_key)
-        if match:
-            etype, num = match.group(1), int(match.group(2))
-            type_counters[etype] = max(type_counters.get(etype, 0), num)
-
+    # Step 2: Run detection on the (partially redacted) text for NEW entities.
+    # Per-type counters for newly-minted placeholders are derived later from a
+    # row-locked snapshot (see the mint/persist block below), not from the
+    # stale ``existing_map`` read at function start — that snapshot can be
+    # superseded by a concurrent redaction before we write.
     entities = policy.get("entities", [])
     score_threshold = policy.get("score_threshold", 0.7)
 
@@ -360,10 +356,15 @@ def _redact_user_message(
     if not results:
         return out
 
-    new_map_entries: dict[str, dict[str, Any]] = {}
     sorted_results = sorted(results, key=lambda r: r.start)
-    replacements: list[tuple[int, int, str]] = []
 
+    # Collect the NER mints that need a fresh placeholder. The actual
+    # placeholder numbers are assigned LATER, under a per-tenant row lock, so
+    # the counter is derived from a snapshot that no concurrent redaction can
+    # mutate between read and write. ``known`` carries spans that already map
+    # to an existing placeholder (no minting, no lock needed for those).
+    known_replacements: list[tuple[int, int, str]] = []
+    to_mint: list[tuple[int, int, str, str, float]] = []  # start, end, etype, original, score
     for result in sorted_results:
         etype = result.entity_type
         original = out[result.start : result.end]
@@ -378,47 +379,101 @@ def _redact_user_message(
         # ordering edge cases, multi-word vs single-word variants).
         ci_key = _canonical_key(original)
         if ci_key and ci_key in inverted_ci:
-            replacements.append((result.start, result.end, inverted_ci[ci_key][1]))
+            known_replacements.append((result.start, result.end, inverted_ci[ci_key][1]))
             continue
 
-        count = type_counters.get(etype, 0) + 1
-        type_counters[etype] = count
-        placeholder = f"[{etype}_{count}]"
-        replacements.append((result.start, result.end, placeholder))
-        new_map_entries[placeholder] = _entry_storage(original)
-        # Telemetry — capture score on every mint so future threshold
-        # tuning can be data-driven instead of vibes-driven. NEVER log the
-        # raw span: this is the PII redactor, and its logs ship to Azure Log
-        # Analytics in cleartext — emitting the detected value (card numbers,
-        # passwords, IBANs, emails) would defeat the module's whole purpose
-        # and is a PCI-DSS violation. tenant id, type and score are sufficient
-        # for tuning; log only the span length as a coarse, non-reversible
-        # shape signal.
-        logger.info(
-            "pii_mint tenant=%s type=%s placeholder=%s score=%.3f span_len=%d",
-            getattr(tenant, "id", "?"),
-            etype,
-            placeholder,
-            result.score,
-            len(original),
-        )
-        # Register the mint in the case-insensitive view so later spans
-        # in the SAME message ("Sautai meets sautai") collapse onto it.
-        if ci_key:
-            inverted_ci[ci_key] = (original, placeholder)
+        to_mint.append((result.start, result.end, etype, original, result.score))
 
-    # Apply replacements
+    new_map_entries: dict[str, dict[str, Any]] = {}
+    replacements: list[tuple[int, int, str]] = list(known_replacements)
+
+    if not to_mint:
+        # Nothing new to persist; just rehydrate known placeholders.
+        for start, end, placeholder in reversed(replacements):
+            out = out[:start] + placeholder + out[end:]
+        return out
+
+    # Mint + persist under a per-tenant row lock. The redactor runs from three
+    # independent inbound processes (Telegram drain, LINE webhook, iOS chat)
+    # plus the arbiter cron and memory_sync. Without a row lock, two concurrent
+    # mints derived from the same stale snapshot can mint the same
+    # ``[PERSON_N]`` for different people and the second full-dict write
+    # clobbers the first — outbound rehydration would then substitute one
+    # contact's real name into a reply about another. We re-read under
+    # ``select_for_update``, re-derive counters from the locked snapshot, assign
+    # the final placeholders there, and write — so the placeholder baked into
+    # ``out`` always matches what the map stores.
+    from django.db import transaction
+
+    with transaction.atomic():
+        locked_map = (
+            type(tenant)
+            .objects.select_for_update()
+            .filter(pk=tenant.pk)
+            .values_list("pii_entity_map", flat=True)
+            .first()
+        ) or {}
+
+        # Re-derive per-type counters from the LOCKED snapshot, not the stale
+        # one read at function start.
+        locked_counters: dict[str, int] = {}
+        for placeholder_key in locked_map:
+            match = _PLACEHOLDER_RE.match(placeholder_key)
+            if match:
+                ckey_etype, num = match.group(1), int(match.group(2))
+                locked_counters[ckey_etype] = max(locked_counters.get(ckey_etype, 0), num)
+
+        # Case-insensitive view of the locked map so a name already present
+        # collapses onto its existing placeholder instead of minting a dup.
+        locked_inverted_ci = _inverted_names_ci(locked_map)
+
+        merged = dict(locked_map)
+        for start, end, etype, original, score in to_mint:
+            ci_key = _canonical_key(original)
+            if ci_key and ci_key in locked_inverted_ci:
+                # Concurrent redaction (or this same one earlier) already
+                # minted this entity — reuse its placeholder.
+                placeholder = locked_inverted_ci[ci_key][1]
+                replacements.append((start, end, placeholder))
+                continue
+
+            count = locked_counters.get(etype, 0) + 1
+            locked_counters[etype] = count
+            placeholder = f"[{etype}_{count}]"
+            replacements.append((start, end, placeholder))
+            entry = _entry_storage(original)
+            new_map_entries[placeholder] = entry
+            merged[placeholder] = entry
+            if ci_key:
+                locked_inverted_ci[ci_key] = (original, placeholder)
+            # Telemetry — capture score on every mint so future threshold
+            # tuning can be data-driven instead of vibes-driven. NEVER log the
+            # raw span: this is the PII redactor, and its logs ship to Azure
+            # Log Analytics in cleartext — emitting the detected value (card
+            # numbers, passwords, IBANs, emails) would defeat the module's
+            # whole purpose and is a PCI-DSS violation. tenant id, type and
+            # score are sufficient for tuning; log only the span length as a
+            # coarse, non-reversible shape signal.
+            logger.info(
+                "pii_mint tenant=%s type=%s placeholder=%s score=%.3f span_len=%d",
+                getattr(tenant, "id", "?"),
+                etype,
+                placeholder,
+                score,
+                len(original),
+            )
+
+        if new_map_entries:
+            type(tenant).objects.filter(pk=tenant.pk).update(pii_entity_map=merged)
+
+    # Update in-memory too
+    if new_map_entries:
+        tenant.pii_entity_map = merged
+
+    # Apply replacements (after the lock — string slicing needs no DB). Numbers
+    # baked here match the persisted map because they were assigned under lock.
     for start, end, placeholder in reversed(replacements):
         out = out[:start] + placeholder + out[end:]
-
-    # Persist new entities to DB. Existing rows are preserved as-is so a
-    # legacy string entry stays a string until something else rewrites it
-    # — keeps reads cheap and avoids touching unrelated rows.
-    if new_map_entries:
-        merged = {**existing_map, **new_map_entries}
-        type(tenant).objects.filter(pk=tenant.pk).update(pii_entity_map=merged)
-        # Update in-memory too
-        tenant.pii_entity_map = merged
 
     return out
 

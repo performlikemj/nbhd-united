@@ -565,10 +565,23 @@ export default function ConstellationPage() {
     const p = positions[String(id)];
     if (!p) {
       // Target is hidden by the current kind/rel filters (e.g. an Evidence/Tag
-      // neighbour shown in the Inspector). Reveal it so the next layout pass
-      // gives it a position, then select it — instead of silently no-op'ing.
+      // neighbour shown in the Inspector), or by cluster isolation (a cross-cluster
+      // neighbour clicked from the Relationships panel). Reveal it so the next layout
+      // pass gives it a position, then select it — instead of silently no-op'ing.
       const target = graphData.nodes.find((n) => String(n.id) === String(id));
       if (!target) return;
+      // If isolation is active and the target lives outside the isolated cluster,
+      // lift isolation so visibleNodes will include it after the next render.
+      if (isolated) {
+        const isoCid = parseInt(String(isolated).split(":")[1], 10);
+        const inCluster =
+          target.kind === "Cluster"
+            ? String(target.id) === String(isolated)
+            : target.kind === "Lesson"
+            ? target.cluster_id === isoCid
+            : false;
+        if (!inCluster) setIsolated(null);
+      }
       setKindFilter((s) => (s.has(target.kind) ? s : new Set([...s, target.kind])));
       const rels = graphData.edges.filter((e) => String(e.source) === String(id) || String(e.target) === String(id)).map((e) => e.type);
       if (rels.length) setRelFilter((s) => { const n = new Set(s); rels.forEach((r) => n.add(r)); return n; });

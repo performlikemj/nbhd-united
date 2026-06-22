@@ -504,9 +504,9 @@ class TemplateDetailView(APIView):
         # Push updated skill config to the agent's container when the default template changes.
         if template.is_default:
             try:
-                from apps.orchestrator.tasks import update_tenant_config_task
+                from apps.cron.publish import publish_task
 
-                update_tenant_config_task.delay(str(tenant.id))
+                publish_task("update_tenant_config", str(tenant.id))
             except Exception:
                 pass  # Non-blocking; config update is best-effort.
 
@@ -530,9 +530,9 @@ class TemplateDetailView(APIView):
         # Mirror PATCH: push updated skill config when the default template changed.
         if was_default:
             try:
-                from apps.orchestrator.tasks import update_tenant_config_task
+                from apps.cron.publish import publish_task
 
-                update_tenant_config_task.delay(str(tenant.id))
+                publish_task("update_tenant_config", str(tenant.id))
             except Exception:
                 pass  # Non-blocking; config update is best-effort.
 
@@ -561,6 +561,7 @@ class ExtractionApproveView(APIView):
 
         from apps.router.extraction_callbacks import _approve_goal, _approve_task
 
+        lesson_id = None
         try:
             if pending.kind == PendingExtraction.Kind.GOAL:
                 _approve_goal(pending)
@@ -569,14 +570,18 @@ class ExtractionApproveView(APIView):
             elif pending.kind == PendingExtraction.Kind.LESSON:
                 from apps.router.extraction_callbacks import _approve_lesson
 
-                _approve_lesson(pending)
+                _, lesson_id = _approve_lesson(pending)
         except Exception:
             logger.exception("extraction approve failed for %s", extraction_id)
             return Response({"detail": "Approval failed."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         pending.status = PendingExtraction.Status.APPROVED
         pending.resolved_at = timezone.now()
-        pending.save(update_fields=["status", "resolved_at"])
+        if pending.kind == PendingExtraction.Kind.LESSON and lesson_id:
+            pending.lesson_id = lesson_id
+            pending.save(update_fields=["status", "resolved_at", "lesson_id"])
+        else:
+            pending.save(update_fields=["status", "resolved_at"])
 
         return Response({"id": str(pending.id), "status": "approved"})
 

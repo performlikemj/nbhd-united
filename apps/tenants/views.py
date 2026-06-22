@@ -3,6 +3,7 @@
 import logging
 from datetime import UTC, datetime, timedelta
 
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -1087,18 +1088,9 @@ class EntityRegistryItemView(APIView):
         except Tenant.DoesNotExist:
             return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
 
-        entity_map = tenant.pii_entity_map or {}
-        if placeholder not in entity_map:
-            return Response(
-                {"detail": f"Unknown placeholder: {placeholder}"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        # Coerce current entry, then apply patch fields.
-        current = coerce(entity_map[placeholder])
         body = request.data or {}
 
-        # Validate types and lengths.
+        # Validate types and lengths (no DB; keep this out of the lock).
         def _str_field(key: str, max_len: int) -> str | None:
             if key not in body:
                 return None
@@ -1121,28 +1113,44 @@ class EntityRegistryItemView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Apply only fields the client sent.
-        for key in ("name", "relationship", "notes"):
-            if patches[key] is not None:
-                current[key] = patches[key]
+        # Serialize the read-modify-write per tenant: the inbound redactor,
+        # the arbiter sweep, and concurrent edits all overwrite the whole
+        # pii_entity_map dict. Re-read the row under a lock so this edit can't
+        # be clobbered by — or clobber — a concurrent mint/delete.
+        with transaction.atomic():
+            locked = Tenant.objects.select_for_update().filter(pk=tenant.pk).first()
+            entity_map = dict((locked.pii_entity_map if locked else None) or {})
+            if placeholder not in entity_map:
+                return Response(
+                    {"detail": f"Unknown placeholder: {placeholder}"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
-        # Stamp updated_at so we can detect drift / show "last edited".
-        current["updated_at"] = timezone.now().isoformat()
+            # Coerce current entry, then apply patch fields.
+            current = coerce(entity_map[placeholder])
 
-        # Rebuild via to_storage_value to drop empty optionals + keep
-        # JSON compact. Preserve arbiter_judged_at so the next arbiter sweep
-        # does not re-evaluate an already-judged entry just because the user
-        # edited its name/relationship/notes.
-        new_value = to_storage_value(
-            current.get("name", ""),
-            relationship=current.get("relationship", ""),
-            notes=current.get("notes", ""),
-            updated_at=current["updated_at"],
-            arbiter_judged_at=current.get("arbiter_judged_at"),
-        )
-        entity_map[placeholder] = new_value
+            # Apply only fields the client sent.
+            for key in ("name", "relationship", "notes"):
+                if patches[key] is not None:
+                    current[key] = patches[key]
 
-        Tenant.objects.filter(pk=tenant.pk).update(pii_entity_map=entity_map)
+            # Stamp updated_at so we can detect drift / show "last edited".
+            current["updated_at"] = timezone.now().isoformat()
+
+            # Rebuild via to_storage_value to drop empty optionals + keep
+            # JSON compact. Preserve arbiter_judged_at so the next arbiter
+            # sweep does not re-evaluate an already-judged entry just because
+            # the user edited its name/relationship/notes.
+            new_value = to_storage_value(
+                current.get("name", ""),
+                relationship=current.get("relationship", ""),
+                notes=current.get("notes", ""),
+                updated_at=current["updated_at"],
+                arbiter_judged_at=current.get("arbiter_judged_at"),
+            )
+            entity_map[placeholder] = new_value
+
+            Tenant.objects.filter(pk=tenant.pk).update(pii_entity_map=entity_map)
         tenant.pii_entity_map = entity_map
 
         return Response(
@@ -1161,15 +1169,19 @@ class EntityRegistryItemView(APIView):
         except Tenant.DoesNotExist:
             return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
 
-        entity_map = tenant.pii_entity_map or {}
-        if placeholder not in entity_map:
-            return Response(
-                {"detail": f"Unknown placeholder: {placeholder}"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+        # Serialize the read-modify-write per tenant so a concurrent redactor
+        # mint (full-dict overwrite) cannot resurrect the deleted entry.
+        with transaction.atomic():
+            locked = Tenant.objects.select_for_update().filter(pk=tenant.pk).first()
+            entity_map = dict((locked.pii_entity_map if locked else None) or {})
+            if placeholder not in entity_map:
+                return Response(
+                    {"detail": f"Unknown placeholder: {placeholder}"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
-        del entity_map[placeholder]
-        Tenant.objects.filter(pk=tenant.pk).update(pii_entity_map=entity_map)
+            del entity_map[placeholder]
+            Tenant.objects.filter(pk=tenant.pk).update(pii_entity_map=entity_map)
         tenant.pii_entity_map = entity_map
 
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -1241,12 +1253,17 @@ class PIIDenylistListView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        denylist = dict(tenant.pii_denylist or {})
-        denylist[key] = {
-            "reason": "manual",
-            "decided_at": timezone.now().isoformat(),
-        }
-        Tenant.objects.filter(pk=tenant.pk).update(pii_denylist=denylist)
+        # Serialize per tenant: the arbiter sweep also writes the full
+        # pii_denylist dict, so an unlocked overwrite here could drop an
+        # arbiter-added key (or vice-versa). Re-read under a row lock.
+        with transaction.atomic():
+            locked = Tenant.objects.select_for_update().filter(pk=tenant.pk).first()
+            denylist = dict((locked.pii_denylist if locked else None) or {})
+            denylist[key] = {
+                "reason": "manual",
+                "decided_at": timezone.now().isoformat(),
+            }
+            Tenant.objects.filter(pk=tenant.pk).update(pii_denylist=denylist)
         tenant.pii_denylist = denylist
 
         return Response(
@@ -1275,15 +1292,19 @@ class PIIDenylistItemView(APIView):
         except Tenant.DoesNotExist:
             return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
 
-        denylist = dict(tenant.pii_denylist or {})
-        if key not in denylist:
-            return Response(
-                {"detail": f"Unknown denylist key: {key}"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+        # Serialize per tenant so a concurrent arbiter/manual denylist write
+        # (full-dict overwrite) cannot resurrect the key we delete here.
+        with transaction.atomic():
+            locked = Tenant.objects.select_for_update().filter(pk=tenant.pk).first()
+            denylist = dict((locked.pii_denylist if locked else None) or {})
+            if key not in denylist:
+                return Response(
+                    {"detail": f"Unknown denylist key: {key}"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
-        del denylist[key]
-        Tenant.objects.filter(pk=tenant.pk).update(pii_denylist=denylist)
+            del denylist[key]
+            Tenant.objects.filter(pk=tenant.pk).update(pii_denylist=denylist)
         tenant.pii_denylist = denylist
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -1326,11 +1347,12 @@ class PIIDenylistBulkView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        denylist = dict(tenant.pii_denylist or {})
         now = timezone.now().isoformat()
         added: list[str] = []
         skipped: list[dict] = []
 
+        # Validate + canonicalize outside the lock (no DB).
+        new_entries: dict[str, dict] = {}
         for raw in names:
             if not isinstance(raw, str):
                 skipped.append({"name": str(raw)[:64], "reason": "not a string"})
@@ -1346,11 +1368,18 @@ class PIIDenylistBulkView(APIView):
             if not key:
                 skipped.append({"name": name[:64], "reason": "canonicalizes to empty"})
                 continue
-            denylist[key] = {"reason": "manual", "decided_at": now}
+            new_entries[key] = {"reason": "manual", "decided_at": now}
             added.append(key)
 
-        # One write covers the whole batch — the JSONField update is atomic.
-        Tenant.objects.filter(pk=tenant.pk).update(pii_denylist=denylist)
+        # Serialize the read-modify-write per tenant: the arbiter sweep and the
+        # single-entry endpoints also overwrite the whole pii_denylist dict, so
+        # an unlocked merge here could drop their concurrent writes. Re-read
+        # under a row lock and merge new entries on top.
+        with transaction.atomic():
+            locked = Tenant.objects.select_for_update().filter(pk=tenant.pk).first()
+            denylist = dict((locked.pii_denylist if locked else None) or {})
+            denylist.update(new_entries)
+            Tenant.objects.filter(pk=tenant.pk).update(pii_denylist=denylist)
         tenant.pii_denylist = denylist
 
         return Response(

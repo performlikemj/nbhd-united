@@ -22,15 +22,22 @@ def expire_stale_pending_actions() -> str:
     from .messaging import update_gate_message
     from .models import ActionAuditLog, ActionStatus, PendingAction
 
-    stale = PendingAction.objects.filter(
+    stale = PendingAction.objects.select_related("tenant__user").filter(
         status=ActionStatus.PENDING,
         expires_at__lt=timezone.now(),
     )
 
     count = 0
     for action in stale:
+        # Conditional update: only flip PENDING→EXPIRED; skip if another writer
+        # (e.g. a concurrent Approve) has already resolved the row.
+        updated = PendingAction.objects.filter(
+            id=action.id,
+            status=ActionStatus.PENDING,
+        ).update(status=ActionStatus.EXPIRED)
+        if not updated:
+            continue
         action.status = ActionStatus.EXPIRED
-        action.save(update_fields=["status"])
 
         ActionAuditLog.objects.create(
             tenant=action.tenant,

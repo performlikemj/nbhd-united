@@ -227,63 +227,80 @@ def _apply_decisions_for_tenant(
     Returns ``(denied_count, confirmed_count)``. Skips items the LLM
     didn't return a decision for — they get re-judged next tick.
     """
+    from django.db import transaction
+
     from apps.tenants.models import Tenant
 
-    entity_map = dict(tenant.pii_entity_map or {})
-    denylist = dict(tenant.pii_denylist or {})
-    map_changed = False
-    denylist_changed = False
     denied = 0
     confirmed = 0
 
-    # Pre-compute canonical-key → [placeholders] so a denied key stamps every
-    # duplicate placeholder in one pass. Legacy bloat means a tenant may have
-    # 59 placeholders all pointing to "sautai"; the dedup in _entries_to_judge
-    # sends one to the LLM, but we still want all 59 marked judged.
-    key_to_placeholders: dict[str, list[str]] = {}
-    for ph, entry in entity_map.items():
-        name = coerce(entry).get("name", "")
-        k = canonical_key(name)
-        if k:
-            key_to_placeholders.setdefault(k, []).append(ph)
+    # Serialize the read-modify-write per tenant: the redactor (inbound) and
+    # the settings views can mutate pii_entity_map / pii_denylist concurrently
+    # with this hourly sweep, and an unlocked full-dict overwrite here would
+    # clobber a placeholder minted or a contact deleted since we read. Re-read
+    # the row under a lock so the snapshot we mutate is the live one.
+    with transaction.atomic():
+        locked = Tenant.objects.select_for_update().filter(pk=tenant.pk).first()
+        if locked is None:
+            return 0, 0
 
-    for item in batch:
-        key = item["key"]
-        is_pii = decisions.get(key)
-        if is_pii is None:
-            continue
+        entity_map = dict(locked.pii_entity_map or {})
+        denylist = dict(locked.pii_denylist or {})
+        map_changed = False
+        denylist_changed = False
 
-        if is_pii:
-            confirmed += 1
-        else:
-            denied += 1
-            if key not in denylist:
-                denylist[key] = {"reason": "arbiter", "decided_at": now_iso}
-                denylist_changed = True
+        # Pre-compute canonical-key → [placeholders] so a denied key stamps
+        # every duplicate placeholder in one pass. Legacy bloat means a tenant
+        # may have 59 placeholders all pointing to "sautai"; the dedup in
+        # _entries_to_judge sends one to the LLM, but we still want all 59
+        # marked judged.
+        key_to_placeholders: dict[str, list[str]] = {}
+        for ph, entry in entity_map.items():
+            name = coerce(entry).get("name", "")
+            k = canonical_key(name)
+            if k:
+                key_to_placeholders.setdefault(k, []).append(ph)
 
-        for placeholder in key_to_placeholders.get(key, [item["placeholder"]]):
-            existing = entity_map.get(placeholder)
-            if existing is None:
+        for item in batch:
+            key = item["key"]
+            is_pii = decisions.get(key)
+            if is_pii is None:
                 continue
-            if isinstance(existing, str):
-                entity_map[placeholder] = {"name": existing, "arbiter_judged_at": now_iso}
-                map_changed = True
-            elif isinstance(existing, dict):
-                if existing.get("arbiter_judged_at") == now_iso:
+
+            if is_pii:
+                confirmed += 1
+            else:
+                denied += 1
+                if key not in denylist:
+                    denylist[key] = {"reason": "arbiter", "decided_at": now_iso}
+                    denylist_changed = True
+
+            for placeholder in key_to_placeholders.get(key, [item["placeholder"]]):
+                existing = entity_map.get(placeholder)
+                if existing is None:
                     continue
-                entity_map[placeholder] = {**existing, "arbiter_judged_at": now_iso}
-                map_changed = True
+                if isinstance(existing, str):
+                    entity_map[placeholder] = {"name": existing, "arbiter_judged_at": now_iso}
+                    map_changed = True
+                elif isinstance(existing, dict):
+                    if existing.get("arbiter_judged_at") == now_iso:
+                        continue
+                    entity_map[placeholder] = {**existing, "arbiter_judged_at": now_iso}
+                    map_changed = True
 
-    updates: dict[str, Any] = {}
-    if map_changed:
-        updates["pii_entity_map"] = entity_map
-        tenant.pii_entity_map = entity_map
-    if denylist_changed:
-        updates["pii_denylist"] = denylist
-        tenant.pii_denylist = denylist
-    if updates:
-        Tenant.objects.filter(pk=tenant.pk).update(**updates)
+        updates: dict[str, Any] = {}
+        if map_changed:
+            updates["pii_entity_map"] = entity_map
+            locked.pii_entity_map = entity_map
+        if denylist_changed:
+            updates["pii_denylist"] = denylist
+            locked.pii_denylist = denylist
+        if updates:
+            Tenant.objects.filter(pk=tenant.pk).update(**updates)
 
+    # Keep the caller's in-memory tenant consistent with what we wrote.
+    tenant.pii_entity_map = locked.pii_entity_map
+    tenant.pii_denylist = locked.pii_denylist
     return denied, confirmed
 
 

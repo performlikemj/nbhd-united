@@ -371,6 +371,7 @@ class HorizonsView(APIView):
                         "title": g["title"] or "Untitled Goal",
                         "slug": g["slug"],
                         "preview": (g["markdown"] or "")[:200],
+                        "markdown": g["markdown"] or "",
                         "created_at": g["created_at"].isoformat(),
                         "updated_at": g["updated_at"].isoformat(),
                     }

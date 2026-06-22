@@ -100,6 +100,7 @@ class WorkoutSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id",
+            "original_workout",
             "plan_id",
             "plan_name",
             "version",

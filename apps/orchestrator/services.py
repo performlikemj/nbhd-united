@@ -151,6 +151,13 @@ def repair_stale_tenant_provisioning(
                 user_id=user_id_str,
                 stage="repair_start",
             )
+            # An ACTIVE tenant with empty container fields is a corrupted state
+            # (e.g. from reactivation of a never-fully-provisioned tenant).
+            # provision_tenant guards against status != PENDING/PROVISIONING, so
+            # demote to PROVISIONING here so the repair path can proceed.
+            if tenant.status == Tenant.Status.ACTIVE:
+                tenant.status = Tenant.Status.PROVISIONING
+                tenant.save(update_fields=["status", "updated_at"])
             provision_tenant(tenant_id_str)
             tenant.refresh_from_db()
 
@@ -773,7 +780,21 @@ def deprovision_tenant(tenant_id: str) -> None:
     except Exception:
         logger.exception("Failed to deprovision tenant %s", tenant_id)
         tenant.status = Tenant.Status.SUSPENDED
-        tenant.save(update_fields=["status", "updated_at"])
+        # The OR sub-key + KV secret deletes run before any code that can raise
+        # (each wrapped in its own swallowing try/except), so by the time we
+        # reach this handler those resources are already gone.  Clear the stale
+        # references so a later reactivation/resubscribe doesn't try to use a
+        # deleted sub-key or a KV secret that no longer exists.
+        tenant.openrouter_key_hash = ""
+        tenant.openrouter_key_secret_name = ""
+        tenant.save(
+            update_fields=[
+                "status",
+                "openrouter_key_hash",
+                "openrouter_key_secret_name",
+                "updated_at",
+            ]
+        )
         raise
 
 

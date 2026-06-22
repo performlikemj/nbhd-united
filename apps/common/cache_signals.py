@@ -45,7 +45,7 @@ def _register():
         Workout,
         WorkoutPlan,
     )
-    from apps.journal.models import DailyNote, Document, JournalEntry
+    from apps.journal.models import DailyNote, Document, Goal, JournalEntry, Task
     from apps.tenants.models import Tenant
 
     @receiver(post_save, sender=Workout)
@@ -101,6 +101,16 @@ def _register():
     @receiver(post_save, sender=DailyNote)
     @receiver(post_delete, sender=DailyNote)
     def _daily_note_changed(sender, instance, **kwargs):
+        _bump(instance, ["journal", "dashboard"])
+
+    @receiver(post_save, sender=Task)
+    @receiver(post_delete, sender=Task)
+    def _task_changed(sender, instance, **kwargs):
+        _bump(instance, ["journal", "dashboard"])
+
+    @receiver(post_save, sender=Goal)
+    @receiver(post_delete, sender=Goal)
+    def _typed_goal_changed(sender, instance, **kwargs):
         _bump(instance, ["journal", "dashboard"])
 
     @receiver(post_save, sender=Tenant)

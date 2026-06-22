@@ -12,6 +12,7 @@ import logging
 import os
 
 from django.db import transaction
+from django.db.models import F
 
 from apps.byo_models.models import BYOCredential
 from apps.tenants.models import Tenant
@@ -141,7 +142,7 @@ def upsert_credential(
         # Bump seed_version on every paste/re-paste. Phase 2 Codex
         # entrypoint compares this against an on-disk marker.
         BYOCredential.objects.filter(pk=cred.pk).update(
-            seed_version=cred.seed_version + 1,
+            seed_version=F("seed_version") + 1,
         )
         cred.refresh_from_db()
     return cred

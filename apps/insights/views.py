@@ -635,26 +635,34 @@ def _upsert_voice_pref_impl(
     tone: str | None,
     volume: str | None,
 ) -> UserVoicePref:
-    topic = None
-    if topic_slug:
-        topic = TopicRegistry.objects.filter(pillar=pillar, slug=topic_slug).first()
-        if topic is None:
-            # Auto-resolve / propose the topic so the assistant can store an
-            # override for a topic it just discovered in conversation.
-            topic = resolve_topic(pillar, topic_slug)
+    # Wrap both operations in a single atomic block so that a proposed topic
+    # created by resolve_topic is never committed without the voice-pref row
+    # that references it (mirrors the FA-0596 fix in _record_insight_impl).
+    # resolve_topic's own @transaction.atomic degrades to a savepoint here, so
+    # a failure in update_or_create rolls back the proposed-topic INSERT too.
+    from django.db import transaction as _tx
 
-    defaults = {"register_offset": register_offset}
-    if tone:
-        defaults["tone"] = tone
-    if volume:
-        defaults["volume"] = volume
+    with _tx.atomic():
+        topic = None
+        if topic_slug:
+            topic = TopicRegistry.objects.filter(pillar=pillar, slug=topic_slug).first()
+            if topic is None:
+                # Auto-resolve / propose the topic so the assistant can store an
+                # override for a topic it just discovered in conversation.
+                topic = resolve_topic(pillar, topic_slug)
 
-    pref, _ = UserVoicePref.objects.update_or_create(
-        tenant=tenant,
-        pillar=pillar,
-        topic=topic,
-        defaults=defaults,
-    )
+        defaults = {"register_offset": register_offset}
+        if tone:
+            defaults["tone"] = tone
+        if volume:
+            defaults["volume"] = volume
+
+        pref, _ = UserVoicePref.objects.update_or_create(
+            tenant=tenant,
+            pillar=pillar,
+            topic=topic,
+            defaults=defaults,
+        )
     return pref
 
 

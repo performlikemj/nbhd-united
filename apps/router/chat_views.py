@@ -600,11 +600,14 @@ class ChatProgressEventView(APIView):
         if client_msg_id:
             qs = base.filter(client_msg_id=client_msg_id)
         else:
-            # The runtime's tool-call hook knows the OpenClaw run, not the
             # client_msg_id. Per-tenant turns are serialized (one container) and
             # only app/Siri turns create AppChatMessage rows, so the tenant's
             # most-recent PENDING turn IS the in-flight one to narrate. (A
             # Telegram/LINE turn creates no row → this no-ops, which is correct.)
+            # NOTE: an adversarial-review change to narrate the OLDEST PENDING
+            # row (FIFO head) was reverted — it broke test_updates_latest_pending
+            # and the oldest-vs-newest choice is ambiguous under per-thread
+            # serialization. Deferred for a product decision (router-chat#2).
             latest_pk = base.order_by("-created_at").values_list("pk", flat=True).first()
             qs = base.filter(pk=latest_pk) if latest_pk is not None else base.none()
         updated = qs.update(phase=phase, phase_detail=detail)
