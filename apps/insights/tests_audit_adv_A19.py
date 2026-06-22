@@ -49,9 +49,7 @@ class UpsertVoicePrefImplAtomicTest(TestCase):
 
         topic_created_pk: dict = {}
 
-        original_resolve = __import__(
-            "apps.insights.topic_resolver", fromlist=["resolve_topic"]
-        ).resolve_topic
+        original_resolve = __import__("apps.insights.topic_resolver", fromlist=["resolve_topic"]).resolve_topic
 
         def capturing_resolve(pillar, candidate, **kw):
             topic = original_resolve(pillar, candidate, **kw)
@@ -146,6 +144,4 @@ class UpsertVoicePrefImplAtomicTest(TestCase):
 
         self.assertEqual(pref.topic_id, existing.pk)
         # No extra topic rows created.
-        self.assertEqual(
-            TopicRegistry.objects.filter(pillar="gravity", slug="a19_existing_topic").count(), 1
-        )
+        self.assertEqual(TopicRegistry.objects.filter(pillar="gravity", slug="a19_existing_topic").count(), 1)

@@ -4,6 +4,7 @@ These tests verify that the early audio gate in apps/router/line_webhook.py
 now rejects voice messages for re-introduction-eligible users BEFORE incurring
 the paid Whisper API call, mirroring the downstream needs_reintroduction check.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -38,6 +39,7 @@ class NeedsReintroductionTests(TestCase):
 
     def _fn(self):
         from apps.router.onboarding import needs_reintroduction
+
         return needs_reintroduction
 
     def test_returns_false_when_onboarding_incomplete(self):

@@ -26,23 +26,17 @@ class GlobalCapKillSwitchTest(TestCase):
 
     def test_is_capped_blocks_even_when_under_budget(self):
         """The operator kill-switch engages the global breaker independent of spend."""
-        budget = MonthlyBudget.objects.create(
-            month=self.first, budget_dollars=100, spent_dollars=5, is_capped=True
-        )
+        budget = MonthlyBudget.objects.create(month=self.first, budget_dollars=100, spent_dollars=5, is_capped=True)
         self.assertGreater(budget.remaining, 0)  # plenty of budget left
         self.assertEqual(check_budget(self.tenant), "global")
 
     def test_remaining_exhausted_still_blocks_without_capped(self):
         """The spend-exhaustion path keeps blocking on its own."""
-        MonthlyBudget.objects.create(
-            month=self.first, budget_dollars=100, spent_dollars=100, is_capped=False
-        )
+        MonthlyBudget.objects.create(month=self.first, budget_dollars=100, spent_dollars=100, is_capped=False)
         self.assertEqual(check_budget(self.tenant), "global")
 
     def test_uncapped_under_budget_not_blocked(self):
-        MonthlyBudget.objects.create(
-            month=self.first, budget_dollars=100, spent_dollars=5, is_capped=False
-        )
+        MonthlyBudget.objects.create(month=self.first, budget_dollars=100, spent_dollars=5, is_capped=False)
         self.assertEqual(check_budget(self.tenant), "")
 
 
@@ -51,9 +45,7 @@ class CapBudgetCommandTest(TestCase):
         self.first = date.today().replace(day=1)
 
     def test_cap_sets_flag_without_touching_spend(self):
-        budget = MonthlyBudget.objects.create(
-            month=self.first, budget_dollars=100, spent_dollars=42
-        )
+        budget = MonthlyBudget.objects.create(month=self.first, budget_dollars=100, spent_dollars=42)
         call_command("cap_budget", stdout=StringIO())
         budget.refresh_from_db()
         self.assertTrue(budget.is_capped)
@@ -67,9 +59,7 @@ class CapBudgetCommandTest(TestCase):
         month-to-date figure surfaced in the transparency UI and let the next
         hourly reconcile re-derive the spend. Now the spend column is untouched.
         """
-        budget = MonthlyBudget.objects.create(
-            month=self.first, budget_dollars=100, spent_dollars=150, is_capped=True
-        )
+        budget = MonthlyBudget.objects.create(month=self.first, budget_dollars=100, spent_dollars=150, is_capped=True)
         call_command("cap_budget", "--uncap", stdout=StringIO())
         budget.refresh_from_db()
         self.assertFalse(budget.is_capped)
@@ -84,9 +74,7 @@ class CapBudgetCommandTest(TestCase):
         the tenant is not silently re-blocked. (Decoupling the kill-switch from
         the spend counter is the substance of the fix.)
         """
-        MonthlyBudget.objects.create(
-            month=self.first, budget_dollars=100, spent_dollars=30
-        )
+        MonthlyBudget.objects.create(month=self.first, budget_dollars=100, spent_dollars=30)
         tenant = create_tenant(display_name="A07 Uncap", telegram_chat_id=444555888)
 
         call_command("cap_budget", stdout=StringIO())

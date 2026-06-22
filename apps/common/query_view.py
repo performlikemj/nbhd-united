@@ -29,6 +29,7 @@ from decimal import Decimal
 from typing import Any, ClassVar
 from uuid import UUID
 
+from django.core.exceptions import FieldError
 from pydantic import BaseModel, ValidationError
 from rest_framework import status
 from rest_framework.permissions import AllowAny

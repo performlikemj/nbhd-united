@@ -4,6 +4,7 @@ Verifies that _send_apology_for_dropped_message sends a Telegram message
 when the buffered message channel is TELEGRAM, matching the behaviour
 already present for the LINE channel.
 """
+
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
@@ -67,8 +68,6 @@ class SendApologyTelegramTest(TestCase):
         tenant = self._make_tenant()
         msg = self._make_msg(BufferedMessage.Channel.TELEGRAM)
 
-        with patch(
-            "apps.router.services.send_telegram_message", side_effect=RuntimeError("network error")
-        ):
+        with patch("apps.router.services.send_telegram_message", side_effect=RuntimeError("network error")):
             # Must not raise
             _send_apology_for_dropped_message(tenant, msg)

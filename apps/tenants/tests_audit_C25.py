@@ -4,7 +4,6 @@ FA-1054: email is lowercased/stripped before duplicate check and stored value.
 FA-1095: validate_password() is called before create_user, enforcing AUTH_PASSWORD_VALIDATORS.
 """
 
-
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIClient

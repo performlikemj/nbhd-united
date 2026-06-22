@@ -71,35 +71,25 @@ class FinanceTransactionsOrderByTests(TestCase):
         # account_nickname is a relation traversal, not a column on
         # FinanceTransaction. Previously this reached qs.order_by and raised
         # FieldError -> HTTP 500. Now it must be a clean invalid_order_by 400.
-        r = self._post(
-            {"resource": "transactions", "window": {"kind": "all"}, "order_by": "account_nickname"}
-        )
+        r = self._post({"resource": "transactions", "window": {"kind": "all"}, "order_by": "account_nickname"})
         self.assertEqual(r.status_code, 400)
         self.assertEqual(r.json()["error"], "invalid_order_by")
 
     def test_order_by_descending_account_nickname_returns_400(self):
-        r = self._post(
-            {"resource": "transactions", "window": {"kind": "all"}, "order_by": "-account_nickname"}
-        )
+        r = self._post({"resource": "transactions", "window": {"kind": "all"}, "order_by": "-account_nickname"})
         self.assertEqual(r.status_code, 400)
         self.assertEqual(r.json()["error"], "invalid_order_by")
 
     def test_order_by_real_transaction_column_still_works(self):
-        r = self._post(
-            {"resource": "transactions", "window": {"kind": "all"}, "order_by": "amount"}
-        )
+        r = self._post({"resource": "transactions", "window": {"kind": "all"}, "order_by": "amount"})
         self.assertEqual(r.status_code, 200)
 
     def test_order_by_account_id_still_works(self):
-        r = self._post(
-            {"resource": "transactions", "window": {"kind": "all"}, "order_by": "account_id"}
-        )
+        r = self._post({"resource": "transactions", "window": {"kind": "all"}, "order_by": "account_id"})
         self.assertEqual(r.status_code, 200)
 
     def test_account_nickname_still_requestable_via_fields(self):
-        r = self._post(
-            {"resource": "transactions", "window": {"kind": "all"}, "fields": ["account_nickname"]}
-        )
+        r = self._post({"resource": "transactions", "window": {"kind": "all"}, "fields": ["account_nickname"]})
         self.assertEqual(r.status_code, 200)
         rows = r.json()["data"]
         self.assertTrue(rows)
@@ -119,7 +109,5 @@ class FinanceTransactionsOrderByTests(TestCase):
         self.assertEqual(r.status_code, 200)
 
     def test_plan_order_by_real_column_still_works(self):
-        r = self._post(
-            {"resource": "plan", "window": {"kind": "all"}, "order_by": "created_at"}
-        )
+        r = self._post({"resource": "plan", "window": {"kind": "all"}, "order_by": "created_at"})
         self.assertEqual(r.status_code, 200)

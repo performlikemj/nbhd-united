@@ -102,20 +102,22 @@ class RecordInsightImplAtomicTest(TestCase):
 
         topic_created_pk = {}
 
-        original_resolve = __import__(
-            "apps.insights.topic_resolver", fromlist=["resolve_topic"]
-        ).resolve_topic
+        original_resolve = __import__("apps.insights.topic_resolver", fromlist=["resolve_topic"]).resolve_topic
 
         def capturing_resolve(pillar, candidate, **kw):
             topic = original_resolve(pillar, candidate, **kw)
             topic_created_pk["pk"] = topic.pk
             return topic
 
-        with patch("apps.insights.views.resolve_topic", side_effect=capturing_resolve), patch.object(
-            AssistantInsight.objects,
-            "create",
-            side_effect=Exception("simulated DB failure"),
-        ), self.assertRaises(Exception, msg="simulated DB failure"):
+        with (
+            patch("apps.insights.views.resolve_topic", side_effect=capturing_resolve),
+            patch.object(
+                AssistantInsight.objects,
+                "create",
+                side_effect=Exception("simulated DB failure"),
+            ),
+            self.assertRaises(Exception, msg="simulated DB failure"),
+        ):
             _record_insight_impl(
                 tenant=tenant_pk_sentinel,
                 pillar="gravity",

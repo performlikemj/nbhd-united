@@ -146,9 +146,7 @@ class RuntimePlanPatchValidationTests(TestCase):
                     "0": {
                         "activity": "Push",
                         "category": "strength",
-                        "detail_json": {
-                            "exercises": [{"name": "Bench", "sets": [{"reps": -3, "weight": 80}]}]
-                        },
+                        "detail_json": {"exercises": [{"name": "Bench", "sets": [{"reps": -3, "weight": 80}]}]},
                     }
                 }
             },
@@ -168,9 +166,7 @@ class RuntimePlanPatchValidationTests(TestCase):
                     "0": {
                         "activity": "Push",
                         "category": "strength",
-                        "detail_json": {
-                            "exercises": [{"name": "Bench", "sets": [{"reps": 8, "weight": 80}]}]
-                        },
+                        "detail_json": {"exercises": [{"name": "Bench", "sets": [{"reps": 8, "weight": 80}]}]},
                     }
                 }
             },

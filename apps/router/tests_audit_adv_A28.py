@@ -32,6 +32,7 @@ from django.test import SimpleTestCase
 # _send_telegram_markdown — the delivery helper used by the pending-queue path
 # ---------------------------------------------------------------------------
 
+
 class SendTelegramMarkdownButtonsOnlyTest(SimpleTestCase):
     """_send_telegram_markdown must deliver reply_markup even with minimal text."""
 
@@ -40,7 +41,9 @@ class SendTelegramMarkdownButtonsOnlyTest(SimpleTestCase):
         """Without a bot token the helper returns False (unchanged)."""
         from apps.router.pending_queue import _send_telegram_markdown
 
-        result = _send_telegram_markdown(12345, "·", reply_markup={"inline_keyboard": [[{"text": "Y", "callback_data": "agent:yes"}]]})
+        result = _send_telegram_markdown(
+            12345, "·", reply_markup={"inline_keyboard": [[{"text": "Y", "callback_data": "agent:yes"}]]}
+        )
         assert result is False
 
     @patch("httpx.post")
@@ -68,6 +71,7 @@ class SendTelegramMarkdownButtonsOnlyTest(SimpleTestCase):
 # ---------------------------------------------------------------------------
 # TelegramPoller._send_rich_response — the live-poller delivery path
 # ---------------------------------------------------------------------------
+
 
 class PollerSendRichResponseButtonsOnlyTest(SimpleTestCase):
     """TelegramPoller._send_rich_response delivers keyboard even with no prose."""
@@ -98,9 +102,11 @@ class PollerSendRichResponseButtonsOnlyTest(SimpleTestCase):
 
         poller = self._make_poller()
         buttons_only = "[[button:Yes|confirm]][[button:No|deny]]"
-        with patch("apps.router.output_guards.log_ascii_chart_leak"):
-            with patch("apps.insights.markers.extract_and_record_insights", return_value=buttons_only):
-                TelegramPoller._send_rich_response(poller, chat_id=12345, tenant=self._make_tenant(), text=buttons_only)
+        with (
+            patch("apps.router.output_guards.log_ascii_chart_leak"),
+            patch("apps.insights.markers.extract_and_record_insights", return_value=buttons_only),
+        ):
+            TelegramPoller._send_rich_response(poller, chat_id=12345, tenant=self._make_tenant(), text=buttons_only)
 
         assert poller._send_message.called, "_send_message must be called for buttons-only reply"
         call_kwargs = poller._send_message.call_args.kwargs
@@ -123,12 +129,14 @@ class PollerSendRichResponseButtonsOnlyTest(SimpleTestCase):
         # render_telegram_html is imported locally inside _send_rich_response so
         # we patch the canonical location (telegram_format module) instead.
         prose_and_buttons = "Pick one: [[button:A|opt_a]][[button:B|opt_b]]"
-        with patch("apps.router.output_guards.log_ascii_chart_leak"):
-            with patch("apps.insights.markers.extract_and_record_insights", return_value=prose_and_buttons):
-                with patch("apps.router.telegram_format.render_telegram_html", return_value=["Pick one:"]):
-                    TelegramPoller._send_rich_response(
-                        poller, chat_id=12345, tenant=self._make_tenant(), text=prose_and_buttons
-                    )
+        with (
+            patch("apps.router.output_guards.log_ascii_chart_leak"),
+            patch("apps.insights.markers.extract_and_record_insights", return_value=prose_and_buttons),
+            patch("apps.router.telegram_format.render_telegram_html", return_value=["Pick one:"]),
+        ):
+            TelegramPoller._send_rich_response(
+                poller, chat_id=12345, tenant=self._make_tenant(), text=prose_and_buttons
+            )
 
         assert poller._send_message.called
         # The final (and only) call must carry reply_markup
@@ -140,9 +148,11 @@ class PollerSendRichResponseButtonsOnlyTest(SimpleTestCase):
         from apps.router.poller import TelegramPoller
 
         poller = self._make_poller()
-        with patch("apps.router.output_guards.log_ascii_chart_leak"):
-            with patch("apps.insights.markers.extract_and_record_insights", return_value=""):
-                TelegramPoller._send_rich_response(poller, chat_id=12345, tenant=self._make_tenant(), text="")
+        with (
+            patch("apps.router.output_guards.log_ascii_chart_leak"),
+            patch("apps.insights.markers.extract_and_record_insights", return_value=""),
+        ):
+            TelegramPoller._send_rich_response(poller, chat_id=12345, tenant=self._make_tenant(), text="")
 
         assert not poller._send_message.called
         assert not poller._send_markdown.called
@@ -152,11 +162,13 @@ class PollerSendRichResponseButtonsOnlyTest(SimpleTestCase):
         from apps.router.poller import TelegramPoller
 
         poller = self._make_poller()
-        with patch("apps.router.output_guards.log_ascii_chart_leak"):
-            with patch("apps.insights.markers.extract_and_record_insights", return_value="[[button:OK|ok]]"):
-                TelegramPoller._send_rich_response(
-                    poller, chat_id=12345, tenant=self._make_tenant(), text="[[button:OK|ok]]"
-                )
+        with (
+            patch("apps.router.output_guards.log_ascii_chart_leak"),
+            patch("apps.insights.markers.extract_and_record_insights", return_value="[[button:OK|ok]]"),
+        ):
+            TelegramPoller._send_rich_response(
+                poller, chat_id=12345, tenant=self._make_tenant(), text="[[button:OK|ok]]"
+            )
 
         assert poller._send_message.called
         # The text argument (first positional after chat_id) must not contain [[button:

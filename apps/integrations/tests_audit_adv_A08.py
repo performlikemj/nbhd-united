@@ -85,8 +85,7 @@ class DailyNoteSectionAnchoringTest(TestCase):
     def test_standard_section_update_preserves_neighbours(self):
         """Baseline: updating a middle section leaves siblings intact."""
         doc = self._seed(
-            "## Morning Report\nold morning\n\n## Log\nold log\n\n"
-            "## Evening Check-in\nold evening\n",
+            "## Morning Report\nold morning\n\n## Log\nold log\n\n## Evening Check-in\nold evening\n",
         )
         resp = self.client.post(
             self.url,

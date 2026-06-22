@@ -95,8 +95,7 @@ class WorkoutOriginalWorkoutCrossTenantAPITests(TestCase):
         created = Workout.objects.get(id=created_id)
         self.assertIsNone(
             created.original_workout_id,
-            "original_workout must be None after POST — the field must not "
-            "accept a caller-supplied cross-tenant FK.",
+            "original_workout must be None after POST — the field must not accept a caller-supplied cross-tenant FK.",
         )
 
     # ------------------------------------------------------------------

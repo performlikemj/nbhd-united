@@ -82,10 +82,12 @@ class SweepConditionalUpdateTest(TestCase):
         action.refresh_from_db()
         self.assertEqual(action.status, ActionStatus.EXPIRED)
         self.assertIn("Expired 1", result)
-        self.assertTrue(ActionAuditLog.objects.filter(
-            tenant=self.tenant,
-            result=ActionStatus.EXPIRED,
-        ).exists())
+        self.assertTrue(
+            ActionAuditLog.objects.filter(
+                tenant=self.tenant,
+                result=ActionStatus.EXPIRED,
+            ).exists()
+        )
 
     def test_sweep_does_not_double_audit_if_row_already_resolved(self):
         """No duplicate ActionAuditLog when sweep races a concurrent approve."""
@@ -106,9 +108,7 @@ class SweepConditionalUpdateTest(TestCase):
             expire_stale_pending_actions()
 
         # Only the one APPROVED log — no extra EXPIRED log from the sweep
-        expired_count = ActionAuditLog.objects.filter(
-            tenant=self.tenant, result=ActionStatus.EXPIRED
-        ).count()
+        expired_count = ActionAuditLog.objects.filter(tenant=self.tenant, result=ActionStatus.EXPIRED).count()
         self.assertEqual(expired_count, 0, "sweep must not create EXPIRED audit log for already-approved row")
 
 

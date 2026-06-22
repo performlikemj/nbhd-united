@@ -35,9 +35,7 @@ class SendGateConfirmationReturnValueTests(TestCase):
     """send_gate_confirmation must return bool, not None."""
 
     def _make(self, username, **user_kwargs):
-        user = User.objects.create_user(
-            username=username, email=f"{username}@example.com", password="x", **user_kwargs
-        )
+        user = User.objects.create_user(username=username, email=f"{username}@example.com", password="x", **user_kwargs)
         tenant = Tenant.objects.create(
             user=user,
             status="active",
@@ -56,25 +54,25 @@ class SendGateConfirmationReturnValueTests(TestCase):
         tg = tg or mock.Mock(return_value=None)
         line = line or mock.Mock(return_value=None)
         editor = mock.Mock()
-        return mock.patch.dict(
-            messaging._SENDERS,
-            {"telegram": (tg, editor), "line": (line, editor)},
-        ), tg, line
+        return (
+            mock.patch.dict(
+                messaging._SENDERS,
+                {"telegram": (tg, editor), "line": (line, editor)},
+            ),
+            tg,
+            line,
+        )
 
     def test_ios_only_user_returns_false(self):
         """iOS-only user (no Telegram/LINE) → returns False (undeliverable)."""
-        user = User.objects.create_user(
-            username="a11_ios", email="a11_ios@example.com", password="x"
-        )
+        user = User.objects.create_user(username="a11_ios", email="a11_ios@example.com", password="x")
         tenant = Tenant.objects.create(
             user=user,
             status="active",
             container_fqdn="a11_ios.example.com",
             container_id="oc-a11ios",
         )
-        DeviceToken.objects.create(
-            tenant=tenant, user=user, token="b" * 64, environment="production"
-        )
+        DeviceToken.objects.create(tenant=tenant, user=user, token="b" * 64, environment="production")
         action = PendingAction.objects.create(
             tenant=tenant,
             action_type=ActionType.GMAIL_DELETE,
@@ -120,12 +118,8 @@ class SendGateConfirmationReturnValueTests(TestCase):
 
     def test_line_user_returns_true(self):
         """LINE-linked user → LINE sender fires, returns True."""
-        tenant, action = self._make(
-            "a11_line", line_user_id="U" + "1" * 32, preferred_channel="line"
-        )
-        patcher, tg, line_mock = self._patched_senders(
-            line=mock.Mock(return_value="line-push-y")
-        )
+        tenant, action = self._make("a11_line", line_user_id="U" + "1" * 32, preferred_channel="line")
+        patcher, tg, line_mock = self._patched_senders(line=mock.Mock(return_value="line-push-y"))
         with patcher:
             result = send_gate_confirmation(tenant, action)
 
@@ -147,9 +141,7 @@ class GateRequestViewUndeliverableTests(TestCase):
         self.client = APIClient()
 
     def _make_tenant(self, username, **user_kwargs):
-        user = User.objects.create_user(
-            username=username, email=f"{username}@example.com", password="x", **user_kwargs
-        )
+        user = User.objects.create_user(username=username, email=f"{username}@example.com", password="x", **user_kwargs)
         tenant = Tenant.objects.create(
             user=user,
             status="active",
@@ -183,9 +175,7 @@ class GateRequestViewUndeliverableTests(TestCase):
             environment="production",
         )
 
-        with mock.patch(
-            "apps.router.cron_delivery.resolve_user_channel", return_value="app"
-        ):
+        with mock.patch("apps.router.cron_delivery.resolve_user_channel", return_value="app"):
             resp = self._post_gate(tenant)
 
         self.assertEqual(resp.status_code, 422)
@@ -200,9 +190,7 @@ class GateRequestViewUndeliverableTests(TestCase):
         """User with no channel at all → 422 undeliverable, action immediately expired."""
         tenant = self._make_tenant("a11_view_none")
 
-        with mock.patch(
-            "apps.router.cron_delivery.resolve_user_channel", return_value=None
-        ):
+        with mock.patch("apps.router.cron_delivery.resolve_user_channel", return_value=None):
             resp = self._post_gate(tenant)
 
         self.assertEqual(resp.status_code, 422)
@@ -216,10 +204,9 @@ class GateRequestViewUndeliverableTests(TestCase):
         tenant = self._make_tenant("a11_view_tg", telegram_chat_id=123456789)
 
         # Patch the Telegram HTTP call so we don't need a real bot token.
-        with mock.patch(
-            "apps.actions.messaging._send_telegram_confirmation", return_value="tg-msg-1"
-        ), mock.patch(
-            "apps.router.cron_delivery.resolve_user_channel", return_value="telegram"
+        with (
+            mock.patch("apps.actions.messaging._send_telegram_confirmation", return_value="tg-msg-1"),
+            mock.patch("apps.router.cron_delivery.resolve_user_channel", return_value="telegram"),
         ):
             resp = self._post_gate(tenant)
 

@@ -30,9 +30,7 @@ class AppChannelRateLimitTest(TestCase):
             status=Tenant.Status.ACTIVE,
         )
         # A registered device makes the app channel the delivery surface.
-        DeviceToken.objects.create(
-            tenant=self.tenant, user=self.user, token="a" * 64
-        )
+        DeviceToken.objects.create(tenant=self.tenant, user=self.user, token="a" * 64)
         self.client = APIClient()
         self.url = f"/api/v1/integrations/runtime/{self.tenant.id}/send-to-user/"
         _rate_counts.clear()
@@ -47,9 +45,7 @@ class AppChannelRateLimitTest(TestCase):
         # record_proactive_outbound dispatches an APNs push; stub it so the test
         # exercises only the rate-limit accounting, not the push transport.
         with patch("apps.router.proactive_context.record_proactive_outbound"):
-            return self.client.post(
-                self.url, {"message": text}, format="json", **self._headers()
-            )
+            return self.client.post(self.url, {"message": text}, format="json", **self._headers())
 
     def test_app_channel_send_increments_counter(self):
         resp = self._send()

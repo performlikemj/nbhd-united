@@ -28,9 +28,7 @@ User = get_user_model()
 
 class SendGateConfirmationChannelResolutionTests(TestCase):
     def _make(self, username, **user_kwargs):
-        user = User.objects.create_user(
-            username=username, email=f"{username}@example.com", password="x", **user_kwargs
-        )
+        user = User.objects.create_user(username=username, email=f"{username}@example.com", password="x", **user_kwargs)
         tenant = Tenant.objects.create(
             user=user,
             status="active",
@@ -52,10 +50,14 @@ class SendGateConfirmationChannelResolutionTests(TestCase):
         tg = tg or mock.Mock(return_value=None)
         line = line or mock.Mock(return_value=None)
         editor = mock.Mock()
-        return mock.patch.dict(
-            messaging._SENDERS,
-            {"telegram": (tg, editor), "line": (line, editor)},
-        ), tg, line
+        return (
+            mock.patch.dict(
+                messaging._SENDERS,
+                {"telegram": (tg, editor), "line": (line, editor)},
+            ),
+            tg,
+            line,
+        )
 
     def test_ios_only_user_does_not_invoke_telegram_sender(self):
         """iOS-only user (DeviceToken, no telegram/line link, default
@@ -65,9 +67,7 @@ class SendGateConfirmationChannelResolutionTests(TestCase):
         # preferred_channel defaults to 'telegram'; no telegram_chat_id set.
         self.assertEqual(tenant.user.preferred_channel, "telegram")
         self.assertIsNone(tenant.user.telegram_chat_id)
-        DeviceToken.objects.create(
-            tenant=tenant, user=tenant.user, token="a" * 64, environment="production"
-        )
+        DeviceToken.objects.create(tenant=tenant, user=tenant.user, token="a" * 64, environment="production")
 
         patcher, tg, line = self._patched_senders()
         with patcher:
@@ -109,9 +109,7 @@ class SendGateConfirmationChannelResolutionTests(TestCase):
 
     def test_line_user_routed_to_line(self):
         """Linked LINE user (preferred_channel='line') routes to the LINE sender."""
-        tenant, action = self._make(
-            "c33_line", line_user_id="U" + "0" * 32, preferred_channel="line"
-        )
+        tenant, action = self._make("c33_line", line_user_id="U" + "0" * 32, preferred_channel="line")
 
         patcher, tg, line = self._patched_senders(line=mock.Mock(return_value="line-push-x"))
         with patcher:

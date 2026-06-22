@@ -988,10 +988,7 @@ class TelegramPoller:
             # ``_download_photo``). Tell the agent so it can tell the user
             # instead of confidently replying to an image it never saw —
             # mirrors the document/voice "couldn't process" markers.
-            message_text = (
-                "[Photo too large to process — please send a smaller image under 5 MB]\n"
-                f"{message_text}"
-            )
+            message_text = f"[Photo too large to process — please send a smaller image under 5 MB]\n{message_text}"
 
         # Contextual recall: inject goals/tasks + relevant history on session start
         if self._is_new_session(tenant):

@@ -21,9 +21,7 @@ class PendingExtractionCacheBumpTests(TestCase):
     """Verify that _bump_on_pending_extraction fires the dashboard cache bump."""
 
     def setUp(self):
-        self.tenant = create_tenant(
-            display_name="A13CacheBump", telegram_chat_id=913913
-        )
+        self.tenant = create_tenant(display_name="A13CacheBump", telegram_chat_id=913913)
         self.baseline = get_tag_version(self.tenant.id, "dashboard")
 
     def _v(self) -> int:

@@ -1357,11 +1357,7 @@ class LineWebhookView(View):
         # billable turn on a suspended/over-budget tenant. (The special-prefix
         # branches above act on stored DB state and don't spawn turns.)
         frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
-        if (
-            tenant.status == Tenant.Status.SUSPENDED
-            and not tenant.is_trial
-            and not bool(tenant.stripe_subscription_id)
-        ):
+        if tenant.status == Tenant.Status.SUSPENDED and not tenant.is_trial and not bool(tenant.stripe_subscription_id):
             lang = tenant.user.language or "en"
             _send_line_flex(
                 line_user_id,

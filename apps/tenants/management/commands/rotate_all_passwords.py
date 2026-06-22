@@ -156,9 +156,7 @@ class Command(BaseCommand):
         # Total passwords actually rotated (locked out) = those emailed plus those
         # whose email failed. Surface it as one number so a partial-Mailgun-outage
         # run doesn't undercount the real blast radius.
-        self.stdout.write(
-            self.style.WARNING(f"Total passwords rotated / locked out: {rotated + email_failed}")
-        )
+        self.stdout.write(self.style.WARNING(f"Total passwords rotated / locked out: {rotated + email_failed}"))
         if email_failed:
             self.stdout.write(
                 self.style.ERROR(
@@ -218,8 +216,7 @@ class Command(BaseCommand):
         if email_failed:
             self.stdout.write(
                 self.style.ERROR(
-                    f"⚠️  Resend still failed for {email_failed} user(s) — "
-                    f"check logs and retry --resend-only"
+                    f"⚠️  Resend still failed for {email_failed} user(s) — check logs and retry --resend-only"
                 )
             )
 

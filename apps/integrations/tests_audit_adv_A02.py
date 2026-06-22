@@ -60,9 +60,7 @@ class RuntimeBYOErrorReconcileTests(TestCase):
 
         with (
             mock.patch("apps.byo_models.services.regenerate_tenant_config") as regen,
-            mock.patch(
-                "apps.orchestrator.azure_client.apply_byo_credentials_to_container"
-            ) as apply_byo,
+            mock.patch("apps.orchestrator.azure_client.apply_byo_credentials_to_container") as apply_byo,
         ):
             response = self._post_billing_error()
 
@@ -99,9 +97,7 @@ class RuntimeBYOErrorReconcileTests(TestCase):
         """Transient reasons (rate-limit/overload) must not touch the container."""
         with (
             mock.patch("apps.byo_models.services.regenerate_tenant_config") as regen,
-            mock.patch(
-                "apps.orchestrator.azure_client.apply_byo_credentials_to_container"
-            ) as apply_byo,
+            mock.patch("apps.orchestrator.azure_client.apply_byo_credentials_to_container") as apply_byo,
         ):
             response = self.client.post(
                 self._url(),
