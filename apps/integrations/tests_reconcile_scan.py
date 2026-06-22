@@ -11,12 +11,14 @@ from django.test.utils import override_settings
 from apps.fuel.models import BodyWeightLog, Workout, WorkoutCategory, WorkoutStatus
 from apps.journal.models import Goal, Task
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
 class RuntimeReconcileScanViewTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Scan Tenant", telegram_chat_id=131313)
+        seed_internal_key(self.tenant)
         self.other_tenant = create_tenant(display_name="Other Tenant", telegram_chat_id=141414)
         self.tenant.finance_enabled = True
         self.tenant.fuel_enabled = True

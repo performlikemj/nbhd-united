@@ -9,6 +9,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from apps.tenants.models import Tenant, User
+from apps.tenants.test_utils import seed_internal_key
 
 from .models import PlatformIssueLog
 
@@ -47,6 +48,7 @@ class PlatformIssueReportTests(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.tenant = _make_tenant()
+        seed_internal_key(self.tenant)
         self.url = _report_url(self.tenant.id)
         self.headers = _auth_headers(self.tenant)
         self.valid_payload = {

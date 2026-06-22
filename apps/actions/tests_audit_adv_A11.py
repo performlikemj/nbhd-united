@@ -25,6 +25,7 @@ from apps.actions.messaging import send_gate_confirmation
 from apps.actions.models import ActionStatus, ActionType, PendingAction
 from apps.router.models import DeviceToken
 from apps.tenants.models import Tenant
+from apps.tenants.test_utils import seed_internal_key
 
 User = get_user_model()
 
@@ -149,6 +150,7 @@ class GateRequestViewUndeliverableTests(TestCase):
             container_id=f"oc-{username}",
             model_tier="pro",
         )
+        seed_internal_key(tenant)
         return tenant
 
     def _post_gate(self, tenant):

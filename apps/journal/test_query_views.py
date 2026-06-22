@@ -14,12 +14,14 @@ from django.test import TestCase, override_settings
 
 from apps.journal.models import Goal, JournalEntry, Task
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
 class JournalQueryViewTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="JournalQuery", telegram_chat_id=902001)
+        seed_internal_key(self.tenant)
         self.other = create_tenant(display_name="JournalQueryOther", telegram_chat_id=902002)
         # User tz so "today" math is deterministic against our fake clock.
         self.tenant.user.timezone = "America/Los_Angeles"

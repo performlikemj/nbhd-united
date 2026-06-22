@@ -11,6 +11,7 @@ from rest_framework.test import APIClient
 from apps.tenants.agenda_models import AgendaEngagement
 from apps.tenants.agenda_service import mark_organic, record_commitment
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 
 class RecordCommitmentTest(TestCase):
@@ -98,6 +99,7 @@ class RuntimeCommitmentEndpointTest(TestCase):
         from django.test import override_settings
 
         self.tenant = create_tenant(display_name="EndpointD", telegram_chat_id=950010)
+        seed_internal_key(self.tenant, key="test-internal-key")
         self.client = APIClient()
         self._override = override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
         self._override.enable()

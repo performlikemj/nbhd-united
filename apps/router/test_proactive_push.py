@@ -26,6 +26,7 @@ from rest_framework.test import APIClient
 from apps.router.cron_delivery import _rate_counts
 from apps.router.models import ChatThread, DeviceToken, ProactiveOutbound
 from apps.tenants.models import Tenant, User
+from apps.tenants.test_utils import seed_internal_key
 
 _VALID_TOKEN = "a" * 64
 _VALID_TOKEN_2 = "b" * 64
@@ -268,6 +269,7 @@ class CronDeliveryEmitsPushTest(TestCase):
         self.user.telegram_chat_id = 12345
         self.user.save()
         self.tenant = _make_tenant(self.user)
+        seed_internal_key(self.tenant)
         ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True, title="Main")
         DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
         self.client = APIClient()
@@ -341,6 +343,7 @@ class CronDeliveryAppOnlyTest(TestCase):
     def setUp(self):
         self.user = _make_user()  # NB: no telegram_chat_id / line_user_id
         self.tenant = _make_tenant(self.user)
+        seed_internal_key(self.tenant)
         ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True, title="Main")
         self.client = APIClient()
         self.url = f"/api/v1/integrations/runtime/{self.tenant.id}/send-to-user/"

@@ -19,6 +19,7 @@ from rest_framework.test import APIClient
 
 from apps.router.models import AppChatMessage, PendingMessage
 from apps.tenants.models import Tenant, User
+from apps.tenants.test_utils import seed_internal_key
 
 
 def _make_user() -> User:
@@ -227,6 +228,7 @@ class ChatProgressEventTest(TestCase):
     def setUp(self):
         self.user = _make_user()
         self.tenant = _make_tenant(self.user)
+        seed_internal_key(self.tenant)
         from apps.router.models import ChatThread
 
         self.thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True, title="Main")

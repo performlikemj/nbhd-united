@@ -26,6 +26,7 @@ from apps.core.models import CoreProfile, MeditationSession, MeditationStatus
 from apps.lessons.models import Lesson, StarJournalEntry, TutoringSession
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 _HAS_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 
@@ -678,6 +679,7 @@ class NotifyMeditationReadyTests(TestCase):
 class RuntimeMeditationCreateViewTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Runtime Core", telegram_chat_id=900300)
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",

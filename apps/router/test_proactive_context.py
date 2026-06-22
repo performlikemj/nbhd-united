@@ -26,6 +26,7 @@ from apps.router.proactive_context import (
     surface_proactive_context,
 )
 from apps.tenants.models import Tenant
+from apps.tenants.test_utils import seed_internal_key
 
 
 class ParseMarkdownItemsTest(TestCase):
@@ -95,6 +96,7 @@ class _TenantFixture(TestCase):
         self.user.line_user_id = "Utestuserabc123"
         self.user.save()
         self.tenant = Tenant.objects.create(user=self.user, status=Tenant.Status.ACTIVE)
+        seed_internal_key(self.tenant, key="test-key")
 
 
 class RecordProactiveOutboundTest(_TenantFixture):

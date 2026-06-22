@@ -16,6 +16,7 @@ from apps.journal.models import JournalEntry
 from apps.lessons.models import Lesson
 from apps.tenants.models import Tenant, User
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 from .yesterdays_signals import (
     NOTABLE_ENERGY_STALE_DAYS,
@@ -254,6 +255,7 @@ class RuntimeYesterdaysSignalsEndpointTests(TestCase):
 
     def setUp(self):
         self.tenant = _make_tenant(chat_id=900_100)
+        seed_internal_key(self.tenant)
         self.other_tenant = _make_tenant(chat_id=900_101)
 
     def _headers(self, *, tenant_id=None, key="test-runtime-key"):

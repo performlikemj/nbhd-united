@@ -19,6 +19,7 @@ from apps.common.query_view import (
 )
 from apps.common.windows import Window
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 # ─── Minimal query model + view for testing dispatch ──────────────────────
 
@@ -147,6 +148,7 @@ class CanonicalQueryHashTests(TestCase):
 class BaseQueryViewDispatchTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="QueryViewT", telegram_chat_id=900900)
+        seed_internal_key(self.tenant)
         self.factory = APIRequestFactory()
         self.view = _TestQueryView.as_view()
 
@@ -290,6 +292,7 @@ class BaseQueryViewDispatchTests(TestCase):
 class BaseQueryViewTimezoneTests(TestCase):
     def test_tenant_tz_picked_up_from_user(self):
         tenant = create_tenant(display_name="TZ", telegram_chat_id=900901)
+        seed_internal_key(tenant)
         tenant.user.timezone = "Asia/Tokyo"
         tenant.user.save(update_fields=["timezone"])
 

@@ -20,6 +20,7 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 from .models import RestingHeartRateLog, SleepLog, Workout, WorkoutPlan
 
@@ -121,6 +122,7 @@ class RuntimePlanPatchValidationTests(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="C05 RT Plan", telegram_chat_id=800503)
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",

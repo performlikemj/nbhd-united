@@ -16,6 +16,7 @@ from apps.finance.models import FinanceAccount, FinanceTransaction
 from apps.journal.models import Document, Goal
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 from .baselines import compute_baseline
 from .models import AssistantInsight, PillarSnapshot, TopicAlias, TopicRegistry, UserVoicePref
@@ -364,6 +365,7 @@ class RuntimeInsightsViewTests(TestCase):
 
     def setUp(self):
         self.tenant = _make_finance_tenant(display_name="RT", chat_id=900400)
+        seed_internal_key(self.tenant)
         self.other_tenant = _make_finance_tenant(display_name="RTOther", chat_id=900401)
 
     def _headers(self, tenant_id=None, key="test-runtime-key"):
@@ -548,6 +550,7 @@ class Phase2EndpointTests(TestCase):
 
     def setUp(self):
         self.tenant = _make_finance_tenant(display_name="P2", chat_id=900600)
+        seed_internal_key(self.tenant)
         self.other_tenant = _make_finance_tenant(display_name="P2Other", chat_id=900601)
 
         # JWT client for user-facing tests
@@ -979,6 +982,7 @@ class ComputeSignalsTests(TestCase):
 class Phase3EndpointTests(TestCase):
     def setUp(self):
         self.tenant = _make_finance_tenant(display_name="P3End", chat_id=900900)
+        seed_internal_key(self.tenant)
         self.other_tenant = _make_finance_tenant(display_name="P3Other", chat_id=900901)
         self.client_jwt = APIClient()
         token = RefreshToken.for_user(self.tenant.user)

@@ -11,6 +11,7 @@ from django.test.utils import override_settings
 from apps.journal.models import JournalEntry, WeeklyReview
 from apps.lessons.models import Lesson, StarJournalEntry, TutoringSession
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 from .services import (
     IntegrationNotConnectedError,
@@ -26,6 +27,7 @@ class RuntimeCronGroundingViewTest(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="Grounding", telegram_chat_id=838383)
+        seed_internal_key(self.tenant)
 
     def _headers(self, tenant_id: str | None = None, key: str = "shared-key") -> dict[str, str]:
         return {
@@ -93,6 +95,7 @@ class RuntimeCurrentStatusViewTest(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="Status", telegram_chat_id=818181)
+        seed_internal_key(self.tenant)
         self.tenant.experimental_typed_journal_lifecycle = True
         self.tenant.finance_enabled = True
         self.tenant.save(update_fields=["experimental_typed_journal_lifecycle", "finance_enabled"])
@@ -150,6 +153,7 @@ class RuntimeCurrentStatusViewTest(TestCase):
 class RuntimeIntegrationViewsTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Runtime", telegram_chat_id=717171)
+        seed_internal_key(self.tenant)
         self.other_tenant = create_tenant(display_name="Other Runtime", telegram_chat_id=727272)
 
     def _headers(self, tenant_id: str | None = None, key: str = "shared-key") -> dict[str, str]:
@@ -516,6 +520,7 @@ class RuntimeMemorySyncViewTest(TestCase):
         from apps.journal.models import Document
 
         self.tenant = create_tenant(display_name="SyncTest", telegram_chat_id=818181)
+        seed_internal_key(self.tenant)
         # Clear seeded starter docs to test with controlled data only.
         Document.objects.filter(tenant=self.tenant).delete()
         Document.objects.create(
@@ -626,6 +631,7 @@ class RedditViewTests(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="Reddit Test", telegram_chat_id=737373)
+        seed_internal_key(self.tenant)
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -745,6 +751,7 @@ class RuntimeCronPhase2SummaryViewTest(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="Phase2", telegram_chat_id=919191)
+        seed_internal_key(self.tenant)
 
     def _headers(self):
         return {
@@ -848,6 +855,7 @@ class RuntimeJournalContextBackboneDualReadTest(TestCase):
         from apps.journal.models import Document, Goal, Task
 
         self.tenant = create_tenant(display_name="Backbone", telegram_chat_id=737373)
+        seed_internal_key(self.tenant)
         self.Document = Document
         self.Goal = Goal
         self.Task = Task
@@ -912,6 +920,7 @@ class RuntimeJournalContextConstellationTest(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="Galaxy ctx", telegram_chat_id=646464)
+        seed_internal_key(self.tenant)
         Lesson.objects.filter(tenant=self.tenant).delete()
 
     def _headers(self) -> dict[str, str]:
@@ -970,6 +979,7 @@ class RuntimeConstellationNotesViewTest(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="Notes", telegram_chat_id=656565)
+        seed_internal_key(self.tenant)
         Lesson.objects.filter(tenant=self.tenant).delete()
 
     def _headers(self, key="shared-key") -> dict[str, str]:

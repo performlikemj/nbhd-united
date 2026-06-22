@@ -10,6 +10,7 @@ from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from apps.tenants.models import Tenant, User
+from apps.tenants.test_utils import seed_internal_key
 
 from .md_utils import append_entry_markdown, parse_daily_note, serialise_daily_note
 from .models import DailyNote, Document, NoteTemplate, UserMemory, WeeklyReview
@@ -603,6 +604,7 @@ class RuntimeToFrontendIntegrationTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="testuser_integ", password="testpass")
         self.tenant = Tenant.objects.create(user=self.user, status="active")
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.runtime_headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-key",
@@ -649,6 +651,7 @@ class RuntimeDailyNoteAPITest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="testuser", password="testpass")
         self.tenant = Tenant.objects.create(user=self.user, status="active")
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-key",
@@ -734,6 +737,7 @@ class RuntimeUserMemoryAPITest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="testuser", password="testpass")
         self.tenant = Tenant.objects.create(user=self.user, status="active")
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-key",
@@ -781,6 +785,7 @@ class RuntimeJournalContextAPITest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="testuser", password="testpass")
         self.tenant = Tenant.objects.create(user=self.user, status="active")
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-key",
@@ -1075,6 +1080,7 @@ class RuntimeDocumentAPITest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="rtdocuser", password="pass")
         self.tenant = Tenant.objects.create(user=self.user, status="active")
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-key",

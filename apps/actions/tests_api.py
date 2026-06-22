@@ -14,6 +14,7 @@ from apps.actions.models import (
     PendingAction,
 )
 from apps.tenants.models import Tenant
+from apps.tenants.test_utils import seed_internal_key
 
 INTERNAL_KEY = "test-internal-key-12345"
 DEPLOY_SECRET = "test-deploy-secret-67890"
@@ -46,6 +47,7 @@ class GateRequestViewTests(TestCase):
         User = get_user_model()
         self.user = User.objects.create_user(username="gate_req_user", email="gate_req@test.com", password="pass")
         self.tenant = _make_tenant(self.user)
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.url = reverse("gate-request", kwargs={"tenant_id": self.tenant.id})
 
@@ -158,6 +160,7 @@ class GatePollViewTests(TestCase):
         User = get_user_model()
         self.user = User.objects.create_user(username="gate_poll_user", email="gate_poll@test.com", password="pass")
         self.tenant = _make_tenant(self.user, container_id="oc-poll-test")
+        seed_internal_key(self.tenant)
         self.client = APIClient()
 
     def test_poll_pending_action(self):

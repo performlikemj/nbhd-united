@@ -14,6 +14,7 @@ from apps.billing.constants import (
     DEEPSEEK_MODEL,
 )
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
@@ -21,6 +22,7 @@ from apps.tenants.services import create_tenant
 class RuntimePreferredModelViewTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Runtime PM", telegram_chat_id=818181)
+        seed_internal_key(self.tenant)
         self.other_tenant = create_tenant(display_name="Other PM", telegram_chat_id=828282)
         self.endpoint = f"/api/v1/tenants/runtime/{self.tenant.id}/preferred-model/"
 
