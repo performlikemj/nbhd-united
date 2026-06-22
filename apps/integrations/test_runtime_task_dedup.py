@@ -14,12 +14,14 @@ from django.test.utils import override_settings
 
 from apps.journal.models import Goal, Task
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
 class RuntimeTaskCreateDedupTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Dedup", telegram_chat_id=818181)
+        seed_internal_key(self.tenant)
 
     def _headers(self):
         return {
@@ -69,6 +71,7 @@ class RuntimeTaskCreateDedupTest(TestCase):
 class RuntimeGoalCreateDedupTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="DedupGoal", telegram_chat_id=828282)
+        seed_internal_key(self.tenant)
 
     def _headers(self):
         return {

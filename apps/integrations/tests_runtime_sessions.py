@@ -14,6 +14,7 @@ from django.test.utils import override_settings
 
 from apps.journal.session_models import Session
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 
 def _make_session(
@@ -45,6 +46,7 @@ def _make_session(
 class RuntimeSessionsPendingViewTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Pending Tenant", telegram_chat_id=911001)
+        seed_internal_key(self.tenant)
         self.other_tenant = create_tenant(display_name="Other Tenant", telegram_chat_id=911002)
 
     def _url(self, tenant_id=None):
@@ -163,6 +165,7 @@ class RuntimeSessionsPendingViewTest(TestCase):
 class RuntimeSessionMarkProcessedViewTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Mark Tenant", telegram_chat_id=911003)
+        seed_internal_key(self.tenant)
         self.other_tenant = create_tenant(display_name="Other Tenant", telegram_chat_id=911004)
         self.session = _make_session(self.tenant)
 

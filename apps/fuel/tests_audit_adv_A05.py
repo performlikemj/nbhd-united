@@ -16,6 +16,7 @@ from rest_framework.test import APIClient
 
 from apps.fuel.models import Workout, WorkoutPlan
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
@@ -25,6 +26,7 @@ class RuntimePlanPatchWeekOverridesMaterializationTests(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="Patch Override", telegram_chat_id=800584)
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",

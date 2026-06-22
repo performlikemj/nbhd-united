@@ -1,8 +1,14 @@
 """Internal auth helper tests.
 
 Phase 1 (2026-05-12): dual-validation against per-tenant `Tenant.internal_api_key`
-with legacy `settings.NBHD_INTERNAL_API_KEY` as fallback. Every validation
-attempt emits a structured audit event via `nbhd.internal_auth` logger.
+with legacy `settings.NBHD_INTERNAL_API_KEY` as fallback.
+
+Phase 1d (2026-06-22): the legacy global fallback was REMOVED. The per-tenant
+key is now the sole accepted credential; a tenant with no per-tenant key (or a
+tenant_id resolving to no Tenant row) is rejected outright. These tests assert
+the fallback is gone and that the global key is no longer honored. Every
+validation attempt still emits a structured audit event via the
+`nbhd.internal_auth` logger.
 """
 
 from __future__ import annotations
@@ -23,28 +29,30 @@ from .internal_auth import (
     OUTCOME_NO_KEY_CONFIGURED,
     OUTCOME_SUCCESS,
     OUTCOME_TENANT_MISMATCH,
-    PROVENANCE_LEGACY_GLOBAL,
     PROVENANCE_NONE,
     PROVENANCE_PER_TENANT,
     InternalAuthError,
     validate_internal_runtime_request,
 )
 
-# ── Legacy path (no per-tenant key set, tenant_id is a non-UUID string) ────
-# These mirror the pre-Phase-1 tests; they exercise the global-key fallback.
+# ── No global fallback (Phase 1d) ──────────────────────────────────────────
+# A global NBHD_INTERNAL_API_KEY is set, but it must NOT be accepted as an
+# inbound runtime credential. Tenant ids that don't resolve to a Tenant row
+# (the test fixtures use non-UUID strings) have no per-tenant key, so every
+# call here is rejected — there is no shared key to fall back to.
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
-class LegacyGlobalKeyPathTest(SimpleTestCase):
-    """When no Tenant has internal_api_key set, the global key path is taken."""
+class NoGlobalFallbackTest(SimpleTestCase):
+    """Phase 1d: the legacy global key is no longer a valid credential."""
 
-    def test_accepts_valid_global_key(self):
-        tenant_id = validate_internal_runtime_request(
-            provided_key="shared-key",
-            provided_tenant_id="tenant-123",
-            expected_tenant_id="tenant-123",
-        )
-        self.assertEqual(tenant_id, "tenant-123")
+    def test_global_key_is_rejected(self):
+        with self.assertRaises(InternalAuthError):
+            validate_internal_runtime_request(
+                provided_key="shared-key",
+                provided_tenant_id="tenant-123",
+                expected_tenant_id="tenant-123",
+            )
 
     def test_rejects_wrong_key(self):
         with self.assertRaises(InternalAuthError):
@@ -78,7 +86,7 @@ class LegacyGlobalKeyPathTest(SimpleTestCase):
 
 @override_settings(NBHD_INTERNAL_API_KEY="")
 class MissingConfigTest(SimpleTestCase):
-    def test_rejects_when_no_key_configured_and_no_per_tenant(self):
+    def test_rejects_when_no_per_tenant_key(self):
         with self.assertRaises(InternalAuthError):
             validate_internal_runtime_request(
                 provided_key="some-key",
@@ -114,21 +122,19 @@ class PerTenantKeyPathTest(TestCase):
         self.assertEqual(result, str(tenant.id))
 
     @override_settings(NBHD_INTERNAL_API_KEY="global-key")
-    def test_per_tenant_set_but_wrong_value_still_falls_back_to_global(self):
-        """During migration the global key remains a valid fallback even
-        for tenants who already have a per-tenant key set. This is what
-        keeps containers alive between the DB update and the revision
-        rollout pushing the new env value. Phase 1d removes the fallback."""
+    def test_per_tenant_set_but_global_value_is_rejected(self):
+        """Phase 1d: the global key is NO LONGER a fallback. A tenant with a
+        per-tenant key set rejects the global key rather than accepting it."""
         tenant = _make_tenant(internal_api_key="per-tenant-secret")
-        result = validate_internal_runtime_request(
-            provided_key="global-key",
-            provided_tenant_id=str(tenant.id),
-            expected_tenant_id=str(tenant.id),
-        )
-        self.assertEqual(result, str(tenant.id))
+        with self.assertRaises(InternalAuthError):
+            validate_internal_runtime_request(
+                provided_key="global-key",
+                provided_tenant_id=str(tenant.id),
+                expected_tenant_id=str(tenant.id),
+            )
 
     @override_settings(NBHD_INTERNAL_API_KEY="global-key")
-    def test_rejects_when_neither_per_tenant_nor_global_matches(self):
+    def test_rejects_when_per_tenant_key_does_not_match(self):
         tenant = _make_tenant(internal_api_key="per-tenant-secret")
         with self.assertRaises(InternalAuthError):
             validate_internal_runtime_request(
@@ -138,14 +144,16 @@ class PerTenantKeyPathTest(TestCase):
             )
 
     @override_settings(NBHD_INTERNAL_API_KEY="global-key")
-    def test_tenant_without_per_tenant_key_uses_global(self):
+    def test_tenant_without_per_tenant_key_is_rejected(self):
+        """A real Tenant row with an empty internal_api_key has no credential
+        to validate against — rejected (previously accepted via global key)."""
         tenant = _make_tenant(internal_api_key="")
-        result = validate_internal_runtime_request(
-            provided_key="global-key",
-            provided_tenant_id=str(tenant.id),
-            expected_tenant_id=str(tenant.id),
-        )
-        self.assertEqual(result, str(tenant.id))
+        with self.assertRaises(InternalAuthError):
+            validate_internal_runtime_request(
+                provided_key="global-key",
+                provided_tenant_id=str(tenant.id),
+                expected_tenant_id=str(tenant.id),
+            )
 
 
 # ── Audit logging ───────────────────────────────────────────────────────────
@@ -181,8 +189,11 @@ class AuditLogTest(TestCase):
         self.assertEqual(rec.outcome, OUTCOME_SUCCESS)
         self.assertEqual(rec.provided_tenant_id, str(tenant.id))
 
-    def test_legacy_global_success_logged(self):
-        tenant = _make_tenant(internal_api_key="")
+    def test_global_key_no_longer_accepted_logged(self):
+        """Phase 1d regression guard: a container presenting the old global
+        key against a tenant that has a per-tenant key is rejected as bad_key
+        — never `legacy_global` success (that provenance no longer exists)."""
+        tenant = _make_tenant(internal_api_key="per-tenant-secret")
         rec = self._capture(
             lambda: validate_internal_runtime_request(
                 provided_key="global-key",
@@ -190,11 +201,12 @@ class AuditLogTest(TestCase):
                 expected_tenant_id=str(tenant.id),
             )
         )
-        self.assertEqual(rec.key_provenance, PROVENANCE_LEGACY_GLOBAL)
-        self.assertEqual(rec.outcome, OUTCOME_SUCCESS)
+        self.assertEqual(rec.key_provenance, PROVENANCE_NONE)
+        self.assertEqual(rec.outcome, OUTCOME_BAD_KEY)
+        self.assertNotIn("legacy_global", rec.getMessage())
 
     def test_bad_key_logged(self):
-        tenant = _make_tenant(internal_api_key="")
+        tenant = _make_tenant(internal_api_key="per-tenant-secret")
         rec = self._capture(
             lambda: validate_internal_runtime_request(
                 provided_key="wrong",
@@ -233,8 +245,9 @@ class AuditLogTest(TestCase):
         )
         self.assertEqual(rec.outcome, OUTCOME_TENANT_MISMATCH)
 
-    @override_settings(NBHD_INTERNAL_API_KEY="")
-    def test_no_key_configured_logged(self):
+    def test_no_per_tenant_key_logged(self):
+        """A tenant_id with no resolvable per-tenant key emits
+        no_key_configured (Phase 1d: there is no global fallback to try)."""
         rec = self._capture(
             lambda: validate_internal_runtime_request(
                 provided_key="anything",
@@ -246,19 +259,19 @@ class AuditLogTest(TestCase):
     def test_rendered_message_carries_provenance_for_log_analytics(self):
         """The provenance/outcome must appear in the RENDERED message, not
         just `extra`. Production's formatter is plain-text and drops `extra`,
-        and the Phase 1d audit gate greps the message string for
-        `key_provenance=legacy_global`. This guards against regressing to a
-        fields-only emit that makes the gate silently unobservable.
+        and the internal-auth audit greps the message string. This guards
+        against regressing to a fields-only emit that makes the audit
+        silently unobservable.
         """
-        tenant = _make_tenant(internal_api_key="")
+        tenant = _make_tenant(internal_api_key="per-tenant-secret")
         rec = self._capture(
             lambda: validate_internal_runtime_request(
-                provided_key="global-key",
+                provided_key="per-tenant-secret",
                 provided_tenant_id=str(tenant.id),
                 expected_tenant_id=str(tenant.id),
             )
         )
         message = rec.getMessage()
-        self.assertIn(f"key_provenance={PROVENANCE_LEGACY_GLOBAL}", message)
+        self.assertIn(f"key_provenance={PROVENANCE_PER_TENANT}", message)
         self.assertIn(f"outcome={OUTCOME_SUCCESS}", message)
         self.assertIn(str(tenant.id), message)

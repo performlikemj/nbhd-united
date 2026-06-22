@@ -1,27 +1,32 @@
 """Internal runtime-to-control-plane auth helpers.
 
-Architecture (2026-05-12, Phase 1):
+Architecture (2026-05-12 Phase 1 → 2026-06-22 Phase 1d):
     Tenant OpenClaw containers authenticate to Django internal endpoints
     via `X-NBHD-Internal-Key` + `X-NBHD-Tenant-Id` headers. The validator
     here is the single chokepoint for every internal route (journal/fuel/
     finance/integrations/cron/router/platform_logs/tenants runtime views).
 
-    Dual-validation during fleet migration:
-      1. If the tenant has `Tenant.internal_api_key` set, the provided key
-         MUST match that value (constant-time compare). Per-tenant scope —
-         a key leaked from container A cannot authenticate as tenant B.
-      2. Otherwise, fall back to the legacy global `settings.NBHD_INTERNAL_
-         API_KEY`. This keeps pre-migration tenants working while the fleet
-         rolls over to per-tenant keys one tenant at a time.
+    Per-tenant validation (only mode):
+        The provided key MUST match the tenant's `Tenant.internal_api_key`
+        (constant-time compare). Per-tenant scope — a key leaked from
+        container A cannot authenticate as tenant B. Each container sources
+        its key from its own per-tenant Key Vault secret.
 
-    Every validation attempt is logged via the Django logger with
-    structured fields so the migration progress is observable in Azure Log
-    Analytics — once the audit shows zero hits on `key_provenance=
-    legacy_global` for 48h, the fallback can be removed (Phase 1d).
+    History — the legacy global fallback:
+        During the fleet migration (Phase 1a–1c) this validator ALSO
+        accepted the shared `settings.NBHD_INTERNAL_API_KEY` as a fallback,
+        so pre-migration containers kept working between the DB key update
+        and the container revision rollout. That fallback was REMOVED in
+        Phase 1d (2026-06-22) after a 7-day audit showed zero
+        `key_provenance=legacy_global` hits across the active fleet. The
+        deliberately gradual approach (vs the 2026-02-22 flag-day removal)
+        avoided the "mass auth failures during provisioning" outage.
 
-    Why this isn't the same shape as the 2026-02-22 attempt: that change
-    flag-day-removed the global key. The dual-validation pattern here
-    avoids the "mass auth failures during provisioning" outage.
+    Note: `settings.NBHD_INTERNAL_API_KEY` is still defined and used
+    elsewhere (the Django→container gateway-token fallback in
+    `apps/cron/gateway_client.py` + `apps/router/poller.py`, and as the
+    container's own `NBHD_INTERNAL_API_KEY` env var name). Phase 1d removed
+    only its acceptance as an inbound runtime-request credential here.
 """
 
 from __future__ import annotations
@@ -29,14 +34,13 @@ from __future__ import annotations
 import logging
 import secrets
 
-from django.conf import settings
-
 logger = logging.getLogger("nbhd.internal_auth")
 
 
 # Key-provenance enum values used in audit log structured fields.
+# PROVENANCE_LEGACY_GLOBAL ("legacy_global") was retired in Phase 1d
+# (2026-06-22) when the global-key fallback was removed.
 PROVENANCE_PER_TENANT = "per_tenant"
-PROVENANCE_LEGACY_GLOBAL = "legacy_global"
 PROVENANCE_NONE = "none"
 
 # Outcome enum values.
@@ -157,34 +161,26 @@ def validate_internal_runtime_request(
         )
         raise InternalAuthError("Tenant scope mismatch")
 
-    # Phase 1 dual-validation: try the per-tenant key first.
+    # Phase 1d (2026-06-22): per-tenant key is the ONLY accepted credential.
+    # The legacy global fallback was removed after a 7-day audit showed zero
+    # `key_provenance=legacy_global` hits across the active fleet. A tenant
+    # with no per-tenant key (or a tenant_id that resolves to no Tenant row)
+    # is rejected outright — there is no shared key to fall back to.
     per_tenant_key = _lookup_tenant_key(tenant_id)
-    if per_tenant_key is not None and secrets.compare_digest(provided_key, per_tenant_key):
-        _emit_audit(
-            provided_tenant_id=tenant_id,
-            expected_tenant_id=expected_id,
-            key_provenance=PROVENANCE_PER_TENANT,
-            outcome=OUTCOME_SUCCESS,
-        )
-        return tenant_id
-
-    # Fall back to the legacy global key. Will be removed in Phase 1d
-    # once the audit log shows no traffic on this path for 48h.
-    configured_key = getattr(settings, "NBHD_INTERNAL_API_KEY", "")
-    if not configured_key:
+    if per_tenant_key is None:
         _emit_audit(
             provided_tenant_id=tenant_id,
             expected_tenant_id=expected_id,
             key_provenance=PROVENANCE_NONE,
             outcome=OUTCOME_NO_KEY_CONFIGURED,
         )
-        raise InternalAuthError("NBHD_INTERNAL_API_KEY is not configured")
+        raise InternalAuthError("No per-tenant internal key configured for tenant")
 
-    if secrets.compare_digest(provided_key, configured_key):
+    if secrets.compare_digest(provided_key, per_tenant_key):
         _emit_audit(
             provided_tenant_id=tenant_id,
             expected_tenant_id=expected_id,
-            key_provenance=PROVENANCE_LEGACY_GLOBAL,
+            key_provenance=PROVENANCE_PER_TENANT,
             outcome=OUTCOME_SUCCESS,
         )
         return tenant_id

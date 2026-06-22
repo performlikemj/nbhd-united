@@ -15,6 +15,7 @@ from apps.cron.tenant_views import (
     _wrap_message_with_phase2,
 )
 from apps.tenants.models import Tenant, User
+from apps.tenants.test_utils import seed_internal_key
 
 
 def _create_user_and_tenant(*, active=True):
@@ -1420,6 +1421,10 @@ class RuntimeContainerStartedTest(TestCase):
         }
         self._override = _ovr(NBHD_INTERNAL_API_KEY="test-internal-key")
         self._override.enable()
+        # Phase 1d: the global internal-key fallback is gone, so the target
+        # tenant must carry its own internal_api_key. Seed it after the
+        # override is live so it matches the header the client sends.
+        seed_internal_key(self.tenant)
 
     def tearDown(self):
         self._override.disable()

@@ -9,12 +9,14 @@ from apps.billing.constants import MINIMAX_MODEL
 from apps.billing.models import UsageRecord
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
 class RuntimeUsageReportTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Usage Tenant", telegram_chat_id=424242)
+        seed_internal_key(self.tenant)
 
     def _url(self, tenant_id: str | None = None) -> str:
         return f"/api/v1/internal/runtime/{tenant_id or self.tenant.id}/usage/report/"
@@ -135,6 +137,7 @@ class RuntimeBYOErrorReportTests(TestCase):
         from apps.byo_models.models import BYOCredential
 
         self.tenant = create_tenant(display_name="BYO Err Tenant", telegram_chat_id=424243)
+        seed_internal_key(self.tenant)
         self.cred = BYOCredential.objects.create(
             tenant=self.tenant,
             provider=BYOCredential.Provider.ANTHROPIC,

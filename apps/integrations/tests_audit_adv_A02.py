@@ -16,6 +16,7 @@ from django.test.utils import override_settings
 
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
@@ -24,6 +25,7 @@ class RuntimeBYOErrorReconcileTests(TestCase):
         from apps.byo_models.models import BYOCredential
 
         self.tenant = create_tenant(display_name="BYO Reconcile Tenant", telegram_chat_id=525354)
+        seed_internal_key(self.tenant)
         self.cred = BYOCredential.objects.create(
             tenant=self.tenant,
             provider=BYOCredential.Provider.ANTHROPIC,

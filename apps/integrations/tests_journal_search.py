@@ -7,12 +7,14 @@ from django.test.utils import override_settings
 
 from apps.journal.models import Document
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
 class RuntimeJournalSearchViewTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Search Tenant", telegram_chat_id=808080)
+        seed_internal_key(self.tenant)
         self.other_tenant = create_tenant(display_name="Other Tenant", telegram_chat_id=909090)
 
         self.doc1 = Document.objects.create(

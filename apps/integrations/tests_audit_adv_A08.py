@@ -17,6 +17,7 @@ from rest_framework.test import APIClient
 
 from apps.journal.models import Document
 from apps.tenants.models import Tenant
+from apps.tenants.test_utils import seed_internal_key
 
 User = get_user_model()
 
@@ -26,6 +27,7 @@ class DailyNoteSectionAnchoringTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="a08user", password="pass")
         self.tenant = Tenant.objects.create(user=self.user, status="active")
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-key",

@@ -17,6 +17,7 @@ from apps.tenants.agenda_service import (
     record_signal,
 )
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 
 class AgendaServiceTest(TestCase):
@@ -219,6 +220,9 @@ class RuntimeAgendaEngagementEndpointTest(TestCase):
         self.client = APIClient()
         self._override = override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
         self._override.enable()
+        # Stamp the per-tenant key AFTER enabling the override so it picks up
+        # "test-internal-key" (the value the client sends in X-NBHD-Internal-Key).
+        seed_internal_key(self.tenant)
 
     def tearDown(self):
         self._override.disable()

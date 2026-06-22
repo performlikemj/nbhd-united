@@ -11,6 +11,7 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 from .models import FinanceAccount, FinanceSnapshot, FinanceTransaction, PayoffPlan
 from .services import DebtInput, calculate_payoff, compare_strategies
@@ -246,6 +247,7 @@ class FinanceSnapshotModelTests(TestCase):
 class RuntimeFinanceViewTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Runtime Finance", telegram_chat_id=900010)
+        seed_internal_key(self.tenant)
         self.other_tenant = create_tenant(display_name="Other", telegram_chat_id=900011)
 
     def _headers(self, tenant_id=None, key="test-key"):
@@ -1895,6 +1897,7 @@ class RuntimeWelcomeMarkViewTests(TestCase):
         self.client = APIClient()
         self._override = override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
         self._override.enable()
+        seed_internal_key(self.tenant, key="test-internal-key")
 
     def tearDown(self):
         self._override.disable()
@@ -2081,6 +2084,7 @@ class FinanceQueryViewTests(TestCase):
         self.other_tenant = create_tenant(display_name="QueryOther", telegram_chat_id=901001)
         self._override = override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
         self._override.enable()
+        seed_internal_key(self.tenant, key="test-internal-key")
 
         self.aj = FinanceAccount.objects.create(
             tenant=self.tenant,

@@ -21,6 +21,7 @@ from django.test.utils import override_settings
 
 from apps.journal.models import Workspace
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 
 def _fake_embedding(_text):
@@ -33,6 +34,7 @@ def _fake_embedding(_text):
 class RuntimeWorkspaceViewsTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="WS Test", telegram_chat_id=303030)
+        seed_internal_key(self.tenant)
         self.other_tenant = create_tenant(display_name="Other WS", telegram_chat_id=303031)
 
     # ── Helpers ──────────────────────────────────────────────────────────

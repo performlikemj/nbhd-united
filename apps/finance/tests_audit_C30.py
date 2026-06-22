@@ -17,6 +17,7 @@ from decimal import Decimal
 from django.test import TestCase, override_settings
 
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 from .models import FinanceAccount
 
@@ -26,6 +27,7 @@ class FinanceQueryPropertyColumnTests(TestCase):
         self.tenant = create_tenant(display_name="QueryC30", telegram_chat_id=901500)
         self._override = override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
         self._override.enable()
+        seed_internal_key(self.tenant)
 
         FinanceAccount.objects.create(
             tenant=self.tenant,

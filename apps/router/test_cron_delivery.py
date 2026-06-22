@@ -7,6 +7,7 @@ from rest_framework.test import APIClient
 
 from apps.router.cron_delivery import _rate_counts, _split_message
 from apps.tenants.models import Tenant
+from apps.tenants.test_utils import seed_internal_key
 
 
 class SplitMessageTest(TestCase):
@@ -40,6 +41,7 @@ class CronDeliveryViewTest(TestCase):
             user=self.user,
             status=Tenant.Status.ACTIVE,
         )
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.url = f"/api/v1/integrations/runtime/{self.tenant.id}/send-to-user/"
         _rate_counts.clear()

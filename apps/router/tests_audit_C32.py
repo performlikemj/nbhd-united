@@ -15,6 +15,7 @@ from rest_framework.test import APIClient
 from apps.router.cron_delivery import RATE_LIMIT_PER_HOUR, _rate_counts
 from apps.router.models import DeviceToken
 from apps.tenants.models import Tenant
+from apps.tenants.test_utils import seed_internal_key
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")
@@ -29,6 +30,7 @@ class AppChannelRateLimitTest(TestCase):
             user=self.user,
             status=Tenant.Status.ACTIVE,
         )
+        seed_internal_key(self.tenant)
         # A registered device makes the app channel the delivery surface.
         DeviceToken.objects.create(tenant=self.tenant, user=self.user, token="a" * 64)
         self.client = APIClient()

@@ -15,6 +15,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.common.llm_contracts import today_in_tenant_tz
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 from .models import BodyWeightLog, FuelProfile, PlanSlot, Workout, WorkoutPlan
 from .services import est_1rm
@@ -633,6 +634,7 @@ class RuntimeEditLockGateTests(TestCase):
         from django.utils import timezone
 
         self.tenant = create_tenant(display_name="Gate Test", telegram_chat_id=800210)
+        seed_internal_key(self.tenant)
         self.workout = Workout.objects.create(
             tenant=self.tenant,
             date=date(2026, 6, 5),
@@ -1184,6 +1186,7 @@ class WorkoutSessionLifecycleTests(TestCase):
 class RuntimeFuelViewTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Runtime Test", telegram_chat_id=800010)
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
@@ -1331,6 +1334,7 @@ class RuntimeFuelViewTests(TestCase):
 class RuntimeSessionLifecycleTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Runtime Session Test", telegram_chat_id=800077)
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
@@ -1408,6 +1412,7 @@ class RuntimeSessionLifecycleTests(TestCase):
 class RuntimeFuelAuditTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Audit Test", telegram_chat_id=800301)
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
@@ -1701,6 +1706,7 @@ class ConsumerFuelProfileViewTests(TestCase):
 class RuntimeFuelProfileViewTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="RT Profile Test", telegram_chat_id=800023)
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
@@ -1781,6 +1787,7 @@ class RuntimeFuelProfileViewTests(TestCase):
 class RuntimeFuelSummaryWithProfileTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Summary Profile", telegram_chat_id=800024)
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
@@ -2171,6 +2178,7 @@ class WorkoutPlanModelTests(TestCase):
 class RuntimeWorkoutPlanTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="RT Plan Test", telegram_chat_id=800061)
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
@@ -2554,6 +2562,7 @@ class PlanReconcilerRaceTests(TestCase):
         from django.utils import timezone
 
         self.tenant = create_tenant(display_name="Race Test", telegram_chat_id=800300)
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
@@ -3121,6 +3130,7 @@ class RuntimeNormalizeTests(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="Norm Test", telegram_chat_id=800088)
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
@@ -3300,6 +3310,7 @@ class RuntimeValidateTests(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="Val Test", telegram_chat_id=800099)
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
@@ -3543,6 +3554,7 @@ class RuntimeWorkoutPlanCreateTests(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="Plan Create", telegram_chat_id=800300)
+        seed_internal_key(self.tenant)
         self.client = APIClient()
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
@@ -4288,6 +4300,7 @@ class HealthKitRuntimeSummaryTests(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="HK Summary Test", telegram_chat_id=800044)
+        seed_internal_key(self.tenant)
         self.tenant.fuel_enabled = True
         self.tenant.save(update_fields=["fuel_enabled"])
         self.client = APIClient()

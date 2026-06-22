@@ -16,12 +16,14 @@ from django.test.utils import override_settings
 from apps.cron.models import CronCreationPath, CronJob
 from apps.cron.services import create_typed_cron
 from apps.tenants.services import create_tenant
+from apps.tenants.test_utils import seed_internal_key
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
 class RuntimeCronCreateViewsTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="CronCreate", telegram_chat_id=818181)
+        seed_internal_key(self.tenant)
         self.other_tenant = create_tenant(display_name="Other", telegram_chat_id=828282)
 
     def _headers(self, tenant_id=None, key="shared-key"):
